@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ quote.quote_number }} — {{ quote.customer.company_name }}</title>
+  <style>
+    /* ── Reset ─────────────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── Base ──────────────────────────────────────────────────────────────── */
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                   Helvetica, Arial, sans-serif;
+      font-size: 10.5pt;
+      color: #111;
+      background: #e8eaf0;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+
+    /* ── Screen: white page card ───────────────────────────────────────────── */
+    .page-shell {
+      max-width: 8.5in;
+      margin: 0.4in auto 0.8in;
+      background: #fff;
+      box-shadow: 0 2px 32px rgba(0,0,0,.14);
+      padding: 0.65in 0.75in 0.75in;
+    }
+
+    /* ── Screen-only controls ──────────────────────────────────────────────── */
+    .controls {
+      position: fixed; top: 16px; right: 16px;
+      display: flex; gap: 8px; z-index: 9999;
+    }
+    .btn {
+      padding: 8px 18px; border: none; border-radius: 8px;
+      font-size: 13px; font-weight: 600; cursor: pointer;
+      line-height: 1.4;
+    }
+    .btn-primary { background: #4b5320; color: #fff; }
+    .btn-primary:hover { background: #3b4119; }
+    .btn-secondary { background: #e5e7eb; color: #374151; }
+    .btn-secondary:hover { background: #d1d5db; }
+
+    /* ── Document header ───────────────────────────────────────────────────── */
+    .doc-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      padding-bottom: 18px;
+      border-bottom: 3px solid #4b5320;
+      margin-bottom: 22px;
+    }
+    .co-name {
+      font-size: 21pt;
+      font-weight: 800;
+      color: #4b5320;
+      letter-spacing: -0.5px;
+      line-height: 1.05;
+    }
+    .co-info {
+      margin-top: 5px;
+      font-size: 8.5pt;
+      color: #6b7280;
+      line-height: 1.8;
+    }
+    .doc-right { text-align: right; }
+    .doc-label {
+      font-size: 7pt; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.13em;
+      color: #9ca3af;
+    }
+    .doc-number {
+      font-size: 15pt; font-weight: 700;
+      color: #4b5320; margin: 2px 0;
+    }
+    .doc-dates {
+      font-size: 8.5pt;
+      color: #6b7280;
+      line-height: 1.85;
+    }
+    .doc-dates strong { color: #374151; }
+
+    /* ── "Prepared for" block ──────────────────────────────────────────────── */
+    .bill-section { margin-bottom: 22px; }
+    .bill-label {
+      font-size: 7pt; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.11em;
+      color: #9ca3af; margin-bottom: 4px;
+    }
+    .bill-company { font-size: 12pt; font-weight: 700; color: #111; }
+    .bill-detail  { font-size: 8.5pt; color: #555; line-height: 1.75; margin-top: 2px; }
+
+    /* ── Lines table ───────────────────────────────────────────────────────── */
+    table.lines {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 9.5pt;
+    }
+    table.lines thead tr { background: #4b5320; color: #fff; }
+    table.lines thead th {
+      padding: 7px 8px;
+      font-size: 7pt; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.08em;
+      border: none;
+    }
+    table.lines thead th.lft { text-align: left; }
+    table.lines thead th.rgt { text-align: right; }
+    table.lines thead th.ctr { text-align: center; }
+
+    table.lines tbody tr { border-bottom: 1px solid #f0f0f0; page-break-inside: avoid; }
+    table.lines tbody tr:last-child { border-bottom: 2px solid #e5e7eb; }
+    table.lines tbody tr.even-row td { background: #fafafa; }
+    table.lines tbody td { padding: 8px 8px; vertical-align: top; }
+
+    .td-num   { text-align: center; color: #c0c0c0; font-size: 8pt; }
+    .td-rgt   { text-align: right; }
+    .td-disc  { text-align: right; color: #9ca3af; }
+    .td-total { text-align: right; font-weight: 600; }
+
+    /* Child-line indentation */
+    .child-indent { padding-left: 18px !important; }
+
+    /* Role badges (visible on print for clarity) */
+    .role-badge {
+      display: inline-block;
+      font-size: 6.5pt; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.07em;
+      padding: 1px 4px; border-radius: 3px;
+      vertical-align: middle; margin-right: 4px;
+    }
+    .badge-core     { background: #fef3c7; color: #92400e; }
+    .badge-warranty { background: #dbeafe; color: #1e40af; }
+    .badge-optional { background: #ecfdf5; color: #065f46; }
+
+    /* Option label badge (customer-facing — shown above description) */
+    .option-label {
+      display: block;
+      font-size: 6.5pt; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.07em;
+      background: #fef3c7; color: #92400e;
+      padding: 1px 5px; border-radius: 3px;
+      margin-bottom: 3px;
+      width: fit-content;
+    }
+
+    /* Part number — shown small below description */
+    .part-num {
+      display: block;
+      font-family: monospace;
+      font-size: 7.5pt;
+      color: #aaa;
+      margin-top: 1px;
+    }
+
+    /* ── Totals ────────────────────────────────────────────────────────────── */
+    .totals-wrap {
+      display: flex;
+      justify-content: flex-end;
+      border-top: 2px solid #e5e7eb;
+      padding-top: 10px;
+      margin-bottom: 18px;
+    }
+    .totals-inner { width: 230px; }
+    .t-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      padding: 3px 0;
+      font-size: 9.5pt;
+    }
+    .t-row .lbl { color: #666; }
+    .t-row .val { font-weight: 500; font-variant-numeric: tabular-nums; }
+    .t-row.disc-row .lbl,
+    .t-row.disc-row .val { color: #dc2626; }
+    .t-row.grand {
+      border-top: 2px solid #4b5320;
+      margin-top: 6px; padding-top: 8px;
+      font-size: 12.5pt; font-weight: 700;
+      color: #4b5320;
+    }
+
+    /* ── Notes ─────────────────────────────────────────────────────────────── */
+    .notes-section {
+      margin-top: 18px;
+      padding-top: 14px;
+      border-top: 1px solid #e5e7eb;
+    }
+    .sec-label {
+      font-size: 7pt; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.11em;
+      color: #9ca3af; margin-bottom: 5px;
+    }
+    .notes-body { font-size: 9pt; color: #444; line-height: 1.65; white-space: pre-wrap; }
+    .validity-line { margin-top: 10px; font-size: 8pt; color: #bbb; font-style: italic; }
+
+    /* ── Alternatives section ──────────────────────────────────────────────── */
+    .alt-section {
+      margin-top: 28px;
+      padding-top: 18px;
+      border-top: 2px dashed #d97706;
+    }
+    .alt-heading { font-size: 8pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; color: #d97706; margin-bottom: 3px; }
+    .alt-subhead { font-size: 8pt; color: #92400e; margin-bottom: 12px; }
+    table.lines.alt-table thead tr { background: #d97706; }
+
+    /* ── Footer ────────────────────────────────────────────────────────────── */
+    .doc-footer {
+      margin-top: 36px;
+      padding-top: 12px;
+      border-top: 1px solid #e5e7eb;
+      text-align: center;
+      font-size: 7.5pt;
+      color: #bbb;
+    }
+
+    /* ── Print overrides ───────────────────────────────────────────────────── */
+    @media print {
+      @page { size: letter portrait; margin: 0.6in 0.65in 0.75in 0.65in; }
+      body  { background: none; }
+      .page-shell {
+        max-width: none; margin: 0; padding: 0;
+        box-shadow: none;
+      }
+      .controls { display: none !important; }
+      .alt-section { page-break-before: auto; }
+    }
+  </style>
+</head>
+<body>
+
+{# ── Screen-only: Print + Close buttons ──────────────────────────────────── #}
+<div class="controls">
+  <button class="btn btn-primary" onclick="window.print()">&#128438; Print / Save PDF</button>
+  <button class="btn btn-secondary" onclick="window.close()">&#x2715; Close</button>
+</div>
+
+<div class="page-shell">
+
+  {# ── Header: company left | doc info right ──────────────────────────────── #}
+  <div class="doc-header">
+    <div>
+      <div class="co-name">{{ company.name or "JAKS Parts" }}</div>
+      <div class="co-info">
+        {% if company.address %}{{ company.address }}<br>{% endif %}
+        {% if company.phone %}Tel:&nbsp;{{ company.phone }}{% if company.email %}&nbsp;&nbsp;·&nbsp;&nbsp;{% endif %}{% endif %}
+        {% if company.email %}{{ company.email }}{% endif %}
+      </div>
+    </div>
+    <div class="doc-right">
+      <div class="doc-label">Proposal / Quotation</div>
+      <div class="doc-number">{{ quote.quote_number }}</div>
+      <div class="doc-dates">
+        <strong>Date:</strong> {{ quote.created_at.strftime('%B %d, %Y') }}<br>
+        {% if quote.valid_until %}
+        <strong>Valid Until:</strong> {{ quote.valid_until.strftime('%B %d, %Y') }}
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# ── Prepared For ────────────────────────────────────────────────────────── #}
+  <div class="bill-section">
+    <div class="bill-label">Prepared For</div>
+    <div class="bill-company">{{ quote.customer.company_name }}</div>
+    {% if customer_addr_lines %}
+    <div class="bill-detail">
+      {% for ln in customer_addr_lines %}{{ ln }}<br>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+
+  {# ── Main line items ─────────────────────────────────────────────────────── #}
+  <table class="lines">
+    <thead>
+      <tr>
+        <th class="ctr" style="width:28px">#</th>
+        <th class="lft">Description</th>
+        <th class="rgt" style="width:42px">Qty</th>
+        <th class="rgt" style="width:90px">Unit Price</th>
+        <th class="rgt" style="width:46px">Disc</th>
+        <th class="rgt" style="width:86px">Extended</th>
+      </tr>
+    </thead>
+    <tbody>
+      {%- set ns = namespace(top_row=0, is_even=false) -%}
+      {% for line in included_lines %}
+        {%- set is_child = line.parent_line_id is not none -%}
+        {%- if not is_child -%}
+          {%- set ns.top_row = ns.top_row + 1 -%}
+          {%- set ns.is_even = (ns.top_row % 2 == 0) -%}
+        {%- endif -%}
+        <tr{% if ns.is_even %} class="even-row"{% endif %}>
+
+          {# Row number — blank for child lines #}
+          <td class="td-num">{% if not is_child %}{{ ns.top_row }}{% endif %}</td>
+
+          {# Description cell #}
+          <td{% if is_child %} class="child-indent"{% endif %}>
+            {% if line.option_label %}
+              <span class="option-label">{{ line.option_label }}</span>
+            {% endif %}
+            {% if is_child %}
+              {% if line.line_role == 'core' %}
+                <span class="role-badge badge-core">Core</span>
+              {% elif line.line_role == 'warranty' %}
+                <span class="role-badge badge-warranty">Warranty</span>
+              {% elif line.line_role == 'optional' %}
+                <span class="role-badge badge-optional">Add-on</span>
+              {% endif %}
+            {% endif %}
+            {{ line.description }}
+            {% if line.product and line.product.part_number %}
+              <span class="part-num">{{ line.product.part_number }}</span>
+            {% endif %}
+          </td>
+
+          <td class="td-rgt">{{ line.qty }}</td>
+          <td class="td-rgt">${{ "%.2f"|format(line.unit_price) }}</td>
+          <td class="td-disc">
+            {% if line.discount_pct %}{{ "%.0f"|format(line.discount_pct) }}%{% else %}—{% endif %}
+          </td>
+          <td class="td-total">${{ "%.2f"|format(line.line_total) }}</td>
+        </tr>
+      {% else %}
+        <tr>
+          <td colspan="6" style="text-align:center;padding:18px;color:#aaa;font-style:italic">
+            No line items.
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {# ── Totals ──────────────────────────────────────────────────────────────── #}
+  <div class="totals-wrap">
+    <div class="totals-inner">
+      {% if discount_amount > 0 %}
+      <div class="t-row">
+        <span class="lbl">Subtotal</span>
+        <span class="val">${{ "%.2f"|format(gross_total) }}</span>
+      </div>
+      <div class="t-row disc-row">
+        <span class="lbl">Discount</span>
+        <span class="val">&#x2212;${{ "%.2f"|format(discount_amount) }}</span>
+      </div>
+      {% endif %}
+      <div class="t-row grand">
+        <span class="lbl">Total</span>
+        <span class="val">${{ "%.2f"|format(subtotal) }}</span>
+      </div>
+    </div>
+  </div>
+
+  {# ── Customer-facing notes ───────────────────────────────────────────────── #}
+  {% if quote.notes and quote.notes.strip() %}
+  <div class="notes-section">
+    <div class="sec-label">Notes</div>
+    <div class="notes-body">{{ quote.notes.strip() }}</div>
+  </div>
+  {% endif %}
+
+  {# Validity statement #}
+  {% if quote.valid_until %}
+  <p class="validity-line">
+    This quote is valid until {{ quote.valid_until.strftime('%B %d, %Y') }}.
+    Prices are subject to change after expiration.
+  </p>
+  {% endif %}
+
+  {# ── Alternatives / Upgrade Options ─────────────────────────────────────── #}
+  {% if alt_lines %}
+  <div class="alt-section">
+    <div class="alt-heading">&#9650; Upgrade Options / Alternatives</div>
+    <div class="alt-subhead">
+      The items below are <strong>not included</strong> in the total above.
+      Ask us about any of these options.
+    </div>
+    <table class="lines alt-table">
+      <thead>
+        <tr>
+          <th class="ctr" style="width:28px">#</th>
+          <th class="lft">Description</th>
+          <th class="rgt" style="width:42px">Qty</th>
+          <th class="rgt" style="width:90px">Unit Price</th>
+          <th class="rgt" style="width:46px">Disc</th>
+          <th class="rgt" style="width:86px">Extended</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for line in alt_lines %}
+        <tr{% if loop.index % 2 == 0 %} class="even-row"{% endif %}>
+          <td class="td-num">{{ loop.index }}</td>
+          <td>
+            {% if line.option_label %}
+              <span class="option-label">{{ line.option_label }}</span>
+            {% endif %}
+            {{ line.description }}
+            {% if line.product and line.product.part_number %}
+              <span class="part-num">{{ line.product.part_number }}</span>
+            {% endif %}
+          </td>
+          <td class="td-rgt">{{ line.qty }}</td>
+          <td class="td-rgt">${{ "%.2f"|format(line.unit_price) }}</td>
+          <td class="td-disc">
+            {% if line.discount_pct %}{{ "%.0f"|format(line.discount_pct) }}%{% else %}—{% endif %}
+          </td>
+          <td class="td-total">${{ "%.2f"|format(line.line_total) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {# ── Footer ──────────────────────────────────────────────────────────────── #}
+  <div class="doc-footer">
+    Thank you for your business
+    {% if company.name %} &nbsp;·&nbsp; {{ company.name }}{% endif %}
+    {% if company.phone %} &nbsp;·&nbsp; {{ company.phone }}{% endif %}
+    {% if company.email %} &nbsp;·&nbsp; {{ company.email }}{% endif %}
+  </div>
+
+</div>{# /page-shell #}
+<script>
+(function () {
+  var params = new URLSearchParams(window.location.search);
+  if (params.get('auto') === '1') {
+    window.addEventListener('load', function () {
+      setTimeout(function () { window.print(); }, 400);
+    });
+  }
+}());
+</script>
+</body>
+</html>

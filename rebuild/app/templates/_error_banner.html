@@ -1,0 +1,30 @@
+{#
+  _error_banner.html — OOB error toast for HTMX routes that return HTML fragments.
+
+  Usage (route that returns HTML, not a redirect):
+    return templates.TemplateResponse(
+        "_error_banner.html",
+        {"request": request, "message": "Something went wrong."}
+    )
+
+  The <span> satisfies HTMX's primary swap target (leaves it unchanged).
+  The toast is appended to #toast-container via OOB swap and auto-dismisses.
+
+  For redirect-based routes, use ?error=message on the redirect URL instead —
+  base.html renders the error flash banner from that query param automatically.
+#}
+<span></span>
+<div id="toast-container" hx-swap-oob="beforeend">
+  <div x-data x-init="setTimeout(() => $el.remove(), 6000)"
+       class="toast toast-error">
+    <svg class="w-4 h-4 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+      <path fill-rule="evenodd"
+            d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414
+               1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293
+               1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0
+               00-1.414-1.414L10 8.586 8.707 7.293z"
+            clip-rule="evenodd"/>
+    </svg>
+    {{ message }}
+  </div>
+</div>

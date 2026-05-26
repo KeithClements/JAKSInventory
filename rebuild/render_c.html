@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Render C — Command Line Focused — Quote Builder</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    .mono { font-family: 'Courier New', Courier, monospace; }
+    .kbd { display:inline-flex; align-items:center; padding:2px 6px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#94a3b8; font-family:monospace; font-size:0.65rem; }
+    .cmd-row td { padding:7px 10px; font-size:0.82rem; border-bottom:1px solid #f1f5f9; vertical-align:middle; }
+    .cmd-th { padding:5px 10px; font-size:0.68rem; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:#64748b; }
+    .cmd-th-r { padding:5px 10px; font-size:0.68rem; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:#64748b; text-align:right; }
+    .cmd-td-r { padding:7px 10px; font-size:0.82rem; border-bottom:1px solid #f1f5f9; vertical-align:middle; text-align:right; }
+    .avail { display:inline-flex; align-items:center; padding:2px 7px; border-radius:4px; font-family:monospace; font-size:0.72rem; font-weight:700; border:1px solid; margin-right:4px; }
+    input[type="text"]:focus { outline:none; }
+    .search-cmd { caret-color: #4b5320; }
+    .search-cmd:focus { outline: none; box-shadow: none; }
+  </style>
+</head>
+<body class="text-gray-900" style="background:#f1f5f9;">
+
+<!-- APPROACH LABEL -->
+<div class="fixed top-2 right-2 z-50 bg-slate-800 text-white text-xs px-3 py-1.5 rounded-full shadow-lg font-mono">
+  Render C — Command Line Focused
+</div>
+
+<div class="flex" style="height:100vh; overflow:hidden;">
+
+  <!-- ═══════════════════════════════════════════════════════════
+       SIDEBAR
+  ═══════════════════════════════════════════════════════════ -->
+  <aside class="flex-shrink-0 flex flex-col overflow-y-auto" style="width:200px; background:#0f172a;">
+    <div class="px-3 py-3 border-b border-slate-800">
+      <div class="font-bold text-sm tracking-widest uppercase mono" style="color:#b0be71;">JAKS</div>
+      <div class="text-slate-500 text-xs mono">parts · inventory</div>
+    </div>
+    <nav class="flex-1 py-2">
+      <a href="#" class="flex items-center px-3 py-1.5 text-slate-500 hover:text-slate-200 hover:bg-slate-800 text-xs mono">
+        <span class="text-slate-600 mr-2">&gt;</span>dashboard
+      </a>
+      <div class="px-3 pt-3 pb-1 text-slate-600 text-xs font-bold uppercase tracking-widest mono">— sales</div>
+      <a href="#" class="flex items-center px-3 py-1.5 text-slate-400 hover:bg-slate-800 text-xs mono">customers</a>
+      <a href="#" class="flex items-center px-3 py-1.5 text-xs mono font-bold" style="background:#1e293b; color:#b0be71; border-left:2px solid #4b5320;">quotes</a>
+      <a href="#" class="flex items-center px-3 py-1.5 text-slate-400 hover:bg-slate-800 text-xs mono">sales_orders</a>
+      <a href="#" class="flex items-center px-3 py-1.5 text-slate-400 hover:bg-slate-800 text-xs mono">invoices</a>
+      <a href="#" class="flex items-center px-3 py-1.5 text-slate-400 hover:bg-slate-800 text-xs mono">payments</a>
+      <div class="px-3 pt-3 pb-1 text-slate-600 text-xs font-bold uppercase tracking-widest mono">— purchasing</div>
+      <a href="#" class="flex items-center px-3 py-1.5 text-slate-400 hover:bg-slate-800 text-xs mono">vendors</a>
+      <a href="#" class="flex items-center px-3 py-1.5 text-slate-400 hover:bg-slate-800 text-xs mono">purchase_orders</a>
+      <div class="px-3 pt-3 pb-1 text-slate-600 text-xs font-bold uppercase tracking-widest mono">— inventory</div>
+      <a href="#" class="flex items-center px-3 py-1.5 text-slate-400 hover:bg-slate-800 text-xs mono">products</a>
+      <div class="px-3 pt-3 pb-1 text-slate-600 text-xs font-bold uppercase tracking-widest mono">— cores</div>
+      <a href="#" class="flex items-center px-3 py-1.5 text-slate-400 hover:bg-slate-800 text-xs mono">core_charges</a>
+      <div class="px-3 pt-3 pb-1 text-slate-600 text-xs font-bold uppercase tracking-widest mono">— system</div>
+      <a href="#" class="flex items-center px-3 py-1.5 text-slate-400 hover:bg-slate-800 text-xs mono">settings</a>
+    </nav>
+    <div class="px-3 py-2 border-t border-slate-800">
+      <span class="text-slate-500 text-xs mono">keith@jaks ~</span>
+    </div>
+  </aside>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       MAIN CONTENT
+  ═══════════════════════════════════════════════════════════ -->
+  <div class="flex-1 flex flex-col overflow-hidden">
+
+    <!-- ─────────────────────────────────────────────────────────
+         HERO SEARCH ZONE (dark, command-palette style)
+    ───────────────────────────────────────────────────────── -->
+    <div style="background:#1e293b; flex-shrink:0;">
+
+      <!-- Quote identity bar -->
+      <div class="flex items-center justify-between px-4 py-2 border-b border-slate-700">
+        <div class="flex items-center gap-4">
+          <div class="flex items-center gap-2">
+            <span class="text-slate-500 text-xs mono">quote:</span>
+            <span class="mono font-bold text-sm" style="color:#b0be71;">Q-2026-0051</span>
+            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-bold mono" style="background:#292524; color:#d97706; border:1px solid #92400e;">draft</span>
+          </div>
+          <div class="flex items-center gap-2 border-l border-slate-700 pl-4">
+            <span class="text-slate-500 text-xs mono">customer:</span>
+            <span class="font-semibold text-slate-200 text-sm">Mike's Diesel Service</span>
+            <span class="text-slate-500 text-xs">[ <span style="color:#94a3b8;">net30</span> · <span class="text-red-400 font-bold">OD:$890</span> · <span class="text-green-400">cr:ok</span> · <span style="color:#f59e0b;">cores:2</span> ]</span>
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="text-slate-500 text-xs mono">05/25/26 → 06/04/26</span>
+          <span class="text-slate-600 text-xs">|</span>
+          <button class="text-slate-300 text-xs hover:text-white border border-slate-600 rounded px-2 py-1 mono hover:border-slate-400">⬡ pop_out</button>
+          <button class="text-slate-300 text-xs hover:text-white border border-slate-600 rounded px-2 py-1 mono hover:border-slate-400">send</button>
+          <button class="text-xs font-bold rounded px-2 py-1 mono" style="background:#4b5320; color:white;">convert ▼</button>
+          <span class="text-slate-600 text-xs mono">✓ saved:5s</span>
+        </div>
+      </div>
+
+      <!-- COMMAND SEARCH BAR — the hero element -->
+      <div class="px-4 py-3">
+        <div class="relative" x-data="{ open: true }">
+          <!-- Search input -->
+          <div class="flex items-center rounded-lg border-2 px-4 py-2.5" style="background:#0f172a; border-color:#4b5320;">
+            <span class="mono font-bold mr-3" style="color:#4b5320; font-size:1rem;">›</span>
+            <input type="text"
+                   class="flex-1 bg-transparent text-white font-mono text-sm search-cmd"
+                   placeholder="type sku, part number, oem ref, or description..."
+                   value="">
+            <div class="flex items-center gap-2 flex-shrink-0 ml-4">
+              <span class="kbd">Ctrl+K</span>
+              <span class="kbd">/</span>
+              <span class="text-slate-500 text-xs mono ml-1">↑↓ move · Enter add · Esc close</span>
+            </div>
+          </div>
+
+          <!-- Command dropdown (visible for demo) -->
+          <div class="absolute left-0 right-0 mt-1 rounded-lg border border-slate-700 overflow-hidden shadow-2xl z-20" style="background:#0f172a;">
+            <!-- Recent / suggestions header -->
+            <div class="flex items-center justify-between px-3 py-1.5 border-b border-slate-800">
+              <span class="text-slate-500 text-xs mono font-semibold uppercase tracking-wide">recent &amp; suggested</span>
+              <span class="text-slate-600 text-xs mono">Tab to cycle · Enter to add</span>
+            </div>
+
+            <!-- Result row 1 (highlighted) -->
+            <div class="flex items-center gap-4 px-3 py-2.5 cursor-pointer" style="background:#172033;">
+              <div class="flex-shrink-0 w-4 h-4 rounded flex items-center justify-center" style="background:#4b5320;">
+                <span class="text-white" style="font-size:0.55rem; font-weight:bold;">✓</span>
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2">
+                  <span class="mono font-bold text-sm" style="color:#b0be71;">JAKS-PAI-311148</span>
+                  <span class="text-slate-300 text-sm truncate">Complete Inframe Overhaul Kit, ISX15</span>
+                </div>
+                <div class="flex items-center gap-3 mt-0.5">
+                  <span class="text-slate-500 text-xs mono">qoh: <span class="text-green-400 font-bold">2</span></span>
+                  <span class="text-slate-500 text-xs mono">pai:<span class="text-green-400">in</span></span>
+                  <span class="text-slate-500 text-xs mono">hhp:<span class="text-blue-400">5d</span></span>
+                  <span class="text-slate-500 text-xs mono">atl:<span class="text-slate-600">—</span></span>
+                  <span class="text-slate-500 text-xs mono">last: <span class="text-slate-300">$1,189 · 3/12</span></span>
+                </div>
+              </div>
+              <div class="flex-shrink-0 text-right">
+                <div class="mono font-bold text-white">$1,245.00</div>
+                <div class="text-slate-500 text-xs mono">32% margin</div>
+              </div>
+            </div>
+
+            <!-- Result row 2 -->
+            <div class="flex items-center gap-4 px-3 py-2 cursor-pointer hover:bg-slate-800 border-t border-slate-800">
+              <div class="flex-shrink-0 w-4 h-4"></div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2">
+                  <span class="mono font-bold text-sm text-slate-300">JAKS-PAI-285040</span>
+                  <span class="text-slate-400 text-sm truncate">Head Gasket Set, ISX15 STD</span>
+                </div>
+                <div class="flex items-center gap-3 mt-0.5">
+                  <span class="text-slate-500 text-xs mono">qoh: <span class="text-red-400 font-bold">0</span></span>
+                  <span class="text-slate-500 text-xs mono">pai:<span class="text-amber-400">12d</span></span>
+                  <span class="text-slate-500 text-xs mono">hhp:<span class="text-slate-600">—</span></span>
+                  <span class="text-slate-500 text-xs mono">atl:<span class="text-blue-400">3d</span></span>
+                </div>
+              </div>
+              <div class="flex-shrink-0 text-right">
+                <div class="mono font-bold text-slate-300">$189.00</div>
+                <div class="text-slate-500 text-xs mono">28% margin</div>
+              </div>
+            </div>
+
+            <!-- Footer hint -->
+            <div class="px-3 py-1.5 border-t border-slate-800 flex items-center gap-4">
+              <span class="text-slate-600 text-xs mono"><span class="kbd">Enter</span> add line</span>
+              <span class="text-slate-600 text-xs mono"><span class="kbd">Tab</span> next result</span>
+              <span class="text-slate-600 text-xs mono"><span class="kbd">Shift+Enter</span> add &amp; continue</span>
+              <span class="text-slate-600 text-xs mono"><span class="kbd">Esc</span> close</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Meta: notes + follow-up compressed below search -->
+      <div class="flex items-center gap-4 px-4 pb-2 border-t border-slate-700" style="padding-top:8px;">
+        <div class="flex items-center gap-2 flex-1">
+          <span class="text-slate-500 text-xs mono flex-shrink-0">note:</span>
+          <input type="text" value="Needs ISX inframe kit — truck down. Priority rebuild."
+                 class="flex-1 bg-transparent border-0 text-slate-300 text-xs mono"
+                 style="outline:none;">
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="text-slate-500 text-xs mono">disc:</span>
+          <input type="text" value="0" class="mono text-white bg-slate-700 border border-slate-600 rounded px-1.5 py-0.5 text-xs text-right" style="width:36px;">
+          <span class="text-slate-500 text-xs">%</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="text-slate-500 text-xs mono">f/u:</span>
+          <input type="date" value="2026-05-26" class="mono text-slate-300 bg-slate-700 border border-slate-600 rounded px-2 py-0.5 text-xs">
+        </div>
+      </div>
+    </div>
+
+    <!-- ─────────────────────────────────────────────────────────
+         LINE ITEMS TABLE (tighter columns, keyboard-first)
+    ───────────────────────────────────────────────────────── -->
+    <div class="flex-1 overflow-auto bg-white">
+      <table class="w-full border-collapse">
+        <thead style="position:sticky; top:0; z-index:10; background:#f8fafc; border-bottom:2px solid #cbd5e1;">
+          <tr>
+            <th class="cmd-th text-center" style="width:32px;">#</th>
+            <th class="cmd-th">Part / Description</th>
+            <th class="cmd-th text-center" style="width:56px;">QOH</th>
+            <th class="cmd-th" style="width:200px;">Vendor Availability</th>
+            <th class="cmd-th-r" style="width:96px;">Sell $</th>
+            <th class="cmd-th-r" style="width:56px;">Disc</th>
+            <th class="cmd-th-r" style="width:72px;">Margin</th>
+            <th class="cmd-th-r" style="width:96px;">Total</th>
+            <th class="cmd-th" style="width:36px;"></th>
+          </tr>
+        </thead>
+        <tbody>
+
+          <!-- Row 1 -->
+          <tr class="hover:bg-blue-50 cursor-default" style="border-left:3px solid transparent;">
+            <td class="cmd-row text-center text-slate-400 mono font-bold" style="padding:7px 8px;">1</td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9;">
+              <div class="mono font-bold text-slate-900" style="font-size:0.85rem; letter-spacing:-0.01em;">JAKS-PAI-311148</div>
+              <div class="text-slate-500 text-xs mt-0.5">Complete Inframe Overhaul Kit — ISX15 (540HP)</div>
+            </td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; text-align:center;">
+              <div class="flex items-center justify-center gap-1">
+                <span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#16a34a;"></span>
+                <span class="mono font-bold text-green-700">2</span>
+              </div>
+            </td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9;">
+              <span class="avail bg-green-50 text-green-800 border-green-200">PAI:In</span>
+              <span class="avail bg-blue-50 text-blue-800 border-blue-200">HHP:5d</span>
+              <span class="avail bg-gray-50 text-gray-400 border-gray-200">ATL:—</span>
+            </td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; text-align:right;">
+              <input type="text" value="1,245.00"
+                     class="mono font-bold text-right border border-transparent hover:border-slate-300 rounded px-2 py-1 bg-transparent text-slate-900"
+                     style="width:80px; font-size:0.85rem;">
+            </td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; text-align:right;">
+              <input type="text" value="0%"
+                     class="mono text-right border border-transparent hover:border-slate-300 rounded px-1.5 py-1 bg-transparent text-slate-600"
+                     style="width:40px; font-size:0.85rem;">
+            </td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; text-align:right;">
+              <span class="mono font-bold text-green-600">32%</span>
+            </td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; text-align:right;">
+              <span class="mono font-bold text-slate-900">$1,245.00</span>
+            </td>
+            <td style="padding:7px 8px; border-bottom:1px solid #f1f5f9; text-align:center;">
+              <button class="text-slate-300 hover:text-slate-600 font-bold text-lg leading-none">⋮</button>
+            </td>
+          </tr>
+
+          <!-- Row 1 chips -->
+          <tr style="background:#f8fafc; border-bottom:1px solid #e2e8f0; border-left:3px solid transparent;">
+            <td style="padding:3px 8px;"></td>
+            <td colspan="8" style="padding:3px 10px 5px;">
+              <div class="flex items-center gap-2">
+                <span class="text-slate-400 text-xs mono font-semibold">add →</span>
+                <button class="mono text-xs border border-slate-300 rounded px-2 py-0.5 text-slate-600 hover:bg-white hover:border-slate-400">+JAKS-WRM-311148</button>
+                <button class="mono text-xs border border-slate-300 rounded px-2 py-0.5 text-slate-600 hover:bg-white hover:border-slate-400">+JAKS-PAI-285040★</button>
+                <button class="text-xs border border-amber-300 rounded px-2 py-0.5 text-amber-700 bg-amber-50 hover:bg-amber-100 font-medium">+Warranty ▼</button>
+              </div>
+            </td>
+          </tr>
+
+          <!-- Row 2 -->
+          <tr class="hover:bg-blue-50 cursor-default">
+            <td class="cmd-row text-center text-slate-400 mono font-bold" style="padding:7px 8px;">2</td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9;">
+              <div class="mono font-bold text-slate-900" style="font-size:0.85rem; letter-spacing:-0.01em;">JAKS-PAI-285040</div>
+              <div class="text-slate-500 text-xs mt-0.5">Head Gasket Set — ISX15 Standard Bore</div>
+            </td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; text-align:center;">
+              <div class="flex items-center justify-center gap-1">
+                <span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#dc2626;"></span>
+                <span class="mono font-bold text-red-600">0</span>
+              </div>
+            </td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9;">
+              <span class="avail bg-amber-50 text-amber-800 border-amber-200">PAI:12d</span>
+              <span class="avail bg-gray-50 text-gray-400 border-gray-200">HHP:—</span>
+              <span class="avail bg-blue-50 text-blue-800 border-blue-200">ATL:3d</span>
+            </td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; text-align:right;">
+              <input type="text" value="189.00"
+                     class="mono font-bold text-right border border-transparent hover:border-slate-300 rounded px-2 py-1 bg-transparent text-slate-900"
+                     style="width:80px; font-size:0.85rem;">
+            </td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; text-align:right;">
+              <input type="text" value="5%"
+                     class="mono text-right border border-transparent hover:border-slate-300 rounded px-1.5 py-1 bg-transparent text-slate-600"
+                     style="width:40px; font-size:0.85rem;">
+            </td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; text-align:right;">
+              <span class="mono font-bold text-amber-600">28%</span>
+            </td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; text-align:right;">
+              <span class="mono font-bold text-slate-900">$179.55</span>
+            </td>
+            <td style="padding:7px 8px; border-bottom:1px solid #f1f5f9; text-align:center;">
+              <button class="text-slate-300 hover:text-slate-600 font-bold text-lg leading-none">⋮</button>
+            </td>
+          </tr>
+
+          <!-- Row 2 chips -->
+          <tr style="background:#f8fafc; border-bottom:1px solid #e2e8f0;">
+            <td style="padding:3px 8px;"></td>
+            <td colspan="8" style="padding:3px 10px 5px;">
+              <div class="flex items-center gap-2">
+                <span class="text-slate-400 text-xs mono font-semibold">add →</span>
+                <button class="text-xs border border-amber-300 rounded px-2 py-0.5 text-amber-700 bg-amber-50 hover:bg-amber-100 font-medium">+Warranty ▼</button>
+              </div>
+            </td>
+          </tr>
+
+          <!-- Row 3: Core -->
+          <tr class="hover:bg-amber-50" style="background:#fffbeb;">
+            <td style="padding:7px 8px; text-align:center; border-bottom:1px solid #f1f5f9; color:#9ca3af; font-family:monospace; font-weight:bold;">3</td>
+            <td style="padding:7px 10px 7px 20px; border-bottom:1px solid #f1f5f9;">
+              <span class="text-amber-600 font-bold mono">⟲</span>
+              <span class="text-amber-800 font-semibold ml-1.5">Core: ISX Inframe Assembly</span>
+              <span class="text-amber-500 text-xs ml-2">refundable</span>
+            </td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; text-align:center; color:#d1d5db;">—</td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; color:#9ca3af; font-size:0.75rem; font-style:italic;">core charge</td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; text-align:right; font-family:monospace; color:#b45309; font-weight:600;">$125.00</td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; text-align:right; color:#d1d5db;">—</td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; text-align:right; color:#d1d5db;">—</td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; text-align:right; font-family:monospace; font-weight:700; color:#b45309;">$125.00</td>
+            <td style="padding:7px 8px; border-bottom:1px solid #f1f5f9; text-align:center;">
+              <button class="text-slate-300 hover:text-slate-600 font-bold text-lg leading-none">⋮</button>
+            </td>
+          </tr>
+
+          <!-- Row 4: Warranty -->
+          <tr class="hover:bg-purple-50" style="background:#fdf9ff;">
+            <td style="padding:7px 8px; text-align:center; border-bottom:1px solid #f1f5f9; color:#9ca3af; font-family:monospace; font-weight:bold;">4</td>
+            <td style="padding:7px 10px 7px 20px; border-bottom:1px solid #f1f5f9;">
+              <span class="text-purple-600 font-bold mono">★</span>
+              <span class="text-purple-800 font-semibold ml-1.5">Warranty: 1-Year Parts Coverage</span>
+              <span class="text-purple-400 text-xs ml-2">included · $0</span>
+            </td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; text-align:center; color:#d1d5db;">—</td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; color:#9ca3af; font-size:0.75rem; font-style:italic;">included</td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; text-align:right; font-family:monospace; color:#c4b5fd;">$0.00</td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; text-align:right; color:#d1d5db;">—</td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; text-align:right; color:#d1d5db;">—</td>
+            <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; text-align:right; font-family:monospace; color:#c4b5fd;">$0.00</td>
+            <td style="padding:7px 8px; border-bottom:1px solid #f1f5f9; text-align:center;">
+              <button class="text-slate-300 hover:text-slate-600 font-bold text-lg leading-none">⋮</button>
+            </td>
+          </tr>
+
+          <!-- Prompt row -->
+          <tr style="border-left:3px solid #4b5320;">
+            <td colspan="9" style="padding:7px 10px; border-bottom:1px solid #f1f5f9; font-family:monospace; font-size:0.75rem; color:#6b7280; background:#fafafa;">
+              <span style="color:#4b5320; font-weight:bold;">›</span>
+              <span class="ml-2 text-gray-400">press <kbd style="background:#e5e7eb; border:1px solid #d1d5db; border-radius:3px; padding:1px 5px; font-size:0.65rem;">Ctrl+K</kbd> to search · <kbd style="background:#e5e7eb; border:1px solid #d1d5db; border-radius:3px; padding:1px 5px; font-size:0.65rem;">/</kbd> to focus search · <kbd style="background:#e5e7eb; border:1px solid #d1d5db; border-radius:3px; padding:1px 5px; font-size:0.65rem;">Tab</kbd> to next line</span>
+            </td>
+          </tr>
+
+          <!-- Filler -->
+          <tr><td colspan="9" style="height:36px; background:white; border-bottom:1px solid #f8fafc;"></td></tr>
+          <tr><td colspan="9" style="height:36px; background:#fafafa; border-bottom:1px solid #f8fafc;"></td></tr>
+          <tr><td colspan="9" style="height:36px; background:white; border-bottom:1px solid #f8fafc;"></td></tr>
+          <tr><td colspan="9" style="height:36px; background:#fafafa; border-bottom:1px solid #f8fafc;"></td></tr>
+          <tr><td colspan="9" style="height:36px; background:white; border-bottom:1px solid #f8fafc;"></td></tr>
+          <tr><td colspan="9" style="height:36px; background:#fafafa; border-bottom:1px solid #f8fafc;"></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ─────────────────────────────────────────────────────────
+         FOOTER
+    ───────────────────────────────────────────────────────── -->
+    <div class="flex-shrink-0 bg-white border-t-2 border-slate-200">
+
+      <!-- Totals -->
+      <div class="px-4 py-2 flex items-center justify-between border-b border-gray-100">
+        <div class="flex items-center gap-5 text-sm">
+          <span class="mono text-slate-500 text-xs">4 lines</span>
+          <span class="text-slate-500 text-xs">subtotal: <strong class="mono text-slate-900">$1,424.55</strong></span>
+          <span class="text-amber-600 text-xs">core: <strong class="mono">$125.00</strong></span>
+          <span class="text-slate-500 text-xs">tax: <strong class="mono text-slate-900">$0.00</strong></span>
+        </div>
+        <div class="font-bold text-slate-900 mono text-lg">
+          total: $1,549.55
+        </div>
+      </div>
+
+      <!-- Quick Follow-up bar + Status bar combined -->
+      <div class="flex items-center justify-between px-4 py-1.5" style="background:#1e293b;">
+        <div class="flex items-center gap-1.5">
+          <span class="text-slate-500 text-xs mono mr-2">f/u:</span>
+          <button class="border border-slate-600 rounded px-2.5 py-1 text-xs mono text-slate-300 hover:bg-slate-700 hover:text-white">📅 tomorrow</button>
+          <button class="border border-slate-600 rounded px-2.5 py-1 text-xs mono text-slate-300 hover:bg-slate-700 hover:text-white">⏳ w/customer</button>
+          <button class="border border-slate-600 rounded px-2.5 py-1 text-xs mono text-slate-300 hover:bg-slate-700 hover:text-white">📦 w/vendor</button>
+          <button class="border border-red-800 rounded px-2.5 py-1 text-xs mono font-bold text-red-400 hover:bg-red-900 hover:text-red-300" style="background:#1c0a0a;">🚛 truck_down</button>
+          <button class="border border-slate-700 rounded px-2.5 py-1 text-xs mono text-slate-600 hover:bg-slate-800 hover:text-slate-400">✗ none</button>
+        </div>
+        <div class="flex items-center gap-3 text-slate-600 mono" style="font-size:0.65rem;">
+          <span>Q-2026-0051</span>
+          <span>·</span>
+          <span>mike's diesel service</span>
+          <span>·</span>
+          <span style="color:#4b5320;">● saved</span>
+          <span>·</span>
+          <span>lines:4</span>
+          <span>·</span>
+          <span>total:$1,549.55</span>
+        </div>
+      </div>
+
+    </div>
+
+  </div><!-- /main -->
+</div><!-- /flex -->
+
+</body>
+</html>

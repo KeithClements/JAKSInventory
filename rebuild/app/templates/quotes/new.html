@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}New Quote — JAKS Inventory{% endblock %}
+{% block heading %}New Quote{% endblock %}
+
+{% block content %}
+<div class="max-w-lg mx-auto">
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+    <form action="/quotes/new" method="post" class="space-y-5">
+
+      <div
+        x-data
+        @record-created.window="
+          if ($event.detail.type === 'customer') {
+            var sel = $el.querySelector('select[name=customer_id]');
+            var opt = document.createElement('option');
+            opt.value = $event.detail.id;
+            opt.textContent = $event.detail.label;
+            opt.selected = true;
+            sel.appendChild(opt);
+            sel.value = String($event.detail.id);
+          }
+        "
+      >
+        <label class="block text-sm font-medium text-gray-700 mb-1">
+          Customer <span class="text-red-500">*</span>
+        </label>
+        <div class="flex gap-2">
+          <select name="customer_id" required
+                  class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm
+                         focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400">
+            <option value="">— Select customer —</option>
+            {% for c in customers %}
+            <option value="{{ c.id }}">{{ c.company_name }}{% if c.contact_name %} ({{ c.contact_name }}){% endif %}</option>
+            {% endfor %}
+          </select>
+          <button type="button"
+                  hx-get="/customers/quick-create-form"
+                  hx-target="#create-slide-content"
+                  hx-swap="innerHTML"
+                  @click="$dispatch('open-create-slide', { title: 'New Customer' })"
+                  class="px-3 py-2 text-sm font-medium text-brand-700 border border-brand-200
+                         rounded-lg bg-brand-50 hover:bg-brand-100 transition-colors whitespace-nowrap">
+            + New
+          </button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Validity (days)</label>
+          <input type="number" name="validity_days" value="30" min="1" max="365"
+                 class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm
+                        focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Default Discount %</label>
+          <input type="number" name="discount_pct" value="0" min="0" max="100" step="0.5"
+                 class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm
+                        focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+          <p class="text-xs text-gray-400 mt-1">Applied to new lines by default</p>
+        </div>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Notes (customer-facing)</label>
+        <textarea name="notes" rows="3"
+                  placeholder="Optional notes included on the quote document…"
+                  class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm
+                         focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400 resize-none"></textarea>
+      </div>
+
+      <div class="flex items-center justify-between pt-2">
+        <a href="/quotes/" class="text-sm text-gray-500 hover:text-gray-700">← Back to quotes</a>
+        <button type="submit"
+                class="px-5 py-2 bg-brand-700 text-white text-sm font-medium rounded-lg
+                       hover:bg-brand-600 transition-colors">
+          Create Quote →
+        </button>
+      </div>
+
+    </form>
+  </div>
+</div>
+{% endblock %}

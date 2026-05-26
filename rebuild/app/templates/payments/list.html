@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}Payments — JAKS Inventory{% endblock %}
+{% block heading %}Payments{% endblock %}
+
+{% block content %}
+
+{# ── Filters ── #}
+<div class="flex items-center justify-between mb-4 gap-4 flex-wrap">
+  <div class="flex items-center gap-1 bg-gray-100 rounded-lg p-1 flex-wrap">
+    {% set tabs = [
+      ('',                    'All'),
+      (PaymentStatus.APPLIED,  'Applied'),
+      (PaymentStatus.REVERSED, 'Reversed'),
+      (PaymentStatus.NSF,      'NSF'),
+    ] %}
+    {% for val, label in tabs %}
+    <a href="/payments/?status={{ val }}&q={{ q }}"
+       class="px-3 py-1.5 text-sm font-medium rounded-md transition-colors
+              {% if status_filter == val %}bg-white shadow text-brand-700{% else %}text-gray-600 hover:text-gray-900{% endif %}">
+      {{ label }}
+    </a>
+    {% endfor %}
+  </div>
+
+  <form method="get" action="/payments/" class="flex items-center gap-2">
+    <input type="hidden" name="status" value="{{ status_filter }}" />
+    <input type="text" name="q" value="{{ q }}"
+           placeholder="Customer name, check #…"
+           class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-56
+                  focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+    <button type="submit"
+            class="px-3 py-1.5 bg-gray-100 text-gray-700 text-sm rounded-lg hover:bg-gray-200 transition-colors">
+      Search
+    </button>
+  </form>
+</div>
+
+{# ── Table ── #}
+{% set pmt_badges = {
+  'applied':  'badge-green',
+  'reversed': 'badge-red',
+  'nsf':      'badge-amber',
+} %}
+
+{% if payments %}
+<div class="card">
+  <div class="overflow-x-auto">
+    <table class="tbl">
+      <thead class="tbl-head">
+        <tr>
+          <th class="tbl-th">Date</th>
+          <th class="tbl-th">Customer</th>
+          <th class="tbl-th">Method</th>
+          <th class="tbl-th">Applied To</th>
+          <th class="tbl-th-r">Received</th>
+          <th class="tbl-th-r">Unapplied</th>
+          <th class="tbl-th">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for pmt in payments %}
+        {% set active_allocs = pmt.allocations | selectattr('is_reversed', 'equalto', false) | list %}
+        <tr class="tbl-row cursor-pointer" onclick="window.location='/payments/{{ pmt.id }}'">
+          <td class="tbl-td whitespace-nowrap">{{ pmt.payment_date.strftime('%m/%d/%Y') }}</td>
+          <td class="tbl-td font-medium text-gray-900">{{ pmt.customer.company_name }}</td>
+          <td class="tbl-td">
+            {% if pmt.payment_method == PaymentMethod.CASH %}
+              <span class="inline-flex items-center gap-1 text-xs">
+                <svg class="w-3.5 h-3.5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"/>
+                </svg>
+                Cash
+              </span>
+            {% elif pmt.payment_method == PaymentMethod.CHECK %}
+              <span class="inline-flex items-center gap-1 text-xs">
+                <svg class="w-3.5 h-3.5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+                Check{% if pmt.check_number %} <span class="font-mono text-xs text-gray-400">#{{ pmt.check_number }}</span>{% endif %}
+              </span>
+            {% elif pmt.payment_method == PaymentMethod.CREDIT_CARD %}
+              <span class="inline-flex items-center gap-1 text-xs">
+                <svg class="w-3.5 h-3.5 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+                </svg>
+                Credit Card
+              </span>
+            {% elif pmt.payment_method == PaymentMethod.ACH %}
+              <span class="inline-flex items-center gap-1 text-xs">
+                <svg class="w-3.5 h-3.5 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/>
+                </svg>
+                ACH
+              </span>
+            {% elif pmt.payment_method == PaymentMethod.WIRE %}
+              <span class="inline-flex items-center gap-1 text-xs">
+                <svg class="w-3.5 h-3.5 text-cyan-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                </svg>
+                Wire
+              </span>
+            {% else %}
+              {{ pmt.payment_method | replace('_', ' ') | title }}
+            {% endif %}
+          </td>
+          <td class="tbl-td">
+            {% if active_allocs %}
+              {% for alloc in active_allocs %}
+                <a href="/invoices/{{ alloc.invoice_id }}"
+                   class="inline-block font-mono text-xs link"
+                   onclick="event.stopPropagation()">
+                  {{ alloc.invoice.invoice_number }}
+                </a>{% if not loop.last %}, {% endif %}
+              {% endfor %}
+            {% else %}
+              <span class="text-amber-600 text-xs font-medium">Unapplied</span>
+            {% endif %}
+          </td>
+          <td class="tbl-td-r font-medium">${{ '%.2f' % pmt.amount_received }}</td>
+          <td class="tbl-td-r">
+            {% if pmt.amount_unallocated > 0.005 %}
+              <span class="text-amber-600 font-semibold">${{ '%.2f' % pmt.amount_unallocated }}</span>
+            {% else %}
+              <span class="text-gray-300">—</span>
+            {% endif %}
+          </td>
+          <td class="tbl-td">
+            <span class="{{ pmt_badges.get(pmt.status, 'badge-gray') }}">
+              {{ pmt.status | title }}
+            </span>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{# ── Summary bar ── #}
+{% set total_received = payments | selectattr('status', 'equalto', PaymentStatus.APPLIED) | map(attribute='amount_received') | sum %}
+{% set total_unapplied = payments | selectattr('status', 'equalto', PaymentStatus.APPLIED) | map(attribute='amount_unallocated') | sum %}
+<div class="mt-4 flex gap-6 text-sm text-gray-500">
+  <span>{{ payments | length }} payment{{ 's' if payments | length != 1 else '' }}</span>
+  {% if total_received > 0 %}
+  <span>Total received: <strong class="text-gray-900">${{ '%.2f' % total_received }}</strong></span>
+  {% endif %}
+  {% if total_unapplied > 0.01 %}
+  <span>Unapplied credit: <strong class="text-amber-600">${{ '%.2f' % total_unapplied }}</strong></span>
+  {% endif %}
+</div>
+
+{% else %}
+<div class="card flex flex-col items-center justify-center py-16">
+  <svg class="w-12 h-12 text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+          d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"/>
+  </svg>
+  <p class="text-gray-500 font-medium">No payments found</p>
+  {% if q or status_filter %}
+  <p class="text-gray-400 text-sm mt-1">Try adjusting your filter.</p>
+  {% else %}
+  <p class="text-gray-400 text-sm mt-1">Payments are recorded from the Invoice detail page.</p>
+  <a href="/invoices/" class="mt-3 text-sm link">Go to Invoices →</a>
+  {% endif %}
+</div>
+{% endif %}
+
+{% endblock %}

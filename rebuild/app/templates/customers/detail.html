@@ -1,0 +1,480 @@
+{% extends "base.html" %}
+{% block title %}{{ customer.company_name }} — JAKS Inventory{% endblock %}
+{% block heading %}{{ customer.company_name }}{% endblock %}
+
+{% block header_actions %}
+  <a href="/quotes/new?customer_id={{ customer.id }}" class="btn-primary btn-sm">New Quote</a>
+  <a href="/invoices/new?customer_id={{ customer.id }}" class="btn-secondary btn-sm">New Invoice</a>
+  <a href="/customers/" class="text-sm text-gray-500 hover:text-gray-700">← Customers</a>
+{% endblock %}
+
+{% block content %}
+<div class="space-y-4"
+     x-data="{ tab: '{{ 'account' if not request.query_params.get('tab') else request.query_params.get('tab') }}' }">
+
+  {# ── Tab bar ── #}
+  <div class="tab-bar">
+    <button type="button" @click="tab = 'account'"
+            :class="tab === 'account' ? 'tab-active' : 'tab-inactive'">
+      Account
+    </button>
+    <button type="button" @click="tab = 'invoices'"
+            :class="tab === 'invoices' ? 'tab-active' : 'tab-inactive'">
+      Invoices
+      {% if recent_invoices %}
+      <span class="ml-1 badge-gray">{{ recent_invoices|length }}</span>
+      {% endif %}
+    </button>
+    <button type="button" @click="tab = 'quotes'"
+            :class="tab === 'quotes' ? 'tab-active' : 'tab-inactive'">
+      Quotes
+      {% if open_quotes %}
+      <span class="ml-1 badge-blue">{{ open_quotes|length }}</span>
+      {% endif %}
+    </button>
+    <button type="button" @click="tab = 'calllog'"
+            :class="tab === 'calllog' ? 'tab-active' : 'tab-inactive'">
+      Call Log
+      {% if customer.call_logs %}
+      <span class="ml-1 badge-gray">{{ customer.call_logs|length }}</span>
+      {% endif %}
+    </button>
+  </div>
+
+  {# ═══════════════════════════════════════════════════════════════════════ #}
+  {# ACCOUNT TAB                                                             #}
+  {# ═══════════════════════════════════════════════════════════════════════ #}
+  <div x-show="tab === 'account'" x-cloak>
+
+    {# Deactivate form — placed outside the edit form to avoid nesting #}
+    <form id="deactivate-form" method="post" action="/customers/{{ customer.id }}/deactivate"
+          onsubmit="return confirm('Deactivate {{ customer.company_name }}?')"></form>
+
+    <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
+
+      {# Left: Account card with view / edit toggle (2/3 width) #}
+      <div class="lg:col-span-2 card"
+           x-data="{ editMode: false, taxExempt: {{ 'true' if customer.is_tax_exempt else 'false' }} }">
+
+        <div class="card-header">
+          <h2 class="card-title">Account</h2>
+          <button type="button" @click="editMode = !editMode" class="btn-secondary btn-sm"
+                  x-text="editMode ? 'Cancel' : 'Edit'"></button>
+        </div>
+
+        {# ── View mode ── #}
+        <div x-show="!editMode" class="card-body">
+          <div>
+            <h3 class="section-title">Contact Info</h3>
+            <dl class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+              <div>
+                <dt class="text-xs text-gray-400">Company</dt>
+                <dd class="text-gray-800 font-medium mt-0.5">{{ customer.company_name }}</dd>
+              </div>
+              <div>
+                <dt class="text-xs text-gray-400">Contact</dt>
+                <dd class="text-gray-700 mt-0.5">{{ customer.contact_name or '—' }}</dd>
+              </div>
+              <div>
+                <dt class="text-xs text-gray-400">Phone</dt>
+                <dd class="text-gray-700 mt-0.5">{{ customer.phone or '—' }}</dd>
+              </div>
+              <div>
+                <dt class="text-xs text-gray-400">Email</dt>
+                <dd class="text-gray-700 mt-0.5">{{ customer.email or '—' }}</dd>
+              </div>
+              {% if customer.address_line1 %}
+              <div class="col-span-2">
+                <dt class="text-xs text-gray-400">Address</dt>
+                <dd class="text-gray-700 mt-0.5">
+                  {{ customer.address_line1 }}
+                  {% if customer.address_line2 %}<br>{{ customer.address_line2 }}{% endif %}
+                  {% if customer.city %}<br>{{ customer.city }}{% if customer.state %}, {{ customer.state }}{% endif %} {{ customer.zip_code }}{% endif %}
+                </dd>
+              </div>
+              {% endif %}
+            </dl>
+          </div>
+
+          {% if customer.notes or customer.internal_notes %}
+          <div class="mt-4 pt-4 border-t border-gray-100 space-y-3">
+            {% if customer.notes %}
+            <div>
+              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-0.5">Notes</p>
+              <p class="text-sm text-gray-600 whitespace-pre-wrap">{{ customer.notes }}</p>
+            </div>
+            {% endif %}
+            {% if customer.internal_notes %}
+            <div>
+              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-0.5">Internal Notes</p>
+              <p class="text-sm text-gray-600 whitespace-pre-wrap">{{ customer.internal_notes }}</p>
+            </div>
+            {% endif %}
+          </div>
+          {% endif %}
+        </div>
+
+        {# ── Edit mode ── #}
+        <div x-show="editMode" x-cloak class="card-body">
+          <form method="post" action="/customers/{{ customer.id }}" class="space-y-5">
+
+            {# Contact Info #}
+            <div>
+              <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide border-b border-gray-100 pb-2 mb-3">Contact Info</h3>
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="form-label">Company Name <span class="text-red-500 normal-case">*</span></label>
+                  <input name="company_name" value="{{ customer.company_name }}" required class="form-input" />
+                </div>
+                <div>
+                  <label class="form-label">Contact Name</label>
+                  <input name="contact_name" value="{{ customer.contact_name }}" class="form-input" />
+                </div>
+                <div>
+                  <label class="form-label">Phone</label>
+                  <input name="phone" type="tel" value="{{ customer.phone }}" class="form-input" />
+                </div>
+                <div>
+                  <label class="form-label">Email</label>
+                  <input name="email" type="email" value="{{ customer.email }}" class="form-input" />
+                </div>
+                <div class="col-span-2">
+                  <label class="form-label">Address Line 1</label>
+                  <input name="address_line1" value="{{ customer.address_line1 }}" class="form-input" />
+                </div>
+                <div class="col-span-2">
+                  <label class="form-label">Address Line 2</label>
+                  <input name="address_line2" value="{{ customer.address_line2 }}" class="form-input" />
+                </div>
+                <div>
+                  <label class="form-label">City</label>
+                  <input name="city" value="{{ customer.city }}" class="form-input" />
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label class="form-label">State</label>
+                    <input name="state" value="{{ customer.state }}" maxlength="2" class="form-input" />
+                  </div>
+                  <div>
+                    <label class="form-label">ZIP</label>
+                    <input name="zip_code" value="{{ customer.zip_code }}" class="form-input" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {# Terms & Pricing #}
+            <div>
+              <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide border-b border-gray-100 pb-2 mb-3">Terms &amp; Pricing</h3>
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="form-label">Payment Terms</label>
+                  <select name="payment_terms" class="form-select">
+                    {% for term in payment_terms %}
+                    <option value="{{ term }}" {% if customer.payment_terms == term %}selected{% endif %}>
+                      {{ term.replace('_', ' ').upper() }}
+                    </option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div>
+                  <label class="form-label">Standing Discount %</label>
+                  <input name="discount_pct" type="number" step="0.5" min="0" max="100"
+                         value="{{ customer.discount_pct }}" class="form-input" />
+                </div>
+                <div>
+                  <label class="form-label">Interest Rate % (annual)</label>
+                  <input name="interest_rate" type="number" step="0.1" min="0" max="100"
+                         value="{{ customer.interest_rate }}" class="form-input" />
+                </div>
+                <div class="flex flex-col justify-center">
+                  <label class="flex items-center gap-2 cursor-pointer select-none">
+                    <input type="checkbox" name="is_tax_exempt"
+                           {% if customer.is_tax_exempt %}checked{% endif %}
+                           x-model="taxExempt"
+                           class="form-checkbox" />
+                    <span class="text-sm text-gray-700">Tax exempt</span>
+                  </label>
+                </div>
+                <div class="col-span-2" x-show="taxExempt" x-cloak>
+                  <label class="form-label">Tax Exempt Cert #</label>
+                  <input name="tax_exempt_cert_number"
+                         value="{{ customer.tax_exempt_cert_number or '' }}"
+                         class="form-input" />
+                </div>
+              </div>
+            </div>
+
+            {# Notes #}
+            <div>
+              <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide border-b border-gray-100 pb-2 mb-3">Notes</h3>
+              <div class="space-y-3">
+                <div>
+                  <label class="form-label">Customer Notes</label>
+                  <textarea name="notes" rows="2" class="form-textarea">{{ customer.notes }}</textarea>
+                </div>
+                <div>
+                  <label class="form-label">
+                    Internal Notes
+                    <span class="normal-case font-normal tracking-normal text-gray-400">(not on documents)</span>
+                  </label>
+                  <textarea name="internal_notes" rows="2" class="form-textarea">{{ customer.internal_notes }}</textarea>
+                </div>
+              </div>
+            </div>
+
+            {# Actions #}
+            <div class="flex items-center gap-3 pt-1">
+              <button type="submit" class="btn-primary">Save Changes</button>
+              <button type="button" @click="editMode = false" class="btn-secondary">Cancel</button>
+              <div class="flex-1"></div>
+              <button type="submit" form="deactivate-form"
+                      class="px-4 py-2 border border-red-200 text-sm font-medium text-red-600 rounded-lg hover:bg-red-50 transition-colors">
+                Deactivate
+              </button>
+            </div>
+
+          </form>
+        </div>
+      </div>
+
+      {# Right: Financial Summary + Quick Stats #}
+      <div class="space-y-4">
+
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">Financial Summary</h3>
+          </div>
+          <div class="card-body">
+            <div id="balance-widget"
+                 hx-get="/customers/{{ customer.id }}/balance"
+                 hx-trigger="load"
+                 hx-swap="innerHTML">
+              <div class="flex items-center justify-center py-4">
+                <svg class="animate-spin w-5 h-5 text-gray-300" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
+                </svg>
+              </div>
+            </div>
+            <div class="border-t border-gray-100 pt-3 mt-1 space-y-2">
+              <div class="flex justify-between items-center">
+                <span class="text-xs text-gray-400">Terms</span>
+                <span class="text-xs font-medium text-gray-700">
+                  {{ customer.payment_terms.replace('_', ' ').upper() if customer.payment_terms else '—' }}
+                </span>
+              </div>
+              <div class="flex justify-between items-center">
+                <span class="text-xs text-gray-400">Discount</span>
+                <span class="text-xs text-gray-700">{{ customer.discount_pct }}%</span>
+              </div>
+              <div class="flex justify-between items-center">
+                <span class="text-xs text-gray-400">Interest rate</span>
+                <span class="text-xs text-gray-700">{{ customer.interest_rate }}%</span>
+              </div>
+              <div class="flex justify-between items-center">
+                <span class="text-xs text-gray-400">Tax exempt</span>
+                {% if customer.is_tax_exempt %}
+                <span class="badge-green">Yes</span>
+                {% else %}
+                <span class="text-xs text-gray-500">No</span>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">Quick Stats</h3>
+          </div>
+          <div class="card-body space-y-2">
+            <div class="flex justify-between text-sm">
+              <span class="text-gray-500">Customer since</span>
+              <span class="text-gray-700">{{ customer.created_at.strftime('%b %Y') }}</span>
+            </div>
+            <div class="flex justify-between text-sm">
+              <span class="text-gray-500">Invoices</span>
+              <span class="text-gray-700">{{ customer.invoices|length }}</span>
+            </div>
+            <div class="flex justify-between text-sm">
+              <span class="text-gray-500">Open quotes</span>
+              <span class="text-gray-700">{{ open_quotes|length }}</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  {# ═══════════════════════════════════════════════════════════════════════ #}
+  {# INVOICES TAB                                                            #}
+  {# ═══════════════════════════════════════════════════════════════════════ #}
+  <div x-show="tab === 'invoices'" x-cloak>
+    {% set inv_badges = {
+      'draft':   'badge-gray',
+      'open':    'badge-blue',
+      'partial': 'badge-amber',
+      'paid':    'badge-green',
+      'void':    'badge-red',
+    } %}
+    <div class="card">
+      {% if recent_invoices %}
+      <div class="overflow-x-auto">
+        <table class="tbl">
+          <thead class="tbl-head">
+            <tr>
+              <th class="tbl-th">Invoice #</th>
+              <th class="tbl-th">Status</th>
+              <th class="tbl-th-r">Total</th>
+              <th class="tbl-th-r">Paid</th>
+              <th class="tbl-th-r">Balance</th>
+              <th class="tbl-th">Date</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for inv in recent_invoices %}
+            <tr class="tbl-row cursor-pointer" onclick="location.href='/invoices/{{ inv.id }}'">
+              <td class="tbl-td font-medium text-brand-700">{{ inv.invoice_number }}</td>
+              <td class="tbl-td">
+                <span class="{{ inv_badges.get(inv.status, 'badge-gray') }}">
+                  {{ inv.status | title }}
+                </span>
+              </td>
+              <td class="tbl-td-r">${{ "%.2f"|format(inv.total) }}</td>
+              <td class="tbl-td-r text-gray-500">${{ "%.2f"|format(inv.amount_paid) }}</td>
+              <td class="tbl-td-r {% if inv.balance_due > 0 %}font-medium text-gray-800{% else %}text-gray-400{% endif %}">
+                ${{ "%.2f"|format(inv.balance_due) }}
+              </td>
+              <td class="tbl-td text-gray-500">{{ inv.created_at.strftime('%b %d, %Y') }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="tbl-empty">
+        No invoices yet.
+        <a href="/invoices/new?customer_id={{ customer.id }}" class="ml-2 link">Create first invoice →</a>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ═══════════════════════════════════════════════════════════════════════ #}
+  {# QUOTES TAB                                                              #}
+  {# ═══════════════════════════════════════════════════════════════════════ #}
+  <div x-show="tab === 'quotes'" x-cloak>
+    {% set q_badges = {
+      'draft':    'badge-gray',
+      'sent':     'badge-blue',
+      'accepted': 'badge-green',
+      'expired':  'badge-amber',
+    } %}
+    <div class="card">
+      {% if open_quotes %}
+      <div class="overflow-x-auto">
+        <table class="tbl">
+          <thead class="tbl-head">
+            <tr>
+              <th class="tbl-th">Quote #</th>
+              <th class="tbl-th">Status</th>
+              <th class="tbl-th">Lines</th>
+              <th class="tbl-th-r">Total</th>
+              <th class="tbl-th">Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for q in open_quotes %}
+            <tr class="tbl-row cursor-pointer" onclick="location.href='/quotes/{{ q.id }}'">
+              <td class="tbl-td font-medium text-brand-700">{{ q.quote_number }}</td>
+              <td class="tbl-td">
+                <span class="{{ q_badges.get(q.status, 'badge-gray') }}">
+                  {{ q.status | title }}
+                </span>
+              </td>
+              <td class="tbl-td text-gray-500">{{ q.lines|length }}</td>
+              <td class="tbl-td-r">${{ "%.2f"|format(q.subtotal) }}</td>
+              <td class="tbl-td text-gray-500">{{ q.created_at.strftime('%b %d, %Y') }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="tbl-empty">
+        No open quotes.
+        <a href="/quotes/new?customer_id={{ customer.id }}" class="ml-2 link">Create a quote →</a>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ═══════════════════════════════════════════════════════════════════════ #}
+  {# CALL LOG TAB                                                            #}
+  {# ═══════════════════════════════════════════════════════════════════════ #}
+  <div x-show="tab === 'calllog'" x-cloak>
+    <div class="card">
+
+      <div class="card-header">
+        <h3 class="card-title">Log an Interaction</h3>
+      </div>
+
+      <div class="card-body border-b border-gray-100">
+        <form
+          hx-post="/customers/{{ customer.id }}/log-call"
+          hx-target="#call-log-list"
+          hx-swap="afterbegin"
+          hx-on::after-request="this.reset()"
+          class="space-y-3"
+        >
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="form-label">Type</label>
+              <select name="call_type" class="form-select">
+                {% for ct in call_types %}
+                <option value="{{ ct }}">{{ ct.replace('_', ' ').title() }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Outcome</label>
+              <select name="outcome" class="form-select">
+                {% for co in call_outcomes %}
+                <option value="{{ co }}">{{ co.replace('_', ' ').title() }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label class="form-label">Notes</label>
+            <textarea name="notes" rows="2" placeholder="What was discussed?"
+                      class="form-textarea"></textarea>
+          </div>
+          <button type="submit" class="btn-primary">Log Call</button>
+        </form>
+      </div>
+
+      <ul id="call-log-list" class="divide-y divide-gray-100">
+        {% for log in customer.call_logs %}
+        <li class="px-5 py-4">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="text-xs text-gray-400">{{ log.logged_at.strftime('%b %d, %Y — %I:%M %p') }}</span>
+            <span class="badge-gray capitalize">{{ log.call_type.replace('_', ' ') }}</span>
+            <span class="badge-blue capitalize">{{ log.outcome.replace('_', ' ') }}</span>
+          </div>
+          {% if log.notes %}
+          <p class="text-sm text-gray-700 whitespace-pre-wrap">{{ log.notes }}</p>
+          {% endif %}
+        </li>
+        {% else %}
+        <li class="px-5 py-10 text-center text-sm text-gray-400">No calls logged yet.</li>
+        {% endfor %}
+      </ul>
+
+    </div>
+  </div>
+
+</div>
+{% endblock %}

@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Core Return Shipment — {{ company.name }}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; font-size: 12px; color: #111; background: white; }
+
+    .page { max-width: 640px; margin: 0 auto; padding: 24px; }
+
+    .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
+    .company-name { font-size: 18px; font-weight: bold; }
+    .company-detail { font-size: 11px; color: #555; margin-top: 2px; }
+    .doc-block { text-align: right; }
+    .doc-title { font-size: 15px; font-weight: bold; color: #444; text-transform: uppercase; letter-spacing: 0.05em; }
+    .doc-date { font-size: 11px; color: #666; margin-top: 4px; }
+
+    hr { border: none; border-top: 1px solid #ccc; margin: 16px 0; }
+    .hr-thick { border-top: 2px solid #1a1a1a; }
+
+    /* Vendor & From */
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 4px; }
+    .section-label { font-size: 9px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.08em; color: #888; margin-bottom: 4px; }
+    .party-name { font-size: 14px; font-weight: bold; }
+    .party-detail { font-size: 11px; color: #555; }
+
+    /* Tracking highlight box */
+    .tracking-box {
+      border: 2px solid #1a1a1a;
+      border-radius: 6px;
+      padding: 12px 16px;
+      margin-top: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .tracking-label { font-size: 9px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.08em; color: #888; margin-bottom: 4px; }
+    .tracking-number { font-size: 18px; font-weight: bold; font-family: monospace; letter-spacing: 0.05em; }
+
+    /* Core details table */
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    thead th { font-size: 9px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.05em; color: #888; padding: 4px 6px; border-bottom: 1px solid #ccc; text-align: left; }
+    thead th.r { text-align: right; }
+    tbody td { padding: 6px 6px; font-size: 12px; border-bottom: 1px solid #eee; vertical-align: top; }
+    tbody td.r { text-align: right; }
+    .sku { font-family: monospace; font-weight: bold; color: #333; }
+    tfoot td { padding: 8px 6px; font-weight: bold; border-top: 2px solid #ccc; }
+
+    /* Instructions */
+    .instructions {
+      background: #fefce8;
+      border: 1px solid #fde047;
+      border-radius: 6px;
+      padding: 10px 14px;
+      margin-top: 16px;
+      font-size: 11px;
+      color: #713f12;
+    }
+
+    /* Signature */
+    .sig-row { display: flex; gap: 40px; margin-top: 20px; }
+    .sig-line { flex: 1; }
+    .sig-line-bar { margin-top: 20px; border-top: 1px solid #999; padding-top: 3px; font-size: 10px; color: #888; }
+
+    .footer { margin-top: 24px; font-size: 10px; color: #888; text-align: center; }
+
+    .print-controls {
+      position: fixed; top: 16px; right: 16px;
+      display: flex; gap: 8px;
+    }
+    .btn {
+      padding: 7px 16px; font-size: 12px; font-weight: 600;
+      border-radius: 6px; cursor: pointer; text-decoration: none;
+      border: 1px solid #ccc; background: white; color: #333;
+    }
+    .btn-primary { background: #1d4ed8; color: white; border-color: #1d4ed8; }
+    @media print {
+      .print-controls { display: none; }
+      .page { padding: 0; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="print-controls">
+  <a href="/cores/" class="btn">← Back to Cores</a>
+  <button onclick="window.print()" class="btn btn-primary">Print / Save PDF</button>
+</div>
+
+<div class="page">
+
+  {# ── Header ── #}
+  <div class="header">
+    <div>
+      <div class="company-name">{{ company.name }}</div>
+      {% if company.address %}<div class="company-detail">{{ company.address }}</div>{% endif %}
+      {% if company.phone %}<div class="company-detail">{{ company.phone }}</div>{% endif %}
+      {% if company.email %}<div class="company-detail">{{ company.email }}</div>{% endif %}
+    </div>
+    <div class="doc-block">
+      <div class="doc-title">Core Return Shipment</div>
+      <div class="doc-date">Date: {{ core.updated_at.strftime('%B %d, %Y') }}</div>
+    </div>
+  </div>
+
+  <hr class="hr-thick" />
+
+  {# ── From / To ── #}
+  <div class="two-col">
+    <div>
+      <div class="section-label">From (Shipper)</div>
+      <div class="party-name">{{ company.name }}</div>
+      {% if company.address %}<div class="party-detail">{{ company.address }}</div>{% endif %}
+      {% if company.phone %}<div class="party-detail">{{ company.phone }}</div>{% endif %}
+    </div>
+    <div>
+      <div class="section-label">To (Vendor)</div>
+      {% if core.vendor %}
+      <div class="party-name">{{ core.vendor.vendor_name }}</div>
+      {% if core.vendor.address_line1 %}<div class="party-detail">{{ core.vendor.address_line1 }}</div>{% endif %}
+      {% if core.vendor.city or core.vendor.state %}
+      <div class="party-detail">
+        {{ [core.vendor.city, core.vendor.state] | select | join(', ') }}
+        {% if core.vendor.zip_code %} {{ core.vendor.zip_code }}{% endif %}
+      </div>
+      {% endif %}
+      {% if core.vendor.phone %}<div class="party-detail">{{ core.vendor.phone }}</div>{% endif %}
+      {% else %}
+      <div class="party-detail" style="color:#999; font-style:italic;">Vendor not linked</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Tracking ── #}
+  {% if core.core_tracking_number %}
+  <div class="tracking-box">
+    <div>
+      <div class="tracking-label">Tracking Number</div>
+      <div class="tracking-number">{{ core.core_tracking_number }}</div>
+    </div>
+    <div style="text-align:right; font-size:11px; color:#555;">
+      <div>Include this document in the package.</div>
+      <div style="margin-top:3px;">Keep a copy for your records.</div>
+    </div>
+  </div>
+  {% else %}
+  <div style="margin-top:14px; padding:10px 14px; background:#fef3c7; border:1px solid #fcd34d; border-radius:6px; font-size:11px; color:#92400e;">
+    No tracking number recorded. Enter one via "Mark Shipped" before printing.
+  </div>
+  {% endif %}
+
+  <hr />
+
+  {# ── Core Details ── #}
+  <div class="section-label">Core Part(s) Being Returned</div>
+  <table>
+    <thead>
+      <tr>
+        <th>SKU / Part #</th>
+        <th>Description</th>
+        <th class="r">Qty</th>
+        <th class="r">Expected Credit / ea</th>
+        <th class="r">Total Expected</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="sku">{{ core.product.sku if core.product else '—' }}</td>
+        <td>{{ core.product.title if core.product else '—' }}</td>
+        <td class="r">{{ core.qty_returned }}</td>
+        <td class="r">${{ '%.2f' | format(core.vendor_unit_charge) }}</td>
+        <td class="r">${{ '%.2f' | format(core.qty_returned * core.vendor_unit_charge) }}</td>
+      </tr>
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="4" style="text-align:right; font-size:11px; color:#555;">Total Expected Credit</td>
+        <td class="r" style="font-size:14px;">${{ '%.2f' | format(core.qty_returned * core.vendor_unit_charge) }}</td>
+      </tr>
+    </tfoot>
+  </table>
+
+  {# ── Origin customer ── #}
+  {% if core.customer %}
+  <div style="margin-top:14px;">
+    <div class="section-label">Original Customer Return (For Your Records)</div>
+    <div style="font-size:11px; color:#555; margin-top:3px;">
+      Core was returned by {{ core.customer.company_name }}
+      {% if core.customer.phone %} — {{ core.customer.phone }}{% endif %}.
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Instructions ── #}
+  <div class="instructions">
+    <strong>Instructions:</strong> Please issue credit of
+    ${{ '%.2f' | format(core.qty_returned * core.vendor_unit_charge) }}
+    to our account upon inspection.
+    If there is any discrepancy with this RMA, please contact us before processing.
+    Reference: {{ core.product.sku if core.product else 'see part details above' }}.
+  </div>
+
+  {# ── Signature ── #}
+  <div class="sig-row">
+    <div class="sig-line">
+      <div class="section-label">Packed By (JAKS)</div>
+      <div class="sig-line-bar">Name / Date</div>
+    </div>
+    <div class="sig-line">
+      <div class="section-label">Received By (Vendor)</div>
+      <div class="sig-line-bar">Name / Date / Signature</div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <p>{{ company.name }}  ·  {{ company.phone }}  ·  {{ company.email }}</p>
+  </div>
+
+</div>
+</body>
+</html>

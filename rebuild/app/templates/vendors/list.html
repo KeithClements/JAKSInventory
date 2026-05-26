@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Vendors — JAKS Inventory{% endblock %}
+{% block heading %}Vendors{% endblock %}
+
+{% block header_actions %}
+  <a href="/vendors/new" class="btn-primary btn-sm">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+    </svg>
+    New Vendor
+  </a>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+  {% if vendors %}
+  <div class="overflow-x-auto">
+    <table class="tbl">
+      <thead class="tbl-head">
+        <tr>
+          <th class="tbl-th">Name</th>
+          <th class="tbl-th">Code</th>
+          <th class="tbl-th">Contact</th>
+          <th class="tbl-th">Phone</th>
+          <th class="tbl-th">Terms</th>
+          <th class="tbl-th-r">Active POs</th>
+          <th class="tbl-th"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for v in vendors %}
+        {% set active_po_count = v.purchase_orders | selectattr('status', 'in', ['draft', 'verbal_order', 'sent', 'partial']) | list | length %}
+        <tr class="tbl-row cursor-pointer" onclick="location.href='/vendors/{{ v.id }}'">
+          <td class="tbl-td font-medium text-gray-800">{{ v.name }}</td>
+          <td class="tbl-td font-mono text-xs text-gray-500">{{ v.vendor_code or '—' }}</td>
+          <td class="tbl-td text-gray-500">{{ v.contact_name or '—' }}</td>
+          <td class="tbl-td text-gray-500">{{ v.phone or '—' }}</td>
+          <td class="tbl-td text-xs text-gray-500">{{ v.payment_terms.replace('_', ' ').upper() if v.payment_terms else '—' }}</td>
+          <td class="tbl-td-r">
+            {% if active_po_count > 0 %}
+            <span class="badge-blue">{{ active_po_count }}</span>
+            {% else %}
+            <span class="text-gray-300">0</span>
+            {% endif %}
+          </td>
+          <td class="tbl-td text-right" onclick="event.stopPropagation()">
+            <a href="/vendors/{{ v.id }}" class="text-xs link mr-3">Edit</a>
+            <a href="/purchase-orders/new?vendor_id={{ v.id }}" class="text-xs link">New PO</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="tbl-empty">
+    No vendors yet.
+    <a href="/vendors/new" class="block mt-2 link">Add your first vendor →</a>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

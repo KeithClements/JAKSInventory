@@ -1,0 +1,15 @@
+{#
+  _images_grid.html
+  Full product images grid. HTMX-swappable target: #images-grid.
+  Expects: images (list[ProductImage]), product_id in context.
+  Used in: products/detail.html (via include) and returned by image endpoints.
+#}
+<div id="images-grid" class="grid grid-cols-3 gap-4">
+  {% for image in images %}
+  {% include "products/_image_card.html" %}
+  {% else %}
+  <div class="col-span-3 py-10 text-center text-sm text-gray-400">
+    No images yet. Upload one below.
+  </div>
+  {% endfor %}
+</div>

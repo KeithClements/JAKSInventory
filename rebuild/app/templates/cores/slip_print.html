@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Core Return Receipt — {% if slip %}{{ slip.slip_number }}{% else %}JAKS Parts{% endif %}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; font-size: 12px; color: #111; background: white; }
+
+    .page {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    /* Header */
+    .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
+    .company-name { font-size: 18px; font-weight: bold; color: #1a1a1a; }
+    .company-detail { font-size: 11px; color: #555; margin-top: 2px; }
+    .slip-block { text-align: right; }
+    .slip-title { font-size: 15px; font-weight: bold; color: #444; text-transform: uppercase; letter-spacing: 0.05em; }
+    .slip-number { font-size: 20px; font-weight: bold; color: #1a1a1a; font-family: monospace; margin-top: 2px; }
+    .slip-date { font-size: 11px; color: #666; margin-top: 2px; }
+
+    hr { border: none; border-top: 1px solid #ccc; margin: 16px 0; }
+    .hr-thick { border-top: 2px solid #1a1a1a; }
+
+    /* Customer block */
+    .section-label { font-size: 9px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.08em; color: #888; margin-bottom: 4px; }
+    .customer-name { font-size: 14px; font-weight: bold; }
+    .customer-detail { font-size: 11px; color: #555; }
+
+    /* Core details table */
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    thead th { font-size: 9px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.05em; color: #888; padding: 4px 6px; border-bottom: 1px solid #ccc; text-align: left; }
+    thead th.r { text-align: right; }
+    tbody td { padding: 6px 6px; font-size: 12px; border-bottom: 1px solid #eee; vertical-align: top; }
+    tbody td.r { text-align: right; }
+    .sku { font-family: monospace; font-weight: bold; color: #333; }
+    tfoot td { padding: 8px 6px; font-weight: bold; border-top: 2px solid #ccc; }
+
+    /* Return info grid */
+    .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
+    .info-cell { }
+    .info-value { font-size: 13px; font-weight: bold; margin-top: 2px; }
+
+    /* Credit box */
+    .credit-box {
+      background: #f0fdf4;
+      border: 1px solid #86efac;
+      border-radius: 6px;
+      padding: 12px 16px;
+      margin-top: 16px;
+    }
+    .credit-amount { font-size: 22px; font-weight: bold; color: #166534; }
+    .credit-label { font-size: 10px; color: #15803d; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 2px; }
+
+    /* Footer */
+    .footer { margin-top: 24px; font-size: 10px; color: #888; text-align: center; }
+    .footer p { margin-top: 4px; }
+
+    /* Print controls — hidden when printing */
+    .print-controls {
+      position: fixed; top: 16px; right: 16px;
+      display: flex; gap: 8px;
+    }
+    .btn {
+      padding: 7px 16px; font-size: 12px; font-weight: 600;
+      border-radius: 6px; cursor: pointer; text-decoration: none;
+      border: 1px solid #ccc; background: white; color: #333;
+    }
+    .btn-primary { background: #1d4ed8; color: white; border-color: #1d4ed8; }
+    @media print {
+      .print-controls { display: none; }
+      .page { padding: 0; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="print-controls">
+  <a href="/cores/" class="btn">← Back</a>
+  <button onclick="window.print()" class="btn btn-primary">Print / Save PDF</button>
+</div>
+
+<div class="page">
+
+  {# ── Header ── #}
+  <div class="header">
+    <div>
+      <div class="company-name">{{ company.name }}</div>
+      {% if company.address %}<div class="company-detail">{{ company.address }}</div>{% endif %}
+      {% if company.phone %}<div class="company-detail">{{ company.phone }}</div>{% endif %}
+      {% if company.email %}<div class="company-detail">{{ company.email }}</div>{% endif %}
+    </div>
+    <div class="slip-block">
+      <div class="slip-title">Core Return Receipt</div>
+      <div class="slip-number">
+        {% if slip %}{{ slip.slip_number }}{% else %}—{% endif %}
+      </div>
+      <div class="slip-date">
+        {% if slip %}{{ slip.created_at.strftime('%B %d, %Y') }}{% else %}{{ core.updated_at.strftime('%B %d, %Y') }}{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <hr class="hr-thick" />
+
+  {# ── Customer ── #}
+  {% if core.customer %}
+  <div>
+    <div class="section-label">Returned By</div>
+    <div class="customer-name">{{ core.customer.company_name }}</div>
+    {% if core.customer.contact_name %}<div class="customer-detail">{{ core.customer.contact_name }}</div>{% endif %}
+    {% if core.customer.phone %}<div class="customer-detail">{{ core.customer.phone }}</div>{% endif %}
+  </div>
+  <hr />
+  {% endif %}
+
+  {# ── Core Details ── #}
+  <div class="section-label">Core Part Returned</div>
+  <table>
+    <thead>
+      <tr>
+        <th>SKU / Part #</th>
+        <th>Description</th>
+        <th class="r">Qty Returned</th>
+        <th class="r">Core Charge / ea</th>
+        <th class="r">Credit Issued</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="sku">{{ core.product.sku if core.product else '—' }}</td>
+        <td>{{ core.product.title if core.product else '—' }}</td>
+        <td class="r">{{ core.qty_returned }}</td>
+        <td class="r">${{ '%.2f' | format(core.customer_unit_charge) }}</td>
+        <td class="r">${{ '%.2f' | format(core.qty_returned * core.customer_unit_charge) }}</td>
+      </tr>
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="4" style="text-align:right; font-size:11px; color:#555;">Total Account Credit</td>
+        <td class="r" style="font-size:14px; color:#166534;">${{ '%.2f' | format(core.qty_returned * core.customer_unit_charge) }}</td>
+      </tr>
+    </tfoot>
+  </table>
+
+  {# ── Condition / Notes ── #}
+  {% if core.notes %}
+  <div style="margin-top:12px;">
+    <div class="section-label">Condition Notes</div>
+    <div style="font-size:12px; color:#333; margin-top:3px;">{{ core.notes }}</div>
+  </div>
+  {% endif %}
+
+  {# ── Credit Applied ── #}
+  <div class="credit-box">
+    <div class="credit-label">Account Credit Applied</div>
+    <div class="credit-amount">${{ '%.2f' | format(core.qty_returned * core.customer_unit_charge) }}</div>
+    <div style="font-size:11px; color:#166534; margin-top:4px;">
+      Applied to {{ core.customer.company_name if core.customer else 'customer account' }}.
+      Balance available on next invoice or by check request.
+    </div>
+  </div>
+
+  <hr style="margin-top:20px;" />
+
+  {# ── Signature area ── #}
+  <div style="display:flex; gap:40px; margin-top:16px;">
+    <div style="flex:1;">
+      <div class="section-label">Received By (JAKS)</div>
+      <div style="margin-top:20px; border-top: 1px solid #999; padding-top:3px; font-size:10px; color:#888;">Signature &amp; Date</div>
+    </div>
+    <div style="flex:1;">
+      <div class="section-label">Customer Signature</div>
+      <div style="margin-top:20px; border-top: 1px solid #999; padding-top:3px; font-size:10px; color:#888;">Signature &amp; Date</div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <p>Keep this receipt for your records. Questions? Call {{ company.phone or 'JAKS Parts' }}.</p>
+    {% if slip %}<p>Slip # {{ slip.slip_number }}</p>{% endif %}
+  </div>
+
+</div>
+</body>
+</html>

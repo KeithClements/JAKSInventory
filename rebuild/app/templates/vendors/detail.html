@@ -1,0 +1,195 @@
+{% extends "base.html" %}
+{% block title %}{{ vendor.name }} — JAKS Inventory{% endblock %}
+{% block heading %}{{ vendor.name }}{% endblock %}
+
+{% block header_actions %}
+  <a href="/purchase-orders/new?vendor_id={{ vendor.id }}" class="btn-primary btn-sm">New PO</a>
+  <a href="/vendors/" class="text-sm text-gray-500 hover:text-gray-700">← Vendors</a>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl space-y-4">
+
+  {# Success flash — auto-dismisses via Alpine #}
+  {% if request.query_params.get('saved') %}
+  <div class="rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800"
+       x-data x-init="setTimeout(() => $el.remove(), 4000)">
+    Vendor saved successfully.
+  </div>
+  {% endif %}
+
+  {# Deactivate form lives outside the main edit form to prevent nesting #}
+  {% if vendor.is_active %}
+  <form id="deactivate-form" method="post" action="/vendors/{{ vendor.id }}/deactivate"
+        onsubmit="return confirm('Deactivate {{ vendor.name }}? They will no longer appear in vendor lists.')">
+  </form>
+  {% endif %}
+
+  {# ── Info card ── #}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Vendor Information</h2>
+      {% if not vendor.is_active %}
+      <span class="badge-gray">Inactive</span>
+      {% endif %}
+    </div>
+    <div class="card-body">
+      <form method="post" action="/vendors/{{ vendor.id }}" class="space-y-4">
+        <div class="grid grid-cols-2 gap-4">
+
+          <div class="col-span-2">
+            <label class="form-label">Vendor Name <span class="text-red-500">*</span></label>
+            <input name="name" value="{{ vendor.name }}" required class="form-input" />
+          </div>
+
+          <div>
+            <label class="form-label">
+              Vendor Code
+              <span class="font-normal text-gray-400 normal-case">(max 4 chars)</span>
+            </label>
+            <input name="vendor_code" value="{{ vendor.vendor_code }}" maxlength="4"
+                   oninput="this.value=this.value.toUpperCase()"
+                   class="form-input font-mono uppercase" />
+          </div>
+
+          <div>
+            <label class="form-label">Account Number</label>
+            <input name="account_number" value="{{ vendor.account_number }}"
+                   class="form-input font-mono" />
+          </div>
+
+          <div>
+            <label class="form-label">Contact Name</label>
+            <input name="contact_name" value="{{ vendor.contact_name }}" class="form-input" />
+          </div>
+
+          <div>
+            <label class="form-label">Phone</label>
+            <input name="phone" type="tel" value="{{ vendor.phone }}" class="form-input" />
+          </div>
+
+          <div>
+            <label class="form-label">Email</label>
+            <input name="email" type="email" value="{{ vendor.email }}" class="form-input" />
+          </div>
+
+          <div>
+            <label class="form-label">Payment Terms</label>
+            <select name="payment_terms" class="form-select">
+              {% for t in payment_terms %}
+              <option value="{{ t }}" {% if vendor.payment_terms == t %}selected{% endif %}>
+                {{ t.replace('_', ' ').upper() }}
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="col-span-2">
+            <label class="form-label">Website</label>
+            <input name="website" type="url" value="{{ vendor.website }}" placeholder="https://"
+                   class="form-input" />
+          </div>
+
+          <div class="col-span-2">
+            <label class="form-label">Notes</label>
+            <textarea name="notes" rows="3" class="form-textarea">{{ vendor.notes }}</textarea>
+          </div>
+
+          <div class="col-span-2">
+            <label class="form-label">
+              Internal Notes
+              <span class="font-normal text-gray-400 normal-case">(not printed on documents)</span>
+            </label>
+            <textarea name="internal_notes" rows="2" class="form-textarea">{{ vendor.internal_notes }}</textarea>
+          </div>
+
+        </div>
+
+        <div class="flex items-center justify-between pt-2 border-t border-gray-100">
+          <button type="submit" class="btn-primary">Save Changes</button>
+          {% if vendor.is_active %}
+          <button type="submit" form="deactivate-form"
+                  class="text-xs text-gray-400 hover:text-red-500 transition-colors">
+            Deactivate vendor
+          </button>
+          {% endif %}
+        </div>
+      </form>
+    </div>
+  </div>
+
+  {# ── Recent Purchase Orders ── #}
+  {% set po_badges = {
+    'draft':        'badge-gray',
+    'verbal_order': 'badge-blue',
+    'sent':         'badge-blue',
+    'partial':      'badge-amber',
+    'received':     'badge-green',
+    'billed':       'badge-green',
+    'cancelled':    'badge-red',
+  } %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Recent Purchase Orders</h2>
+      <a href="/purchase-orders/?vendor_id={{ vendor.id }}" class="text-xs link">View all</a>
+    </div>
+    {% if recent_pos %}
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">PO #</th>
+            <th class="tbl-th">Status</th>
+            <th class="tbl-th-r">Lines</th>
+            <th class="tbl-th">Created</th>
+            <th class="tbl-th">Expected</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for po in recent_pos %}
+          <tr class="tbl-row cursor-pointer" onclick="location.href='/purchase-orders/{{ po.id }}'">
+            <td class="tbl-td font-mono font-semibold text-brand-700">{{ po.po_number }}</td>
+            <td class="tbl-td">
+              <span class="{{ po_badges.get(po.status, 'badge-gray') }}">
+                {{ po.status.replace('_', ' ').title() }}
+              </span>
+            </td>
+            <td class="tbl-td-r">{{ po.lines | length }}</td>
+            <td class="tbl-td text-gray-400 text-xs">{{ po.created_at.strftime('%b %d, %Y') }}</td>
+            <td class="tbl-td text-gray-400 text-xs">
+              {{ po.expected_at.strftime('%b %d, %Y') if po.expected_at else '—' }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="tbl-empty">
+      No purchase orders yet.
+      <a href="/purchase-orders/new?vendor_id={{ vendor.id }}" class="block mt-1 link">Create first PO →</a>
+    </div>
+    {% endif %}
+  </div>
+
+  {# ── Product Sources ── #}
+  <div class="card">
+    <div class="card-body">
+      <div class="flex items-center justify-between">
+        <div>
+          <p class="text-sm font-semibold text-gray-700">Product Sources</p>
+          <p class="text-xs text-gray-400 mt-0.5">
+            Supplies
+            <span class="font-semibold text-gray-700">{{ product_count }}</span>
+            {% if product_count == 1 %}product{% else %}products{% endif %}
+          </p>
+        </div>
+        {% if product_count > 0 %}
+        <a href="/products/?vendor_id={{ vendor.id }}" class="text-sm link">View products →</a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

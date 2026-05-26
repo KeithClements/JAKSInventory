@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Render B — Balanced Operator (RECOMMENDED) — Quote Builder</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    .mono { font-family: 'Courier New', Courier, monospace; }
+    .tbl-th { padding: 6px 10px; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #6b7280; text-align: left; }
+    .tbl-th-r { padding: 6px 10px; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #6b7280; text-align: right; }
+    .tbl-td { padding: 6px 10px; font-size: 0.8rem; border-bottom: 1px solid #f3f4f6; vertical-align: middle; }
+    .tbl-td-r { padding: 6px 10px; font-size: 0.8rem; border-bottom: 1px solid #f3f4f6; vertical-align: middle; text-align: right; }
+    .chip-row td { background: #f9fafb; border-bottom: 1px solid #e5e7eb; }
+    .avail-pill { display:inline-flex; align-items:center; padding:1px 6px; border-radius:4px; font-size:0.7rem; font-weight:600; border:1px solid; margin-right:3px; }
+    .qoh-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:4px; }
+    input[type="text"]:focus { outline:none; box-shadow:0 0 0 2px rgba(75,83,32,0.25); border-color:#4b5320; background:white; }
+  </style>
+</head>
+<body class="bg-gray-50 text-gray-900 text-sm">
+
+<!-- APPROACH LABEL -->
+<div class="fixed top-2 right-2 z-50 text-white text-xs px-3 py-1.5 rounded-full shadow-lg font-semibold" style="background:#4b5320;">
+  ★ Render B — Balanced Operator (RECOMMENDED)
+</div>
+
+<div class="flex" style="height:100vh; overflow:hidden;">
+
+  <!-- ═══════════════════════════════════════════════════════════
+       SIDEBAR
+  ═══════════════════════════════════════════════════════════ -->
+  <aside class="flex-shrink-0 flex flex-col bg-slate-900 overflow-y-auto" style="width:220px;">
+    <div class="px-4 py-3 border-b border-slate-700">
+      <div class="text-white font-bold text-sm tracking-wide">JAKS PARTS</div>
+      <div class="text-slate-400 text-xs">Inventory System</div>
+    </div>
+    <nav class="flex-1 py-1 text-sm">
+      <a href="#" class="flex items-center px-4 py-1.5 text-slate-400 hover:text-white hover:bg-slate-800 text-xs">Dashboard</a>
+
+      <div class="px-4 pt-3 pb-1 text-slate-500 text-xs font-semibold uppercase tracking-widest">Sales</div>
+      <a href="#" class="flex items-center px-4 py-1.5 text-slate-300 hover:text-white hover:bg-slate-800 text-xs">Customers</a>
+      <a href="#" class="flex items-center px-4 py-1.5 text-white bg-slate-700 text-xs font-medium" style="border-left:3px solid #b0be71;">
+        <span class="text-slate-300" style="font-size:0.6rem; margin-right:6px;">▶</span>Quotes
+      </a>
+      <a href="#" class="flex items-center px-4 py-1.5 text-slate-300 hover:text-white hover:bg-slate-800 text-xs">Sales Orders</a>
+      <a href="#" class="flex items-center px-4 py-1.5 text-slate-300 hover:text-white hover:bg-slate-800 text-xs">Invoices</a>
+      <a href="#" class="flex items-center px-4 py-1.5 text-slate-300 hover:text-white hover:bg-slate-800 text-xs">Payments</a>
+
+      <div class="px-4 pt-3 pb-1 text-slate-500 text-xs font-semibold uppercase tracking-widest">Purchasing</div>
+      <a href="#" class="flex items-center px-4 py-1.5 text-slate-300 hover:text-white hover:bg-slate-800 text-xs">Vendors</a>
+      <a href="#" class="flex items-center px-4 py-1.5 text-slate-300 hover:text-white hover:bg-slate-800 text-xs">Purchase Orders</a>
+
+      <div class="px-4 pt-3 pb-1 text-slate-500 text-xs font-semibold uppercase tracking-widest">Inventory</div>
+      <a href="#" class="flex items-center px-4 py-1.5 text-slate-300 hover:text-white hover:bg-slate-800 text-xs">Products</a>
+
+      <div class="px-4 pt-3 pb-1 text-slate-500 text-xs font-semibold uppercase tracking-widest">Cores</div>
+      <a href="#" class="flex items-center px-4 py-1.5 text-slate-300 hover:text-white hover:bg-slate-800 text-xs">Core Charges</a>
+
+      <div class="px-4 pt-3 pb-1 text-slate-500 text-xs font-semibold uppercase tracking-widest">Reports</div>
+      <a href="#" class="flex items-center px-4 py-1.5 text-slate-300 hover:text-white hover:bg-slate-800 text-xs">Reports</a>
+
+      <div class="px-4 pt-3 pb-1 text-slate-500 text-xs font-semibold uppercase tracking-widest">System</div>
+      <a href="#" class="flex items-center px-4 py-1.5 text-slate-300 hover:text-white hover:bg-slate-800 text-xs">Settings</a>
+    </nav>
+    <!-- User -->
+    <div class="px-4 py-2.5 border-t border-slate-700 flex items-center gap-2">
+      <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold text-white" style="background:#4b5320;">K</div>
+      <span class="text-slate-300 text-xs">Keith</span>
+    </div>
+  </aside>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       MAIN CONTENT
+  ═══════════════════════════════════════════════════════════ -->
+  <div class="flex-1 flex flex-col overflow-hidden">
+
+    <!-- ─────────────────────────────────────────────────────────
+         HEADER ZONE
+    ───────────────────────────────────────────────────────── -->
+    <div class="flex-shrink-0 bg-white border-b border-gray-200 px-4 py-3 space-y-2">
+
+      <!-- Row 1: Customer + Quote Metadata + Actions -->
+      <div class="flex items-start gap-4">
+
+        <!-- Left: Customer field + status panel -->
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 mb-1.5">
+            <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide flex-shrink-0">Customer</label>
+            <div class="flex items-center gap-1.5 flex-1">
+              <div class="flex-1 border border-gray-300 rounded-lg px-3 py-1.5 bg-white flex items-center justify-between cursor-pointer hover:border-gray-400">
+                <span class="font-semibold text-gray-900">Mike's Diesel Service, LLC</span>
+                <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+              </div>
+              <button class="flex-shrink-0 border border-dashed border-gray-300 rounded-lg px-2 py-1.5 text-xs text-gray-500 hover:border-gray-400 hover:text-gray-700 font-medium">
+                + New
+              </button>
+            </div>
+          </div>
+
+          <!-- Customer status mini-panel -->
+          <div class="flex items-center gap-1 flex-wrap">
+            <span class="inline-flex items-center gap-1 text-xs px-2 py-1 bg-gray-100 rounded text-gray-600 font-medium">
+              Terms: Net 30
+            </span>
+            <span class="inline-flex items-center gap-1 text-xs px-2 py-1 bg-gray-100 rounded text-gray-600 font-medium">
+              Open: <span class="mono font-bold text-gray-900 ml-0.5">$3,200.00</span>
+            </span>
+            <span class="inline-flex items-center gap-1 text-xs px-2 py-1 bg-red-50 rounded text-red-700 font-semibold border border-red-100">
+              ⚠ Overdue: <span class="mono ml-0.5">$890.00</span>
+            </span>
+            <span class="inline-flex items-center gap-1 text-xs px-2 py-1 bg-green-50 rounded text-green-700 font-semibold border border-green-100">
+              ✓ Credit OK
+            </span>
+            <span class="inline-flex items-center gap-1 text-xs px-2 py-1 bg-amber-50 rounded text-amber-700 font-semibold border border-amber-100">
+              ⟲ 2 Cores Owed
+            </span>
+          </div>
+        </div>
+
+        <!-- Middle: Quote metadata -->
+        <div class="flex items-start gap-4 flex-shrink-0">
+          <div>
+            <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Quote #</div>
+            <div class="mono font-bold text-gray-900">Q-2026-0051</div>
+          </div>
+          <div>
+            <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Date</div>
+            <div class="text-gray-900 font-medium">May 25, 2026</div>
+          </div>
+          <div>
+            <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Expires</div>
+            <div class="text-gray-900 font-medium">Jun 04, 2026</div>
+          </div>
+          <div>
+            <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Disc %</div>
+            <div class="flex items-center gap-1">
+              <input type="text" value="0" class="mono text-right border border-gray-300 rounded-lg px-2 py-1 font-medium" style="width:52px; font-size:0.85rem;">
+              <span class="text-gray-400 text-xs">%</span>
+            </div>
+          </div>
+          <div>
+            <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Follow-up</div>
+            <input type="date" value="2026-05-26"
+                   class="border border-gray-300 rounded-lg px-2 py-1 text-sm text-gray-700" style="font-size:0.8rem;">
+          </div>
+        </div>
+
+        <!-- Right: Action buttons -->
+        <div class="flex-shrink-0 flex flex-col gap-1.5">
+          <div class="flex items-center gap-1.5">
+            <button class="border border-gray-300 rounded-lg px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 flex items-center gap-1.5">
+              ⬡ Pop Out
+            </button>
+            <button class="border border-gray-300 rounded-lg px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">
+              Send
+            </button>
+            <button class="text-white rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1" style="background:#4b5320;">
+              Convert
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </button>
+            <button class="border border-gray-200 rounded-lg px-3 py-1.5 text-xs text-gray-400 hover:text-red-600 hover:border-red-200">
+              Mark Lost
+            </button>
+          </div>
+          <div class="text-right text-xs text-gray-400">✓ Saved 5s ago</div>
+        </div>
+      </div>
+
+      <!-- Row 2: Notes + Internal Notes -->
+      <div class="flex items-center gap-4">
+        <div class="flex items-center gap-2 flex-1">
+          <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide flex-shrink-0">Notes</label>
+          <input type="text"
+                 value="Needs ISX inframe kit ASAP — truck is down. Priority rebuild job."
+                 class="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm text-gray-700 focus:border-gray-400"
+                 style="outline:none;">
+        </div>
+        <div class="flex items-center gap-2" style="width:300px;">
+          <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide flex-shrink-0">Internal</label>
+          <input type="text"
+                 placeholder="Internal note (not printed)…"
+                 class="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm text-gray-400 focus:border-gray-400"
+                 style="outline:none;">
+        </div>
+      </div>
+    </div>
+
+    <!-- ─────────────────────────────────────────────────────────
+         PART SEARCH BAR
+    ───────────────────────────────────────────────────────── -->
+    <div class="flex-shrink-0 bg-white border-b border-gray-200 px-4 py-2">
+      <div class="relative">
+        <div class="absolute inset-y-0 left-3 flex items-center pointer-events-none">
+          <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+          </svg>
+        </div>
+        <input type="text"
+               placeholder="Search parts: SKU, OEM#, cross-reference, description, ESN, vendor SKU…"
+               class="w-full border-2 border-gray-300 rounded-lg pl-10 pr-28 py-2 text-sm font-medium"
+               style="outline:none; font-size:0.875rem;">
+        <div class="absolute inset-y-0 right-3 flex items-center gap-2">
+          <kbd class="px-1.5 py-0.5 text-xs bg-gray-100 border border-gray-300 rounded text-gray-500 font-mono">Ctrl+K</kbd>
+          <kbd class="px-1.5 py-0.5 text-xs bg-gray-100 border border-gray-300 rounded text-gray-500 font-mono">/</kbd>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─────────────────────────────────────────────────────────
+         LINE ITEMS TABLE
+    ───────────────────────────────────────────────────────── -->
+    <div class="flex-1 overflow-auto bg-white">
+      <table class="w-full border-collapse">
+        <thead style="position:sticky; top:0; z-index:10; background:#f9fafb; border-bottom:2px solid #e5e7eb;">
+          <tr>
+            <th class="tbl-th text-center" style="width:36px;">#</th>
+            <th class="tbl-th">Description</th>
+            <th class="tbl-th text-center" style="width:56px;">QOH</th>
+            <th class="tbl-th" style="width:220px;">Source / Availability</th>
+            <th class="tbl-th text-center" style="width:72px;">ETA</th>
+            <th class="tbl-th-r" style="width:100px;">Sell $</th>
+            <th class="tbl-th-r" style="width:60px;">Disc %</th>
+            <th class="tbl-th-r" style="width:72px;">Margin %</th>
+            <th class="tbl-th-r" style="width:100px;">Total</th>
+            <th class="tbl-th" style="width:36px;"></th>
+          </tr>
+        </thead>
+        <tbody>
+
+          <!-- ═══ Line 1: Inframe Kit ═══ -->
+          <tr class="hover:bg-blue-50 transition-colors">
+            <td class="tbl-td text-center text-gray-400 font-medium">1</td>
+            <td class="tbl-td">
+              <div class="flex items-center gap-2">
+                <div>
+                  <div class="mono font-bold text-gray-900 text-sm">JAKS-PAI-311148</div>
+                  <div class="text-gray-500 text-xs mt-0.5">Complete Inframe Overhaul Kit, ISX15 (540HP)</div>
+                </div>
+                <span class="inline-flex items-center px-1.5 py-0.5 text-xs bg-gray-100 text-gray-500 rounded border border-gray-200 flex-shrink-0">
+                  Last sold $1,189 · 3/12
+                </span>
+              </div>
+            </td>
+            <td class="tbl-td text-center">
+              <div class="flex items-center justify-center gap-1">
+                <span class="qoh-dot" style="background:#16a34a;"></span>
+                <span class="font-bold text-green-700 mono">2</span>
+              </div>
+            </td>
+            <td class="tbl-td">
+              <span class="avail-pill bg-green-50 text-green-700 border-green-200">PAI: In Stock</span>
+              <span class="avail-pill bg-blue-50 text-blue-700 border-blue-200">HHP: 5d</span>
+              <span class="avail-pill bg-gray-50 text-gray-400 border-gray-200">ATL: —</span>
+            </td>
+            <td class="tbl-td text-center">
+              <span class="font-medium text-green-600 text-xs">Today</span>
+            </td>
+            <td class="tbl-td-r">
+              <input type="text" value="1,245.00"
+                     class="mono text-right border border-transparent hover:border-gray-300 rounded-md px-2 py-1 font-semibold text-gray-900 bg-transparent"
+                     style="width:88px; font-size:0.85rem;">
+            </td>
+            <td class="tbl-td-r">
+              <input type="text" value="0"
+                     class="mono text-right border border-transparent hover:border-gray-300 rounded-md px-2 py-1 text-gray-700 bg-transparent"
+                     style="width:44px; font-size:0.85rem;">
+            </td>
+            <td class="tbl-td-r">
+              <span class="font-bold text-green-600">32%</span>
+            </td>
+            <td class="tbl-td-r">
+              <span class="mono font-bold text-gray-900">$1,245.00</span>
+            </td>
+            <td class="tbl-td text-center">
+              <button class="text-gray-300 hover:text-gray-600 text-lg font-bold leading-none">⋮</button>
+            </td>
+          </tr>
+
+          <!-- Line 1 chips row -->
+          <tr class="chip-row">
+            <td class="tbl-td text-center"></td>
+            <td colspan="9" style="padding:4px 10px 6px;">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-xs text-gray-400 font-medium">Add:</span>
+                <button class="inline-flex items-center gap-1 mono text-xs border border-gray-300 rounded-md px-2 py-1 text-gray-600 hover:bg-white hover:border-gray-400 transition-colors">
+                  + JAKS-WRM-311148
+                </button>
+                <button class="inline-flex items-center gap-1 mono text-xs border border-gray-300 rounded-md px-2 py-1 text-gray-600 hover:bg-white hover:border-gray-400 transition-colors">
+                  + JAKS-PAI-285040 ★
+                </button>
+                <button class="inline-flex items-center gap-1 text-xs border border-amber-300 rounded-md px-2 py-1 text-amber-700 bg-amber-50 hover:bg-amber-100 transition-colors font-medium">
+                  + Warranty ▼
+                </button>
+              </div>
+            </td>
+          </tr>
+
+          <!-- ═══ Line 2: Head Gasket ═══ -->
+          <tr class="hover:bg-blue-50 transition-colors">
+            <td class="tbl-td text-center text-gray-400 font-medium">2</td>
+            <td class="tbl-td">
+              <div class="flex items-center gap-2">
+                <div>
+                  <div class="mono font-bold text-gray-900 text-sm">JAKS-PAI-285040</div>
+                  <div class="text-gray-500 text-xs mt-0.5">Head Gasket Set, ISX15 Standard Bore</div>
+                </div>
+                <span class="inline-flex items-center px-1.5 py-0.5 text-xs bg-orange-50 text-orange-600 rounded border border-orange-200 flex-shrink-0">
+                  ⚠ 0 stock · research needed
+                </span>
+              </div>
+            </td>
+            <td class="tbl-td text-center">
+              <div class="flex items-center justify-center gap-1">
+                <span class="qoh-dot" style="background:#dc2626;"></span>
+                <span class="font-bold text-red-600 mono">0</span>
+              </div>
+            </td>
+            <td class="tbl-td">
+              <span class="avail-pill bg-amber-50 text-amber-700 border-amber-200">PAI: 12d</span>
+              <span class="avail-pill bg-gray-50 text-gray-400 border-gray-200">HHP: —</span>
+              <span class="avail-pill bg-blue-50 text-blue-700 border-blue-200">ATL: 3d</span>
+            </td>
+            <td class="tbl-td text-center">
+              <span class="font-medium text-amber-600 text-xs">~12d</span>
+            </td>
+            <td class="tbl-td-r">
+              <input type="text" value="189.00"
+                     class="mono text-right border border-transparent hover:border-gray-300 rounded-md px-2 py-1 font-semibold text-gray-900 bg-transparent"
+                     style="width:88px; font-size:0.85rem;">
+            </td>
+            <td class="tbl-td-r">
+              <input type="text" value="5"
+                     class="mono text-right border border-transparent hover:border-gray-300 rounded-md px-2 py-1 text-gray-700 bg-transparent"
+                     style="width:44px; font-size:0.85rem;">
+            </td>
+            <td class="tbl-td-r">
+              <span class="font-bold text-amber-600">28%</span>
+            </td>
+            <td class="tbl-td-r">
+              <span class="mono font-bold text-gray-900">$179.55</span>
+            </td>
+            <td class="tbl-td text-center">
+              <button class="text-gray-300 hover:text-gray-600 text-lg font-bold leading-none">⋮</button>
+            </td>
+          </tr>
+
+          <!-- Line 2 chips row -->
+          <tr class="chip-row">
+            <td class="tbl-td text-center"></td>
+            <td colspan="9" style="padding:4px 10px 6px;">
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-gray-400 font-medium">Add:</span>
+                <button class="inline-flex items-center gap-1 text-xs border border-amber-300 rounded-md px-2 py-1 text-amber-700 bg-amber-50 hover:bg-amber-100 transition-colors font-medium">
+                  + Warranty ▼
+                </button>
+              </div>
+            </td>
+          </tr>
+
+          <!-- ═══ Line 3: Core Charge ═══ -->
+          <tr class="hover:bg-amber-50 transition-colors" style="background:#fffdf5;">
+            <td class="tbl-td text-center text-gray-400 font-medium">3</td>
+            <td class="tbl-td" style="padding-left:24px;">
+              <div class="flex items-center gap-2">
+                <span class="inline-flex items-center justify-center w-5 h-5 rounded text-amber-600 bg-amber-100 flex-shrink-0 text-xs font-bold">⟲</span>
+                <div>
+                  <div class="font-semibold text-amber-800 text-sm">Core: ISX Inframe Assembly</div>
+                  <div class="text-amber-600 text-xs mt-0.5">Refundable — returned when core received</div>
+                </div>
+              </div>
+            </td>
+            <td class="tbl-td text-center text-gray-300">—</td>
+            <td class="tbl-td">
+              <span class="text-xs text-gray-400 italic">core charge</span>
+            </td>
+            <td class="tbl-td text-center text-gray-300">—</td>
+            <td class="tbl-td-r">
+              <span class="mono font-semibold text-amber-700">$125.00</span>
+            </td>
+            <td class="tbl-td-r text-gray-300">—</td>
+            <td class="tbl-td-r text-gray-300">—</td>
+            <td class="tbl-td-r">
+              <span class="mono font-bold text-amber-700">$125.00</span>
+            </td>
+            <td class="tbl-td text-center">
+              <button class="text-gray-300 hover:text-gray-600 text-lg font-bold leading-none">⋮</button>
+            </td>
+          </tr>
+
+          <!-- ═══ Line 4: Warranty (child) ═══ -->
+          <tr class="hover:bg-purple-50 transition-colors" style="background:#fdf9ff;">
+            <td class="tbl-td text-center text-gray-400 font-medium">4</td>
+            <td class="tbl-td" style="padding-left:24px;">
+              <div class="flex items-center gap-2">
+                <span class="inline-flex items-center justify-center w-5 h-5 rounded text-purple-600 bg-purple-100 flex-shrink-0 text-xs font-bold">★</span>
+                <div>
+                  <div class="font-semibold text-purple-800 text-sm">Warranty: 1-Year Parts Coverage</div>
+                  <div class="text-purple-400 text-xs mt-0.5">Included — no additional charge</div>
+                </div>
+              </div>
+            </td>
+            <td class="tbl-td text-center text-gray-300">—</td>
+            <td class="tbl-td">
+              <span class="text-xs text-gray-400 italic">included</span>
+            </td>
+            <td class="tbl-td text-center text-gray-300">—</td>
+            <td class="tbl-td-r">
+              <span class="mono text-gray-400">$0.00</span>
+            </td>
+            <td class="tbl-td-r text-gray-300">—</td>
+            <td class="tbl-td-r text-gray-300">—</td>
+            <td class="tbl-td-r">
+              <span class="mono text-gray-400">$0.00</span>
+            </td>
+            <td class="tbl-td text-center">
+              <button class="text-gray-300 hover:text-gray-600 text-lg font-bold leading-none">⋮</button>
+            </td>
+          </tr>
+
+          <!-- Empty / add-line row -->
+          <tr class="hover:bg-gray-50 cursor-text">
+            <td colspan="10" class="tbl-td text-center text-gray-300 text-xs italic" style="height:36px;">
+              — search for a part above to add another line —
+            </td>
+          </tr>
+
+          <!-- Filler rows -->
+          <tr><td colspan="10" style="height:36px; border-bottom:1px solid #f3f4f6;"></td></tr>
+          <tr><td colspan="10" style="height:36px; border-bottom:1px solid #f3f4f6; background:#fafafa;"></td></tr>
+          <tr><td colspan="10" style="height:36px; border-bottom:1px solid #f3f4f6;"></td></tr>
+          <tr><td colspan="10" style="height:36px; border-bottom:1px solid #f3f4f6; background:#fafafa;"></td></tr>
+          <tr><td colspan="10" style="height:36px; border-bottom:1px solid #f3f4f6;"></td></tr>
+          <tr><td colspan="10" style="height:36px; border-bottom:1px solid #f3f4f6; background:#fafafa;"></td></tr>
+          <tr><td colspan="10" style="height:36px; border-bottom:1px solid #f3f4f6;"></td></tr>
+          <tr><td colspan="10" style="height:36px; border-bottom:1px solid #f3f4f6; background:#fafafa;"></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ─────────────────────────────────────────────────────────
+         FOOTER: Totals + Follow-Up Bar
+    ───────────────────────────────────────────────────────── -->
+    <div class="flex-shrink-0 border-t-2 border-gray-200 bg-white">
+
+      <!-- Totals row -->
+      <div class="px-4 py-2 flex items-center justify-between border-b border-gray-100">
+        <div class="flex items-center gap-6 text-sm text-gray-500">
+          <span>4 lines</span>
+          <span>Subtotal: <strong class="text-gray-900 mono">$1,424.55</strong></span>
+          <span class="text-amber-600">Core deposit: <strong class="mono">$125.00</strong></span>
+          <span>Tax: <strong class="mono text-gray-900">$0.00</strong></span>
+        </div>
+        <div class="flex items-center gap-4">
+          <div class="text-right">
+            <div class="text-xs text-gray-500 uppercase tracking-wide font-semibold">Quote Total</div>
+            <div class="font-bold text-gray-900 mono text-xl">$1,549.55</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quick Follow-Up Bar (always visible) -->
+      <div class="px-4 py-2 flex items-center gap-2 bg-gray-50">
+        <span class="text-xs font-semibold text-gray-500 uppercase tracking-wide mr-2 flex-shrink-0">Follow Up:</span>
+        <button class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-gray-300 rounded-lg text-gray-700 hover:bg-white hover:border-gray-400 transition-colors">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+          Follow Up Tomorrow
+        </button>
+        <button class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-gray-300 rounded-lg text-gray-700 hover:bg-white hover:border-gray-400 transition-colors">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          Waiting Customer
+        </button>
+        <button class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-gray-300 rounded-lg text-gray-700 hover:bg-white hover:border-gray-400 transition-colors">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10"/></svg>
+          Waiting Vendor
+        </button>
+        <button class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-red-300 rounded-lg text-red-700 bg-red-50 hover:bg-red-100 transition-colors">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          Truck Down
+        </button>
+        <button class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-gray-200 rounded-lg text-gray-400 hover:text-gray-600 hover:border-gray-300 transition-colors">
+          No Follow Up
+        </button>
+      </div>
+    </div>
+
+  </div><!-- /main -->
+</div><!-- /flex -->
+
+</body>
+</html>

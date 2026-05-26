@@ -1,0 +1,52 @@
+{#
+  _suggested_sell_row.html
+  One suggested sell row in the product detail Suggested Sells tab.
+  Expects: suggestion (SuggestedSell), product_id
+#}
+<tr id="ss-{{ suggestion.id }}" class="border-b border-gray-100 group">
+
+  {# SKU + Title #}
+  <td class="px-4 py-3">
+    <div class="font-mono text-sm text-gray-800">{{ suggestion.suggested_product.sku }}</div>
+    <div class="text-xs text-gray-400 mt-0.5">{{ suggestion.suggested_product.title }}</div>
+  </td>
+
+  {# Relationship type — inline editable dropdown via HTMX PATCH #}
+  <td class="px-4 py-3">
+    <select name="relationship_type"
+            hx-patch="/products/{{ product_id }}/suggested-sells/{{ suggestion.id }}"
+            hx-target="#ss-{{ suggestion.id }}"
+            hx-swap="outerHTML"
+            hx-include="this"
+            class="rounded-lg border border-gray-200 px-2 py-1 text-xs w-full focus:outline-none focus:ring-2 focus:ring-brand-400">
+      {% for rt in ['recommended', 'required', 'optional', 'warranty'] %}
+      <option value="{{ rt }}" {% if suggestion.relationship_type == rt %}selected{% endif %}>
+        {{ rt|title }}
+      </option>
+      {% endfor %}
+    </select>
+  </td>
+
+  {# Cost (read-only reference) #}
+  <td class="px-4 py-3 text-sm text-right text-gray-500">
+    ${{ "%.2f"|format(suggestion.suggested_product.cost) }}
+  </td>
+
+  {# Sell price (read-only reference) #}
+  <td class="px-4 py-3 text-sm text-right text-gray-600 font-medium">
+    ${{ "%.2f"|format(suggestion.suggested_product.selling_price) }}
+  </td>
+
+  {# Remove #}
+  <td class="px-4 py-3 text-center">
+    <button type="button"
+            hx-delete="/products/{{ product_id }}/suggested-sells/{{ suggestion.id }}"
+            hx-target="closest tr"
+            hx-swap="outerHTML swap:200ms"
+            hx-confirm="Remove {{ suggestion.suggested_product.sku }} from suggestions?"
+            class="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors">
+      Remove
+    </button>
+  </td>
+
+</tr>

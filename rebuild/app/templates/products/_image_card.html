@@ -1,0 +1,57 @@
+{#
+  _image_card.html
+  Single product image card. Expects: image, product_id in context.
+  Used by _images_grid.html.
+#}
+<div id="img-{{ image.id }}"
+     class="relative group rounded-xl border border-gray-100 overflow-hidden bg-gray-50 shadow-sm">
+
+  {# Image #}
+  <img src="/static/{{ image.file_path }}"
+       alt="{{ image.alt_text or 'Product image' }}"
+       class="w-full h-40 object-cover" />
+
+  {# Primary badge #}
+  {% if image.is_primary %}
+  <div class="absolute top-2 left-2">
+    <span class="inline-flex rounded-full bg-brand-700 text-white text-xs px-2 py-0.5 font-medium shadow-sm">
+      Primary
+    </span>
+  </div>
+  {% endif %}
+
+  {# Source badge #}
+  {% if image.source and image.source != 'manual' %}
+  <div class="absolute top-2 right-2">
+    <span class="inline-flex rounded-full bg-black/50 text-white text-xs px-2 py-0.5 font-medium">
+      {{ image.source|upper }}
+    </span>
+  </div>
+  {% endif %}
+
+  {# Hover overlay with actions #}
+  <div class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity
+              flex items-end justify-between p-2 gap-2">
+    {% if not image.is_primary %}
+    <button type="button"
+            hx-post="/products/{{ product_id }}/images/{{ image.id }}/set-primary"
+            hx-target="#images-grid"
+            hx-swap="outerHTML"
+            class="rounded-md bg-white/90 text-xs px-2.5 py-1 font-medium text-gray-800 hover:bg-white transition-colors">
+      Set Primary
+    </button>
+    {% else %}
+    <span></span>
+    {% endif %}
+
+    <button type="button"
+            hx-delete="/products/{{ product_id }}/images/{{ image.id }}"
+            hx-target="#img-{{ image.id }}"
+            hx-swap="outerHTML swap:200ms"
+            hx-confirm="Remove this image?"
+            class="rounded-md bg-red-600/90 text-xs px-2.5 py-1 font-medium text-white hover:bg-red-600 transition-colors">
+      Remove
+    </button>
+  </div>
+
+</div>

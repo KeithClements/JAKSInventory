@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}New Vendor — JAKS Inventory{% endblock %}
+{% block heading %}New Vendor{% endblock %}
+
+{% block header_actions %}
+  <a href="/vendors/" class="text-sm text-gray-500 hover:text-gray-700">← Vendors</a>
+{% endblock %}
+
+{% block content %}
+<form method="post" action="/vendors/new" class="max-w-2xl space-y-6">
+
+  <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+    <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Vendor Information</h2>
+
+    <div class="grid grid-cols-2 gap-4">
+
+      <div class="col-span-2">
+        <label class="block text-xs font-medium text-gray-500 mb-1">
+          Vendor Name <span class="text-red-500">*</span>
+        </label>
+        <input name="name" required placeholder="e.g. PAI Industries"
+               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+      </div>
+
+      <div>
+        <label class="block text-xs font-medium text-gray-500 mb-1">
+          Vendor Code <span class="text-red-500">*</span>
+          <span class="font-normal text-gray-400 normal-case">(max 4 chars, used in SKUs)</span>
+        </label>
+        <input name="vendor_code" required maxlength="4" placeholder="e.g. PAI"
+               oninput="this.value=this.value.toUpperCase()"
+               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full font-mono uppercase focus:outline-none focus:ring-2 focus:ring-brand-400" />
+      </div>
+
+      <div>
+        <label class="block text-xs font-medium text-gray-500 mb-1">Account Number</label>
+        <input name="account_number" placeholder="Your account # with this vendor"
+               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+      </div>
+
+      <div>
+        <label class="block text-xs font-medium text-gray-500 mb-1">Contact Name</label>
+        <input name="contact_name"
+               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+      </div>
+
+      <div>
+        <label class="block text-xs font-medium text-gray-500 mb-1">Phone</label>
+        <input name="phone" type="tel"
+               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+      </div>
+
+      <div>
+        <label class="block text-xs font-medium text-gray-500 mb-1">Email</label>
+        <input name="email" type="email"
+               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+      </div>
+
+      <div>
+        <label class="block text-xs font-medium text-gray-500 mb-1">Payment Terms</label>
+        <select name="payment_terms"
+                class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">
+          {% for t in payment_terms %}
+          <option value="{{ t }}" {% if t == 'net_30' %}selected{% endif %}>
+            {{ t.replace('_', ' ').upper() }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="col-span-2">
+        <label class="block text-xs font-medium text-gray-500 mb-1">Website</label>
+        <input name="website" type="url" placeholder="https://"
+               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+      </div>
+
+      <div class="col-span-2">
+        <label class="block text-xs font-medium text-gray-500 mb-1">Notes</label>
+        <textarea name="notes" rows="3" placeholder="Return policies, lead times, special instructions…"
+                  class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400"></textarea>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="flex gap-3">
+    <button type="submit"
+            class="rounded-lg bg-brand-700 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-600 transition-colors">
+      Save Vendor
+    </button>
+    <a href="/vendors/"
+       class="rounded-lg border border-gray-200 px-5 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors">
+      Cancel
+    </a>
+  </div>
+
+</form>
+{% endblock %}

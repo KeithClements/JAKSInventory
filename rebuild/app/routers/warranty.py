@@ -1,0 +1,376 @@
+"""
+app/routers/warranty.py
+========================
+Warranty claim UI — list, create, detail, and full lifecycle actions.
+
+Workflow:
+  DRAFT → submit_to_vendor() → record_vendor_decision() →
+    (approved)  credit_customer() or issue_refund_check()
+    (denied)    notify_customer_of_denial()
+  → close_claim()
+
+All mutations route through WarrantyService — no direct model writes here.
+"""
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from urllib.parse import quote as url_quote
+
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+from sqlalchemy.orm import Session
+
+from app.constants import WarrantyDecision, WarrantyResolution, WarrantyStatus
+from app.deps import get_current_user_id, get_db
+from app.models.customer import Customer
+from app.models.invoice import Invoice
+from app.models.product import Product
+from app.models.vendor import Vendor
+from app.models.warranty import WarrantyClaim
+
+log = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/warranty", tags=["warranty"])
+templates = Jinja2Templates(
+    directory=str(Path(__file__).resolve().parent.parent / "templates")
+)
+
+
+# ── List ──────────────────────────────────────────────────────────────────────
+
+@router.get("/", response_class=HTMLResponse)
+def warranty_list(
+    request: Request,
+    status: str = "",
+    q: str = "",
+    db: Session = Depends(get_db),
+):
+    from sqlalchemy import or_
+    query = db.query(WarrantyClaim).join(Customer)
+    if status:
+        query = query.filter(WarrantyClaim.status == status)
+    else:
+        # Default: hide closed claims
+        query = query.filter(WarrantyClaim.status != WarrantyStatus.CLOSED)
+    if q:
+        query = query.filter(
+            or_(
+                WarrantyClaim.claim_number.ilike(f"%{q}%"),
+                Customer.company_name.ilike(f"%{q}%"),
+            )
+        )
+    claims = query.order_by(WarrantyClaim.claim_date.desc()).limit(200).all()
+    return templates.TemplateResponse(
+        "warranty/list.html",
+        {
+            "request": request,
+            "claims": claims,
+            "status_filter": status,
+            "q": q,
+            "WarrantyStatus": WarrantyStatus,
+        },
+    )
+
+
+# ── New / Create ───────────────────────────────────────────────────────────────
+
+@router.get("/new", response_class=HTMLResponse)
+def warranty_new(
+    request: Request,
+    customer_id: int = 0,
+    invoice_id: int = 0,
+    db: Session = Depends(get_db),
+):
+    customers = (
+        db.query(Customer)
+        .filter(Customer.is_active == True)  # noqa: E712
+        .order_by(Customer.company_name)
+        .all()
+    )
+    vendors = (
+        db.query(Vendor)
+        .filter(Vendor.is_active == True)  # noqa: E712
+        .order_by(Vendor.name)
+        .all()
+    )
+    products = (
+        db.query(Product)
+        .filter(Product.is_active == True)  # noqa: E712
+        .order_by(Product.sku)
+        .all()
+    )
+    selected_customer = (
+        db.query(Customer).filter(Customer.id == customer_id).first()
+        if customer_id else None
+    )
+    selected_invoice = (
+        db.query(Invoice).filter(Invoice.id == invoice_id).first()
+        if invoice_id else None
+    )
+
+    return templates.TemplateResponse(
+        "warranty/new.html",
+        {
+            "request": request,
+            "customers": customers,
+            "vendors": vendors,
+            "products": products,
+            "selected_customer": selected_customer,
+            "selected_invoice": selected_invoice,
+        },
+    )
+
+
+@router.post("/new", response_class=RedirectResponse)
+async def warranty_create(
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    from app.services.warranty_service import WarrantyService
+
+    form = await request.form()
+
+    customer_id_raw = str(form.get("customer_id", "")).strip()
+    if not customer_id_raw:
+        return RedirectResponse("/warranty/new", status_code=303)
+    customer_id = int(customer_id_raw)
+
+    failure_description = str(form.get("failure_description", "")).strip()
+    notes = str(form.get("notes", "")).strip()
+
+    # Optional invoice and vendor links
+    inv_raw = str(form.get("invoice_number", "")).strip()
+    invoice_id = None
+    if inv_raw:
+        inv = db.query(Invoice).filter(Invoice.invoice_number == inv_raw).first()
+        if inv:
+            invoice_id = inv.id
+
+    vendor_id_raw = str(form.get("vendor_id", "")).strip()
+    vendor_id = int(vendor_id_raw) if vendor_id_raw else None
+
+    # Parse parallel line arrays
+    product_ids = form.getlist("product_id[]")
+    qty_claimeds = form.getlist("qty_claimed[]")
+    credit_amounts = form.getlist("credit_amount[]")
+
+    lines = []
+    for i, pid in enumerate(product_ids):
+        qty_raw = qty_claimeds[i] if i < len(qty_claimeds) else "1"
+        amt_raw = credit_amounts[i] if i < len(credit_amounts) else "0"
+        if not pid:
+            continue
+        lines.append({
+            "product_id": int(pid),
+            "qty_claimed": max(1, int(qty_raw)) if qty_raw else 1,
+            "credit_amount": float(amt_raw) if amt_raw else 0.0,
+        })
+
+    if not lines:
+        return RedirectResponse("/warranty/new", status_code=303)
+
+    try:
+        claim = WarrantyService(db, user_id).create_claim(
+            customer_id=customer_id,
+            invoice_id=invoice_id,
+            vendor_id=vendor_id,
+            failure_description=failure_description,
+            lines=lines,
+            notes=notes,
+        )
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/warranty/new?error={url_quote(str(exc))}", status_code=303
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error creating warranty claim")
+        return RedirectResponse(
+            f"/warranty/new?error={url_quote('Unexpected error — claim was not created.')}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/warranty/{claim.id}", status_code=303)
+
+
+# ── Detail ────────────────────────────────────────────────────────────────────
+
+@router.get("/{claim_id}", response_class=HTMLResponse)
+def warranty_detail(claim_id: int, request: Request, db: Session = Depends(get_db)):
+    claim = db.query(WarrantyClaim).filter(WarrantyClaim.id == claim_id).first()
+    if not claim:
+        return RedirectResponse("/warranty/", status_code=303)
+    return templates.TemplateResponse(
+        "warranty/detail.html",
+        {
+            "request": request,
+            "claim": claim,
+            "WarrantyStatus": WarrantyStatus,
+            "WarrantyDecision": WarrantyDecision,
+            "WarrantyResolution": WarrantyResolution,
+        },
+    )
+
+
+# ── Submit to Vendor ──────────────────────────────────────────────────────────
+
+@router.post("/{claim_id}/submit", response_class=RedirectResponse)
+def warranty_submit(
+    claim_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    from app.services.warranty_service import WarrantyService
+    try:
+        WarrantyService(db, user_id).submit_to_vendor(claim_id)
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error={url_quote(str(exc))}", status_code=303
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error submitting claim %s to vendor", claim_id)
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error={url_quote('Unexpected error — claim was not submitted.')}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/warranty/{claim_id}", status_code=303)
+
+
+# ── Vendor Decision ───────────────────────────────────────────────────────────
+
+@router.post("/{claim_id}/vendor-decision", response_class=RedirectResponse)
+async def warranty_vendor_decision(
+    claim_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    from app.services.warranty_service import WarrantyService
+
+    form = await request.form()
+    decision = str(form.get("decision", WarrantyDecision.APPROVED))
+    decision_notes = str(form.get("decision_notes", "")).strip() or None
+
+    claim = db.query(WarrantyClaim).filter(WarrantyClaim.id == claim_id).first()
+    if not claim:
+        return RedirectResponse("/warranty/", status_code=303)
+
+    # Parse per-line resolutions
+    line_resolutions = []
+    for line in claim.claim_lines:
+        approved_qty = int(form.get(f"line_{line.id}_approved_qty", 0) or 0)
+        credit_amount = float(form.get(f"line_{line.id}_credit_amount", 0) or 0.0)
+        resolution = str(form.get(f"line_{line.id}_resolution", "")).strip() or None
+        line_resolutions.append({
+            "claim_line_id": line.id,
+            "approved_qty": approved_qty,
+            "credit_amount": credit_amount,
+            "resolution": resolution,
+        })
+
+    try:
+        WarrantyService(db, user_id).record_vendor_decision(
+            claim_id=claim_id,
+            decision=decision,
+            line_resolutions=line_resolutions,
+            decision_notes=decision_notes,
+        )
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error={url_quote(str(exc))}", status_code=303
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error recording vendor decision for claim %s", claim_id)
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error={url_quote('Unexpected error — decision was not recorded.')}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/warranty/{claim_id}", status_code=303)
+
+
+# ── Credit Customer ───────────────────────────────────────────────────────────
+
+@router.post("/{claim_id}/credit-customer", response_class=RedirectResponse)
+def warranty_credit_customer(
+    claim_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    from app.services.warranty_service import WarrantyService
+    try:
+        WarrantyService(db, user_id).credit_customer(claim_id)
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error={url_quote(str(exc))}", status_code=303
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error crediting customer for claim %s", claim_id)
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error={url_quote('Unexpected error — credit was not applied.')}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/warranty/{claim_id}", status_code=303)
+
+
+# ── Notify Customer of Denial ─────────────────────────────────────────────────
+
+@router.post("/{claim_id}/notify-denial", response_class=RedirectResponse)
+async def warranty_notify_denial(
+    claim_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    from app.services.warranty_service import WarrantyService
+    form = await request.form()
+    notes = str(form.get("notes", "")).strip() or "Customer notified of vendor denial"
+    try:
+        WarrantyService(db, user_id).notify_customer_of_denial(claim_id, notes)
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error={url_quote(str(exc))}", status_code=303
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error notifying denial for claim %s", claim_id)
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error={url_quote('Unexpected error — notification was not recorded.')}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/warranty/{claim_id}", status_code=303)
+
+
+# ── Close Claim ───────────────────────────────────────────────────────────────
+
+@router.post("/{claim_id}/close", response_class=RedirectResponse)
+def warranty_close(
+    claim_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    from app.services.warranty_service import WarrantyService
+    try:
+        WarrantyService(db, user_id).close_claim(claim_id)
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error={url_quote(str(exc))}", status_code=303
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error closing claim %s", claim_id)
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error={url_quote('Unexpected error — claim was not closed.')}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/warranty/{claim_id}", status_code=303)

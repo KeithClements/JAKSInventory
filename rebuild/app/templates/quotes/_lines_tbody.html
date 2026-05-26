@@ -1,0 +1,20 @@
+{#
+  quotes/_lines_tbody.html
+  ========================
+  Full tbody content — used by select-upgrade and toggle-included endpoints
+  to do a full tbody innerHTML swap after multi-row state changes.
+
+  hx-swap="innerHTML" on #quote-lines-tbody targets this.
+
+  Context: lines (list[QuoteLine], already tree-sorted by the router).
+#}
+{% for line in lines %}
+  {% include "quotes/_line_row.html" %}
+{% endfor %}
+{% if not lines %}
+<tr id="empty-state-row">
+  <td colspan="9" class="px-4 py-8 text-center text-gray-400 text-sm">
+    No lines yet — use the search below to add products.
+  </td>
+</tr>
+{% endif %}

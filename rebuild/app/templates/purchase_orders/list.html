@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Purchase Orders — JAKS Inventory{% endblock %}
+{% block heading %}Purchase Orders{% endblock %}
+
+{% block header_actions %}
+  <a href="/purchase-orders/new" class="btn-primary btn-sm">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+    </svg>
+    New PO
+  </a>
+{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+
+  {# ── Status filter tabs ── #}
+  <div class="flex items-center gap-1 bg-gray-100 rounded-lg p-1 flex-wrap">
+    {% for tab_status, tab_label in status_tabs %}
+    <a href="/purchase-orders/{% if tab_status %}?status={{ tab_status }}{% endif %}"
+       class="px-3 py-1.5 text-sm font-medium rounded-md transition-colors
+              {% if active_status == tab_status %}bg-white shadow text-brand-700{% else %}text-gray-600 hover:text-gray-900{% endif %}">
+      {{ tab_label }}
+    </a>
+    {% endfor %}
+  </div>
+
+  {# ── Table ── #}
+  {% set po_badges = {
+    'draft':        'badge-gray',
+    'verbal_order': 'badge-blue',
+    'sent':         'badge-blue',
+    'partial':      'badge-amber',
+    'received':     'badge-green',
+    'billed':       'badge-green',
+    'cancelled':    'badge-red',
+  } %}
+
+  <div class="card">
+    {% if pos %}
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">PO #</th>
+            <th class="tbl-th">Vendor</th>
+            <th class="tbl-th-r">Lines</th>
+            <th class="tbl-th">Status</th>
+            <th class="tbl-th">Ordered</th>
+            <th class="tbl-th">Expected</th>
+            <th class="tbl-th">Received</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for po in pos %}
+          <tr class="tbl-row cursor-pointer" onclick="location.href='/purchase-orders/{{ po.id }}'">
+            <td class="tbl-td font-mono font-semibold text-brand-700">{{ po.po_number }}</td>
+            <td class="tbl-td font-medium text-gray-800">{{ po.vendor.name }}</td>
+            <td class="tbl-td-r">{{ po.lines | length }}</td>
+            <td class="tbl-td">
+              <span class="{{ po_badges.get(po.status, 'badge-gray') }}">
+                {{ po.status.replace('_', ' ').title() }}
+              </span>
+            </td>
+            <td class="tbl-td text-gray-400 text-xs">
+              {{ po.ordered_at.strftime('%b %d, %Y') if po.ordered_at else '—' }}
+            </td>
+            <td class="tbl-td text-gray-400 text-xs">
+              {{ po.expected_at.strftime('%b %d, %Y') if po.expected_at else '—' }}
+            </td>
+            <td class="tbl-td text-gray-400 text-xs">
+              {% set receipt = po.receipts | first if po.receipts else none %}
+              {{ receipt.received_at.strftime('%b %d, %Y') if receipt else '—' }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="tbl-empty">
+      {% if active_status %}No {{ active_status.replace('_', ' ') }} purchase orders.
+      {% else %}No purchase orders yet.{% endif %}
+      {% if not active_status %}
+      <a href="/purchase-orders/new" class="block mt-2 link">Create your first PO →</a>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+</div>
+{% endblock %}

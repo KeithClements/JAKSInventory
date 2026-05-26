@@ -1,0 +1,12 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+sqlalchemy==2.0.49  # 2.0.36 incompatible with Python 3.14 (types.UnionType handling)
+jinja2==3.1.4
+python-multipart==0.0.12
+aiofiles==24.1.0
+python-dotenv==1.0.1
+httpx==0.27.2
+pywin32==311
+itsdangerous==2.2.0
+weasyprint
+openpyxl==3.1.5

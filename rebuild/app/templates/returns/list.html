@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}Return Authorizations — JAKS Inventory{% endblock %}
+{% block heading %}Return Authorizations{% endblock %}
+
+{% block header_actions %}
+  <a href="/returns/new" class="btn-primary btn-sm">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+    </svg>
+    New RA
+  </a>
+{% endblock %}
+
+{% block content %}
+
+{# ── Flash messages ── #}
+{% if request.query_params.get('ok') %}
+<div class="rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800 flex items-center gap-2 mb-4">
+  <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+  {{ request.query_params.get('ok') }}
+</div>
+{% endif %}
+{% if request.query_params.get('error') %}
+<div class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700 flex items-center gap-2 mb-4">
+  <svg class="w-4 h-4 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+  {{ request.query_params.get('error') }}
+</div>
+{% endif %}
+
+{# ── Filters ── #}
+<div class="flex items-center justify-between mb-4 gap-4 flex-wrap">
+  <div class="flex items-center gap-1 bg-gray-100 rounded-lg p-1 flex-wrap">
+    {% set tabs = [
+      ('',              'Open'),
+      (RAStatus.DRAFT,  'Draft'),
+      (RAStatus.OPEN,   'Authorized'),
+      (RAStatus.RECEIVED, 'Received'),
+      (RAStatus.CLOSED, 'Closed'),
+    ] %}
+    {% for val, label in tabs %}
+    <a href="/returns/?status={{ val }}&q={{ q }}"
+       class="px-3 py-1.5 text-sm font-medium rounded-md transition-colors
+              {% if status_filter == val %}bg-white shadow text-brand-700{% else %}text-gray-600 hover:text-gray-900{% endif %}">
+      {{ label }}
+    </a>
+    {% endfor %}
+  </div>
+
+  <form method="get" action="/returns/" class="flex items-center gap-2">
+    <input type="hidden" name="status" value="{{ status_filter }}" />
+    <input type="text" name="q" value="{{ q }}"
+           placeholder="RA #, customer…"
+           class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-48
+                  focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+    <button type="submit"
+            class="px-3 py-1.5 bg-gray-100 text-gray-700 text-sm rounded-lg hover:bg-gray-200 transition-colors">
+      Search
+    </button>
+  </form>
+</div>
+
+{# ── Table ── #}
+{% set ra_badges = {
+  'draft':    'badge-gray',
+  'open':     'badge-blue',
+  'received': 'badge-amber',
+  'closed':   'badge-gray',
+} %}
+
+{% if ras %}
+<div class="card">
+  <div class="overflow-x-auto">
+    <table class="tbl">
+      <thead class="tbl-head">
+        <tr>
+          <th class="tbl-th">RA #</th>
+          <th class="tbl-th">Customer</th>
+          <th class="tbl-th">Reason</th>
+          <th class="tbl-th-r">Credit</th>
+          <th class="tbl-th">Status</th>
+          <th class="tbl-th">Date</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for ra in ras %}
+        <tr class="tbl-row cursor-pointer" onclick="window.location='/returns/{{ ra.id }}'">
+          <td class="tbl-td font-mono text-xs font-semibold text-brand-700">{{ ra.ra_number }}</td>
+          <td class="tbl-td font-medium text-gray-900">{{ ra.customer.company_name }}</td>
+          <td class="tbl-td text-gray-500 text-xs max-w-xs truncate">
+            {{ ra.reason[:80] }}{% if ra.reason | length > 80 %}…{% endif %}
+          </td>
+          <td class="tbl-td-r {% if ra.total_credit > 0 %}font-semibold text-brand-700{% else %}text-gray-400{% endif %}">
+            {% if ra.total_credit > 0 %}${{ '%.2f' % ra.total_credit }}{% else %}—{% endif %}
+          </td>
+          <td class="tbl-td">
+            <span class="{{ ra_badges.get(ra.status, 'badge-gray') }}">
+              {{ ra.status | title }}
+            </span>
+          </td>
+          <td class="tbl-td text-gray-400">{{ ra.requested_at.strftime('%m/%d/%Y') }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% else %}
+<div class="card flex flex-col items-center justify-center py-16">
+  <svg class="w-12 h-12 text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+          d="M16 15v-1a4 4 0 00-4-4H8m0 0l3 3m-3-3l3-3m9 14V5a2 2 0 00-2-2H6a2 2 0 00-2 2v16l4-2 4 2 4-2 4 2z"/>
+  </svg>
+  <p class="text-gray-500 font-medium">No return authorizations found</p>
+  {% if q or status_filter %}
+  <p class="text-gray-400 text-sm mt-1">Try adjusting your filter.</p>
+  {% else %}
+  <p class="text-gray-400 text-sm mt-1">Create an RA when a customer needs to return parts.</p>
+  <a href="/returns/new" class="mt-3 text-sm link">New RA →</a>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

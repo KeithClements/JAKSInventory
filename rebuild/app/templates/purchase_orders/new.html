@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% block title %}New Purchase Order — JAKS Inventory{% endblock %}
+{% block heading %}New Purchase Order{% endblock %}
+
+{% block header_actions %}
+  <a href="/purchase-orders/" class="text-sm text-gray-500 hover:text-gray-700">← Purchase Orders</a>
+{% endblock %}
+
+{% block content %}
+<form method="post" action="/purchase-orders/new" class="max-w-5xl space-y-6" x-data="poForm()">
+
+  <!-- Order header -->
+  <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+    <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Order Details</h2>
+
+    <div class="grid grid-cols-2 gap-4">
+
+      <div
+        x-data
+        @record-created.window="
+          if ($event.detail.type === 'vendor') {
+            var sel = $el.querySelector('select[name=vendor_id]');
+            var opt = document.createElement('option');
+            opt.value = $event.detail.id;
+            opt.textContent = $event.detail.label;
+            opt.selected = true;
+            sel.appendChild(opt);
+            sel.value = String($event.detail.id);
+          }
+        "
+      >
+        <label class="block text-xs font-medium text-gray-500 mb-1">
+          Vendor <span class="text-red-500">*</span>
+        </label>
+        <div class="flex gap-2">
+          <select name="vendor_id" required
+                  class="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm
+                         focus:outline-none focus:ring-2 focus:ring-brand-400">
+            <option value="">— Select Vendor —</option>
+            {% for v in vendors %}
+            <option value="{{ v.id }}" {% if request.query_params.get('vendor_id') == v.id|string %}selected{% endif %}>
+              {{ v.name }}
+            </option>
+            {% endfor %}
+          </select>
+          <button type="button"
+                  hx-get="/vendors/quick-create-form"
+                  hx-target="#create-slide-content"
+                  hx-swap="innerHTML"
+                  @click="$dispatch('open-create-slide', { title: 'New Vendor' })"
+                  class="px-3 py-2 text-xs font-medium text-brand-700 border border-brand-200
+                         rounded-lg bg-brand-50 hover:bg-brand-100 transition-colors whitespace-nowrap">
+            + New
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <label class="block text-xs font-medium text-gray-500 mb-1">Expected Delivery</label>
+        <input name="expected_at" type="date"
+               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+      </div>
+
+      <div>
+        <label class="block text-xs font-medium text-gray-500 mb-1">Freight In Cost ($)</label>
+        <input name="freight_in_cost" type="number" step="0.01" min="0" value="0"
+               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+      </div>
+
+      <div>
+        <label class="block text-xs font-medium text-gray-500 mb-1">Vendor Confirmation #</label>
+        <input name="vendor_confirmation_number" placeholder="Verbal order confirmation"
+               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+      </div>
+
+      <div class="col-span-2">
+        <label class="block text-xs font-medium text-gray-500 mb-1">Notes</label>
+        <textarea name="notes" rows="2" placeholder="Shipping instructions, special requests…"
+                  class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400"></textarea>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Line items -->
+  <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+    <div class="flex items-center justify-between border-b border-gray-100 pb-3">
+      <h2 class="text-sm font-semibold text-gray-700">Line Items</h2>
+      <button type="button" @click="addLine()"
+              class="text-sm font-medium text-green-600 hover:underline">
+        + Add Line
+      </button>
+    </div>
+
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="text-xs text-gray-500 uppercase">
+          <tr>
+            <th class="pb-2 text-left font-medium w-1/3">Product</th>
+            <th class="pb-2 text-left font-medium">Description</th>
+            <th class="pb-2 text-right font-medium w-16">Qty</th>
+            <th class="pb-2 text-right font-medium w-28">Unit Cost</th>
+            <th class="pb-2 text-right font-medium w-28">Core</th>
+            <th class="pb-2 w-8"></th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="(line, i) in lines" :key="i">
+            <tr class="border-t border-gray-50">
+              <td class="py-2 pr-3">
+                <select name="product_id[]" @change="fillLine($event, i)"
+                        class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand-400">
+                  <option value="">— Custom line —</option>
+                  {% for p in products %}
+                  <option value="{{ p.id }}"
+                          data-cost="{{ p.cost or 0 }}"
+                          data-core="{{ p.vendor_core_charge or 0 }}"
+                          data-title="{{ p.title | truncate(50, true, '') }}">
+                    {{ p.sku }} — {{ p.title | truncate(45) }}
+                  </option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td class="py-2 pr-3">
+                <input name="description[]" x-model="line.description" placeholder="Description"
+                       class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              </td>
+              <td class="py-2 pr-3">
+                <input name="qty[]" type="number" min="1" x-model="line.qty"
+                       class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs text-right focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              </td>
+              <td class="py-2 pr-3">
+                <input name="unit_cost[]" type="number" step="0.01" min="0" x-model="line.cost"
+                       class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs text-right focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              </td>
+              <td class="py-2 pr-3">
+                <input name="core_charge[]" type="number" step="0.01" min="0" x-model="line.core"
+                       class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs text-right focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              </td>
+              <td class="py-2 text-center">
+                <button type="button" @click="lines.splice(i, 1)"
+                        class="text-gray-300 hover:text-red-500 transition-colors text-base leading-none">✕</button>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+        <tfoot>
+          <tr class="border-t border-gray-100">
+            <td colspan="3" class="pt-3 text-right text-xs text-gray-500 font-medium">Subtotal</td>
+            <td class="pt-3 text-right text-sm font-bold text-gray-800" x-text="'$' + subtotal().toFixed(2)"></td>
+            <td colspan="2"></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+
+  <div class="flex gap-3">
+    <button type="submit"
+            class="rounded-lg bg-brand-700 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-600 transition-colors">
+      Create PO
+    </button>
+    <a href="/purchase-orders/"
+       class="rounded-lg border border-gray-200 px-5 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors">
+      Cancel
+    </a>
+  </div>
+
+</form>
+
+<script>
+function poForm() {
+  return {
+    lines: [{ description: '', qty: 1, cost: '', core: '' }],
+    addLine() {
+      this.lines.push({ description: '', qty: 1, cost: '', core: '' });
+    },
+    fillLine(e, i) {
+      const opt = e.target.selectedOptions[0];
+      if (opt && opt.value) {
+        this.lines[i].cost = opt.dataset.cost || '';
+        this.lines[i].core = opt.dataset.core || '';
+        if (!this.lines[i].description) {
+          this.lines[i].description = opt.dataset.title || '';
+        }
+      }
+    },
+    subtotal() {
+      return this.lines.reduce((s, l) => s + (parseFloat(l.cost) || 0) * (parseInt(l.qty) || 0), 0);
+    },
+  };
+}
+</script>
+{% endblock %}

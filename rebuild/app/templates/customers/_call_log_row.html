@@ -1,0 +1,10 @@
+<li class="px-5 py-4 border-b border-gray-50 last:border-0">
+  <div class="flex items-center gap-2 mb-1">
+    <span class="text-xs text-gray-400">{{ log.logged_at.strftime('%b %d, %Y — %I:%M %p') }}</span>
+    <span class="inline-block rounded-full bg-gray-100 text-gray-600 px-2 py-0.5 text-xs capitalize">{{ log.call_type.replace('_', ' ') }}</span>
+    <span class="inline-block rounded-full bg-blue-50 text-blue-600 px-2 py-0.5 text-xs capitalize">{{ log.outcome.replace('_', ' ') }}</span>
+  </div>
+  {% if log.notes %}
+  <p class="text-sm text-gray-700 whitespace-pre-wrap">{{ log.notes }}</p>
+  {% endif %}
+</li>

@@ -1,0 +1,25 @@
+{#
+  quotes/_totals.html
+  ====================
+  Totals bar content — rendered both on initial workspace load and as HTMX
+  partial for GET /quotes/{id}/totals (triggered after every line mutation).
+  Context: gross, discount_amount, subtotal, line_count
+#}
+<div class="flex items-center justify-between">
+  <span class="text-sm text-gray-400">
+    {{ line_count }} line{% if line_count != 1 %}s{% endif %}
+  </span>
+  <div class="flex items-center gap-6">
+    {% if discount_amount > 0 %}
+    <div class="text-sm text-gray-400">
+      Gross: <span class="tabular-nums font-medium">${{ '%.2f' % gross }}</span>
+    </div>
+    <div class="text-sm text-red-600">
+      Discount: <span class="tabular-nums font-medium">−${{ '%.2f' % discount_amount }}</span>
+    </div>
+    {% endif %}
+    <div class="text-base font-semibold text-gray-900">
+      Total: <span class="tabular-nums">${{ '%.2f' % subtotal }}</span>
+    </div>
+  </div>
+</div>

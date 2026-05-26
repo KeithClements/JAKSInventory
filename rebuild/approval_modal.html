@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Design Approval — Quote Builder — JAKS Inventory</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    .mono { font-family: 'Courier New', Courier, monospace; }
+    .tbl-th { padding: 6px 10px; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #6b7280; text-align: left; }
+    .tbl-th-r { padding: 6px 10px; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #6b7280; text-align: right; }
+    .tbl-td { padding: 6px 10px; font-size: 0.8rem; border-bottom: 1px solid #f3f4f6; vertical-align: middle; }
+    .tbl-td-r { padding: 6px 10px; font-size: 0.8rem; border-bottom: 1px solid #f3f4f6; vertical-align: middle; text-align: right; }
+    .avail-pill { display:inline-flex; align-items:center; padding:1px 6px; border-radius:4px; font-size:0.7rem; font-weight:600; border:1px solid; margin-right:3px; }
+    .qoh-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:4px; }
+    [x-cloak] { display: none !important; }
+
+    /* Option card styles for modal */
+    .option-card { border:2px solid #e5e7eb; border-radius:12px; padding:16px; cursor:pointer; transition:all 0.15s ease; }
+    .option-card:hover { border-color:#9ca3af; box-shadow:0 2px 8px rgba(0,0,0,0.08); }
+    .option-card.selected { border-color:#4b5320; box-shadow:0 0 0 3px rgba(75,83,32,0.15); }
+    .option-card.recommended { background:linear-gradient(135deg, #f7f8f3 0%, #fff 100%); }
+
+    /* Mockup thumbnails */
+    .thumb { width:100%; height:80px; border-radius:6px; border:1px solid #e5e7eb; overflow:hidden; position:relative; }
+    .thumb-a { background:repeating-linear-gradient(0deg, #f9fafb, #f9fafb 14px, #fff 14px, #fff 15px); }
+    .thumb-b { background:#f9fafb; }
+    .thumb-c { background:#0f172a; }
+    .thumb-header-a { height:28px; background:#fff; border-bottom:2px solid #d1d5db; }
+    .thumb-header-b { height:64px; background:#fff; border-bottom:1px solid #e5e7eb; }
+    .thumb-header-c { height:52px; background:#1e293b; }
+  </style>
+</head>
+<body class="bg-gray-50 text-gray-900 text-sm" x-data="{
+  showModal: true,
+  selected: 'b',
+  approved: false,
+  approve() {
+    this.approved = true;
+    setTimeout(() => { this.showModal = false; }, 1200);
+  }
+}">
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     BACKGROUND: Render B (Quote Builder — Balanced Operator)
+     This is what the user is evaluating. Dimmed when modal is open.
+═══════════════════════════════════════════════════════════════════ -->
+<div :class="showModal ? 'opacity-40 pointer-events-none select-none filter blur-sm' : 'opacity-100'"
+     style="transition:opacity 0.3s ease; height:100vh; display:flex; overflow:hidden;">
+
+  <!-- Sidebar -->
+  <aside class="flex-shrink-0 flex flex-col bg-slate-900 overflow-y-auto" style="width:220px;">
+    <div class="px-4 py-3 border-b border-slate-700">
+      <div class="text-white font-bold text-sm tracking-wide">JAKS PARTS</div>
+      <div class="text-slate-400 text-xs">Inventory System</div>
+    </div>
+    <nav class="flex-1 py-1 text-sm">
+      <a href="#" class="flex items-center px-4 py-1.5 text-slate-400 text-xs">Dashboard</a>
+      <div class="px-4 pt-3 pb-1 text-slate-500 text-xs font-semibold uppercase tracking-widest">Sales</div>
+      <a href="#" class="flex items-center px-4 py-1.5 text-slate-300 text-xs">Customers</a>
+      <a href="#" class="flex items-center px-4 py-1.5 text-white bg-slate-700 text-xs font-medium" style="border-left:3px solid #b0be71;">Quotes</a>
+      <a href="#" class="flex items-center px-4 py-1.5 text-slate-300 text-xs">Sales Orders</a>
+      <a href="#" class="flex items-center px-4 py-1.5 text-slate-300 text-xs">Invoices</a>
+      <a href="#" class="flex items-center px-4 py-1.5 text-slate-300 text-xs">Payments</a>
+      <div class="px-4 pt-3 pb-1 text-slate-500 text-xs font-semibold uppercase tracking-widest">Purchasing</div>
+      <a href="#" class="flex items-center px-4 py-1.5 text-slate-300 text-xs">Vendors</a>
+      <a href="#" class="flex items-center px-4 py-1.5 text-slate-300 text-xs">Purchase Orders</a>
+      <div class="px-4 pt-3 pb-1 text-slate-500 text-xs font-semibold uppercase tracking-widest">Inventory</div>
+      <a href="#" class="flex items-center px-4 py-1.5 text-slate-300 text-xs">Products</a>
+      <div class="px-4 pt-3 pb-1 text-slate-500 text-xs font-semibold uppercase tracking-widest">Cores</div>
+      <a href="#" class="flex items-center px-4 py-1.5 text-slate-300 text-xs">Core Charges</a>
+    </nav>
+  </aside>
+
+  <!-- Main: simplified for background -->
+  <div class="flex-1 flex flex-col overflow-hidden">
+    <!-- Header -->
+    <div class="flex-shrink-0 bg-white border-b border-gray-200 px-4 py-3 space-y-2">
+      <div class="flex items-start gap-4">
+        <div class="flex-1">
+          <div class="flex items-center gap-2 mb-1.5">
+            <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Customer</label>
+            <div class="flex-1 border border-gray-300 rounded-lg px-3 py-1.5 bg-white flex items-center justify-between">
+              <span class="font-semibold text-gray-900">Mike's Diesel Service, LLC</span>
+            </div>
+          </div>
+          <div class="flex items-center gap-1">
+            <span class="inline-flex items-center gap-1 text-xs px-2 py-1 bg-gray-100 rounded text-gray-600 font-medium">Terms: Net 30</span>
+            <span class="inline-flex items-center gap-1 text-xs px-2 py-1 bg-gray-100 rounded text-gray-600 font-medium">Open: <span class="mono font-bold ml-0.5">$3,200.00</span></span>
+            <span class="inline-flex items-center gap-1 text-xs px-2 py-1 bg-red-50 rounded text-red-700 font-semibold border border-red-100">⚠ Overdue: $890.00</span>
+            <span class="inline-flex items-center gap-1 text-xs px-2 py-1 bg-green-50 rounded text-green-700 font-semibold border border-green-100">✓ Credit OK</span>
+            <span class="inline-flex items-center gap-1 text-xs px-2 py-1 bg-amber-50 rounded text-amber-700 font-semibold border border-amber-100">⟲ 2 Cores Owed</span>
+          </div>
+        </div>
+        <div class="flex items-start gap-4 flex-shrink-0">
+          <div><div class="text-xs font-semibold text-gray-500 uppercase mb-1">Quote #</div><div class="mono font-bold text-gray-900">Q-2026-0051</div></div>
+          <div><div class="text-xs font-semibold text-gray-500 uppercase mb-1">Date</div><div class="font-medium text-gray-900">May 25, 2026</div></div>
+          <div><div class="text-xs font-semibold text-gray-500 uppercase mb-1">Expires</div><div class="font-medium text-gray-900">Jun 04, 2026</div></div>
+        </div>
+        <div class="flex-shrink-0">
+          <div class="flex items-center gap-1.5">
+            <button class="border border-gray-300 rounded-lg px-3 py-1.5 text-xs text-gray-700">⬡ Pop Out</button>
+            <button class="border border-gray-300 rounded-lg px-3 py-1.5 text-xs text-gray-700">Send</button>
+            <button class="text-white rounded-lg px-3 py-1.5 text-xs font-semibold" style="background:#4b5320;">Convert ▼</button>
+          </div>
+          <div class="text-right text-xs text-gray-400 mt-1">✓ Saved 5s ago</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Search bar -->
+    <div class="flex-shrink-0 bg-white border-b border-gray-200 px-4 py-2">
+      <div class="relative">
+        <div class="absolute inset-y-0 left-3 flex items-center pointer-events-none">
+          <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+        </div>
+        <input type="text" placeholder="Search parts: SKU, OEM#, cross-reference, description, ESN, vendor SKU…"
+               class="w-full border-2 border-gray-300 rounded-lg pl-10 pr-28 py-2 text-sm">
+        <div class="absolute inset-y-0 right-3 flex items-center gap-2">
+          <kbd class="px-1.5 py-0.5 text-xs bg-gray-100 border border-gray-300 rounded text-gray-500 font-mono">Ctrl+K</kbd>
+        </div>
+      </div>
+    </div>
+
+    <!-- Table (abbreviated for background) -->
+    <div class="flex-1 overflow-auto bg-white">
+      <table class="w-full border-collapse">
+        <thead style="background:#f9fafb; border-bottom:2px solid #e5e7eb;">
+          <tr>
+            <th class="tbl-th text-center" style="width:36px;">#</th>
+            <th class="tbl-th">Description</th>
+            <th class="tbl-th text-center" style="width:56px;">QOH</th>
+            <th class="tbl-th" style="width:220px;">Source / Availability</th>
+            <th class="tbl-th-r" style="width:100px;">Sell $</th>
+            <th class="tbl-th-r" style="width:60px;">Disc %</th>
+            <th class="tbl-th-r" style="width:72px;">Margin %</th>
+            <th class="tbl-th-r" style="width:100px;">Total</th>
+            <th class="tbl-th" style="width:36px;"></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="tbl-td text-center text-gray-400">1</td>
+            <td class="tbl-td"><div class="mono font-bold text-sm">JAKS-PAI-311148</div><div class="text-gray-500 text-xs">Complete Inframe Overhaul Kit, ISX15 (540HP)</div></td>
+            <td class="tbl-td text-center"><span class="qoh-dot" style="background:#16a34a;"></span><span class="mono font-bold text-green-700">2</span></td>
+            <td class="tbl-td"><span class="avail-pill bg-green-50 text-green-700 border-green-200">PAI: In</span><span class="avail-pill bg-blue-50 text-blue-700 border-blue-200">HHP: 5d</span><span class="avail-pill bg-gray-50 text-gray-400 border-gray-200">ATL: —</span></td>
+            <td class="tbl-td-r"><span class="mono font-semibold">1,245.00</span></td>
+            <td class="tbl-td-r text-gray-400">0%</td>
+            <td class="tbl-td-r font-bold text-green-600">32%</td>
+            <td class="tbl-td-r"><span class="mono font-bold">$1,245.00</span></td>
+            <td class="tbl-td text-center"><button class="text-gray-300 font-bold text-lg">⋮</button></td>
+          </tr>
+          <tr style="background:#f9fafb; border-bottom:1px solid #e5e7eb;">
+            <td class="tbl-td"></td>
+            <td colspan="8" style="padding:4px 10px 5px; font-size:0.75rem;">
+              <span class="text-gray-400 mr-2">Add:</span>
+              <button class="mono border border-gray-300 rounded px-2 py-0.5 text-gray-600 text-xs mr-1.5">+JAKS-WRM-311148</button>
+              <button class="mono border border-gray-300 rounded px-2 py-0.5 text-gray-600 text-xs mr-1.5">+JAKS-PAI-285040 ★</button>
+              <button class="border border-amber-300 rounded px-2 py-0.5 text-amber-700 bg-amber-50 text-xs">+Warranty ▼</button>
+            </td>
+          </tr>
+          <tr>
+            <td class="tbl-td text-center text-gray-400">2</td>
+            <td class="tbl-td"><div class="mono font-bold text-sm">JAKS-PAI-285040</div><div class="text-gray-500 text-xs">Head Gasket Set, ISX15 Standard Bore</div></td>
+            <td class="tbl-td text-center"><span class="qoh-dot" style="background:#dc2626;"></span><span class="mono font-bold text-red-600">0</span></td>
+            <td class="tbl-td"><span class="avail-pill bg-amber-50 text-amber-700 border-amber-200">PAI: 12d</span><span class="avail-pill bg-gray-50 text-gray-400 border-gray-200">HHP: —</span><span class="avail-pill bg-blue-50 text-blue-700 border-blue-200">ATL: 3d</span></td>
+            <td class="tbl-td-r"><span class="mono font-semibold">189.00</span></td>
+            <td class="tbl-td-r text-gray-600">5%</td>
+            <td class="tbl-td-r font-bold text-amber-600">28%</td>
+            <td class="tbl-td-r"><span class="mono font-bold">$179.55</span></td>
+            <td class="tbl-td text-center"><button class="text-gray-300 font-bold text-lg">⋮</button></td>
+          </tr>
+          <tr style="background:#f9fafb; border-bottom:1px solid #e5e7eb;">
+            <td class="tbl-td"></td>
+            <td colspan="8" style="padding:4px 10px 5px; font-size:0.75rem;">
+              <span class="text-gray-400 mr-2">Add:</span>
+              <button class="border border-amber-300 rounded px-2 py-0.5 text-amber-700 bg-amber-50 text-xs">+Warranty ▼</button>
+            </td>
+          </tr>
+          <tr style="background:#fffbeb;">
+            <td class="tbl-td text-center text-gray-400">3</td>
+            <td class="tbl-td" style="padding-left:24px;"><span class="text-amber-600 font-bold">⟲ Core:</span><span class="ml-2 text-amber-800 font-semibold">ISX Inframe Assembly — Refundable</span></td>
+            <td class="tbl-td text-center text-gray-300">—</td>
+            <td class="tbl-td text-gray-400 text-xs italic">core charge</td>
+            <td class="tbl-td-r"><span class="mono font-semibold text-amber-700">$125.00</span></td>
+            <td class="tbl-td-r text-gray-300">—</td>
+            <td class="tbl-td-r text-gray-300">—</td>
+            <td class="tbl-td-r"><span class="mono font-bold text-amber-700">$125.00</span></td>
+            <td class="tbl-td text-center"><button class="text-gray-300 font-bold text-lg">⋮</button></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Footer -->
+    <div class="flex-shrink-0 bg-white border-t-2 border-gray-200">
+      <div class="px-4 py-2 flex items-center justify-between border-b border-gray-100">
+        <span class="text-gray-500 text-sm">4 lines · Subtotal: <strong class="mono text-gray-900">$1,424.55</strong> · Core: <strong class="mono text-amber-600">$125.00</strong></span>
+        <span class="font-bold text-gray-900 mono text-lg">$1,549.55</span>
+      </div>
+      <div class="px-4 py-2 flex items-center gap-2 bg-gray-50">
+        <span class="text-xs font-semibold text-gray-500 uppercase tracking-wide mr-2">Follow Up:</span>
+        <button class="border border-gray-300 rounded-lg px-3 py-1.5 text-xs text-gray-700">📅 Follow Up Tomorrow</button>
+        <button class="border border-gray-300 rounded-lg px-3 py-1.5 text-xs text-gray-700">⏳ Waiting Customer</button>
+        <button class="border border-gray-300 rounded-lg px-3 py-1.5 text-xs text-gray-700">📦 Waiting Vendor</button>
+        <button class="border border-red-300 rounded-lg px-3 py-1.5 text-xs font-semibold text-red-700 bg-red-50">🚛 Truck Down</button>
+        <button class="border border-gray-200 rounded-lg px-3 py-1.5 text-xs text-gray-400">No Follow Up</button>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /background render -->
+
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     APPROVAL MODAL OVERLAY
+═══════════════════════════════════════════════════════════════════ -->
+<div x-show="showModal"
+     x-cloak
+     class="fixed inset-0 z-50 flex items-center justify-center"
+     style="backdrop-filter: blur(1px);">
+
+  <!-- Backdrop -->
+  <div class="absolute inset-0 bg-black/20"></div>
+
+  <!-- Modal card -->
+  <div class="relative bg-white rounded-2xl shadow-2xl border border-gray-200 overflow-hidden"
+       style="width:780px; max-height:90vh; overflow-y:auto;">
+
+    <!-- ── Modal Header ── -->
+    <div class="px-6 py-5 border-b border-gray-100" style="background:linear-gradient(135deg, #f7f8f3 0%, #ffffff 100%);">
+      <div class="flex items-start justify-between">
+        <div>
+          <div class="flex items-center gap-2 mb-1">
+            <div class="w-8 h-8 rounded-lg flex items-center justify-center" style="background:#4b5320;">
+              <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            </div>
+            <h2 class="text-lg font-bold text-gray-900">Quote Builder — Design Approval</h2>
+          </div>
+          <p class="text-sm text-gray-500 ml-10">Review the three design approaches below and select the one to build. This is the most-used screen in the system.</p>
+        </div>
+        <div class="text-xs text-gray-400 bg-gray-100 rounded-lg px-2.5 py-1.5 font-mono flex-shrink-0 ml-4">
+          Screen: Quote Builder<br>Priority: #1 Critical
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Option Cards ── -->
+    <div class="px-6 py-5 grid grid-cols-3 gap-4">
+
+      <!-- Option A -->
+      <div class="option-card"
+           :class="selected === 'a' ? 'selected' : ''"
+           @click="selected = 'a'">
+        <!-- Mini thumbnail -->
+        <div class="thumb thumb-a mb-3">
+          <div class="thumb-header-a"></div>
+          <div class="px-1.5 py-1">
+            <div class="h-1.5 bg-gray-300 rounded mb-1" style="width:60%;"></div>
+            <div class="space-y-px">
+              <div class="h-2.5 bg-gray-100 rounded border border-gray-200 flex items-center px-1 gap-1">
+                <div class="w-4 h-1 bg-gray-300 rounded"></div>
+                <div class="flex-1 h-1 bg-gray-200 rounded"></div>
+                <div class="w-6 h-1 bg-gray-300 rounded"></div>
+                <div class="w-5 h-1 bg-gray-300 rounded"></div>
+              </div>
+              <div class="h-2.5 bg-white rounded border border-gray-200 flex items-center px-1 gap-1">
+                <div class="w-4 h-1 bg-gray-300 rounded"></div>
+                <div class="flex-1 h-1 bg-gray-200 rounded"></div>
+                <div class="w-6 h-1 bg-gray-300 rounded"></div>
+                <div class="w-5 h-1 bg-gray-300 rounded"></div>
+              </div>
+              <div class="h-1.5 bg-gray-50 rounded flex items-center px-1 gap-0.5">
+                <div class="w-3 h-0.5 bg-gray-200 rounded"></div>
+                <div class="w-5 h-0.5 bg-gray-200 rounded"></div>
+                <div class="w-4 h-0.5 bg-amber-200 rounded"></div>
+              </div>
+              <div class="h-2.5 bg-gray-100 rounded border border-gray-200 flex items-center px-1 gap-1">
+                <div class="w-4 h-1 bg-gray-300 rounded"></div>
+                <div class="flex-1 h-1 bg-gray-200 rounded"></div>
+                <div class="w-6 h-1 bg-red-200 rounded"></div>
+                <div class="w-5 h-1 bg-gray-300 rounded"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- Option info -->
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-bold text-gray-800">Option A</span>
+          <span class="text-xs px-2 py-0.5 bg-gray-100 text-gray-500 rounded font-medium">Dense</span>
+        </div>
+        <p class="text-xs font-semibold text-gray-700 mb-1">Dense Ops Console</p>
+        <ul class="text-xs text-gray-500 space-y-1">
+          <li class="flex items-start gap-1.5"><span class="text-green-500 flex-shrink-0 mt-0.5">✓</span>Maximum data per pixel — 20+ rows visible at 1080p</li>
+          <li class="flex items-start gap-1.5"><span class="text-green-500 flex-shrink-0 mt-0.5">✓</span>All info on single header strip — zero wasted space</li>
+          <li class="flex items-start gap-1.5"><span class="text-amber-500 flex-shrink-0 mt-0.5">△</span>Smaller text — may feel cramped at first</li>
+          <li class="flex items-start gap-1.5"><span class="text-amber-500 flex-shrink-0 mt-0.5">△</span>Customer status inline, not a dedicated panel</li>
+        </ul>
+        <div class="mt-3 flex items-center gap-2">
+          <div class="w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0"
+               :class="selected === 'a' ? 'border-transparent' : 'border-gray-300'"
+               :style="selected === 'a' ? 'background:#4b5320;' : ''">
+            <div x-show="selected === 'a'" class="w-2 h-2 rounded-full bg-white"></div>
+          </div>
+          <span class="text-xs text-gray-500">Select Option A</span>
+        </div>
+      </div>
+
+      <!-- Option B (RECOMMENDED) -->
+      <div class="option-card recommended"
+           :class="selected === 'b' ? 'selected' : ''"
+           @click="selected = 'b'">
+        <!-- Recommended badge -->
+        <div class="flex justify-center mb-2">
+          <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold text-white" style="background:#4b5320;">
+            ★ Recommended
+          </span>
+        </div>
+        <!-- Mini thumbnail -->
+        <div class="thumb thumb-b mb-3" style="border-color:#b0be71;">
+          <div class="thumb-header-b flex flex-col gap-1 px-1.5 py-1.5">
+            <div class="flex items-center gap-1">
+              <div class="flex-1 h-3 bg-white rounded border border-gray-200 flex items-center px-1"><div class="text-xs text-gray-400" style="font-size:5px; font-weight:bold; color:#4b5320;">Mike's Diesel Service</div></div>
+            </div>
+            <div class="flex items-center gap-0.5">
+              <div class="h-2 bg-gray-100 rounded px-1" style="width:40px;"><div style="font-size:4px; color:#6b7280; font-weight:600; padding-top:2px;">Net 30</div></div>
+              <div class="h-2 bg-red-50 rounded px-1 border border-red-100" style="width:44px;"><div style="font-size:4px; color:#dc2626; font-weight:700; padding-top:2px;">⚠ OD $890</div></div>
+              <div class="h-2 bg-green-50 rounded px-1 border border-green-100" style="width:36px;"><div style="font-size:4px; color:#16a34a; font-weight:700; padding-top:2px;">✓ Credit</div></div>
+              <div class="h-2 bg-amber-50 rounded px-1 border border-amber-100" style="width:36px;"><div style="font-size:4px; color:#d97706; font-weight:700; padding-top:2px;">2 Cores</div></div>
+            </div>
+            <div class="h-2 rounded border-2 bg-white" style="border-color:#4b5320;"><div style="font-size:4px; color:#9ca3af; padding-left:8px; padding-top:1px;">Search parts: SKU, OEM#...</div></div>
+          </div>
+          <div class="px-1.5" style="background:#f9fafb; border-top:1px solid #e5e7eb;">
+            <div class="space-y-px">
+              <div class="h-3 bg-white rounded flex items-center gap-1 px-1 border border-gray-100">
+                <div class="w-3 h-1 bg-gray-200 rounded"></div>
+                <div class="flex-1 h-1 bg-gray-100 rounded"></div>
+                <div style="width:5px; height:5px; border-radius:50%; background:#16a34a;"></div>
+                <div class="w-8 h-1 bg-green-100 rounded"></div>
+                <div class="w-6 h-1 bg-green-200 rounded"></div>
+              </div>
+              <div class="h-2 bg-amber-50 rounded flex items-center gap-1 px-1">
+                <div class="w-3 h-0.5 bg-amber-200 rounded"></div>
+                <div class="w-8 h-0.5 bg-amber-100 rounded"></div>
+                <div class="w-4 h-0.5 bg-amber-200 rounded"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- Option info -->
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-bold text-gray-800">Option B</span>
+          <span class="text-xs px-2 py-0.5 rounded font-bold text-white" style="background:#4b5320;">Recommended</span>
+        </div>
+        <p class="text-xs font-semibold text-gray-700 mb-1">Balanced Operator</p>
+        <ul class="text-xs text-gray-500 space-y-1">
+          <li class="flex items-start gap-1.5"><span class="text-green-500 flex-shrink-0 mt-0.5">✓</span>Exactly matches the approved DESIGN.md specification</li>
+          <li class="flex items-start gap-1.5"><span class="text-green-500 flex-shrink-0 mt-0.5">✓</span>Customer status mini-panel — 5 live fields visible</li>
+          <li class="flex items-start gap-1.5"><span class="text-green-500 flex-shrink-0 mt-0.5">✓</span>36px rows — optimal for 6-8hr daily use</li>
+          <li class="flex items-start gap-1.5"><span class="text-green-500 flex-shrink-0 mt-0.5">✓</span>Chips row, follow-up bar, full 9-column table</li>
+        </ul>
+        <div class="mt-3 flex items-center gap-2">
+          <div class="w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0"
+               :class="selected === 'b' ? 'border-transparent' : 'border-gray-300'"
+               :style="selected === 'b' ? 'background:#4b5320;' : ''">
+            <div x-show="selected === 'b'" class="w-2 h-2 rounded-full bg-white"></div>
+          </div>
+          <span class="text-xs font-semibold" :class="selected === 'b' ? 'text-gray-800' : 'text-gray-500'">Select Option B</span>
+        </div>
+      </div>
+
+      <!-- Option C -->
+      <div class="option-card"
+           :class="selected === 'c' ? 'selected' : ''"
+           @click="selected = 'c'">
+        <!-- Mini thumbnail -->
+        <div class="thumb thumb-c mb-3">
+          <div class="thumb-header-c flex flex-col gap-1 px-1.5 py-1.5">
+            <div class="flex items-center gap-1">
+              <div class="h-1.5 rounded" style="background:#1e3a5f; width:50%;"></div>
+              <div class="text-xs" style="font-size:4px; color:#94a3b8; margin-left:auto;">Q-2026-0051</div>
+            </div>
+            <div class="h-4 rounded flex items-center px-1.5 border" style="background:#0f172a; border-color:#4b5320; border-width:1.5px;">
+              <div style="color:#4b5320; font-size:6px; font-weight:900; margin-right:3px;">›</div>
+              <div style="font-size:4px; color:#64748b; font-family:monospace;">type sku, part number, description...</div>
+            </div>
+          </div>
+          <div style="background:#f8fafc; padding:4px 6px; border-top:1px solid #e2e8f0;">
+            <div class="space-y-px">
+              <div class="h-3 bg-white rounded flex items-center gap-1 px-1 border border-slate-100">
+                <div class="w-3 h-1 bg-slate-200 rounded"></div>
+                <div class="flex-1 h-1 bg-slate-100 rounded"></div>
+                <div style="width:5px; height:5px; border-radius:50%; background:#16a34a;"></div>
+                <div class="w-6 h-1 bg-green-100 rounded"></div>
+              </div>
+              <div class="h-2 rounded flex items-center gap-1 px-1" style="background:#f8fafc;">
+                <div class="w-2 h-0.5 bg-slate-200 rounded"></div>
+                <div class="w-5 h-0.5 bg-slate-200 rounded"></div>
+              </div>
+              <div class="h-3 bg-white rounded flex items-center gap-1 px-1 border border-slate-100">
+                <div class="w-3 h-1 bg-slate-200 rounded"></div>
+                <div class="flex-1 h-1 bg-slate-100 rounded"></div>
+                <div style="width:5px; height:5px; border-radius:50%; background:#dc2626;"></div>
+                <div class="w-6 h-1 bg-amber-100 rounded"></div>
+              </div>
+            </div>
+          </div>
+          <div style="background:#1e293b; height:12px; display:flex; align-items:center; padding:0 6px; gap:4px;">
+            <div style="font-size:3.5px; color:#4b5320; font-family:monospace; font-weight:bold;">● saved</div>
+            <div style="font-size:3.5px; color:#475569; font-family:monospace;">total: $1,549.55</div>
+          </div>
+        </div>
+        <!-- Option info -->
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-bold text-gray-800">Option C</span>
+          <span class="text-xs px-2 py-0.5 bg-slate-800 text-slate-200 rounded font-medium font-mono">cmd</span>
+        </div>
+        <p class="text-xs font-semibold text-gray-700 mb-1">Command Line Focused</p>
+        <ul class="text-xs text-gray-500 space-y-1">
+          <li class="flex items-start gap-1.5"><span class="text-green-500 flex-shrink-0 mt-0.5">✓</span>Search bar is the hero — keyboard-first design</li>
+          <li class="flex items-start gap-1.5"><span class="text-green-500 flex-shrink-0 mt-0.5">✓</span>Dark input zone — less visual noise during typing</li>
+          <li class="flex items-start gap-1.5"><span class="text-amber-500 flex-shrink-0 mt-0.5">△</span>Fewer columns — simplified for speed</li>
+          <li class="flex items-start gap-1.5"><span class="text-amber-500 flex-shrink-0 mt-0.5">△</span>Requires keyboard comfort — less mouse-friendly</li>
+        </ul>
+        <div class="mt-3 flex items-center gap-2">
+          <div class="w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0"
+               :class="selected === 'c' ? 'border-transparent' : 'border-gray-300'"
+               :style="selected === 'c' ? 'background:#4b5320;' : ''">
+            <div x-show="selected === 'c'" class="w-2 h-2 rounded-full bg-white"></div>
+          </div>
+          <span class="text-xs text-gray-500">Select Option C</span>
+        </div>
+      </div>
+
+    </div><!-- /grid -->
+
+    <!-- ── Decision Context ── -->
+    <div class="mx-6 mb-4 p-4 bg-amber-50 rounded-xl border border-amber-100">
+      <div class="flex items-start gap-3">
+        <svg class="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        <div>
+          <p class="text-xs font-semibold text-amber-800 mb-1">Why this decision matters</p>
+          <p class="text-xs text-amber-700">This screen is your primary work surface — 6 to 8 hours per day. Target: build a quote in 45 seconds without touching the mouse. Option B is recommended because it exactly implements what was specified across all planning sessions and gives the best balance of information density and readability for daily sustained use.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Open files note ── -->
+    <div class="mx-6 mb-4 p-3 bg-gray-50 rounded-xl border border-gray-100 flex items-center justify-between">
+      <div class="text-xs text-gray-500">
+        <span class="font-semibold text-gray-700">View full renders:</span>
+        <span class="mono ml-1">render_a.html</span> ·
+        <span class="mono">render_b.html</span> ·
+        <span class="mono">render_c.html</span>
+        <span class="ml-2 text-gray-400">— open in browser to compare side by side</span>
+      </div>
+    </div>
+
+    <!-- ── Modal Actions ── -->
+    <div class="px-6 pb-6 flex items-center justify-between">
+      <div class="text-xs text-gray-400">
+        Approving will lock the visual design and begin implementation of:
+        <strong class="text-gray-600">Quote PDF → Invoice PDF → Payment Workflow</strong>
+      </div>
+      <div class="flex items-center gap-3">
+        <button @click="showModal = false"
+                class="px-4 py-2 text-sm text-gray-500 border border-gray-300 rounded-xl hover:bg-gray-50 transition-colors">
+          Request Changes
+        </button>
+        <button @click="approve()"
+                :disabled="approved"
+                class="px-6 py-2 text-sm font-bold text-white rounded-xl transition-all disabled:opacity-75"
+                :style="approved ? 'background:#16a34a;' : 'background:#4b5320;'"
+                :class="!approved ? 'hover:opacity-90' : ''">
+          <span x-show="!approved">
+            ✓ Approve Option
+            <span class="uppercase font-black" x-text="selected"></span>
+            — Begin Build
+          </span>
+          <span x-show="approved">✓ Design Approved! Starting build…</span>
+        </button>
+      </div>
+    </div>
+
+  </div><!-- /modal card -->
+</div><!-- /modal overlay -->
+
+</body>
+</html>

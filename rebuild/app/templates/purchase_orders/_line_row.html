@@ -1,0 +1,19 @@
+<tr>
+  <td class="px-5 py-3 font-mono text-xs text-brand-700">
+    {% if line.product %}
+    <a href="/products/{{ line.product.id }}" class="hover:underline">{{ line.product.sku }}</a>
+    {% else %}
+    <span class="text-gray-300">—</span>
+    {% endif %}
+  </td>
+  <td class="px-5 py-3 text-gray-600">
+    {{ line.description or (line.product.title if line.product else '—') }}
+  </td>
+  <td class="px-5 py-3 text-right text-gray-700">{{ line.qty_ordered }}</td>
+  <td class="px-5 py-3 text-right text-gray-400">0</td>
+  <td class="px-5 py-3 text-right text-gray-700">${{ "%.2f" | format(line.unit_cost) }}</td>
+  <td class="px-5 py-3 text-right font-medium text-gray-800">${{ "%.2f" | format(line.line_total) }}</td>
+  <td class="px-5 py-3 text-center">
+    <span class="inline-block rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-500">Pending</span>
+  </td>
+</tr>

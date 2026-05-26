@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+{% block title %}Import Customers — JAKS Inventory{% endblock %}
+{% block heading %}Import Customers{% endblock %}
+
+{% block header_actions %}
+  <a href="/customers/" class="text-sm text-gray-500 hover:text-gray-700">← Customers</a>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl space-y-6">
+
+  {# ── Instructions card ─────────────────────────────────────────────────── #}
+  <div class="bg-blue-50 border border-blue-200 rounded-xl px-5 py-4 text-sm text-blue-800">
+    <p class="font-semibold mb-1">Upload a <code>.xlsx</code> or <code>.csv</code> file to import customers in bulk.</p>
+    <p class="text-blue-700 mb-2">The first row must be a header row. Column names are flexible — common variations are recognised automatically.</p>
+    <details class="text-xs text-blue-700">
+      <summary class="cursor-pointer font-medium hover:text-blue-900">Recognised column names ▸</summary>
+      <div class="mt-2 grid grid-cols-2 gap-x-8 gap-y-0.5 pl-2">
+        <div><span class="font-mono bg-blue-100 px-1 rounded">Company / Company Name</span> → Company <span class="text-blue-500 font-semibold">*required</span></div>
+        <div><span class="font-mono bg-blue-100 px-1 rounded">Contact / Contact Name</span> → Contact</div>
+        <div><span class="font-mono bg-blue-100 px-1 rounded">Phone / Tel</span> → Phone</div>
+        <div><span class="font-mono bg-blue-100 px-1 rounded">Email</span> → Email</div>
+        <div><span class="font-mono bg-blue-100 px-1 rounded">Address / Address Line 1</span> → Address</div>
+        <div><span class="font-mono bg-blue-100 px-1 rounded">City / State / Zip</span> → City / State / Zip</div>
+        <div><span class="font-mono bg-blue-100 px-1 rounded">Terms / Payment Terms</span> → Net 30 / Net 60 / COD</div>
+        <div><span class="font-mono bg-blue-100 px-1 rounded">Discount / Discount %</span> → Standing Discount %</div>
+        <div><span class="font-mono bg-blue-100 px-1 rounded">Interest / Interest Rate %</span> → Interest Rate %</div>
+        <div><span class="font-mono bg-blue-100 px-1 rounded">Notes</span> → Notes</div>
+      </div>
+    </details>
+  </div>
+
+  {# ── Error banner ──────────────────────────────────────────────────────── #}
+  {% if error %}
+  <div class="bg-red-50 border border-red-200 rounded-xl px-5 py-4 text-sm text-red-700">
+    <span class="font-semibold">Error:</span> {{ error }}
+  </div>
+  {% endif %}
+
+  {# ── Flash (query param) ───────────────────────────────────────────────── #}
+  {% if request.query_params.get('error') %}
+  <div class="bg-red-50 border border-red-200 rounded-xl px-5 py-4 text-sm text-red-700">
+    {{ request.query_params.get('error') | replace('+', ' ') }}
+  </div>
+  {% endif %}
+
+  {# ── Upload form (shown when no preview yet) ───────────────────────────── #}
+  {% if preview_rows is none %}
+  <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+    <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3 mb-4">Select File</h2>
+    <form method="post" action="/customers/import" enctype="multipart/form-data" class="space-y-4">
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">
+          Excel (.xlsx) or CSV file
+        </label>
+        <input type="file" name="file" accept=".xlsx,.csv" required
+               class="block w-full text-sm text-gray-600
+                      file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0
+                      file:text-sm file:font-medium file:bg-brand-50 file:text-brand-700
+                      hover:file:bg-brand-100 file:cursor-pointer cursor-pointer" />
+        <p class="text-xs text-gray-400 mt-1">Maximum 10 MB. Rows without a company name will be skipped.</p>
+      </div>
+      <button type="submit"
+              class="rounded-lg bg-brand-700 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-600 transition-colors">
+        Preview Import
+      </button>
+    </form>
+  </div>
+
+  {% else %}
+  {# ── Preview results ───────────────────────────────────────────────────── #}
+
+  {# Summary bar #}
+  <div class="flex flex-wrap items-center gap-3">
+    <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-50 border border-green-200 text-sm font-semibold text-green-700">
+      ✓ {{ total_valid }} valid row{{ 's' if total_valid != 1 else '' }}
+    </span>
+    {% if total_skipped %}
+    <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-sm font-semibold text-amber-700">
+      ⚠ {{ total_skipped }} skipped (missing company name)
+    </span>
+    {% endif %}
+    {% set dupe_count = preview_rows | selectattr('_duplicate') | list | length %}
+    {% if dupe_count %}
+    <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-100 border border-gray-200 text-sm font-semibold text-gray-600">
+      {{ dupe_count }} duplicate{{ 's' if dupe_count != 1 else '' }} (already exist)
+    </span>
+    {% endif %}
+    <a href="/customers/import"
+       class="ml-auto text-sm text-gray-500 hover:text-gray-700">← Upload different file</a>
+  </div>
+
+  {# Preview table #}
+  {% if preview_rows %}
+  <div class="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+    <div class="card-header px-5 py-3 border-b border-gray-100">
+      <h2 class="card-title text-sm">Preview (first {{ [preview_rows|length, 200]|min }} of {{ total_valid }})</h2>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl text-xs">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">Company</th>
+            <th class="tbl-th">Contact</th>
+            <th class="tbl-th">Phone</th>
+            <th class="tbl-th">City / State</th>
+            <th class="tbl-th">Terms</th>
+            <th class="tbl-th-r">Disc %</th>
+            <th class="tbl-th"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in preview_rows %}
+          <tr class="tbl-row {{ 'opacity-50' if row._duplicate else '' }}">
+            <td class="tbl-td font-medium text-gray-800">{{ row.company_name }}</td>
+            <td class="tbl-td text-gray-500">{{ row.contact_name or '—' }}</td>
+            <td class="tbl-td text-gray-500 font-mono">{{ row.phone or '—' }}</td>
+            <td class="tbl-td text-gray-500">
+              {% set city_st = [row.city, row.state] | select | join(', ') %}
+              {{ city_st or '—' }}
+            </td>
+            <td class="tbl-td">
+              <span class="px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">
+                {{ row.payment_terms.replace('_', ' ').upper() }}
+              </span>
+            </td>
+            <td class="tbl-td-r">
+              {% if row.discount_pct %}{{ row.discount_pct }}%{% else %}—{% endif %}
+            </td>
+            <td class="tbl-td">
+              {% if row._duplicate %}
+              <span class="text-xs text-gray-400 italic">exists</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {# Skipped rows #}
+  {% if skipped %}
+  <div class="bg-amber-50 border border-amber-200 rounded-xl p-4">
+    <p class="text-sm font-semibold text-amber-700 mb-2">Skipped rows ({{ skipped|length }}):</p>
+    <ul class="text-xs text-amber-700 space-y-0.5">
+      {% for row in skipped %}
+      <li>{{ row.error }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {# Confirm form #}
+  {% if total_valid > 0 %}
+  <form method="post" action="/customers/import/confirm">
+    <input type="hidden" name="import_json" value="{{ import_json | e }}" />
+    <div class="flex items-center gap-4 pt-2">
+      <label class="flex items-center gap-2 cursor-pointer text-sm text-gray-600 select-none">
+        <input type="checkbox" name="skip_duplicates" value="1" checked
+               class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+        Skip duplicates (companies that already exist)
+      </label>
+      <button type="submit"
+              class="rounded-lg bg-brand-700 px-6 py-2.5 text-sm font-semibold text-white hover:bg-brand-600 transition-colors">
+        Import {{ total_valid }} Customer{{ 's' if total_valid != 1 else '' }}
+      </button>
+    </div>
+  </form>
+  {% endif %}
+
+  {% endif %}{# /if preview_rows is none #}
+
+</div>
+{% endblock %}

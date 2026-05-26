@@ -1,0 +1,351 @@
+{% extends "base.html" %}
+{% block title %}Core Charges — JAKS Inventory{% endblock %}
+{% block heading %}Core Charges{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl space-y-6">
+
+  {# ── Flash messages ── #}
+  {% if request.query_params.get('error') %}
+  <div class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700 flex items-center gap-2">
+    <svg class="w-4 h-4 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+    {{ request.query_params.get('error') }}
+  </div>
+  {% endif %}
+  {% if request.query_params.get('ok') %}
+  <div class="rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800 flex items-center gap-2">
+    <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+    {{ request.query_params.get('ok') }}
+  </div>
+  {% endif %}
+
+  {# ══════════════════════════════════════════════════════════════════════════
+     STAGE 1 — Awaiting Customer Return
+     ══════════════════════════════════════════════════════════════════════════ #}
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Awaiting Customer Return</h2>
+        <p class="text-xs text-gray-400 mt-0.5">Customers who owe a core back</p>
+      </div>
+      {% if awaiting_return %}
+      <span class="text-xs font-semibold text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-2.5 py-0.5">
+        {{ awaiting_return | length }} open
+      </span>
+      {% endif %}
+    </div>
+
+    {% if awaiting_return %}
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">Customer</th>
+            <th class="tbl-th">SKU</th>
+            <th class="tbl-th">Description</th>
+            <th class="tbl-th-r">Owed</th>
+            <th class="tbl-th-r">Charge/ea</th>
+            <th class="tbl-th">Deadline</th>
+            <th class="tbl-th">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for core in awaiting_return %}
+          <tr class="tbl-row" x-data="{ open: false }">
+            <td class="tbl-td font-medium text-gray-900">
+              {% if core.customer %}
+              <a href="/customers/{{ core.customer.id }}" class="link">{{ core.customer.company_name }}</a>
+              {% else %}—{% endif %}
+            </td>
+            <td class="tbl-td font-mono text-xs text-brand-700">
+              {{ core.product.sku if core.product else '—' }}
+            </td>
+            <td class="tbl-td text-gray-600 text-sm">
+              {{ core.product.title if core.product else '—' }}
+            </td>
+            <td class="tbl-td-r font-semibold text-amber-600">{{ core.qty_outstanding }}</td>
+            <td class="tbl-td-r">${{ '%.2f' | format(core.customer_unit_charge) }}</td>
+            <td class="tbl-td text-sm {% if core.is_overdue %}text-red-600 font-semibold{% else %}text-gray-500{% endif %}">
+              {% if core.return_deadline %}
+                {{ core.return_deadline.strftime('%m/%d/%Y') }}
+                {% if core.is_overdue %}<span class="badge-red ml-1">Overdue</span>{% endif %}
+              {% else %}—{% endif %}
+            </td>
+            <td class="tbl-td">
+              <button type="button" @click="open = !open"
+                      class="text-xs font-medium text-brand-700 hover:text-brand-600 underline underline-offset-2">
+                <span x-text="open ? 'Cancel' : 'Record Return'"></span>
+              </button>
+            </td>
+          </tr>
+          <tr x-show="open" style="display:none">
+            <td colspan="7" class="px-5 pb-4 pt-1 bg-gray-50 border-b border-gray-100">
+              <form method="post" action="/cores/{{ core.id }}/return"
+                    class="flex items-end gap-3 flex-wrap">
+                <div>
+                  <label class="form-label">Qty Returned</label>
+                  <input type="number" name="qty_returned"
+                         min="1" max="{{ core.qty_outstanding }}"
+                         value="{{ core.qty_outstanding }}"
+                         class="w-24 border border-gray-300 rounded-lg px-3 py-1.5 text-sm
+                                focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+                </div>
+                <div class="flex-1 min-w-52">
+                  <label class="form-label">Condition Notes</label>
+                  <input type="text" name="condition"
+                         placeholder="Good condition, clean, no damage…"
+                         class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm
+                                focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+                </div>
+                <button type="submit" class="btn-primary">
+                  Record Return &amp; Credit Account
+                </button>
+                <p class="w-full text-xs text-gray-400">
+                  Account credit = qty × ${{ '%.2f' | format(core.customer_unit_charge) }}/ea, applied immediately to customer balance.
+                </p>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="card-body">
+      <p class="text-sm text-gray-400">No cores awaiting return — all clear.</p>
+    </div>
+    {% endif %}
+  </div>
+
+
+  {# ══════════════════════════════════════════════════════════════════════════
+     STAGE 2 — Ready to Ship to Vendor
+     ══════════════════════════════════════════════════════════════════════════ #}
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Ready to Ship to Vendor</h2>
+        <p class="text-xs text-gray-400 mt-0.5">Cores received from customers — awaiting vendor return shipment</p>
+      </div>
+      {% if pending_vendor_ship %}
+      <span class="text-xs font-semibold text-blue-600 bg-blue-50 border border-blue-200 rounded-full px-2.5 py-0.5">
+        {{ pending_vendor_ship | length }} ready
+      </span>
+      {% endif %}
+    </div>
+
+    {% if pending_vendor_ship %}
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">SKU</th>
+            <th class="tbl-th">Description</th>
+            <th class="tbl-th">From Customer</th>
+            <th class="tbl-th-r">Qty</th>
+            <th class="tbl-th-r">Expected Credit</th>
+            <th class="tbl-th">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for core in pending_vendor_ship %}
+          <tr class="tbl-row" x-data="{ open: false }">
+            <td class="tbl-td font-mono text-xs text-brand-700">
+              {{ core.product.sku if core.product else '—' }}
+            </td>
+            <td class="tbl-td text-gray-600 text-sm">
+              {{ core.product.title if core.product else '—' }}
+            </td>
+            <td class="tbl-td text-sm text-gray-600">
+              {% if core.customer %}{{ core.customer.company_name }}{% else %}—{% endif %}
+            </td>
+            <td class="tbl-td-r font-medium">{{ core.qty_returned }}</td>
+            <td class="tbl-td-r font-medium text-green-700">
+              ${{ '%.2f' | format(core.vendor_unit_charge * core.qty_returned) }}
+            </td>
+            <td class="tbl-td">
+              <button type="button" @click="open = !open"
+                      class="text-xs font-medium text-brand-700 hover:text-brand-600 underline underline-offset-2">
+                <span x-text="open ? 'Cancel' : 'Mark Shipped'"></span>
+              </button>
+            </td>
+          </tr>
+          <tr x-show="open" style="display:none">
+            <td colspan="6" class="px-5 pb-4 pt-1 bg-gray-50 border-b border-gray-100">
+              <form method="post" action="/cores/{{ core.id }}/submit-to-vendor"
+                    class="flex items-end gap-3 flex-wrap">
+                <div class="flex-1 min-w-52">
+                  <label class="form-label">Tracking Number</label>
+                  <input type="text" name="tracking_number"
+                         placeholder="UPS / FedEx tracking number…"
+                         class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm
+                                focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+                </div>
+                <button type="submit" class="btn-primary">Mark as Shipped to Vendor</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="card-body">
+      <p class="text-sm text-gray-400">No cores waiting to ship to vendor.</p>
+    </div>
+    {% endif %}
+  </div>
+
+
+  {# ══════════════════════════════════════════════════════════════════════════
+     STAGE 3 — Awaiting Vendor Decision
+     ══════════════════════════════════════════════════════════════════════════ #}
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Awaiting Vendor Decision</h2>
+        <p class="text-xs text-gray-400 mt-0.5">Shipped to vendor — waiting for credit or denial</p>
+      </div>
+      {% if awaiting_vendor %}
+      <span class="text-xs font-semibold text-purple-600 bg-purple-50 border border-purple-200 rounded-full px-2.5 py-0.5">
+        {{ awaiting_vendor | length }} pending
+      </span>
+      {% endif %}
+    </div>
+
+    {% if awaiting_vendor %}
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">SKU</th>
+            <th class="tbl-th">Description</th>
+            <th class="tbl-th">Tracking</th>
+            <th class="tbl-th-r">Qty</th>
+            <th class="tbl-th-r">Expected Credit</th>
+            <th class="tbl-th">Record Decision</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for core in awaiting_vendor %}
+          <tr class="tbl-row" x-data="{ decision: null }">
+            <td class="tbl-td font-mono text-xs text-brand-700">
+              {{ core.product.sku if core.product else '—' }}
+            </td>
+            <td class="tbl-td text-gray-600 text-sm">
+              {{ core.product.title if core.product else '—' }}
+            </td>
+            <td class="tbl-td font-mono text-xs text-gray-500">
+              {{ core.core_tracking_number or '—' }}
+            </td>
+            <td class="tbl-td-r font-medium">{{ core.qty_returned }}</td>
+            <td class="tbl-td-r font-semibold text-green-700">
+              ${{ '%.2f' | format(core.vendor_unit_charge * core.qty_returned) }}
+            </td>
+            <td class="tbl-td">
+              <div class="flex items-center gap-2" x-show="decision === null">
+                <button type="button" @click="decision = 'accepted'"
+                        class="text-xs font-medium text-green-700 hover:text-green-600 underline underline-offset-2">
+                  Accepted
+                </button>
+                <span class="text-gray-300">|</span>
+                <button type="button" @click="decision = 'denied'"
+                        class="text-xs font-medium text-red-600 hover:text-red-500 underline underline-offset-2">
+                  Denied
+                </button>
+              </div>
+              <button type="button" x-show="decision !== null" @click="decision = null"
+                      class="text-xs text-gray-400 hover:text-gray-600 underline underline-offset-2">
+                Cancel
+              </button>
+            </td>
+          </tr>
+
+          {# Vendor accepted — enter actual credit received #}
+          <tr x-show="decision === 'accepted'" style="display:none">
+            <td colspan="6" class="px-5 pb-4 pt-1 bg-green-50 border-b border-gray-100">
+              <form method="post" action="/cores/{{ core.id }}/vendor-accepted"
+                    class="flex items-end gap-3 flex-wrap">
+                <div>
+                  <label class="form-label">Credit Amount Received ($)</label>
+                  <input type="number" name="credit_amount" step="0.01" min="0"
+                         value="{{ '%.2f' | format(core.vendor_unit_charge * core.qty_returned) }}"
+                         class="w-32 border border-gray-300 rounded-lg px-3 py-1.5 text-sm
+                                focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+                </div>
+                <button type="submit"
+                        class="px-4 py-2 bg-green-700 text-white text-sm font-medium rounded-lg hover:bg-green-600 transition-colors">
+                  Confirm Credit
+                </button>
+                <p class="w-full text-xs text-gray-500">
+                  Pre-filled with expected amount. Adjust if vendor issued a different credit.
+                </p>
+              </form>
+            </td>
+          </tr>
+
+          {# Vendor denied — record reason and resolution #}
+          <tr x-show="decision === 'denied'" style="display:none">
+            <td colspan="6" class="px-5 pb-4 pt-1 bg-red-50 border-b border-gray-100">
+              <form method="post" action="/cores/{{ core.id }}/vendor-denied"
+                    class="space-y-3">
+                <div class="flex items-end gap-3 flex-wrap">
+                  <div class="flex-1 min-w-52">
+                    <label class="form-label">Denial Reason <span class="text-red-500">*</span></label>
+                    <input type="text" name="denial_reason" required
+                           placeholder="Wrong core, damaged, missing tag…"
+                           class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm
+                                  focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+                  </div>
+                  <div>
+                    <label class="form-label">Resolution</label>
+                    <select name="resolution"
+                            class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm bg-white
+                                   focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400">
+                      <option value="{{ CoreDenialResolution.ABSORBED_BY_JAKS }}">JAKS absorbs loss</option>
+                      <option value="{{ CoreDenialResolution.CHARGED_TO_CUSTOMER }}">Charge back to customer</option>
+                      <option value="{{ CoreDenialResolution.DISPUTED }}">Dispute with vendor</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="flex items-end gap-3">
+                  <div class="flex-1">
+                    <label class="form-label">Notes (optional)</label>
+                    <input type="text" name="notes"
+                           placeholder="Internal notes on how this was handled…"
+                           class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm
+                                  focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+                  </div>
+                  <button type="submit"
+                          class="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-500 transition-colors">
+                    Record Denial
+                  </button>
+                </div>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="card-body">
+      <p class="text-sm text-gray-400">No cores awaiting vendor decision.</p>
+    </div>
+    {% endif %}
+  </div>
+
+  {# ── All clear ── #}
+  {% if not awaiting_return and not pending_vendor_ship and not awaiting_vendor %}
+  <div class="card flex flex-col items-center justify-center py-16">
+    <svg class="w-12 h-12 text-green-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+            d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    </svg>
+    <p class="text-gray-500 font-medium">All cores settled</p>
+    <p class="text-gray-400 text-sm mt-1">No open core charges at this time.</p>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

@@ -1,0 +1,680 @@
+{% extends "base.html" %}
+{% block title %}{{ product.sku }} — JAKS Inventory{% endblock %}
+{% block heading %}{{ product.sku }}{% endblock %}
+
+{% block header_actions %}
+  <a href="/products/" class="text-sm text-gray-500 hover:text-gray-700">← Products</a>
+  <div class="flex items-center gap-2 ml-4">
+    {% for src_name, src_code in [('PAI', 'pai'), ('HHP', 'hhp'), ('ATL', 'atl')] %}
+    <button type="button"
+            hx-get="/products/{{ product.id }}/enrich-panel?source={{ src_code }}"
+            hx-target="#create-slide-content"
+            @click="createSlideTitle = 'Enrich from {{ src_name }}'; createSlideOpen = true"
+            class="btn-secondary btn-sm">
+      ⟳ {{ src_name }}
+    </button>
+    {% endfor %}
+  </div>
+{% endblock %}
+
+{% block content %}
+
+{% if error %}
+<div class="mb-4 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+  {{ error }}
+</div>
+{% endif %}
+
+<div x-data="{ tab: 'info' }">
+
+  {# ── Tab bar ── #}
+  <nav class="tab-bar mb-5">
+    {% set tabs = [('info', 'Info'), ('sources', 'Vendor Sources'), ('xrefs', 'Cross Refs'), ('images', 'Images'), ('suggestions', 'Suggested Sells'), ('history', 'Cost History')] %}
+    {% for key, label in tabs %}
+    <button type="button"
+            @click="tab='{{ key }}'"
+            :class="tab==='{{ key }}' ? 'tab-active' : 'tab-inactive'">
+      {{ label }}
+      {% if key == 'sources' %}
+        <span class="ml-1 text-xs text-gray-400">({{ product.vendor_sources|selectattr('is_active')|list|length }})</span>
+      {% elif key == 'xrefs' %}
+        <span class="ml-1 text-xs text-gray-400">({{ product.cross_references|length }})</span>
+      {% elif key == 'images' %}
+        <span class="ml-1 text-xs text-gray-400">({{ product.images|length }})</span>
+      {% elif key == 'suggestions' %}
+        <span class="ml-1 text-xs text-gray-400">({{ product.suggested_sells|length }})</span>
+      {% elif key == 'history' %}
+        <span class="ml-1 text-xs text-gray-400">({{ product.cost_history|length }})</span>
+      {% endif %}
+    </button>
+    {% endfor %}
+  </nav>
+
+
+  {# ══ INFO TAB ══ #}
+  <div x-show="tab==='info'">
+
+    {# Deactivate form lives outside the main edit form to prevent nesting #}
+    <form id="deactivate-form" method="post" action="/products/{{ product.id }}/deactivate"
+          onsubmit="return confirm('Archive this product? It will be hidden from active lists.')">
+      <input type="hidden" name="reason" value="archived via UI" />
+    </form>
+
+    <form method="post" action="/products/{{ product.id }}" class="max-w-3xl space-y-4">
+
+      {# Identity card #}
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">Identity</h2>
+        </div>
+        <div class="card-body space-y-4">
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="form-label">SKU</label>
+              <input name="sku" value="{{ product.sku }}" required class="form-input font-mono" />
+            </div>
+            <div>
+              <label class="form-label">Title</label>
+              <input name="title" value="{{ product.title }}" class="form-input" />
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="form-label">Manufacturer</label>
+              <select name="manufacturer" class="form-select">
+                <option value="">— Select —</option>
+                {% for m in manufacturers %}
+                  <option value="{{ m }}" {% if product.manufacturer == m %}selected{% endif %}>{{ m }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Brand</label>
+              <input name="brand" value="{{ product.brand }}" class="form-input" />
+            </div>
+          </div>
+          <div>
+            <label class="form-label">Category</label>
+            <select name="category_id" class="form-select">
+              <option value="">— None —</option>
+              {% for cat in categories %}
+                <option value="{{ cat.id }}" {% if product.category_id == cat.id %}selected{% endif %}>
+                  {{ cat.full_path }}
+                </option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label class="form-label">Description</label>
+            <textarea name="description" rows="3" class="form-textarea">{{ product.description }}</textarea>
+          </div>
+        </div>
+      </div>
+
+      {# Pricing card #}
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title flex items-center gap-3">
+            Pricing
+            <span class="text-green-700 font-bold text-base">→ ${{ "%.2f"|format(product.selling_price) }}</span>
+            {% if product.price_override %}
+              <span class="badge-amber font-normal">price override</span>
+            {% endif %}
+          </h2>
+        </div>
+        <div class="card-body space-y-4">
+          <div class="grid grid-cols-3 gap-4">
+            <div>
+              <label class="form-label">Our Cost ($)</label>
+              <input name="cost" type="number" step="0.01" min="0"
+                     value="{{ product.cost }}" class="form-input" />
+              {% if product.cost_source %}
+                <p class="mt-0.5 text-xs text-gray-400">Source: {{ product.cost_source }}</p>
+              {% endif %}
+            </div>
+            <div>
+              <label class="form-label">Markup %</label>
+              <input name="markup_pct" type="number" step="0.1" min="0"
+                     value="{{ product.markup_pct or '' }}" placeholder="Global default"
+                     class="form-input" />
+            </div>
+            <div>
+              <label class="form-label">Price Override ($)</label>
+              <input name="price_override" type="number" step="0.01" min="0"
+                     value="{{ product.price_override or '' }}" placeholder="Leave blank for markup"
+                     class="form-input" />
+            </div>
+          </div>
+
+          {# Core charge toggle #}
+          <div x-data="{ hasCore: {{ 'true' if product.has_core else 'false' }} }">
+            <label class="flex items-center gap-2 cursor-pointer select-none">
+              <input type="checkbox" name="has_core" x-model="hasCore"
+                     {% if product.has_core %}checked{% endif %}
+                     class="form-checkbox" />
+              <span class="text-sm font-medium text-gray-700">Core charge</span>
+            </label>
+            <div x-show="hasCore" class="mt-3 grid grid-cols-2 gap-4">
+              <div>
+                <label class="form-label">Vendor Core Charge ($)</label>
+                <input name="vendor_core_charge" type="number" step="0.01" min="0"
+                       value="{{ product.vendor_core_charge }}" class="form-input" />
+              </div>
+              <div>
+                <label class="form-label">Customer Core Charge ($)</label>
+                <input name="customer_core_charge" type="number" step="0.01" min="0"
+                       value="{{ product.customer_core_charge }}" class="form-input" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {# Inventory card — read-only qty display + editable reorder point #}
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">Inventory</h2>
+        </div>
+        <div class="card-body space-y-4">
+          <div class="grid grid-cols-4 gap-4">
+            <div>
+              <label class="form-label">On Hand</label>
+              <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm font-medium
+                {% if product.qty_on_hand == 0 %}text-red-600
+                {% elif product.reorder_point > 0 and product.qty_on_hand <= product.reorder_point %}text-amber-600
+                {% else %}text-gray-700{% endif %}">
+                {{ product.qty_on_hand }}
+              </div>
+            </div>
+            <div>
+              <label class="form-label">Committed</label>
+              <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm text-gray-500">
+                {{ product.qty_committed }}
+              </div>
+            </div>
+            <div>
+              <label class="form-label">Available</label>
+              <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm font-medium
+                {% if product.qty_available <= 0 %}text-red-600{% else %}text-gray-700{% endif %}">
+                {{ product.qty_available }}
+              </div>
+            </div>
+            <div>
+              <label class="form-label">On Order</label>
+              <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm text-gray-500">
+                {{ product.qty_on_order }}
+              </div>
+            </div>
+          </div>
+          <div class="w-48">
+            <label class="form-label">Reorder Point</label>
+            <input name="reorder_point" type="number" min="0"
+                   value="{{ product.reorder_point }}" class="form-input" />
+          </div>
+        </div>
+      </div>
+
+      {# Warranty card — x-data on the card itself for isWarrantable toggle #}
+      <div x-data="{ isWarrantable: {{ 'true' if product.is_warrantable else 'false' }} }"
+           class="card">
+        <div class="card-header">
+          <h2 class="card-title">Warranty</h2>
+          <label class="flex items-center gap-2 cursor-pointer select-none">
+            <input type="checkbox" name="is_warrantable" x-model="isWarrantable"
+                   {% if product.is_warrantable %}checked{% endif %}
+                   class="form-checkbox" />
+            <span class="text-xs text-gray-600">Extended warranty available</span>
+          </label>
+        </div>
+        <div class="card-body space-y-4">
+          <div class="grid grid-cols-3 gap-4">
+            <div>
+              <label class="form-label">Supplier Warranty (months)</label>
+              <input name="supplier_warranty_months" type="number" min="0"
+                     value="{{ product.supplier_warranty_months }}" placeholder="0"
+                     class="form-input" />
+              <p class="mt-0.5 text-xs text-gray-400">What the vendor includes at no charge</p>
+            </div>
+            <div>
+              <label class="form-label">Supplier Coverage Type</label>
+              <select name="supplier_warranty_type" class="form-select">
+                <option value="parts_only" {% if product.supplier_warranty_type == 'parts_only' %}selected{% endif %}>Parts Only</option>
+                <option value="parts_labor" {% if product.supplier_warranty_type == 'parts_labor' %}selected{% endif %}>Parts &amp; Labor</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Manufacturer Warranty (months)</label>
+              <input name="manufacturer_warranty_months" type="number" min="0"
+                     value="{{ product.manufacturer_warranty_months }}" placeholder="0"
+                     class="form-input" />
+              <p class="mt-0.5 text-xs text-gray-400">OEM factory warranty (for reference)</p>
+            </div>
+          </div>
+
+          <div x-show="isWarrantable" class="grid grid-cols-2 gap-4 pt-2 border-t border-gray-100">
+            <div>
+              <label class="form-label">JAKS Extension (months)</label>
+              <input name="jaks_warranty_months" type="number" min="0"
+                     value="{{ product.jaks_warranty_months }}" placeholder="12"
+                     class="form-input" />
+              <p class="mt-0.5 text-xs text-gray-400">Additional months JAKS sells on top of supplier warranty</p>
+            </div>
+            <div>
+              <label class="form-label">Warranty % of Unit Price / Year</label>
+              <input name="warranty_percentage" type="number" step="0.5" min="0" max="100"
+                     value="{{ product.warranty_percentage }}" placeholder="10.0"
+                     class="form-input" />
+              <p class="mt-0.5 text-xs text-gray-400">
+                e.g. 10% of ${{ "%.0f"|format(product.cost) }} × {{ product.jaks_warranty_months or 12 }}mo ÷ 12
+                = ${{ "%.2f"|format(product.cost * (product.warranty_percentage / 100) * ((product.jaks_warranty_months or 12) / 12)) }}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {# Notes card #}
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">Notes</h2>
+        </div>
+        <div class="card-body space-y-4">
+          <div>
+            <label class="form-label">Customer-facing Notes</label>
+            <textarea name="notes" rows="2" class="form-textarea">{{ product.notes }}</textarea>
+          </div>
+          <div>
+            <label class="form-label">Internal Notes</label>
+            <textarea name="internal_notes" rows="2" class="form-textarea">{{ product.internal_notes }}</textarea>
+          </div>
+        </div>
+      </div>
+
+      {# Actions — Archive uses deactivate-form defined above to avoid form nesting #}
+      <div class="flex items-center gap-3">
+        <button type="submit" class="btn-primary">Save Changes</button>
+        <a href="/products/" class="btn-secondary">Cancel</a>
+        <button type="submit" form="deactivate-form"
+                class="ml-auto rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors">
+          Archive Product
+        </button>
+      </div>
+
+    </form>
+  </div>
+
+
+  {# ══ VENDOR SOURCES TAB ══ #}
+  <div x-show="tab==='sources'" x-cloak class="space-y-4">
+
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">Vendor Sources</h2>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="tbl">
+          <thead class="tbl-head">
+            <tr>
+              <th class="tbl-th">Vendor</th>
+              <th class="tbl-th">Part Number</th>
+              <th class="tbl-th-r">Cost</th>
+              <th class="tbl-th">Lead Time</th>
+              <th class="tbl-th">Preferred</th>
+              <th class="tbl-th"></th>
+            </tr>
+          </thead>
+          <tbody id="vendor-sources-body">
+            {% for source in product.vendor_sources if source.is_active %}
+            <tr id="vsrc-{{ source.id }}" class="tbl-row">
+              <td class="tbl-td font-medium">{{ source.vendor.name }}</td>
+              <td class="tbl-td font-mono text-xs">{{ source.vendor_part_number or '—' }}</td>
+              <td class="tbl-td-r">${{ "%.2f"|format(source.vendor_cost) }}</td>
+              <td class="tbl-td">
+                {% if source.lead_time_days %}
+                  <span class="text-xs text-gray-500">{{ source.lead_time_days }}d</span>
+                {% else %}
+                  <span class="text-gray-300">—</span>
+                {% endif %}
+              </td>
+              <td class="tbl-td">
+                {% if source.is_preferred %}
+                  <span class="badge-green">Preferred</span>
+                {% else %}
+                  <button type="button"
+                          hx-post="/products/{{ product.id }}/vendor-sources/{{ source.id }}/prefer"
+                          hx-target="#vendor-sources-body"
+                          hx-swap="innerHTML"
+                          class="btn-ghost">
+                    Set Preferred
+                  </button>
+                {% endif %}
+              </td>
+              <td class="tbl-td text-right">
+                <button type="button"
+                        hx-delete="/products/{{ product.id }}/vendor-sources/{{ source.id }}"
+                        hx-target="closest tr"
+                        hx-swap="outerHTML swap:200ms"
+                        hx-confirm="Remove this vendor source?"
+                        class="rounded-lg border border-red-200 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors">
+                  Remove
+                </button>
+              </td>
+            </tr>
+            {% else %}
+            <tr id="vsrc-empty">
+              <td colspan="6" class="tbl-empty">No vendor sources added yet.</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">Add Vendor Source</h2>
+      </div>
+      <div class="card-body">
+        <form hx-post="/products/{{ product.id }}/vendor-sources"
+              hx-target="#vendor-sources-body"
+              hx-swap="beforeend"
+              hx-on::after-request="this.reset()"
+              class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="form-label">Vendor <span class="text-red-500">*</span></label>
+            <select name="vendor_id" class="form-select">
+              <option value="">— Select Vendor —</option>
+              {% for v in vendors %}
+                <option value="{{ v.id }}">{{ v.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label class="form-label">Vendor Part Number</label>
+            <input name="vendor_part_number" type="text" placeholder="Supplier's part #"
+                   class="form-input font-mono" />
+          </div>
+          <div>
+            <label class="form-label">Vendor Cost ($)</label>
+            <input name="vendor_cost" type="number" step="0.01" min="0" placeholder="0.00"
+                   class="form-input" />
+          </div>
+          <div>
+            <label class="form-label">Lead Time (days)</label>
+            <input name="lead_time_days" type="number" min="0" placeholder="e.g. 3"
+                   class="form-input" />
+          </div>
+          <div class="col-span-2 flex items-center justify-between">
+            <label class="flex items-center gap-2 cursor-pointer select-none">
+              <input type="checkbox" name="is_preferred" class="form-checkbox" />
+              <span class="text-sm text-gray-700">Set as preferred vendor</span>
+            </label>
+            <button type="submit" class="btn-primary">Add Source</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+
+  {# ══ CROSS REFS TAB ══ #}
+  <div x-show="tab==='xrefs'" x-cloak class="space-y-4">
+
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">Cross References</h2>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="tbl">
+          <thead class="tbl-head">
+            <tr>
+              <th class="tbl-th">Type</th>
+              <th class="tbl-th">Part Number</th>
+              <th class="tbl-th">Brand</th>
+              <th class="tbl-th">Confidence</th>
+              <th class="tbl-th"></th>
+            </tr>
+          </thead>
+          <tbody id="cross-refs-body">
+            {% for xref in product.cross_references %}
+            {% include "products/_cross_ref_row.html" %}
+            {% else %}
+            <tr id="xref-empty">
+              <td colspan="5" class="tbl-empty">No cross references added yet.</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">Add Cross Reference</h2>
+      </div>
+      <div class="card-body">
+        <form hx-post="/products/{{ product.id }}/cross-refs"
+              hx-target="#cross-refs-body"
+              hx-swap="beforeend"
+              hx-on::after-request="this.reset()"
+              class="grid grid-cols-3 gap-4">
+          <div>
+            <label class="form-label">Type</label>
+            <select name="ref_type" class="form-select">
+              {% for rt in cross_ref_types %}
+                <option value="{{ rt }}">{{ rt|upper }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label class="form-label">Part Number <span class="text-red-500">*</span></label>
+            <input name="ref_number" type="text" placeholder="e.g. 3803583"
+                   class="form-input font-mono" />
+          </div>
+          <div>
+            <label class="form-label">Brand</label>
+            <input name="brand" type="text" placeholder="e.g. Cummins" class="form-input" />
+          </div>
+          <div class="col-span-2">
+            <label class="form-label">Confidence</label>
+            <select name="status" class="form-select">
+              <option value="proven" selected>Proven</option>
+              <option value="found">Found</option>
+              <option value="researching">Researching</option>
+              <option value="dealer_confirmed">Dealer Confirmed</option>
+              <option value="vendor_confirmed">Vendor Confirmed</option>
+              <option value="bad_cross">Bad Cross</option>
+              <option value="obsolete">Obsolete</option>
+            </select>
+          </div>
+          <div class="flex items-end justify-end">
+            <button type="submit" class="btn-primary">Add Cross Ref</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+
+  {# ══ IMAGES TAB ══ #}
+  <div x-show="tab==='images'" x-cloak class="space-y-4">
+
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">Product Images</h2>
+      </div>
+      <div class="card-body">
+        {% with images = product.images, product_id = product.id %}
+          {% include "products/_images_grid.html" %}
+        {% endwith %}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">Upload Image</h2>
+      </div>
+      <div class="card-body">
+        <form hx-post="/products/{{ product.id }}/images"
+              hx-target="#images-grid"
+              hx-swap="outerHTML"
+              hx-encoding="multipart/form-data"
+              hx-on::after-request="this.reset()"
+              class="flex items-end gap-4">
+          <div class="flex-1">
+            <label class="form-label">Image File</label>
+            <input type="file" name="file" accept="image/*" required
+                   class="block w-full text-sm text-gray-500
+                          file:mr-4 file:py-2 file:px-4
+                          file:rounded-lg file:border-0
+                          file:text-sm file:font-medium
+                          file:bg-brand-50 file:text-brand-700
+                          hover:file:bg-brand-100" />
+          </div>
+          <button type="submit" class="btn-primary shrink-0">Upload</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+
+  {# ══ SUGGESTED SELLS TAB ══ #}
+  <div x-show="tab==='suggestions'" x-cloak class="space-y-4">
+
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">Suggested Sells</h2>
+          <p class="text-xs text-gray-400 mt-0.5">
+            These products appear as chips on the quote line for fast one-click add.
+            Warranty type chips open the tier picker.
+          </p>
+        </div>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="tbl">
+          <thead class="tbl-head">
+            <tr>
+              <th class="tbl-th">Product</th>
+              <th class="tbl-th">Type</th>
+              <th class="tbl-th-r">Cost</th>
+              <th class="tbl-th-r">Sell Price</th>
+              <th class="tbl-th"></th>
+            </tr>
+          </thead>
+          <tbody id="suggested-sells-body">
+            {% for suggestion in product.suggested_sells %}
+            {% include "products/_suggested_sell_row.html" %}
+            {% else %}
+            <tr id="ss-empty">
+              <td colspan="5" class="tbl-empty">
+                No suggested sells configured. Add products below to show chips on quotes.
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">Add Suggested Product</h2>
+      </div>
+      <div class="card-body">
+        <form hx-post="/products/{{ product.id }}/suggested-sells"
+              hx-target="#suggested-sells-body"
+              hx-swap="beforeend"
+              hx-on::after-request="this.reset()"
+              class="grid grid-cols-3 gap-4">
+          <div>
+            <label class="form-label">SKU <span class="text-red-500">*</span></label>
+            <input name="sku" type="text" placeholder="e.g. JAKS-PAI-12345"
+                   class="form-input font-mono" />
+            <p class="mt-0.5 text-xs text-gray-400">Exact SKU of the product to suggest</p>
+          </div>
+          <div>
+            <label class="form-label">Type</label>
+            <select name="relationship_type" class="form-select">
+              {% for st in suggested_sell_types %}
+              <option value="{{ st }}" {% if st == 'recommended' %}selected{% endif %}>{{ st|title }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="flex items-end">
+            <button type="submit" class="btn-primary w-full">Add Suggestion</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    {% if product.suggested_sells %}
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">Chip Preview</h2>
+        <span class="text-xs text-gray-400">How this looks on the quote line</span>
+      </div>
+      <div class="card-body">
+        <div class="flex flex-wrap gap-2">
+          {% for s in product.suggested_sells if s.relationship_type in ['recommended', 'required', 'warranty'] %}
+          <span class="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium
+            {% if s.relationship_type == 'warranty' %}border-blue-200 bg-blue-50 text-blue-700
+            {% elif s.relationship_type == 'required' %}border-amber-200 bg-amber-50 text-amber-700
+            {% else %}border-gray-200 bg-white text-gray-700{% endif %}">
+            <span class="text-gray-400">+</span>
+            {{ s.suggested_product.sku }}
+          </span>
+          {% else %}
+          <span class="text-xs text-gray-400">No chips to preview (all suggestions are "optional" type)</span>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+
+  {# ══ COST HISTORY TAB ══ #}
+  <div x-show="tab==='history'" x-cloak>
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">Cost History</h2>
+      </div>
+      {% if product.cost_history %}
+      <div class="overflow-x-auto">
+        <table class="tbl">
+          <thead class="tbl-head">
+            <tr>
+              <th class="tbl-th">Date</th>
+              <th class="tbl-th-r">Old Cost</th>
+              <th class="tbl-th-r">New Cost</th>
+              <th class="tbl-th-r">Change</th>
+              <th class="tbl-th">Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for h in product.cost_history|sort(attribute='changed_at', reverse=True) %}
+            <tr class="tbl-row">
+              <td class="tbl-td text-gray-500">{{ h.changed_at.strftime('%Y-%m-%d') if h.changed_at else '—' }}</td>
+              <td class="tbl-td-r text-gray-500">${{ "%.2f"|format(h.old_cost) }}</td>
+              <td class="tbl-td-r font-medium">${{ "%.2f"|format(h.new_cost) }}</td>
+              <td class="tbl-td-r">
+                {% set delta = h.new_cost - h.old_cost %}
+                <span class="{% if delta > 0 %}text-red-600{% elif delta < 0 %}text-green-600{% else %}text-gray-400{% endif %}">
+                  {% if delta > 0 %}+{% endif %}${{ "%.2f"|format(delta) }}
+                </span>
+              </td>
+              <td class="tbl-td text-xs text-gray-500">{{ h.notes or '—' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="tbl-empty">No cost changes recorded yet.</div>
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+{% endblock %}

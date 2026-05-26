@@ -1,0 +1,24 @@
+{% if customers %}
+  {% for c in customers %}
+  <button
+    type="button"
+    class="w-full text-left px-3 py-2 hover:bg-gray-50 text-sm border-b border-gray-100 last:border-0 transition-colors"
+    onclick="
+      document.dispatchEvent(new CustomEvent('customer-selected', {
+        detail: { id: {{ c.id }}, name: '{{ c.company_name | replace("'", "\\'") }}' }
+      }));
+      this.closest('[id]').style.display = 'none';
+    "
+  >
+    <span class="font-medium text-gray-900">{{ c.company_name }}</span>
+    {% if c.phone %}
+    <span class="text-gray-400 ml-2">{{ c.phone }}</span>
+    {% endif %}
+    {% if c.payment_terms %}
+    <span class="ml-2 text-xs text-gray-400">{{ c.payment_terms }}</span>
+    {% endif %}
+  </button>
+  {% endfor %}
+{% else %}
+  <p class="px-3 py-2 text-sm text-gray-400 italic">No customers found.</p>
+{% endif %}

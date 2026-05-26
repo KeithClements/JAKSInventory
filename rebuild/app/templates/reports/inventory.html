@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Inventory Snapshot — JAKS Inventory{% endblock %}
+{% block heading %}Inventory Snapshot{% endblock %}
+
+{% block header_actions %}
+  <a href="/reports/" class="text-sm text-gray-500 hover:text-gray-700">AR Aging</a>
+  <a href="/reports/sales/" class="text-sm text-gray-500 hover:text-gray-700">Sales Report</a>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl space-y-4">
+
+  <p class="text-xs text-gray-400">As of {{ today.strftime('%B %d, %Y') }} — active products with qty on hand &gt; 0</p>
+
+  {# Summary cards #}
+  <div class="grid grid-cols-3 gap-4">
+    <div class="stat-card">
+      <p class="stat-label">SKUs in Stock</p>
+      <p class="stat-value">{{ products | length }}</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Total Units</p>
+      <p class="stat-value">{{ total_units }}</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Cost Value</p>
+      <p class="stat-value text-brand-700">${{ '%.2f' % total_value }}</p>
+      <p class="text-xs text-gray-400 mt-0.5">Retail est. ${{ '%.2f' % total_retail }}</p>
+    </div>
+  </div>
+
+  {# Product table #}
+  {% if products %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Stock by Product</h2>
+      <a href="/products/" class="text-xs link">All products →</a>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">SKU</th>
+            <th class="tbl-th">Description</th>
+            <th class="tbl-th-r">On Hand</th>
+            <th class="tbl-th-r">On Order</th>
+            <th class="tbl-th-r">Unit Cost</th>
+            <th class="tbl-th-r">Total Value</th>
+            <th class="tbl-th-r">Sell Price</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in products %}
+          <tr class="tbl-row cursor-pointer" onclick="location.href='/products/{{ p.id }}'">
+            <td class="tbl-td font-mono text-xs font-semibold text-brand-700">{{ p.sku }}</td>
+            <td class="tbl-td text-gray-600 text-sm max-w-xs truncate">{{ p.title }}</td>
+            <td class="tbl-td-r font-medium
+              {% if p.qty_on_hand == 0 %}text-red-600
+              {% elif p.reorder_point and p.qty_on_hand <= p.reorder_point %}text-amber-600
+              {% else %}text-green-700{% endif %}">
+              {{ p.qty_on_hand }}
+            </td>
+            <td class="tbl-td-r {% if p.qty_on_order > 0 %}text-blue-600{% else %}text-gray-400{% endif %}">
+              {% if p.qty_on_order > 0 %}{{ p.qty_on_order }}{% else %}—{% endif %}
+            </td>
+            <td class="tbl-td-r tabular-nums">${{ '%.2f' % p.cost }}</td>
+            <td class="tbl-td-r tabular-nums font-semibold text-brand-700">
+              ${{ '%.2f' % (p.qty_on_hand * p.cost) }}
+            </td>
+            <td class="tbl-td-r tabular-nums text-gray-500">${{ '%.2f' % p.selling_price }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="border-t-2 border-gray-200 bg-gray-50">
+          <tr>
+            <td colspan="2" class="px-4 py-3 text-sm font-bold text-gray-700">Totals</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-gray-700">{{ total_units }}</td>
+            <td></td>
+            <td></td>
+            <td class="px-4 py-3 text-right text-lg font-bold text-brand-700">${{ '%.2f' % total_value }}</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-gray-500">${{ '%.2f' % total_retail }}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+
+  {% else %}
+  <div class="card flex flex-col items-center justify-center py-16">
+    <svg class="w-12 h-12 text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+            d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+    </svg>
+    <p class="text-gray-500 font-medium">No products with stock on hand</p>
+    <p class="text-gray-400 text-sm mt-1">Receive a purchase order to add inventory.</p>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

@@ -1,0 +1,29 @@
+<div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+  <div class="rounded-lg bg-gray-50 border border-gray-100 px-4 py-3">
+    <p class="text-xs text-gray-500 mb-0.5">Open Balance</p>
+    <p class="text-lg font-semibold {% if balance.total_open > 0 %}text-gray-800{% else %}text-gray-400{% endif %}">
+      ${{ "%.2f"|format(balance.total_open) }}
+    </p>
+  </div>
+  <div class="rounded-lg {% if balance.overdue_amount > 0 %}bg-red-50 border border-red-100{% else %}bg-gray-50 border border-gray-100{% endif %} px-4 py-3">
+    <p class="text-xs {% if balance.overdue_amount > 0 %}text-red-500{% else %}text-gray-500{% endif %} mb-0.5">Overdue</p>
+    <p class="text-lg font-semibold {% if balance.overdue_amount > 0 %}text-red-700{% else %}text-gray-400{% endif %}">
+      ${{ "%.2f"|format(balance.overdue_amount) }}
+    </p>
+    {% if balance.oldest_overdue_days > 0 %}
+    <p class="text-xs text-red-400 mt-0.5">{{ balance.oldest_overdue_days }}d oldest</p>
+    {% endif %}
+  </div>
+  <div class="rounded-lg {% if balance.credit_balance > 0 %}bg-green-50 border border-green-100{% else %}bg-gray-50 border border-gray-100{% endif %} px-4 py-3">
+    <p class="text-xs {% if balance.credit_balance > 0 %}text-green-600{% else %}text-gray-500{% endif %} mb-0.5">Credit Balance</p>
+    <p class="text-lg font-semibold {% if balance.credit_balance > 0 %}text-green-700{% else %}text-gray-400{% endif %}">
+      ${{ "%.2f"|format(balance.credit_balance) }}
+    </p>
+  </div>
+  <div class="rounded-lg {% if balance.unapplied_payments > 0 %}bg-amber-50 border border-amber-100{% else %}bg-gray-50 border border-gray-100{% endif %} px-4 py-3">
+    <p class="text-xs {% if balance.unapplied_payments > 0 %}text-amber-600{% else %}text-gray-500{% endif %} mb-0.5">Unapplied Payments</p>
+    <p class="text-lg font-semibold {% if balance.unapplied_payments > 0 %}text-amber-700{% else %}text-gray-400{% endif %}">
+      ${{ "%.2f"|format(balance.unapplied_payments) }}
+    </p>
+  </div>
+</div>

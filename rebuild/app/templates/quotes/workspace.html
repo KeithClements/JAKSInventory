@@ -1,0 +1,835 @@
+{% extends "base.html" %}
+{% block title %}{{ quote.quote_number }} — JAKS Inventory{% endblock %}
+{% block heading %}{{ quote.quote_number }}{% endblock %}
+
+{# ── Header actions: status-conditional buttons ──────────────────────────── #}
+{% block header_actions %}
+
+{# Status badge #}
+{% set sc = {
+  'draft':     'bg-gray-100 text-gray-600',
+  'sent':      'bg-blue-100 text-blue-700',
+  'accepted':  'bg-green-100 text-green-700',
+  'converted': 'bg-green-100 text-green-700',
+  'declined':  'bg-red-100 text-red-700',
+  'expired':   'bg-amber-100 text-amber-700',
+} %}
+<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold {{ sc.get(quote.status, 'bg-gray-100 text-gray-600') }}">
+  {{ quote.status | title }}{% if quote.is_expired and quote.status == 'sent' %} · Expired{% endif %}
+</span>
+
+{# Customer name pill #}
+<span class="text-sm font-medium text-gray-700 hidden sm:inline">{{ quote.customer.company_name }}</span>
+
+{# ── Action buttons based on status ── #}
+
+{% if quote.status == QuoteStatus.DRAFT %}
+
+  {# Send #}
+  <form action="/quotes/{{ quote.id }}/send" method="post" class="inline">
+    <button type="submit"
+            class="px-3 py-1.5 bg-brand-700 text-white text-sm font-medium rounded-lg hover:bg-brand-600 transition-colors">
+      Send to Customer
+    </button>
+  </form>
+
+  {# Convert to Invoice (direct) #}
+  <form action="/quotes/{{ quote.id }}/convert-to-invoice" method="post" class="inline">
+    <button type="submit"
+            onclick="return confirm('Convert this quote directly to an invoice?')"
+            class="px-3 py-1.5 bg-brand-700 text-white text-sm font-medium rounded-lg hover:bg-brand-600 transition-colors">
+      → Invoice
+    </button>
+  </form>
+
+  {# Convert to Sales Order (with payment mode) #}
+  <div x-data="{ showSO: false }" class="relative inline-block">
+    <button @click="showSO = !showSO"
+            class="px-3 py-1.5 bg-brand-700 text-white text-sm font-medium rounded-lg hover:bg-brand-600 transition-colors">
+      → Sales Order ▾
+    </button>
+    <div x-show="showSO" x-cloak @click.away="showSO = false"
+         class="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 p-4 w-56">
+      <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Payment at SO</p>
+      <form action="/quotes/{{ quote.id }}/convert-to-so" method="post" class="space-y-3">
+        <label class="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="radio" name="payment_mode" value="{{ SOPaymentMode.NONE }}" checked class="accent-brand-700" />
+          No deposit
+        </label>
+        <label class="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="radio" name="payment_mode" value="{{ SOPaymentMode.DEPOSIT }}" class="accent-brand-700" />
+          Deposit required
+        </label>
+        <label class="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="radio" name="payment_mode" value="{{ SOPaymentMode.FULL }}" class="accent-brand-700" />
+          Full payment
+        </label>
+        <button type="submit"
+                class="w-full px-3 py-2 bg-brand-700 text-white text-sm font-medium rounded-lg hover:bg-brand-600 transition-colors">
+          Create Sales Order →
+        </button>
+      </form>
+    </div>
+  </div>
+
+{% elif quote.status == QuoteStatus.SENT %}
+
+  {# Mark Lost (with reason popup) #}
+  <div x-data="{ showLost: false, reason: '' }" class="relative inline-block">
+    <button @click="showLost = !showLost"
+            class="px-3 py-1.5 border border-red-300 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 transition-colors">
+      Mark Lost
+    </button>
+    <div x-show="showLost" x-cloak @click.away="showLost = false"
+         class="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 p-4 w-72">
+      <p class="text-sm font-semibold text-gray-700 mb-2">Why was this quote lost?</p>
+      <input x-model="reason" type="text"
+             placeholder="Competitor price, timing, no decision…"
+             @keydown.enter.prevent="if(reason.trim()) $el.closest('div').querySelector('form').submit()"
+             class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm mb-3
+                    focus:outline-none focus:ring-1 focus:ring-red-400 focus:border-red-400" />
+      <form action="/quotes/{{ quote.id }}/mark-lost" method="post">
+        <input type="hidden" name="lost_reason" :value="reason" />
+        <button type="submit" :disabled="!reason.trim()"
+                class="w-full px-3 py-2 bg-red-600 text-white text-sm font-medium rounded-lg
+                       hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+          Confirm: Mark Lost
+        </button>
+      </form>
+    </div>
+  </div>
+
+  {# Convert to Invoice #}
+  <form action="/quotes/{{ quote.id }}/convert-to-invoice" method="post" class="inline">
+    <button type="submit"
+            onclick="return confirm('Convert to invoice?')"
+            class="px-3 py-1.5 bg-brand-700 text-white text-sm font-medium rounded-lg hover:bg-brand-600 transition-colors">
+      → Invoice
+    </button>
+  </form>
+
+  {# Convert to SO #}
+  <div x-data="{ showSO: false }" class="relative inline-block">
+    <button @click="showSO = !showSO"
+            class="px-3 py-1.5 bg-brand-700 text-white text-sm font-medium rounded-lg hover:bg-brand-600 transition-colors">
+      → Sales Order ▾
+    </button>
+    <div x-show="showSO" x-cloak @click.away="showSO = false"
+         class="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 p-4 w-56">
+      <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Payment at SO</p>
+      <form action="/quotes/{{ quote.id }}/convert-to-so" method="post" class="space-y-3">
+        <label class="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="radio" name="payment_mode" value="{{ SOPaymentMode.NONE }}" checked class="accent-brand-700" />
+          No deposit
+        </label>
+        <label class="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="radio" name="payment_mode" value="{{ SOPaymentMode.DEPOSIT }}" class="accent-brand-700" />
+          Deposit required
+        </label>
+        <label class="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="radio" name="payment_mode" value="{{ SOPaymentMode.FULL }}" class="accent-brand-700" />
+          Full payment
+        </label>
+        <button type="submit"
+                class="w-full px-3 py-2 bg-brand-700 text-white text-sm font-medium rounded-lg hover:bg-brand-600 transition-colors">
+          Create Sales Order →
+        </button>
+      </form>
+    </div>
+  </div>
+
+{% elif quote.status in (QuoteStatus.DECLINED, QuoteStatus.EXPIRED) %}
+
+  <form action="/quotes/{{ quote.id }}/reactivate" method="post" class="inline">
+    <button type="submit"
+            class="px-3 py-1.5 bg-brand-700 text-white text-sm font-medium rounded-lg hover:bg-brand-600 transition-colors">
+      Reactivate Quote
+    </button>
+  </form>
+
+{% elif quote.status == QuoteStatus.CONVERTED %}
+
+  <span class="text-sm text-gray-400">
+    Converted
+    {% if quote.converted_to_so_id %}→ <a href="/sales-orders/{{ quote.converted_to_so_id }}" class="text-blue-600 hover:underline">SO</a>{% endif %}
+    {% if quote.converted_to_invoice_id %}→ <a href="/invoices/{{ quote.converted_to_invoice_id }}" class="text-blue-600 hover:underline">Invoice</a>{% endif %}
+  </span>
+
+{% endif %}
+
+  {# Download PDF — server-side via WeasyPrint #}
+  <a href="/quotes/{{ quote.id }}/pdf"
+     class="inline-flex items-center gap-1.5 px-3 py-1.5 border border-gray-300 text-gray-600
+            text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors">
+    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+    </svg>
+    Download PDF
+  </a>
+
+  {# Print (browser) — fallback / preview #}
+  <a href="/quotes/{{ quote.id }}/print" target="_blank" rel="noopener"
+     class="inline-flex items-center gap-1.5 px-3 py-1.5 border border-gray-200 text-gray-400
+            text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors">
+    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0
+               002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2
+               2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/>
+    </svg>
+    Print
+  </a>
+
+  {# Back link #}
+  <a href="/quotes/" class="ml-1 text-sm text-gray-400 hover:text-gray-600">← All quotes</a>
+
+{% endblock %}
+
+{% block content %}
+
+{# ── Quote header: info strip + balance chips + notes ─────────────────────── #}
+<form id="quote-header-form" action="/quotes/{{ quote.id }}" method="post">
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm mb-3">
+
+  {# Row 1: Customer · metadata · edit controls · balance chips (all one line) #}
+  <div class="flex items-center gap-x-4 gap-y-1 px-4 py-2.5 border-b border-gray-100 text-sm flex-wrap">
+
+    {# Customer link #}
+    <div class="flex items-center gap-2 shrink-0">
+      <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Customer</span>
+      <a href="/customers/{{ quote.customer_id }}" class="font-semibold text-blue-700 hover:underline">
+        {{ quote.customer.company_name }}
+      </a>
+    </div>
+
+    {# Created #}
+    <div class="flex items-center gap-1.5 shrink-0 text-gray-500">
+      <span class="text-xs text-gray-400">Created</span>
+      <span class="font-medium text-gray-700">{{ quote.created_at.strftime('%b %d, %Y') }}</span>
+    </div>
+
+    {# Valid Until #}
+    {% if quote.valid_until %}
+    <div class="flex items-center gap-1.5 shrink-0">
+      <span class="text-xs text-gray-400">Expires</span>
+      <span class="font-medium {% if quote.is_expired %}text-red-600{% else %}text-gray-700{% endif %}">
+        {{ quote.valid_until.strftime('%b %d, %Y') }}
+      </span>
+    </div>
+    {% endif %}
+
+    {# Disc % input #}
+    <div class="flex items-center gap-1.5 shrink-0">
+      <label class="text-xs text-gray-400">Disc&nbsp;%</label>
+      <input type="number" name="discount_pct" value="{{ quote.discount_pct }}" min="0" max="100" step="0.5"
+             class="w-14 border border-gray-200 rounded px-2 py-0.5 text-sm text-right
+                    focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+    </div>
+
+    {# Validity days input #}
+    <div class="flex items-center gap-1.5 shrink-0">
+      <label class="text-xs text-gray-400">Valid&nbsp;(days)</label>
+      <input type="number" name="validity_days" value="{{ quote.validity_days }}" min="1" max="365"
+             class="w-14 border border-gray-200 rounded px-2 py-0.5 text-sm text-right
+                    focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+    </div>
+
+    {# Save + autosave indicator #}
+    <button type="submit"
+            class="px-2.5 py-0.5 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200 transition-colors font-medium shrink-0">
+      Save
+    </button>
+    <span id="autosave-status" class="text-xs text-gray-400 shrink-0"></span>
+
+    {# ── Balance chips — right-aligned ── #}
+    <div class="ml-auto flex items-center gap-2 flex-wrap">
+
+      <span class="inline-flex items-center text-xs px-2 py-0.5 bg-gray-100 rounded text-gray-600 font-medium">
+        {{ quote.customer.payment_terms | upper | replace('_', ' ') }}
+      </span>
+
+      {% if cust_open_balance > 0 %}
+      <span class="inline-flex items-center text-xs px-2 py-0.5 bg-gray-100 rounded text-gray-600">
+        Open: <span class="font-bold text-gray-800 ml-1 tabular-nums">${{ '%.2f' % cust_open_balance }}</span>
+      </span>
+      {% endif %}
+
+      {% if cust_overdue_balance > 0 %}
+      <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-red-50 rounded text-red-700 font-semibold border border-red-100">
+        ⚠ Overdue: <span class="tabular-nums">${{ '%.2f' % cust_overdue_balance }}</span>
+      </span>
+      {% endif %}
+
+      {% if cust_credit_balance > 0 %}
+      <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-green-50 rounded text-green-700 font-semibold border border-green-100">
+        ✓ Credit <span class="tabular-nums">${{ '%.2f' % cust_credit_balance }}</span>
+      </span>
+      {% endif %}
+
+      {% if cores_owed_qty > 0 %}
+      <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-amber-50 rounded text-amber-700 font-semibold border border-amber-100">
+        ⟲ {{ cores_owed_qty }} core{{ 's' if cores_owed_qty != 1 else '' }}
+      </span>
+      {% endif %}
+
+      <a href="/customers/{{ quote.customer_id }}"
+         class="inline-flex items-center gap-0.5 text-xs text-brand-600 hover:underline font-medium ml-1">
+        Account
+        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+        </svg>
+      </a>
+    </div>
+  </div>
+
+  {# Row 2: Notes (compact inline, 1 row) #}
+  <div class="grid grid-cols-2 divide-x divide-gray-100">
+    <div class="flex items-center gap-2 px-4 py-2">
+      <label class="text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap shrink-0">Notes</label>
+      <textarea name="notes" rows="1"
+                placeholder="Customer-facing note…"
+                class="flex-1 text-sm text-gray-700 border border-transparent hover:border-gray-200
+                       focus:border-brand-400 focus:outline-none rounded px-1 py-0.5 resize-none
+                       bg-transparent focus:bg-white transition-colors">{{ quote.notes }}</textarea>
+    </div>
+    <div class="flex items-center gap-2 px-4 py-2">
+      <label class="text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap shrink-0">Internal</label>
+      <textarea name="internal_notes" rows="1"
+                placeholder="Internal only, not printed…"
+                class="flex-1 text-sm text-gray-700 border border-transparent hover:border-gray-200
+                       focus:border-brand-400 focus:outline-none rounded px-1 py-0.5 resize-none
+                       bg-transparent focus:bg-white transition-colors">{{ quote.internal_notes }}</textarea>
+    </div>
+  </div>
+
+</div>
+</form>
+
+{# ── Lost reason banner ───────────────────────────────────────────────────── #}
+{% if quote.lost_reason %}
+<div class="bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-4 text-sm text-red-700 flex items-start gap-2">
+  <svg class="w-4 h-4 mt-0.5 shrink-0 text-red-400" fill="currentColor" viewBox="0 0 20 20">
+    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"/>
+  </svg>
+  <div>
+    <span class="font-semibold">Lost:</span> {{ quote.lost_reason }}
+  </div>
+</div>
+{% endif %}
+
+{# ── Add-line search (above the table, always visible) ────────────────────── #}
+{% if quote.status in (QuoteStatus.DRAFT, QuoteStatus.SENT) %}
+<div x-data="lineAdder({{ quote.id }}, {{ quote.discount_pct }})"
+     @start-child-add.window="setChildMode($event.detail)"
+     @record-created.window="
+       if ($event.detail.type === 'product') {
+         selectProduct({
+           product_id: $event.detail.id,
+           part_number: $event.detail.part_number,
+           description: $event.detail.description,
+           current_cost: $event.detail.current_cost,
+           suggested_sell: $event.detail.suggested_sell
+         });
+       }
+     "
+     class="bg-white rounded-xl border border-gray-200 shadow-sm mb-3 px-3 py-3">
+
+  {# Child-mode banner #}
+  <div x-show="childMode" x-cloak
+       class="flex items-center gap-2 mb-2 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700">
+    <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 9l3 3-3 3M6 12h10"/>
+    </svg>
+    <span>Adding <span class="font-semibold" x-text="childModeLabel"></span> to line <span class="font-mono" x-text="'#' + parentLineId"></span></span>
+    <button type="button" @click="clearChildMode()" class="ml-auto text-amber-400 hover:text-amber-600">✕</button>
+  </div>
+
+  {# Row 1: Full-width part search (prominent, like Design B) #}
+  <div class="relative mb-2" @click.away="results = []">
+    <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+         fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
+    </svg>
+    <input
+      type="text"
+      id="line-search-input"
+      x-ref="searchInput"
+      x-model="q"
+      @input.debounce.250ms="doSearch()"
+      @keydown.escape="results = []; q = ''; selectedProduct = null"
+      @keydown.arrow-down.prevent="focusResult(0)"
+      placeholder="Search parts: Part#, OEM#, cross-ref, description — or type free text to add a misc line"
+      autocomplete="off"
+      class="w-full pl-10 pr-20 py-2.5 text-sm border-2 border-gray-300 rounded-lg
+             focus:border-brand-400 focus:outline-none focus:ring-0 bg-white font-medium"
+    />
+    {# Spinner + keyboard hint #}
+    <div class="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
+      <div x-show="loading" class="pointer-events-none">
+        <svg class="w-3.5 h-3.5 animate-spin text-gray-400" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+        </svg>
+      </div>
+      <span x-show="!loading" class="text-xs text-gray-400 font-mono pointer-events-none">/</span>
+    </div>
+    {# Results dropdown #}
+    <div x-show="results.length > 0" x-cloak
+         class="absolute left-0 top-full z-40 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl
+                max-h-60 overflow-y-auto w-full">
+      <template x-for="(r, idx) in results" :key="r.product_id">
+        <button
+          type="button"
+          :id="'result-' + idx"
+          @click="selectProduct(r)"
+          @keydown.enter.prevent="selectProduct(r)"
+          @keydown.arrow-down.prevent="focusResult(idx + 1)"
+          @keydown.arrow-up.prevent="idx > 0 ? focusResult(idx - 1) : $refs.searchInput.focus()"
+          class="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-blue-50
+                 transition-colors focus:bg-blue-50 focus:outline-none border-b border-gray-50 last:border-0">
+          <span class="font-mono text-xs font-bold text-blue-700 w-24 shrink-0 truncate" x-text="r.part_number"></span>
+          <span class="flex-1 text-sm text-gray-800 truncate" x-text="r.description"></span>
+          <span class="text-xs shrink-0 tabular-nums font-medium"
+                :class="r.qty_on_hand <= 0 ? 'text-red-500' : 'text-gray-400'"
+                x-text="r.qty_on_hand <= 0 ? 'Out' : r.qty_on_hand + ' ea'"></span>
+          <span class="text-xs text-gray-500 shrink-0 tabular-nums" x-text="'$' + r.suggested_sell.toFixed(2)"></span>
+          <span x-show="r.last_sold_price"
+                class="text-xs text-brand-400 shrink-0 tabular-nums"
+                x-text="r.last_sold_price ? 'Last $' + r.last_sold_price.toFixed(2) : ''"></span>
+        </button>
+      </template>
+    </div>
+  </div>
+
+  {# Row 2: Selected indicator (left) + controls (right) #}
+  <div class="flex items-center gap-2">
+
+    {# Selected product indicator — shrinks when space is tight #}
+    <p x-show="selectedProduct" x-cloak
+       class="min-w-0 text-xs text-green-600 flex items-center gap-1 truncate mr-auto">
+      <svg class="w-3 h-3 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+      </svg>
+      <span class="truncate" x-text="selectedProduct ? selectedProduct.description : ''"></span>
+    </p>
+
+    {# Qty #}
+    <div class="flex items-center gap-1 shrink-0">
+      <label class="text-xs text-gray-500 font-medium">Qty</label>
+      <input
+        type="number"
+        x-ref="qtyInput"
+        x-model.number="qty"
+        min="1"
+        @keydown.enter.prevent="$refs.priceInput.select()"
+        class="w-14 text-right border border-gray-300 rounded-lg px-2 py-1.5 text-sm
+               focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400"
+      />
+    </div>
+
+    {# Price #}
+    <div class="flex items-center gap-1 shrink-0">
+      <label class="text-xs text-gray-500 font-medium">$</label>
+      <input
+        type="number"
+        x-ref="priceInput"
+        x-model.number="unitPrice"
+        step="0.01"
+        min="0"
+        @keydown.enter.prevent="$refs.discInput.select()"
+        class="w-24 text-right border border-gray-300 rounded-lg px-2 py-1.5 text-sm
+               focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400"
+      />
+    </div>
+
+    {# Discount % #}
+    <div class="flex items-center gap-1 shrink-0">
+      <label class="text-xs text-gray-500 font-medium">Disc&nbsp;%</label>
+      <input
+        type="number"
+        x-ref="discInput"
+        x-model.number="discountPct"
+        step="0.5"
+        min="0"
+        max="100"
+        @keydown.enter.prevent="addLine()"
+        class="w-14 text-right border border-gray-300 rounded-lg px-2 py-1.5 text-sm
+               focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400"
+      />
+    </div>
+
+    {# New Product shortcut — opens quick-create slide-over #}
+    <button
+      type="button"
+      hx-get="/products/quick-create-form"
+      hx-target="#create-slide-content"
+      hx-swap="innerHTML"
+      @click="$dispatch('open-create-slide', { title: 'New Product' })"
+      class="px-3 py-1.5 text-xs font-medium text-brand-700 border border-brand-200
+             rounded-lg bg-brand-50 hover:bg-brand-100 transition-colors shrink-0"
+      title="Create a new product record and auto-select it"
+    >
+      + New Product
+    </button>
+
+    {# Add button #}
+    <button
+      type="button"
+      @click="addLine()"
+      :disabled="!selectedProduct && q.trim().length < 2"
+      class="px-4 py-1.5 bg-brand-700 text-white text-sm font-medium rounded-lg
+             hover:bg-brand-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
+    >
+      + Add Line
+    </button>
+
+  </div>{# /controls row #}
+</div>
+{% endif %}{# /add-line card #}
+
+{# ── Line items ───────────────────────────────────────────────────────────── #}
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden mb-0">
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="border-b border-gray-100 bg-gray-50 text-xs font-semibold text-gray-400 uppercase tracking-wide">
+          <th class="text-left px-3 py-2 w-28">SKU</th>
+          <th class="text-left px-2 py-2">Description</th>
+          <th class="text-center px-2 py-2 w-14">QOH</th>
+          <th class="text-right px-2 py-2 w-12">Qty</th>
+          <th class="text-right px-2 py-2 w-24">Sell $</th>
+          <th class="text-right px-2 py-2 w-16">Disc %</th>
+          <th class="text-right px-2 py-2 w-14">Margin %</th>
+          <th class="text-right px-3 py-2 w-24">Total</th>
+          <th class="w-8 px-2 py-2"></th>
+        </tr>
+      </thead>
+      <tbody id="quote-lines-tbody"
+             hx-get="/quotes/{{ quote.id }}/lines"
+             hx-trigger="refreshLines"
+             hx-swap="innerHTML">
+        {% for line in sorted_lines %}
+          {% include "quotes/_line_row.html" %}
+        {% endfor %}
+        {% if not sorted_lines %}
+        <tr id="empty-state-row">
+          <td colspan="9" class="px-4 py-8 text-center text-gray-400 text-sm">
+            No lines yet — search for a part above to get started.
+          </td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+</div>{# /card #}
+
+{# ── Totals bar ───────────────────────────────────────────────────────────── #}
+<div id="quote-totals"
+     hx-get="/quotes/{{ quote.id }}/totals"
+     hx-trigger="refreshTotals"
+     class="bg-white border border-gray-200 rounded-xl shadow-sm mt-3 px-4 py-3">
+  {% include "quotes/_totals.html" %}
+</div>
+
+{# ── Follow-Up Bar ────────────────────────────────────────────────────────── #}
+{% include "quotes/_follow_up_bar.html" %}
+
+{# ── JS: Alpine lineAdder component + htmx:afterRequest → totals refresh ─── #}
+<script>
+function lineAdder(quoteId, defaultDisc) {
+  return {
+    q: '',
+    results: [],
+    loading: false,
+    selectedProduct: null,
+    qty: 1,
+    unitPrice: 0.00,
+    unitCost: 0.00,
+    discountPct: defaultDisc,
+
+    // ── Child-mode state ──────────────────────────────────────────────────
+    childMode: false,       // true when adding a child to a specific parent
+    parentLineId: null,     // which parent
+    childLineRole: 'primary', // 'upgrade_option' | 'optional' | 'warranty' | 'suggested'
+    childModeLabel: '',     // human label for the banner
+
+    setChildMode(detail) {
+      this.childMode = true;
+      this.parentLineId = detail.parentLineId;
+      this.childLineRole = detail.lineRole || 'upgrade_option';
+      this.childModeLabel = detail.label || 'child line';
+      this.$nextTick(() => {
+        this.$refs.searchInput.focus();
+        this.$refs.searchInput.select();
+      });
+    },
+
+    clearChildMode() {
+      this.childMode = false;
+      this.parentLineId = null;
+      this.childLineRole = 'primary';
+      this.childModeLabel = '';
+    },
+
+    async doSearch() {
+      if (this.q.trim().length < 2) {
+        this.results = [];
+        return;
+      }
+      this.loading = true;
+      try {
+        const resp = await fetch('/quotes/product-search?q=' + encodeURIComponent(this.q.trim()));
+        this.results = await resp.json();
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    focusResult(idx) {
+      const el = document.getElementById('result-' + idx);
+      if (el) el.focus();
+    },
+
+    selectProduct(r) {
+      this.selectedProduct = r;
+      this.q = r.part_number;
+      this.unitCost = r.current_cost;
+      this.unitPrice = r.suggested_sell;
+      this.results = [];
+      this.$nextTick(() => {
+        this.$refs.qtyInput.focus();
+        this.$refs.qtyInput.select();
+      });
+    },
+
+    addLine() {
+      const desc = (this.selectedProduct ? this.selectedProduct.description : '') || this.q.trim();
+      if (!desc) return;
+
+      // Remove empty-state row if present
+      const emptyRow = document.getElementById('empty-state-row');
+      if (emptyRow) emptyRow.remove();
+
+      const values = {
+        description: desc,
+        qty: this.qty,
+        unit_price: this.unitPrice,
+        unit_cost: this.unitCost,
+        discount_pct: this.discountPct,
+        line_type: this.selectedProduct ? 'product' : 'misc',
+        line_role: this.childMode ? this.childLineRole : 'primary',
+      };
+      if (this.selectedProduct) {
+        values.product_id = this.selectedProduct.product_id;
+      }
+
+      if (this.childMode && this.parentLineId) {
+        // Insert child line immediately before the parent's chips row
+        values.parent_line_id = this.parentLineId;
+        htmx.ajax('POST', '/quotes/' + quoteId + '/lines', {
+          values: values,
+          target: '#chips-' + this.parentLineId,
+          swap: 'beforebegin',
+        });
+      } else {
+        // Normal top-level line: append to tbody
+        htmx.ajax('POST', '/quotes/' + quoteId + '/lines', {
+          values: values,
+          target: '#quote-lines-tbody',
+          swap: 'beforeend',
+        });
+      }
+
+      this.reset();
+    },
+
+    reset() {
+      this.q = '';
+      this.results = [];
+      this.selectedProduct = null;
+      this.qty = 1;
+      this.unitPrice = 0;
+      this.unitCost = 0;
+      this.clearChildMode();
+      this.$nextTick(() => this.$refs.searchInput.focus());
+    },
+  };
+}
+
+// ── Autosave: debounced header field save ──────────────────────────────────
+(function () {
+  var timer = null;
+  var savedAt = null;
+
+  function setStatus(text, cls) {
+    var el = document.getElementById('autosave-status');
+    if (el) { el.textContent = text; el.className = cls; }
+  }
+
+  function doSave() {
+    setStatus('Saving…', 'text-xs text-gray-400');
+    var form = document.getElementById('quote-header-form');
+    if (!form) return;
+    fetch('/quotes/{{ quote.id }}/autosave', {
+      method: 'POST',
+      body: new FormData(form),
+    }).then(function (r) {
+      if (r.ok) {
+        savedAt = Date.now();
+        setStatus('✓ Saved', 'text-xs text-green-600 font-medium');
+      } else {
+        setStatus('Save failed', 'text-xs text-red-500 font-medium');
+      }
+    }).catch(function () {
+      setStatus('Save failed', 'text-xs text-red-500 font-medium');
+    });
+  }
+
+  function schedule() {
+    clearTimeout(timer);
+    timer = setTimeout(doSave, 2500);
+  }
+
+  // Attach listeners after DOM is ready
+  document.addEventListener('DOMContentLoaded', function () {
+    var form = document.getElementById('quote-header-form');
+    if (!form) return;
+    form.querySelectorAll('input, textarea').forEach(function (el) {
+      el.addEventListener('input', schedule);
+      el.addEventListener('change', schedule);
+    });
+  });
+
+  // Update "Saved X ago" every 30s so it doesn't freeze on "Saved"
+  setInterval(function () {
+    if (!savedAt) return;
+    var secs = Math.floor((Date.now() - savedAt) / 1000);
+    if (secs < 15) return; // still shows "✓ Saved" — fresh enough
+    var mins = Math.floor(secs / 60);
+    var label = mins < 1 ? 'Saved ' + secs + 's ago' : 'Saved ' + mins + 'm ago';
+    setStatus(label, 'text-xs text-gray-400');
+  }, 30000);
+})();
+
+// After any HTMX request that modifies lines, refresh the totals bar.
+// select-upgrade and toggle-included already return the full tbody HTML
+// (hx-swap="innerHTML" on the button), so only totals needs a follow-up.
+document.body.addEventListener('htmx:afterRequest', function (evt) {
+  const path = (evt.detail.pathInfo && evt.detail.pathInfo.requestPath) || '';
+  if (/\/quotes\/\d+\/lines/.test(path)) {
+    htmx.trigger(document.getElementById('quote-totals'), 'refreshTotals');
+  }
+});
+
+// ── Keyboard navigation for the line table ──────────────────────────────────
+//
+// Enter in Qty  → saves (if changed) then moves focus to Price in the same row.
+// Enter in Price / Disc % → saves (if changed) then moves focus to the search bar.
+//
+// The challenge: hx-trigger="change" fires an hx-swap="outerHTML" that destroys
+// the DOM nodes we're trying to focus.  We solve this with a two-step approach:
+//   1. Before blur, store the desired next-focus target in lineNav.pendingFocus.
+//   2. A microtask checks whether the "change" event actually fired:
+//      – No change: no HTMX swap is coming → focus directly.
+//      – Change fired: HTMX will swap the row → htmx:afterSwap picks up
+//        pendingFocus and focuses the right element in the fresh DOM.
+window.lineNav = {
+  pendingFocus: null,  // { lineId, field }
+
+  qtyEnter: function (el) {
+    var row   = el.closest('tr');
+    var rowId = row.id.replace('line-', '');
+    var changeFired = false;
+    var onchange = function () { changeFired = true; };
+    el.addEventListener('change', onchange, { once: true });
+    window.lineNav.pendingFocus = { lineId: rowId, field: 'unit_price' };
+    el.blur();
+    Promise.resolve().then(function () {
+      el.removeEventListener('change', onchange);
+      if (!changeFired) {
+        // Value unchanged → no HTMX swap coming; focus price directly.
+        window.lineNav.pendingFocus = null;
+        var target = row.querySelector('[name="unit_price"]');
+        if (target) { target.focus(); target.select(); }
+      }
+      // If changeFired, htmx:afterSwap will restore focus.
+    });
+  },
+
+  priceEnter: function (el) {
+    var row   = el.closest('tr');
+    var rowId = row.id.replace('line-', '');
+    var changeFired = false;
+    var onchange = function () { changeFired = true; };
+    el.addEventListener('change', onchange, { once: true });
+    window.lineNav.pendingFocus = { lineId: rowId, field: 'search' };
+    el.blur();
+    Promise.resolve().then(function () {
+      el.removeEventListener('change', onchange);
+      if (!changeFired) {
+        // Value unchanged → focus search directly.
+        window.lineNav.pendingFocus = null;
+        var s = document.getElementById('line-search-input');
+        if (s) { s.focus(); s.select(); }
+      }
+      // If changeFired, htmx:afterSwap will restore focus.
+    });
+  },
+};
+
+// Chips-row lifecycle management + focus restoration after row swap.
+//
+// _line_row.html renders a chips <tr id="chips-N"> immediately after the main
+// <tr id="line-N">.  Two situations need cleanup:
+//
+//   DELETE  — hx-swap="delete" removes only the main row; the chips row must
+//             be explicitly removed afterwards.
+//
+//   UPDATE  — hx-swap="outerHTML" replaces the main row with fresh HTML that
+//             already includes a new chips row, but the old chips row is still
+//             sitting in the DOM right after it.  Remove the duplicate.
+//
+// We use htmx:afterSwap so the DOM mutation has already happened when we run.
+// The line ID is extracted from the request path rather than the (possibly
+// removed) target element.
+document.body.addEventListener('htmx:afterSwap', function (evt) {
+  const path = (evt.detail.pathInfo && evt.detail.pathInfo.requestPath) || '';
+  const verb = (evt.detail.requestConfig && evt.detail.requestConfig.verb || '').toLowerCase();
+  const lineMatch = path.match(/\/quotes\/\d+\/lines\/(\d+)$/);
+  if (!lineMatch) return;
+  const lineId = lineMatch[1];
+
+  if (verb === 'delete') {
+    // Main row was deleted — kill its chips row too.
+    const chips = document.getElementById('chips-' + lineId);
+    if (chips) chips.remove();
+
+  } else if (verb === 'post') {
+    // Main row was replaced — new chips row is the first one in the DOM;
+    // any subsequent duplicate (the old chips row) must be removed.
+    const all = [...document.querySelectorAll('#chips-' + lineId)];
+    all.slice(1).forEach(function (el) { el.remove(); });
+
+    // Restore keyboard focus in the freshly swapped row.
+    var pf = window.lineNav && window.lineNav.pendingFocus;
+    if (pf && lineId === pf.lineId) {
+      if (pf.field === 'search') {
+        var s = document.getElementById('line-search-input');
+        if (s) { s.focus(); s.select(); }
+      } else {
+        var row = document.getElementById('line-' + lineId);
+        if (row) {
+          var target = row.querySelector('[name="' + pf.field + '"]');
+          if (target) { target.focus(); target.select(); }
+        }
+      }
+      window.lineNav.pendingFocus = null;
+    }
+  }
+});
+</script>
+
+{% endblock %}

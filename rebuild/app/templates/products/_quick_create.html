@@ -1,0 +1,106 @@
+{#
+  Quick Create Product slide-over content.
+  Loaded via HTMX into #create-slide-content in base.html.
+  Used when "Add non-stocked item" is chosen from quote search.
+#}
+<form
+  class="flex flex-col flex-1 min-h-0"
+  hx-post="/products/quick-create"
+  hx-target="#create-slide-content"
+  hx-swap="innerHTML"
+>
+  <div class="slide-over-body space-y-4">
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">
+        SKU <span class="text-red-500">*</span>
+      </label>
+      <div class="flex gap-2 items-center">
+        <span class="px-2 py-2 text-sm text-gray-500 bg-gray-100 border border-gray-300 border-r-0 rounded-l-lg">JAKS-</span>
+        <input type="text" name="sku_suffix" required autofocus
+               class="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-r-lg
+                      focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400"
+               placeholder="PAI-311148"/>
+      </div>
+      <p class="mt-1 text-xs text-gray-400">Full SKU: JAKS-[what you type]</p>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">
+        Title / Description <span class="text-red-500">*</span>
+      </label>
+      <input type="text" name="title" required
+             class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg
+                    focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400"
+             placeholder="e.g. Inframe Kit ISX"/>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Unit Cost</label>
+      <div class="relative">
+        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
+        <input type="number" name="cost" min="0" step="0.01" value="0.00"
+               x-data x-ref="costInput"
+               class="w-full pl-6 pr-3 py-2 text-sm border border-gray-300 rounded-lg
+                      focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400"/>
+      </div>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Markup %</label>
+      <div
+        x-data="{ markup: 30, cost: 0 }"
+        x-init="
+          $watch('markup', v => {});
+          document.querySelector('[name=cost]').addEventListener('input', e => { cost = parseFloat(e.target.value) || 0 });
+        "
+        class="flex gap-3 items-center"
+      >
+        <input type="number" name="markup_pct" min="0" max="300" step="1"
+               x-model="markup"
+               class="w-24 px-3 py-2 text-sm border border-gray-300 rounded-lg
+                      focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400"/>
+        <span class="text-sm text-gray-500">%</span>
+        <span class="text-sm text-gray-500">→ Sell:
+          <span class="font-medium text-gray-900"
+                x-text="'$' + (cost * (1 + markup / 100)).toFixed(2)"></span>
+        </span>
+      </div>
+    </div>
+
+    <div x-data="{ hasCore: false }">
+      <label class="flex items-center gap-2 cursor-pointer">
+        <input type="checkbox" name="has_core" x-model="hasCore"
+               class="rounded border-gray-300 text-blue-600 focus:ring-brand-400"/>
+        <span class="text-sm font-medium text-gray-700">Has Core Charge</span>
+      </label>
+      <div x-show="hasCore" x-cloak class="mt-2 flex gap-3">
+        <div class="flex-1">
+          <label class="block text-xs text-gray-500 mb-1">Vendor Core $</label>
+          <input type="number" name="vendor_core_charge" min="0" step="0.01" value="0.00"
+                 class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg
+                        focus:outline-none focus:ring-1 focus:ring-brand-400"/>
+        </div>
+        <div class="flex-1">
+          <label class="block text-xs text-gray-500 mb-1">Customer Core $</label>
+          <input type="number" name="customer_core_charge" min="0" step="0.01" value="0.00"
+                 class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg
+                        focus:outline-none focus:ring-1 focus:ring-brand-400"/>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="slide-over-footer">
+    <button type="button"
+            @click="createSlideOpen = false"
+            class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+      Cancel
+    </button>
+    <button type="submit"
+            class="px-4 py-2 text-sm font-medium text-white bg-brand-700 hover:bg-brand-600 rounded-lg">
+      Save &amp; Select
+    </button>
+  </div>
+</form>
