@@ -98,6 +98,15 @@ async def list_quotes(
             )
         )
     quotes = query.order_by(Quote.created_at.desc()).limit(150).all()
+
+    # Load active customers for the inline New Quote modal on the list page.
+    customers = (
+        db.query(Customer)
+        .filter(Customer.is_active == True)  # noqa: E712
+        .order_by(Customer.company_name)
+        .all()
+    )
+
     return templates.TemplateResponse(
         "quotes/list.html",
         {
@@ -107,6 +116,7 @@ async def list_quotes(
             "follow_up_filter": follow_up,
             "q": q,
             "QuoteStatus": QuoteStatus,
+            "customers": customers,
         },
     )
 

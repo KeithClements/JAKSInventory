@@ -124,12 +124,12 @@
       </button>
       {% endif %}
 
-      <a href="/quotes/{{ quote.id }}/print" target="_blank" rel="noopener" @click="moreOpen = false"
+      <a href="/quotes/{{ quote.id }}/print?auto=1" target="_blank" rel="noopener" @click="moreOpen = false"
          class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Print / Save PDF</a>
     </div>
   </div>
   {% else %}
-  <a href="/quotes/{{ quote.id }}/print" target="_blank" rel="noopener" class="btn-secondary btn-sm">Print / PDF</a>
+  <a href="/quotes/{{ quote.id }}/print?auto=1" target="_blank" rel="noopener" class="btn-secondary btn-sm">Print / PDF</a>
   {% endif %}
 
   {# Mark Lost popover (sent only) #}

@@ -3,22 +3,174 @@
 {% block heading %}Quotes{% endblock %}
 
 {% block header_actions %}
-  <a href="/quotes/new" class="btn-primary btn-sm">
+  {#
+    Dispatch an Alpine event rather than navigating away.
+    The modal component below (in {% block content %}) listens for
+    'open-new-quote' on window and shows the customer-picker panel.
+    POST to /quotes/new creates the quote and redirects to the workspace.
+  #}
+  <button @click="$dispatch('open-new-quote')" class="btn-primary btn-sm">
     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
     </svg>
     New Quote
-  </a>
+  </button>
 {% endblock %}
 
 {% block content %}
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   NEW QUOTE MODAL
+   Opens in-page — no navigation away from the list.
+   After POST, the server redirects to /quotes/{id} (the full workspace).
+   Customer data is embedded as JSON below for instant client-side filtering.
+══════════════════════════════════════════════════════════════════════════════ #}
+<div
+  x-data="{
+    open: false,
+    query: '',
+    get filtered() {
+      if (!this.query.trim()) return window._NQC || [];
+      const q = this.query.toLowerCase();
+      return (window._NQC || []).filter(c => c.n.toLowerCase().includes(q));
+    }
+  }"
+  @open-new-quote.window="open = true; query = ''; $nextTick(() => $refs.qf && $refs.qf.focus())"
+  @keydown.escape.window="open = false"
+>
+
+  {# Backdrop #}
+  <div x-show="open" x-cloak @click="open = false"
+       class="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm"
+       x-transition:enter="transition ease-out duration-150"
+       x-transition:enter-start="opacity-0"
+       x-transition:enter-end="opacity-100"
+       x-transition:leave="transition ease-in duration-100"
+       x-transition:leave-start="opacity-100"
+       x-transition:leave-end="opacity-0">
+  </div>
+
+  {# Panel #}
+  <div x-show="open" x-cloak
+       class="fixed inset-0 z-[60] flex items-start justify-center pt-20 px-4 pointer-events-none"
+       x-transition:enter="transition ease-out duration-200"
+       x-transition:enter-start="opacity-0 scale-95"
+       x-transition:enter-end="opacity-100 scale-100"
+       x-transition:leave="transition ease-in duration-150"
+       x-transition:leave-start="opacity-100 scale-100"
+       x-transition:leave-end="opacity-0 scale-95">
+
+    <form action="/quotes/new" method="post"
+          class="card w-full max-w-sm pointer-events-auto"
+          @click.stop
+          x-data
+          @record-created.window="
+            if ($event.detail.type === 'customer') {
+              window._NQC = window._NQC || [];
+              window._NQC.unshift({ i: $event.detail.id, n: $event.detail.label });
+              $dispatch('open-new-quote');
+              $nextTick(() => {
+                var sel = document.querySelector('#nq-customer-select');
+                if (sel) { sel.value = String($event.detail.id); sel.focus(); }
+              });
+            }
+          ">
+
+      <div class="card-header">
+        <span class="card-title">New Quote</span>
+        <button type="button" @click="open = false"
+                class="ml-auto text-gray-400 hover:text-gray-600 transition-colors">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="card-body space-y-3">
+
+        <div>
+          <label class="form-label">Customer <span class="text-red-500">*</span></label>
+
+          {# Type-to-filter — filters the <select> below client-side #}
+          <input
+            type="text"
+            x-ref="qf"
+            x-model="query"
+            placeholder="Type to filter customers…"
+            autocomplete="off"
+            class="form-input mb-2"
+            @keydown.enter.prevent
+            @keydown.arrow-down.prevent="document.getElementById('nq-customer-select').focus()"
+          />
+
+          {# Alpine x-for renders options reactively as query changes #}
+          <select
+            id="nq-customer-select"
+            name="customer_id"
+            required
+            class="form-select"
+            style="height: 11rem"
+            @keydown.enter.prevent="$el.closest('form').requestSubmit()"
+          >
+            <option value="">— Select a customer —</option>
+            <template x-for="c in filtered" :key="c.i">
+              <option :value="c.i" x-text="c.n"></option>
+            </template>
+          </select>
+        </div>
+
+        {# Discount, validity and notes are all editable in the workspace header
+           after the quote is created — no need to ask for them here. #}
+        <input type="hidden" name="discount_pct" value="0" />
+        <input type="hidden" name="validity_days" value="30" />
+        <input type="hidden" name="notes" value="" />
+
+        {# Quick-create a customer without leaving this modal flow #}
+        <div class="text-center border-t border-gray-100 pt-2">
+          <button type="button"
+                  hx-get="/customers/quick-create-form"
+                  hx-target="#create-slide-content"
+                  hx-swap="innerHTML"
+                  @click="$dispatch('open-create-slide', { title: 'New Customer' }); open = false"
+                  class="text-xs link">
+            + Create a new customer first
+          </button>
+        </div>
+
+      </div>
+
+      <div class="card-footer">
+        <button type="button" @click="open = false" class="btn-secondary">Cancel</button>
+        <button type="submit" class="btn-primary">Create Quote →</button>
+      </div>
+
+    </form>
+  </div>
+</div>
+
+{# Customer data for the modal — embedded at render time for instant filtering,
+   no extra HTTP request required when the modal opens. #}
+<script>
+window._NQC = [
+{% for c in customers %}
+  {"i": {{ c.id }}, "n": {{ (c.company_name ~ (" (" ~ c.contact_name ~ ")" if c.contact_name else "")) | tojson }}}{% if not loop.last %},{% endif %}
+
+{% endfor %}
+];
+</script>
+
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   FOLLOW-UP DUE BANNER
+══════════════════════════════════════════════════════════════════════════════ #}
 {% if follow_up_filter == 'due' %}
 <div class="mb-4 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-900 flex items-center justify-between gap-3">
   <span>Showing quotes with follow-ups due (pending outcome).</span>
   <a href="/quotes/" class="text-sm link">Clear filter</a>
 </div>
 {% endif %}
-{# ── Status filter tabs + search ── #}
+
+{# ── Status filter tabs + search ─────────────────────────────────────────── #}
 <div class="flex items-center justify-between mb-4 gap-4 flex-wrap">
   <div class="flex items-center gap-1 bg-gray-100 rounded-lg p-1 flex-wrap">
     {% set tabs = [
@@ -42,16 +194,12 @@
     <input type="hidden" name="status" value="{{ status_filter }}" />
     <input type="text" name="q" value="{{ q }}"
            placeholder="Search quote# or customer…"
-           class="w-56 px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white
-                  focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
-    <button type="submit"
-            class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors">
-      Search
-    </button>
+           class="form-input w-56" />
+    <button type="submit" class="btn-secondary">Search</button>
   </form>
 </div>
 
-{# ── Table ── #}
+{# ── Quotes table ─────────────────────────────────────────────────────────── #}
 {% set q_badges = {
   'draft':     'badge-gray',
   'sent':      'badge-blue',
@@ -60,6 +208,7 @@
   'declined':  'badge-red',
   'expired':   'badge-amber',
 } %}
+
 {% if quotes %}
 <div class="card">
   <div class="overflow-x-auto">
@@ -77,9 +226,13 @@
       </thead>
       <tbody>
         {% for quote in quotes %}
-        <tr class="tbl-row">
+        <tr class="tbl-row cursor-pointer" onclick="location.href='/quotes/{{ quote.id }}'">
           <td class="tbl-td">
-            <a href="/quotes/{{ quote.id }}" class="tbl-link font-mono text-xs">{{ quote.quote_number }}</a>
+            <a href="/quotes/{{ quote.id }}"
+               class="font-mono text-xs font-semibold link"
+               onclick="event.stopPropagation()">
+              {{ quote.quote_number }}
+            </a>
           </td>
           <td class="tbl-td font-medium text-gray-900">{{ quote.customer.company_name }}</td>
           <td class="tbl-td-r text-gray-500">{{ quote.lines | length }}</td>
@@ -106,6 +259,7 @@
     </table>
   </div>
 </div>
+
 {% else %}
 <div class="card flex flex-col items-center justify-center py-16">
   <svg class="w-12 h-12 text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -116,8 +270,12 @@
   {% if q or status_filter %}
   <p class="text-gray-400 text-sm mt-1">Try adjusting your filter or search.</p>
   {% else %}
-  <a href="/quotes/new" class="mt-3 text-sm link">Create the first quote →</a>
+  <button @click="$dispatch('open-new-quote')"
+          class="mt-4 btn-primary">
+    Create the first quote →
+  </button>
   {% endif %}
 </div>
 {% endif %}
+
 {% endblock %}
