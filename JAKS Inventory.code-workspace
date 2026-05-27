@@ -1,0 +1,201 @@
+{
+  "folders": [
+    {
+      "name": "JAKS App (rebuild)",
+      "path": "rebuild"
+    },
+    {
+      "name": "QBO Integration",
+      "path": "qbo"
+    },
+    {
+      "name": "Vendor Scrapers",
+      "path": "sources"
+    },
+    {
+      "name": "Root",
+      "path": "."
+    }
+  ],
+
+  "settings": {
+    // ── Python ────────────────────────────────────────────────────────────
+    "python.defaultInterpreterPath": "${workspaceFolder:Root}/.venv/Scripts/python.exe",
+    "python.terminal.activateEnvironment": true,
+
+    // ── Editor ───────────────────────────────────────────────────────────
+    "editor.formatOnSave": true,
+    "editor.tabSize": 4,
+    "editor.rulers": [100],
+    "editor.wordWrap": "off",
+    "files.trimTrailingWhitespace": true,
+    "files.insertFinalNewline": true,
+
+    // ── Jinja2 templates ─────────────────────────────────────────────────
+    "files.associations": {
+      "*.html": "jinja-html",
+      "**templates**/*.html": "jinja-html"
+    },
+    "[jinja-html]": {
+      "editor.formatOnSave": false,
+      "editor.tabSize": 2
+    },
+
+    // ── Tailwind ─────────────────────────────────────────────────────────
+    "tailwindCSS.includeLanguages": {
+      "jinja-html": "html"
+    },
+    "tailwindCSS.experimental.classRegex": [
+      ["class=\"([^\"]*)", "[\"'`]([^\"'`]*)(?:[\"'`])"]
+    ],
+
+    // ── Search — exclude generated / legacy noise ─────────────────────────
+    "search.exclude": {
+      "**/__pycache__": true,
+      "**/.venv": true,
+      "**/node_modules": true,
+      "rebuild/data": true,
+      "jaks_inventory/**": true,
+      "engine/**": true,
+      "db/**": true,
+      "ui/**": true,
+      "workers/**": true,
+      "mockups/**": true
+    },
+
+    // ── File explorer — hide noise ────────────────────────────────────────
+    "files.exclude": {
+      "**/__pycache__": true,
+      "**/*.pyc": true,
+      "**/.venv": true
+    },
+
+    // ── Emmet in Jinja templates ─────────────────────────────────────────
+    "emmet.includeLanguages": {
+      "jinja-html": "html"
+    }
+  },
+
+  "launch": {
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "Run JAKS App",
+        "type": "python",
+        "request": "launch",
+        "module": "uvicorn",
+        "args": [
+          "app.main:app",
+          "--reload",
+          "--host", "127.0.0.1",
+          "--port", "8000"
+        ],
+        "cwd": "${workspaceFolder:JAKS App (rebuild)}",
+        "env": {},
+        "console": "integratedTerminal",
+        "justMyCode": false
+      },
+      {
+        "name": "Run JAKS App (port 8080)",
+        "type": "python",
+        "request": "launch",
+        "module": "uvicorn",
+        "args": [
+          "app.main:app",
+          "--reload",
+          "--host", "127.0.0.1",
+          "--port", "8080"
+        ],
+        "cwd": "${workspaceFolder:JAKS App (rebuild)}",
+        "env": {},
+        "console": "integratedTerminal",
+        "justMyCode": false
+      },
+      {
+        "name": "Seed Demo Data",
+        "type": "python",
+        "request": "launch",
+        "program": "seed_demo.py",
+        "cwd": "${workspaceFolder:JAKS App (rebuild)}",
+        "console": "integratedTerminal"
+      }
+    ]
+  },
+
+  "extensions": {
+    "recommendations": [
+      // Python
+      "ms-python.python",
+      "ms-python.pylance",
+      "ms-python.black-formatter",
+
+      // Jinja2 / HTML templates
+      "samuelcolvin.jinjahtml",
+      "wholroyd.jinja",
+
+      // Tailwind CSS
+      "bradlc.vscode-tailwindcss",
+
+      // HTMX — syntax hints
+      "otovo-oss.htmx-tags",
+
+      // Git
+      "eamodio.gitlens",
+      "mhutchie.git-graph",
+
+      // Productivity
+      "streetsidesoftware.code-spell-checker",
+      "christian-kohler.path-intellisense",
+      "aaron-bond.better-comments"
+    ]
+  },
+
+  "tasks": {
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "Start JAKS App",
+        "type": "shell",
+        "command": "python run.py",
+        "options": {
+          "cwd": "${workspaceFolder:JAKS App (rebuild)}"
+        },
+        "group": {
+          "kind": "build",
+          "isDefault": true
+        },
+        "presentation": {
+          "reveal": "always",
+          "panel": "dedicated"
+        },
+        "problemMatcher": []
+      },
+      {
+        "label": "Seed Demo Data",
+        "type": "shell",
+        "command": "python seed_demo.py",
+        "options": {
+          "cwd": "${workspaceFolder:JAKS App (rebuild)}"
+        },
+        "presentation": {
+          "reveal": "always",
+          "panel": "shared"
+        },
+        "problemMatcher": []
+      },
+      {
+        "label": "Install Requirements",
+        "type": "shell",
+        "command": "pip install -r requirements.txt",
+        "options": {
+          "cwd": "${workspaceFolder:JAKS App (rebuild)}"
+        },
+        "presentation": {
+          "reveal": "always",
+          "panel": "shared"
+        },
+        "problemMatcher": []
+      }
+    ]
+  }
+}
