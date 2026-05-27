@@ -30,8 +30,10 @@
       <tbody>
         {% for v in vendors %}
         {% set active_po_count = v.purchase_orders | selectattr('status', 'in', ['draft', 'verbal_order', 'sent', 'partial']) | list | length %}
-        <tr class="tbl-row cursor-pointer" onclick="location.href='/vendors/{{ v.id }}'">
-          <td class="tbl-td font-medium text-gray-800">{{ v.name }}</td>
+        <tr class="tbl-row">
+          <td class="tbl-td">
+            <a href="/vendors/{{ v.id }}" class="tbl-link text-sm text-gray-900">{{ v.name }}</a>
+          </td>
           <td class="tbl-td font-mono text-xs text-gray-500">{{ v.vendor_code or '—' }}</td>
           <td class="tbl-td text-gray-500">{{ v.contact_name or '—' }}</td>
           <td class="tbl-td text-gray-500">{{ v.phone or '—' }}</td>

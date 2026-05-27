@@ -51,8 +51,10 @@
         </thead>
         <tbody>
           {% for p in products %}
-          <tr class="tbl-row cursor-pointer" onclick="location.href='/products/{{ p.id }}'">
-            <td class="tbl-td font-mono text-xs font-semibold text-brand-700">{{ p.sku }}</td>
+          <tr class="tbl-row">
+            <td class="tbl-td">
+              <a href="/products/{{ p.id }}" class="tbl-link font-mono text-xs">{{ p.sku }}</a>
+            </td>
             <td class="tbl-td text-gray-600 text-sm max-w-xs truncate">{{ p.title }}</td>
             <td class="tbl-td-r font-medium
               {% if p.qty_on_hand == 0 %}text-red-600

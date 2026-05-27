@@ -320,8 +320,10 @@
     <table class="tbl">
       <tbody>
         {% for inv in so.invoices | sort(attribute='created_at', reverse=True) %}
-        <tr class="tbl-row cursor-pointer" onclick="window.location='/invoices/{{ inv.id }}'">
-          <td class="tbl-td font-mono text-xs font-semibold text-brand-700">{{ inv.invoice_number }}</td>
+        <tr class="tbl-row">
+          <td class="tbl-td">
+            <a href="/invoices/{{ inv.id }}" class="tbl-link font-mono text-xs">{{ inv.invoice_number }}</a>
+          </td>
           <td class="tbl-td text-gray-600">{{ inv.created_at.strftime('%b %d, %Y') }}</td>
           <td class="tbl-td-r font-medium">${{ '%.2f' % inv.total }}</td>
           <td class="tbl-td">

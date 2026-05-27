@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.constants import CoreStatus, InvoiceStatus, QuoteOutcome, QuoteStatus, SOStatus
 from app.deps import get_db
 from app.models.invoice import Invoice, Payment
-from app.models.quote import Quote, SalesOrder
+from app.models.quote import Quote, QuoteLine, SalesOrder
 from app.models.purchase_order import PurchaseOrder
 from app.models.core import CoreCharge
 from app.models.product import Product
@@ -103,6 +103,21 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         .all()
     )
 
+    # Research queue — quote lines flagged as "researching" or "waiting_dealer"
+    # on active (non-converted, non-declined) quotes
+    research_queue = (
+        db.query(QuoteLine)
+        .join(QuoteLine.quote)
+        .join(Quote.customer)
+        .filter(
+            QuoteLine.research_status.in_(["researching", "waiting_dealer"]),
+            Quote.status.notin_([QuoteStatus.CONVERTED, QuoteStatus.DECLINED]),
+        )
+        .order_by(QuoteLine.id.asc())
+        .limit(10)
+        .all()
+    )
+
     # Quotes with overdue follow-ups (follow_up_date in the past, outcome still pending)
     now = datetime.utcnow()
     overdue_followups = (
@@ -131,5 +146,6 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         "recent_invoices": recent_invoices,
         "recent_calls": recent_calls,
         "overdue_followups": overdue_followups,
+        "research_queue": research_queue,
         "today": today,
     })

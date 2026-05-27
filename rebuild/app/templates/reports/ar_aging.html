@@ -65,9 +65,11 @@
         </thead>
         <tbody>
           {% for row in aging_rows %}
-          <tr class="tbl-row cursor-pointer" onclick="location.href='/customers/{{ row.customer.id }}'">
+          <tr class="tbl-row">
             <td class="tbl-td font-medium text-gray-900">
+              <a href="/customers/{{ row.customer.id }}" class="tbl-link text-sm">
               {{ row.customer.company_name }}
+              </a>
               <span class="text-xs text-gray-400 ml-1">({{ row.invoices | length }} inv)</span>
             </td>
             <td class="tbl-td-r text-green-700">

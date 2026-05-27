@@ -55,9 +55,10 @@
           'discontinued': 'badge-red',
         } %}
         {% for p in products %}
-        <tr class="tbl-row cursor-pointer" onclick="location.href='/products/{{ p.id }}'">
-
-          <td class="tbl-td font-mono font-medium text-brand-700">{{ p.sku }}</td>
+        <tr class="tbl-row">
+          <td class="tbl-td">
+            <a href="/products/{{ p.id }}" class="tbl-link font-mono text-xs">{{ p.sku }}</a>
+          </td>
 
           <td class="tbl-td max-w-xs truncate">{{ p.title or '—' }}</td>
 

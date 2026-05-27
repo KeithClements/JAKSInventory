@@ -74,8 +74,10 @@
         <tbody>
           {% for row in customer_rows %}
           {% set outstanding = row.revenue - row.collected %}
-          <tr class="tbl-row cursor-pointer" onclick="location.href='/customers/{{ row.customer.id }}'">
-            <td class="tbl-td font-medium text-gray-900">{{ row.customer.company_name }}</td>
+          <tr class="tbl-row">
+            <td class="tbl-td">
+              <a href="/customers/{{ row.customer.id }}" class="tbl-link text-sm text-gray-900">{{ row.customer.company_name }}</a>
+            </td>
             <td class="tbl-td-r text-gray-500">{{ row.invoice_count }}</td>
             <td class="tbl-td-r font-semibold text-brand-700">${{ '%.2f' % row.revenue }}</td>
             <td class="tbl-td-r text-green-700">${{ '%.2f' % row.collected }}</td>

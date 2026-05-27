@@ -147,8 +147,10 @@
         </thead>
         <tbody>
           {% for po in recent_pos %}
-          <tr class="tbl-row cursor-pointer" onclick="location.href='/purchase-orders/{{ po.id }}'">
-            <td class="tbl-td font-mono font-semibold text-brand-700">{{ po.po_number }}</td>
+          <tr class="tbl-row">
+            <td class="tbl-td">
+              <a href="/purchase-orders/{{ po.id }}" class="tbl-link font-mono text-xs">{{ po.po_number }}</a>
+            </td>
             <td class="tbl-td">
               <span class="{{ po_badges.get(po.status, 'badge-gray') }}">
                 {{ po.status.replace('_', ' ').title() }}

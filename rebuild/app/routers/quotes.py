@@ -22,7 +22,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.constants import (
-    CoreDirection, CoreStatus, InvoiceStatus, QuoteStatus, SOPaymentMode, LineRole,
+    CoreDirection, CoreStatus, InvoiceStatus, QuoteOutcome, QuoteStatus, SOPaymentMode, LineRole,
 )
 from app.deps import get_current_user_id, get_db
 from app.models.core import CoreCharge
@@ -79,8 +79,6 @@ async def list_quotes(
 ):
     from datetime import datetime
     from sqlalchemy import or_
-
-    from app.constants import QuoteOutcome
 
     query = db.query(Quote).join(Customer)
     if follow_up == "due":

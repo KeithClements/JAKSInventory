@@ -335,8 +335,10 @@
           </thead>
           <tbody>
             {% for inv in recent_invoices %}
-            <tr class="tbl-row cursor-pointer" onclick="location.href='/invoices/{{ inv.id }}'">
-              <td class="tbl-td font-medium text-brand-700">{{ inv.invoice_number }}</td>
+            <tr class="tbl-row">
+              <td class="tbl-td">
+                <a href="/invoices/{{ inv.id }}" class="tbl-link font-mono text-xs">{{ inv.invoice_number }}</a>
+              </td>
               <td class="tbl-td">
                 <span class="{{ inv_badges.get(inv.status, 'badge-gray') }}">
                   {{ inv.status | title }}
@@ -387,8 +389,10 @@
           </thead>
           <tbody>
             {% for q in open_quotes %}
-            <tr class="tbl-row cursor-pointer" onclick="location.href='/quotes/{{ q.id }}'">
-              <td class="tbl-td font-medium text-brand-700">{{ q.quote_number }}</td>
+            <tr class="tbl-row">
+              <td class="tbl-td">
+                <a href="/quotes/{{ q.id }}" class="tbl-link font-mono text-xs">{{ q.quote_number }}</a>
+              </td>
               <td class="tbl-td">
                 <span class="{{ q_badges.get(q.status, 'badge-gray') }}">
                   {{ q.status | title }}

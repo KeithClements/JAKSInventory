@@ -12,6 +12,12 @@
 {% endblock %}
 
 {% block content %}
+{% if follow_up_filter == 'due' %}
+<div class="mb-4 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-900 flex items-center justify-between gap-3">
+  <span>Showing quotes with follow-ups due (pending outcome).</span>
+  <a href="/quotes/" class="text-sm link">Clear filter</a>
+</div>
+{% endif %}
 {# ── Status filter tabs + search ── #}
 <div class="flex items-center justify-between mb-4 gap-4 flex-wrap">
   <div class="flex items-center gap-1 bg-gray-100 rounded-lg p-1 flex-wrap">
@@ -71,8 +77,10 @@
       </thead>
       <tbody>
         {% for quote in quotes %}
-        <tr class="tbl-row cursor-pointer" onclick="window.location='/quotes/{{ quote.id }}'">
-          <td class="tbl-td font-mono text-xs font-semibold text-brand-700">{{ quote.quote_number }}</td>
+        <tr class="tbl-row">
+          <td class="tbl-td">
+            <a href="/quotes/{{ quote.id }}" class="tbl-link font-mono text-xs">{{ quote.quote_number }}</a>
+          </td>
           <td class="tbl-td font-medium text-gray-900">{{ quote.customer.company_name }}</td>
           <td class="tbl-td-r text-gray-500">{{ quote.lines | length }}</td>
           <td class="tbl-td-r font-medium">${{ '%.2f' % quote.subtotal }}</td>

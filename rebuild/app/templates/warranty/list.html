@@ -87,8 +87,10 @@
       </thead>
       <tbody>
         {% for claim in claims %}
-        <tr class="tbl-row cursor-pointer" onclick="window.location='/warranty/{{ claim.id }}'">
-          <td class="tbl-td font-mono text-xs font-semibold text-brand-700">{{ claim.claim_number }}</td>
+        <tr class="tbl-row">
+          <td class="tbl-td">
+            <a href="/warranty/{{ claim.id }}" class="tbl-link font-mono text-xs">{{ claim.claim_number }}</a>
+          </td>
           <td class="tbl-td font-medium text-gray-900">{{ claim.customer.company_name }}</td>
           <td class="tbl-td text-gray-500 text-xs max-w-xs truncate">
             {{ claim.failure_description[:80] }}{% if claim.failure_description | length > 80 %}…{% endif %}

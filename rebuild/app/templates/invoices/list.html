@@ -69,9 +69,10 @@
       </thead>
       <tbody>
         {% for inv in invoices %}
-        <tr class="tbl-row cursor-pointer {% if inv.is_overdue %}bg-red-50/40{% endif %}"
-            onclick="window.location='/invoices/{{ inv.id }}'">
-          <td class="tbl-td font-mono text-xs font-semibold text-brand-700">{{ inv.invoice_number }}</td>
+        <tr class="tbl-row {% if inv.is_overdue %}bg-red-50/40{% endif %}">
+          <td class="tbl-td">
+            <a href="/invoices/{{ inv.id }}" class="tbl-link font-mono text-xs">{{ inv.invoice_number }}</a>
+          </td>
           <td class="tbl-td font-medium text-gray-900">{{ inv.customer.company_name }}</td>
           <td class="tbl-td text-gray-500">
             {% if inv.customer_po_number %}

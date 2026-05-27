@@ -3,8 +3,14 @@
 {% block heading %}Dashboard{% endblock %}
 
 {% block header_actions %}
+  <a href="/quotes/new" class="btn-secondary btn-sm">
+    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+    </svg>
+    New Quote
+  </a>
   <a href="/invoices/new" class="btn-primary btn-sm">
-    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
     </svg>
     New Invoice
@@ -13,115 +19,201 @@
 
 {% block content %}
 
-{# ── KPI stat cards ── #}
-<div class="grid grid-cols-2 gap-4 sm:grid-cols-4 xl:grid-cols-7 mb-4">
-  <div class="stat-card">
-    <p class="stat-label">Today's Payments</p>
+{# ── KPI stat cards ─────────────────────────────────────────────────────────── #}
+<div class="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7 mb-5">
+
+  <div class="stat-card-green">
+    <p class="stat-label">Today's Cash</p>
     <p class="stat-value text-green-700">${{ "%.2f"|format(today_payments) }}</p>
+    <p class="stat-sub">Payments received</p>
   </div>
-  <div class="stat-card">
+
+  <div class="stat-card-brand">
     <p class="stat-label">AR Balance</p>
-    <p class="stat-value {% if ar_balance > 0 %}text-brand-700{% endif %}">${{ "%.2f"|format(ar_balance) }}</p>
-    <a href="/invoices/?status=open" class="text-xs link">View open →</a>
+    <p class="stat-value text-brand-700">${{ "%.2f"|format(ar_balance) }}</p>
+    <a href="/invoices/?status=open" class="text-xs link">Open invoices →</a>
   </div>
-  <div class="stat-card">
+
+  <div class="{% if overdue_count > 0 %}stat-card-red{% else %}stat-card-brand{% endif %}">
     <p class="stat-label">Overdue</p>
     <p class="stat-value {% if overdue_count > 0 %}text-red-600{% endif %}">{{ overdue_count }}</p>
     <a href="/invoices/" class="text-xs link">View invoices →</a>
   </div>
-  <div class="stat-card">
+
+  <div class="{% if open_quotes > 0 %}stat-card-amber{% else %}stat-card-brand{% endif %}">
     <p class="stat-label">Open Quotes</p>
-    <p class="stat-value">{{ open_quotes }}</p>
+    <p class="stat-value {% if open_quotes > 0 %}text-amber-600{% endif %}">{{ open_quotes }}</p>
     <a href="/quotes/?status=draft" class="text-xs link">Draft quotes →</a>
   </div>
-  <div class="stat-card">
-    <p class="stat-label">Open SOs</p>
-    <p class="stat-value {% if open_sos > 0 %}text-brand-700{% endif %}">{{ open_sos }}</p>
+
+  <div class="{% if open_sos > 0 %}stat-card-blue{% else %}stat-card-brand{% endif %}">
+    <p class="stat-label">Sales Orders</p>
+    <p class="stat-value {% if open_sos > 0 %}text-blue-600{% endif %}">{{ open_sos }}</p>
     <a href="/sales-orders/" class="text-xs link">View all →</a>
   </div>
-  <div class="stat-card">
-    <p class="stat-label">Open POs</p>
-    <p class="stat-value">{{ open_pos }}</p>
+
+  <div class="{% if open_pos > 0 %}stat-card-blue{% else %}stat-card-brand{% endif %}">
+    <p class="stat-label">Purchase Orders</p>
+    <p class="stat-value {% if open_pos > 0 %}text-blue-600{% endif %}">{{ open_pos }}</p>
     <a href="/purchase-orders/" class="text-xs link">View all →</a>
   </div>
-  <div class="stat-card">
+
+  <div class="{% if open_cores > 0 %}stat-card-amber{% else %}stat-card-brand{% endif %}">
     <p class="stat-label">Open Cores</p>
     <p class="stat-value {% if open_cores > 0 %}text-amber-600{% endif %}">{{ open_cores }}</p>
     <a href="/cores/" class="text-xs link">View all →</a>
   </div>
+
 </div>
 
+{# ── Main 2-column layout ────────────────────────────────────────────────────── #}
 <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
 
-  {# ── Recent Invoices (2/3 width) ── #}
-  <div class="lg:col-span-2 card">
-    <div class="card-header">
-      <h2 class="card-title">Recent Invoices</h2>
-      <a href="/invoices/" class="text-xs link">All invoices →</a>
+  {# ── Recent Invoices (2/3 width) ──────────────────────────────────────────── #}
+  <div class="lg:col-span-2 space-y-4">
+
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">Recent Invoices</h2>
+          <p class="text-xs text-gray-400 mt-0.5">Last 10 created</p>
+        </div>
+        <a href="/invoices/" class="text-xs link">All invoices →</a>
+      </div>
+
+      {% if recent_invoices %}
+      {% set inv_badges = {
+        'draft':   'badge-gray',
+        'open':    'badge-blue',
+        'partial': 'badge-amber',
+        'paid':    'badge-green',
+        'void':    'badge-red',
+      } %}
+      <div class="overflow-x-auto">
+        <table class="tbl">
+          <thead class="tbl-head">
+            <tr>
+              <th class="tbl-th">Invoice #</th>
+              <th class="tbl-th">Customer</th>
+              <th class="tbl-th hidden sm:table-cell">Date</th>
+              <th class="tbl-th-r">Total</th>
+              <th class="tbl-th-r">Balance</th>
+              <th class="tbl-th">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for inv in recent_invoices %}
+            <tr class="tbl-row">
+              <td class="tbl-td">
+                <a href="/invoices/{{ inv.id }}" class="tbl-link font-mono text-xs">{{ inv.invoice_number }}</a>
+              </td>
+              <td class="tbl-td">
+                <span class="text-sm text-gray-700">{{ inv.customer.company_name }}</span>
+              </td>
+              <td class="tbl-td hidden sm:table-cell text-gray-400 text-xs">
+                {{ inv.created_at.strftime('%b %d') }}
+              </td>
+              <td class="tbl-td-r font-medium text-gray-800">${{ "%.2f"|format(inv.total) }}</td>
+              <td class="tbl-td-r">
+                {% if inv.balance_due > 0 %}
+                <span class="font-semibold {% if inv.balance_due == inv.total %}text-blue-600{% else %}text-amber-600{% endif %}">${{ "%.2f"|format(inv.balance_due) }}</span>
+                {% else %}
+                <span class="text-gray-300">—</span>
+                {% endif %}
+              </td>
+              <td class="tbl-td">
+                <span class="{{ inv_badges.get(inv.status, 'badge-gray') }}">
+                  {{ inv.status | title }}
+                </span>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="tbl-empty">
+        No invoices yet.
+        <a href="/invoices/new" class="link ml-1">Create one →</a>
+      </div>
+      {% endif %}
     </div>
-    {% if recent_invoices %}
-    {% set inv_badges = {
-      'draft':   'badge-gray',
-      'open':    'badge-blue',
-      'partial': 'badge-amber',
-      'paid':    'badge-green',
-      'void':    'badge-red',
-    } %}
-    <div class="overflow-x-auto">
-      <table class="tbl">
-        <thead class="tbl-head">
-          <tr>
-            <th class="tbl-th">Invoice</th>
-            <th class="tbl-th">Customer</th>
-            <th class="tbl-th-r">Total</th>
-            <th class="tbl-th">Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for inv in recent_invoices %}
-          <tr class="tbl-row">
-            <td class="tbl-td">
-              <a href="/invoices/{{ inv.id }}" class="tbl-link font-mono text-xs">{{ inv.invoice_number }}</a>
-            </td>
-            <td class="tbl-td text-gray-600">{{ inv.customer.company_name }}</td>
-            <td class="tbl-td-r font-medium">${{ "%.2f"|format(inv.total) }}</td>
-            <td class="tbl-td">
-              <span class="{{ inv_badges.get(inv.status, 'badge-gray') }}">
-                {{ inv.status | title }}
-              </span>
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% else %}
-    <div class="tbl-empty">
-      No invoices yet. <a href="/invoices/new" class="link">Create one →</a>
+
+    {# ── Research Queue (shown when non-empty) ─────────────────────────────── #}
+    {% if research_queue %}
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">Research Queue</h2>
+          <p class="text-xs text-gray-400 mt-0.5">Parts being sourced</p>
+        </div>
+        <span class="badge-amber">{{ research_queue | length }} open</span>
+      </div>
+      {% set rs_cfg = {
+        'researching':    ('badge-amber', 'Researching'),
+        'waiting_dealer': ('badge-blue',  'Awaiting Dealer'),
+      } %}
+      <div class="overflow-x-auto">
+        <table class="tbl">
+          <thead class="tbl-head">
+            <tr>
+              <th class="tbl-th">Quote</th>
+              <th class="tbl-th">Customer</th>
+              <th class="tbl-th">Part / Description</th>
+              <th class="tbl-th">Stage</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for line in research_queue %}
+            {% set rc = rs_cfg.get(line.research_status, ('badge-gray', line.research_status or 'Unknown')) %}
+            <tr class="tbl-row">
+              <td class="tbl-td">
+                <a href="/quotes/{{ line.quote_id }}"
+                   class="tbl-link font-mono text-xs">{{ line.quote.quote_number }}</a>
+              </td>
+              <td class="tbl-td text-gray-600 text-xs">{{ line.quote.customer.company_name }}</td>
+              <td class="tbl-td text-gray-600 text-xs max-w-xs truncate">
+                {{ line.description or '(no description)' }}
+              </td>
+              <td class="tbl-td">
+                <span class="{{ rc[0] }}">{{ rc[1] }}</span>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </div>
     {% endif %}
-  </div>
 
-  {# ── Right column ── #}
+  </div>{# /lg:col-span-2 #}
+
+  {# ── Right sidebar ────────────────────────────────────────────────────────── #}
   <div class="flex flex-col gap-4">
 
     {# Follow-Up Due #}
     <div class="card">
       <div class="card-header">
-        <h2 class="card-title">Follow-Up Due</h2>
-        <a href="/quotes/?follow_up=due" class="text-xs link">Follow-ups due →</a>
+        <div>
+          <h2 class="card-title">Follow-Ups Due</h2>
+          {% if overdue_followups %}
+          <p class="text-xs text-amber-600 font-medium mt-0.5">{{ overdue_followups | length }} need attention</p>
+          {% endif %}
+        </div>
+        <a href="/quotes/?follow_up=due" class="text-xs link">All →</a>
       </div>
+
       {% if overdue_followups %}
       {% set fu_colors = {
-        'called':     'bg-blue-100 text-blue-700',
-        'emailed':    'bg-amber-100 text-amber-700',
-        'left_vm':    'bg-purple-100 text-purple-700',
-        'interested': 'bg-red-100 text-red-700 font-bold',
-        'pending':    'bg-gray-100 text-gray-600',
+        'called':     'badge-blue',
+        'emailed':    'badge-amber',
+        'left_vm':    'badge-purple',
+        'interested': 'badge-red',
+        'pending':    'badge-gray',
       } %}
       {% set fu_labels = {
         'called':     'Call Back',
-        'emailed':    'Waiting Cust.',
+        'emailed':    'Waiting',
         'left_vm':    'Left VM',
         'interested': '🔴 Truck Down',
         'pending':    'Pending',
@@ -133,14 +225,13 @@
           <div class="min-w-0">
             <a href="/quotes/{{ q.id }}"
                class="text-xs font-mono font-bold text-brand-700 hover:underline">{{ q.quote_number }}</a>
-            <p class="text-xs text-gray-600 truncate">{{ q.customer.company_name }}</p>
+            <p class="text-xs text-gray-500 truncate mt-0.5">{{ q.customer.company_name }}</p>
           </div>
-          <div class="flex items-center gap-1.5 shrink-0">
-            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs
-                         {{ fu_colors.get(q.follow_up_status or 'pending', 'bg-gray-100 text-gray-600') }}">
+          <div class="flex flex-col items-end gap-1 shrink-0">
+            <span class="{{ fu_colors.get(q.follow_up_status or 'pending', 'badge-gray') }} text-xs">
               {{ fu_labels.get(q.follow_up_status or 'pending', 'Pending') }}
             </span>
-            <span class="text-xs {% if days_late >= 2 %}text-red-600 font-semibold{% else %}text-amber-600{% endif %} tabular-nums">
+            <span class="text-xs tabular-nums {% if days_late >= 2 %}text-red-600 font-bold{% else %}text-amber-600 font-medium{% endif %}">
               {% if days_late == 0 %}Today{% elif days_late == 1 %}1d late{% else %}{{ days_late }}d late{% endif %}
             </span>
           </div>
@@ -148,59 +239,95 @@
         {% endfor %}
       </ul>
       {% else %}
-      <div class="tbl-empty text-green-600">✓ No follow-ups due</div>
+      <div class="px-5 py-4 flex items-center gap-2 text-sm text-green-700">
+        <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+        </svg>
+        No follow-ups overdue
+      </div>
       {% endif %}
     </div>
 
     {# Low Stock #}
     <div class="card">
       <div class="card-header">
-        <h2 class="card-title">Low Stock</h2>
+        <div>
+          <h2 class="card-title">Low Stock</h2>
+          {% if low_stock %}
+          <p class="text-xs text-red-500 font-medium mt-0.5">{{ low_stock | length }} SKU{{ 's' if low_stock | length != 1 }}</p>
+          {% endif %}
+        </div>
+        <a href="/reports/inventory/" class="text-xs link">Inventory →</a>
       </div>
+
       {% if low_stock %}
       <ul class="divide-y divide-gray-100">
         {% for p in low_stock %}
-        <li class="px-5 py-3 flex items-center justify-between">
-          <div>
+        <li class="px-5 py-2.5 flex items-center justify-between gap-2">
+          <div class="min-w-0">
             <a href="/products/{{ p.id }}"
-               class="text-sm font-medium text-gray-800 hover:text-brand-600 transition-colors">{{ p.sku }}</a>
-            <p class="text-xs text-gray-400 truncate max-w-[140px]">{{ p.title }}</p>
+               class="text-xs font-mono font-bold text-brand-700 hover:underline">{{ p.sku }}</a>
+            <p class="text-xs text-gray-400 truncate mt-0.5 max-w-[140px]">{{ p.title }}</p>
           </div>
-          <span class="text-sm font-bold tabular-nums
-            {% if p.qty_on_hand == 0 %}text-red-600{% else %}text-amber-600{% endif %}">
-            {{ p.qty_on_hand }}
-          </span>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <span class="text-sm font-bold tabular-nums
+              {% if p.qty_on_hand == 0 %}text-red-600{% else %}text-amber-600{% endif %}">
+              {{ p.qty_on_hand }}
+            </span>
+            <span class="text-xs text-gray-300">in stock</span>
+          </div>
         </li>
         {% endfor %}
       </ul>
       {% else %}
-      <div class="tbl-empty">No low stock alerts.</div>
+      <div class="px-5 py-4 flex items-center gap-2 text-sm text-green-700">
+        <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+        </svg>
+        All stock levels OK
+      </div>
       {% endif %}
     </div>
 
-    {# Recent Calls #}
+    {# Recent Calls / Activity ─────────────────────────────────────────────── #}
     <div class="card">
       <div class="card-header">
-        <h2 class="card-title">Recent Calls</h2>
+        <h2 class="card-title">Recent Activity</h2>
+        <button
+          @click="logCallOpen = true"
+          class="text-xs link"
+        >Log call →</button>
       </div>
+
       {% if recent_calls %}
       <ul class="divide-y divide-gray-100">
         {% for log in recent_calls %}
         <li class="px-5 py-3">
-          <a href="/customers/{{ log.customer_id }}"
-             class="text-xs font-semibold link">{{ log.customer.company_name }}</a>
-          <p class="text-xs text-gray-500 mt-0.5">
-            {{ log.notes[:80] }}{% if log.notes|length > 80 %}…{% endif %}
+          <div class="flex items-center justify-between mb-0.5">
+            <a href="/customers/{{ log.customer_id }}"
+               class="text-xs font-semibold link">{{ log.customer.company_name }}</a>
+            <span class="text-xs text-gray-300 tabular-nums">
+              {{ log.logged_at.strftime('%b %d') }}
+            </span>
+          </div>
+          {% if log.notes %}
+          <p class="text-xs text-gray-500 leading-relaxed">
+            {{ log.notes[:90] }}{% if log.notes|length > 90 %}…{% endif %}
           </p>
-          <p class="text-xs text-gray-300 mt-0.5">{{ log.logged_at.strftime('%b %d, %I:%M %p') }}</p>
+          {% endif %}
+          <p class="text-xs text-gray-300 mt-0.5">
+            {{ log.call_type | replace('_', ' ') | title if log.call_type else 'Call' }}
+            · {{ log.logged_at.strftime('%I:%M %p') }}
+          </p>
         </li>
         {% endfor %}
       </ul>
       {% else %}
-      <div class="tbl-empty">No recent calls logged.</div>
+      <div class="tbl-empty">No calls logged today.</div>
       {% endif %}
     </div>
 
-  </div>
-</div>
+  </div>{# /right sidebar #}
+
+</div>{# /grid #}
 {% endblock %}

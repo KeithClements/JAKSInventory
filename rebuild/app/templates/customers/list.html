@@ -64,8 +64,10 @@
       </thead>
       <tbody>
         {% for c in customers %}
-        <tr class="tbl-row cursor-pointer" onclick="location.href='/customers/{{ c.id }}'">
-          <td class="tbl-td font-medium text-gray-800">{{ c.company_name }}</td>
+        <tr class="tbl-row">
+          <td class="tbl-td">
+            <a href="/customers/{{ c.id }}" class="tbl-link text-sm text-gray-900">{{ c.company_name }}</a>
+          </td>
           <td class="tbl-td text-gray-500">{{ c.contact_name or '—' }}</td>
           <td class="tbl-td text-gray-500">{{ c.phone or '—' }}</td>
           <td class="tbl-td text-gray-500 uppercase text-xs">{{ c.payment_terms.replace('_', ' ') }}</td>

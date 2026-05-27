@@ -83,8 +83,10 @@
       </thead>
       <tbody>
         {% for ra in ras %}
-        <tr class="tbl-row cursor-pointer" onclick="window.location='/returns/{{ ra.id }}'">
-          <td class="tbl-td font-mono text-xs font-semibold text-brand-700">{{ ra.ra_number }}</td>
+        <tr class="tbl-row">
+          <td class="tbl-td">
+            <a href="/returns/{{ ra.id }}" class="tbl-link font-mono text-xs">{{ ra.ra_number }}</a>
+          </td>
           <td class="tbl-td font-medium text-gray-900">{{ ra.customer.company_name }}</td>
           <td class="tbl-td text-gray-500 text-xs max-w-xs truncate">
             {{ ra.reason[:80] }}{% if ra.reason | length > 80 %}…{% endif %}
