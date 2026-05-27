@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import calendar
+import json
 from datetime import date, datetime
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func
+from sqlalchemy import extract, func
 from sqlalchemy.orm import Session, joinedload
 
 from app.constants import CoreStatus, InvoiceStatus, QuoteOutcome, QuoteStatus, SOStatus
@@ -86,12 +88,12 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         .all()
     )
 
-    # Recent invoices (last 8, excluding void)
+    # Recent invoices (last 10, excluding void)
     recent_invoices = (
         db.query(Invoice)
         .filter(Invoice.status != InvoiceStatus.VOID)
         .order_by(Invoice.created_at.desc())
-        .limit(8)
+        .limit(10)
         .all()
     )
 
@@ -104,9 +106,10 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     )
 
     # Research queue — quote lines flagged as "researching" or "waiting_dealer"
-    # on active (non-converted, non-declined) quotes
+    # on active (non-converted, non-declined) quotes.
     research_queue = (
         db.query(QuoteLine)
+        .options(joinedload(QuoteLine.quote).joinedload(Quote.customer))
         .join(QuoteLine.quote)
         .join(Quote.customer)
         .filter(
@@ -133,6 +136,27 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         .all()
     )
 
+    # Monthly revenue (last 6 months) — finalized invoices only
+    monthly_labels: list[str] = []
+    monthly_totals: list[float] = []
+    for i in range(5, -1, -1):
+        m = today.month - i
+        y = today.year
+        while m <= 0:
+            m += 12
+            y -= 1
+        total = (
+            db.query(func.sum(Invoice.total))
+            .filter(
+                Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL, InvoiceStatus.PAID]),
+                extract("year", Invoice.created_at) == y,
+                extract("month", Invoice.created_at) == m,
+            )
+            .scalar() or 0.0
+        )
+        monthly_labels.append(calendar.month_abbr[m])
+        monthly_totals.append(round(float(total), 2))
+
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
         "today_payments": today_payments,
@@ -148,4 +172,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         "overdue_followups": overdue_followups,
         "research_queue": research_queue,
         "today": today,
+        "monthly_labels_json": json.dumps(monthly_labels),
+        "monthly_totals_json": json.dumps(monthly_totals),
+        "monthly_current": monthly_totals[-1] if monthly_totals else 0.0,
     })
