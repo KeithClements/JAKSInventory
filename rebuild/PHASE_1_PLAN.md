@@ -1208,6 +1208,44 @@ Creates ResearchItem (RI-XXXX) via ResearchService when status is set.
 
 ---
 
+---
+
+### Session 2026-05-27 — Code Review, Bug Fixes, Startup, Dashboard, Inspection Gate
+
+| Item | Status |
+|---|---|
+| **Code review — all 5 angles (line-by-line, removed-behavior, cross-file, language pitfalls, data integrity)** | ✅ Done |
+| **BUG FIX: `GET /customers/import` + `POST /customers/import` route shadowed by `/{customer_id}` wildcard** | ✅ Fixed |
+| `_safe_float()` helper — tolerates `"5%"`, `"$10"`, `"1,200"` in CSV import | ✅ Fixed |
+| `is_tax_exempt` was parsed in `_parse_rows` but never written to Customer in confirm route | ✅ Fixed |
+| `isinstance(rows, list)` guard after `json.loads` in `customer_import_confirm` | ✅ Fixed |
+| `int(customer_id_raw)` ValueError guard in `log_call_global` | ✅ Fixed |
+| **BUG FIX: `CoreSlip` created every partial return — idempotency check added** | ✅ Fixed |
+| **BUG FIX: `db.rollback()` missing in create_core_slip exception handler** | ✅ Fixed |
+| **BUG FIX: `CoreSlip.customer` type annotation `Mapped[Customer \| None]` → `Mapped[Customer]`** | ✅ Fixed |
+| **BUG FIX: `customer_id=None` passed to `create_core_slip` — added explicit ValueError guard** | ✅ Fixed |
+| **BUG FIX: `Invoice.payment_allocations` → `Invoice.allocations` (dashboard.py — crash on startup)** | ✅ Fixed |
+| **BUG FIX: `Invoice.payment_allocations` → `Invoice.allocations` (reports.py ×2 — AR aging, sales)** | ✅ Fixed |
+| **`START JAKS.bat`** — double-click startup for Keith | ✅ Created |
+| **Smoke test** — 20/20 key pages HTTP 200 with `raise_server_exceptions=True` | ✅ Passing |
+| **Dashboard: Open SOs KPI widget** — queries `SOStatus.OPEN/PARTIAL/HOLD`, live in template | ✅ Built |
+| **Core inspection gate** — Accept / Hold / Reject at point of customer return | ✅ Built |
+| `CoreInspectionOutcome.HOLD` constant added | ✅ Added |
+| `record_customer_return()` — credit gated behind `inspection_outcome == ACCEPTED` | ✅ Done |
+| `complete_inspection()` service method — finalises held cores, issues deferred credit | ✅ Built |
+| `POST /cores/{id}/complete-inspection` route | ✅ Built |
+| Cores list Stage 1.5 — "Pending Inspection" section with Accept/Reject decision form | ✅ Built |
+| Stage 1 return form — inspection outcome dropdown replaces plain condition text | ✅ Done |
+| Stage 2 (Ready to Ship) — excludes held cores from vendor queue | ✅ Fixed |
+
+**Known pending items before go-live:**
+- Quote PDF (NEXT-2) — weasyprint, still untested on Windows
+- Research Queue widget on dashboard (NEXT-6)
+- QBO push (STEP 17) — Keith confirmed no hard deadline
+- PHASE_1_PLAN.md NEXT-1: DB recreate still needed for `line_role`/`is_included`/`option_label` columns
+
+---
+
 *This document governs Phase 1 build decisions.*
 *Update it as decisions are locked or scope changes.*
 *Do not start a step until the previous step's gate condition is met.*

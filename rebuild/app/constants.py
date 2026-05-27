@@ -367,6 +367,7 @@ class CoreInspectionOutcome(StrEnum):
     ACCEPTED = "accepted"
     REJECTED = "rejected"
     PARTIAL  = "partial"
+    HOLD     = "hold"      # received, not yet accepted/rejected — credit deferred
 
 
 class CoreSlipStatus(StrEnum):

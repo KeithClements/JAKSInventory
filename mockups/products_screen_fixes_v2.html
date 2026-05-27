@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Products screen — fixes v2 — JAK's Diesel PRO</title>
+<style>
+  :root{
+    --bg:#0f1419; --panel:#1a2128; --panel2:#232c35; --border:#2d3a45;
+    --text:#e6edf3; --muted:#9aa6b2; --dim:#6b7480; --faint:#5a6470;
+    --orange:#ff8c42; --green:#3fb950; --amber:#d29922; --red:#f85149;
+    --blue:#58a6ff; --purple:#bc8cff; --teal:#39d0d8;
+  }
+  html,body{margin:0;background:#0a0e12;color:var(--text);
+    font:13px/1.45 -apple-system,Segoe UI,Roboto,sans-serif}
+  .page{max-width:1480px;margin:0 auto;padding:18px}
+  h1{font-size:18px;margin:0 0 4px;color:var(--orange)}
+  h2{font-size:14px;margin:18px 0 8px;color:var(--text);
+     letter-spacing:.4px;text-transform:uppercase}
+  .lead{color:var(--muted);font-size:12px;margin:0 0 18px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px}
+
+  /* annotated section */
+  .card{background:var(--bg);border:1px solid var(--border);
+        border-radius:10px;padding:14px 16px}
+  .card h3{font-size:12.5px;margin:0 0 8px;color:var(--orange);
+           text-transform:uppercase;letter-spacing:.6px}
+  .card p{margin:4px 0;color:var(--muted)}
+  .card .before,.card .after{font-size:11px;padding:2px 8px;
+        border-radius:4px;font-weight:700;letter-spacing:.4px}
+  .card .before{background:#3b1f25;color:#f85149;margin-right:6px}
+  .card .after {background:#1d3522;color:#3fb950;margin-right:6px}
+
+  /* mock topnav + subtabs */
+  .frame{border:1px solid var(--border);border-radius:10px;overflow:hidden;
+         background:var(--bg)}
+  .topnav{height:42px;background:#161b20;display:flex;align-items:center;
+          padding:0 16px;gap:18px;border-bottom:1px solid var(--border)}
+  .brand{color:var(--orange);font-weight:800;font-size:13px;letter-spacing:.5px}
+  .nav{display:flex;gap:18px;font-size:11.5px;font-weight:700;
+       letter-spacing:.5px;color:var(--muted)}
+  .nav .on{color:var(--orange);border-bottom:2px solid var(--orange);
+          padding-bottom:12px;margin-bottom:-12px}
+  .subtabs{background:#1a1f24;height:36px;display:flex;align-items:center;
+          padding:0 12px;border-bottom:1px solid #2f3942}
+  .subtabs .t{padding:0 14px;height:36px;line-height:36px;font-size:11.5px;
+           color:var(--muted);font-weight:600;border-right:1px solid #2a323a}
+  .subtabs .t.on{background:var(--bg);color:var(--text);
+           border-bottom:2px solid var(--orange)}
+  .body{padding:14px 16px}
+
+  /* page header */
+  .ph{display:flex;align-items:flex-end;justify-content:space-between;
+      margin-bottom:14px}
+  .ph .title{font-size:20px;font-weight:700}
+  .ph .sub{color:var(--dim);font-size:11px;margin-top:2px}
+  .actions{display:flex;gap:6px}
+  .btn{background:transparent;color:var(--text);border:1px solid var(--border);
+       padding:7px 12px;border-radius:6px;font-size:11.5px;font-weight:600;
+       cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+  .btn:hover{border-color:#3d4a56;background:#1a2128}
+  .btn.primary{background:var(--orange);border-color:var(--orange);color:#0f1419}
+  .btn.ghost{color:var(--muted)}
+
+  /* KPI cards — FIXED: no inner border around value, clickable, with hover */
+  .kpis{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));
+        gap:10px;margin-bottom:14px}
+  .kpi{background:var(--panel);border:1px solid var(--border);border-radius:8px;
+       padding:12px 14px;border-left:3px solid var(--blue);cursor:pointer;
+       transition:transform .08s,border-color .15s;position:relative}
+  .kpi:hover{transform:translateY(-1px);border-color:#3d4a56}
+  .kpi .l{font-size:10px;color:var(--muted);letter-spacing:.6px;
+          text-transform:uppercase;font-weight:700}
+  .kpi .v{font-size:22px;font-weight:800;margin-top:4px;color:var(--text);
+          background:transparent;border:none}
+  .kpi .s{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .kpi.green{border-left-color:var(--green)} .kpi.green .v{color:var(--green)}
+  .kpi.amber{border-left-color:var(--amber)} .kpi.amber .v{color:var(--amber)}
+  .kpi.red{border-left-color:var(--red)}     .kpi.red .v{color:var(--red)}
+  .kpi.blue .v{color:var(--blue)}
+  .kpi.purple{border-left-color:var(--purple)} .kpi.purple .v{color:var(--purple)}
+  .kpi.orange{border-left-color:var(--orange)} .kpi.orange .v{color:var(--orange)}
+  .kpi .arrow{position:absolute;top:8px;right:10px;color:var(--dim);font-size:11px}
+
+  /* attention bar */
+  .attn{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+        background:var(--panel);border:1px solid var(--border);
+        border-radius:8px;padding:9px 14px;margin-bottom:14px}
+  .attn .head{color:var(--amber);font-size:10px;font-weight:700;
+              letter-spacing:.8px;margin-right:4px}
+  .chip{background:#2a323b;border:1px solid #3a4452;border-radius:14px;
+        padding:3px 10px 3px 7px;font-size:11px;display:inline-flex;
+        align-items:center;gap:6px;cursor:pointer}
+  .chip .n{background:#4a5360;color:#fff;border-radius:10px;padding:1px 7px;
+           font-weight:800;font-size:10.5px}
+  .chip.amber .n{background:var(--amber);color:#1a1106}
+  .chip.red .n{background:var(--red)}
+  .chip.blue .n{background:var(--blue);color:#0a1626}
+
+  /* filter row — FIXED: adds Clear button */
+  .filters{display:flex;gap:8px;margin-bottom:8px;align-items:center}
+  .filters input,.filters select{background:var(--panel);
+        border:1px solid var(--border);color:var(--text);font-size:12px;
+        padding:7px 10px;border-radius:6px;height:30px}
+  .filters input{flex:1;min-width:0}
+  .filters .clear{background:#2a1f1a;border-color:#5a3a2a;color:var(--orange);
+        font-weight:700}
+  .filters .clear:hover{background:#3a2820}
+
+  /* layout: table + drawer */
+  .split{display:grid;grid-template-columns:1fr 320px;gap:10px;
+         background:var(--panel);border:1px solid var(--border);
+         border-radius:8px;padding:0;overflow:hidden}
+  table{width:100%;border-collapse:collapse;font-size:11.5px;background:var(--panel)}
+  thead th{background:#1d242c;color:var(--dim);font-size:10px;font-weight:700;
+       text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);
+       letter-spacing:.5px;text-transform:uppercase;position:sticky;top:0}
+  tbody td{padding:8px 10px;border-bottom:1px solid #232c35;color:var(--text)}
+  tbody tr:hover{background:#1d242c}
+  tbody tr.sel{background:#2a3540}
+  .pill{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;
+       font-weight:700}
+  .pill.green{background:rgba(63,185,80,.15);color:var(--green)}
+  .pill.amber{background:rgba(210,153,34,.18);color:var(--amber)}
+  .pill.red{background:rgba(248,81,73,.18);color:var(--red)}
+  .pill.purple{background:rgba(188,140,255,.18);color:var(--purple)}
+  .pill.blue{background:rgba(88,166,255,.18);color:var(--blue)}
+
+  /* checkbox — FIXED: explicit dark-theme indicator, removes ghost glyph */
+  .cb{width:14px;height:14px;border:1.5px solid #4a5360;border-radius:3px;
+      display:inline-block;vertical-align:middle;background:#1d242c}
+  .cb.chk{background:var(--orange);border-color:var(--orange);position:relative}
+  .cb.chk::after{content:"\2713";position:absolute;color:#0f1419;
+       font-weight:900;font-size:11px;top:-3px;left:1px}
+
+  /* DETAIL DRAWER — FIXED: now dark themed (was white!) */
+  .drawer{background:var(--panel);border-left:1px solid var(--border);
+       padding:14px;color:var(--text);min-height:380px;
+       display:flex;flex-direction:column;gap:8px}
+  .drawer .hd{display:flex;justify-content:space-between;
+       border-bottom:1px solid var(--border);padding-bottom:6px;margin-bottom:6px}
+  .drawer .hd .t{font-weight:700;color:var(--orange);font-size:13px}
+  .drawer .hd .x{color:var(--dim);cursor:pointer}
+  .drawer .sku{font-size:15px;font-weight:800;color:var(--text)}
+  .drawer .ttl{color:var(--muted);font-size:11.5px;margin-bottom:6px}
+  .drawer .row{display:flex;justify-content:space-between;
+       padding:5px 0;border-bottom:1px dashed #2a323b;font-size:12px}
+  .drawer .row .k{color:var(--dim)}
+  .drawer .row .v{color:var(--text);font-weight:600}
+  .drawer .row .v.green{color:var(--green)}
+  .drawer .row .v.amber{color:var(--amber)}
+
+  /* footer + activity legend — FIXED: visible colored letters */
+  .footer{display:flex;justify-content:space-between;align-items:center;
+       padding:10px 4px 2px;font-size:11px;color:var(--dim)}
+  .legend{display:flex;gap:14px;align-items:center;padding:8px 4px;
+       font-size:11px;color:var(--dim);background:transparent;
+       border-top:1px dashed var(--border);margin-top:4px}
+  .legend .lab{color:var(--dim);font-weight:700}
+  .legend .L{font-weight:900;margin-right:4px}
+  .legend .L.q{color:var(--green)}
+  .legend .L.s{color:var(--blue)}
+  .legend .L.p{color:var(--amber)}
+  .legend .L.a{color:var(--teal)}
+  .legend .L.r{color:var(--purple)}
+  .legend .L.k{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>Products screen — fix plan & target mockup</h1>
+<p class="lead">Diff against the current live screen. Each card below = one defect being fixed in this pass.</p>
+
+<h2>What's broken right now</h2>
+<div class="grid2">
+
+  <div class="card">
+    <h3><span class="before">BUG</span>Right detail panel is white</h3>
+    <p>Drawer uses <code>background:#fdfdfd; border:#d0d0d0</code> — leftover light theme. Text on white is illegible against the dark app.</p>
+    <p><span class="after">FIX</span>Re-skin the drawer: <code>background:var(--panel)</code>, dark border, accent orange header, colored key/value rows. See "DETAIL DRAWER" sample below.</p>
+  </div>
+
+  <div class="card">
+    <h3><span class="before">BUG</span>Activity legend invisible</h3>
+    <p>Legend renders but the Q / S / P / A / R / K letters take the global text color. Looks like flat white text — no legend semantics.</p>
+    <p><span class="after">FIX</span>Force <code>setTextFormat(RichText)</code> and inline colored spans; bump label to <code>font-weight:900</code>. Add a dashed top-border separator so it reads as a strip.</p>
+  </div>
+
+  <div class="card">
+    <h3><span class="before">BUG</span>KPI cards show "box around text"</h3>
+    <p>The QLabel value field is inheriting a thin frame from the global theme stylesheet. Looks like every number sits in a recessed box.</p>
+    <p><span class="after">FIX</span>Explicitly set <code>border:none;background:transparent</code> on every label inside the card. Add a 3-px colored left bar (per-category accent) — matches the mockup.</p>
+  </div>
+
+  <div class="card">
+    <h3><span class="before">BUG</span>KPI cards do nothing on click</h3>
+    <p>They're decorative. Mockup &sect;4 calls for "drill-down" — clicking a KPI should filter the table to those rows.</p>
+    <p><span class="after">FIX</span>Wrap each card in a clickable QFrame with <code>mousePressEvent</code> → render the matching subset (re-uses the existing <code>_render_subset</code> helper from the chip drill-down). Pointer cursor on hover.</p>
+  </div>
+
+  <div class="card">
+    <h3><span class="before">BUG</span>Checkbox column has weird artifact</h3>
+    <p>Empty checkbox shows a black square / outline of the previous indicator — Qt's default dark-on-dark glyph fights the alternating row color.</p>
+    <p><span class="after">FIX</span>Add explicit <code>QTableWidget::indicator</code> rules to the products QSS: 14&times;14, <code>#4a5360</code> border, <code>#1d242c</code> background, orange when checked with a white &check;. No more ghost glyph.</p>
+  </div>
+
+  <div class="card">
+    <h3><span class="before">BUG</span>No way to clear filters</h3>
+    <p>Once a search + 2 combos are set there's no reset path other than emptying each one manually.</p>
+    <p><span class="after">FIX</span>Add a "🧹 Clear" button on the right side of the filter row. Clears the search box and all 4 combos, then re-runs the search. Hidden when nothing is filtering (optional).</p>
+  </div>
+
+</div>
+
+<h2>Target mockup — fixed products screen</h2>
+
+<div class="frame">
+  <div class="topnav">
+    <div class="brand">JAK'S DIESEL PRO</div>
+    <div class="nav">
+      <span>DASHBOARD</span><span>SALES</span><span class="on">INVENTORY</span>
+      <span>PURCHASING</span><span>CUSTOMERS</span><span>ACCOUNTING</span>
+    </div>
+  </div>
+  <div class="subtabs">
+    <span class="t on">Products</span><span class="t">Adjustments</span>
+    <span class="t">Warehouses &amp; Bins</span><span class="t">Kits</span>
+    <span class="t">Cycle Counts</span><span class="t">Categories &amp; Brands</span>
+  </div>
+  <div class="body">
+
+    <div class="ph">
+      <div>
+        <div class="title">Products</div>
+        <div class="sub">SKU master · on-hand · reorder · pricing</div>
+      </div>
+      <div class="actions">
+        <button class="btn">📥 Import CSV</button>
+        <button class="btn">📤 Export</button>
+        <button class="btn">🏷 Print Labels</button>
+        <button class="btn primary">＋ New Product</button>
+        <button class="btn">🤖 AI Catalog Import</button>
+      </div>
+    </div>
+
+    <div class="kpis">
+      <div class="kpi blue">     <div class="l">Active SKUs</div>     <div class="v">1,247</div><div class="s">in catalog</div><div class="arrow">›</div></div>
+      <div class="kpi green">    <div class="l">On-hand Value</div>  <div class="v">$184.2K</div><div class="s">at avg cost</div><div class="arrow">›</div></div>
+      <div class="kpi amber">    <div class="l">Low Stock</div>      <div class="v">38</div><div class="s">below reorder pt</div><div class="arrow">›</div></div>
+      <div class="kpi red">      <div class="l">Out of Stock</div>   <div class="v">12</div><div class="s">qty = 0</div><div class="arrow">›</div></div>
+      <div class="kpi purple">   <div class="l">On Order (PO)</div>  <div class="v">87</div><div class="s">across open POs</div><div class="arrow">›</div></div>
+      <div class="kpi orange">   <div class="l">Dead Stock</div>     <div class="v">23</div><div class="s">no sale 180d</div><div class="arrow">›</div></div>
+      <div class="kpi green">    <div class="l">Avg Margin</div>     <div class="v">32.4%</div><div class="s">trailing 30d</div><div class="arrow">›</div></div>
+    </div>
+
+    <div class="attn">
+      <span class="head">⚠ NEEDS ATTENTION</span>
+      <span class="chip red"><span class="n">3</span>Out — open sales order</span>
+      <span class="chip amber"><span class="n">38</span>Below reorder point</span>
+      <span class="chip amber"><span class="n">2</span>Negative on-hand</span>
+      <span class="chip"><span class="n">9</span>No cost on file</span>
+      <span class="chip blue"><span class="n">14</span>Missing photo</span>
+      <span class="chip red"><span class="n">1</span>Price &lt; cost</span>
+      <span class="chip"><span class="n">0</span>Duplicate UPC</span>
+    </div>
+
+    <div class="filters">
+      <input placeholder="🔍 Search SKU, description, category, supplier, part numbers…">
+      <select><option>All Categories</option></select>
+      <select><option>All Types</option></select>
+      <select><option>All Warehouses</option></select>
+      <select><option>All Vendors</option></select>
+      <button class="btn">✏ Edit</button>
+      <button class="btn">✏ Bulk Edit</button>
+      <button class="btn clear">🧹 Clear</button>
+      <button class="btn">More ▾</button>
+    </div>
+
+    <div class="split">
+      <table>
+        <thead><tr>
+          <th style="width:32px"></th><th>SKU</th><th>Item</th><th>Type</th>
+          <th>Category</th><th style="text-align:right">On hand</th>
+          <th style="text-align:right">Alloc</th>
+          <th style="text-align:right">Avail</th>
+          <th style="text-align:right">Cost</th><th style="text-align:right">List</th>
+          <th>Vendor</th><th>Status</th>
+        </tr></thead>
+        <tbody>
+          <tr class="sel">
+            <td><span class="cb chk"></span></td>
+            <td>JAKS-PAI-C15103-010</td><td>Inframe Engine Kit</td>
+            <td><span class="pill green">NEW</span></td>
+            <td>Engine Parts</td>
+            <td style="text-align:right">9</td>
+            <td style="text-align:right">0</td>
+            <td style="text-align:right;color:var(--green);font-weight:700">9</td>
+            <td style="text-align:right">3,186.83</td>
+            <td style="text-align:right">4,552.61</td>
+            <td>PAI Industries</td>
+            <td><span class="pill green">● In Stock</span></td>
+          </tr>
+          <tr>
+            <td><span class="cb"></span></td>
+            <td>JAKS-CUM-3920763</td><td>Oil Pan Gasket</td>
+            <td><span class="pill purple">REMAN</span></td>
+            <td>Gaskets</td>
+            <td style="text-align:right">2</td>
+            <td style="text-align:right">1</td>
+            <td style="text-align:right;color:var(--amber);font-weight:700">1</td>
+            <td style="text-align:right">38.20</td>
+            <td style="text-align:right">59.99</td>
+            <td>Cummins</td>
+            <td><span class="pill amber">● Low</span></td>
+          </tr>
+          <tr>
+            <td><span class="cb"></span></td>
+            <td>JAKS-CAT-1W3300</td><td>Oil Filter</td>
+            <td><span class="pill green">NEW</span></td>
+            <td>Filters</td>
+            <td style="text-align:right">0</td>
+            <td style="text-align:right">0</td>
+            <td style="text-align:right;color:var(--red);font-weight:700">0</td>
+            <td style="text-align:right">7.40</td>
+            <td style="text-align:right">14.99</td>
+            <td>Caterpillar</td>
+            <td><span class="pill red">● Out</span></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="drawer">
+        <div class="hd"><div class="t">▼ Product Detail</div><div class="x">✕</div></div>
+        <div class="sku">JAKS-PAI-C15103-010</div>
+        <div class="ttl">Inframe Engine Kit</div>
+        <span class="pill green">In Stock</span>
+        <div class="row"><span class="k">Supplier</span><span class="v">PAI Industries</span></div>
+        <div class="row"><span class="k">Category</span><span class="v">Engine Parts › Inframe Kits</span></div>
+        <div class="row"><span class="k">Condition</span><span class="v">New</span></div>
+        <div class="row"><span class="k">Vendor SKU</span><span class="v">C15103-010</span></div>
+        <div class="row"><span class="k">Qty on Hand</span><span class="v green">9</span></div>
+        <div class="row"><span class="k">Min / Max</span><span class="v">0 / 0</span></div>
+        <div class="row"><span class="k">Price</span><span class="v">$4,552.61</span></div>
+        <div class="row"><span class="k">Cost</span><span class="v">$3,186.83</span></div>
+        <div class="row"><span class="k">Margin</span><span class="v green">30.0%</span></div>
+      </div>
+    </div>
+
+    <div class="legend">
+      <span class="lab">Activity legend:</span>
+      <span><span class="L q">Q</span>on quote</span>
+      <span><span class="L s">S</span>on sales order</span>
+      <span><span class="L p">P</span>on PO</span>
+      <span><span class="L a">A</span>recent adjustment</span>
+      <span><span class="L r">R</span>recent receipt</span>
+      <span><span class="L k">K</span>in a kit</span>
+    </div>
+
+    <div class="footer">
+      <span>All products — 1,247 results</span>
+      <span>1 selected · 0 synced · auto-refresh 31s ago</span>
+    </div>
+
+  </div>
+</div>
+
+<h2>Implementation order</h2>
+<ol style="color:var(--muted);font-size:12px;line-height:1.7">
+  <li><b>Drawer dark skin</b> — re-skin <code>_detail_panel</code>, <code>_detail_browser</code>, <code>_detail_toggle</code>, <code>_detail_close_btn</code> with the dark palette + colored value rows.</li>
+  <li><b>Checkbox indicator</b> — add explicit <code>QTableWidget::indicator</code> CSS to <code>_products_dark_qss()</code>.</li>
+  <li><b>KPI cards</b> — <code>border:none;background:transparent</code> on inner labels; add 3-px left accent border; wrap each card with <code>mousePressEvent</code> → <code>_render_subset()</code>.</li>
+  <li><b>Activity legend</b> — confirm RichText and force visible weights/colors; add dashed top border.</li>
+  <li><b>Clear filters button</b> — new <code>QPushButton "🧹 Clear"</code> placed before "More ▾"; wires to <code>_clear_filters()</code>.</li>
+  <li><b>Compile + relaunch + verify</b>.</li>
+</ol>
+
+</div>
+</body>
+</html>

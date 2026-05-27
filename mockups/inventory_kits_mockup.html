@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>JAK's Diesel PRO — Inventory · Kits Mockup</title>
+<style>
+  :root {
+    --bg:#0f1419; --panel:#1a2128; --panel2:#232c35;
+    --border:#2d3a45; --border-hi:#3d4d5c;
+    --text:#e6edf3; --dim:#8b98a5; --faint:#5d6b78;
+    --accent:#ff8c42; --accent-dim:#b85d1f;
+    --green:#3fb950; --red:#f85149; --amber:#d29922;
+    --blue:#58a6ff; --purple:#bc8cff; --teal:#39d0d8;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:13px/1.4 "Segoe UI", system-ui, sans-serif; }
+  .topnav { display:flex; align-items:center; gap:24px;
+            background:#11161c; border-bottom:1px solid var(--border);
+            padding:0 18px; height:48px; }
+  .brand { color:var(--accent); font-weight:900; font-size:13px;
+           letter-spacing:0.5px; }
+  .topnav .cats { display:flex; gap:4px; flex:1; }
+  .topnav .cats a { color:var(--dim); text-decoration:none;
+                    font-weight:600; font-size:11px; letter-spacing:0.8px;
+                    padding:14px 12px; border-bottom:2px solid transparent;
+                    cursor:pointer; }
+  .topnav .cats a.active { color:var(--accent);
+                           border-bottom-color:var(--accent); }
+  .topnav .cats a:hover { color:var(--text); }
+  .topnav .right { display:flex; align-items:center; gap:12px;
+                   color:var(--dim); font-size:11px; }
+  .topnav .right .user { color:var(--accent); }
+  .topnav .right .gear { font-size:15px; color:var(--text); cursor:pointer; }
+
+  .subtabs { display:flex; gap:6px; padding:10px 18px 0;
+             background:var(--bg); border-bottom:1px solid var(--border); }
+  .subtab { padding:8px 14px; font-size:11px; font-weight:600;
+            color:var(--dim); border:1px solid transparent;
+            border-bottom:none; border-radius:6px 6px 0 0; cursor:pointer;
+            letter-spacing:0.3px; }
+  .subtab.active { background:var(--accent); color:white;
+                   border-color:var(--accent); }
+  .subtab:hover:not(.active) { color:var(--text); background:var(--panel2); }
+
+  .body { padding:14px 18px 30px; }
+  .h1 { font-size:20px; font-weight:700; margin:0; }
+  .h1 small { color:var(--dim); font-weight:500; font-size:12px;
+              margin-left:10px; }
+  .headerrow { display:flex; align-items:baseline; justify-content:space-between;
+               margin-bottom:14px; }
+  .btn { padding:8px 14px; border-radius:6px; border:none;
+         font-weight:600; font-size:12px; cursor:pointer;
+         display:inline-flex; align-items:center; gap:6px; }
+  .btn-primary { background:var(--accent); color:white; }
+  .btn-primary:hover { background:var(--accent-dim); }
+  .btn-ghost { background:var(--panel2); color:var(--text);
+               border:1px solid var(--border); }
+  .btn-ghost:hover { border-color:var(--border-hi); }
+  .btn-green { background:var(--green); color:white; }
+  .btn-green:hover { background:#2ea043; }
+
+  .kpis { display:grid; grid-template-columns:repeat(7,1fr); gap:8px;
+          margin-bottom:14px; }
+  .kpi { background:var(--panel); border:1px solid var(--border);
+         border-radius:8px; padding:10px 12px; min-height:64px; }
+  .kpi .lbl { font-size:9px; font-weight:700; letter-spacing:0.8px;
+              color:var(--dim); text-transform:uppercase; }
+  .kpi .val { font-size:20px; font-weight:700; margin-top:4px; }
+  .kpi .sub { font-size:10px; color:var(--faint); margin-top:2px; }
+  .c-blue { color:var(--blue); } .c-amber { color:var(--amber); }
+  .c-green { color:var(--green); } .c-red { color:var(--red); }
+  .c-accent { color:var(--accent); } .c-purple { color:var(--purple); }
+  .c-teal { color:var(--teal); }
+
+  .attn { background:var(--panel); border:1px solid var(--border);
+          border-radius:8px; padding:8px 12px; display:flex;
+          align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  .attn .head { font-size:10px; font-weight:700; letter-spacing:0.8px;
+                color:var(--amber); margin-right:6px; }
+  .chip { display:inline-flex; align-items:center; gap:6px;
+          background:var(--panel2); border:1px solid var(--border);
+          border-radius:14px; padding:3px 10px 3px 4px; font-size:11px;
+          font-weight:600; color:var(--text); cursor:pointer; }
+  .chip:hover { border-color:var(--border-hi); }
+  .chip .badge { width:20px; height:20px; border-radius:50%;
+                 color:white; font-size:10px; font-weight:700;
+                 display:flex; align-items:center; justify-content:center; }
+  .chip.zero { color:var(--faint); }
+  .chip.zero .badge { background:var(--border); }
+
+  .filters { display:flex; gap:8px; align-items:center;
+             margin-bottom:10px; flex-wrap:wrap; }
+  .search { flex:0 1 280px; background:var(--panel2); color:var(--text);
+            border:1px solid var(--border); border-radius:6px;
+            padding:7px 10px; font-size:12px; }
+  .select { background:var(--panel2); color:var(--text);
+            border:1px solid var(--border); border-radius:6px;
+            padding:7px 28px 7px 10px; font-size:12px;
+            appearance:none; min-width:120px;
+            background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),
+                             linear-gradient(135deg,var(--dim) 50%,transparent 50%);
+            background-position:calc(100% - 14px) center,
+                                calc(100% - 9px) center;
+            background-size:5px 5px,5px 5px; background-repeat:no-repeat; }
+  .spacer { flex:1; }
+
+  table { width:100%; border-collapse:collapse;
+          background:var(--panel); border:1px solid var(--border);
+          border-radius:8px; overflow:hidden; }
+  th { font-size:10px; font-weight:600; text-transform:uppercase;
+       letter-spacing:0.5px; color:var(--dim); text-align:left;
+       padding:10px 12px; background:var(--panel2);
+       border-bottom:1px solid var(--border); }
+  td { padding:10px 12px; border-bottom:1px solid var(--border);
+       font-size:12px; vertical-align:middle; }
+  tr:nth-child(even) td { background:#1f262e; }
+  tr:hover td { background:rgba(255,140,66,0.05); cursor:pointer; }
+  .sku { color:var(--accent); font-weight:700; font-family:Consolas,monospace;
+         font-size:11px; }
+  .right { text-align:right; }
+  .center { text-align:center; }
+  .mono { font-family:Consolas,monospace; }
+  .cust { line-height:1.25; }
+  .cust .nm { font-weight:600; }
+  .cust .sb { color:var(--dim); font-size:10px; margin-top:1px; }
+
+  .pill { display:inline-block; padding:2px 8px; border-radius:10px;
+          font-size:10px; font-weight:700; text-transform:uppercase;
+          letter-spacing:0.3px; border:1px solid; }
+  .p-active   { color:var(--green);  border-color:rgba(63,185,80,.5);   background:rgba(63,185,80,.12); }
+  .p-short    { color:var(--red);    border-color:rgba(248,81,73,.5);   background:rgba(248,81,73,.12); }
+  .p-draft    { color:var(--faint);  border-color:var(--border);        background:var(--panel2); }
+  .p-rev      { color:var(--amber);  border-color:rgba(210,153,34,.5);  background:rgba(210,153,34,.12); }
+  .p-disc     { color:var(--faint);  border-color:var(--border);        background:var(--panel2); }
+
+  .marg { font-weight:700; }
+  .marg.good { color:var(--green); }
+  .marg.ok   { color:var(--amber); }
+  .marg.bad  { color:var(--red); }
+
+  .buildbar { width:80px; height:6px; background:var(--panel2);
+              border-radius:3px; overflow:hidden; display:inline-block;
+              vertical-align:middle; margin-right:6px; }
+  .buildbar > span { display:block; height:100%; }
+
+  .acts { display:flex; gap:3px; }
+  .act { width:18px; height:18px; border-radius:4px;
+         display:flex; align-items:center; justify-content:center;
+         color:white; font-size:10px; font-weight:700; }
+  .act.off { background:var(--panel2); color:var(--faint);
+             border:1px solid var(--border); }
+  .act.blue { background:var(--blue); } .act.green { background:var(--green); }
+  .act.amber { background:var(--amber); } .act.red { background:var(--red); }
+  .act.purple { background:var(--purple); } .act.teal { background:var(--teal); }
+
+  .footer { color:var(--dim); font-size:11px; margin-top:10px; }
+</style>
+</head>
+<body>
+
+<div class="topnav">
+  <div class="brand">JAK'S DIESEL PRO</div>
+  <div class="cats">
+    <a>DASHBOARD</a><a>SALES</a><a>CORE PROCESSING</a>
+    <a class="active">INVENTORY</a><a>PURCHASING</a><a>PRICING</a>
+    <a>CUSTOMERS</a><a>MARKETING</a><a>ACCOUNTING</a><a>TOOLS</a>
+  </div>
+  <div class="right">
+    Tue, May 19 · 04:26 PM <span>·</span> <span class="user">User</span>
+    <span class="gear">⚙</span>
+  </div>
+</div>
+
+<div class="subtabs">
+  <div class="subtab">Products</div>
+  <div class="subtab">Adjustments</div>
+  <div class="subtab">Locations</div>
+  <div class="subtab active">Kits</div>
+</div>
+
+<div class="body">
+
+  <div class="headerrow">
+    <h1 class="h1">Kits &amp; Assemblies
+      <small>Engine overhaul · Service kits · Custom bundles</small>
+    </h1>
+    <div>
+      <button class="btn btn-ghost">📋 Print BOM</button>
+      <button class="btn btn-ghost">🧬 Clone Kit</button>
+      <button class="btn btn-primary">+ New Kit</button>
+    </div>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="lbl">Active Kits</div>
+      <div class="val c-blue">38</div><div class="sub">live in catalog</div></div>
+    <div class="kpi"><div class="lbl">Buildable Now</div>
+      <div class="val c-green">22</div><div class="sub">all components on hand</div></div>
+    <div class="kpi"><div class="lbl">Short Components</div>
+      <div class="val c-red">11</div><div class="sub">missing at least 1 part</div></div>
+    <div class="kpi"><div class="lbl">Kits Sold MTD</div>
+      <div class="val c-accent">$48.2k</div><div class="sub">14 units</div></div>
+    <div class="kpi"><div class="lbl">Avg Margin</div>
+      <div class="val c-green">38.4%</div><div class="sub">across active kits</div></div>
+    <div class="kpi"><div class="lbl">Auto-Explode</div>
+      <div class="val c-purple">12</div><div class="sub">on sale → child SKUs</div></div>
+    <div class="kpi"><div class="lbl">Stale Kits</div>
+      <div class="val c-amber">4</div><div class="sub">no sales 180d</div></div>
+  </div>
+
+  <div class="attn">
+    <span class="head">⚠ NEEDS ATTENTION</span>
+    <span class="chip"><span class="badge" style="background:var(--red)">11</span>Component shortage</span>
+    <span class="chip"><span class="badge" style="background:var(--amber)">6</span>Cost out of date</span>
+    <span class="chip"><span class="badge" style="background:var(--red)">3</span>Margin &lt; 10%</span>
+    <span class="chip"><span class="badge" style="background:var(--amber)">4</span>Never sold</span>
+    <span class="chip"><span class="badge" style="background:var(--blue)">2</span>BOM revision pending</span>
+    <span class="chip zero"><span class="badge">0</span>Circular BOM</span>
+  </div>
+
+  <div class="filters">
+    <input class="search" placeholder="🔍   Search kit SKU, name, engine, component…" />
+    <select class="select"><option>All Kit Types</option>
+      <option>Overhaul</option><option>In-Frame</option>
+      <option>Service / Maintenance</option><option>Custom</option></select>
+    <select class="select"><option>All Engines</option>
+      <option>Cummins ISX</option><option>Detroit DD15</option>
+      <option>Detroit Series 60</option><option>CAT C15</option></select>
+    <select class="select"><option>Buildable — All</option>
+      <option>Yes (in stock)</option><option>No (short)</option>
+      <option>Build &gt;10</option></select>
+    <select class="select"><option>All Status</option>
+      <option>Active</option><option>Draft</option>
+      <option>Revision Pending</option><option>Discontinued</option></select>
+    <select class="select"><option>Margin — All</option>
+      <option>&gt; 40%</option><option>25–40%</option>
+      <option>10–25%</option><option>&lt; 10%</option></select>
+    <div class="spacer"></div>
+    <button class="btn btn-ghost">View / Edit BOM</button>
+    <button class="btn btn-ghost" style="color:var(--teal)">⚒ Assemble</button>
+    <button class="btn btn-ghost" style="color:var(--amber)">⇆ Disassemble</button>
+    <button class="btn btn-green">+ Add to Quote</button>
+  </div>
+
+  <table>
+    <thead><tr>
+      <th>Kit SKU</th><th>Description</th><th>Engine</th>
+      <th class="center">Comp</th><th class="right">Buildable</th>
+      <th class="right">Cost</th><th class="right">Price</th>
+      <th class="right">Margin</th><th>Status</th>
+      <th>Last Sold</th><th>Activity</th>
+    </tr></thead>
+    <tbody>
+      <tr><td class="sku">KIT-ISX-OVH</td>
+        <td><div class="cust"><div class="nm">Cummins ISX 15 Overhaul Kit</div>
+            <div class="sb">Pistons · Rings · Liners · Bearings · Gaskets</div></div></td>
+        <td>Cummins ISX</td>
+        <td class="center">28</td>
+        <td class="right">
+          <span class="buildbar"><span style="width:80%; background:var(--green)"></span></span>
+          <span class="mono">8</span></td>
+        <td class="right mono">$3,420</td>
+        <td class="right mono">$5,499</td>
+        <td class="right marg good">37.8%</td>
+        <td><span class="pill p-active">ACTIVE</span></td>
+        <td class="mono">05/18</td>
+        <td><div class="acts">
+          <span class="act green">⚒</span><span class="act green">$</span>
+          <span class="act purple">📋</span><span class="act off">⚠</span>
+          <span class="act off">⇆</span></div></td></tr>
+      <tr><td class="sku">KIT-ISX-IF</td>
+        <td><div class="cust"><div class="nm">Cummins ISX In-Frame Kit</div>
+            <div class="sb">Pistons · Rings · Liners · Rod Bearings</div></div></td>
+        <td>Cummins ISX</td>
+        <td class="center">14</td>
+        <td class="right">
+          <span class="buildbar"><span style="width:0%; background:var(--red)"></span></span>
+          <span class="mono c-red">0</span></td>
+        <td class="right mono">$2,180</td>
+        <td class="right mono">$3,299</td>
+        <td class="right marg good">33.9%</td>
+        <td><span class="pill p-short">SHORT</span></td>
+        <td class="mono">05/14</td>
+        <td><div class="acts">
+          <span class="act red">⚒</span><span class="act green">$</span>
+          <span class="act purple">📋</span><span class="act red">⚠</span>
+          <span class="act off">⇆</span></div></td></tr>
+      <tr><td class="sku">KIT-DD15-OVH</td>
+        <td><div class="cust"><div class="nm">Detroit DD15 Overhaul Kit</div>
+            <div class="sb">Pistons · Rings · Liners · Bearings · Gaskets</div></div></td>
+        <td>Detroit DD15</td>
+        <td class="center">31</td>
+        <td class="right">
+          <span class="buildbar"><span style="width:50%; background:var(--amber)"></span></span>
+          <span class="mono">5</span></td>
+        <td class="right mono">$3,840</td>
+        <td class="right mono">$5,999</td>
+        <td class="right marg good">36.0%</td>
+        <td><span class="pill p-active">ACTIVE</span></td>
+        <td class="mono">05/17</td>
+        <td><div class="acts">
+          <span class="act green">⚒</span><span class="act green">$</span>
+          <span class="act purple">📋</span><span class="act off">⚠</span>
+          <span class="act off">⇆</span></div></td></tr>
+      <tr><td class="sku">KIT-DS60-SVC</td>
+        <td><div class="cust"><div class="nm">DS60 250k Service Kit</div>
+            <div class="sb">Oil · Air · Fuel filters · Belt · Coolant</div></div></td>
+        <td>Detroit Series 60</td>
+        <td class="center">9</td>
+        <td class="right">
+          <span class="buildbar"><span style="width:100%; background:var(--green)"></span></span>
+          <span class="mono">24</span></td>
+        <td class="right mono">$184</td>
+        <td class="right mono">$329</td>
+        <td class="right marg good">44.1%</td>
+        <td><span class="pill p-active">ACTIVE</span></td>
+        <td class="mono">05/19</td>
+        <td><div class="acts">
+          <span class="act green">⚒</span><span class="act green">$</span>
+          <span class="act off">📋</span><span class="act off">⚠</span>
+          <span class="act off">⇆</span></div></td></tr>
+      <tr><td class="sku">KIT-C15-HEAD</td>
+        <td><div class="cust"><div class="nm">CAT C15 Head Gasket Set</div>
+            <div class="sb">Head gasket · Bolts · Seals</div></div></td>
+        <td>CAT C15</td>
+        <td class="center">12</td>
+        <td class="right">
+          <span class="buildbar"><span style="width:65%; background:var(--green)"></span></span>
+          <span class="mono">3</span></td>
+        <td class="right mono">$612</td>
+        <td class="right mono">$649</td>
+        <td class="right marg bad">5.7%</td>
+        <td><span class="pill p-rev">REV PENDING</span></td>
+        <td class="mono">04/30</td>
+        <td><div class="acts">
+          <span class="act green">⚒</span><span class="act green">$</span>
+          <span class="act amber">📋</span><span class="act red">⚠</span>
+          <span class="act off">⇆</span></div></td></tr>
+      <tr><td class="sku">KIT-DD15-EGR</td>
+        <td><div class="cust"><div class="nm">DD15 EGR Cooler Bundle</div>
+            <div class="sb">Cooler · Gaskets · Clamps · Hardware</div></div></td>
+        <td>Detroit DD15</td>
+        <td class="center">7</td>
+        <td class="right">
+          <span class="buildbar"><span style="width:0%; background:var(--red)"></span></span>
+          <span class="mono c-red">0</span></td>
+        <td class="right mono">$1,840</td>
+        <td class="right mono">$2,899</td>
+        <td class="right marg good">36.5%</td>
+        <td><span class="pill p-short">SHORT</span></td>
+        <td class="mono">never</td>
+        <td><div class="acts">
+          <span class="act red">⚒</span><span class="act off">$</span>
+          <span class="act off">📋</span><span class="act amber">⚠</span>
+          <span class="act off">⇆</span></div></td></tr>
+      <tr><td class="sku">KIT-ISX-CORE</td>
+        <td><div class="cust"><div class="nm">ISX Core Engine Bundle</div>
+            <div class="sb">Long-block + accessory kit (custom)</div></div></td>
+        <td>Cummins ISX</td>
+        <td class="center">42</td>
+        <td class="right">
+          <span class="buildbar"><span style="width:25%; background:var(--amber)"></span></span>
+          <span class="mono">1</span></td>
+        <td class="right mono">$18,400</td>
+        <td class="right mono">$24,999</td>
+        <td class="right marg ok">26.4%</td>
+        <td><span class="pill p-draft">DRAFT</span></td>
+        <td class="mono">never</td>
+        <td><div class="acts">
+          <span class="act amber">⚒</span><span class="act off">$</span>
+          <span class="act off">📋</span><span class="act amber">⚠</span>
+          <span class="act off">⇆</span></div></td></tr>
+    </tbody>
+  </table>
+
+  <div class="footer">
+    7 of 38 kits shown  ·  22 buildable now  ·  $5,840 cost tied up in component shortages
+  </div>
+
+</div>
+</body>
+</html>

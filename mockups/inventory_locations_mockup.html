@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>JAK's Diesel PRO — Inventory · Locations Mockup</title>
+<style>
+  :root {
+    --bg:#0f1419; --panel:#1a2128; --panel2:#232c35;
+    --border:#2d3a45; --border-hi:#3d4d5c;
+    --text:#e6edf3; --dim:#8b98a5; --faint:#5d6b78;
+    --accent:#ff8c42; --accent-dim:#b85d1f;
+    --green:#3fb950; --red:#f85149; --amber:#d29922;
+    --blue:#58a6ff; --purple:#bc8cff; --teal:#39d0d8;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:13px/1.4 "Segoe UI", system-ui, sans-serif; }
+  .topnav { display:flex; align-items:center; gap:24px;
+            background:#11161c; border-bottom:1px solid var(--border);
+            padding:0 18px; height:48px; }
+  .brand { color:var(--accent); font-weight:900; font-size:13px;
+           letter-spacing:0.5px; }
+  .topnav .cats { display:flex; gap:4px; flex:1; }
+  .topnav .cats a { color:var(--dim); text-decoration:none;
+                    font-weight:600; font-size:11px; letter-spacing:0.8px;
+                    padding:14px 12px; border-bottom:2px solid transparent;
+                    cursor:pointer; }
+  .topnav .cats a.active { color:var(--accent);
+                           border-bottom-color:var(--accent); }
+  .topnav .cats a:hover { color:var(--text); }
+  .topnav .right { display:flex; align-items:center; gap:12px;
+                   color:var(--dim); font-size:11px; }
+  .topnav .right .user { color:var(--accent); }
+  .topnav .right .gear { font-size:15px; color:var(--text); cursor:pointer; }
+
+  .subtabs { display:flex; gap:6px; padding:10px 18px 0;
+             background:var(--bg); border-bottom:1px solid var(--border); }
+  .subtab { padding:8px 14px; font-size:11px; font-weight:600;
+            color:var(--dim); border:1px solid transparent;
+            border-bottom:none; border-radius:6px 6px 0 0; cursor:pointer;
+            letter-spacing:0.3px; }
+  .subtab.active { background:var(--accent); color:white;
+                   border-color:var(--accent); }
+  .subtab:hover:not(.active) { color:var(--text); background:var(--panel2); }
+
+  .body { padding:14px 18px 30px; }
+  .h1 { font-size:20px; font-weight:700; margin:0; }
+  .h1 small { color:var(--dim); font-weight:500; font-size:12px;
+              margin-left:10px; }
+  .headerrow { display:flex; align-items:baseline; justify-content:space-between;
+               margin-bottom:14px; }
+  .btn { padding:8px 14px; border-radius:6px; border:none;
+         font-weight:600; font-size:12px; cursor:pointer;
+         display:inline-flex; align-items:center; gap:6px; }
+  .btn-primary { background:var(--accent); color:white; }
+  .btn-primary:hover { background:var(--accent-dim); }
+  .btn-ghost { background:var(--panel2); color:var(--text);
+               border:1px solid var(--border); }
+  .btn-ghost:hover { border-color:var(--border-hi); }
+
+  .kpis { display:grid; grid-template-columns:repeat(7,1fr); gap:8px;
+          margin-bottom:14px; }
+  .kpi { background:var(--panel); border:1px solid var(--border);
+         border-radius:8px; padding:10px 12px; min-height:64px; }
+  .kpi .lbl { font-size:9px; font-weight:700; letter-spacing:0.8px;
+              color:var(--dim); text-transform:uppercase; }
+  .kpi .val { font-size:20px; font-weight:700; margin-top:4px; }
+  .kpi .sub { font-size:10px; color:var(--faint); margin-top:2px; }
+  .c-blue { color:var(--blue); } .c-amber { color:var(--amber); }
+  .c-green { color:var(--green); } .c-red { color:var(--red); }
+  .c-accent { color:var(--accent); } .c-purple { color:var(--purple); }
+  .c-teal { color:var(--teal); }
+
+  .attn { background:var(--panel); border:1px solid var(--border);
+          border-radius:8px; padding:8px 12px; display:flex;
+          align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  .attn .head { font-size:10px; font-weight:700; letter-spacing:0.8px;
+                color:var(--amber); margin-right:6px; }
+  .chip { display:inline-flex; align-items:center; gap:6px;
+          background:var(--panel2); border:1px solid var(--border);
+          border-radius:14px; padding:3px 10px 3px 4px; font-size:11px;
+          font-weight:600; color:var(--text); cursor:pointer; }
+  .chip:hover { border-color:var(--border-hi); }
+  .chip .badge { width:20px; height:20px; border-radius:50%;
+                 color:white; font-size:10px; font-weight:700;
+                 display:flex; align-items:center; justify-content:center; }
+  .chip.zero { color:var(--faint); }
+  .chip.zero .badge { background:var(--border); }
+
+  .filters { display:flex; gap:8px; align-items:center;
+             margin-bottom:10px; flex-wrap:wrap; }
+  .search { flex:0 1 280px; background:var(--panel2); color:var(--text);
+            border:1px solid var(--border); border-radius:6px;
+            padding:7px 10px; font-size:12px; }
+  .select { background:var(--panel2); color:var(--text);
+            border:1px solid var(--border); border-radius:6px;
+            padding:7px 28px 7px 10px; font-size:12px;
+            appearance:none; min-width:120px;
+            background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),
+                             linear-gradient(135deg,var(--dim) 50%,transparent 50%);
+            background-position:calc(100% - 14px) center,
+                                calc(100% - 9px) center;
+            background-size:5px 5px,5px 5px; background-repeat:no-repeat; }
+  .spacer { flex:1; }
+
+  table { width:100%; border-collapse:collapse;
+          background:var(--panel); border:1px solid var(--border);
+          border-radius:8px; overflow:hidden; }
+  th { font-size:10px; font-weight:600; text-transform:uppercase;
+       letter-spacing:0.5px; color:var(--dim); text-align:left;
+       padding:10px 12px; background:var(--panel2);
+       border-bottom:1px solid var(--border); }
+  td { padding:10px 12px; border-bottom:1px solid var(--border);
+       font-size:12px; vertical-align:middle; }
+  tr:nth-child(even) td { background:#1f262e; }
+  tr:hover td { background:rgba(255,140,66,0.05); cursor:pointer; }
+  tr.group td { background:#161c22; color:var(--accent);
+                font-weight:700; font-size:11px; letter-spacing:0.5px;
+                text-transform:uppercase; }
+  .right { text-align:right; }
+  .center { text-align:center; }
+  .mono { font-family:Consolas,monospace; }
+  .code { color:var(--accent); font-weight:700; font-family:Consolas,monospace;
+          font-size:11px; }
+  .desc-sub { color:var(--dim); font-size:10px; margin-top:1px; }
+  .indent { padding-left:24px; }
+
+  .pill { display:inline-block; padding:2px 8px; border-radius:10px;
+          font-size:10px; font-weight:700; text-transform:uppercase;
+          letter-spacing:0.3px; border:1px solid; }
+  .p-active   { color:var(--green);  border-color:rgba(63,185,80,.5);   background:rgba(63,185,80,.12); }
+  .p-empty    { color:var(--faint);  border-color:var(--border);        background:var(--panel2); }
+  .p-quar     { color:var(--amber);  border-color:rgba(210,153,34,.5);  background:rgba(210,153,34,.12); }
+  .p-recv     { color:var(--blue);   border-color:rgba(88,166,255,.5);  background:rgba(88,166,255,.12); }
+  .p-ship     { color:var(--teal);   border-color:rgba(57,208,216,.5);  background:rgba(57,208,216,.12); }
+  .p-disabled { color:var(--red);    border-color:rgba(248,81,73,.5);   background:rgba(248,81,73,.12); }
+
+  .capbar { width:80px; height:6px; background:var(--panel2);
+            border-radius:3px; overflow:hidden; display:inline-block;
+            vertical-align:middle; margin-right:6px; }
+  .capbar > span { display:block; height:100%; }
+  .cap-ok   { background:var(--green); }
+  .cap-warn { background:var(--amber); }
+  .cap-bad  { background:var(--red); }
+
+  .acts { display:flex; gap:3px; }
+  .act { width:18px; height:18px; border-radius:4px;
+         display:flex; align-items:center; justify-content:center;
+         color:white; font-size:10px; font-weight:700; }
+  .act.off { background:var(--panel2); color:var(--faint);
+             border:1px solid var(--border); }
+  .act.blue { background:var(--blue); } .act.green { background:var(--green); }
+  .act.amber { background:var(--amber); } .act.red { background:var(--red); }
+  .act.purple { background:var(--purple); } .act.teal { background:var(--teal); }
+
+  .footer { color:var(--dim); font-size:11px; margin-top:10px; }
+</style>
+</head>
+<body>
+
+<div class="topnav">
+  <div class="brand">JAK'S DIESEL PRO</div>
+  <div class="cats">
+    <a>DASHBOARD</a><a>SALES</a><a>CORE PROCESSING</a>
+    <a class="active">INVENTORY</a><a>PURCHASING</a><a>PRICING</a>
+    <a>CUSTOMERS</a><a>MARKETING</a><a>ACCOUNTING</a><a>TOOLS</a>
+  </div>
+  <div class="right">
+    Tue, May 19 · 04:26 PM <span>·</span> <span class="user">User</span>
+    <span class="gear">⚙</span>
+  </div>
+</div>
+
+<div class="subtabs">
+  <div class="subtab">Products</div>
+  <div class="subtab">Adjustments</div>
+  <div class="subtab active">Locations</div>
+  <div class="subtab">Kits</div>
+</div>
+
+<div class="body">
+
+  <div class="headerrow">
+    <h1 class="h1">Locations
+      <small>Warehouses · Zones · Bins · Quarantine</small>
+    </h1>
+    <div>
+      <button class="btn btn-ghost">🏷 Print Bin Labels</button>
+      <button class="btn btn-ghost">📋 Cycle Count Zone</button>
+      <button class="btn btn-primary">+ New Location</button>
+    </div>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="lbl">Warehouses</div>
+      <div class="val c-blue">3</div><div class="sub">Main · East · Shop Floor</div></div>
+    <div class="kpi"><div class="lbl">Active Bins</div>
+      <div class="val c-green">412</div><div class="sub">of 480 defined</div></div>
+    <div class="kpi"><div class="lbl">Empty Bins</div>
+      <div class="val c-amber">68</div><div class="sub">14% utilisation gap</div></div>
+    <div class="kpi"><div class="lbl">Capacity Used</div>
+      <div class="val c-teal">71%</div><div class="sub">across all WH</div></div>
+    <div class="kpi"><div class="lbl">Mis-located</div>
+      <div class="val c-red">9</div><div class="sub">items off-bin</div></div>
+    <div class="kpi"><div class="lbl">Negative On-hand</div>
+      <div class="val c-red">2</div><div class="sub">requires count</div></div>
+    <div class="kpi"><div class="lbl">Last Cycle Count</div>
+      <div class="val c-purple">05/16</div><div class="sub">WH-Main · Zone A</div></div>
+  </div>
+
+  <div class="attn">
+    <span class="head">⚠ NEEDS ATTENTION</span>
+    <span class="chip"><span class="badge" style="background:var(--red)">4</span>Over capacity</span>
+    <span class="chip"><span class="badge" style="background:var(--red)">2</span>Negative on-hand</span>
+    <span class="chip"><span class="badge" style="background:var(--amber)">17</span>Stale (no movement 90d)</span>
+    <span class="chip"><span class="badge" style="background:var(--blue)">9</span>Mis-located scans</span>
+    <span class="chip"><span class="badge" style="background:var(--amber)">5</span>Missing label</span>
+    <span class="chip"><span class="badge" style="background:var(--purple)">3</span>Quarantine — needs review</span>
+  </div>
+
+  <div class="filters">
+    <input class="search" placeholder="🔍   Search code, description, item in bin…" />
+    <select class="select"><option>All Warehouses</option>
+      <option>WH-Main</option><option>WH-East</option><option>Shop Floor</option></select>
+    <select class="select"><option>All Zones</option>
+      <option>Zone A</option><option>Zone B</option><option>Zone R</option>
+      <option>Receiving</option><option>Shipping</option><option>Quarantine</option></select>
+    <select class="select"><option>All Types</option>
+      <option>Bin</option><option>Rack</option><option>Floor</option>
+      <option>Quarantine</option><option>Receiving</option><option>Shipping</option></select>
+    <select class="select"><option>All Status</option>
+      <option>Active</option><option>Empty</option><option>Disabled</option></select>
+    <select class="select"><option>Capacity — All</option>
+      <option>Over 90%</option><option>Over 75%</option><option>Under 25%</option></select>
+    <div class="spacer"></div>
+    <button class="btn btn-ghost">View / Edit</button>
+    <button class="btn btn-ghost" style="color:var(--blue)">🔀 Bulk Move</button>
+    <button class="btn btn-ghost" style="color:var(--amber)">⏸ Disable</button>
+    <button class="btn btn-primary">+ New Bin</button>
+  </div>
+
+  <table>
+    <thead><tr>
+      <th>Code</th><th>Description</th><th>Type</th>
+      <th class="right">Items</th><th class="right">Qty</th>
+      <th>Capacity</th><th>Last Count</th>
+      <th>Status</th><th>Activity</th>
+    </tr></thead>
+    <tbody>
+      <tr class="group"><td colspan="9">▼ WH-MAIN  ·  Spokane, WA  ·  18,400 sq ft  ·  280 bins  ·  82% used</td></tr>
+      <tr><td class="code indent">A-12-03</td>
+        <td>ISX Heads · Top Shelf
+          <div class="desc-sub">Zone A · Aisle 12 · Position 3</div></td>
+        <td>Bin</td><td class="right">3</td><td class="right mono">14</td>
+        <td><span class="capbar"><span class="cap-bad" style="width:96%"></span></span>96%</td>
+        <td class="mono">05/16</td>
+        <td><span class="pill p-active">ACTIVE</span></td>
+        <td><div class="acts">
+          <span class="act green">📦</span><span class="act green">✓</span>
+          <span class="act red">⚠</span><span class="act off">⏸</span></div></td></tr>
+      <tr><td class="code indent">A-12-04</td>
+        <td>ISX Heads · Bottom Shelf
+          <div class="desc-sub">Zone A · Aisle 12 · Position 4</div></td>
+        <td>Bin</td><td class="right">2</td><td class="right mono">8</td>
+        <td><span class="capbar"><span class="cap-ok" style="width:48%"></span></span>48%</td>
+        <td class="mono">05/16</td>
+        <td><span class="pill p-active">ACTIVE</span></td>
+        <td><div class="acts">
+          <span class="act green">📦</span><span class="act green">✓</span>
+          <span class="act off">⚠</span><span class="act off">⏸</span></div></td></tr>
+      <tr><td class="code indent">B-04-11</td>
+        <td>DS60 Rods
+          <div class="desc-sub">Zone B · Aisle 4 · Position 11</div></td>
+        <td>Bin</td><td class="right">1</td><td class="right mono qty-down">−2</td>
+        <td><span class="capbar"><span class="cap-warn" style="width:0%"></span></span>0%</td>
+        <td class="mono">04/22</td>
+        <td><span class="pill p-active">ACTIVE</span></td>
+        <td><div class="acts">
+          <span class="act amber">📦</span><span class="act amber">✓</span>
+          <span class="act red">⚠</span><span class="act off">⏸</span></div></td></tr>
+      <tr><td class="code indent">QR-01</td>
+        <td>Quarantine — Inspection Hold
+          <div class="desc-sub">Damaged / suspect inbound</div></td>
+        <td>Quarantine</td><td class="right">3</td><td class="right mono">7</td>
+        <td><span class="capbar"><span class="cap-ok" style="width:30%"></span></span>30%</td>
+        <td class="mono">05/12</td>
+        <td><span class="pill p-quar">QUARANTINE</span></td>
+        <td><div class="acts">
+          <span class="act amber">📦</span><span class="act off">✓</span>
+          <span class="act amber">⚠</span><span class="act off">⏸</span></div></td></tr>
+      <tr><td class="code indent">RECV-01</td>
+        <td>Receiving Dock A
+          <div class="desc-sub">Inbound staging</div></td>
+        <td>Receiving</td><td class="right">6</td><td class="right mono">28</td>
+        <td><span class="capbar"><span class="cap-warn" style="width:78%"></span></span>78%</td>
+        <td class="mono">—</td>
+        <td><span class="pill p-recv">RECEIVING</span></td>
+        <td><div class="acts">
+          <span class="act blue">📦</span><span class="act green">✓</span>
+          <span class="act off">⚠</span><span class="act off">⏸</span></div></td></tr>
+
+      <tr class="group"><td colspan="9">▼ WH-EAST  ·  Pasco, WA  ·  6,200 sq ft  ·  120 bins  ·  54% used</td></tr>
+      <tr><td class="code indent">R-22-A</td>
+        <td>DS60 Rods · Pallet Rack
+          <div class="desc-sub">Zone R · Rack 22 · Slot A</div></td>
+        <td>Rack</td><td class="right">5</td><td class="right mono">42</td>
+        <td><span class="capbar"><span class="cap-ok" style="width:62%"></span></span>62%</td>
+        <td class="mono">05/10</td>
+        <td><span class="pill p-active">ACTIVE</span></td>
+        <td><div class="acts">
+          <span class="act green">📦</span><span class="act green">✓</span>
+          <span class="act off">⚠</span><span class="act off">⏸</span></div></td></tr>
+      <tr><td class="code indent">SHIP-02</td>
+        <td>Shipping Dock B
+          <div class="desc-sub">Outbound staging</div></td>
+        <td>Shipping</td><td class="right">11</td><td class="right mono">36</td>
+        <td><span class="capbar"><span class="cap-warn" style="width:84%"></span></span>84%</td>
+        <td class="mono">—</td>
+        <td><span class="pill p-ship">SHIPPING</span></td>
+        <td><div class="acts">
+          <span class="act teal">📦</span><span class="act green">✓</span>
+          <span class="act off">⚠</span><span class="act off">⏸</span></div></td></tr>
+
+      <tr class="group"><td colspan="9">▼ SHOP FLOOR  ·  Adjacent to WH-Main  ·  12 work benches</td></tr>
+      <tr><td class="code indent">BENCH-3</td>
+        <td>Rebuild Bench #3
+          <div class="desc-sub">WIP — current build EB-2018</div></td>
+        <td>Floor</td><td class="right">7</td><td class="right mono">19</td>
+        <td><span class="capbar"><span class="cap-ok" style="width:55%"></span></span>55%</td>
+        <td class="mono">—</td>
+        <td><span class="pill p-active">ACTIVE</span></td>
+        <td><div class="acts">
+          <span class="act green">📦</span><span class="act off">✓</span>
+          <span class="act off">⚠</span><span class="act off">⏸</span></div></td></tr>
+    </tbody>
+  </table>
+
+  <div class="footer">
+    8 of 412 active bins shown  ·  3 warehouses  ·  next cycle: WH-Main Zone B (05/21)
+  </div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>JAK's Diesel PRO — New Quote (Modal) Mockup</title>
+<style>
+  :root {
+    --bg:#0f1419; --panel:#1a2128; --panel2:#232c35;
+    --border:#2d3a45; --border-hi:#3d4d5c;
+    --text:#e6edf3; --dim:#8b98a5; --faint:#5d6b78;
+    --accent:#ff8c42; --accent-dim:#b85d1f;
+    --green:#3fb950; --red:#f85149; --amber:#d29922;
+    --blue:#58a6ff; --purple:#bc8cff; --teal:#39d0d8;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:13px/1.4 "Segoe UI", system-ui, sans-serif;
+         min-height:100vh; }
+
+  /* --- faint underlying page so the modal floats over it --- */
+  .behind { position:fixed; inset:0; background:var(--bg); opacity:0.45;
+            background-image:
+              linear-gradient(var(--border) 1px, transparent 1px),
+              linear-gradient(90deg, var(--border) 1px, transparent 1px);
+            background-size:120px 32px; z-index:0; }
+  .scrim  { position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:1; }
+
+  /* --- modal window --- */
+  .modal { position:relative; z-index:2; width:1340px; max-width:98vw;
+           margin:18px auto; background:var(--panel);
+           border:1px solid var(--border-hi); border-radius:10px;
+           box-shadow:0 24px 60px rgba(0,0,0,0.6); overflow:hidden; }
+
+  .titlebar { display:flex; align-items:center; gap:10px;
+              background:#11161c; border-bottom:1px solid var(--border);
+              padding:8px 12px; }
+  .titlebar .qno { color:var(--accent); font-weight:800; font-size:14px;
+                   font-family:Consolas,monospace; }
+  .titlebar .pill { display:inline-block; padding:2px 8px; border-radius:10px;
+                    font-size:10px; font-weight:700; text-transform:uppercase;
+                    letter-spacing:0.3px; border:1px solid; }
+  .pill.draft  { color:var(--amber);  border-color:rgba(210,153,34,.5); background:rgba(210,153,34,.12); }
+  .pill.open   { color:var(--green);  border-color:rgba(63,185,80,.5);  background:rgba(63,185,80,.12); }
+  .pill.day    { color:var(--blue);   border-color:rgba(88,166,255,.5); background:rgba(88,166,255,.12); }
+  .titlebar .prio { display:flex; align-items:center; gap:6px;
+                    margin-left:8px; color:var(--dim); font-size:11px; }
+  .titlebar .prio select { background:var(--panel2); color:var(--text);
+                           border:1px solid var(--border); border-radius:4px;
+                           padding:3px 22px 3px 8px; font-size:11px; }
+  .titlebar .spacer { flex:1; }
+  .titlebar .wctl { display:flex; gap:4px; }
+  .titlebar .wctl span { width:24px; height:22px; display:flex;
+                         align-items:center; justify-content:center;
+                         color:var(--dim); cursor:pointer; border-radius:3px;
+                         font-size:13px; }
+  .titlebar .wctl span:hover { background:var(--panel2); color:var(--text); }
+  .titlebar .wctl .close:hover { background:var(--red); color:white; }
+
+  /* --- action bar --- */
+  .actionbar { display:flex; align-items:center; gap:6px;
+               padding:8px 12px; background:#161c23;
+               border-bottom:1px solid var(--border); }
+  .btn { padding:7px 12px; border-radius:6px; border:none;
+         font-weight:600; font-size:12px; cursor:pointer;
+         display:inline-flex; align-items:center; gap:6px; }
+  .btn-primary { background:var(--accent); color:white; }
+  .btn-primary:hover { background:var(--accent-dim); }
+  .btn-ghost   { background:var(--panel2); color:var(--text);
+                 border:1px solid var(--border); }
+  .btn-ghost:hover { border-color:var(--border-hi); }
+  .btn-green   { background:rgba(63,185,80,.18); color:var(--green);
+                 border:1px solid rgba(63,185,80,.5); }
+  .btn-green:hover { background:rgba(63,185,80,.28); }
+  .actionbar .spacer { flex:1; }
+
+  /* --- meta strip --- */
+  .meta { display:flex; gap:14px; align-items:center; flex-wrap:wrap;
+          padding:8px 12px; background:var(--panel);
+          border-bottom:1px solid var(--border); }
+  .meta label { font-size:10px; color:var(--dim); font-weight:700;
+                letter-spacing:0.5px; text-transform:uppercase;
+                margin-right:5px; }
+  .meta input, .meta select {
+          background:var(--panel2); color:var(--text);
+          border:1px solid var(--border); border-radius:4px;
+          padding:4px 8px; font-size:12px; }
+  .meta .grp { display:flex; align-items:center; }
+  .meta .cc  { display:flex; align-items:center; gap:5px;
+               color:var(--dim); font-size:11px; }
+
+  /* --- vehicle / engine strip --- */
+  .vehicle { display:flex; gap:14px; align-items:center; flex-wrap:wrap;
+             padding:9px 12px; background:#161c23;
+             border-bottom:1px solid var(--border); }
+  .vehicle label { font-size:10px; color:var(--dim); font-weight:700;
+                   letter-spacing:0.5px; text-transform:uppercase;
+                   margin-right:5px; }
+  .vehicle input, .vehicle select {
+             background:var(--panel2); color:var(--text);
+             border:1px solid var(--border); border-radius:4px;
+             padding:5px 9px; font-size:12px;
+             font-family:Consolas,monospace; }
+  .vehicle .resolved { color:var(--accent); font-weight:700;
+                       font-size:12px; display:inline-flex;
+                       align-items:center; gap:6px; }
+  .vehicle .resolved .dot { color:var(--green); font-size:14px; }
+  .vehicle .spacer { flex:1; }
+  .vehicle .hint   { color:var(--faint); font-size:10px; font-style:italic; }
+
+  /* --- body grid --- */
+  .body { display:grid; grid-template-columns:240px 1fr;
+          background:var(--bg); }
+  .rail { background:var(--panel); border-right:1px solid var(--border);
+          padding:12px; overflow-y:auto; max-height:62vh; }
+  .rail .sectn { font-size:9px; font-weight:800; letter-spacing:0.9px;
+                 color:var(--dim); text-transform:uppercase;
+                 margin:14px 0 6px; }
+  .rail .sectn:first-child { margin-top:0; }
+  .cust .nm   { font-size:15px; font-weight:700; color:var(--text); }
+  .cust .lnk  { color:var(--blue); font-size:11px; cursor:pointer;
+                margin-top:2px; }
+  .cust .row  { display:flex; justify-content:space-between;
+                gap:6px; font-size:11px; margin-top:6px; }
+  .cust .row .k { color:var(--dim); text-transform:uppercase;
+                  font-size:9px; letter-spacing:0.5px;
+                  align-self:center; font-weight:700; }
+  .cust .row .v { color:var(--text); text-align:right; }
+  .cust .row .v.bad  { color:var(--red); font-weight:700; }
+  .cust .row .v.good { color:var(--green); font-weight:700; }
+  .ship { font-size:11px; line-height:1.4; color:var(--text); }
+  .ship .chg { color:var(--blue); cursor:pointer; font-size:10px; }
+  .notes-box { background:var(--panel2); border:1px solid var(--border);
+               border-radius:5px; padding:6px 8px; font-size:11px;
+               color:var(--text); line-height:1.4; }
+  .recent .row { display:flex; flex-direction:column;
+                 padding:5px 0; border-bottom:1px dashed var(--border); }
+  .recent .row:last-child { border-bottom:none; }
+  .recent .top { display:flex; justify-content:space-between;
+                 font-size:11px; }
+  .recent .top a { color:var(--blue); font-family:Consolas,monospace;
+                   font-weight:700; cursor:pointer; }
+  .recent .top .amt { color:var(--green); font-weight:700; }
+  .recent .sub { color:var(--faint); font-size:10px; margin-top:1px; }
+  .freq .row { display:flex; align-items:center; gap:6px;
+               padding:4px 0; border-bottom:1px dashed var(--border);
+               cursor:pointer; }
+  .freq .row:last-child { border-bottom:none; }
+  .freq .row:hover { background:rgba(255,140,66,0.06); }
+  .freq .sku { color:var(--accent); font-family:Consolas,monospace;
+               font-size:10px; font-weight:700; min-width:80px; }
+  .freq .desc { color:var(--text); font-size:11px; flex:1;
+                overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .freq .cnt  { color:var(--dim); font-size:10px; }
+
+  /* --- main --- */
+  .main { padding:10px 12px 0; display:flex; flex-direction:column;
+          max-height:62vh; }
+  .searchbar { display:flex; gap:6px; align-items:center;
+               margin-bottom:8px; }
+  .searchbar .inp { flex:1; background:var(--panel2); color:var(--text);
+                    border:1px solid var(--border); border-radius:6px;
+                    padding:8px 12px; font-size:12px; }
+  .grid-wrap { flex:1; overflow:auto; border:1px solid var(--border);
+               border-radius:6px; background:var(--panel); }
+  table.lines { width:100%; border-collapse:collapse; }
+  table.lines th { font-size:9px; font-weight:700; text-transform:uppercase;
+                   letter-spacing:0.5px; color:var(--dim); text-align:left;
+                   padding:7px 8px; background:var(--panel2);
+                   border-bottom:1px solid var(--border);
+                   position:sticky; top:0; z-index:1; }
+  table.lines td { padding:7px 8px; border-bottom:1px solid var(--border);
+                   font-size:12px; vertical-align:middle; }
+  table.lines tr:nth-child(even) td { background:#1f262e; }
+  table.lines tr:hover td { background:rgba(255,140,66,0.06); cursor:pointer; }
+  .ln-num   { color:var(--faint); font-family:Consolas,monospace; }
+  .ln-pn    { color:var(--accent); font-weight:700;
+              font-family:Consolas,monospace; font-size:11px; }
+  .ln-desc  { color:var(--text); }
+  .ln-brand { color:var(--dim); font-size:11px; font-weight:600; }
+  .ln-right { text-align:right; font-family:Consolas,monospace; }
+  .mg.good { color:var(--green); font-weight:700; }
+  .mg.ok   { color:var(--amber); font-weight:700; }
+  .mg.bad  { color:var(--red);   font-weight:700; }
+  .core-y  { color:var(--amber); font-weight:700; }
+  .core-n  { color:var(--faint); }
+  .avail.stock { color:var(--green); }
+  .avail.low   { color:var(--amber); }
+  .avail.out   { color:var(--red); }
+  .avail.ord   { color:var(--blue); }
+  .loc { color:var(--dim); font-family:Consolas,monospace; font-size:11px; }
+
+  .addline { padding:8px 10px; background:var(--panel2);
+             border-top:1px solid var(--border);
+             display:flex; align-items:center; gap:10px;
+             font-size:11px; color:var(--dim); }
+  .addline .plus { color:var(--accent); font-weight:700; cursor:pointer; }
+  .addline .kbd { display:inline-flex; align-items:center; gap:3px; }
+  .addline kbd { font-family:Consolas,monospace; font-size:10px;
+                 background:var(--panel); border:1px solid var(--border);
+                 border-radius:3px; padding:1px 5px; color:var(--text); }
+
+  /* --- footer tabs + totals --- */
+  .footer { background:#11161c; border-top:1px solid var(--border); }
+  .ftabs { display:flex; gap:2px; padding:0 12px;
+           border-bottom:1px solid var(--border); }
+  .ftab { padding:8px 14px; font-size:11px; font-weight:600;
+          color:var(--dim); cursor:pointer; border-bottom:2px solid transparent;
+          letter-spacing:0.3px; display:inline-flex; align-items:center; gap:6px; }
+  .ftab.active { color:var(--accent); border-bottom-color:var(--accent); }
+  .ftab:hover:not(.active) { color:var(--text); }
+  .ftab .bdg { background:var(--blue); color:white; font-size:9px;
+               font-weight:700; padding:1px 6px; border-radius:8px; }
+  .ftab .bdg.fuel { background:var(--amber); }
+
+  .ftotals { display:flex; align-items:center; gap:22px;
+             padding:10px 14px; font-size:11px; }
+  .ftotals .k { color:var(--dim); text-transform:uppercase;
+                font-size:9px; letter-spacing:0.7px; font-weight:700;
+                margin-right:6px; }
+  .ftotals .v { color:var(--text); font-family:Consolas,monospace;
+                font-weight:700; }
+  .ftotals .v.green  { color:var(--green); }
+  .ftotals .v.accent { color:var(--accent); font-size:15px; }
+  .ftotals .v.mg     { color:var(--green); }
+  .ftotals .spacer { flex:1; }
+  .ftotals .save-row { display:flex; gap:6px; }
+
+  .attach-strip { display:flex; gap:6px; padding:8px 14px;
+                  border-top:1px solid var(--border); flex-wrap:wrap; }
+  .attach-strip .chip { display:inline-flex; align-items:center; gap:6px;
+                        background:var(--panel2); border:1px solid var(--border);
+                        border-radius:6px; padding:4px 10px; font-size:11px;
+                        color:var(--text); cursor:pointer; }
+  .attach-strip .chip:hover { border-color:var(--border-hi); }
+  .attach-strip .chip .sz { color:var(--faint); font-size:10px; }
+  .attach-strip .add { color:var(--accent); border-style:dashed;
+                       background:transparent; }
+
+</style>
+</head>
+<body>
+
+<div class="behind"></div>
+<div class="scrim"></div>
+
+<div class="modal">
+
+  <!-- title bar -->
+  <div class="titlebar">
+    <span class="qno">QT-2026-0245</span>
+    <span class="pill draft">DRAFT</span>
+    <span class="pill day">DAY 1</span>
+    <div class="prio">
+      <label>Priority:</label>
+      <select><option>Medium</option><option>High</option>
+        <option>Low</option><option>Rush</option></select>
+    </div>
+    <div class="spacer"></div>
+    <span style="color:var(--dim); font-size:11px;">
+      Created Tue, May 19 · 4:32 PM · by Keith</span>
+    <div class="wctl">
+      <span title="Pop out">⧉</span>
+      <span title="Minimize">_</span>
+      <span title="Maximize">▢</span>
+      <span class="close" title="Close">✕</span>
+    </div>
+  </div>
+
+  <!-- action bar -->
+  <div class="actionbar">
+    <button class="btn btn-ghost">💾 Save Draft</button>
+    <button class="btn btn-ghost">✉ Email</button>
+    <button class="btn btn-ghost">📱 SMS</button>
+    <button class="btn btn-ghost">🖨 Print</button>
+    <button class="btn btn-ghost">📋 Duplicate</button>
+    <button class="btn btn-ghost">🔔 Follow Up</button>
+    <div class="spacer"></div>
+    <button class="btn btn-ghost" style="color:var(--dim)">⚙ Document Settings</button>
+    <button class="btn btn-green">👁 Preview</button>
+    <button class="btn btn-primary">⊡ Convert to Order →</button>
+  </div>
+
+  <!-- meta row -->
+  <div class="meta">
+    <div class="grp"><label>Date:</label><input value="05/19/2026" size="10"/></div>
+    <div class="grp"><label>Expires:</label><input value="06/18/2026" size="10"/></div>
+    <div class="grp"><label>Terms:</label>
+      <select><option>Net 30</option><option>Net 15</option>
+        <option>Net 60</option><option>COD</option><option>Prepay</option></select></div>
+    <div class="cc"><input type="checkbox" checked/> +3% CC fee</div>
+    <div class="grp"><label>Job / PO #:</label>
+      <input placeholder="Job or PO #" size="14"/></div>
+    <div class="grp"><label>Salesperson:</label>
+      <select><option>Keith</option><option>Mike</option>
+        <option>Sarah</option></select></div>
+  </div>
+
+  <!-- vehicle / engine strip -->
+  <div class="vehicle">
+    <div class="grp"><label>ESN:</label>
+      <input placeholder="Engine Serial #" value="79123456" size="14"/></div>
+    <div class="grp"><label>VIN:</label>
+      <input placeholder="Vehicle VIN" value="1FUJGLDR8CSBT1234" size="20"/></div>
+    <div class="grp"><label>Engine Platform:</label>
+      <select>
+        <option>Cummins ISX15</option>
+        <option>Cummins ISX12</option>
+        <option>Detroit DD15</option>
+        <option>Detroit DS60</option>
+        <option>Cat C15</option>
+        <option>PACCAR MX-13</option>
+        <option>Other / Unknown</option>
+      </select></div>
+    <span class="resolved"><span class="dot">●</span>
+      Cummins ISX15 · 2012 · Freightliner Cascadia</span>
+    <div class="spacer"></div>
+    <span class="hint">Tab through fields · auto-decodes on blur</span>
+  </div>
+
+  <!-- body -->
+  <div class="body">
+
+    <!-- left rail -->
+    <div class="rail">
+      <div class="sectn">Customer</div>
+      <div class="cust">
+        <div class="nm">Hauling Bros LLC</div>
+        <div class="lnk">View profile →</div>
+        <div class="row"><span class="k">Phone</span>
+          <span class="v">(555) 412-8800</span></div>
+        <div class="row"><span class="k">Contact</span>
+          <span class="v">Joe Mendez</span></div>
+        <div class="row"><span class="k">Terms</span>
+          <span class="v">Net 30</span></div>
+        <div class="row"><span class="k">Balance</span>
+          <span class="v bad">$2,140.18</span></div>
+        <div class="row"><span class="k">Credit</span>
+          <span class="v good">$25,000</span></div>
+        <div class="row"><span class="k">Tier</span>
+          <span class="v">Gold · 8%</span></div>
+      </div>
+
+      <div class="sectn">Ship To</div>
+      <div class="ship">
+        1240 Industrial Pkwy<br/>
+        Bay 4 · Toledo, OH 43615<br/>
+        <span class="chg">Change →</span>
+      </div>
+
+      <div class="sectn">Quick Notes</div>
+      <div class="notes-box">
+        Prefers reman over new. Always asks about cores.
+        Pay on time. Will-call pickup most weeks.
+      </div>
+
+      <div class="sectn">Recent Orders (90d)</div>
+      <div class="recent">
+        <div class="row">
+          <div class="top"><a>SO-19840</a><span class="amt">$4,210</span></div>
+          <div class="sub">Apr 22 · Cummins ISX injectors</div></div>
+        <div class="row">
+          <div class="top"><a>SO-19712</a><span class="amt">$1,890</span></div>
+          <div class="sub">Apr 3 · Turbo CHRA</div></div>
+        <div class="row">
+          <div class="top"><a>SO-19501</a><span class="amt">$7,640</span></div>
+          <div class="sub">Mar 14 · Reman head + gaskets</div></div>
+        <div class="row">
+          <div class="top"><a style="color:var(--dim)">See all 14 →</a><span></span></div>
+        </div>
+      </div>
+
+      <div class="sectn">★ Frequently Ordered</div>
+      <div class="freq">
+        <div class="row"><span class="sku">4307516</span>
+          <span class="desc">ISX15 Injector (reman)</span>
+          <span class="cnt">12×</span></div>
+        <div class="row"><span class="sku">2882079</span>
+          <span class="desc">HE451VE Turbo</span>
+          <span class="cnt">5×</span></div>
+        <div class="row"><span class="sku">4089649</span>
+          <span class="desc">ISX15 EGR Cooler</span>
+          <span class="cnt">4×</span></div>
+        <div class="row"><span class="sku">5579220</span>
+          <span class="desc">Water Pump Kit</span>
+          <span class="cnt">3×</span></div>
+      </div>
+    </div>
+
+    <!-- main -->
+    <div class="main">
+
+      <!-- search bar -->
+      <div class="searchbar">
+        <input class="inp" placeholder="🔍   Search part #, OEM, SKU, description, engine, truck…" />
+        <button class="btn btn-ghost">Search (F2)</button>
+        <button class="btn btn-green">+ Add to Quote</button>
+        <button class="btn btn-ghost">＋ New Part</button>
+      </div>
+
+      <!-- line grid -->
+      <div class="grid-wrap">
+        <table class="lines">
+          <thead><tr>
+            <th>#</th><th>Part #</th><th>Description</th><th>Brand</th>
+            <th class="ln-right">Qty</th><th class="ln-right">Cost</th>
+            <th class="ln-right">Price</th><th class="ln-right">Ext</th>
+            <th class="ln-right">Margin</th><th class="ln-right">Core</th>
+            <th>Avail</th><th>Loc</th>
+          </tr></thead>
+          <tbody>
+            <tr><td class="ln-num">1</td><td class="ln-pn">4307516</td>
+              <td class="ln-desc">Injector, ISX15 (reman)</td>
+              <td class="ln-brand">CMNS</td>
+              <td class="ln-right">6</td><td class="ln-right">$285.00</td>
+              <td class="ln-right">$485.00</td><td class="ln-right">$2,910.00</td>
+              <td class="ln-right mg good">41.2%</td>
+              <td class="ln-right core-y">Y $80</td>
+              <td class="avail stock">In Stock</td>
+              <td class="loc">A-12</td></tr>
+
+            <tr><td class="ln-num">2</td><td class="ln-pn">2882079</td>
+              <td class="ln-desc">Turbocharger, HE451VE</td>
+              <td class="ln-brand">HOLS</td>
+              <td class="ln-right">1</td><td class="ln-right">$1,640.00</td>
+              <td class="ln-right">$2,390.00</td><td class="ln-right">$2,390.00</td>
+              <td class="ln-right mg ok">31.4%</td>
+              <td class="ln-right core-y">Y $400</td>
+              <td class="avail stock">In Stock</td>
+              <td class="loc">B-04</td></tr>
+
+            <tr><td class="ln-num">3</td><td class="ln-pn">4089649</td>
+              <td class="ln-desc">EGR Cooler, ISX15</td>
+              <td class="ln-brand">CMNS</td>
+              <td class="ln-right">1</td><td class="ln-right">$680.00</td>
+              <td class="ln-right">$1,090.00</td><td class="ln-right">$1,090.00</td>
+              <td class="ln-right mg good">37.6%</td>
+              <td class="ln-right core-y">Y $220</td>
+              <td class="avail stock">In Stock</td>
+              <td class="loc">C-22</td></tr>
+
+            <tr><td class="ln-num">4</td><td class="ln-pn">5579220</td>
+              <td class="ln-desc">Water Pump Kit</td>
+              <td class="ln-brand">CMNS</td>
+              <td class="ln-right">1</td><td class="ln-right">$185.00</td>
+              <td class="ln-right">$298.00</td><td class="ln-right">$298.00</td>
+              <td class="ln-right mg good">37.9%</td>
+              <td class="ln-right core-n">—</td>
+              <td class="avail stock">In Stock</td>
+              <td class="loc">A-31</td></tr>
+
+            <tr><td class="ln-num">5</td><td class="ln-pn">3680763</td>
+              <td class="ln-desc">Fuel Filter Set (3-pc)</td>
+              <td class="ln-brand">FLEET</td>
+              <td class="ln-right">2</td><td class="ln-right">$18.40</td>
+              <td class="ln-right">$42.50</td><td class="ln-right">$85.00</td>
+              <td class="ln-right mg good">56.7%</td>
+              <td class="ln-right core-n">—</td>
+              <td class="avail stock">In Stock</td>
+              <td class="loc">D-08</td></tr>
+
+            <tr><td class="ln-num">6</td><td class="ln-pn">4955505</td>
+              <td class="ln-desc">Coolant Thermostat 180°F</td>
+              <td class="ln-brand">CMNS</td>
+              <td class="ln-right">1</td><td class="ln-right">$78.00</td>
+              <td class="ln-right">$142.00</td><td class="ln-right">$142.00</td>
+              <td class="ln-right mg good">45.1%</td>
+              <td class="ln-right core-n">—</td>
+              <td class="avail ord">Ordered</td>
+              <td class="loc">—</td></tr>
+
+            <tr><td class="ln-num">7</td><td class="ln-pn">3104206</td>
+              <td class="ln-desc">Gasket Set, Cyl Head</td>
+              <td class="ln-brand">VICT</td>
+              <td class="ln-right">1</td><td class="ln-right">$412.00</td>
+              <td class="ln-right">$640.00</td><td class="ln-right">$640.00</td>
+              <td class="ln-right mg ok">35.6%</td>
+              <td class="ln-right core-n">—</td>
+              <td class="avail low">Low (1)</td>
+              <td class="loc">B-19</td></tr>
+          </tbody>
+        </table>
+
+        <div class="addline">
+          <span class="plus">＋ Add Line</span>
+          <span class="kbd">type part # or press <kbd>F2</kbd> to search</span>
+          <div style="flex:1"></div>
+          <span class="kbd"><kbd>Tab</kbd> next field</span>
+          <span class="kbd"><kbd>Enter</kbd> new line</span>
+          <span class="kbd"><kbd>F4</kbd> alt part</span>
+          <span class="kbd"><kbd>Ctrl+D</kbd> discount</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- footer tabs + totals -->
+  <div class="footer">
+    <div class="ftabs">
+      <div class="ftab active">Totals</div>
+      <div class="ftab">Shipping <span class="bdg fuel">FUEL</span></div>
+      <div class="ftab">Notes</div>
+      <div class="ftab">Internal</div>
+      <div class="ftab">Attachments <span class="bdg">2</span></div>
+      <div class="ftab">Activity</div>
+    </div>
+
+    <div class="ftotals">
+      <span><span class="k">Lines</span><span class="v">7</span></span>
+      <span><span class="k">Subtotal</span><span class="v">$7,555.00</span></span>
+      <span><span class="k">Core Dep</span><span class="v">$1,200.00</span></span>
+      <span><span class="k">Freight</span><span class="v">$285.00</span></span>
+      <span><span class="k">Tax</span><span class="v">$0.00</span></span>
+      <span><span class="k">Margin</span><span class="v mg">37.4%</span></span>
+      <div class="spacer"></div>
+      <span><span class="k">Total</span><span class="v accent">$9,040.00</span></span>
+      <div class="save-row">
+        <button class="btn btn-ghost">Cancel</button>
+        <button class="btn btn-green">💾 Save &amp; New <span style="color:var(--faint); font-size:10px">Ctrl+N</span></button>
+        <button class="btn btn-primary">💾 Save &amp; Close <span style="font-size:10px; opacity:.8">Ctrl+S</span></button>
+      </div>
+    </div>
+
+    <div class="attach-strip">
+      <span class="chip">📎 freight_quote_saia.pdf <span class="sz">142 KB</span></span>
+      <span class="chip">📷 esn_plate.jpg <span class="sz">1.2 MB</span></span>
+      <span class="chip add">+ Attach</span>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

@@ -1,0 +1,2106 @@
+"""Sales Order workspace — CRM-style full-screen SO creation matching Quote layout.
+
+Unlike the Quote dialog, the SO has no optional/recommended items: every line
+added is actually being ordered.  No checkbox column, no warranty upsell.
+"""
+from __future__ import annotations
+
+from datetime import date, timedelta
+
+from PySide6.QtCore import Qt, QDate, QTimer
+from PySide6.QtGui import QColor, QCursor, QFont, QKeySequence, QShortcut
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QCheckBox,
+    QComboBox,
+    QDateEdit,
+    QDialog,
+    QDoubleSpinBox,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QSpinBox,
+    QSplitter,
+    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+from db import (
+    browse_products,
+    search_by_part_number,
+    get_all_customers,
+    get_product_by_id,
+    create_sales_order,
+    get_sales_order,
+    update_sales_order,
+    add_so_line,
+    add_discount_line,
+    get_so_lines,
+    remove_so_line,
+    update_so_line_price,
+    get_customer_frequently_ordered,
+    get_credit_agreement,
+    get_customer_aging,
+)
+from .discount_line_dialog import DiscountLineDialog
+
+# ── Column indices for SO line items table ──
+_L_ID = 0
+_L_SKU = 1
+_L_DESC = 2
+_L_SUPPLIER = 3
+_L_QOH = 4
+_L_QTY = 5
+_L_COST = 6
+_L_PRICE = 7
+_L_CORE = 8
+_L_WARRANTY = 9
+_L_TOTAL = 10
+_L_MARGIN = 11
+_L_NOTES = 12
+_L_COLS = 13
+
+_LINE_HEADERS = [
+    "ID", "SKU", "Description", "Supplier", "QOH",
+    "Qty", "Cost", "Sell Price", "Core", "Warranty",
+    "Total", "Margin %", "Notes",
+]
+
+_HIDDEN_LINE_COLS = {_L_ID}
+
+# ── Shared style constants (match QuoteDialog) ──
+_LBL_DIM = "font-size: 9pt; color: #666;"
+_LBL_VAL = "font-size: 10pt;"
+_BTN_PRIMARY = (
+    "QPushButton { background-color: #1565c0; color: white; "
+    "font-weight: bold; padding: 5px 14px; border-radius: 4px; }"
+    "QPushButton:hover { background-color: #1976d2; }"
+)
+_BTN_SUCCESS = (
+    "QPushButton { background-color: #2e7d32; color: white; "
+    "font-weight: bold; padding: 5px 14px; border-radius: 4px; }"
+    "QPushButton:hover { background-color: #388e3c; }"
+)
+_BTN_DARK = (
+    "QPushButton { background-color: #37474f; color: white; "
+    "font-weight: bold; padding: 5px 16px; border-radius: 4px; }"
+    "QPushButton:hover { background-color: #455a64; }"
+)
+
+
+class NewSODialog(QDialog):
+    """Full-screen CRM-style sales order workspace."""
+
+    def __init__(
+        self,
+        so_id: int | None = None,
+        customer_id: int | None = None,
+        product_ids: list[int] | None = None,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self._so_id = so_id
+        self._preset_customer_id = customer_id
+        self._preset_product_ids = product_ids or []
+        self._so: dict | None = None
+        self._so_lines: list[dict] = []
+
+        if so_id:
+            self._so = get_sales_order(so_id)
+            self._so_lines = get_so_lines(so_id)
+
+        title = f"Sales Order {self._so['so_number']}" if self._so else "New Sales Order"
+        self.setWindowTitle(title)
+        self.setMinimumSize(1400, 800)
+        self.resize(1500, 850)
+
+        self._cost_hidden = False
+
+        self._build_ui()
+        self._disable_auto_default()
+        self._load_customers()
+        self._load_data()
+
+        # Auto-save draft every 60 s
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(60_000)
+        self._autosave_timer.timeout.connect(self._autosave_draft)
+        self._autosave_timer.start()
+
+        self._customer_combo.setFocus()
+
+    # ==================================================================
+    #  UI BUILD
+    # ==================================================================
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        root.addWidget(self._build_action_bar())
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setHandleWidth(3)
+        splitter.addWidget(self._build_customer_panel())
+        splitter.addWidget(self._build_center_panel())
+        self._finder_panel = self._build_finder_panel()
+        splitter.addWidget(self._finder_panel)
+
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 0)
+        splitter.setSizes([260, 700, 340])
+
+        root.addWidget(splitter, 1)
+        root.addWidget(self._build_footer())
+
+    # ------------------------------------------------------------------
+    #  TOP ACTION BAR
+    # ------------------------------------------------------------------
+    def _build_action_bar(self) -> QFrame:
+        bar = QFrame()
+        bar.setStyleSheet(
+            "QFrame { background: #263238; padding: 4px 8px; }"
+            "QPushButton { color: white; border: 1px solid #546e7a; "
+            "border-radius: 3px; padding: 5px 12px; font-size: 9pt; }"
+            "QPushButton:hover { background: #37474f; }"
+        )
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(8, 4, 8, 4)
+        lay.setSpacing(6)
+
+        self._so_num_label = QLabel("New Sales Order")
+        self._so_num_label.setStyleSheet(
+            "color: white; font-weight: bold; font-size: 13pt;"
+        )
+        lay.addWidget(self._so_num_label)
+
+        self._status_label = QLabel("DRAFT")
+        self._status_label.setStyleSheet(
+            "font-weight: bold; padding: 2px 10px; background: #e3f2fd; "
+            "border-radius: 4px; color: #1565c0; font-size: 10pt;"
+        )
+        lay.addWidget(self._status_label)
+
+        self._acct_badge = QLabel("")
+        self._acct_badge.setStyleSheet(
+            "color: #ffd54f; font-weight: bold; font-size: 11pt; padding: 2px 8px;"
+        )
+        self._acct_badge.hide()
+        lay.addWidget(self._acct_badge)
+
+        # Priority
+        pri_label = QLabel("Priority:")
+        pri_label.setStyleSheet("color: #B0BEC5; font-size: 10pt;")
+        lay.addWidget(pri_label)
+        self._priority_combo = QComboBox()
+        self._priority_combo.addItem("Normal", "normal")
+        self._priority_combo.addItem("🔥 Rush", "rush")
+        self._priority_combo.addItem("Will-Call", "will-call")
+        self._priority_combo.setStyleSheet(
+            "QComboBox { background: #37474f; color: white; border: 1px solid #546e7a; "
+            "border-radius: 3px; padding: 3px 8px; font-size: 9pt; min-width: 120px; }"
+            "QComboBox::drop-down { border: none; }"
+            "QComboBox QAbstractItemView { background: #37474f; color: white; "
+            "selection-background-color: #546e7a; }"
+        )
+        lay.addWidget(self._priority_combo)
+
+        lay.addSpacing(20)
+
+        # Toggle finder panel
+        self._toggle_finder_btn = QPushButton("🔧 Finder ▸")
+        self._toggle_finder_btn.setToolTip("Toggle inventory finder panel")
+        self._toggle_finder_btn.clicked.connect(self._toggle_finder_panel)
+        lay.addWidget(self._toggle_finder_btn)
+
+        lay.addStretch()
+
+        # Cost toggle
+        self._cost_toggle_btn = QPushButton("👁")
+        self._cost_toggle_btn.setFixedSize(48, 26)
+        self._cost_toggle_btn.setToolTip("Show / Hide cost columns")
+        self._cost_toggle_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._cost_toggle_btn.setStyleSheet(
+            "QPushButton { background: #22C55E; color: white; font-size: 14px; "
+            "border: none; border-radius: 13px; padding: 0; }"
+            "QPushButton:hover { background: #16A34A; }"
+        )
+        self._cost_toggle_btn.clicked.connect(self._on_toggle_cost)
+        lay.addWidget(self._cost_toggle_btn)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setToolTip("Discard changes (Escape)")
+        cancel_btn.clicked.connect(self.reject)
+        lay.addWidget(cancel_btn)
+
+        return bar
+
+    # ------------------------------------------------------------------
+    #  LEFT — CUSTOMER PANEL
+    # ------------------------------------------------------------------
+    def _build_customer_panel(self) -> QWidget:
+        panel = QWidget()
+        panel.setMaximumWidth(300)
+        panel.setMinimumWidth(220)
+        panel.setStyleSheet("QWidget { background: #fafafa; }")
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(8, 8, 4, 8)
+        lay.setSpacing(6)
+
+        hdr_row = QHBoxLayout()
+        hdr = QLabel("👤 Customer")
+        hdr.setStyleSheet("font-weight: bold; font-size: 11pt; color: #263238;")
+        hdr_row.addWidget(hdr)
+        hdr_row.addStretch()
+
+        self._collapse_cust_btn = QPushButton("▼")
+        self._collapse_cust_btn.setFixedSize(24, 24)
+        self._collapse_cust_btn.setStyleSheet(
+            "QPushButton { border: none; font-size: 10pt; color: #555; }"
+            "QPushButton:hover { color: #1565c0; }"
+        )
+        self._collapse_cust_btn.clicked.connect(self._toggle_customer_details)
+        hdr_row.addWidget(self._collapse_cust_btn)
+        lay.addLayout(hdr_row)
+
+        # Customer selector
+        cust_row = QHBoxLayout()
+        self._customer_combo = QComboBox()
+        self._customer_combo.setMinimumWidth(160)
+        self._customer_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._customer_combo.currentIndexChanged.connect(self._on_customer_changed)
+        cust_row.addWidget(self._customer_combo)
+
+        new_cust_btn = QPushButton("➕")
+        new_cust_btn.setToolTip("Create new customer")
+        new_cust_btn.setFixedWidth(32)
+        new_cust_btn.setStyleSheet(
+            "QPushButton { background: #1565c0; color: white; font-weight: bold; "
+            "border-radius: 3px; padding: 4px; }"
+            "QPushButton:hover { background: #1976d2; }"
+        )
+        new_cust_btn.clicked.connect(self._on_new_customer)
+        cust_row.addWidget(new_cust_btn)
+        lay.addLayout(cust_row)
+
+        # Collapsible details
+        self._cust_details_widget = QWidget()
+        details_lay = QVBoxLayout(self._cust_details_widget)
+        details_lay.setContentsMargins(0, 0, 0, 0)
+        details_lay.setSpacing(6)
+
+        # Contact card
+        card = QFrame()
+        card.setStyleSheet(
+            "QFrame { background: white; border: 1px solid #e0e0e0; "
+            "border-radius: 4px; padding: 6px; }"
+        )
+        cg = QGridLayout(card)
+        cg.setHorizontalSpacing(8)
+        cg.setVerticalSpacing(3)
+        cg.setContentsMargins(6, 6, 6, 6)
+
+        def _dim(t: str) -> QLabel:
+            lb = QLabel(t)
+            lb.setStyleSheet(_LBL_DIM)
+            return lb
+
+        cg.addWidget(_dim("Company"), 0, 0)
+        self._cust_company = QLabel("—")
+        self._cust_company.setStyleSheet(_LBL_VAL + " font-weight: bold;")
+        self._cust_company.setWordWrap(True)
+        cg.addWidget(self._cust_company, 0, 1)
+
+        cg.addWidget(_dim("Phone"), 1, 0)
+        self._cust_phone = QLabel("—")
+        self._cust_phone.setStyleSheet(_LBL_VAL)
+        cg.addWidget(self._cust_phone, 1, 1)
+
+        cg.addWidget(_dim("Email"), 2, 0)
+        self._cust_email = QLabel("—")
+        self._cust_email.setStyleSheet(_LBL_VAL)
+        self._cust_email.setWordWrap(True)
+        cg.addWidget(self._cust_email, 2, 1)
+
+        cg.addWidget(_dim("Terms"), 3, 0)
+        self._cust_terms = QLabel("—")
+        self._cust_terms.setStyleSheet(_LBL_VAL)
+        cg.addWidget(self._cust_terms, 3, 1)
+
+        cg.addWidget(_dim("Address"), 4, 0)
+        self._cust_address = QLabel("—")
+        self._cust_address.setStyleSheet(_LBL_VAL + " color: #444;")
+        self._cust_address.setWordWrap(True)
+        cg.addWidget(self._cust_address, 4, 1)
+
+        cg.addWidget(_dim("Ship-To"), 5, 0)
+        self._cust_ship_to = QLabel("—")
+        self._cust_ship_to.setStyleSheet(_LBL_VAL + " color: #444;")
+        self._cust_ship_to.setWordWrap(True)
+        cg.addWidget(self._cust_ship_to, 5, 1)
+
+        cg.addWidget(_dim("Bill-To"), 6, 0)
+        self._cust_bill_to = QLabel("—")
+        self._cust_bill_to.setStyleSheet(_LBL_VAL + " color: #444;")
+        self._cust_bill_to.setWordWrap(True)
+        cg.addWidget(self._cust_bill_to, 6, 1)
+
+        cg.addWidget(_dim("Credit"), 7, 0)
+        self._cust_credit_status = QLabel("—")
+        self._cust_credit_status.setStyleSheet(_LBL_VAL)
+        cg.addWidget(self._cust_credit_status, 7, 1)
+
+        cg.addWidget(_dim("Balance"), 8, 0)
+        self._cust_balance = QLabel("—")
+        self._cust_balance.setStyleSheet(_LBL_VAL)
+        cg.addWidget(self._cust_balance, 8, 1)
+
+        cg.addWidget(_dim("Tier"), 9, 0)
+        self._cust_tier = QLabel("—")
+        self._cust_tier.setStyleSheet(_LBL_VAL)
+        cg.addWidget(self._cust_tier, 9, 1)
+
+        self._cust_core_warning = QLabel("")
+        self._cust_core_warning.setWordWrap(True)
+        self._cust_core_warning.hide()
+        cg.addWidget(self._cust_core_warning, 10, 0, 1, 2)
+
+        details_lay.addWidget(card)
+
+        # Edit customer button
+        self._edit_cust_btn = QPushButton("✏️ Edit Customer")
+        self._edit_cust_btn.setStyleSheet(
+            "QPushButton { background: #ff8f00; color: white; font-weight: bold; "
+            "padding: 4px 12px; border-radius: 3px; font-size: 9pt; }"
+            "QPushButton:hover { background: #ffa000; }"
+        )
+        self._edit_cust_btn.clicked.connect(self._on_edit_customer)
+        details_lay.addWidget(self._edit_cust_btn)
+
+        # Frequently ordered
+        fo_hdr = QLabel("⭐ Frequently Ordered")
+        fo_hdr.setStyleSheet("font-weight: bold; font-size: 10pt; margin-top: 4px;")
+        details_lay.addWidget(fo_hdr)
+
+        self._freq_ordered_list = QListWidget()
+        self._freq_ordered_list.setStyleSheet(
+            "QListWidget { background: white; border: 1px solid #e0e0e0; "
+            "border-radius: 4px; font-size: 9pt; }"
+            "QListWidget::item { padding: 3px 6px; }"
+            "QListWidget::item:selected { background: #e8f5e9; color: #1b5e20; }"
+        )
+        self._freq_ordered_list.itemDoubleClicked.connect(self._on_add_freq_item)
+        details_lay.addWidget(self._freq_ordered_list, 1)
+
+        lay.addWidget(self._cust_details_widget, 1)
+        return panel
+
+    # ------------------------------------------------------------------
+    #  CENTER — HEADER + ITEMS
+    # ------------------------------------------------------------------
+    def _build_center_panel(self) -> QWidget:
+        panel = QWidget()
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setSpacing(4)
+
+        # Compact header row
+        hdr = QHBoxLayout()
+        hdr.setSpacing(12)
+
+        hdr.addWidget(QLabel("Date:"))
+        self._so_date = QDateEdit()
+        self._so_date.setCalendarPopup(True)
+        self._so_date.setDate(QDate.currentDate())
+        hdr.addWidget(self._so_date)
+
+        hdr.addWidget(QLabel("Promised:"))
+        self._promised_date = QDateEdit()
+        self._promised_date.setCalendarPopup(True)
+        self._promised_date.setDate(QDate.currentDate().addDays(7))
+        hdr.addWidget(self._promised_date)
+
+        hdr.addWidget(QLabel("Ship:"))
+        self._ship_method_edit = QComboBox()
+        self._ship_method_edit.addItems([
+            "Default", "Customer Pickup", "Local Delivery", "UPS Ground",
+            "UPS 2nd Day", "UPS Next Day", "FedEx Ground", "FedEx Express",
+            "Freight / LTL", "Other",
+        ])
+        self._ship_method_edit.setMinimumWidth(130)
+        hdr.addWidget(self._ship_method_edit)
+
+        hdr.addStretch()
+        lay.addLayout(hdr)
+
+        # Equipment / ESN row (second header row)
+        eq_row = QHBoxLayout()
+        eq_row.setSpacing(8)
+        eq_row.addWidget(QLabel("Applies to:"))
+        self._equipment_type_combo = QComboBox()
+        self._equipment_type_combo.addItem("— none —", "")
+        self._equipment_type_combo.addItem("Engine", "engine")
+        self._equipment_type_combo.addItem("Truck", "truck")
+        eq_row.addWidget(self._equipment_type_combo)
+
+        eq_row.addWidget(QLabel("Make:"))
+        self._equipment_make_combo = QComboBox()
+        self._equipment_make_combo.setEditable(True)
+        self._equipment_make_combo.addItems([
+            "", "Cummins", "Caterpillar", "Detroit Diesel",
+            "Navistar / International", "PACCAR", "Volvo / Mack",
+            "John Deere", "Perkins", "Deutz", "Other",
+        ])
+        self._equipment_make_combo.setMinimumWidth(140)
+        eq_row.addWidget(self._equipment_make_combo)
+
+        eq_row.addWidget(QLabel("Model:"))
+        self._equipment_model_edit = QLineEdit()
+        self._equipment_model_edit.setPlaceholderText("e.g. DT466, 379")
+        self._equipment_model_edit.setMaximumWidth(130)
+        eq_row.addWidget(self._equipment_model_edit)
+
+        eq_row.addWidget(QLabel("ESN:"))
+        self._esn_edit = QLineEdit()
+        self._esn_edit.setPlaceholderText("Engine S/N")
+        self._esn_edit.setMaximumWidth(140)
+        eq_row.addWidget(self._esn_edit)
+
+        eq_row.addWidget(QLabel("VIN:"))
+        self._vin_edit = QLineEdit()
+        self._vin_edit.setPlaceholderText("VIN")
+        self._vin_edit.setMaximumWidth(170)
+        eq_row.addWidget(self._vin_edit)
+
+        eq_row.addStretch()
+        lay.addLayout(eq_row)
+
+        # Part search bar
+        search_bar = QHBoxLayout()
+        search_bar.setSpacing(6)
+
+        self._sku_edit = QLineEdit()
+        self._sku_edit.setPlaceholderText(
+            "🔍  Search part #, OEM, SKU, description…"
+        )
+        self._sku_edit.setStyleSheet(
+            "QLineEdit { padding: 5px 8px; border: 2px solid #6B8E23; "
+            "border-radius: 4px; font-size: 10pt; }"
+            "QLineEdit:focus { border-color: #556B2F; }"
+        )
+        self._sku_edit.returnPressed.connect(self._on_search_parts)
+        search_bar.addWidget(self._sku_edit, 1)
+
+        search_btn = QPushButton("Search")
+        search_btn.setStyleSheet(_BTN_PRIMARY)
+        search_btn.clicked.connect(self._on_search_parts)
+        search_bar.addWidget(search_btn)
+
+        add_search_btn = QPushButton("➕ Add to Order")
+        add_search_btn.setStyleSheet(_BTN_SUCCESS)
+        add_search_btn.setToolTip("Add the selected search result to this order")
+        add_search_btn.clicked.connect(self._on_add_from_search)
+        search_bar.addWidget(add_search_btn)
+
+        new_part_btn = QPushButton("🆕 New Part")
+        new_part_btn.setStyleSheet(
+            "QPushButton { background: #7b1fa2; color: white; font-weight: bold; "
+            "padding: 5px 14px; border-radius: 4px; }"
+            "QPushButton:hover { background: #8e24aa; }"
+        )
+        new_part_btn.setToolTip("Create a new product in inventory")
+        new_part_btn.clicked.connect(self._on_new_part)
+        search_bar.addWidget(new_part_btn)
+        lay.addLayout(search_bar)
+
+        # Search results (hidden until search)
+        self._search_table = QTableWidget(0, 9)
+        self._search_table.setHorizontalHeaderLabels([
+            "ID", "SKU", "Title", "Supplier", "QOH",
+            "Cost", "Sell Price", "Margin%", "Engine",
+        ])
+        self._search_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._search_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._search_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._search_table.setColumnHidden(0, True)
+        self._search_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch
+        )
+        self._search_table.setAlternatingRowColors(True)
+        self._search_table.verticalHeader().setDefaultSectionSize(24)
+        self._search_table.verticalHeader().setVisible(False)
+        self._search_table.setMaximumHeight(140)
+        self._search_table.setStyleSheet(
+            "QTableWidget::item:selected { background-color: #bbdefb; color: #0d47a1; }"
+        )
+        self._search_table.doubleClicked.connect(self._on_add_from_search)
+        self._search_table.hide()
+        self._search_results: list[dict] = []
+        lay.addWidget(self._search_table)
+
+        self._search_count_label = QLabel("")
+        self._search_count_label.setStyleSheet(
+            "font-size: 9pt; color: #6B8E23; font-weight: bold; padding: 0 4px;"
+        )
+        self._search_count_label.hide()
+        lay.addWidget(self._search_count_label)
+
+        # Line items table
+        self._lines_table = QTableWidget(0, _L_COLS)
+        self._lines_table.setHorizontalHeaderLabels(_LINE_HEADERS)
+        self._lines_table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
+        self._lines_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._lines_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        for _hc in _HIDDEN_LINE_COLS:
+            self._lines_table.setColumnHidden(_hc, True)
+        self._lines_table.horizontalHeader().setStretchLastSection(False)
+        self._lines_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
+        self._lines_table.horizontalHeader().setSectionResizeMode(
+            _L_DESC, QHeaderView.ResizeMode.Stretch
+        )
+        self._lines_table.setColumnWidth(_L_QTY, 65)
+        self._lines_table.setColumnWidth(_L_NOTES, 120)
+        self._lines_table.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self._lines_table.setAlternatingRowColors(True)
+        self._lines_table.verticalHeader().setDefaultSectionSize(26)
+        self._lines_table.verticalHeader().setVisible(False)
+        self._lines_table.setStyleSheet(
+            "QHeaderView::section { background: #f5f5f5; font-weight: bold; "
+            "border: 1px solid #ddd; padding: 4px; }"
+            "QTableWidget::item:selected { background-color: #c8e6c9; color: #1b5e20; }"
+        )
+        self._lines_table.selectionModel().selectionChanged.connect(
+            self._on_line_selected
+        )
+        self._lines_table.cellChanged.connect(self._on_line_cell_edited)
+        self._lines_table.cellDoubleClicked.connect(self._on_line_cell_double_clicked)
+        self._lines_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._lines_table.customContextMenuRequested.connect(self._show_line_context_menu)
+        lay.addWidget(self._lines_table, 1)
+
+        # Delete shortcut
+        del_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Delete), self._lines_table)
+        del_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        del_shortcut.activated.connect(self._on_remove_line)
+
+        # Inline price editor
+        self._price_editor_frame = QFrame()
+        self._price_editor_frame.setStyleSheet(
+            "QFrame { background: #e8f5e9; border: 1px solid #a5d6a7; "
+            "border-radius: 4px; padding: 3px 6px; }"
+        )
+        pe_lay = QHBoxLayout(self._price_editor_frame)
+        pe_lay.setContentsMargins(6, 2, 6, 2)
+        pe_lay.setSpacing(8)
+
+        self._pe_label = QLabel("Adjust selected line:")
+        self._pe_label.setStyleSheet("font-weight: bold; font-size: 9pt;")
+        pe_lay.addWidget(self._pe_label)
+
+        pe_lay.addWidget(QLabel("Margin %:"))
+        self._pe_margin_spin = QDoubleSpinBox()
+        self._pe_margin_spin.setRange(-100, 999)
+        self._pe_margin_spin.setDecimals(1)
+        self._pe_margin_spin.setSuffix("%")
+        self._pe_margin_spin.setMaximumWidth(80)
+        pe_lay.addWidget(self._pe_margin_spin)
+
+        pe_apply_margin = QPushButton("Apply Margin")
+        pe_apply_margin.setStyleSheet(
+            "QPushButton { background: #2e7d32; color: white; padding: 3px 8px; "
+            "border-radius: 3px; font-size: 9pt; }"
+            "QPushButton:hover { background: #388e3c; }"
+        )
+        pe_apply_margin.clicked.connect(self._on_apply_margin)
+        pe_lay.addWidget(pe_apply_margin)
+
+        pe_lay.addSpacing(10)
+        pe_lay.addWidget(QLabel("Price $:"))
+        self._pe_price_spin = QDoubleSpinBox()
+        self._pe_price_spin.setRange(0, 999999)
+        self._pe_price_spin.setDecimals(2)
+        self._pe_price_spin.setPrefix("$")
+        self._pe_price_spin.setMaximumWidth(100)
+        pe_lay.addWidget(self._pe_price_spin)
+
+        pe_apply_price = QPushButton("Set Price")
+        pe_apply_price.setStyleSheet(
+            "QPushButton { background: #1565c0; color: white; padding: 3px 8px; "
+            "border-radius: 3px; font-size: 9pt; }"
+            "QPushButton:hover { background: #1976d2; }"
+        )
+        pe_apply_price.clicked.connect(self._on_apply_price)
+        pe_lay.addWidget(pe_apply_price)
+
+        pe_lay.addStretch()
+
+        rm_btn = QPushButton("🗑️ Remove")
+        rm_btn.setStyleSheet(
+            "QPushButton { color: #c62828; padding: 3px 8px; "
+            "border-radius: 3px; font-size: 9pt; }"
+        )
+        rm_btn.clicked.connect(self._on_remove_line)
+        pe_lay.addWidget(rm_btn)
+
+        self._price_editor_frame.hide()
+        lay.addWidget(self._price_editor_frame)
+
+        # Manual add-line bar
+        add_bar = QHBoxLayout()
+        add_bar.setSpacing(4)
+        add_bar.setContentsMargins(0, 2, 0, 2)
+
+        self._desc_edit = QLineEdit()
+        self._desc_edit.setPlaceholderText("Manual line description…")
+        self._desc_edit.setMaximumHeight(24)
+        add_bar.addWidget(self._desc_edit)
+
+        self._qty_spin = QSpinBox()
+        self._qty_spin.setRange(1, 99999)
+        self._qty_spin.setValue(1)
+        self._qty_spin.setMaximumHeight(24)
+        self._qty_spin.setMaximumWidth(75)
+        add_bar.addWidget(QLabel("Qty"))
+        add_bar.addWidget(self._qty_spin)
+
+        self._price_spin = QDoubleSpinBox()
+        self._price_spin.setRange(0, 999999)
+        self._price_spin.setDecimals(2)
+        self._price_spin.setPrefix("$")
+        self._price_spin.setMaximumHeight(24)
+        self._price_spin.setMaximumWidth(90)
+        add_bar.addWidget(QLabel("$"))
+        add_bar.addWidget(self._price_spin)
+
+        add_btn = QPushButton("➕ Add")
+        add_btn.setStyleSheet("QPushButton { padding: 2px 8px; font-size: 9pt; }")
+        add_btn.setMaximumHeight(24)
+        add_btn.clicked.connect(self._on_add_line)
+        add_bar.addWidget(add_btn)
+
+        disc_btn = QPushButton("➖ Discount")
+        disc_btn.setToolTip("Add a manual discount line (% or fixed $)")
+        disc_btn.setStyleSheet(
+            "QPushButton { background: #b91c1c; color: white; font-weight: bold; "
+            "padding: 2px 8px; font-size: 9pt; border-radius: 3px; }"
+            "QPushButton:hover { background: #991b1b; }"
+        )
+        disc_btn.setMaximumHeight(24)
+        disc_btn.clicked.connect(self._on_add_discount_line)
+        add_bar.addWidget(disc_btn)
+
+        lay.addLayout(add_bar)
+
+        # Bottom tabs
+        btabs = QTabWidget()
+        btabs.setStyleSheet(
+            "QTabWidget::pane { border: 1px solid #ccc; border-radius: 4px; }"
+            "QTabBar::tab { padding: 3px 12px; font-size: 9pt; }"
+            "QTabBar::tab:selected { font-weight: bold; }"
+        )
+
+        # Prices & Costs tab
+        prices_w = QWidget()
+        pg = QGridLayout(prices_w)
+        pg.setContentsMargins(10, 6, 10, 6)
+        pg.setHorizontalSpacing(20)
+        pg.setVerticalSpacing(4)
+
+        pg.addWidget(QLabel("Subtotal"), 0, 0)
+        self._subtotal_label = QLabel("$0.00")
+        self._subtotal_label.setStyleSheet("font-size: 11pt;")
+        pg.addWidget(self._subtotal_label, 0, 1, alignment=Qt.AlignmentFlag.AlignRight)
+
+        pg.addWidget(QLabel("Cores"), 0, 2)
+        self._core_label = QLabel("$0.00")
+        self._core_label.setStyleSheet("font-size: 11pt;")
+        pg.addWidget(self._core_label, 0, 3, alignment=Qt.AlignmentFlag.AlignRight)
+
+        pg.addWidget(QLabel("Tax"), 1, 0)
+        self._tax_spin = QDoubleSpinBox()
+        self._tax_spin.setRange(0, 999999)
+        self._tax_spin.setDecimals(2)
+        self._tax_spin.setPrefix("$")
+        self._tax_spin.valueChanged.connect(self._on_tax_changed)
+        pg.addWidget(self._tax_spin, 1, 1, alignment=Qt.AlignmentFlag.AlignRight)
+
+        pg.addWidget(QLabel("Margin"), 1, 2)
+        self._margin_label = QLabel("—")
+        self._margin_label.setStyleSheet("font-size: 11pt;")
+        pg.addWidget(self._margin_label, 1, 3, alignment=Qt.AlignmentFlag.AlignRight)
+
+        pg.addWidget(QLabel("Shipping"), 2, 0)
+        self._ship_cost_spin = QDoubleSpinBox()
+        self._ship_cost_spin.setRange(0, 99999)
+        self._ship_cost_spin.setDecimals(2)
+        self._ship_cost_spin.setPrefix("$")
+        self._ship_cost_spin.valueChanged.connect(self._on_shipping_changed)
+        pg.addWidget(self._ship_cost_spin, 2, 1, alignment=Qt.AlignmentFlag.AlignRight)
+
+        total_lbl = QLabel("Total")
+        total_lbl.setStyleSheet("font-weight: bold; font-size: 13pt;")
+        pg.addWidget(total_lbl, 3, 0)
+        self._total_label = QLabel("$0.00")
+        self._total_label.setStyleSheet("font-weight: bold; font-size: 13pt;")
+        pg.addWidget(self._total_label, 3, 1, alignment=Qt.AlignmentFlag.AlignRight)
+
+        btabs.addTab(prices_w, "Prices && Costs")
+
+        # Notes tab
+        notes_w = QWidget()
+        nl = QVBoxLayout(notes_w)
+        nl.setContentsMargins(8, 4, 8, 4)
+        self._notes_edit = QTextEdit()
+        self._notes_edit.setPlaceholderText("Internal notes or special instructions…")
+        nl.addWidget(self._notes_edit)
+        btabs.addTab(notes_w, "Notes")
+
+        btabs.setMaximumHeight(140)
+        lay.addWidget(btabs)
+        return panel
+
+    # ------------------------------------------------------------------
+    #  RIGHT — INVENTORY FINDER
+    # ------------------------------------------------------------------
+    def _build_finder_panel(self) -> QWidget:
+        panel = QWidget()
+        panel.setMaximumWidth(380)
+        panel.setMinimumWidth(280)
+        panel.setStyleSheet("QWidget { background: #f5f5f5; }")
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(6, 8, 8, 8)
+        lay.setSpacing(6)
+
+        hdr = QLabel("🔧 Inventory Finder")
+        hdr.setStyleSheet("font-weight: bold; font-size: 11pt; color: #263238;")
+        lay.addWidget(hdr)
+
+        lay.addWidget(QLabel("Part # / Keyword"))
+        self._finder_input = QLineEdit()
+        self._finder_input.setPlaceholderText("Enter part #, SKU, or keyword…")
+        self._finder_input.setStyleSheet(
+            "QLineEdit { padding: 5px 8px; border: 2px solid #6B8E23; "
+            "border-radius: 4px; font-size: 10pt; }"
+            "QLineEdit:focus { border-color: #556B2F; }"
+        )
+        self._finder_input.returnPressed.connect(self._on_finder_search)
+        lay.addWidget(self._finder_input)
+
+        search_btn = QPushButton("🔍 Search Inventory")
+        search_btn.setStyleSheet(_BTN_PRIMARY)
+        search_btn.clicked.connect(self._on_finder_search)
+        lay.addWidget(search_btn)
+
+        results_hdr = QLabel("Results")
+        results_hdr.setStyleSheet("font-weight: bold; font-size: 10pt; margin-top: 4px;")
+        lay.addWidget(results_hdr)
+
+        self._finder_table = QTableWidget(0, 7)
+        self._finder_table.setHorizontalHeaderLabels([
+            "ID", "Part #", "Description", "Source", "Cost",
+            "Sell Price", "Margin%",
+        ])
+        self._finder_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._finder_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._finder_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._finder_table.setColumnHidden(0, True)
+        self._finder_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch
+        )
+        self._finder_table.setAlternatingRowColors(True)
+        self._finder_table.verticalHeader().setDefaultSectionSize(24)
+        self._finder_table.verticalHeader().setVisible(False)
+        self._finder_table.setStyleSheet(
+            "QTableWidget { font-size: 9pt; }"
+            "QTableWidget::item:selected { background-color: #ffe0b2; color: #e65100; }"
+        )
+        self._finder_table.doubleClicked.connect(self._on_add_from_finder)
+        self._finder_results: list[dict] = []
+        lay.addWidget(self._finder_table, 1)
+
+        add_finder_btn = QPushButton("➕ Add to Order")
+        add_finder_btn.setStyleSheet(_BTN_SUCCESS)
+        add_finder_btn.clicked.connect(self._on_add_from_finder)
+        lay.addWidget(add_finder_btn)
+
+        return panel
+
+    # ------------------------------------------------------------------
+    #  FOOTER BAR
+    # ------------------------------------------------------------------
+    def _build_footer(self) -> QFrame:
+        footer = QFrame()
+        footer.setStyleSheet(
+            "QFrame { background: #eceff1; border-top: 1px solid #cfd8dc; "
+            "padding: 4px 12px; }"
+        )
+        flay = QHBoxLayout(footer)
+        flay.setContentsMargins(12, 4, 12, 4)
+        flay.setSpacing(24)
+
+        self._footer_lines = QLabel("Lines: 0")
+        self._footer_lines.setStyleSheet("font-size: 10pt;")
+        flay.addWidget(self._footer_lines)
+
+        self._footer_subtotal = QLabel("Subtotal: $0.00")
+        self._footer_subtotal.setStyleSheet("font-size: 10pt;")
+        flay.addWidget(self._footer_subtotal)
+
+        self._footer_cost = QLabel("Cost: $0.00")
+        self._footer_cost.setStyleSheet("font-size: 10pt; color: #b45309;")
+        flay.addWidget(self._footer_cost)
+
+        self._footer_profit = QLabel("Profit: $0.00")
+        self._footer_profit.setStyleSheet("font-size: 10pt; font-weight: bold; color: #2e7d32;")
+        flay.addWidget(self._footer_profit)
+
+        self._footer_total = QLabel("Total: $0.00")
+        self._footer_total.setStyleSheet("font-size: 11pt; font-weight: bold;")
+        flay.addWidget(self._footer_total)
+
+        self._footer_margin = QLabel("Margin: —")
+        self._footer_margin.setStyleSheet("font-size: 10pt;")
+        flay.addWidget(self._footer_margin)
+
+        flay.addStretch()
+
+        save_close_btn = QPushButton("💾 Save && Close\nCtrl+S")
+        save_close_btn.setStyleSheet(
+            "QPushButton { background: #6B8E23; color: white; font-weight: bold; "
+            "border: none; padding: 5px 18px; border-radius: 3px; font-size: 9pt; }"
+            "QPushButton:hover { background: #556B2F; }"
+        )
+        save_close_btn.setToolTip("Save order and close (Ctrl+S)")
+        save_close_btn.clicked.connect(self._on_save)
+        flay.addWidget(save_close_btn)
+
+        save_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
+        save_shortcut.activated.connect(self._on_save)
+
+        return footer
+
+    # ==================================================================
+    #  CUSTOMER LOADING
+    # ==================================================================
+    def _load_customers(self) -> None:
+        self._customer_combo.blockSignals(True)
+        self._customer_combo.clear()
+        self._customer_combo.addItem("— Select Customer —", None)
+        for c in get_all_customers():
+            acct = c.get("account_number") or ""
+            name = c.get("name", "")
+            company = c.get("company")
+            display = f"{acct} — {name}" if acct else name
+            if company:
+                display = f"{display} ({company})"
+            self._customer_combo.addItem(display, c.get("id"))
+        self._customer_combo.blockSignals(False)
+        self._customer_combo.setCurrentIndex(0)
+
+    def _on_customer_changed(self, _idx: int) -> None:
+        cid = self._customer_combo.currentData()
+        if not cid:
+            self._cust_company.setText("—")
+            self._cust_phone.setText("—")
+            self._cust_email.setText("—")
+            self._cust_terms.setText("—")
+            self._cust_address.setText("—")
+            self._cust_ship_to.setText("—")
+            self._cust_bill_to.setText("—")
+            self._cust_credit_status.setText("—")
+            self._cust_credit_status.setStyleSheet(_LBL_VAL)
+            self._cust_balance.setText("—")
+            self._cust_tier.setText("—")
+            self._cust_core_warning.hide()
+            self._acct_badge.hide()
+            self._freq_ordered_list.clear()
+            return
+
+        from db import get_customer
+        c = get_customer(cid)
+        if not c:
+            return
+
+        self._cust_company.setText(c.get("company") or "—")
+        self._cust_phone.setText(c.get("phone") or "—")
+        self._cust_email.setText(c.get("email") or "—")
+        self._cust_terms.setText(c.get("payment_terms") or "—")
+
+        addr_parts = [p for p in [
+            c.get("address"), c.get("city"), c.get("state"), c.get("zip"),
+        ] if p]
+        self._cust_address.setText(", ".join(addr_parts) if addr_parts else "—")
+
+        ship_parts = [p for p in [
+            c.get("ship_to_address"), c.get("ship_to_city"),
+            c.get("ship_to_state"), c.get("ship_to_zip"),
+        ] if p]
+        self._cust_ship_to.setText(", ".join(ship_parts) if ship_parts else "—")
+
+        bill_parts = [p for p in [
+            c.get("bill_to_address"), c.get("bill_to_city"),
+            c.get("bill_to_state"), c.get("bill_to_zip"),
+        ] if p]
+        self._cust_bill_to.setText(", ".join(bill_parts) if bill_parts else "—")
+
+        acct = c.get("account_number") or ""
+        name = c.get("name") or ""
+        if acct:
+            self._acct_badge.setText(f"#{acct} — {name}")
+            self._acct_badge.show()
+        else:
+            self._acct_badge.hide()
+
+        self._load_freq_ordered(cid)
+        self._load_customer_credit(cid)
+
+        # If we have preset products that couldn't be added because no
+        # customer was selected, add them now that one is.
+        if self._preset_product_ids and not self._so_id:
+            self._add_preset_products()
+
+    def _load_freq_ordered(self, cid: int) -> None:
+        self._freq_ordered_list.clear()
+        try:
+            items = get_customer_frequently_ordered(cid, limit=12)
+        except Exception:
+            return
+        for fo in items:
+            sku = fo.get("sku") or "—"
+            title = fo.get("title") or ""
+            cnt = fo.get("order_count", 0)
+            text = f"{sku}  ×{cnt}  {title[:30]}"
+            item = QListWidgetItem(text)
+            item.setData(Qt.ItemDataRole.UserRole, fo.get("product_id"))
+            self._freq_ordered_list.addItem(item)
+
+    def _load_customer_credit(self, cid: int) -> None:
+        try:
+            agreement = get_credit_agreement(cid)
+        except Exception:
+            agreement = None
+        try:
+            aging = get_customer_aging(cid)
+        except Exception:
+            aging = None
+
+        if agreement:
+            limit = float(agreement.get("credit_limit") or 0)
+            balance = float(aging.get("total_outstanding") or 0) if aging else 0
+            available = limit - balance
+            if balance > limit and limit > 0:
+                self._cust_credit_status.setText("⚠️ OVER LIMIT")
+                self._cust_credit_status.setStyleSheet(_LBL_VAL + " color: #c62828; font-weight: bold;")
+            else:
+                self._cust_credit_status.setText("✅ Current")
+                self._cust_credit_status.setStyleSheet(_LBL_VAL + " color: #2e7d32;")
+            self._cust_balance.setText(
+                f"${balance:,.0f} / ${available:,.0f} avail"
+            )
+            tier = agreement.get("pricing_tier") or "Standard"
+            self._cust_tier.setText(tier)
+        else:
+            self._cust_credit_status.setText("No agreement")
+            self._cust_credit_status.setStyleSheet(_LBL_VAL)
+            self._cust_balance.setText("—")
+            self._cust_tier.setText("Standard")
+
+        # Overdue cores
+        try:
+            from db import get_customer_overdue_cores
+            cores = get_customer_overdue_cores(cid)
+            if cores:
+                self._cust_core_warning.setText(
+                    f"⚠️ {len(cores)} overdue core return(s)"
+                )
+                self._cust_core_warning.setStyleSheet(
+                    "color: #c62828; font-weight: bold; font-size: 9pt; "
+                    "background: #fee2e2; padding: 3px 6px; border-radius: 3px;"
+                )
+                self._cust_core_warning.show()
+            else:
+                self._cust_core_warning.hide()
+        except Exception:
+            self._cust_core_warning.hide()
+
+    def _on_new_customer(self) -> None:
+        from .customer_dialog import CustomerDialog
+        dlg = CustomerDialog(parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._load_customers()
+
+    def _on_edit_customer(self) -> None:
+        cid = self._customer_combo.currentData()
+        if not cid:
+            return
+        from .customer_dialog import CustomerDialog
+        dlg = CustomerDialog(customer_id=cid, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._on_customer_changed(self._customer_combo.currentIndex())
+
+    def _on_add_freq_item(self, item: QListWidgetItem) -> None:
+        pid = item.data(Qt.ItemDataRole.UserRole)
+        if not pid:
+            return
+        prod = get_product_by_id(int(pid))
+        if not prod:
+            return
+        price = float(prod.get("selling_price") or 0)
+        if not self._so_id:
+            self._create_so_in_db()
+        if not self._so_id:
+            return
+        add_so_line(
+            so_id=self._so_id,
+            product_id=int(pid),
+            quantity=1,
+            unit_price=price,
+        )
+        self._reload_so()
+        self._refresh_lines()
+
+    # ==================================================================
+    #  DATA LOADING
+    # ==================================================================
+    def _load_data(self) -> None:
+        if self._preset_customer_id:
+            idx = self._customer_combo.findData(self._preset_customer_id)
+            if idx >= 0:
+                self._customer_combo.setCurrentIndex(idx)
+
+        if self._so:
+            s = self._so
+            self._so_num_label.setText(s.get("so_number", "New Sales Order"))
+
+            cid = s.get("customer_id")
+            if cid:
+                idx = self._customer_combo.findData(cid)
+                if idx >= 0:
+                    self._customer_combo.setCurrentIndex(idx)
+
+            if s.get("promised_date"):
+                self._promised_date.setDate(
+                    QDate.fromString(str(s["promised_date"])[:10], "yyyy-MM-dd")
+                )
+
+            ship = s.get("ship_method") or ""
+            idx = self._ship_method_edit.findText(ship)
+            if idx >= 0:
+                self._ship_method_edit.setCurrentIndex(idx)
+            elif ship:
+                self._ship_method_edit.setCurrentText(ship)
+
+            self._notes_edit.setPlainText(s.get("notes") or "")
+            self._ship_cost_spin.setValue(float(s.get("shipping") or 0))
+
+            pri = s.get("priority", "normal") or "normal"
+            idx = self._priority_combo.findData(pri)
+            if idx >= 0:
+                self._priority_combo.setCurrentIndex(idx)
+
+            # Equipment / ESN fields
+            eq_type = (s.get("equipment_type") or "").lower()
+            eq_idx = self._equipment_type_combo.findData(eq_type)
+            if eq_idx >= 0:
+                self._equipment_type_combo.setCurrentIndex(eq_idx)
+            eq_make = s.get("equipment_make") or ""
+            mk_idx = self._equipment_make_combo.findText(eq_make)
+            if mk_idx >= 0:
+                self._equipment_make_combo.setCurrentIndex(mk_idx)
+            else:
+                self._equipment_make_combo.setCurrentText(eq_make)
+            self._equipment_model_edit.setText(s.get("equipment_model") or "")
+            self._esn_edit.setText(s.get("esn") or "")
+            self._vin_edit.setText(s.get("vin") or "")
+
+            status = (s.get("status") or "draft").upper()
+            self._status_label.setText(status)
+
+            self._refresh_lines()
+
+        if self._preset_product_ids and not self._so:
+            self._add_preset_products()
+
+        # Apply user-configured shipping defaults for brand-new SOs.
+        if not self._so:
+            try:
+                from db import get_setting as _gs
+                default_method = (_gs("default_shipping_method", "") or "").strip()
+                if default_method:
+                    midx = self._ship_method_edit.findText(default_method)
+                    if midx >= 0:
+                        self._ship_method_edit.setCurrentIndex(midx)
+                    else:
+                        self._ship_method_edit.setCurrentText(default_method)
+                default_fee_raw = _gs("default_shipping_fee", "0") or "0"
+                try:
+                    default_fee = float(default_fee_raw)
+                except (TypeError, ValueError):
+                    default_fee = 0.0
+                if default_fee > 0 and hasattr(self, "_ship_cost_spin"):
+                    self._ship_cost_spin.setValue(default_fee)
+            except Exception:
+                pass
+
+    def _add_preset_products(self) -> None:
+        # If we don't have an SO yet, ensure one exists. Stay silent if no
+        # customer is selected — we'll retry once the user picks one in
+        # _on_customer_changed instead of spamming a warning per product.
+        if not self._so_id:
+            if not self._create_so_in_db(silent=True):
+                return
+        remaining: list[int] = []
+        for pid in self._preset_product_ids:
+            prod = get_product_by_id(pid)
+            if not prod:
+                continue
+            price = float(prod.get("selling_price") or 0)
+            try:
+                add_so_line(
+                    so_id=self._so_id,
+                    product_id=pid,
+                    quantity=1,
+                    unit_price=price,
+                )
+            except Exception:
+                remaining.append(pid)
+        # Clear preset list so we don't re-add on next customer change
+        self._preset_product_ids = remaining
+        if self._so_id:
+            self._reload_so()
+            self._refresh_lines()
+
+    def _create_so_in_db(self, silent: bool = False) -> bool:
+        customer_id = self._customer_combo.currentData()
+        if not customer_id:
+            if not silent:
+                QMessageBox.warning(self, "No Customer", "Select a customer before adding items.")
+                # Focus the customer combo so the user can pick one
+                try:
+                    self._customer_combo.setFocus()
+                    self._customer_combo.showPopup()
+                except Exception:
+                    pass
+            return False
+        promised = self._promised_date.date().toString("yyyy-MM-dd")
+        ship = self._ship_method_edit.currentText()
+        if ship == "Default":
+            ship = None
+        notes = self._notes_edit.toPlainText().strip() or None
+        priority = self._priority_combo.currentData() or "normal"
+        equipment_type = self._equipment_type_combo.currentData() or None
+        equipment_make = self._equipment_make_combo.currentText().strip() or None
+        equipment_model = self._equipment_model_edit.text().strip() or None
+        esn = self._esn_edit.text().strip() or None
+        vin = self._vin_edit.text().strip() or None
+
+        result = create_sales_order(
+            customer_id=customer_id,
+            priority=priority,
+            promised_date=promised,
+            ship_method=ship,
+            notes=notes,
+            status="draft",
+            equipment_type=equipment_type,
+            equipment_make=equipment_make,
+            equipment_model=equipment_model,
+            esn=esn,
+            vin=vin,
+        )
+        self._so_id = result["id"]
+        self._so_num_label.setText(result["so_number"])
+        self._so = get_sales_order(self._so_id)
+        return True
+
+    def _reload_so(self) -> None:
+        if self._so_id:
+            self._so = get_sales_order(self._so_id)
+            self._so_lines = get_so_lines(self._so_id)
+
+    # ==================================================================
+    #  LINE ITEMS
+    # ==================================================================
+    def _refresh_lines(self) -> None:
+        self._lines_table.blockSignals(True)
+        self._lines_table.setRowCount(0)
+
+        if not self._so_id:
+            self._lines_table.blockSignals(False)
+            self._update_totals_display()
+            return
+
+        self._so_lines = get_so_lines(self._so_id)
+
+        # Enrich lines with product cost data for display
+        for line in self._so_lines:
+            pid = line.get("product_id")
+            if pid:
+                prod = get_product_by_id(int(pid))
+                if prod:
+                    line["_cost"] = float(prod.get("cost") or 0)
+                    line["_core"] = float(prod.get("core_charge") or 0)
+                    line["_supplier"] = prod.get("supplier") or ""
+                    line["_qoh"] = int(prod.get("qty_on_hand") or 0)
+                else:
+                    line["_cost"] = 0.0
+                    line["_core"] = 0.0
+                    line["_supplier"] = ""
+                    line["_qoh"] = 0
+            else:
+                line["_cost"] = 0.0
+                line["_core"] = 0.0
+                line["_supplier"] = ""
+                line["_qoh"] = 0
+
+        self._lines_table.setRowCount(len(self._so_lines))
+
+        for row, line in enumerate(self._so_lines):
+            def mk(text: str) -> QTableWidgetItem:
+                it = QTableWidgetItem(str(text) if text else "")
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                return it
+
+            def mk_editable(text: str) -> QTableWidgetItem:
+                it = QTableWidgetItem(str(text) if text else "")
+                it.setFlags(it.flags() | Qt.ItemFlag.ItemIsEditable)
+                return it
+
+            # ── Discount lines: red italic, em-dash SKU, parenthesized total.
+            if (line.get("line_kind") or "product") == "discount":
+                lt = float(line.get("line_total") or 0)
+                disc_color = QColor("#b91c1c")
+
+                def mkd(text: str) -> QTableWidgetItem:
+                    it = QTableWidgetItem(str(text) if text else "")
+                    it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    f = it.font(); f.setItalic(True); it.setFont(f)
+                    it.setForeground(disc_color)
+                    return it
+
+                self._lines_table.setItem(row, _L_ID, mk(line.get("id", "")))
+                self._lines_table.setItem(row, _L_SKU, mkd("—"))
+                self._lines_table.setItem(row, _L_DESC, mkd(line.get("description") or "Discount"))
+                self._lines_table.setItem(row, _L_SUPPLIER, mkd(""))
+                self._lines_table.setItem(row, _L_QOH, mkd("—"))
+                self._lines_table.setItem(row, _L_QTY, mkd(""))
+                self._lines_table.setItem(row, _L_COST, mkd(""))
+                self._lines_table.setItem(row, _L_PRICE, mkd(""))
+                self._lines_table.setItem(row, _L_CORE, mkd(""))
+                self._lines_table.setItem(row, _L_WARRANTY, mkd("—"))
+                self._lines_table.setItem(row, _L_TOTAL, mkd(f"(${abs(lt):,.2f})"))
+                self._lines_table.setItem(row, _L_MARGIN, mkd(""))
+                self._lines_table.setItem(row, _L_NOTES, mkd(line.get("notes") or ""))
+                continue
+
+            line_id = line.get("id", "")
+            self._lines_table.setItem(row, _L_ID, mk(line_id))
+
+            sku = line.get("sku") or ""
+            self._lines_table.setItem(row, _L_SKU, mk(sku))
+
+            desc = line.get("description") or line.get("product_title") or ""
+            self._lines_table.setItem(row, _L_DESC, mk(desc))
+
+            self._lines_table.setItem(row, _L_SUPPLIER, mk(line.get("_supplier", "")))
+
+            qoh = line.get("_qoh", 0)
+            qoh_item = mk(str(qoh))
+            if qoh <= 0:
+                qoh_item.setForeground(QColor("#c62828"))
+            self._lines_table.setItem(row, _L_QOH, qoh_item)
+
+            qty = int(line.get("quantity_ordered") or 1)
+            self._lines_table.setItem(row, _L_QTY, mk_editable(str(qty)))
+
+            cost = line.get("_cost", 0)
+            cost_item = mk(f"${cost:,.2f}")
+            self._lines_table.setItem(row, _L_COST, cost_item)
+
+            price = float(line.get("unit_price") or 0)
+            self._lines_table.setItem(row, _L_PRICE, mk_editable(f"${price:,.2f}"))
+
+            core = line.get("_core", 0)
+            self._lines_table.setItem(row, _L_CORE, mk(f"${core:,.2f}" if core > 0 else "—"))
+
+            # Warranty
+            w_months = int(line.get("warranty_months") or 0)
+            w_type = line.get("warranty_type") or "parts_only"
+            w_mileage = line.get("warranty_mileage_limit")
+            if w_months > 0:
+                from engine.warranty import format_warranty_short
+                w_item = mk(format_warranty_short(w_months, w_type, w_mileage))
+                w_item.setForeground(QColor("#1565c0"))
+            else:
+                w_item = mk("—")
+            w_item.setToolTip("Double-click to edit warranty")
+            self._lines_table.setItem(row, _L_WARRANTY, w_item)
+
+            total = float(line.get("line_total") or 0)
+            total_item = mk(f"${total:,.2f}")
+            total_item.setFont(QFont("", -1, QFont.Weight.Bold))
+            self._lines_table.setItem(row, _L_TOTAL, total_item)
+
+            # Margin
+            if price > 0 and cost > 0:
+                margin = ((price - cost) / price) * 100
+                margin_item = mk(f"{margin:.1f}%")
+                if margin < 10:
+                    margin_item.setForeground(QColor("#c62828"))
+                elif margin < 30:
+                    margin_item.setForeground(QColor("#f59e0b"))
+                else:
+                    margin_item.setForeground(QColor("#2e7d32"))
+            else:
+                margin_item = mk("—")
+            self._lines_table.setItem(row, _L_MARGIN, margin_item)
+
+            notes = line.get("notes") or ""
+            self._lines_table.setItem(row, _L_NOTES, mk_editable(notes))
+
+            # Colour backorder rows
+            bo = int(line.get("quantity_backordered") or 0)
+            if bo > 0:
+                for c in range(_L_COLS):
+                    cell = self._lines_table.item(row, c)
+                    if cell and c not in (_L_QOH,):
+                        cell.setForeground(QColor("#b45309"))
+
+        self._lines_table.blockSignals(False)
+        self._lines_table.resizeColumnsToContents()
+        self._lines_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
+        self._lines_table.horizontalHeader().setSectionResizeMode(
+            _L_DESC, QHeaderView.ResizeMode.Stretch
+        )
+        self._update_totals_display()
+
+    def _update_totals_display(self) -> None:
+        lines = self._so_lines or []
+        subtotal = sum(float(l.get("line_total") or 0) for l in lines)
+        total_cost = sum(l.get("_cost", 0) * int(l.get("quantity_ordered") or 1) for l in lines)
+        total_cores = sum(l.get("_core", 0) * int(l.get("quantity_ordered") or 1) for l in lines)
+        shipping = self._ship_cost_spin.value()
+        tax = self._tax_spin.value()
+        total = subtotal + tax + shipping
+        profit = subtotal - total_cost
+
+        if subtotal > 0 and total_cost > 0:
+            overall_margin = ((subtotal - total_cost) / subtotal) * 100
+        else:
+            overall_margin = 0
+
+        self._subtotal_label.setText(f"${subtotal:,.2f}")
+        self._core_label.setText(f"${total_cores:,.2f}" if total_cores > 0 else "—")
+        self._total_label.setText(f"${total:,.2f}")
+
+        if overall_margin > 0:
+            self._margin_label.setText(f"{overall_margin:.1f}%")
+        else:
+            self._margin_label.setText("—")
+
+        self._footer_lines.setText(f"Lines: {len(lines)}")
+        self._footer_subtotal.setText(f"Subtotal: ${subtotal:,.2f}")
+        self._footer_cost.setText(f"Cost: ${total_cost:,.2f}")
+        self._footer_profit.setText(f"Profit: ${profit:,.2f}")
+        if profit < 0:
+            self._footer_profit.setStyleSheet("font-size: 10pt; font-weight: bold; color: #c62828;")
+        else:
+            self._footer_profit.setStyleSheet("font-size: 10pt; font-weight: bold; color: #2e7d32;")
+        self._footer_total.setText(f"Total: ${total:,.2f}")
+        if overall_margin > 0:
+            margin_text = f"Margin: {overall_margin:.1f}%"
+            if overall_margin < 10:
+                self._footer_margin.setStyleSheet("font-size: 10pt; color: #c62828; font-weight: bold;")
+            elif overall_margin < 30:
+                self._footer_margin.setStyleSheet("font-size: 10pt; color: #f59e0b; font-weight: bold;")
+            else:
+                self._footer_margin.setStyleSheet("font-size: 10pt; color: #2e7d32; font-weight: bold;")
+        else:
+            margin_text = "Margin: —"
+            self._footer_margin.setStyleSheet("font-size: 10pt;")
+        self._footer_margin.setText(margin_text)
+
+    # ==================================================================
+    #  SEARCH + ADD
+    # ==================================================================
+    def _on_search_parts(self) -> None:
+        query = self._sku_edit.text().strip()
+        if not query:
+            return
+
+        results = search_by_part_number(query)
+        browse_results = browse_products(search=query, limit=50)
+        seen_ids = {r.get("id") or r.get("product_id") for r in results}
+        for br in browse_results:
+            if br.get("id") not in seen_ids:
+                results.append(br)
+
+        self._search_results = results[:50]
+        self._search_table.setRowCount(len(self._search_results))
+
+        for i, p in enumerate(self._search_results):
+            def mk(text: str) -> QTableWidgetItem:
+                it = QTableWidgetItem(str(text) if text else "")
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                return it
+
+            pid = p.get("id") or p.get("product_id", "")
+            self._search_table.setItem(i, 0, mk(pid))
+            self._search_table.setItem(i, 1, mk(p.get("sku", "")))
+            self._search_table.setItem(i, 2, mk(p.get("title", "")))
+            self._search_table.setItem(i, 3, mk(p.get("supplier", "")))
+
+            qoh = p.get("qty_on_hand", 0)
+            qoh_item = mk(str(qoh))
+            if qoh is not None and int(qoh or 0) <= 0:
+                qoh_item.setForeground(QColor("#c62828"))
+            self._search_table.setItem(i, 4, qoh_item)
+
+            cost = float(p.get("cost") or 0)
+            self._search_table.setItem(i, 5, mk(f"${cost:,.2f}"))
+
+            price = float(p.get("selling_price") or 0)
+            self._search_table.setItem(i, 6, mk(f"${price:,.2f}"))
+
+            margin = ((price - cost) / price * 100) if price > 0 and cost > 0 else 0
+            margin_item = mk(f"{margin:.1f}%")
+            if margin < 10:
+                margin_item.setForeground(QColor("#c62828"))
+            elif margin < 30:
+                margin_item.setForeground(QColor("#f59e0b"))
+            else:
+                margin_item.setForeground(QColor("#2e7d32"))
+            self._search_table.setItem(i, 7, margin_item)
+
+            engine = p.get("engine_manufacturer", "")
+            if p.get("engine_model"):
+                engine = f"{engine} {p['engine_model']}".strip()
+            self._search_table.setItem(i, 8, mk(engine))
+
+        self._search_table.resizeColumnsToContents()
+        self._search_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch
+        )
+        self._search_table.show()
+
+        count = len(self._search_results)
+        self._search_count_label.setText(
+            f"Found {count} result{'s' if count != 1 else ''}"
+        )
+        self._search_count_label.show()
+
+    def _on_add_from_search(self) -> None:
+        row = self._search_table.currentRow()
+        if row < 0 or row >= len(self._search_results):
+            return
+        p = self._search_results[row]
+
+        pid = p.get("id") or p.get("product_id")
+        if pid:
+            full = get_product_by_id(int(pid))
+            if full:
+                p = full
+
+        if p.get("inventory_status") == "pre_inventory":
+            QMessageBox.warning(
+                self, "Pre-Inventory Item",
+                "This item is still in Pre-Inventory and cannot be added.\n"
+                "Approve it in the Pre-Inventory Review screen first.",
+            )
+            return
+
+        # Duplicate check
+        if pid and self._so_lines:
+            existing_pids = [int(l.get("product_id") or 0) for l in self._so_lines if l.get("product_id")]
+            if int(pid) in existing_pids:
+                ans = QMessageBox.question(
+                    self, "Duplicate Part",
+                    f"'{p.get('sku', '')}' is already on this order.\nAdd another line?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if ans != QMessageBox.StandardButton.Yes:
+                    return
+
+        price = float(p.get("selling_price") or 0)
+
+        if not self._so_id:
+            self._create_so_in_db()
+        if not self._so_id:
+            return
+
+        add_so_line(
+            so_id=self._so_id,
+            product_id=int(pid) if pid else None,
+            quantity=self._qty_spin.value(),
+            unit_price=price,
+        )
+
+        self._reload_so()
+        self._refresh_lines()
+        self._search_table.hide()
+        self._search_count_label.hide()
+        self._sku_edit.clear()
+        self._qty_spin.setValue(1)
+        self._sku_edit.setFocus()
+
+        # Suggested sells
+        if pid:
+            self._show_suggested_sells(int(pid))
+
+    def _show_suggested_sells(self, product_id: int) -> None:
+        try:
+            from .suggested_sells_popup import SuggestedSellsPopup
+        except ImportError:
+            return
+        dlg = SuggestedSellsPopup(product_id, parent=self)
+        if not dlg.has_suggestions:
+            return
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        for item in dlg.selected_items():
+            add_so_line(
+                so_id=self._so_id,
+                product_id=item["product_id"],
+                quantity=item["qty"],
+                unit_price=item["selling_price"],
+            )
+        self._reload_so()
+        self._refresh_lines()
+
+    def _on_add_line(self) -> None:
+        """Add a manual (non-product) line item."""
+        desc = self._desc_edit.text().strip()
+        if not desc:
+            QMessageBox.information(
+                self, "No Description",
+                "Enter a description, or use Search to find a product.",
+            )
+            return
+
+        if not self._so_id:
+            self._create_so_in_db()
+        if not self._so_id:
+            return
+
+        qty = self._qty_spin.value()
+        price = self._price_spin.value()
+        line_total = price * qty
+
+        # Direct insert for non-product lines
+        from db.database import get_db
+        with get_db() as conn:
+            conn.execute("""
+                INSERT INTO sales_order_lines
+                    (so_id, product_id, sku, description,
+                     quantity_ordered, quantity_picked, quantity_backordered,
+                     unit_price, line_total, notes)
+                VALUES (%s, NULL, '', %s, %s, 0, %s, %s, %s, '')
+            """, (self._so_id, desc, qty, qty, price, line_total))
+            conn.commit()
+
+            # Recalculate SO totals
+            from db.inventory import _recalculate_so_totals
+            _recalculate_so_totals(conn, self._so_id)
+
+        self._reload_so()
+        self._refresh_lines()
+        self._desc_edit.clear()
+        self._qty_spin.setValue(1)
+        self._price_spin.setValue(0)
+        self._sku_edit.setFocus()
+
+    def _on_add_discount_line(self) -> None:
+        """Open the shared DiscountLineDialog and append a negative line."""
+        if not self._so_id:
+            self._create_so_in_db()
+        if not self._so_id:
+            return
+        # Compute current non-discount subtotal for % preview.
+        subtotal = 0.0
+        for ln in (self._so_lines or []):
+            if (ln.get("line_kind") or "product") == "discount":
+                continue
+            subtotal += float(ln.get("line_total") or 0)
+        dlg = DiscountLineDialog(
+            self,
+            doc_type="so",
+            product_subtotal=subtotal,
+            default_description="Discount",
+        )
+        if dlg.exec() != dlg.DialogCode.Accepted or not dlg.result_payload:
+            return
+        payload = dlg.result_payload
+        result = add_discount_line(
+            "so",
+            self._so_id,
+            description=payload["description"],
+            discount_amount=payload.get("discount_amount"),
+            discount_pct=payload.get("discount_pct"),
+        )
+        if not result.get("success"):
+            QMessageBox.warning(
+                self,
+                "Discount Line",
+                f"Could not add discount line: {result.get('error', 'unknown error')}",
+            )
+            return
+        self._reload_so()
+        self._refresh_lines()
+
+    def _on_remove_line(self) -> None:
+        row = self._lines_table.currentRow()
+        if row < 0:
+            return
+        line_id_item = self._lines_table.item(row, _L_ID)
+        if not line_id_item:
+            return
+        line_id = int(line_id_item.text())
+        desc = self._lines_table.item(row, _L_DESC)
+        desc_text = desc.text() if desc else ""
+
+        ans = QMessageBox.question(
+            self, "Remove Line",
+            f"Remove '{desc_text}' from this order?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+
+        remove_so_line(line_id)
+        self._reload_so()
+        self._refresh_lines()
+        self._price_editor_frame.hide()
+
+    # ==================================================================
+    #  INLINE EDITING
+    # ==================================================================
+    def _on_line_cell_edited(self, row: int, col: int) -> None:
+        if col not in (_L_QTY, _L_PRICE, _L_NOTES):
+            return
+        if row >= len(self._so_lines):
+            return
+        line_id_item = self._lines_table.item(row, _L_ID)
+        if not line_id_item:
+            return
+        line_id = int(line_id_item.text())
+        cell_text = (self._lines_table.item(row, col).text() or "").strip()
+
+        if col == _L_QTY:
+            try:
+                new_qty = max(1, int(cell_text))
+            except ValueError:
+                new_qty = 1
+            # Update quantity — need to update line_total too
+            price = float(self._so_lines[row].get("unit_price") or 0)
+            from db.database import get_db
+            with get_db() as conn:
+                conn.execute(
+                    "UPDATE sales_order_lines SET quantity_ordered=%s, line_total=%s WHERE id=%s",
+                    (new_qty, price * new_qty, line_id),
+                )
+                conn.commit()
+                from db.inventory import _recalculate_so_totals
+                _recalculate_so_totals(conn, self._so_id)
+
+        elif col == _L_PRICE:
+            try:
+                val = float(cell_text.replace("$", "").replace(",", ""))
+            except ValueError:
+                val = 0.0
+            update_so_line_price(line_id, val)
+
+        elif col == _L_NOTES:
+            from db.database import get_db
+            with get_db() as conn:
+                conn.execute(
+                    "UPDATE sales_order_lines SET notes=%s WHERE id=%s",
+                    (cell_text, line_id),
+                )
+                conn.commit()
+
+        self._reload_so()
+        self._update_totals_display()
+
+    def _on_line_cell_double_clicked(self, row: int, col: int) -> None:
+        if col != _L_WARRANTY:
+            return
+        if row >= len(self._so_lines):
+            return
+        line = self._so_lines[row]
+        self._edit_line_warranty(line)
+
+    def _edit_line_warranty(self, line: dict) -> None:
+        from PySide6.QtWidgets import (
+            QDialog, QFormLayout, QSpinBox, QComboBox, QCheckBox,
+            QDialogButtonBox, QHBoxLayout, QWidget,
+        )
+        from db.inventory import update_so_line
+
+        line_id = int(line.get("id"))
+        current_months = int(line.get("warranty_months") or 0)
+        current_type = (line.get("warranty_type") or "parts_only").lower()
+        current_mileage = line.get("warranty_mileage_limit")
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Warranty for Line")
+        form = QFormLayout(dlg)
+
+        months_spin = QSpinBox()
+        months_spin.setRange(0, 120)
+        months_spin.setSuffix(" months")
+        months_spin.setValue(current_months)
+        form.addRow("Duration:", months_spin)
+
+        type_combo = QComboBox()
+        type_combo.addItem("Parts Only", "parts_only")
+        type_combo.addItem("Parts & Labor", "parts_labor")
+        type_combo.setCurrentIndex(1 if current_type == "parts_labor" else 0)
+        form.addRow("Coverage:", type_combo)
+
+        mi_row = QWidget()
+        mi_lay = QHBoxLayout(mi_row)
+        mi_lay.setContentsMargins(0, 0, 0, 0)
+        mi_spin = QSpinBox()
+        mi_spin.setRange(0, 1_000_000)
+        mi_spin.setSingleStep(1000)
+        mi_spin.setSuffix(" mi")
+        mi_spin.setValue(int(current_mileage or 0))
+        unlimited_cb = QCheckBox("Unlimited")
+        unlimited_cb.setChecked(current_mileage in (None, 0))
+
+        def _sync(_state):
+            mi_spin.setEnabled(not unlimited_cb.isChecked())
+        unlimited_cb.stateChanged.connect(_sync)
+        _sync(unlimited_cb.checkState())
+        mi_lay.addWidget(mi_spin)
+        mi_lay.addWidget(unlimited_cb)
+        form.addRow("Mileage limit:", mi_row)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        form.addRow(btns)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        months = int(months_spin.value())
+        w_type = type_combo.currentData() or "parts_only"
+        mileage = None if unlimited_cb.isChecked() else int(mi_spin.value())
+        if mileage == 0:
+            mileage = None
+        update_so_line(
+            line_id,
+            warranty_months=months,
+            warranty_type=w_type,
+            warranty_mileage_limit=mileage,
+        )
+        self._reload_so()
+        self._refresh_lines()
+
+    def _on_line_selected(self) -> None:
+        row = self._lines_table.currentRow()
+        if row < 0 or row >= len(self._so_lines):
+            self._price_editor_frame.hide()
+            return
+        line = self._so_lines[row]
+        cost = line.get("_cost", 0)
+        price = float(line.get("unit_price") or 0)
+
+        if cost > 0 and price > 0:
+            margin = ((price - cost) / price) * 100
+        else:
+            margin = 0
+        self._pe_margin_spin.setValue(margin)
+        self._pe_price_spin.setValue(price)
+        sku = line.get("sku") or line.get("description", "")[:20]
+        self._pe_label.setText(f"Adjust: {sku}")
+        self._price_editor_frame.show()
+
+    def _on_apply_margin(self) -> None:
+        row = self._lines_table.currentRow()
+        if row < 0 or row >= len(self._so_lines):
+            return
+        line = self._so_lines[row]
+        cost = line.get("_cost", 0)
+        if cost <= 0:
+            QMessageBox.warning(self, "No Cost", "Cannot compute margin without a cost value.")
+            return
+        margin = self._pe_margin_spin.value()
+        if margin >= 100:
+            QMessageBox.warning(self, "Invalid Margin", "Margin must be less than 100%.")
+            return
+        new_price = round(cost / (1 - margin / 100), 2)
+        line_id = int(self._lines_table.item(row, _L_ID).text())
+        update_so_line_price(line_id, new_price)
+        self._reload_so()
+        self._refresh_lines()
+
+    def _on_apply_price(self) -> None:
+        row = self._lines_table.currentRow()
+        if row < 0 or row >= len(self._so_lines):
+            return
+        new_price = self._pe_price_spin.value()
+        line_id = int(self._lines_table.item(row, _L_ID).text())
+        update_so_line_price(line_id, new_price)
+        self._reload_so()
+        self._refresh_lines()
+
+    # ==================================================================
+    #  SAVE
+    # ==================================================================
+    def _on_save(self) -> None:
+        self._on_save_silent()
+        if self._so_id:
+            QMessageBox.information(
+                self, "Saved",
+                f"Sales Order {self._so.get('so_number', '')} saved.",
+            )
+        self.accept()
+
+    def _on_save_silent(self) -> None:
+        if not self._so_id:
+            self._create_so_in_db()
+        if not self._so_id:
+            return
+
+        customer_id = self._customer_combo.currentData()
+        promised = self._promised_date.date().toString("yyyy-MM-dd")
+        ship = self._ship_method_edit.currentText()
+        if ship == "Default":
+            ship = None
+        notes = self._notes_edit.toPlainText().strip() or None
+        priority = self._priority_combo.currentData() or "normal"
+        shipping = self._ship_cost_spin.value()
+        equipment_type = self._equipment_type_combo.currentData() or None
+        equipment_make = self._equipment_make_combo.currentText().strip() or None
+        equipment_model = self._equipment_model_edit.text().strip() or None
+        esn = self._esn_edit.text().strip() or None
+        vin = self._vin_edit.text().strip() or None
+
+        update_sales_order(
+            self._so_id,
+            customer_id=customer_id,
+            promised_date=promised,
+            ship_method=ship,
+            notes=notes,
+            priority=priority,
+            shipping=shipping,
+            equipment_type=equipment_type,
+            equipment_make=equipment_make,
+            equipment_model=equipment_model,
+            esn=esn,
+            vin=vin,
+        )
+        self._reload_so()
+
+    def _autosave_draft(self) -> None:
+        if self._so_id:
+            self._on_save_silent()
+
+    def _on_tax_changed(self, _val: float) -> None:
+        self._update_totals_display()
+
+    def _on_shipping_changed(self, _val: float) -> None:
+        self._update_totals_display()
+
+    # ==================================================================
+    #  FINDER PANEL
+    # ==================================================================
+    def _on_finder_search(self) -> None:
+        query = self._finder_input.text().strip()
+        if not query:
+            return
+
+        results = search_by_part_number(query)
+        browse_results = browse_products(search=query, limit=50)
+        seen = {r.get("id") or r.get("product_id") for r in results}
+        for br in browse_results:
+            if br.get("id") not in seen:
+                results.append(br)
+
+        self._finder_results = results[:50]
+        self._finder_table.setRowCount(len(self._finder_results))
+
+        for i, p in enumerate(self._finder_results):
+            def mk(text: str) -> QTableWidgetItem:
+                it = QTableWidgetItem(str(text) if text else "")
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                return it
+
+            pid = p.get("id") or p.get("product_id", "")
+            self._finder_table.setItem(i, 0, mk(pid))
+            self._finder_table.setItem(i, 1, mk(p.get("sku", "")))
+            self._finder_table.setItem(i, 2, mk(p.get("title", "")))
+            self._finder_table.setItem(i, 3, mk(p.get("supplier", "")))
+
+            cost = float(p.get("cost") or 0)
+            self._finder_table.setItem(i, 4, mk(f"${cost:,.2f}"))
+
+            price = float(p.get("selling_price") or 0)
+            self._finder_table.setItem(i, 5, mk(f"${price:,.2f}"))
+
+            margin = ((price - cost) / price * 100) if price > 0 and cost > 0 else 0
+            margin_item = mk(f"{margin:.1f}%")
+            if margin < 10:
+                margin_item.setForeground(QColor("#c62828"))
+            elif margin < 30:
+                margin_item.setForeground(QColor("#f59e0b"))
+            else:
+                margin_item.setForeground(QColor("#2e7d32"))
+            self._finder_table.setItem(i, 6, margin_item)
+
+        self._finder_table.resizeColumnsToContents()
+        self._finder_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch
+        )
+
+    def _on_add_from_finder(self) -> None:
+        row = self._finder_table.currentRow()
+        if row < 0 or row >= len(self._finder_results):
+            return
+        p = self._finder_results[row]
+        pid = p.get("id") or p.get("product_id")
+        if not pid:
+            return
+
+        full = get_product_by_id(int(pid))
+        if full:
+            p = full
+
+        if p.get("inventory_status") == "pre_inventory":
+            QMessageBox.warning(
+                self, "Pre-Inventory",
+                "This item is still in Pre-Inventory.",
+            )
+            return
+
+        price = float(p.get("selling_price") or 0)
+
+        if not self._so_id:
+            self._create_so_in_db()
+        if not self._so_id:
+            return
+
+        add_so_line(
+            so_id=self._so_id,
+            product_id=int(pid),
+            quantity=1,
+            unit_price=price,
+        )
+        self._reload_so()
+        self._refresh_lines()
+
+    # ==================================================================
+    #  CONTEXT MENU
+    # ==================================================================
+    def _show_line_context_menu(self, pos) -> None:
+        row = self._lines_table.rowAt(pos.y())
+        if row < 0:
+            return
+        self._lines_table.selectRow(row)
+
+        menu = QMenu(self)
+        menu.addAction("🗑️ Remove Line", self._on_remove_line)
+
+        line = self._so_lines[row] if row < len(self._so_lines) else None
+        if line:
+            pid = line.get("product_id")
+            if pid:
+                menu.addAction("📦 View Product", lambda: self._view_product(int(pid)))
+
+        menu.exec(self._lines_table.viewport().mapToGlobal(pos))
+
+    def _view_product(self, product_id: int) -> None:
+        try:
+            from .product_detail_dialog import ProductDetailDialog
+            dlg = ProductDetailDialog(product_id, parent=self)
+            dlg.exec()
+        except ImportError:
+            QMessageBox.information(self, "Info", f"Product ID: {product_id}")
+
+    # ==================================================================
+    #  NEW PART
+    # ==================================================================
+    def _on_new_part(self) -> None:
+        try:
+            from .product_detail_dialog import ProductDetailDialog
+            dlg = ProductDetailDialog(parent=self)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                # Could auto-add the new product
+                pass
+        except ImportError:
+            QMessageBox.information(
+                self, "New Part",
+                "Product editor not available — add products via Inventory screen.",
+            )
+
+    # ==================================================================
+    #  TOGGLES / MISC
+    # ==================================================================
+    def _on_toggle_cost(self) -> None:
+        self._cost_hidden = not self._cost_hidden
+        self._lines_table.setColumnHidden(_L_COST, self._cost_hidden)
+        self._lines_table.setColumnHidden(_L_MARGIN, self._cost_hidden)
+        # Hide cost column in search results too
+        self._search_table.setColumnHidden(5, self._cost_hidden)
+        self._search_table.setColumnHidden(7, self._cost_hidden)
+        self._finder_table.setColumnHidden(4, self._cost_hidden)
+        self._finder_table.setColumnHidden(6, self._cost_hidden)
+        # Footer cost/profit
+        self._footer_cost.setVisible(not self._cost_hidden)
+        self._footer_profit.setVisible(not self._cost_hidden)
+        self._footer_margin.setVisible(not self._cost_hidden)
+
+        if self._cost_hidden:
+            self._cost_toggle_btn.setStyleSheet(
+                "QPushButton { background: #EF4444; color: white; font-size: 14px; "
+                "border: none; border-radius: 13px; padding: 0; }"
+                "QPushButton:hover { background: #DC2626; }"
+            )
+        else:
+            self._cost_toggle_btn.setStyleSheet(
+                "QPushButton { background: #22C55E; color: white; font-size: 14px; "
+                "border: none; border-radius: 13px; padding: 0; }"
+                "QPushButton:hover { background: #16A34A; }"
+            )
+
+    def _toggle_finder_panel(self) -> None:
+        visible = self._finder_panel.isVisible()
+        self._finder_panel.setVisible(not visible)
+        self._toggle_finder_btn.setText(
+            "🔧 Finder ◂" if not visible else "🔧 Finder ▸"
+        )
+
+    def _toggle_customer_details(self) -> None:
+        visible = self._cust_details_widget.isVisible()
+        self._cust_details_widget.setVisible(not visible)
+        self._collapse_cust_btn.setText("▶" if visible else "▼")
+
+    def _disable_auto_default(self) -> None:
+        """Prevent any button from acting as default (Enter-triggered)."""
+        for btn in self.findChildren(QPushButton):
+            btn.setAutoDefault(False)
+            btn.setDefault(False)

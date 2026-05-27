@@ -1,0 +1,6462 @@
+"""Quote workspace — CRM-style single-screen quoting with ESN/Part Finder."""
+from __future__ import annotations
+
+import logging
+from datetime import date, timedelta
+
+from PySide6.QtCore import Qt, QDate, QEvent, QTimer, QThread, Signal
+from PySide6.QtGui import QColor, QCursor, QFont, QKeySequence, QShortcut
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QCalendarWidget,
+    QCheckBox,
+    QComboBox,
+    QCompleter,
+    QDateEdit,
+    QDialog,
+    QDoubleSpinBox,
+    QFormLayout,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QSpinBox,
+    QSplitter,
+    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QTextBrowser,
+    QVBoxLayout,
+    QWidget,
+)
+
+from db import (
+    browse_products,
+    search_by_part_number,
+    get_all_customers,
+    search_customers,
+    get_product_by_sku,
+    get_product_by_id,
+    generate_quote_number,
+    get_quote,
+    get_all_quotes,
+    create_quote,
+    add_quote_line,
+    add_discount_line,
+    remove_quote_line,
+    update_quote_line,
+    set_or_replace_warranty_line,
+    reorder_quote_lines,
+    update_quote,
+    convert_quote_to_invoice,
+    convert_quote_to_so,
+    get_esn_cache,
+    get_engine_compatibility,
+    get_customer_purchase_history,
+    get_customer_frequently_ordered,
+    get_credit_agreement,
+    get_customer_aging,
+    get_customer_overdue_cores,
+    get_setting,
+)
+from .discount_line_dialog import DiscountLineDialog
+
+
+# ── Column indices for line items table ──
+_L_ID = 0
+_L_SEL = 1
+_L_SKU = 2
+_L_DESC = 3
+_L_SUPPLIER = 4
+_L_QOH = 5
+_L_QTY = 6
+_L_COST = 7
+_L_PRICE = 8
+_L_CORE = 9
+_L_FREIGHT = 10
+_L_WARRANTY = 11
+_L_TOTAL = 12
+_L_MARGIN = 13
+_L_NOTES = 14
+_L_COLS = 15
+
+_LINE_HEADERS = [
+    "ID", "✓", "SKU", "Description", "Supplier", "QOH",
+    "Qty", "Cost", "Sell Price", "Core Deposit", "Freight", "Warranty", "Total", "Margin %", "Notes",
+]
+
+# ── Shared style constants ──
+# JAK's commercial palette (Phase 1 polish) — now DARK-themed.
+#   Tokens routed through ui.theme.DARK so the entire 5,751-line dialog
+#   inherits the dark palette in one place. Legacy names preserved so the
+#   ~100 sites that reference these constants don't need editing.
+_COLOR_CHARCOAL       = "#161b20"   # toolbar / header bars (header_bg)
+_COLOR_CHARCOAL_HOVER = "#222a30"   # hover on dark surfaces (panel)
+_COLOR_OLIVE          = "#7c8f4d"   # JAK's olive — accent
+_COLOR_OLIVE_HOVER    = "#8fa55a"
+_COLOR_OFFWHITE       = "#222a30"   # main panel backgrounds (panel)
+_COLOR_BORDER         = "#2f3942"   # subtle dividers
+_COLOR_TEXT           = "#e6e9eb"   # primary text on dark
+_COLOR_TEXT_DIM       = "#9aa3ad"   # secondary text
+_COLOR_SUCCESS        = "#5ed26a"   # green
+_COLOR_WARNING        = "#f0b454"   # warm amber
+_COLOR_DESTRUCTIVE    = "#e06464"   # red
+
+_GROUP_SS = (
+    f"QGroupBox {{ font-weight: bold; color: {_COLOR_TEXT}; "
+    f"background: {_COLOR_OFFWHITE}; border: 1px solid {_COLOR_BORDER}; "
+    "border-radius: 4px; margin-top: 6px; padding-top: 14px; }"
+    f"QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; color: {_COLOR_TEXT_DIM}; }}"
+)
+_LBL_DIM = f"font-size: 9pt; color: {_COLOR_TEXT_DIM};"
+_LBL_VAL = f"font-size: 10pt; color: {_COLOR_TEXT}; font-weight: 600;"
+
+# Button hierarchy ----------------------------------------------------------
+# PRIMARY  — main commit actions (Save & Close, Save & New, Search)
+_BTN_PRIMARY = (
+    f"QPushButton {{ background-color: {_COLOR_OLIVE}; color: white; "
+    "font-weight: bold; padding: 5px 14px; border: none; border-radius: 4px; }"
+    f"QPushButton:hover {{ background-color: {_COLOR_OLIVE_HOVER}; }}"
+    "QPushButton:disabled { background-color: #b6bea3; color: #f0f0f0; }"
+)
+# SECONDARY — non-destructive operations (Add to Quote, Convert, QBO, Print…)
+_BTN_SECONDARY = (
+    f"QPushButton {{ background-color: #2a333a; color: {_COLOR_TEXT}; "
+    f"font-weight: 600; padding: 5px 14px; border: 1px solid {_COLOR_BORDER}; "
+    "border-radius: 4px; }"
+    "QPushButton:hover { background-color: #323c44; }"
+    f"QPushButton:disabled {{ color: {_COLOR_TEXT_DIM}; }}"
+)
+# TERTIARY — flat link-like (ESN Finder, small toggles)
+_BTN_TERTIARY = (
+    f"QPushButton {{ background: transparent; color: #cfd5d8; "
+    "font-weight: 500; padding: 4px 10px; border: 1px solid #546e7a; "
+    "border-radius: 4px; }"
+    "QPushButton:hover { background: #37474f; color: white; }"
+)
+# STATUS — green success (used for cost toggle / confirmations)
+_BTN_SUCCESS = (
+    f"QPushButton {{ background-color: {_COLOR_SUCCESS}; color: white; "
+    "font-weight: bold; padding: 5px 14px; border: none; border-radius: 4px; }"
+    "QPushButton:hover { background-color: #388e3c; }"
+)
+# STATUS — orange warning (Follow Up, Edit Customer)
+_BTN_WARNING = (
+    f"QPushButton {{ background-color: {_COLOR_WARNING}; color: white; "
+    "font-weight: bold; padding: 5px 14px; border: none; border-radius: 4px; }"
+    "QPushButton:hover { background-color: #9A3412; }"
+)
+# STATUS — red destructive (Discount, Remove)
+_BTN_DESTRUCTIVE = (
+    f"QPushButton {{ background-color: {_COLOR_DESTRUCTIVE}; color: white; "
+    "font-weight: bold; padding: 5px 14px; border: none; border-radius: 4px; }"
+    "QPushButton:hover { background-color: #991b1b; }"
+)
+_BTN_DARK = (
+    f"QPushButton {{ background-color: {_COLOR_CHARCOAL_HOVER}; color: white; "
+    "font-weight: bold; padding: 5px 16px; border-radius: 4px; }"
+    f"QPushButton:hover {{ background-color: #455a64; }}"
+)
+_BTN_FLAT = "QPushButton { padding: 5px 12px; border-radius: 4px; }"
+
+
+def _make_quote_calendar() -> QCalendarWidget:
+    """Build a QCalendarWidget that won't be clipped in the popup."""
+    cal = QCalendarWidget()
+    cal.setGridVisible(True)
+    cal.setHorizontalHeaderFormat(
+        QCalendarWidget.HorizontalHeaderFormat.SingleLetterDayNames
+    )
+    cal.setVerticalHeaderFormat(
+        QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader
+    )
+    cal.setMinimumSize(300, 230)
+    cal.setStyleSheet(
+        "QCalendarWidget QWidget { background-color: white; }"
+        "QCalendarWidget QAbstractItemView:enabled { color: #1F2937; }"
+        "QCalendarWidget QToolButton { color: #1F2937; background: #F9FAFB; padding: 4px 8px; }"
+    )
+    return cal
+
+
+class _CumminsFinderWorker(QThread):
+    """Background thread that runs the Cummins Playwright scraper."""
+    finished_signal = Signal(list)
+    error_signal = Signal(str)
+
+    def __init__(self, esn: str, keyword: str = "Overhaul Kit", parent=None):
+        super().__init__(parent)
+        self.esn = esn
+        self.keyword = keyword
+
+    def run(self):
+        try:
+            from jaks_inventory.scraper.cummins_scraper import search_cummins_esn
+            results = search_cummins_esn(self.esn, self.keyword, headless=True)
+            self.finished_signal.emit(results)
+        except Exception as exc:
+            self.error_signal.emit(str(exc))
+
+
+log = logging.getLogger(__name__)
+
+
+class QuoteDialog(QDialog):
+    """Full-screen CRM-style quoting workspace."""
+
+    quote_saved_new = Signal()  # emitted when Save & New is clicked
+
+    def __init__(
+        self,
+        quote_id: int | None = None,
+        customer_id: int | None = None,
+        product_ids: list[int] | None = None,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self._quote_id = quote_id
+        self._preset_customer_id = customer_id
+        self._preset_product_ids = product_ids or []
+        self._quote: dict | None = None
+
+        if quote_id:
+            self._quote = get_quote(quote_id)
+
+        title = f"Quote {self._quote['quote_number']}" if self._quote else "New Quote"
+        self.setWindowTitle(title)
+        self.setMinimumSize(1400, 800)
+        self.resize(1500, 850)
+        # Phase M — promote to top-level window so it gets its own taskbar
+        # entry and minimize button. Stays modal-of-parent semantically via
+        # exec(), but the user can drag/resize/move independently.
+        try:
+            self.setWindowFlag(Qt.WindowType.Window, True)
+            self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
+            self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
+        except Exception as e:
+            log.debug("Quote dialog window flag setup failed: %s", e)
+
+        self._cost_hidden = False
+        self._save_and_new = False
+        # Set by _on_convert_to_so so the parent screen can open the new SO
+        # after the dialog closes.
+        self._created_so_id: int | None = None
+        # Set by _on_unified_convert to suppress redundant prompts when the
+        # underlying _on_convert_to_so / _on_convert_to_invoice are called.
+        self._skip_convert_prompts: bool = False
+        # Set by _on_duplicate so the parent screen can open the new draft.
+        self._duplicated_to_quote_id: int | None = None
+
+        # UAT 1.4 — track whether the Delivery & Fuel dialog has already been
+        # answered this session for the current quote. Once the user has been
+        # asked (even if they picked $0 / Local), don't re-prompt on every
+        # print. The user can reopen it explicitly via "Reset shipping"
+        # (which calls _on_fuel_suggest_zip with force=True).
+        self._fuel_prompted: bool = False
+
+        self._build_ui()
+        self._disable_auto_default()
+        self._load_customers()
+        self._load_data()
+
+        # Auto-save draft every 60 seconds
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(60_000)
+        self._autosave_timer.timeout.connect(self._autosave_draft)
+        self._autosave_timer.start()
+
+        # Default focus: if a customer is already set (editing existing
+        # quote or one passed in), jump straight to the search box so the
+        # user can start typing immediately. Otherwise focus customer.
+        try:
+            has_cust = bool(self._quote and self._quote.get("customer_id"))
+        except Exception:
+            has_cust = False
+        if has_cust:
+            self._sku_edit.setFocus()
+        else:
+            self._customer_combo.setFocus()
+
+        # ── Power-user keyboard workflow ──
+        # Down-arrow in the search field → jump to first result row.
+        # Enter on a search-result row → add to quote and focus Qty.
+        # Enter on Qty after auto-focus → confirm and return to search.
+        self._sku_edit.installEventFilter(self)
+        self._search_table.installEventFilter(self)
+        self._qty_spin.installEventFilter(self)
+        # Tracks whether _qty_spin currently has "post-add" semantics
+        # (Enter = commit & refocus search). Set after adding a line.
+        self._qty_post_add_mode = False
+
+        # F2 = quick-focus search (a.k.a. "Quick Quote" entry point in
+        # this dialog), F3 = customer picker, Esc = close dialog.
+        QShortcut(QKeySequence("F2"), self,
+                  activated=lambda: self._sku_edit.setFocus())
+        QShortcut(QKeySequence("F3"), self,
+                  activated=lambda: self._customer_combo.setFocus())
+        QShortcut(QKeySequence("Esc"), self, activated=self.reject)
+        # Phase 7 hook — paste a customer parts list directly into quote.
+        QShortcut(QKeySequence("Ctrl+Shift+V"), self,
+                  activated=self._on_bulk_paste_parts)
+
+    # ------------------------------------------------------------------
+    #  Power-user keyboard event filter
+    # ------------------------------------------------------------------
+    def eventFilter(self, obj, ev):  # noqa: N802 (Qt signature)
+        if ev.type() == QEvent.Type.KeyPress:
+            key = ev.key()
+            # --- Search box: Down jumps into the results table ---
+            if obj is self._sku_edit and key == Qt.Key.Key_Down:
+                if self._search_table.isVisible() and self._search_table.rowCount() > 0:
+                    self._search_table.setFocus()
+                    if self._search_table.currentRow() < 0:
+                        self._search_table.selectRow(0)
+                    return True
+            # --- Search results table: Enter adds, Esc returns to search ---
+            if obj is self._search_table:
+                if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                    if self._search_table.currentRow() < 0 and self._search_table.rowCount() > 0:
+                        self._search_table.selectRow(0)
+                    self._on_add_from_search()
+                    # After add, _on_add_from_search clears + refocuses
+                    # _sku_edit. Override that to focus Qty for the
+                    # confirm-then-back-to-search flow.
+                    self._qty_spin.setValue(1)
+                    self._qty_spin.selectAll()
+                    self._qty_spin.setFocus()
+                    self._qty_post_add_mode = True
+                    return True
+                if key == Qt.Key.Key_Escape:
+                    self._sku_edit.setFocus()
+                    return True
+            # --- Qty spinbox: Enter after add confirms and re-focuses search ---
+            if obj is self._qty_spin and key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if self._qty_post_add_mode:
+                    self._qty_post_add_mode = False
+                    # If qty was changed from 1, update the most recent line
+                    new_qty = self._qty_spin.value()
+                    if new_qty != 1 and self._quote and self._quote.get("lines"):
+                        try:
+                            last = self._quote["lines"][-1]
+                            update_quote_line(int(last["id"]), qty=new_qty)
+                            self._quote = get_quote(self._quote_id)
+                            self._refresh_lines()
+                        except Exception as e:
+                            log.debug("Inline qty update failed: %s", e)
+                    self._qty_spin.setValue(1)
+                    self._sku_edit.clear()
+                    self._sku_edit.setFocus()
+                    return True
+        return super().eventFilter(obj, ev)
+
+    # ------------------------------------------------------------------
+    #  Phase 7 — Bulk part-paste hook (architecture stub)
+    # ------------------------------------------------------------------
+    def _on_bulk_paste_parts(self) -> None:
+        """Entry point for pasting a customer parts request directly into the
+        quote builder. Reads the clipboard, splits on whitespace/comma/newline,
+        and for each token runs the existing search + auto-add path.
+
+        For now this is a minimal implementation: it auto-adds the top
+        search hit per token. The real multi-line review dialog (with
+        interchange suggestions and per-token QOH preview) will replace
+        this body in a future patch.
+        """
+        from PySide6.QtWidgets import QApplication
+        if self._require_customer() is None:
+            return
+        cb = QApplication.clipboard()
+        raw = (cb.text() if cb else "").strip()
+        if not raw:
+            QMessageBox.information(self, "Bulk Paste",
+                "Copy a list of part numbers first, then press Ctrl+Shift+V.")
+            return
+        # Split on any common separator
+        import re as _re
+        tokens = [t.strip() for t in _re.split(r"[\s,;]+", raw) if t.strip()]
+        if not tokens:
+            return
+        if len(tokens) > 50:
+            ans = QMessageBox.question(
+                self, "Bulk Paste",
+                f"Paste contains {len(tokens)} part numbers. Add all of them?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+        added = 0
+        missed: list[str] = []
+        for tok in tokens:
+            self._sku_edit.setText(tok)
+            try:
+                self._on_search_parts()
+            except Exception as e:
+                log.debug("Bulk paste search failed for %r: %s", tok, e)
+                missed.append(tok)
+                continue
+            if not self._search_results:
+                missed.append(tok)
+                continue
+            self._search_table.selectRow(0)
+            try:
+                self._on_add_from_search()
+                added += 1
+            except Exception as e:
+                log.debug("Bulk paste add failed for %r: %s", tok, e)
+                missed.append(tok)
+        msg = f"Added {added} line(s) from {len(tokens)} part numbers."
+        if missed:
+            msg += f"\n\nNot found ({len(missed)}):\n• " + "\n• ".join(missed[:20])
+            if len(missed) > 20:
+                msg += f"\n…and {len(missed)-20} more"
+        QMessageBox.information(self, "Bulk Paste Complete", msg)
+        self._sku_edit.clear()
+        self._sku_edit.setFocus()
+
+    # ==================================================================
+    #  UI BUILD
+    # ==================================================================
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ────── TOP ACTION BAR ──────
+        root.addWidget(self._build_action_bar())
+
+        # ────── MAIN 3-COLUMN SPLITTER ──────
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setHandleWidth(3)
+
+        # LEFT — Customer context
+        splitter.addWidget(self._build_customer_panel())
+        # CENTER — Quote header + items
+        splitter.addWidget(self._build_center_panel())
+        # ESN / Part Finder side panel removed in the 2025 redesign — ESN/VIN
+        # lookup now lives inline in the vehicle row at the top of the
+        # center panel. We still build the finder widgets (off-screen) so
+        # the existing `_on_esn_lookup`, `_on_finder_search`, etc. methods
+        # stay wired to real QObjects and can populate the inline banner.
+        self._finder_panel = self._build_finder_panel()
+        self._finder_panel.setVisible(False)
+        self._finder_panel.setParent(None)
+
+        splitter.setStretchFactor(0, 0)   # left: fixed-ish
+        splitter.setStretchFactor(1, 1)   # center: stretch
+        splitter.setSizes([260, 1000])
+
+        root.addWidget(splitter, 1)
+
+        # ────── FOOTER BAR ──────
+        root.addWidget(self._build_footer())
+
+    # ------------------------------------------------------------------
+    #  TOP ACTION BAR
+    # ------------------------------------------------------------------
+    def _build_action_bar(self) -> QFrame:
+        # Custom frame: double-click anywhere on the dark title bar toggles maximize.
+        class _TitleBar(QFrame):
+            def __init__(self, parent_dialog):
+                super().__init__()
+                self._dlg = parent_dialog
+
+            def mouseDoubleClickEvent(self, event):  # noqa: N802 (Qt signature)
+                if event.button() == Qt.MouseButton.LeftButton:
+                    if self._dlg.isMaximized():
+                        self._dlg.showNormal()
+                    else:
+                        self._dlg.showMaximized()
+                super().mouseDoubleClickEvent(event)
+
+        bar = _TitleBar(self)
+        bar.setStyleSheet(
+            f"QFrame {{ background: {_COLOR_CHARCOAL}; padding: 4px 8px; }}"
+            "QPushButton { color: white; border: 1px solid #546e7a; "
+            "border-radius: 3px; padding: 5px 12px; font-size: 9pt; }"
+            f"QPushButton:hover {{ background: {_COLOR_CHARCOAL_HOVER}; }}"
+        )
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(8, 4, 8, 4)
+        lay.setSpacing(6)
+
+        # Quote # + status
+        self._quote_num_label = QLabel("")
+        self._quote_num_label.setStyleSheet(
+            "color: white; font-weight: bold; font-size: 13pt;"
+        )
+        lay.addWidget(self._quote_num_label)
+
+        self._status_label = QLabel("DRAFT")
+        self._status_label.setStyleSheet(
+            "font-weight: bold; padding: 2px 10px; background: #455a64; "
+            "border-radius: 4px; color: white; font-size: 10pt;"
+        )
+        lay.addWidget(self._status_label)
+
+        # ── PO badge (shown after customer is selected, displays PO/Job#) ──
+        # Replaces the old "#account — name" badge to keep the title bar
+        # focused on quote-level information the customer cares about.
+        self._acct_badge = QLabel("")
+        self._acct_badge.setStyleSheet(
+            "color: #ffd54f; font-weight: bold; font-size: 11pt; padding: 2px 8px;"
+        )
+        self._acct_badge.hide()
+        lay.addWidget(self._acct_badge)
+
+        # ── Priority selector ──
+        pri_label = QLabel("Priority:")
+        pri_label.setStyleSheet("color: #B0BEC5; font-size: 10pt;")
+        lay.addWidget(pri_label)
+        self._priority_combo = QComboBox()
+        self._priority_combo.addItem("🔥 High", "high")
+        self._priority_combo.addItem("Medium", "medium")
+        self._priority_combo.addItem("Low", "low")
+        self._priority_combo.addItem("⏳ Waiting on Customer", "waiting_on_customer")
+        self._priority_combo.addItem("⏳ Waiting on Vendor", "waiting_on_vendor")
+        self._priority_combo.setCurrentIndex(1)  # default: medium
+        self._priority_combo.setStyleSheet(
+            "QComboBox { background: #37474f; color: white; border: 1px solid #546e7a; "
+            "border-radius: 3px; padding: 3px 8px; font-size: 9pt; min-width: 120px; }"
+            "QComboBox::drop-down { border: none; }"
+            "QComboBox QAbstractItemView { background: #37474f; color: white; selection-background-color: #546e7a; }"
+        )
+        lay.addWidget(self._priority_combo)
+
+        lay.addSpacing(20)
+
+        # ── action buttons (unified Convert dialog) ──
+        self._to_so_btn = QPushButton("📋 Convert…")
+        self._to_so_btn.setToolTip(
+            "Convert this quote to a Sales Order or Invoice (single dialog)."
+        )
+        self._to_so_btn.setStyleSheet(
+            f"QPushButton {{ background: {_COLOR_OLIVE}; color: white; font-weight: bold; "
+            "border: none; padding: 5px 14px; border-radius: 3px; }"
+            f"QPushButton:hover {{ background: {_COLOR_OLIVE_HOVER}; }}"
+        )
+        self._to_so_btn.clicked.connect(self._on_unified_convert)
+        lay.addWidget(self._to_so_btn)
+
+        # Hidden legacy invoice button kept for `_apply_locked_state` compat.
+        self._convert_btn = QPushButton("📄 → Invoice")
+        self._convert_btn.clicked.connect(self._on_convert_to_invoice)
+        self._convert_btn.setVisible(False)
+
+        self._follow_up_btn = QPushButton("📞 Follow Up")
+        self._follow_up_btn.setToolTip(
+            "Record the outcome: reschedule follow-up, mark won, mark lost with reason, or void."
+        )
+        self._follow_up_btn.setStyleSheet(
+            f"QPushButton {{ background: {_COLOR_WARNING}; color: white; font-weight: bold; "
+            "border: none; padding: 5px 14px; border-radius: 3px; }"
+            "QPushButton:hover { background: #9A3412; }"
+        )
+        self._follow_up_btn.clicked.connect(self._on_set_follow_up)
+        lay.addWidget(self._follow_up_btn)
+
+        # ── Push to QBO Estimate (Phase 5) ──
+        self._qbo_push_btn = QPushButton("📤 QBO")
+        self._qbo_push_btn.setToolTip(
+            "Push (or re-sync) this quote to QuickBooks Online as an Estimate.\n"
+            "Right-click for more options (Open in QBO, Unlink)."
+        )
+        self._qbo_push_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #cfd5d8; "
+            "font-weight: 600; border: 1px solid #546e7a; padding: 5px 14px; "
+            "border-radius: 3px; }"
+            "QPushButton:hover { background: #37474f; color: white; }"
+        )
+        self._qbo_push_btn.clicked.connect(self._on_push_to_qbo_estimate)
+        self._qbo_push_btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._qbo_push_btn.customContextMenuRequested.connect(
+            self._show_qbo_estimate_menu
+        )
+        lay.addWidget(self._qbo_push_btn)
+
+        # D1: tiny status badge that tells the user at a glance whether
+        # this quote is linked to a QBO Estimate. Hidden until refreshed.
+        self._qbo_status_label = QLabel("")
+        self._qbo_status_label.setVisible(False)
+        self._qbo_status_label.setStyleSheet(
+            "QLabel { color: #2E7D32; font-weight: 600; padding: 0 6px; }"
+        )
+        lay.addWidget(self._qbo_status_label)
+
+        # ── Reopen (only shown when the quote is LOST) ──
+        self._reopen_btn = QPushButton("♻️ Reopen")
+        self._reopen_btn.setToolTip("Reopen this lost quote (sets status back to Sent)")
+        self._reopen_btn.setStyleSheet(
+            f"QPushButton {{ background: {_COLOR_WARNING}; color: white; font-weight: bold; "
+            "border: none; padding: 5px 14px; border-radius: 3px; }"
+            "QPushButton:hover { background: #9A3412; }"
+        )
+        self._reopen_btn.clicked.connect(self._on_reopen_lost)
+        self._reopen_btn.hide()
+        lay.addWidget(self._reopen_btn)
+
+        # Legacy ESN Finder toggle — kept as a hidden placeholder so any
+        # code that still references `_toggle_finder_btn` (e.g. enable/disable
+        # in `_apply_locked_state`) keeps working. The side panel itself is
+        # gone; ESN/VIN lookup now lives inline in the vehicle row.
+        self._toggle_finder_btn = QPushButton("")
+        self._toggle_finder_btn.hide()
+
+        # ── New Quote action cluster (matches the 2025 mockup) ──
+        self._save_draft_btn = QPushButton("💾 Save Draft")
+        self._save_draft_btn.setStyleSheet(_BTN_TERTIARY)
+        self._save_draft_btn.setToolTip("Save without closing (Ctrl+Shift+S)")
+        self._save_draft_btn.clicked.connect(self._on_save_silent)
+        lay.addWidget(self._save_draft_btn)
+
+        self._email_btn_top = QPushButton("✉ Email")
+        self._email_btn_top.setStyleSheet(_BTN_TERTIARY)
+        self._email_btn_top.setToolTip("Email this quote as a PDF attachment")
+        self._email_btn_top.clicked.connect(self._on_send_email)
+        lay.addWidget(self._email_btn_top)
+
+        self._sms_btn_top = QPushButton("📱 SMS")
+        self._sms_btn_top.setStyleSheet(_BTN_TERTIARY)
+        self._sms_btn_top.setToolTip("Text the customer a link / summary of this quote")
+        self._sms_btn_top.clicked.connect(self._on_send_sms)
+        lay.addWidget(self._sms_btn_top)
+
+        self._print_btn_top = QPushButton("🖨 Print")
+        self._print_btn_top.setStyleSheet(_BTN_TERTIARY)
+        self._print_btn_top.setToolTip("Print this quote (Ctrl+P)")
+        self._print_btn_top.clicked.connect(self._print_current_quote)
+        lay.addWidget(self._print_btn_top)
+
+        self._duplicate_btn_top = QPushButton("📋 Duplicate")
+        self._duplicate_btn_top.setStyleSheet(_BTN_TERTIARY)
+        self._duplicate_btn_top.setToolTip("Duplicate this quote (Ctrl+D)")
+        self._duplicate_btn_top.clicked.connect(self._on_duplicate)
+        lay.addWidget(self._duplicate_btn_top)
+
+        lay.addStretch()
+
+        # Pop Out — re-open the current quote as an independent non-modal
+        # window so the user can return to the main window and open another.
+        self._popout_btn = QPushButton("⧉ Pop Out")
+        self._popout_btn.setStyleSheet(_BTN_TERTIARY)
+        self._popout_btn.setToolTip(
+            "Detach this quote so you can keep working in the main window"
+        )
+        self._popout_btn.clicked.connect(self._on_pop_out)
+        lay.addWidget(self._popout_btn)
+
+        # Cost visibility toggle (compact eyeball switch — far right)
+        self._cost_toggle_btn = QPushButton("👁")
+        self._cost_toggle_btn.setFixedSize(48, 26)
+        self._cost_toggle_btn.setToolTip("Show / Hide cost columns")
+        self._cost_toggle_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._cost_toggle_btn.setStyleSheet(
+            f"QPushButton {{ background: {_COLOR_SUCCESS}; color: white; font-size: 14px; "
+            "border: none; border-radius: 13px; padding: 0; }"
+            "QPushButton:hover { background: #388e3c; }"
+        )
+        self._cost_toggle_btn.clicked.connect(self._on_toggle_cost)
+        lay.addWidget(self._cost_toggle_btn)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setToolTip("Discard changes (Escape)")
+        cancel_btn.clicked.connect(self.reject)
+        lay.addWidget(cancel_btn)
+
+        return bar
+
+    # ------------------------------------------------------------------
+    #  LEFT — CUSTOMER CONTEXT PANEL
+    # ------------------------------------------------------------------
+    def _build_customer_panel(self) -> QWidget:
+        panel = QWidget()
+        panel.setMaximumWidth(300)
+        panel.setMinimumWidth(220)
+        panel.setStyleSheet(f"QWidget {{ background: {_COLOR_OFFWHITE}; }}")
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(8, 8, 4, 8)
+        lay.setSpacing(6)
+
+        # ── Header row: title + collapse button ──
+        hdr_row = QHBoxLayout()
+        hdr = QLabel("👤 Customer")
+        hdr.setStyleSheet(f"font-weight: bold; font-size: 11pt; color: {_COLOR_CHARCOAL};")
+        hdr_row.addWidget(hdr)
+        hdr_row.addStretch()
+
+        self._collapse_cust_btn = QPushButton("▼")
+        self._collapse_cust_btn.setFixedSize(24, 24)
+        self._collapse_cust_btn.setToolTip("Collapse / expand customer details")
+        self._collapse_cust_btn.setStyleSheet(
+            "QPushButton { border: none; font-size: 10pt; color: #555; }"
+            f"QPushButton:hover {{ color: {_COLOR_OLIVE}; }}"
+        )
+        self._collapse_cust_btn.clicked.connect(self._toggle_customer_details)
+        hdr_row.addWidget(self._collapse_cust_btn)
+        lay.addLayout(hdr_row)
+
+        # ── Customer selector ──
+        cust_row = QHBoxLayout()
+        self._customer_combo = QComboBox()
+        self._customer_combo.setEditable(True)
+        self._customer_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._customer_combo.setMinimumWidth(160)
+        self._customer_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._customer_combo.currentIndexChanged.connect(self._on_customer_changed)
+        self._customer_combo.lineEdit().setPlaceholderText("Type account, customer, or company")
+        cust_row.addWidget(self._customer_combo)
+
+        new_cust_btn = QPushButton("➕")
+        new_cust_btn.setToolTip("Create new customer")
+        new_cust_btn.setFixedWidth(32)
+        new_cust_btn.setStyleSheet(
+            f"QPushButton {{ background: {_COLOR_OLIVE}; color: white; font-weight: bold; "
+            "border: none; border-radius: 3px; padding: 4px; }"
+            f"QPushButton:hover {{ background: {_COLOR_OLIVE_HOVER}; }}"
+        )
+        new_cust_btn.clicked.connect(self._on_new_customer)
+        cust_row.addWidget(new_cust_btn)
+        lay.addLayout(cust_row)
+
+        # View-profile link — opens the customer detail dialog. Lives just
+        # under the customer picker so it's visible even when the detail
+        # card is collapsed.
+        self._view_profile_lnk = QLabel(
+            '<a href="#" style="color:#58a6ff; text-decoration:none;">View profile →</a>'
+        )
+        self._view_profile_lnk.setOpenExternalLinks(False)
+        self._view_profile_lnk.setStyleSheet("font-size: 9pt; padding: 0 2px;")
+        self._view_profile_lnk.linkActivated.connect(lambda _u: self._on_edit_customer())
+        lay.addWidget(self._view_profile_lnk)
+
+        # ── Collapsible details container ──
+        self._cust_details_widget = QWidget()
+        details_lay = QVBoxLayout(self._cust_details_widget)
+        details_lay.setContentsMargins(0, 0, 0, 0)
+        details_lay.setSpacing(6)
+
+        # ── Contact card ──
+        card = QFrame()
+        card.setStyleSheet(
+            f"QFrame {{ background: {_COLOR_OFFWHITE}; border: 1px solid {_COLOR_BORDER}; "
+            "border-radius: 4px; padding: 6px; }"
+        )
+        cg = QGridLayout(card)
+        cg.setHorizontalSpacing(8)
+        cg.setVerticalSpacing(3)
+        cg.setContentsMargins(6, 6, 6, 6)
+        cg.setColumnStretch(1, 1)
+
+        def _dim(t: str) -> QLabel:
+            lb = QLabel(t)
+            lb.setStyleSheet(_LBL_DIM)
+            return lb
+
+        cg.addWidget(_dim("Company"), 0, 0)
+        self._cust_company = QLabel("—")
+        self._cust_company.setStyleSheet(_LBL_VAL + " font-weight: bold;")
+        self._cust_company.setWordWrap(True)
+        cg.addWidget(self._cust_company, 0, 1)
+
+        cg.addWidget(_dim("Phone"), 1, 0)
+        self._cust_phone = QLabel("—")
+        self._cust_phone.setStyleSheet(_LBL_VAL)
+        cg.addWidget(self._cust_phone, 1, 1)
+
+        cg.addWidget(_dim("Email"), 2, 0)
+        self._cust_email = QLabel("—")
+        self._cust_email.setStyleSheet(_LBL_VAL)
+        self._cust_email.setWordWrap(True)
+        cg.addWidget(self._cust_email, 2, 1)
+
+        cg.addWidget(_dim("Terms"), 3, 0)
+        self._cust_terms = QLabel("—")
+        self._cust_terms.setStyleSheet(_LBL_VAL)
+        cg.addWidget(self._cust_terms, 3, 1)
+
+        cg.addWidget(_dim("Address"), 4, 0)
+        self._cust_address = QLabel("—")
+        self._cust_address.setStyleSheet(_LBL_VAL + " color: #444;")
+        self._cust_address.setWordWrap(True)
+        cg.addWidget(self._cust_address, 4, 1)
+
+        cg.addWidget(_dim("Ship-To"), 5, 0)
+        self._cust_ship_to = QLabel("—")
+        self._cust_ship_to.setStyleSheet(_LBL_VAL + " color: #444;")
+        self._cust_ship_to.setWordWrap(True)
+        cg.addWidget(self._cust_ship_to, 5, 1)
+
+        cg.addWidget(_dim("Bill-To"), 6, 0)
+        self._cust_bill_to = QLabel("—")
+        self._cust_bill_to.setStyleSheet(_LBL_VAL + " color: #444;")
+        self._cust_bill_to.setWordWrap(True)
+        cg.addWidget(self._cust_bill_to, 6, 1)
+
+        # ── Credit & Pricing info ──
+        cg.addWidget(_dim("Credit"), 7, 0)
+        self._cust_credit_status = QLabel("—")
+        self._cust_credit_status.setStyleSheet(_LBL_VAL)
+        cg.addWidget(self._cust_credit_status, 7, 1)
+
+        cg.addWidget(_dim("Balance"), 8, 0)
+        self._cust_balance = QLabel("—")
+        self._cust_balance.setStyleSheet(_LBL_VAL)
+        cg.addWidget(self._cust_balance, 8, 1)
+
+        cg.addWidget(_dim("Tier"), 9, 0)
+        self._cust_tier = QLabel("—")
+        self._cust_tier.setStyleSheet(_LBL_VAL)
+        cg.addWidget(self._cust_tier, 9, 1)
+
+        self._cust_core_warning = QLabel("")
+        self._cust_core_warning.setWordWrap(True)
+        self._cust_core_warning.hide()
+        cg.addWidget(self._cust_core_warning, 10, 0, 1, 2)
+
+        details_lay.addWidget(card)
+
+        # ── Edit Customer button ──
+        self._edit_cust_btn = QPushButton("✏️ Edit Customer")
+        self._edit_cust_btn.setStyleSheet(_BTN_SECONDARY + "QPushButton{font-size:9pt;}")
+        self._edit_cust_btn.setToolTip("Edit selected customer's details")
+        self._edit_cust_btn.setEnabled(False)
+        self._edit_cust_btn.clicked.connect(self._on_edit_customer)
+        details_lay.addWidget(self._edit_cust_btn)
+
+        # compat stub
+        self._customer_info = QLabel("")
+        self._customer_info.hide()
+
+        # ── Recent quotes for this customer ──
+        rq_hdr = QLabel("📋 Recent Quotes")
+        rq_hdr.setStyleSheet("font-weight: bold; font-size: 10pt; margin-top: 6px;")
+        details_lay.addWidget(rq_hdr)
+
+        self._recent_quotes_list = QListWidget()
+        self._recent_quotes_list.setMaximumHeight(130)
+        self._recent_quotes_list.setStyleSheet(
+            f"QListWidget {{ background: #161b20; color: {_COLOR_TEXT}; border: 1px solid {_COLOR_BORDER}; "
+            "border-radius: 4px; font-size: 9pt; }"
+            "QListWidget::item { padding: 3px 6px; }"
+            "QListWidget::item:selected { background: #3a4a32; color: #e6e9eb; }"
+        )
+        self._recent_quotes_list.itemDoubleClicked.connect(self._on_load_past_quote)
+        details_lay.addWidget(self._recent_quotes_list)
+
+        # ── Frequently ordered ──
+        fo_hdr = QLabel("⭐ Frequently Ordered")
+        fo_hdr.setStyleSheet("font-weight: bold; font-size: 10pt; margin-top: 4px;")
+        details_lay.addWidget(fo_hdr)
+
+        self._freq_ordered_list = QListWidget()
+        self._freq_ordered_list.setStyleSheet(
+            f"QListWidget {{ background: #161b20; color: {_COLOR_TEXT}; border: 1px solid {_COLOR_BORDER}; "
+            "border-radius: 4px; font-size: 9pt; }"
+            "QListWidget::item { padding: 3px 6px; }"
+            "QListWidget::item:selected { background: #3a4a32; color: #e6e9eb; }"
+        )
+        self._freq_ordered_list.itemDoubleClicked.connect(self._on_add_freq_item)
+        details_lay.addWidget(self._freq_ordered_list, 1)
+
+        lay.addWidget(self._cust_details_widget, 1)
+
+        return panel
+
+    # ------------------------------------------------------------------
+    #  CENTER — QUOTE HEADER + ITEMS
+    # ------------------------------------------------------------------
+    def _build_center_panel(self) -> QWidget:
+        panel = QWidget()
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setSpacing(4)
+
+        # ── Compact header row: dates + terms ──
+        hdr = QHBoxLayout()
+        hdr.setSpacing(12)
+
+        hdr.addWidget(QLabel("Date:"))
+        self._quote_date = QDateEdit()
+        self._quote_date.setCalendarPopup(True)
+        self._quote_date.setDisplayFormat("M/d/yyyy")
+        self._quote_date.setCalendarWidget(_make_quote_calendar())
+        self._quote_date.setDate(QDate.currentDate())
+        hdr.addWidget(self._quote_date)
+
+        hdr.addWidget(QLabel("Expires:"))
+        self._exp_date = QDateEdit()
+        self._exp_date.setCalendarPopup(True)
+        self._exp_date.setDisplayFormat("M/d/yyyy")
+        self._exp_date.setCalendarWidget(_make_quote_calendar())
+        # Pull default validity from Document Settings (defaults to 30 days).
+        try:
+            from db import get_setting as _gs
+            _exp_days = int(_gs("quote_default_expires_days", "30") or 30)
+        except Exception as e:
+            log.debug("Quote default expiry lookup failed: %s", e)
+            _exp_days = 30
+        self._exp_date.setDate(QDate.currentDate().addDays(_exp_days))
+        hdr.addWidget(self._exp_date)
+
+        hdr.addWidget(QLabel("Terms:"))
+        self._terms_edit = QComboBox()
+        self._terms_edit.setEditable(True)
+        try:
+            from db.inventory import list_payment_terms
+            _terms = [""] + list_payment_terms()
+        except Exception as e:
+            log.debug("Payment terms lookup failed: %s", e)
+            _terms = [
+                "", "Due on Receipt", "Net 15", "Net 30", "Net 45", "Net 60",
+                "COD", "Prepaid", "2/10 Net 30",
+            ]
+        self._terms_edit.addItems(_terms)
+        self._terms_edit.lineEdit().setPlaceholderText("Net 30")
+        # Pre-fill default terms from Document Settings if configured.
+        try:
+            from db import get_setting as _gs
+            _default_terms = (_gs("quote_default_terms", "") or "").strip()
+        except Exception as e:
+            log.debug("Quote default terms lookup failed: %s", e)
+            _default_terms = ""
+        if _default_terms:
+            self._terms_edit.setCurrentText(_default_terms)
+        self._terms_edit.setMinimumWidth(170)
+        hdr.addWidget(self._terms_edit)
+
+        # 3% Credit-card convenience fee toggle — lives next to Terms because
+        # it's a payment-method consequence, not a shipping cost.
+        self._cc_fee_check = QCheckBox("+3% CC fee")
+        self._cc_fee_check.setToolTip(
+            "Add a 3% credit-card convenience fee to the quote total.\n"
+            "PDF will note that cash, check, or ACH avoids this fee."
+        )
+        self._cc_fee_check.toggled.connect(self._on_cc_fee_toggled)
+        hdr.addWidget(self._cc_fee_check)
+
+        hdr.addSpacing(16)
+        hdr.addWidget(QLabel("ESN:"))
+        self._esn_edit = QLineEdit()
+        self._esn_edit.setPlaceholderText("Engine Serial #")
+        self._esn_edit.setMaximumWidth(140)
+        self._esn_edit.setStyleSheet(
+            "QLineEdit { border: 1px solid #ff8f00; border-radius: 3px; padding: 2px 4px; }"
+        )
+        self._esn_edit.returnPressed.connect(self._update_esn_vin_banner)
+        self._esn_edit.editingFinished.connect(self._update_esn_vin_banner)
+        hdr.addWidget(self._esn_edit)
+
+        hdr.addWidget(QLabel("VIN:"))
+        self._vin_edit = QLineEdit()
+        self._vin_edit.setPlaceholderText("Vehicle VIN")
+        self._vin_edit.setMaximumWidth(160)
+        self._vin_edit.setStyleSheet(
+            "QLineEdit { border: 1px solid #ff8f00; border-radius: 3px; padding: 2px 4px; }"
+        )
+        self._vin_edit.returnPressed.connect(self._update_esn_vin_banner)
+        self._vin_edit.editingFinished.connect(self._update_esn_vin_banner)
+        hdr.addWidget(self._vin_edit)
+
+        # Engine Platform — narrows search hints / SKU filtering without
+        # requiring a full ESN decode. Optional companion to ESN/VIN.
+        hdr.addSpacing(8)
+        hdr.addWidget(QLabel("Engine:"))
+        self._engine_platform_combo = QComboBox()
+        self._engine_platform_combo.addItems([
+            "— select —",
+            "Cummins ISX15", "Cummins ISX12", "Cummins X15", "Cummins L9",
+            "Detroit DD15", "Detroit DD13", "Detroit DS60",
+            "Cat C15", "Cat C13", "Cat 3406E",
+            "PACCAR MX-13", "PACCAR MX-11",
+            "Volvo D13", "Mack MP8",
+            "International DT466", "International MaxxForce",
+            "Other / Unknown",
+        ])
+        self._engine_platform_combo.setMaximumWidth(160)
+        self._engine_platform_combo.setStyleSheet(
+            "QComboBox { padding: 2px 4px; border: 1px solid #ff8f00; border-radius: 3px; }"
+        )
+        self._engine_platform_combo.currentTextChanged.connect(
+            lambda _t: self._update_esn_vin_banner()
+        )
+        hdr.addWidget(self._engine_platform_combo)
+
+        # Resolved vehicle badge — green dot + decoded summary. Hidden
+        # until ESN/VIN/Engine pick produces a decoded result.
+        self._vehicle_resolved_label = QLabel("")
+        self._vehicle_resolved_label.setStyleSheet(
+            "QLabel { color: #16a34a; font-weight: 600; font-size: 9pt; padding: 0 6px; }"
+        )
+        self._vehicle_resolved_label.hide()
+        hdr.addWidget(self._vehicle_resolved_label)
+
+        hdr.addSpacing(10)
+        hdr.addWidget(QLabel("Job/PO#:"))
+        self._job_edit = QLineEdit()
+        self._job_edit.setPlaceholderText("Job or PO #")
+        self._job_edit.setMaximumWidth(130)
+        self._job_edit.setStyleSheet(
+            "QLineEdit { border: 1px solid #7c3aed; border-radius: 3px; padding: 2px 4px; }"
+        )
+        # Live-update the title-bar PO badge as the user types.
+        self._job_edit.textChanged.connect(lambda _t: self._refresh_po_badge())
+        hdr.addWidget(self._job_edit)
+
+        hdr.addStretch()
+        lay.addLayout(hdr)
+
+        # ── Customer Vehicle Information banner (hidden until ESN/VIN entered) ──
+        self._esn_vin_banner = QFrame()
+        self._esn_vin_banner.setStyleSheet(
+            "QFrame { background: #fff3e0; border: 2px solid #ff8f00; "
+            "border-radius: 4px; padding: 4px 10px; }"
+        )
+        banner_lay = QHBoxLayout(self._esn_vin_banner)
+        banner_lay.setContentsMargins(10, 4, 10, 4)
+        banner_lay.setSpacing(14)
+
+        banner_title = QLabel("Customer Vehicle Information")
+        banner_title.setStyleSheet(
+            "font-weight: bold; font-size: 9pt; color: #e65100;"
+        )
+        banner_lay.addWidget(banner_title)
+        banner_lay.addSpacing(6)
+
+        self._banner_esn = QLabel("")
+        self._banner_esn.setStyleSheet(
+            "font-size: 9pt; color: #e65100;"
+        )
+        banner_lay.addWidget(self._banner_esn)
+        self._banner_vin = QLabel("")
+        self._banner_vin.setStyleSheet(
+            "font-size: 9pt; color: #e65100;"
+        )
+        banner_lay.addWidget(self._banner_vin)
+
+        banner_lay.addSpacing(10)
+        mfr_lbl = QLabel("Manufacturer:")
+        mfr_lbl.setStyleSheet("font-size: 9pt; color: #e65100;")
+        banner_lay.addWidget(mfr_lbl)
+        self._banner_mfr = QComboBox()
+        self._banner_mfr.addItems([
+            "", "Cummins", "Caterpillar", "Detroit Diesel",
+            "Navistar / International", "PACCAR", "Volvo / Mack",
+            "John Deere", "Perkins", "Deutz", "Other",
+        ])
+        self._banner_mfr.setStyleSheet(
+            "QComboBox { font-size: 9pt; padding: 1px 4px; min-width: 130px; }"
+        )
+        banner_lay.addWidget(self._banner_mfr)
+
+        # Equipment type (Engine / Truck / None) + model
+        banner_lay.addSpacing(10)
+        eq_type_lbl = QLabel("Applies to:")
+        eq_type_lbl.setStyleSheet("font-size: 9pt; color: #e65100;")
+        banner_lay.addWidget(eq_type_lbl)
+        self._banner_equip_type = QComboBox()
+        self._banner_equip_type.addItem("— none —", "")
+        self._banner_equip_type.addItem("Engine", "engine")
+        self._banner_equip_type.addItem("Truck", "truck")
+        self._banner_equip_type.setStyleSheet(
+            "QComboBox { font-size: 9pt; padding: 1px 4px; min-width: 90px; }"
+        )
+        banner_lay.addWidget(self._banner_equip_type)
+
+        model_lbl = QLabel("Model:")
+        model_lbl.setStyleSheet("font-size: 9pt; color: #e65100;")
+        banner_lay.addWidget(model_lbl)
+        self._banner_equip_model = QLineEdit()
+        self._banner_equip_model.setPlaceholderText("e.g. DT466, 379")
+        self._banner_equip_model.setMaximumWidth(120)
+        self._banner_equip_model.setStyleSheet(
+            "QLineEdit { border: 1px solid #ff8f00; border-radius: 3px; padding: 2px 4px; }"
+        )
+        banner_lay.addWidget(self._banner_equip_model)
+
+        banner_lay.addStretch()
+        self._esn_vin_banner.hide()
+        lay.addWidget(self._esn_vin_banner)
+
+        # ── Part search bar ──
+        search_bar = QHBoxLayout()
+        search_bar.setSpacing(6)
+
+        self._sku_edit = QLineEdit()
+        self._sku_edit.setPlaceholderText(
+            "🔍  Search part #, OEM, SKU, description, engine, truck…"
+        )
+        self._sku_edit.setStyleSheet(
+            f"QLineEdit {{ padding: 5px 8px; border: 2px solid {_COLOR_OLIVE}; "
+            "border-radius: 4px; font-size: 10pt; }"
+            f"QLineEdit:focus {{ border-color: {_COLOR_OLIVE_HOVER}; }}"
+        )
+        self._sku_edit.returnPressed.connect(self._on_search_parts)
+        search_bar.addWidget(self._sku_edit, 1)
+
+        search_btn = QPushButton("Search")
+        search_btn.setStyleSheet(_BTN_PRIMARY)
+        search_btn.setToolTip("Search inventory (Enter)")
+        search_btn.setMinimumWidth(96)
+        search_btn.clicked.connect(self._on_search_parts)
+        search_bar.addWidget(search_btn)
+
+        add_search_btn = QPushButton("➕ Add to Quote")
+        add_search_btn.setStyleSheet(_BTN_PRIMARY)
+        add_search_btn.setToolTip("Add the selected search result to the quote (Enter)")
+        add_search_btn.setMinimumWidth(130)
+        add_search_btn.clicked.connect(self._on_add_from_search)
+        search_bar.addWidget(add_search_btn)
+
+        new_part_btn = QPushButton("🆕 New Part")
+        new_part_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #6b7280; "
+            "border: 1px dashed #cfd5d8; border-radius: 4px; "
+            "padding: 4px 10px; font-size: 9pt; }"
+            "QPushButton:hover { color: #1c2226; border-color: #6B7A4A; }"
+        )
+        new_part_btn.setToolTip("Create a new product in inventory (rarely needed)")
+        new_part_btn.clicked.connect(self._on_new_part)
+        search_bar.addWidget(new_part_btn)
+        lay.addLayout(search_bar)
+
+        # ── Search results (hidden until search) ──
+        self._search_table = QTableWidget(0, 9)
+        self._search_table.setHorizontalHeaderLabels([
+            "ID", "SKU", "Title", "Supplier", "QOH",
+            "Cost", "Sell Price", "Margin%", "Engine",
+        ])
+        self._search_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._search_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._search_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._search_table.setColumnHidden(0, True)
+        self._search_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch
+        )
+        self._search_table.setAlternatingRowColors(True)
+        self._search_table.verticalHeader().setDefaultSectionSize(24)
+        self._search_table.verticalHeader().setVisible(False)
+        self._search_table.setMaximumHeight(140)
+        self._search_table.setStyleSheet(
+            "QTableWidget::item:selected { background-color: #eef0e6; color: #3d4a2c; }"
+        )
+        self._search_table.doubleClicked.connect(self._on_add_from_search)
+        self._search_table.hide()
+        self._search_results: list[dict] = []
+        lay.addWidget(self._search_table)
+
+        # ── Search results count badge ──
+        self._search_count_label = QLabel("")
+        self._search_count_label.setStyleSheet(
+            "font-size: 9pt; color: #1565c0; font-weight: bold; padding: 0 4px;"
+        )
+        self._search_count_label.hide()
+        lay.addWidget(self._search_count_label)
+
+        # ── Option-group pill strip (shown only when groups exist) ──
+        self._option_pill_bar = QWidget()
+        self._option_pill_layout = QHBoxLayout(self._option_pill_bar)
+        self._option_pill_layout.setContentsMargins(0, 2, 0, 4)
+        self._option_pill_layout.setSpacing(6)
+        self._option_pill_bar.hide()
+        lay.addWidget(self._option_pill_bar)
+
+        # ── Line items table ──
+        self._lines_table = QTableWidget(0, _L_COLS)
+        self._lines_table.setHorizontalHeaderLabels(_LINE_HEADERS)
+        self._lines_table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
+        self._lines_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._lines_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._lines_table.setColumnHidden(_L_ID, True)
+        # Warranty is now its own line item (linked via parent_line_id),
+        # so the per-row Warranty column is no longer needed.
+        self._lines_table.setColumnHidden(_L_WARRANTY, True)
+        # 2025 redesign: Supplier / per-line Freight / Notes columns are
+        # hidden in the line grid. Supplier lives in the part record,
+        # freight moved to the Shipping footer tab, and notes are still
+        # editable via the row context menu / detail pane.
+        try:
+            self._lines_table.setColumnHidden(_L_SUPPLIER, True)
+            self._lines_table.setColumnHidden(_L_FREIGHT, True)
+            self._lines_table.setColumnHidden(_L_NOTES, True)
+        except Exception as _e:
+            log.debug("Hide trimmed columns failed: %s", _e)
+        self._lines_table.horizontalHeader().setStretchLastSection(False)
+        self._lines_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
+        self._lines_table.horizontalHeader().setSectionResizeMode(
+            _L_DESC, QHeaderView.ResizeMode.Stretch
+        )
+        self._lines_table.setColumnWidth(_L_QTY, 65)
+        self._lines_table.setColumnWidth(_L_FREIGHT, 75)
+        self._lines_table.setColumnWidth(_L_NOTES, 120)
+
+        # Drag-and-drop reordering (via the vertical-header handle only —
+        # body drag is disabled so plain clicks on a line don't accidentally
+        # start a drag and drop the selection onto the row below).
+        self._lines_table.setAcceptDrops(True)
+        self._lines_table.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self._lines_table.setDefaultDropAction(Qt.DropAction.MoveAction)
+        # setDragDropMode re-enables drag on the body; force it off here so
+        # micro-movements during click don't initiate a drag.
+        self._lines_table.setDragEnabled(False)
+        self._lines_table.verticalHeader().setSectionsMovable(True)
+        self._lines_table.verticalHeader().setDragEnabled(True)
+        self._lines_table.verticalHeader().setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+
+        self._lines_table.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self._lines_table.setAlternatingRowColors(True)
+        self._lines_table.verticalHeader().setDefaultSectionSize(24)
+        self._lines_table.verticalHeader().setVisible(True)
+        self._lines_table.verticalHeader().setFixedWidth(20)
+        self._lines_table.verticalHeader().setStyleSheet(
+            "QHeaderView::section { background: #e0e0e0; border: 1px solid #ccc; "
+            "font-size: 1px; color: transparent; }"
+            "QHeaderView::section:hover { background: #d8ddc9; cursor: grab; }"
+        )
+        self._lines_table.setStyleSheet(
+            f"QHeaderView::section {{ background: {_COLOR_CHARCOAL}; font-weight: bold; "
+            f"color: {_COLOR_TEXT}; border: 1px solid {_COLOR_BORDER}; padding: 4px; }}"
+            f"QTableWidget {{ gridline-color: {_COLOR_BORDER}; background: #161b20; color: {_COLOR_TEXT}; alternate-background-color: #1d242a; }}"
+            "QTableWidget::item:selected { background-color: #3a4a32; color: #e6e9eb; }"
+        )
+        self._lines_table.selectionModel().selectionChanged.connect(
+            self._on_line_selected
+        )
+        self._lines_table.doubleClicked.connect(self._on_line_double_click)
+        self._lines_table.cellChanged.connect(self._on_line_cell_edited)
+        self._lines_table.verticalHeader().sectionMoved.connect(self._on_lines_reordered)
+        self._lines_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._lines_table.customContextMenuRequested.connect(self._show_line_context_menu)
+        lay.addWidget(self._lines_table, 1)
+
+        # Keyboard shortcuts for line items
+        del_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Delete), self._lines_table)
+        del_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        del_shortcut.activated.connect(self._on_remove_line)
+        del_shortcut.setObjectName("del_shortcut")
+
+        # ── Inline price editor (shown when a line is selected) ──
+        self._price_editor_frame = QFrame()
+        self._price_editor_frame.setStyleSheet(
+            f"QFrame {{ background: {_COLOR_OFFWHITE}; border: 1px solid {_COLOR_BORDER}; "
+            "border-radius: 4px; padding: 3px 6px; }"
+        )
+        pe_lay = QHBoxLayout(self._price_editor_frame)
+        pe_lay.setContentsMargins(6, 2, 6, 2)
+        pe_lay.setSpacing(8)
+
+        self._pe_label = QLabel("Adjust selected line:")
+        self._pe_label.setStyleSheet("font-weight: bold; font-size: 9pt;")
+        pe_lay.addWidget(self._pe_label)
+
+        pe_lay.addWidget(QLabel("Margin %:"))
+        self._pe_margin_spin = QDoubleSpinBox()
+        self._pe_margin_spin.setRange(-100, 999)
+        self._pe_margin_spin.setDecimals(1)
+        self._pe_margin_spin.setSuffix("%")
+        self._pe_margin_spin.setMaximumWidth(80)
+        self._pe_margin_spin.valueChanged.connect(self._on_margin_spin_changed)
+        pe_lay.addWidget(self._pe_margin_spin)
+
+        pe_apply_margin = QPushButton("Apply Margin")
+        pe_apply_margin.setStyleSheet(
+            f"QPushButton {{ background: {_COLOR_OLIVE}; color: white; padding: 3px 10px; "
+            "border: none; border-radius: 3px; font-size: 9pt; font-weight: 600; }"
+            f"QPushButton:hover {{ background: {_COLOR_OLIVE_HOVER}; }}"
+        )
+        pe_apply_margin.clicked.connect(self._on_apply_margin)
+        pe_lay.addWidget(pe_apply_margin)
+
+        pe_lay.addSpacing(10)
+        pe_lay.addWidget(QLabel("Price $:"))
+        self._pe_price_spin = QDoubleSpinBox()
+        self._pe_price_spin.setRange(0, 999999)
+        self._pe_price_spin.setDecimals(2)
+        self._pe_price_spin.setPrefix("$")
+        self._pe_price_spin.setMaximumWidth(100)
+        pe_lay.addWidget(self._pe_price_spin)
+
+        pe_apply_price = QPushButton("Set Price")
+        pe_apply_price.setStyleSheet(
+            f"QPushButton {{ background: {_COLOR_OLIVE}; color: white; padding: 3px 10px; "
+            "border: none; border-radius: 3px; font-size: 9pt; font-weight: 600; }"
+            f"QPushButton:hover {{ background: {_COLOR_OLIVE_HOVER}; }}"
+        )
+        pe_apply_price.clicked.connect(self._on_apply_price)
+        pe_lay.addWidget(pe_apply_price)
+
+        pe_lay.addSpacing(10)
+        self._pe_warranty_btn = QPushButton("🛡️ Warranty")
+        self._pe_warranty_btn.setStyleSheet(
+            f"QPushButton {{ background: white; color: {_COLOR_CHARCOAL}; padding: 3px 10px; "
+            f"border: 1px solid {_COLOR_BORDER}; border-radius: 3px; font-size: 9pt; font-weight: 600; }}"
+            "QPushButton:hover { background: #eef0f2; }"
+        )
+        self._pe_warranty_btn.setToolTip("Add an extended warranty to this line")
+        self._pe_warranty_btn.clicked.connect(self._on_warranty_dialog)
+        self._pe_warranty_btn.hide()
+        pe_lay.addWidget(self._pe_warranty_btn)
+
+        self._pe_eta_btn = QPushButton("📅 ETA")
+        self._pe_eta_btn.setStyleSheet(
+            f"QPushButton {{ background: white; color: {_COLOR_CHARCOAL}; padding: 3px 10px; "
+            f"border: 1px solid {_COLOR_BORDER}; border-radius: 3px; font-size: 9pt; font-weight: 600; }}"
+            "QPushButton:hover { background: #eef0f2; }"
+        )
+        self._pe_eta_btn.setToolTip("Set or recompute the ETA for this line")
+        self._pe_eta_btn.clicked.connect(self._on_pe_eta_clicked)
+        self._pe_eta_btn.hide()
+        pe_lay.addWidget(self._pe_eta_btn)
+
+        pe_lay.addStretch()
+
+        rm_btn = QPushButton("🗑️ Remove")
+        rm_btn.setStyleSheet(
+            f"QPushButton {{ color: {_COLOR_DESTRUCTIVE}; padding: 3px 10px; border-radius: 3px; "
+            "border: 1px solid #e6c2c2; background: white; font-size: 9pt; font-weight: 600; }"
+            "QPushButton:hover { background: #fbeaea; }"
+        )
+        rm_btn.clicked.connect(self._on_remove_line)
+        pe_lay.addWidget(rm_btn)
+
+        self._price_editor_frame.hide()
+        lay.addWidget(self._price_editor_frame)
+
+        # ── Compact manual add-line bar ──
+        add_bar = QHBoxLayout()
+        add_bar.setSpacing(4)
+        add_bar.setContentsMargins(0, 2, 0, 2)
+
+        self._desc_edit = QLineEdit()
+        self._desc_edit.setPlaceholderText("Manual line…")
+        self._desc_edit.setMaximumHeight(24)
+        add_bar.addWidget(self._desc_edit)
+
+        self._qty_spin = QSpinBox()
+        self._qty_spin.setRange(1, 99999)
+        self._qty_spin.setValue(1)
+        self._qty_spin.setMaximumHeight(24)
+        self._qty_spin.setMaximumWidth(75)
+        add_bar.addWidget(QLabel("Qty"))
+        add_bar.addWidget(self._qty_spin)
+
+        self._price_spin = QDoubleSpinBox()
+        self._price_spin.setRange(0, 999999)
+        self._price_spin.setDecimals(2)
+        self._price_spin.setPrefix("$")
+        self._price_spin.setMaximumHeight(24)
+        self._price_spin.setMaximumWidth(90)
+        add_bar.addWidget(QLabel("$"))
+        add_bar.addWidget(self._price_spin)
+
+        self._cost_spin = QDoubleSpinBox()
+        self._cost_spin.setRange(0, 999999)
+        self._cost_spin.setDecimals(2)
+        self._cost_spin.setPrefix("$")
+        self._cost_spin.setMaximumHeight(24)
+        self._cost_spin.setMaximumWidth(90)
+        self._cost_lbl = QLabel("Cost")
+        add_bar.addWidget(self._cost_lbl)
+        add_bar.addWidget(self._cost_spin)
+
+        add_btn = QPushButton("➕ Add")
+        add_btn.setStyleSheet("QPushButton { padding: 2px 8px; font-size: 9pt; }")
+        add_btn.setMaximumHeight(24)
+        add_btn.clicked.connect(self._on_add_line)
+        add_bar.addWidget(add_btn)
+
+        disc_btn = QPushButton("➖ Discount")
+        disc_btn.setToolTip("Add a manual discount line (% or fixed $)")
+        disc_btn.setStyleSheet(
+            f"QPushButton {{ background: {_COLOR_DESTRUCTIVE}; color: white; font-weight: bold; "
+            "padding: 2px 8px; font-size: 9pt; border: none; border-radius: 3px; }"
+            "QPushButton:hover { background: #991b1b; }"
+        )
+        disc_btn.setMaximumHeight(24)
+        disc_btn.clicked.connect(self._on_add_discount_line)
+        add_bar.addWidget(disc_btn)
+
+        lay.addLayout(add_bar)
+
+        # ── Bottom tabs: Prices/Costs | Notes | Comments ──
+        btabs = QTabWidget()
+        btabs.setStyleSheet(
+            "QTabWidget::pane { border: 1px solid #ccc; border-radius: 4px; }"
+            "QTabBar::tab { padding: 3px 12px; font-size: 9pt; }"
+            "QTabBar::tab:selected { font-weight: bold; }"
+        )
+
+        # Prices & Costs
+        prices_w = QWidget()
+        pg = QGridLayout(prices_w)
+        pg.setContentsMargins(10, 6, 10, 6)
+        pg.setHorizontalSpacing(20)
+        pg.setVerticalSpacing(4)
+        pg.setColumnStretch(1, 1)
+        pg.setColumnStretch(3, 1)
+
+        # Helper: set a generous minimum width so right-aligned amounts
+        # never get clipped (default sizeHint locks at the placeholder).
+        def _wide(lbl: QLabel, sample: str) -> QLabel:
+            fm = lbl.fontMetrics()
+            lbl.setMinimumWidth(fm.horizontalAdvance(sample) + 8)
+            return lbl
+
+        pg.addWidget(QLabel("Subtotal"), 0, 0)
+        self._subtotal_label = QLabel("$0.00")
+        self._subtotal_label.setStyleSheet("font-size: 11pt;")
+        _wide(self._subtotal_label, "$999,999.99")
+        pg.addWidget(self._subtotal_label, 0, 1, alignment=Qt.AlignmentFlag.AlignRight)
+
+        pg.addWidget(QLabel("Cores"), 0, 2)
+        self._core_label = QLabel("$0.00")
+        self._core_label.setStyleSheet("font-size: 11pt;")
+        _wide(self._core_label, "$999,999.99")
+        pg.addWidget(self._core_label, 0, 3, alignment=Qt.AlignmentFlag.AlignRight)
+
+        pg.addWidget(QLabel("Tax"), 1, 0)
+        # ``quote.tax`` is stored as a percentage (e.g. ``8.25``); the PDF
+        # multiplies subtotal × tax/100. Spinbox now reflects that.
+        self._tax_spin = QDoubleSpinBox()
+        self._tax_spin.setRange(0, 25)
+        self._tax_spin.setDecimals(2)
+        self._tax_spin.setSuffix(" %")
+        self._tax_spin.setSingleStep(0.25)
+        self._tax_spin.valueChanged.connect(self._on_tax_changed)
+        # Live "= $X.XX" preview based on current subtotal × rate.
+        self._tax_amount_label = QLabel("= $0.00")
+        self._tax_amount_label.setStyleSheet("font-size: 9pt; color: #6b7280;")
+        _tax_row = QWidget()
+        _tax_row_l = QHBoxLayout(_tax_row)
+        _tax_row_l.setContentsMargins(0, 0, 0, 0)
+        _tax_row_l.setSpacing(6)
+        _tax_row_l.addStretch(1)
+        _tax_row_l.addWidget(self._tax_spin)
+        _tax_row_l.addWidget(self._tax_amount_label)
+        pg.addWidget(_tax_row, 1, 1, alignment=Qt.AlignmentFlag.AlignRight)
+
+        pg.addWidget(QLabel("Margin"), 1, 2)
+        self._margin_label = QLabel("—")
+        self._margin_label.setStyleSheet("font-size: 11pt;")
+        _wide(self._margin_label, "999.9%")
+        pg.addWidget(self._margin_label, 1, 3, alignment=Qt.AlignmentFlag.AlignRight)
+
+        pg.addWidget(QLabel("Shipping"), 2, 0)
+        self._shipping_label = QLabel("—")
+        self._shipping_label.setStyleSheet("font-size: 11pt; color: #1565c0;")
+        _wide(self._shipping_label, "$999,999.99")
+        pg.addWidget(self._shipping_label, 2, 1, alignment=Qt.AlignmentFlag.AlignRight)
+
+        pg.addWidget(QLabel("Options"), 2, 2)
+        self._optional_label = QLabel("—")
+        self._optional_label.setStyleSheet("font-size: 10pt; color: #2e7d32;")
+        self._optional_label.setTextFormat(Qt.TextFormat.RichText)
+        self._optional_label.setWordWrap(True)
+        self._optional_label.setMinimumWidth(220)
+        pg.addWidget(self._optional_label, 2, 3, alignment=Qt.AlignmentFlag.AlignRight)
+
+        total_lbl = QLabel("Total")
+        total_lbl.setStyleSheet("font-weight: bold; font-size: 13pt;")
+        pg.addWidget(total_lbl, 3, 0)
+        self._total_label = QLabel("$0.00")
+        self._total_label.setStyleSheet("font-weight: bold; font-size: 13pt;")
+        _wide(self._total_label, "$999,999.99")
+        pg.addWidget(self._total_label, 3, 1, alignment=Qt.AlignmentFlag.AlignRight)
+
+        btabs.addTab(prices_w, "Totals")
+
+        # Shipping tab
+        ship_w = QWidget()
+        sl = QGridLayout(ship_w)
+        sl.setContentsMargins(10, 8, 10, 8)
+        sl.setHorizontalSpacing(12)
+        sl.setVerticalSpacing(6)
+        sl.setColumnMinimumWidth(1, 300)
+        sl.setColumnStretch(1, 1)
+
+        # NOTE: The legacy "Offer extended warranty as upsell" checkbox was
+        # removed. Extended warranties are now added as separate optional
+        # line items via the 🛡️ Warranty button on each line, so the
+        # customer can accept or decline them per-line — no separate
+        # Standard vs. Extended A/B comparison needed.
+
+        sl.addWidget(QLabel("Method:"), 1, 0)
+        self._ship_method_combo = QComboBox()
+        self._ship_method_combo.addItems([
+            "Default", "Customer Pickup", "Local Delivery", "UPS Ground", "UPS 2nd Day",
+            "UPS Next Day", "FedEx Ground", "FedEx Express", "Freight / LTL", "Other",
+        ])
+        self._ship_method_combo.setStyleSheet("padding: 4px;")
+        self._ship_method_combo.currentTextChanged.connect(self._on_ship_method_changed)
+        sl.addWidget(self._ship_method_combo, 1, 1)
+
+        sl.addWidget(QLabel("ETA:"), 2, 0)
+        self._ship_eta_edit = QDateEdit()
+        self._ship_eta_edit.setCalendarPopup(True)
+        self._ship_eta_edit.setDisplayFormat("M/d/yyyy")
+        self._ship_eta_edit.setCalendarWidget(_make_quote_calendar())
+        self._ship_eta_edit.setDate(date.today() + timedelta(days=3))
+        self._ship_eta_edit.setMinimumWidth(140)
+        sl.addWidget(self._ship_eta_edit, 2, 1, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        sl.addWidget(QLabel("Shipping Cost:"), 3, 0)
+        self._ship_cost_spin = QDoubleSpinBox()
+        self._ship_cost_spin.setRange(0, 99999)
+        self._ship_cost_spin.setDecimals(2)
+        self._ship_cost_spin.setPrefix("$")
+        self._ship_cost_spin.setMinimumWidth(140)
+        self._ship_cost_spin.setStyleSheet("padding: 4px;")
+        sl.addWidget(self._ship_cost_spin, 3, 1, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        # ── Phase J: Fuel surcharge spinbox + presets ──
+        sl.addWidget(QLabel("Fuel Surcharge:"), 4, 0)
+        fuel_row = QWidget()
+        fuel_l = QHBoxLayout(fuel_row)
+        fuel_l.setContentsMargins(0, 0, 0, 0)
+        fuel_l.setSpacing(6)
+        self._fuel_spin = QDoubleSpinBox()
+        self._fuel_spin.setRange(0, 9999)
+        self._fuel_spin.setDecimals(2)
+        self._fuel_spin.setPrefix("$")
+        self._fuel_spin.setMinimumWidth(120)
+        self._fuel_spin.valueChanged.connect(self._on_fuel_changed)
+        fuel_l.addWidget(self._fuel_spin)
+        for label, val in (
+            ("Local +$15", 15.0),
+            ("<100mi +$45", 45.0),
+            ("<250mi +$95", 95.0),
+            ("Long-haul +$175", 175.0),
+        ):
+            b = QPushButton(label)
+            b.setStyleSheet(
+                "QPushButton { padding: 2px 6px; font-size: 8pt; "
+                "border: 1px solid #d0d0d0; border-radius: 3px; }"
+                "QPushButton:hover { background: #f0f0f0; }"
+            )
+            b.clicked.connect(lambda _checked=False, v=val: self._fuel_spin.setValue(v))
+            fuel_l.addWidget(b)
+        suggest_btn = QPushButton("Suggest by ZIP")
+        suggest_btn.setStyleSheet(
+            "QPushButton { padding: 2px 6px; font-size: 8pt; "
+            "border: 1px solid #1565c0; color: #1565c0; border-radius: 3px; }"
+            "QPushButton:hover { background: #e3f2fd; }"
+        )
+        suggest_btn.clicked.connect(self._on_fuel_suggest_zip)
+        fuel_l.addWidget(suggest_btn)
+        fuel_l.addStretch(1)
+        sl.addWidget(fuel_row, 4, 1)
+
+        self._ship_fee_check = QCheckBox("Add shipping fee + fuel surcharge to quote total")
+        self._ship_fee_check.setToolTip(
+            "When checked, shipping cost AND fuel surcharge are added "
+            "to the quote total."
+        )
+        self._ship_fee_check.setChecked(True)
+        self._ship_fee_check.setVisible(False)  # legacy — no longer surfaced
+        # Legacy alias for places that referenced ``_ship_fee_label``.
+        self._ship_fee_label = QLabel("")
+        self._ship_fee_label.setVisible(False)
+
+        # NOTE: The 3% credit-card convenience-fee toggle now lives in the
+        # quote header next to the Terms combobox (see _build_header).
+
+        sl.setRowStretch(7, 1)
+        btabs.addTab(ship_w, "🚚 Shipping")
+
+        # Notes
+        notes_w = QWidget()
+        nl = QVBoxLayout(notes_w)
+        nl.setContentsMargins(8, 4, 8, 4)
+        self._notes_edit = QTextEdit()
+        self._notes_edit.setPlaceholderText(
+            "Notes for this quote — appears on the printed PDF if filled in"
+        )
+        nl.addWidget(self._notes_edit)
+        btabs.addTab(notes_w, "Notes")
+
+        # Comments / Activity
+        comments_w = QWidget()
+        cl = QVBoxLayout(comments_w)
+        cl.setContentsMargins(8, 2, 8, 2)
+        cl.setSpacing(2)
+
+        self._comments_list = QTextBrowser()
+        self._comments_list.setOpenExternalLinks(False)
+        self._comments_list.setStyleSheet(
+            f"QTextBrowser {{ background: #161b20; color: {_COLOR_TEXT}; border: 1px solid {_COLOR_BORDER}; "
+            "border-radius: 3px; font-size: 9pt; padding: 4px; }"
+        )
+        self._comments_list.setMaximumHeight(80)
+        cl.addWidget(self._comments_list)
+
+        comment_row = QHBoxLayout()
+        comment_row.setSpacing(4)
+        self._comment_input = QLineEdit()
+        self._comment_input.setPlaceholderText("Add a comment…")
+        self._comment_input.setMaximumHeight(24)
+        self._comment_input.returnPressed.connect(self._on_add_comment)
+        comment_row.addWidget(self._comment_input, 1)
+
+        comment_btn = QPushButton("💬 Post")
+        comment_btn.setStyleSheet(
+            f"QPushButton {{ background: {_COLOR_OLIVE}; color: white; padding: 2px 10px; "
+            "border: none; border-radius: 3px; font-size: 9pt; font-weight: 600; }"
+            f"QPushButton:hover {{ background: {_COLOR_OLIVE_HOVER}; }}"
+        )
+        comment_btn.setMaximumHeight(24)
+        comment_btn.clicked.connect(self._on_add_comment)
+        comment_row.addWidget(comment_btn)
+        cl.addLayout(comment_row)
+
+        btabs.addTab(comments_w, "Activity")
+
+        btabs.setMaximumHeight(140)
+        lay.addWidget(btabs)
+        return panel
+
+    # ------------------------------------------------------------------
+    #  RIGHT — ESN / PART FINDER
+    # ------------------------------------------------------------------
+    def _build_finder_panel(self) -> QWidget:
+        panel = QWidget()
+        panel.setMaximumWidth(380)
+        panel.setMinimumWidth(280)
+        panel.setStyleSheet(f"QWidget {{ background: {_COLOR_OFFWHITE}; color: {_COLOR_TEXT}; }}")
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(6, 8, 8, 8)
+        lay.setSpacing(6)
+
+        hdr = QLabel("🔧 Smart ESN / VIN Finder")
+        hdr.setStyleSheet(f"font-weight: bold; font-size: 11pt; color: {_COLOR_TEXT};")
+        lay.addWidget(hdr)
+
+        # ── Manufacturer dropdown ──
+        lay.addWidget(QLabel("Manufacturer"))
+        self._finder_mfr = QComboBox()
+        self._finder_mfr.addItems([
+            "Any", "Cummins", "Caterpillar", "Detroit Diesel",
+            "Navistar / International", "PACCAR", "Volvo / Mack",
+            "John Deere", "Perkins", "Deutz", "Other",
+        ])
+        self._finder_mfr.setStyleSheet(
+            "QComboBox { padding: 4px; border: 1px solid #bbb; border-radius: 3px; }"
+        )
+        lay.addWidget(self._finder_mfr)
+
+        # ── ESN / VIN # input ──
+        lay.addWidget(QLabel("ESN or VIN #"))
+        self._finder_input = QLineEdit()
+        self._finder_input.setPlaceholderText("Enter ESN, VIN, OEM part #…")
+        self._finder_input.setStyleSheet(
+            "QLineEdit { padding: 5px 8px; border: 2px solid #ff8f00; "
+            "border-radius: 4px; font-size: 10pt; }"
+            "QLineEdit:focus { border-color: #e65100; }"
+        )
+        self._finder_input.returnPressed.connect(self._on_finder_search)
+        lay.addWidget(self._finder_input)
+
+        # ── Search-for keyword (for Cummins ESN lookup) ──
+        lay.addWidget(QLabel("Search For"))
+        self._finder_keyword = QLineEdit()
+        self._finder_keyword.setPlaceholderText("Overhaul Kit, Turbo, Injector…")
+        self._finder_keyword.setStyleSheet(
+            "QLineEdit { padding: 5px 8px; border: 2px solid #2563EB; "
+            "border-radius: 4px; font-size: 10pt; }"
+            "QLineEdit:focus { border-color: #1D4ED8; }"
+        )
+        self._finder_keyword.returnPressed.connect(self._on_esn_lookup)
+        lay.addWidget(self._finder_keyword)
+
+        # ── Action buttons row ──
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(4)
+
+        esn_btn = QPushButton("🔎 ESN Lookup")
+        esn_btn.setToolTip("Look up ESN in cache / engine compatibility DB")
+        esn_btn.setStyleSheet(
+            "QPushButton { background: #ff8f00; color: white; font-weight: bold; "
+            "padding: 5px 10px; border-radius: 3px; }"
+            "QPushButton:hover { background: #ffa000; }"
+        )
+        esn_btn.clicked.connect(self._on_esn_lookup)
+        btn_row.addWidget(esn_btn)
+
+        xref_btn = QPushButton("🔄 Cross-Ref")
+        xref_btn.setToolTip("Search aftermarket interchanges for this OEM part")
+        xref_btn.setStyleSheet(
+            "QPushButton { background: #6a1b9a; color: white; font-weight: bold; "
+            "padding: 5px 10px; border-radius: 3px; }"
+            "QPushButton:hover { background: #7b1fa2; }"
+        )
+        xref_btn.clicked.connect(self._on_finder_xref)
+        btn_row.addWidget(xref_btn)
+
+        lay.addLayout(btn_row)
+
+        search_all_btn = QPushButton("🔍 Search Inventory")
+        search_all_btn.setToolTip("Search all products by this part # / description")
+        search_all_btn.setStyleSheet(_BTN_PRIMARY)
+        search_all_btn.clicked.connect(self._on_finder_search)
+        lay.addWidget(search_all_btn)
+
+        # ── ESN info card (hidden until lookup) ──
+        self._esn_card = QFrame()
+        self._esn_card.setStyleSheet(
+            "QFrame { background: #fff8e1; border: 1px solid #ffcc80; "
+            "border-radius: 4px; padding: 6px; }"
+        )
+        esn_lay = QVBoxLayout(self._esn_card)
+        esn_lay.setContentsMargins(6, 4, 6, 4)
+        esn_lay.setSpacing(2)
+        self._esn_info_label = QLabel("")
+        self._esn_info_label.setWordWrap(True)
+        self._esn_info_label.setStyleSheet("font-size: 9pt;")
+        esn_lay.addWidget(self._esn_info_label)
+        self._esn_card.hide()
+        lay.addWidget(self._esn_card)
+
+        # ── Results table ──
+        results_hdr = QLabel("Results")
+        results_hdr.setStyleSheet("font-weight: bold; font-size: 10pt; margin-top: 4px;")
+        lay.addWidget(results_hdr)
+
+        self._finder_table = QTableWidget(0, 7)
+        self._finder_table.setHorizontalHeaderLabels([
+            "ID", "Part #", "Description", "Source", "Cost",
+            "Sell Price", "Margin%",
+        ])
+        self._finder_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._finder_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._finder_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._finder_table.setColumnHidden(0, True)
+        self._finder_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch
+        )
+        self._finder_table.setAlternatingRowColors(True)
+        self._finder_table.verticalHeader().setDefaultSectionSize(24)
+        self._finder_table.verticalHeader().setVisible(False)
+        self._finder_table.setStyleSheet(
+            "QTableWidget { font-size: 9pt; }"
+            "QTableWidget::item:selected { background-color: #ffe0b2; color: #e65100; }"
+        )
+        self._finder_table.doubleClicked.connect(self._on_add_from_finder)
+        self._finder_results: list[dict] = []
+        lay.addWidget(self._finder_table, 1)
+
+        # Add to quote button
+        add_finder_btn = QPushButton("➕ Add to Quote")
+        add_finder_btn.setStyleSheet(_BTN_SUCCESS)
+        add_finder_btn.clicked.connect(self._on_add_from_finder)
+        lay.addWidget(add_finder_btn)
+
+        return panel
+
+    # ------------------------------------------------------------------
+    #  FOOTER BAR
+    # ------------------------------------------------------------------
+    def _build_footer(self) -> QFrame:
+        footer = QFrame()
+        footer.setStyleSheet(
+            f"QFrame {{ background: {_COLOR_OFFWHITE}; border-top: 1px solid {_COLOR_BORDER}; "
+            "padding: 4px 12px; }"
+        )
+        flay = QHBoxLayout(footer)
+        flay.setContentsMargins(12, 4, 12, 4)
+        flay.setSpacing(14)
+
+        # ── LEFT: dim internal metrics (Lines/Revenue/Cost/Profit/Margin)
+        # Render with a real QFont so fontMetrics() returns accurate widths
+        # (CSS font-size does NOT affect QLabel.fontMetrics, which is what
+        # caused the previous Total clipping bug).
+        def _mk_metric(text: str, color: str, wide: str, *,
+                       size_pt: int = 9, bold: bool = False,
+                       italic: bool = False) -> QLabel:
+            lbl = QLabel(text)
+            f = lbl.font()
+            f.setPointSize(size_pt)
+            f.setBold(bold)
+            f.setItalic(italic)
+            lbl.setFont(f)
+            lbl.setStyleSheet(f"color: {color};")
+            lbl.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred)
+            fm = lbl.fontMetrics()
+            lbl.setMinimumWidth(fm.horizontalAdvance(wide) + 10)
+            return lbl
+
+        self._footer_lines = _mk_metric("Lines: 0", "#6b7280", "Lines: 999")
+        flay.addWidget(self._footer_lines)
+
+        # Subtotal kept (compact) — used by some internal flows but
+        # de-emphasised so it doesn't compete with Total on the right.
+        self._footer_subtotal = _mk_metric(
+            "Subtotal: $0.00", "#6b7280", "Subtotal: $999,999.99")
+        self._footer_subtotal.hide()  # hidden in footer; visible in tab
+
+        self._footer_revenue = _mk_metric(
+            "Revenue: $0.00", "#6b7280", "Revenue: $999,999.99")
+        flay.addWidget(self._footer_revenue)
+
+        self._footer_cost = _mk_metric(
+            "Cost: $0.00", "#6b7280", "Cost: $999,999.99", italic=True)
+        flay.addWidget(self._footer_cost)
+
+        self._footer_profit = _mk_metric(
+            "Profit: $0.00", "#6b7280", "Profit: $999,999.99", italic=True)
+        flay.addWidget(self._footer_profit)
+
+        self._footer_margin = _mk_metric(
+            "Margin: —", "#6b7280", "Margin: 999.9%", italic=True)
+        flay.addWidget(self._footer_margin)
+
+        flay.addStretch(1)
+
+        # ── RIGHT: big TOTAL — dominates the footer.
+        self._footer_total = QLabel("Total: $0.00")
+        _ft = self._footer_total.font()
+        _ft.setPointSize(16)
+        _ft.setBold(True)
+        self._footer_total.setFont(_ft)
+        self._footer_total.setStyleSheet("color: #1c2226;")
+        self._footer_total.setSizePolicy(
+            QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred
+        )
+        _fm = self._footer_total.fontMetrics()
+        self._footer_total.setMinimumWidth(_fm.horizontalAdvance("Total: $999,999.99") + 16)
+        self._footer_total.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        flay.addWidget(self._footer_total)
+
+        # Separator before action cluster
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setStyleSheet("color: #cfd5d8;")
+        flay.addWidget(sep)
+
+        doc_settings_btn = QPushButton("⚙ Document Settings")
+        doc_settings_btn.setStyleSheet(_BTN_SECONDARY)
+        doc_settings_btn.setToolTip(
+            "Configure how this quote / SO / invoice prints "
+            "(SKU column, supplier, address, logo size, default terms…)"
+        )
+        doc_settings_btn.clicked.connect(self._open_document_settings)
+        flay.addWidget(doc_settings_btn)
+
+        preview_btn = QPushButton("👁 Preview Quote")
+        preview_btn.setStyleSheet(_BTN_SECONDARY)
+        preview_btn.setToolTip("Preview quote as formatted output")
+        preview_btn.clicked.connect(self._on_preview_quote)
+        flay.addWidget(preview_btn)
+
+        print_btn = QPushButton("🖨️ Print")
+        print_btn.setStyleSheet(_BTN_SECONDARY)
+        print_btn.setToolTip("Print this quote")
+        print_btn.clicked.connect(self._print_current_quote)
+        flay.addWidget(print_btn)
+
+        save_new_btn = QPushButton("💾 Save && New\nCtrl+N")
+        save_new_btn.setStyleSheet(
+            f"QPushButton {{ background: {_COLOR_OLIVE}; color: white; font-weight: bold; "
+            "border: none; padding: 5px 14px; border-radius: 3px; font-size: 9pt; }"
+            f"QPushButton:hover {{ background: {_COLOR_OLIVE_HOVER}; }}"
+        )
+        save_new_btn.setToolTip("Save this quote and open a new blank quote (Ctrl+N)")
+        save_new_btn.clicked.connect(self._on_save_and_new)
+        flay.addWidget(save_new_btn)
+
+        save_close_btn = QPushButton("💾 Save && Close\nCtrl+S")
+        save_close_btn.setStyleSheet(
+            f"QPushButton {{ background: {_COLOR_OLIVE}; color: white; font-weight: bold; "
+            "border: 2px solid #4d5a36; padding: 5px 20px; border-radius: 3px; font-size: 9pt; }"
+            f"QPushButton:hover {{ background: {_COLOR_OLIVE_HOVER}; }}"
+        )
+        save_close_btn.setToolTip("Save quote and close (Ctrl+S)")
+        save_close_btn.clicked.connect(self._on_save)
+        flay.addWidget(save_close_btn)
+
+        # Keyboard shortcuts
+        save_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
+        save_shortcut.activated.connect(self._on_save)
+        save_draft_shortcut = QShortcut(QKeySequence("Ctrl+Shift+S"), self)
+        save_draft_shortcut.activated.connect(self._on_save_silent)
+        save_new_shortcut = QShortcut(QKeySequence("Ctrl+N"), self)
+        save_new_shortcut.activated.connect(self._on_save_and_new)
+        # Ctrl+D = Duplicate quote (full impl in a later batch).
+        dup_shortcut = QShortcut(QKeySequence("Ctrl+D"), self)
+        dup_shortcut.activated.connect(self._on_duplicate)
+        # Ctrl+P = Print, Ctrl+Shift+P = Preview
+        print_shortcut = QShortcut(QKeySequence("Ctrl+P"), self)
+        print_shortcut.activated.connect(self._print_current_quote)
+        preview_shortcut = QShortcut(QKeySequence("Ctrl+Shift+P"), self)
+        preview_shortcut.activated.connect(self._on_preview_quote)
+
+        # Explicit tab order across the main editing fields so arrow/Tab
+        # keys flow naturally between header → totals → search → lines.
+        # Follows the real quoting workflow: Customer → Date/Terms →
+        # Search → Qty → Price → Save.
+        try:
+            chain = [
+                self._customer_combo,
+                self._quote_date,
+                self._exp_date,
+                self._terms_edit,
+                self._cc_fee_check,
+                self._esn_edit,
+                self._vin_edit,
+                self._job_edit,
+                self._sku_edit,
+                self._lines_table,
+                self._qty_spin,
+                self._price_spin,
+                self._cost_spin,
+            ]
+            for prev, nxt in zip(chain, chain[1:]):
+                QWidget.setTabOrder(prev, nxt)
+        except Exception as e:
+            log.debug("Quote dialog tab-order setup failed: %s", e)
+
+        return footer
+
+    # ==================================================================
+    #  DATA LOADING
+    # ==================================================================
+    def _load_customers(self) -> None:
+        self._customer_combo.blockSignals(True)
+        self._customer_combo.clear()
+        self._customer_combo.addItem("🆕 New Customer (default)", None)
+        for c in get_all_customers():
+            acct = c.get("account_number") or ""
+            name = c.get("name", "")
+            company = c.get("company")
+            if acct:
+                display = f"{acct} — {name}"
+            else:
+                display = name
+            if company:
+                display = f"{display} ({company})"
+            self._customer_combo.addItem(display, c.get("id"))
+        self._customer_combo.blockSignals(False)
+        completer = QCompleter(self._customer_combo.model(), self._customer_combo)
+        completer.setCompletionColumn(0)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.activated[str].connect(self._on_customer_completion_activated)
+        self._customer_combo.setCompleter(completer)
+        self._customer_combo.setCurrentIndex(0)
+        self._edit_cust_btn.setEnabled(False)
+
+    def _on_customer_completion_activated(self, text: str) -> None:
+        idx = self._customer_combo.findText(text, Qt.MatchFlag.MatchFixedString)
+        if idx >= 0:
+            self._customer_combo.setCurrentIndex(idx)
+
+    def _on_customer_changed(self, _idx: int) -> None:
+        cid = self._customer_combo.currentData()
+        if not cid:
+            self._edit_cust_btn.setEnabled(False)
+            self._cust_company.setText("—")
+            self._cust_phone.setText("—")
+            self._cust_email.setText("—")
+            self._cust_terms.setText("—")
+            self._cust_address.setText("—")
+            self._cust_ship_to.setText("—")
+            self._cust_bill_to.setText("—")
+            self._cust_credit_status.setText("—")
+            self._cust_credit_status.setStyleSheet(_LBL_VAL)
+            self._cust_balance.setText("—")
+            self._cust_tier.setText("—")
+            self._cust_tier.setStyleSheet(_LBL_VAL)
+            self._cust_core_warning.hide()
+            self._customer_info.setText("")
+            self._acct_badge.hide()
+            self._recent_quotes_list.clear()
+            self._freq_ordered_list.clear()
+            return
+
+        # Customer is now selected — clear any "required" highlight.
+        try:
+            self._highlight_required(self._customer_combo, True)
+        except Exception as e:
+            log.debug("Customer-required highlight clear failed: %s", e)
+
+        from db import get_customer
+        c = get_customer(cid)
+        if not c:
+            return
+
+        self._edit_cust_btn.setEnabled(True)
+
+        self._cust_company.setText(c.get("company") or "—")
+        self._cust_phone.setText(c.get("phone") or "—")
+        self._cust_email.setText(c.get("email") or "—")
+        self._cust_terms.setText(c.get("payment_terms") or "—")
+
+        addr_parts = [p for p in [
+            c.get("address"), c.get("city"), c.get("state"), c.get("zip"),
+        ] if p]
+        addr_text = ", ".join(addr_parts) if addr_parts else "—"
+        self._cust_address.setText(addr_text)
+
+        # Ship-to (default to billing/main address when blank)
+        ship_parts = [p for p in [
+            c.get("ship_to_address"), c.get("ship_to_city"),
+            c.get("ship_to_state"), c.get("ship_to_zip"),
+        ] if p]
+        if ship_parts:
+            self._cust_ship_to.setText(", ".join(ship_parts))
+            self._cust_ship_to.setStyleSheet(_LBL_VAL + " color: #444;")
+        else:
+            self._cust_ship_to.setText(f"(same as billing)")
+            self._cust_ship_to.setStyleSheet(
+                _LBL_VAL + " color: #888; font-style: italic;"
+            )
+
+        # Bill-to (also defaults to main address when blank)
+        bill_parts = [p for p in [
+            c.get("bill_to_address"), c.get("bill_to_city"),
+            c.get("bill_to_state"), c.get("bill_to_zip"),
+        ] if p]
+        if bill_parts:
+            self._cust_bill_to.setText(", ".join(bill_parts))
+            self._cust_bill_to.setStyleSheet(_LBL_VAL + " color: #444;")
+        else:
+            self._cust_bill_to.setText("(same as address)")
+            self._cust_bill_to.setStyleSheet(
+                _LBL_VAL + " color: #888; font-style: italic;"
+            )
+
+        # PO badge (replaces the legacy account-number badge): show the
+        # current Job/PO# from the title row, if any.
+        self._refresh_po_badge()
+
+        if not self._terms_edit.currentText().strip() and c.get("payment_terms"):
+            self._terms_edit.setCurrentText(c["payment_terms"])
+
+        # Legacy compat
+        parts = []
+        if c.get("email"):
+            parts.append(c["email"])
+        if c.get("phone"):
+            parts.append(c["phone"])
+        self._customer_info.setText(" | ".join(parts))
+
+        # Populate recent quotes
+        self._load_customer_quotes(cid)
+        # Populate frequently ordered
+        self._load_freq_ordered(cid)
+        # Populate credit & pricing info
+        self._load_customer_credit(cid)
+
+    def _load_customer_quotes(self, cid: int) -> None:
+        self._recent_quotes_list.clear()
+        try:
+            quotes = get_all_quotes(customer_id=cid, limit=10)
+        except Exception:
+            return
+        for q in quotes:
+            status = (q.get("status") or "draft").upper()
+            total = float(q.get("total") or 0)
+            text = f"{q.get('quote_number', '?')}  —  {status}  ${total:,.0f}"
+            item = QListWidgetItem(text)
+            item.setData(Qt.ItemDataRole.UserRole, q.get("id"))
+            self._recent_quotes_list.addItem(item)
+
+    def _load_freq_ordered(self, cid: int) -> None:
+        self._freq_ordered_list.clear()
+        try:
+            items = get_customer_frequently_ordered(cid, limit=12)
+        except Exception:
+            return
+        for fo in items:
+            sku = (fo.get("sku") or "").strip()
+            # Skip rows where the linked product was deleted/null — they
+            # show up as a phantom "— ×1" entry otherwise.
+            if not sku or not fo.get("id"):
+                continue
+            title = fo.get("title") or ""
+            cnt = fo.get("order_count", 0)
+            text = f"{sku}  ×{cnt}  {title[:30]}"
+            item = QListWidgetItem(text)
+            item.setData(Qt.ItemDataRole.UserRole, fo.get("id"))
+            self._freq_ordered_list.addItem(item)
+
+    def _load_customer_credit(self, cid: int) -> None:
+        """Populate credit status, balance, and pricing tier for customer."""
+        try:
+            agreement = get_credit_agreement(cid)
+            aging = get_customer_aging(cid)
+        except Exception:
+            agreement = None
+            aging = None
+
+        if agreement:
+            limit = float(agreement.get("credit_limit") or 0)
+            outstanding = float(aging.get("total_outstanding") or 0) if aging else 0
+            available = limit - outstanding
+
+            if outstanding > limit and limit > 0:
+                self._cust_credit_status.setText("⚠️ OVER LIMIT")
+                self._cust_credit_status.setStyleSheet(_LBL_VAL + " color: #c62828; font-weight: bold;")
+            elif limit > 0:
+                self._cust_credit_status.setText("✅ Current")
+                self._cust_credit_status.setStyleSheet(_LBL_VAL + " color: #2e7d32; font-weight: bold;")
+            else:
+                self._cust_credit_status.setText("—")
+                self._cust_credit_status.setStyleSheet(_LBL_VAL)
+
+            if limit > 0:
+                self._cust_balance.setText(f"${outstanding:,.0f} / ${available:,.0f} avail")
+            else:
+                self._cust_balance.setText("—")
+        else:
+            self._cust_credit_status.setText("No agreement")
+            self._cust_credit_status.setStyleSheet(_LBL_VAL + " color: #999;")
+            self._cust_balance.setText("—")
+
+        # Pricing tier from customer record
+        from db import get_customer
+        cust = get_customer(cid)
+        tier = (cust.get("pricing_tier") or "Standard") if cust else "Standard"
+        self._cust_tier.setText(tier)
+        if tier.lower() in ("wholesale", "special"):
+            self._cust_tier.setStyleSheet(_LBL_VAL + " color: #1565c0; font-weight: bold;")
+        else:
+            self._cust_tier.setStyleSheet(_LBL_VAL)
+
+        # Overdue core warning
+        try:
+            overdue = get_customer_overdue_cores(cid)
+        except Exception:
+            overdue = []
+        if overdue:
+            total_val = sum(float(c.get("core_charge", 0)) * int(c.get("qty", 1)) for c in overdue)
+            self._cust_core_warning.setText(
+                f"⚠️ {len(overdue)} OVERDUE CORE{'S' if len(overdue) != 1 else ''} — ${total_val:,.0f}"
+            )
+            self._cust_core_warning.setStyleSheet(
+                "QLabel { background: #ffcdd2; color: #b71c1c; font-weight: bold; "
+                "padding: 4px 8px; border-radius: 3px; font-size: 9pt; }"
+            )
+            self._cust_core_warning.show()
+        else:
+            self._cust_core_warning.hide()
+
+    def _on_load_past_quote(self, item: QListWidgetItem) -> None:
+        """Load a past quote into the dialog."""
+        qid = item.data(Qt.ItemDataRole.UserRole)
+        if not qid:
+            return
+        reply = QMessageBox.question(
+            self, "Load Quote",
+            f"Open quote #{qid}? Unsaved changes to the current quote will be lost.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._quote_id = qid
+        self._quote = get_quote(qid)
+        if self._quote:
+            self.setWindowTitle(f"Quote {self._quote['quote_number']}")
+            self._load_data()
+
+    def _on_add_freq_item(self, item: QListWidgetItem) -> None:
+        """Double-click a frequently ordered product to add it to the quote."""
+        if self._require_customer() is None:
+            return
+        pid = item.data(Qt.ItemDataRole.UserRole)
+        if not pid:
+            return
+        prod = get_product_by_id(int(pid))
+        if not prod:
+            return
+        if prod.get("inventory_status") == "pre_inventory":
+            QMessageBox.warning(
+                self, "Pre-Inventory Item",
+                "This item is still in Pre-Inventory and cannot be added to a quote.\n"
+                "Approve it in the Pre-Inventory Review screen first.",
+            )
+            return
+        if not self._quote_id:
+            self._create_quote_in_db()
+        add_quote_line(
+            quote_id=self._quote_id,
+            product_id=int(pid),
+            description=prod.get("invoice_description") or prod.get("title", ""),
+            supplier=prod.get("supplier", ""),
+            qty=1,
+            unit_price=self._price_for(prod),
+            unit_cost=float(prod.get("cost") or 0),
+            core_charge=float(prod.get("core_sell_price") or prod.get("core_charge") or 0),
+        )
+        self._quote = get_quote(self._quote_id)
+        self._refresh_lines()
+
+    def _load_data(self) -> None:
+        """Populate form from existing quote or presets."""
+        if self._preset_customer_id:
+            idx = self._customer_combo.findData(self._preset_customer_id)
+            if idx >= 0:
+                self._customer_combo.setCurrentIndex(idx)
+
+        if self._quote:
+            q = self._quote
+            self._quote_num_label.setText(q.get("quote_number", ""))
+
+            cid = q.get("customer_id")
+            if cid:
+                idx = self._customer_combo.findData(cid)
+                if idx >= 0:
+                    self._customer_combo.setCurrentIndex(idx)
+
+            if q.get("quote_date"):
+                self._quote_date.setDate(
+                    QDate.fromString(str(q["quote_date"])[:10], "yyyy-MM-dd")
+                )
+            if q.get("expiration_date"):
+                self._exp_date.setDate(
+                    QDate.fromString(str(q["expiration_date"])[:10], "yyyy-MM-dd")
+                )
+
+            self._terms_edit.setCurrentText(q.get("terms") or "")
+            self._esn_edit.setText(q.get("esn") or "")
+            self._vin_edit.setText(q.get("vin") or "")
+            self._job_edit.setText(q.get("job_number") or "")
+            self._notes_edit.setPlainText(q.get("notes") or "")
+            self._tax_spin.setValue(float(q.get("tax") or 0))
+            # Phase J — fuel surcharge.
+            try:
+                self._fuel_spin.blockSignals(True)
+                self._fuel_spin.setValue(float(q.get("fuel_surcharge") or 0))
+                self._fuel_spin.blockSignals(False)
+            except Exception:
+                pass
+
+            # 3% CC convenience-fee toggle.
+            try:
+                self._cc_fee_check.blockSignals(True)
+                self._cc_fee_check.setChecked(bool(int(q.get("cc_fee_enabled") or 0)))
+                self._cc_fee_check.blockSignals(False)
+            except Exception:
+                pass
+
+            # Restore manufacturer selection
+            mfr = q.get("manufacturer") or ""
+            idx = self._banner_mfr.findText(mfr)
+            if idx >= 0:
+                self._banner_mfr.setCurrentIndex(idx)
+            elif mfr:
+                self._banner_mfr.setCurrentText(mfr)
+
+            # Restore equipment type/model
+            eq_type = (q.get("equipment_type") or "").lower()
+            eq_idx = self._banner_equip_type.findData(eq_type)
+            if eq_idx >= 0:
+                self._banner_equip_type.setCurrentIndex(eq_idx)
+            self._banner_equip_model.setText(q.get("equipment_model") or "")
+            # If equipment_make differs from legacy manufacturer, prefer it.
+            eq_make = q.get("equipment_make")
+            if eq_make:
+                mk_idx = self._banner_mfr.findText(eq_make)
+                if mk_idx >= 0:
+                    self._banner_mfr.setCurrentIndex(mk_idx)
+                else:
+                    self._banner_mfr.setCurrentText(eq_make)
+
+            self._update_esn_vin_banner()
+
+            status = q.get("status", "draft").upper()
+            self._status_label.setText(status)
+            self._update_status_style(status)
+
+            # Restore priority
+            pri = q.get("priority", "medium") or "medium"
+            idx = self._priority_combo.findData(pri)
+            if idx >= 0:
+                self._priority_combo.setCurrentIndex(idx)
+
+            self._refresh_lines()
+            self._refresh_comments()
+        else:
+            self._quote_num_label.setText(generate_quote_number())
+            # Apply user-configured defaults for new quotes (Settings → Invoice
+            # tab → Shipping & Delivery).
+            try:
+                default_method = (get_setting("default_shipping_method", "") or "").strip()
+                if default_method:
+                    midx = self._ship_method_combo.findText(default_method)
+                    if midx >= 0:
+                        self._ship_method_combo.setCurrentIndex(midx)
+                    else:
+                        self._ship_method_combo.setCurrentText(default_method)
+                default_fee_raw = get_setting("default_shipping_fee", "0") or "0"
+                try:
+                    default_fee = float(default_fee_raw)
+                except (TypeError, ValueError):
+                    default_fee = 0.0
+                if default_fee > 0:
+                    self._ship_cost_spin.setValue(default_fee)
+            except Exception:
+                pass
+
+        if self._preset_product_ids and not self._quote:
+            self._add_preset_products()
+
+        # Lock the dialog if the quote has already been converted to an SO.
+        self._apply_locked_state()
+        # Refresh the PO badge from the (possibly just-loaded) Job/PO# field.
+        try:
+            self._refresh_po_badge()
+        except Exception:
+            pass
+        # D1: refresh QBO estimate badge.
+        try:
+            self._refresh_qbo_estimate_badge()
+        except Exception:
+            pass
+
+    def _add_preset_products(self) -> None:
+        for pid in self._preset_product_ids:
+            prod = get_product_by_id(pid)
+            if not prod:
+                continue
+            if not self._quote_id:
+                self._create_quote_in_db()
+            add_quote_line(
+                quote_id=self._quote_id,
+                product_id=pid,
+                description=prod.get("invoice_description") or prod.get("title", ""),
+                supplier=prod.get("supplier", ""),
+                qty=1,
+                unit_price=float(prod.get("selling_price") or 0),
+                unit_cost=float(prod.get("cost") or 0),
+                core_charge=float(prod.get("core_sell_price") or prod.get("core_charge") or 0),
+            )
+        if self._quote_id:
+            self._quote = get_quote(self._quote_id)
+            self._refresh_lines()
+
+    def _price_for(self, prod: dict) -> float:
+        """Resolve unit price via compute_price (tiered pricing v2).
+
+        Falls back to ``selling_price`` if computation fails.
+        """
+        try:
+            pid = prod.get("id") or prod.get("product_id")
+            if not pid:
+                return float(prod.get("selling_price") or 0)
+            cid = self._customer_combo.currentData() if hasattr(self, "_customer_combo") else None
+            from db import compute_price
+            r = compute_price(int(pid), customer_id=int(cid) if cid else None)
+            net = r.get("net_price")
+            if net is not None and float(net) > 0:
+                return float(net)
+        except Exception:
+            pass
+        return float(prod.get("selling_price") or 0)
+
+    def _create_quote_in_db(self) -> None:
+        customer_id = self._customer_combo.currentData()
+        qdate = self._quote_date.date().toString("yyyy-MM-dd")
+        exp = self._exp_date.date().toString("yyyy-MM-dd")
+        terms = self._terms_edit.currentText().strip() or None
+        notes = self._notes_edit.toPlainText().strip() or None
+        esn = self._esn_edit.text().strip() or None
+        vin = self._vin_edit.text().strip() or None
+        manufacturer = self._banner_mfr.currentText() or None
+        job_number = self._job_edit.text().strip() or None
+        equipment_type = self._banner_equip_type.currentData() or None
+        equipment_make = manufacturer
+        equipment_model = self._banner_equip_model.text().strip() or None
+
+        result = create_quote(
+            customer_id=customer_id,
+            quote_date=qdate,
+            expiration_date=exp,
+            terms=terms,
+            notes=notes,
+            esn=esn,
+            vin=vin,
+            manufacturer=manufacturer,
+            job_number=job_number,
+            equipment_type=equipment_type,
+            equipment_make=equipment_make,
+            equipment_model=equipment_model,
+        )
+        self._quote_id = result["quote_id"]
+        self._quote_num_label.setText(result["quote_number"])
+        self._quote = get_quote(self._quote_id)
+
+    # ==================================================================
+    #  LINES TABLE
+    # ==================================================================
+    def _refresh_option_pills(self) -> None:
+        """Show a pill strip listing each option group present.
+
+        Clicking a pill marks that group as the customer's choice
+        (``quotes.selected_option_group``) so totals + conversion only
+        include matching lines plus the always-required ones.
+        """
+        # Clear existing pills.
+        while self._option_pill_layout.count():
+            item = self._option_pill_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+        if not self._quote:
+            self._option_pill_bar.hide()
+            return
+
+        groups: list[str] = []
+        seen = set()
+        for ln in self._quote.get("lines", []):
+            g = (ln.get("option_group") or "").strip()
+            if g and g not in seen:
+                seen.add(g)
+                groups.append(g)
+
+        if not groups:
+            self._option_pill_bar.hide()
+            return
+
+        selected = (self._quote.get("selected_option_group") or "").strip() or None
+
+        from PySide6.QtWidgets import QPushButton, QLabel
+        from engine.quote_packages import short_package_label, RECOMMENDED_TIER
+        self._option_pill_layout.addWidget(QLabel("<b>Packages:</b>"))
+        for g in groups:
+            is_sel = (g == selected)
+            is_recommended = (g.strip().upper() == RECOMMENDED_TIER)
+            label = short_package_label(g)
+            if is_recommended:
+                label += "  ⭐"
+            if is_sel:
+                label += "  ✓"
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setChecked(is_sel)
+            # Selected = olive fill; recommended (unselected) = subtle
+            # olive outline so it reads as the suggested middle option
+            # without screaming.
+            if is_sel:
+                css = (
+                    "QPushButton { padding: 4px 14px; border-radius: 12px; "
+                    "background: #6B7A4A; color: white; font-weight: bold; "
+                    "border: 1px solid #4d5a36; }"
+                    "QPushButton:hover { background: #5A6A3A; }"
+                )
+            elif is_recommended:
+                css = (
+                    "QPushButton { padding: 4px 14px; border-radius: 12px; "
+                    "background: #f1f3ea; color: #3d4a2c; font-weight: bold; "
+                    "border: 1.5px solid #6B7A4A; }"
+                    "QPushButton:hover { background: #e6ead4; }"
+                )
+            else:
+                css = (
+                    f"QPushButton {{ padding: 4px 14px; border-radius: 12px; "
+                    f"background: #2a333a; color: {_COLOR_TEXT}; "
+                    f"border: 1px solid {_COLOR_BORDER}; }}"
+                    "QPushButton:hover { background: #323c44; color: #ffffff; }"
+                )
+            btn.setStyleSheet(css)
+            btn.clicked.connect(
+                lambda _checked, gg=g: self._on_pick_option_group(gg)
+            )
+            self._option_pill_layout.addWidget(btn)
+
+        # Clear pill
+        clear_btn = QPushButton("None")
+        clear_btn.setStyleSheet(
+            f"QPushButton {{ padding: 3px 10px; border-radius: 12px; "
+            f"background: #1d242a; border: 1px dashed {_COLOR_BORDER}; color: {_COLOR_TEXT_DIM}; }}"
+            "QPushButton:hover { background: #2a333a; }"
+        )
+        clear_btn.clicked.connect(lambda: self._on_pick_option_group(None))
+        self._option_pill_layout.addWidget(clear_btn)
+        self._option_pill_layout.addStretch()
+        self._option_pill_bar.show()
+
+    def _on_pick_option_group(self, group: str | None) -> None:
+        """Set or clear the selected option group, then refresh totals."""
+        if not self._quote_id:
+            return
+        update_quote(self._quote_id, selected_option_group=(group or None))
+        self._quote = get_quote(self._quote_id)
+        self._refresh_lines()
+        self._update_totals_display()
+
+    def _refresh_lines(self) -> None:
+        self._lines_table.blockSignals(True)
+        self._lines_table.setRowCount(0)
+        # Keep the option-pill strip in sync.
+        self._refresh_option_pills()
+        if not self._quote:
+            self._lines_table.blockSignals(False)
+            self._update_totals_display()
+            return
+
+        lines = self._quote.get("lines", [])
+        # Group order: required parts first (each with its warranty child
+        # immediately beneath), then any other optional/orphan lines.
+        by_parent: dict[int, list[dict]] = {}
+        roots: list[dict] = []
+        for ln in lines:
+            pid = ln.get("parent_line_id")
+            if pid:
+                by_parent.setdefault(int(pid), []).append(ln)
+            else:
+                roots.append(ln)
+        required_roots = [l for l in roots if not l.get("is_optional")]
+        optional_roots = [l for l in roots if l.get("is_optional")]
+        sorted_lines: list[dict] = []
+        for parent in required_roots + optional_roots:
+            sorted_lines.append(parent)
+            sorted_lines.extend(by_parent.get(int(parent.get("id") or 0), []))
+
+        self._lines_table.setRowCount(len(sorted_lines))
+
+        for row, ln in enumerate(sorted_lines):
+            is_opt = bool(ln.get("is_optional"))
+            opt_color = QColor("#2e7d32")  # green for optional parts
+
+            def mk(text: str) -> QTableWidgetItem:
+                it = QTableWidgetItem(str(text) if text else "")
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if is_opt:
+                    it.setForeground(opt_color)
+                return it
+
+            def mk_editable(text: str) -> QTableWidgetItem:
+                it = QTableWidgetItem(str(text) if text else "")
+                it.setFlags(it.flags() | Qt.ItemFlag.ItemIsEditable)
+                if is_opt:
+                    it.setForeground(opt_color)
+                return it
+
+            # ── Discount line: single row with em-dash SKU, italic red description,
+            # parenthesized negative total, blank for everything else.
+            if (ln.get("line_kind") or "product") == "discount":
+                lt = float(ln.get("line_total") or 0)
+                disc_color = QColor("#b91c1c")
+
+                def mkd(text: str, italic: bool = True) -> QTableWidgetItem:
+                    it = QTableWidgetItem(str(text) if text else "")
+                    it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    if italic:
+                        f = it.font(); f.setItalic(True); it.setFont(f)
+                    it.setForeground(disc_color)
+                    return it
+
+                self._lines_table.setItem(row, _L_ID, mk(ln.get("id")))
+                sel_item = QTableWidgetItem()
+                sel_item.setFlags(
+                    sel_item.flags() | Qt.ItemFlag.ItemIsUserCheckable
+                )
+                # Discount lines are always part of the active quote.
+                sel_item.setCheckState(Qt.CheckState.Checked)
+                sel_item.setFlags(sel_item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                self._lines_table.setItem(row, _L_SEL, sel_item)
+                self._lines_table.setItem(row, _L_SKU, mkd("\u2014"))
+                self._lines_table.setItem(row, _L_DESC, mkd(ln.get("description") or "Discount"))
+                self._lines_table.setItem(row, _L_SUPPLIER, mkd(""))
+                self._lines_table.setItem(row, _L_QOH, mkd("\u2014"))
+                self._lines_table.setItem(row, _L_QTY, mkd(""))
+                self._lines_table.setItem(row, _L_COST, mkd(""))
+                self._lines_table.setItem(row, _L_PRICE, mkd(""))
+                self._lines_table.setItem(row, _L_CORE, mkd(""))
+                self._lines_table.setItem(row, _L_FREIGHT, mkd("\u2014"))
+                self._lines_table.setItem(row, _L_WARRANTY, mkd("\u2014"))
+                self._lines_table.setItem(row, _L_TOTAL, mkd(f"(${abs(lt):,.2f})"))
+                self._lines_table.setItem(row, _L_MARGIN, mkd(""))
+                self._lines_table.setItem(row, _L_NOTES, mkd(ln.get("notes") or ""))
+                continue
+
+            self._lines_table.setItem(row, _L_ID, mk(ln.get("id")))
+
+            sel_item = QTableWidgetItem()
+            sel_item.setFlags(sel_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            sel_item.setCheckState(
+                Qt.CheckState.Checked if ln.get("is_selected") else Qt.CheckState.Unchecked
+            )
+            self._lines_table.setItem(row, _L_SEL, sel_item)
+
+            self._lines_table.setItem(row, _L_SKU, mk(ln.get("sku", "")))
+            # Indent + arrow-prefix child add-on lines (e.g. extended warranty)
+            # so they read as belonging to the parent row above them.
+            desc_text = ln.get("description", "") or ""
+            if ln.get("parent_line_id"):
+                desc_text = f"↳ {desc_text}"
+            self._lines_table.setItem(row, _L_DESC, mk(desc_text))
+            self._lines_table.setItem(row, _L_SUPPLIER, mk(ln.get("supplier", "")))
+
+            qoh_raw = ln.get("qty_on_hand")
+            reserved = int(ln.get("qty_reserved") or 0)
+            qoh = None
+            is_inventoried_ln = str(ln.get("product_type") or "inventoried") == "inventoried"
+            if is_inventoried_ln and qoh_raw is not None:
+                qoh = max(int(qoh_raw) - reserved, 0)
+            qoh_text = str(qoh) if qoh is not None else "—"
+            qoh_item = mk(qoh_text)
+            if qoh is not None and is_inventoried_ln:
+                qoh_val = int(qoh)
+                qoh_yellow = int(get_setting("qoh_yellow_threshold", 5) or 5)
+                if qoh_val <= 0:
+                    qoh_item.setForeground(QColor("#c62828"))  # red — out
+                elif qoh_val <= qoh_yellow:
+                    qoh_item.setForeground(QColor("#f59e0b"))  # yellow — low
+                else:
+                    qoh_item.setForeground(QColor("#2e7d32"))  # green — in stock
+            elif not is_inventoried_ln:
+                # Non-stock / special-order lines → blue marker.
+                qoh_item.setForeground(QColor("#1565c0"))
+                qoh_item.setText("S/O")
+                qoh_item.setToolTip("Special-order / non-stock item")
+            self._lines_table.setItem(row, _L_QOH, qoh_item)
+
+            self._lines_table.setItem(row, _L_QTY, mk_editable(ln.get("qty", 1)))
+
+            cost = float(ln.get("unit_cost") or 0)
+            self._lines_table.setItem(row, _L_COST, mk(f"${cost:,.2f}"))
+
+            price = float(ln.get("unit_price") or 0)
+            self._lines_table.setItem(row, _L_PRICE, mk_editable(f"{price:.2f}"))
+
+            core = float(ln.get("core_charge") or 0)
+            core_item = mk_editable(f"{core:.2f}" if core > 0 else "0.00")
+            if core > 0:
+                core_item.setForeground(QColor("#b45309"))
+            self._lines_table.setItem(row, _L_CORE, core_item)
+
+            # Per-line freight (inline editable). Shows "—" when zero.
+            line_ship = float(ln.get("line_shipping") or 0)
+            freight_item = mk_editable(f"{line_ship:.2f}" if line_ship > 0 else "0.00")
+            if line_ship > 0:
+                freight_item.setForeground(QColor("#1565c0"))
+            else:
+                freight_item.setText("—")
+            self._lines_table.setItem(row, _L_FREIGHT, freight_item)
+
+            # Warranty column (v2: months / type / mileage)
+            w_years = int(ln.get("warranty_years") or 0)
+            w_price = float(ln.get("warranty_price") or 0)
+            w_months = int(ln.get("warranty_months") or 0)
+            w_type = ln.get("warranty_type") or "parts_only"
+            w_mileage = ln.get("warranty_mileage_limit")
+            is_warrantable = False
+            mfr_warranty = 0
+            pid = ln.get("product_id")
+            if pid:
+                prod = get_product_by_id(int(pid))
+                if prod:
+                    is_warrantable = bool(prod.get("is_warrantable"))
+                    mfr_warranty = int(prod.get("manufacturer_warranty_months") or 0)
+
+            if not ln.get("is_optional") and not ln.get("parent_line_id"):
+                try:
+                    from engine.warranty import format_standard_warranty, supplier_standard_warranty_for_product
+                    std_months, _, _ = supplier_standard_warranty_for_product(ln)
+                    std_text = format_standard_warranty(std_months)
+                except Exception:
+                    std_text = ""
+            else:
+                std_text = ""
+
+            if std_text:
+                w_item = mk(std_text)
+                w_item.setForeground(QColor("#2e7d32"))
+            elif w_months > 0:
+                from engine.warranty import format_warranty_short
+                w_item = mk(format_warranty_short(w_months, w_type, w_mileage))
+                w_item.setForeground(QColor("#1565c0"))
+            elif w_years > 0:
+                # Legacy fallback for rows created before migration 052
+                w_item = mk(f"+{w_years}yr ${w_price:,.0f}")
+                w_item.setForeground(QColor("#1565c0"))
+            elif is_warrantable:
+                w_item = mk("⚡ Available")
+                w_item.setForeground(QColor("#7c3aed"))
+            else:
+                w_item = mk("—")
+            self._lines_table.setItem(row, _L_WARRANTY, w_item)
+
+            line_ship = float(ln.get("line_shipping") or 0)
+            total = float(ln.get("line_total") or 0) + (w_price * int(ln.get("qty") or 1)) + line_ship
+            total_item = mk(f"${total:,.2f}")
+            if line_ship > 0:
+                total_item.setToolTip(f"Includes ${line_ship:,.2f} freight")
+            self._lines_table.setItem(row, _L_TOTAL, total_item)
+
+            margin = float(ln.get("margin_pct") or 0)
+            margin_item = mk(f"{margin:.1f}%")
+            # Neutral when no margin data yet — never show a red 0.0%
+            # because that misleads users on freshly added lines.
+            if margin <= 0:
+                margin_item.setForeground(QColor("#6b7280"))   # neutral gray
+            elif margin < 10:
+                margin_item.setForeground(QColor("#c62828"))   # red < 10%
+            elif margin < 30:
+                margin_item.setForeground(QColor("#f59e0b"))   # yellow 10-29%
+            else:
+                margin_item.setForeground(QColor("#2e7d32"))   # green 30%+
+            self._lines_table.setItem(row, _L_MARGIN, margin_item)
+
+            # Notes column (editable) — ETA lines shown in bold red.
+            # (Freight is now in its own column, no longer prefixed here.)
+            notes_text = ln.get("notes") or ""
+            display_notes = notes_text
+            notes_item = mk_editable(notes_text)
+            notes_item.setText(display_notes)
+            if not is_opt and (notes_text.startswith("[ETA:") or "\n[ETA:" in notes_text):
+                notes_item.setForeground(QColor("#c62828"))
+                f = notes_item.font()
+                f.setBold(True)
+                notes_item.setFont(f)
+            self._lines_table.setItem(row, _L_NOTES, notes_item)
+
+            # Expand row height if notes have multiple lines
+            if "\n" in display_notes:
+                line_count = display_notes.count("\n") + 1
+                self._lines_table.setRowHeight(row, max(24, 18 * line_count + 6))
+
+            # ── Apply column alignment (Phase 1 polish): center Qty/QOH,
+            # right-align money columns. Description / Notes / SKU stay left.
+            _RIGHT = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            _CENTER = Qt.AlignmentFlag.AlignCenter
+            for _col in (_L_COST, _L_PRICE, _L_CORE, _L_FREIGHT, _L_TOTAL, _L_MARGIN):
+                _cell = self._lines_table.item(row, _col)
+                if _cell:
+                    _cell.setTextAlignment(_RIGHT)
+            for _col in (_L_QTY, _L_QOH):
+                _cell = self._lines_table.item(row, _col)
+                if _cell:
+                    _cell.setTextAlignment(_CENTER)
+
+            # Mark optional rows with italic font for extra visual cue
+            if is_opt:
+                for c in range(_L_COLS):
+                    cell = self._lines_table.item(row, c)
+                    if cell:
+                        f = cell.font()
+                        f.setItalic(True)
+                        cell.setFont(f)
+
+        self._lines_table.blockSignals(False)
+        self._lines_table.itemChanged.connect(self._on_line_checkbox_changed)
+        self._lines_table.resizeColumnsToContents()
+        # Keep Description as stretch but other columns user-resizable
+        self._lines_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
+        self._lines_table.horizontalHeader().setSectionResizeMode(
+            _L_DESC, QHeaderView.ResizeMode.Stretch
+        )
+        self._update_totals_display()
+        self._refresh_ship_eta_from_lines()
+
+    def _refresh_ship_eta_from_lines(self) -> None:
+        """Pre-fill the Shipping-tab ETA from the latest line-level ETA.
+
+        Uses ``engine.eta.compute_line_eta`` across all tier-A (Requested
+        Parts) lines and picks the latest computed ``eta_date`` so the
+        Shipping tab mirrors what the customer sees as "Expected Ready" on
+        the printed PDF.
+        """
+        if not self._quote or not getattr(self, "_ship_eta_edit", None):
+            return
+        try:
+            from engine.eta import compute_line_eta
+            from engine.quote_tiers import classify_lines
+        except Exception:
+            return
+        lines = self._quote.get("lines", [])
+        if not lines:
+            return
+        try:
+            tiers = classify_lines(lines)
+            tier_a = tiers.get("tier_a", [])
+        except Exception:
+            tier_a = lines
+        latest_iso: str | None = None
+        for ln in tier_a:
+            pid = ln.get("product_id")
+            if not pid:
+                continue
+            try:
+                eta = compute_line_eta(int(pid), int(ln.get("qty") or 1))
+            except Exception:
+                continue
+            d = eta.get("eta_date") if eta else None
+            if d and (latest_iso is None or str(d) > latest_iso):
+                latest_iso = str(d)
+        if not latest_iso:
+            return
+        try:
+            qd = QDate.fromString(latest_iso[:10], "yyyy-MM-dd")
+            if qd.isValid():
+                self._ship_eta_edit.blockSignals(True)
+                self._ship_eta_edit.setDate(qd)
+                self._ship_eta_edit.blockSignals(False)
+        except Exception:
+            pass
+
+    def _on_line_checkbox_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() != _L_SEL:
+            return
+        row = item.row()
+        line_id_item = self._lines_table.item(row, _L_ID)
+        if not line_id_item:
+            return
+        line_id = int(line_id_item.text())
+        selected = item.checkState() == Qt.CheckState.Checked
+        update_quote_line(line_id, is_selected=selected)
+        self._quote = get_quote(self._quote_id)
+        self._update_totals_display()
+
+    def _update_totals_display(self) -> None:
+        if not self._quote:
+            self._subtotal_label.setText("$0.00")
+            self._core_label.setText("$0.00")
+            self._shipping_label.setText("—")
+            self._optional_label.setText("—")
+            self._total_label.setText("$0.00")
+            self._margin_label.setText("—")
+            if hasattr(self, "_tax_amount_label"):
+                self._tax_amount_label.setText("= $0.00")
+            self._footer_lines.setText("Lines: 0")
+            self._footer_subtotal.setText("Subtotal: $0.00")
+            self._footer_revenue.setText("Revenue: $0.00")
+            self._footer_cost.setText("Cost: $0.00")
+            self._footer_profit.setText("Profit: $0.00")
+            self._footer_total.setText("Total: $0.00")
+            self._footer_margin.setText("Margin: —")
+            return
+
+        from engine.quote_tiers import classify_lines
+
+        subtotal = float(self._quote.get("subtotal") or 0)
+        cores = float(self._quote.get("core_total") or 0)
+        lines = self._quote.get("lines", [])
+
+        tiers = classify_lines(lines)
+        a_total = tiers["a_total"]
+        b_addons = tiers["b_addons"]
+        b_total = tiers["b_total"]
+        c_warranty = tiers["c_warranty"]
+        c_total = tiers["c_total"]
+
+        # Per-line shipping for tier A only (shown in dedicated row).
+        shipping_total = sum(
+            float(l.get("line_shipping") or 0) for l in tiers["tier_a"]
+        )
+
+        # Tax / fees layered on top of the most-inclusive option (C).
+        tax_rate = float(self._quote.get("tax") or 0)
+        tax_amt = a_total * tax_rate / 100.0
+        # Customer-facing top-line: include cores + tax on top of Option C.
+        top_total = c_total + cores + tax_amt
+
+        self._subtotal_label.setText(f"${subtotal:,.2f}")
+        self._core_label.setText(f"${cores:,.2f}" if cores > 0 else "—")
+        self._core_label.setStyleSheet(
+            "font-size: 11pt; color: #b45309;" if cores > 0 else "font-size: 11pt; color: #999;"
+        )
+        self._shipping_label.setText(f"${shipping_total:,.2f}" if shipping_total > 0 else "—")
+
+        # ── Option A/B/C breakdown shown in the "Optional" cell ──
+        # Stack as small rich-text rows so the user sees how each tier rolls up.
+        if tiers["has_b"] or tiers["has_c"]:
+            parts = [
+                f'<span style="color:#555;">A: <b>${a_total:,.2f}</b></span>',
+            ]
+            if tiers["has_b"]:
+                parts.append(
+                    f'<span style="color:#2e7d32;">+ Add-Ons ${b_addons:,.2f} '
+                    f'→ B: <b>${b_total:,.2f}</b></span>'
+                )
+            if tiers["has_c"]:
+                parts.append(
+                    f'<span style="color:#1565c0;">+ Warranty ${c_warranty:,.2f} '
+                    f'→ C: <b>${c_total:,.2f}</b></span>'
+                )
+            self._optional_label.setText("<br>".join(parts))
+        else:
+            self._optional_label.setText("—")
+        self._optional_label.setTextFormat(Qt.TextFormat.RichText)
+
+        self._total_label.setText(f"${top_total:,.2f}")
+        if hasattr(self, "_tax_amount_label"):
+            self._tax_amount_label.setText(f"= ${tax_amt:,.2f}")
+
+        # Margin computed against tier A only (the baseline customer
+        # actually committed to). Add-ons/warranty live in their own
+        # buckets and shouldn't dilute the headline margin.
+        total_cost = sum(
+            float(l.get("unit_cost") or 0) * int(l.get("qty") or 1)
+            for l in tiers["tier_a"]
+        )
+        revenue = a_total
+        profit = revenue - total_cost
+        if revenue > 0 and total_cost > 0:
+            overall_margin = ((revenue - total_cost) / revenue) * 100
+            self._margin_label.setText(f"{overall_margin:.1f}%")
+            margin_text = f"Margin: {overall_margin:.1f}%"
+        else:
+            overall_margin = 0
+            self._margin_label.setText("—")
+            margin_text = "Margin: —"
+
+        self._footer_lines.setText(f"Lines: {len(lines)}")
+        self._footer_subtotal.setText(f"Subtotal: ${a_total:,.2f}")
+        self._footer_revenue.setText(f"Revenue: ${revenue:,.2f}")
+        self._footer_cost.setText(f"Cost: ${total_cost:,.2f}")
+        self._footer_profit.setText(f"Profit: ${profit:,.2f}")
+        if profit < 0:
+            self._footer_profit.setStyleSheet("font-size: 10pt; font-weight: bold; color: #c62828;")
+        else:
+            self._footer_profit.setStyleSheet("font-size: 10pt; font-weight: bold; color: #2e7d32;")
+        # Footer total = most-inclusive customer-facing number.
+        self._footer_total.setText(f"Total: ${top_total:,.2f}")
+        self._footer_margin.setText(margin_text)
+        if overall_margin > 0:
+            if overall_margin < 10:
+                self._footer_margin.setStyleSheet("font-size: 10pt; color: #c62828; font-weight: bold;")
+            elif overall_margin < 30:
+                self._footer_margin.setStyleSheet("font-size: 10pt; color: #f59e0b; font-weight: bold;")
+            else:
+                self._footer_margin.setStyleSheet("font-size: 10pt; color: #2e7d32; font-weight: bold;")
+        else:
+            self._footer_margin.setStyleSheet("font-size: 10pt;")
+
+    def _update_status_style(self, status: str) -> None:
+        colors = {
+            "DRAFT": "background: #e3f2fd; color: #1565c0;",
+            "SENT": "background: #fff3e0; color: #e65100;",
+            "ACCEPTED": "background: #e8f5e9; color: #2e7d32;",
+            "INVOICED": "background: #f3e5f5; color: #6a1b9a;",
+            "NEEDS FOLLOW UP": "background: #fff8e1; color: #B45309;",
+            "LOST": "background: #ffebee; color: #b71c1c;",
+            "VOID": "background: #eceff1; color: #455a64;",
+        }
+        style = colors.get(status, "background: #eee; color: #333;")
+        self._status_label.setStyleSheet(
+            f"font-weight: bold; padding: 2px 10px; border-radius: 4px; "
+            f"font-size: 10pt; {style}"
+        )
+        # Only offer "Reopen" for lost quotes.
+        if hasattr(self, "_reopen_btn"):
+            self._reopen_btn.setVisible(status == "LOST")
+
+    def _refresh_status_badge(self) -> None:
+        """Sync the status badge text + colour from ``self._quote``."""
+        if not getattr(self, "_status_label", None):
+            return
+        status = (
+            (self._quote.get("status") if self._quote else "draft") or "draft"
+        ).upper().replace("_", " ")
+        self._status_label.setText(status)
+        self._update_status_style(status)
+
+    def _update_esn_vin_banner(self) -> None:
+        """Show/hide the vehicle info banner based on current field values."""
+        esn = self._esn_edit.text().strip()
+        vin = self._vin_edit.text().strip()
+        platform = ""
+        try:
+            txt = self._engine_platform_combo.currentText().strip()
+            if txt and not txt.startswith("—"):
+                platform = txt
+        except Exception:
+            platform = ""
+
+        if esn or vin:
+            self._banner_esn.setText(f"ESN: {esn}" if esn else "")
+            self._banner_esn.setVisible(bool(esn))
+            self._banner_vin.setText(f"VIN: {vin}" if vin else "")
+            self._banner_vin.setVisible(bool(vin))
+            self._esn_vin_banner.show()
+        else:
+            self._esn_vin_banner.hide()
+
+        # Inline resolved-vehicle badge (green dot) — mirrors the legacy
+        # right-side ESN Finder summary, now compact and inline.
+        try:
+            parts: list[str] = []
+            if platform:
+                parts.append(platform)
+            if esn:
+                parts.append(f"ESN {esn}")
+            if vin:
+                parts.append(f"VIN {vin[-6:]}")
+            if parts:
+                self._vehicle_resolved_label.setText(
+                    "● " + " · ".join(parts)
+                )
+                self._vehicle_resolved_label.show()
+            else:
+                self._vehicle_resolved_label.hide()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    #  POP OUT — detach this quote as a non-modal top-level window
+    # ------------------------------------------------------------------
+    def _on_pop_out(self) -> None:
+        """Save the current quote and re-open it as a non-modal window so
+        the user can return to the main window and open another quote."""
+        # Try to save first so we don't drop in-flight edits.
+        try:
+            self._on_save_silent()
+        except Exception as e:
+            log.warning("Pop-out save failed: %s", e)
+            QMessageBox.warning(
+                self, "Pop Out",
+                f"Couldn't save before popping out:\n{e}",
+            )
+            return
+
+        qid = self._quote_id
+        if not qid:
+            QMessageBox.information(
+                self, "Pop Out",
+                "Please fill in a customer and at least one line so the "
+                "quote can be saved before being popped out.",
+            )
+            return
+
+        parent_win = self.parent()
+        # Close this modal dialog first so the main window regains focus.
+        self.accept()
+
+        try:
+            new_dlg = QuoteDialog(quote_id=qid, parent=parent_win)
+            new_dlg.setModal(False)
+            new_dlg.setWindowFlag(Qt.WindowType.Window, True)
+            # Disable pop-out on the detached copy — it's already detached.
+            if hasattr(new_dlg, "_popout_btn"):
+                new_dlg._popout_btn.setText("⧉ Popped Out")
+                new_dlg._popout_btn.setEnabled(False)
+            new_dlg.show()
+            new_dlg.raise_()
+            new_dlg.activateWindow()
+        except Exception as e:
+            log.exception("Pop-out re-open failed: %s", e)
+            QMessageBox.warning(
+                parent_win, "Pop Out",
+                f"Could not re-open the quote in pop-out mode:\n{e}",
+            )
+
+    # ==================================================================
+    #  CENTER — PART SEARCH
+    # ==================================================================
+    def _on_quick_add(self) -> None:
+        """Enter key = search + instantly add first result to quote."""
+        if self._require_customer() is None:
+            return
+        query = self._sku_edit.text().strip()
+        if not query:
+            return
+
+        results = search_by_part_number(query)
+        browse_results = browse_products(search=query, limit=50)
+        seen_ids = {r.get("id") or r.get("product_id") for r in results}
+        for br in browse_results:
+            if br.get("id") not in seen_ids:
+                results.append(br)
+
+        if not results:
+            # No results — fall back to normal search display
+            self._on_search_parts()
+            return
+
+        p = results[0]
+        pid = p.get("id") or p.get("product_id")
+        if pid:
+            full = get_product_by_id(int(pid))
+            if full:
+                p = full
+
+        desc = p.get("invoice_description") or p.get("title", p.get("sku", ""))
+        price = self._price_for(p)
+        cost = float(p.get("cost") or 0)
+        core = float(p.get("core_sell_price") or p.get("core_charge") or 0)
+        supplier = p.get("supplier", "")
+
+        if not self._quote_id:
+            self._create_quote_in_db()
+
+        add_quote_line(
+            quote_id=self._quote_id,
+            product_id=int(pid) if pid else None,
+            description=desc,
+            supplier=supplier,
+            qty=self._qty_spin.value(),
+            unit_price=price,
+            unit_cost=cost,
+            core_charge=core,
+        )
+
+        self._quote = get_quote(self._quote_id)
+        self._refresh_lines()
+        self._search_table.hide()
+        self._search_count_label.hide()
+        self._sku_edit.clear()
+        self._qty_spin.setValue(1)
+        self._sku_edit.setFocus()
+
+    def _on_search_parts(self) -> None:
+        query = self._sku_edit.text().strip()
+        if not query:
+            return
+
+        results = search_by_part_number(query)
+        browse_results = browse_products(search=query, limit=50)
+        seen_ids = {r.get("id") or r.get("product_id") for r in results}
+        for br in browse_results:
+            if br.get("id") not in seen_ids:
+                results.append(br)
+
+        self._search_results = results[:50]
+        self._search_table.setRowCount(len(self._search_results))
+
+        for i, p in enumerate(self._search_results):
+            def mk(text: str) -> QTableWidgetItem:
+                it = QTableWidgetItem(str(text) if text else "")
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                return it
+
+            # Build hover tooltip with OEM + cross-references
+            oem = (p.get("oem_part_number") or "").strip()
+            xrefs: list[str] = []
+            pid_for_xref = p.get("id") or p.get("product_id")
+            if pid_for_xref:
+                try:
+                    from db.inventory import get_interchanges
+                    for r in get_interchanges(int(pid_for_xref)):
+                        num = (r.get("interchange_number") or "").strip()
+                        typ = (r.get("interchange_type") or "").strip()
+                        mfg = (r.get("manufacturer") or "").strip()
+                        if not num:
+                            continue
+                        label = num
+                        meta = " / ".join([s for s in (typ, mfg) if s])
+                        if meta:
+                            label = f"{num} <span style='color:#6b7280;'>({meta})</span>"
+                        xrefs.append(label)
+                except Exception:
+                    pass
+            tooltip_lines = [
+                f"<b>{p.get('sku', '')}</b> &mdash; {p.get('title', '')}",
+                f"<span style='color:#6b7280;'>Supplier:</span> {p.get('supplier', '') or '\u2014'}",
+                f"<span style='color:#6b7280;'>OEM Part #:</span> "
+                + (f"<b>{oem}</b>" if oem else "<i>none</i>"),
+            ]
+            if xrefs:
+                items_html = "<br/>".join(f"&nbsp;&nbsp;\u2022 {x}" for x in xrefs)
+                tooltip_lines.append(
+                    f"<span style='color:#6b7280;'>Cross References:</span><br/>{items_html}"
+                )
+            else:
+                tooltip_lines.append("<span style='color:#6b7280;'>Cross References:</span> <i>none</i>")
+            tooltip_html = "<div style='font-size:11pt;'>" + "<br/>".join(tooltip_lines) + "</div>"
+
+            pid = p.get("id") or p.get("product_id", "")
+            self._search_table.setItem(i, 0, mk(pid))
+            self._search_table.setItem(i, 1, mk(p.get("sku", "")))
+            self._search_table.setItem(i, 2, mk(p.get("title", "")))
+            self._search_table.setItem(i, 3, mk(p.get("supplier", "")))
+
+            qoh_raw = p.get("qty_on_hand", 0)
+            reserved = int(p.get("qty_reserved") or 0)
+            is_inventoried_p = str(p.get("product_type") or "inventoried") == "inventoried"
+            if is_inventoried_p:
+                qoh = max(int(qoh_raw or 0) - reserved, 0)
+                qoh_item = mk(str(qoh))
+                if qoh <= 0:
+                    qoh_item.setForeground(QColor("#c62828"))
+            else:
+                qoh_item = mk("—")
+            self._search_table.setItem(i, 4, qoh_item)
+
+            cost = float(p.get("cost") or 0)
+            self._search_table.setItem(i, 5, mk(f"${cost:,.2f}"))
+
+            price = float(p.get("selling_price") or 0)
+            self._search_table.setItem(i, 6, mk(f"${price:,.2f}"))
+
+            margin = ((price - cost) / price * 100) if price > 0 and cost > 0 else 0
+            margin_item = mk(f"{margin:.1f}%")
+            if margin <= 0:
+                margin_item.setForeground(QColor("#6b7280"))  # neutral
+            elif margin < 10:
+                margin_item.setForeground(QColor("#c62828"))
+            elif margin < 30:
+                margin_item.setForeground(QColor("#f59e0b"))
+            else:
+                margin_item.setForeground(QColor("#2e7d32"))
+            self._search_table.setItem(i, 7, margin_item)
+
+            engine = p.get("engine_manufacturer", "")
+            if p.get("engine_model"):
+                engine = f"{engine} {p['engine_model']}".strip()
+            self._search_table.setItem(i, 8, mk(engine))
+
+            # Apply hover tooltip with OEM + cross-references to every cell
+            for col in range(self._search_table.columnCount()):
+                cell = self._search_table.item(i, col)
+                if cell is not None:
+                    cell.setToolTip(tooltip_html)
+
+        self._search_table.resizeColumnsToContents()
+        self._search_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch
+        )
+        self._search_table.show()
+
+        # Update search count badge
+        count = len(self._search_results)
+        self._search_count_label.setText(f"Found {count} result{'s' if count != 1 else ''}")
+        self._search_count_label.show()
+
+    def _on_add_from_search(self) -> None:
+        if self._require_customer() is None:
+            return
+        row = self._search_table.currentRow()
+        if row < 0 or row >= len(self._search_results):
+            return
+        p = self._search_results[row]
+
+        pid = p.get("id") or p.get("product_id")
+        if pid:
+            full = get_product_by_id(int(pid))
+            if full:
+                p = full
+
+        # Block pre-inventory items
+        if p.get("inventory_status") == "pre_inventory":
+            QMessageBox.warning(
+                self, "Pre-Inventory Item",
+                "This item is still in Pre-Inventory and cannot be added to a quote.\n"
+                "Approve it in the Pre-Inventory Review screen first.",
+            )
+            return
+
+        # Duplicate line warning
+        if pid and self._quote:
+            existing_skus = [
+                ln.get("product_id") for ln in self._quote.get("lines", [])
+            ]
+            if int(pid) in [int(x) for x in existing_skus if x]:
+                ans = QMessageBox.question(
+                    self, "Duplicate Part",
+                    f"'{p.get('sku', '')}' is already on this quote.\nAdd another line?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if ans != QMessageBox.StandardButton.Yes:
+                    return
+
+        desc = p.get("invoice_description") or p.get("title", p.get("sku", ""))
+        price = self._price_for(p)
+        cost = float(p.get("cost") or 0)
+        core = float(p.get("core_sell_price") or p.get("core_charge") or 0)
+        supplier = p.get("supplier", "")
+
+        if not self._quote_id:
+            self._create_quote_in_db()
+
+        add_quote_line(
+            quote_id=self._quote_id,
+            product_id=int(pid) if pid else None,
+            description=desc,
+            supplier=supplier,
+            qty=self._qty_spin.value(),
+            unit_price=price,
+            unit_cost=cost,
+            core_charge=core,
+        )
+
+        self._quote = get_quote(self._quote_id)
+        self._refresh_lines()
+        self._search_table.hide()
+        self._search_count_label.hide()
+        self._sku_edit.clear()
+        self._sku_edit.setFocus()
+
+        # ── Suggested sells popup ──
+        if pid:
+            self._show_suggested_sells(int(pid))
+
+    # ==================================================================
+    #  ADD / REMOVE LINES
+    # ==================================================================
+    def _on_add_line(self) -> None:
+        if self._require_customer() is None:
+            return
+        desc = self._desc_edit.text().strip()
+        if not desc:
+            QMessageBox.information(
+                self, "No Description",
+                "Enter a description, or use Search to find a product.",
+            )
+            return
+
+        if not self._quote_id:
+            self._create_quote_in_db()
+
+        add_quote_line(
+            quote_id=self._quote_id,
+            product_id=None,
+            description=desc,
+            supplier="",
+            qty=self._qty_spin.value(),
+            unit_price=self._price_spin.value(),
+            unit_cost=self._cost_spin.value(),
+            core_charge=0,
+        )
+
+        self._quote = get_quote(self._quote_id)
+        self._refresh_lines()
+
+        self._desc_edit.clear()
+        self._qty_spin.setValue(1)
+        self._price_spin.setValue(0)
+        self._cost_spin.setValue(0)
+        self._sku_edit.setFocus()
+
+    def _on_add_discount_line(self) -> None:
+        """Open the shared DiscountLineDialog and append a negative line."""
+        if self._require_customer() is None:
+            return
+        if not self._quote_id:
+            self._create_quote_in_db()
+        # Compute current non-discount subtotal for % preview.
+        subtotal = 0.0
+        for ln in (self._quote.get("lines") or []) if self._quote else []:
+            if (ln.get("line_kind") or "product") == "discount":
+                continue
+            subtotal += float(ln.get("line_total") or 0)
+        dlg = DiscountLineDialog(
+            self,
+            doc_type="quote",
+            product_subtotal=subtotal,
+            default_description="Discount",
+        )
+        if dlg.exec() != dlg.DialogCode.Accepted or not dlg.result_payload:
+            return
+        payload = dlg.result_payload
+        result = add_discount_line(
+            "quote",
+            self._quote_id,
+            description=payload["description"],
+            discount_amount=payload.get("discount_amount"),
+            discount_pct=payload.get("discount_pct"),
+        )
+        if not result.get("success"):
+            QMessageBox.warning(
+                self,
+                "Discount Line",
+                f"Could not add discount line: {result.get('error', 'unknown error')}",
+            )
+            return
+        self._quote = get_quote(self._quote_id)
+        self._refresh_lines()
+
+    def _show_suggested_sells(self, product_id: int) -> None:
+        """Show the suggested sells popup for a product, adding checked items as quote lines."""
+        from .suggested_sells_popup import SuggestedSellsPopup
+
+        dlg = SuggestedSellsPopup(product_id, parent=self)
+        if not dlg.has_suggestions:
+            return
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        for item in dlg.selected_items():
+            add_quote_line(
+                quote_id=self._quote_id,
+                product_id=item["product_id"],
+                description=item["title"],
+                supplier="",
+                qty=item["qty"],
+                unit_price=item["selling_price"],
+                unit_cost=float(item.get("cost") or 0),
+                core_charge=float(item.get("core_charge") or 0),
+            )
+        self._quote = get_quote(self._quote_id)
+        self._refresh_lines()
+
+    def _on_remove_line(self) -> None:
+        selected = self._lines_table.selectedItems()
+        if not selected:
+            QMessageBox.information(self, "No Selection", "Select a line to remove.")
+            return
+        row = selected[0].row()
+        line_id = int(self._lines_table.item(row, _L_ID).text())
+
+        remove_quote_line(self._quote_id, line_id)
+        self._quote = get_quote(self._quote_id)
+
+        try:
+            self._lines_table.itemChanged.disconnect(self._on_line_checkbox_changed)
+        except RuntimeError:
+            pass
+        self._refresh_lines()
+
+    # ==================================================================
+    #  NEW CUSTOMER / COST TOGGLE / INLINE PRICE EDITOR
+    # ==================================================================
+    def _on_new_customer(self) -> None:
+        """Open the customer dialog to create a new customer, then select it."""
+        from .customer_dialog import CustomerDialog
+        dlg = CustomerDialog(parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            new_id = getattr(dlg, "_customer_id", None)
+            self._load_customers()
+            if new_id:
+                idx = self._customer_combo.findData(new_id)
+                if idx >= 0:
+                    self._customer_combo.setCurrentIndex(idx)
+
+    def _on_edit_customer(self) -> None:
+        """Open customer dialog for the currently selected customer."""
+        cid = self._customer_combo.currentData()
+        if not cid:
+            QMessageBox.information(self, "No Customer", "Select a customer first.")
+            return
+        from .customer_dialog import CustomerDialog
+        dlg = CustomerDialog(customer_id=cid, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._load_customers()
+            idx = self._customer_combo.findData(cid)
+            if idx >= 0:
+                self._customer_combo.setCurrentIndex(idx)
+
+    def _toggle_customer_details(self) -> None:
+        """Collapse or expand the customer detail section."""
+        vis = self._cust_details_widget.isVisible()
+        self._cust_details_widget.setVisible(not vis)
+        self._collapse_cust_btn.setText("▶" if vis else "▼")
+
+    def _on_toggle_cost(self) -> None:
+        """Toggle cost column visibility in lines table and search table."""
+        self._cost_hidden = not self._cost_hidden
+        if self._cost_hidden:
+            self._cost_toggle_btn.setText("👁")
+            self._cost_toggle_btn.setStyleSheet(
+                "QPushButton { background: #EF4444; color: white; font-size: 14px; "
+                "border: none; border-radius: 13px; padding: 0; }"
+                "QPushButton:hover { background: #DC2626; }"
+            )
+        else:
+            self._cost_toggle_btn.setText("👁")
+            self._cost_toggle_btn.setStyleSheet(
+                "QPushButton { background: #22C55E; color: white; font-size: 14px; "
+                "border: none; border-radius: 13px; padding: 0; }"
+                "QPushButton:hover { background: #16A34A; }"
+            )
+        # Lines table: hide/show Cost + Margin columns
+        self._lines_table.setColumnHidden(_L_COST, self._cost_hidden)
+        self._lines_table.setColumnHidden(_L_MARGIN, self._cost_hidden)
+        # Search table: hide/show Cost + Margin columns
+        self._search_table.setColumnHidden(5, self._cost_hidden)   # Cost
+        self._search_table.setColumnHidden(7, self._cost_hidden)   # Margin%
+        # Finder table
+        self._finder_table.setColumnHidden(4, self._cost_hidden)   # Cost
+        self._finder_table.setColumnHidden(6, self._cost_hidden)   # Margin%
+        # Manual add bar cost fields
+        self._cost_lbl.setVisible(not self._cost_hidden)
+        self._cost_spin.setVisible(not self._cost_hidden)
+        # Totals section: hide margin, show/hide cost-related data
+        self._margin_label.setVisible(not self._cost_hidden)
+        # Hide the price editor margin controls when costs hidden
+        if hasattr(self, "_pe_margin_spin"):
+            self._pe_margin_spin.setVisible(not self._cost_hidden)
+
+    def _on_line_selected(self) -> None:
+        """Show inline price editor when a line is selected."""
+        rows = self._lines_table.selectionModel().selectedRows()
+        if not rows:
+            self._price_editor_frame.hide()
+            return
+        row = rows[0].row()
+        line_id_item = self._lines_table.item(row, _L_ID)
+        if not line_id_item:
+            self._price_editor_frame.hide()
+            return
+
+        # Populate price editor with current line values
+        sku = self._lines_table.item(row, _L_SKU)
+        desc = self._lines_table.item(row, _L_DESC)
+        label = (sku.text() if sku and sku.text() else "") or (desc.text()[:30] if desc else "")
+        self._pe_label.setText(f"Adjust: {label}")
+
+        cost_item = self._lines_table.item(row, _L_COST)
+        price_item = self._lines_table.item(row, _L_PRICE)
+        cost = float(cost_item.text().replace("$", "").replace(",", "")) if cost_item else 0
+        price = float(price_item.text().replace("$", "").replace(",", "")) if price_item else 0
+
+        self._pe_price_spin.setValue(price)
+        margin = ((price - cost) / price * 100) if price > 0 and cost > 0 else 0
+        self._pe_margin_spin.blockSignals(True)
+        self._pe_margin_spin.setValue(margin)
+        self._pe_margin_spin.blockSignals(False)
+
+        # Check if this line has a product (warranty + ETA controls require one).
+        has_product = False
+        if self._quote:
+            lines = self._quote.get("lines", [])
+            if row < len(lines):
+                has_product = bool(lines[row].get("product_id"))
+        self._pe_warranty_btn.setVisible(has_product)
+        self._pe_eta_btn.setVisible(has_product)
+
+        self._price_editor_frame.show()
+
+    def _on_apply_margin(self) -> None:
+        """Apply a margin % to the selected line (recalculate price from cost)."""
+        self._apply_margin_to_selected_line(show_errors=True)
+
+    def _on_margin_spin_changed(self, _value: float) -> None:
+        """Keep price in sync as margin changes; persist immediately for selected line."""
+        self._apply_margin_to_selected_line(show_errors=False)
+
+    def _apply_margin_to_selected_line(self, *, show_errors: bool) -> None:
+        """Recalculate selected line price from cost + margin and persist it."""
+        rows = self._lines_table.selectionModel().selectedRows()
+        if not rows:
+            return
+        row = rows[0].row()
+        line_id = int(self._lines_table.item(row, _L_ID).text())
+        cost_text = self._lines_table.item(row, _L_COST).text()
+        cost = float(cost_text.replace("$", "").replace(",", ""))
+        if cost <= 0:
+            if show_errors:
+                QMessageBox.warning(self, "No Cost", "Cannot calculate price — line has no cost.")
+            return
+        margin = self._pe_margin_spin.value()
+        if margin >= 100:
+            if show_errors:
+                QMessageBox.warning(self, "Invalid Margin", "Margin must be less than 100%.")
+            return
+        new_price = round(cost / (1 - margin / 100), 2)
+        self._pe_price_spin.blockSignals(True)
+        self._pe_price_spin.setValue(new_price)
+        self._pe_price_spin.blockSignals(False)
+        update_quote_line(line_id, unit_price=new_price)
+        self._quote = get_quote(self._quote_id)
+        self._refresh_lines()
+        # Re-select the same row so the price editor stays open and the
+        # margin spinbox keeps focus while the user is adjusting it.
+        if 0 <= row < self._lines_table.rowCount():
+            self._lines_table.selectRow(row)
+            if not self._pe_margin_spin.hasFocus():
+                self._pe_margin_spin.setFocus()
+
+    def _on_apply_price(self) -> None:
+        """Set an explicit dollar price on the selected line."""
+        rows = self._lines_table.selectionModel().selectedRows()
+        if not rows:
+            return
+        row = rows[0].row()
+        line_id = int(self._lines_table.item(row, _L_ID).text())
+        new_price = self._pe_price_spin.value()
+        update_quote_line(line_id, unit_price=new_price)
+        self._quote = get_quote(self._quote_id)
+        self._refresh_lines()
+
+    def _on_warranty_dialog(self) -> None:
+        """Open warranty selector (months / type / mileage) for the selected line.
+
+        Warranties are stored as separate optional add-on lines linked to
+        the parent product line via ``parent_line_id``. This dialog
+        reads the existing child line (if any), edits coverage, and
+        upserts/removes the child via ``set_or_replace_warranty_line``.
+        """
+        rows = self._lines_table.selectionModel().selectedRows()
+        if not rows:
+            return
+        row = rows[0].row()
+        if not self._quote:
+            return
+        # Resolve the line id from the (hidden) ID column to survive grouping.
+        try:
+            sel_line_id = int(self._lines_table.item(row, _L_ID).text())
+        except Exception:
+            return
+
+        all_lines = self._quote.get("lines", [])
+        # Don't let the rep attach a warranty TO a warranty line — climb to
+        # the parent if the user clicked the child row.
+        line_by_id = {int(l.get("id")): l for l in all_lines if l.get("id") is not None}
+        sel_line = line_by_id.get(sel_line_id)
+        if not sel_line:
+            return
+        if sel_line.get("parent_line_id"):
+            parent_id = int(sel_line["parent_line_id"])
+        else:
+            parent_id = sel_line_id
+        parent = line_by_id.get(parent_id)
+        if not parent:
+            return
+
+        # Existing child warranty line (if any) for this parent.
+        existing = next(
+            (
+                l for l in all_lines
+                if l.get("parent_line_id") == parent_id
+                and int(l.get("warranty_months") or 0) > 0
+            ),
+            None,
+        )
+
+        if existing:
+            current_months = int(existing.get("warranty_months") or 0)
+            current_type = (existing.get("warranty_type") or "parts_only").lower()
+            current_mileage = existing.get("warranty_mileage_limit")
+        else:
+            # Legacy fallback: read whatever was stored on the parent (pre-063).
+            current_months = int(parent.get("warranty_months") or 0)
+            if current_months == 0:
+                current_months = 12 * int(parent.get("warranty_years") or 0)
+            current_type = (parent.get("warranty_type") or "parts_only").lower()
+            current_mileage = parent.get("warranty_mileage_limit")
+
+        unit_price = float(parent.get("unit_price") or 0)
+        qty = int(parent.get("qty") or 1)
+
+        # Pull product warranty rate (% of unit price per year) for live preview.
+        warranty_pct = 0.0
+        is_warrantable = False
+        pid = parent.get("product_id")
+        if pid:
+            try:
+                prod = get_product_by_id(int(pid)) or {}
+                is_warrantable = bool(prod.get("is_warrantable"))
+                warranty_pct = float(prod.get("warranty_percentage") or 0)
+            except Exception:
+                pass
+        # If product isn't flagged warrantable, default to a sensible 5%/yr so the
+        # rep can still attach a warranty quote.
+        rate_is_default = False
+        if warranty_pct <= 0:
+            warranty_pct = 5.0
+            rate_is_default = True
+        # Sensible default duration when none is set yet.
+        if current_months == 0 and is_warrantable:
+            current_months = 12
+
+        from PySide6.QtWidgets import (
+            QDialog, QFormLayout, QSpinBox, QComboBox, QCheckBox,
+            QDialogButtonBox, QHBoxLayout, QWidget, QLabel, QPushButton,
+        )
+
+        dlg = QDialog(self)
+        parent_desc = (parent.get("description") or "").strip()
+        if parent_desc:
+            short = parent_desc[:55] + ("…" if len(parent_desc) > 55 else "")
+            dlg.setWindowTitle(f"Extended Warranty — {short}")
+        else:
+            dlg.setWindowTitle("Extended Warranty for Line")
+        form = QFormLayout(dlg)
+
+        info_lbl = QLabel(
+            "This will be added as an <b>optional</b> line item "
+            "the customer can accept or decline."
+        )
+        info_lbl.setStyleSheet("color: #555; font-style: italic;")
+        info_lbl.setWordWrap(True)
+        form.addRow(info_lbl)
+
+        months_spin = QSpinBox()
+        months_spin.setRange(0, 120)
+        months_spin.setSuffix(" months")
+        months_spin.setValue(current_months)
+        form.addRow("Duration:", months_spin)
+
+        type_combo = QComboBox()
+        type_combo.addItem("Parts Only", "parts_only")
+        type_combo.addItem("Parts & Labor", "parts_labor")
+        type_combo.setCurrentIndex(1 if current_type == "parts_labor" else 0)
+        form.addRow("Coverage:", type_combo)
+
+        mi_row = QWidget()
+        mi_lay = QHBoxLayout(mi_row)
+        mi_lay.setContentsMargins(0, 0, 0, 0)
+        mi_spin = QSpinBox()
+        mi_spin.setRange(0, 1_000_000)
+        mi_spin.setSingleStep(1000)
+        mi_spin.setSuffix(" mi")
+        mi_spin.setValue(int(current_mileage or 0))
+        unlimited_cb = QCheckBox("Unlimited")
+        unlimited_cb.setChecked(current_mileage in (None, 0))
+
+        def _sync_unlimited(state):
+            mi_spin.setEnabled(not unlimited_cb.isChecked())
+        unlimited_cb.stateChanged.connect(_sync_unlimited)
+        _sync_unlimited(unlimited_cb.checkState())
+        mi_lay.addWidget(mi_spin)
+        mi_lay.addWidget(unlimited_cb)
+        form.addRow("Mileage limit:", mi_row)
+
+        # Live charge preview: rate% * unit_price * months/12 per unit.
+        charge_label = QLabel()
+        charge_label.setStyleSheet("color: #2e7d32; font-weight: bold;")
+
+        def _recalc_charge():
+            months = int(months_spin.value())
+            if months <= 0 or unit_price <= 0:
+                charge_label.setText("No charge")
+                return
+            per_unit = unit_price * (warranty_pct / 100.0) * (months / 12.0)
+            total = per_unit * qty
+            note = (
+                "default rate" if rate_is_default
+                else "from product"
+            )
+            charge_label.setText(
+                f"${per_unit:,.2f} per unit  \u00d7 {qty} = ${total:,.2f}  "
+                f"({warranty_pct:.1f}% \u00d7 {months}mo, {note})"
+            )
+
+        months_spin.valueChanged.connect(lambda _v: _recalc_charge())
+        _recalc_charge()
+        form.addRow("Charge:", charge_label)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        # "Remove warranty" button — only when a child line currently exists.
+        remove_btn: QPushButton | None = None
+        if existing:
+            remove_btn = QPushButton("Remove Warranty")
+            remove_btn.setStyleSheet(
+                "QPushButton { background-color: #c62828; color: white; "
+                "padding: 4px 10px; border-radius: 4px; }"
+            )
+            btns.addButton(remove_btn, QDialogButtonBox.ButtonRole.DestructiveRole)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+
+        # Smuggle the chosen action out of the dialog.
+        action = {"value": "cancel"}
+
+        def _on_remove():
+            action["value"] = "remove"
+            dlg.accept()
+        if remove_btn is not None:
+            remove_btn.clicked.connect(_on_remove)
+
+        def _on_ok():
+            action["value"] = "save"
+        btns.accepted.connect(_on_ok)
+        form.addRow(btns)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        if action["value"] == "remove":
+            set_or_replace_warranty_line(
+                self._quote_id, parent_id, months=0,
+            )
+        else:
+            months = int(months_spin.value())
+            w_type = type_combo.currentData() or "parts_only"
+            mileage = None if unlimited_cb.isChecked() else int(mi_spin.value())
+            if mileage == 0:
+                mileage = None  # treat 0 miles as "Unlimited"
+            set_or_replace_warranty_line(
+                self._quote_id, parent_id,
+                months=months,
+                warranty_type=w_type,
+                mileage_limit=mileage,
+                warranty_pct=warranty_pct,
+            )
+
+        self._quote = get_quote(self._quote_id)
+        self._refresh_lines()
+
+    # ==================================================================
+    #  ESN / PART FINDER (right panel)
+    # ==================================================================
+    def _toggle_finder_panel(self) -> None:
+        vis = self._finder_panel.isVisible()
+        self._finder_panel.setVisible(not vis)
+        self._toggle_finder_btn.setText(
+            "🔧 ESN Finder ◂" if not vis else "🔧 ESN Finder ▸"
+        )
+
+    def _on_esn_lookup(self) -> None:
+        """Look up ESN in cache, then fall back to live Cummins scraper."""
+        esn = self._finder_input.text().strip()
+        if not esn:
+            return
+
+        cached = get_esn_cache(esn)
+        if cached:
+            parts = []
+            if cached.get("oem"):
+                parts.append(f"<b>OEM:</b> {cached['oem']}")
+            if cached.get("engine_model"):
+                parts.append(f"<b>Engine:</b> {cached['engine_model']}")
+            if cached.get("horsepower"):
+                parts.append(f"<b>HP:</b> {cached['horsepower']}")
+            if cached.get("cpl"):
+                parts.append(f"<b>CPL:</b> {cached['cpl']}")
+            if cached.get("application"):
+                parts.append(f"<b>App:</b> {cached['application']}")
+            if cached.get("emission_level"):
+                parts.append(f"<b>Emission:</b> {cached['emission_level']}")
+            self._esn_info_label.setText("<br>".join(parts))
+            self._esn_card.show()
+
+            engine_model = cached.get("engine_model")
+            if engine_model:
+                self._show_engine_parts(engine_model)
+        else:
+            # Not in cache — try live Cummins scraper
+            mfr = self._finder_mfr.currentText()
+            if mfr in ("Cummins", "Any"):
+                self._launch_cummins_scraper(esn)
+            else:
+                self._esn_info_label.setText(
+                    f"<b>ESN {esn}</b> not found in cache.<br>"
+                    "Try the OEM site directly for this serial number."
+                )
+                self._esn_card.show()
+                self._finder_table.setRowCount(0)
+
+    # ------------------------------------------------------------------
+    #  Cummins live scraper (runs in background thread)
+    # ------------------------------------------------------------------
+    def _launch_cummins_scraper(self, esn: str) -> None:
+        """Run the Cummins Playwright scraper in a QThread."""
+        keyword = self._finder_keyword.text().strip() or "Overhaul Kit"
+        self._esn_info_label.setText(
+            f"<b>🔍 Searching Cummins for ESN {esn}…</b><br>"
+            f"Keyword: <b>{keyword}</b> — This may take 15–30 seconds."
+        )
+        self._esn_card.show()
+        self._finder_table.setRowCount(0)
+
+        self._cummins_worker = _CumminsFinderWorker(esn, keyword=keyword)
+        self._cummins_worker.finished_signal.connect(self._on_cummins_results)
+        self._cummins_worker.error_signal.connect(self._on_cummins_error)
+        self._cummins_worker.start()
+
+    def _on_cummins_results(self, results: list) -> None:
+        """Populate the finder table with Cummins scraper results."""
+        if not results:
+            esn = self._finder_input.text().strip()
+            self._esn_info_label.setText(
+                f"<b>ESN {esn}</b> — Cummins returned no results.<br>"
+                "Try a different keyword or check the ESN."
+            )
+            self._esn_card.show()
+            self._finder_table.setRowCount(0)
+            return
+
+        esn = self._finder_input.text().strip()
+        self._esn_info_label.setText(
+            f"<b>ESN {esn}</b> — <b>{len(results)}</b> part(s) found on Cummins."
+        )
+        self._esn_card.show()
+
+        self._finder_results = []
+        self._finder_table.setRowCount(len(results))
+
+        for i, r in enumerate(results):
+            def mk(text: str) -> QTableWidgetItem:
+                it = QTableWidgetItem(str(text) if text else "")
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                return it
+
+            row_data = {
+                "id": "",
+                "sku": r.part_number,
+                "title": r.description or r.kit_description or "",
+                "supplier": "Cummins OEM",
+                "cost": 0,
+                "selling_price": 0,
+                "core_charge": 0,
+                "_cummins_result": r,
+            }
+            self._finder_results.append(row_data)
+
+            self._finder_table.setItem(i, 0, mk(""))  # ID
+            self._finder_table.setItem(i, 1, mk(r.part_number))  # Part #
+            desc = r.description or ""
+            if r.kit_number:
+                desc += f" (Kit: {r.kit_number})"
+            if r.kit_description and r.kit_description != r.description:
+                desc += f" — {r.kit_description}"
+            self._finder_table.setItem(i, 2, mk(desc))  # Description
+            self._finder_table.setItem(i, 3, mk("Cummins"))  # Source
+            self._finder_table.setItem(i, 4, mk(""))  # Cost
+            self._finder_table.setItem(i, 5, mk(""))  # Sell Price
+            self._finder_table.setItem(i, 6, mk(""))  # Margin%
+
+        self._finder_table.resizeColumnsToContents()
+        self._finder_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch
+        )
+
+    def _on_cummins_error(self, error_msg: str) -> None:
+        """Handle Cummins scraper failure."""
+        esn = self._finder_input.text().strip()
+        self._esn_info_label.setText(
+            f"<b>ESN {esn}</b> — Cummins lookup failed.<br>"
+            f"{error_msg}"
+        )
+        self._esn_card.show()
+
+    def _show_engine_parts(self, engine_model: str) -> None:
+        """Fill finder results with parts compatible with this engine."""
+        try:
+            parts = get_engine_compatibility(engine_model)
+        except Exception:
+            parts = []
+
+        self._finder_results = []
+        self._finder_table.setRowCount(len(parts))
+
+        for i, p in enumerate(parts):
+            def mk(text: str) -> QTableWidgetItem:
+                it = QTableWidgetItem(str(text) if text else "")
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                return it
+
+            pid = p.get("product_id") or p.get("id", "")
+            self._finder_results.append(p)
+            self._finder_table.setItem(i, 0, mk(pid))
+            self._finder_table.setItem(i, 1, mk(p.get("sku", "")))
+            title = p.get("title", "")
+            cat = p.get("category", "")
+            desc = f"[{cat}] {title}" if cat else title
+            self._finder_table.setItem(i, 2, mk(desc))
+            self._finder_table.setItem(i, 3, mk("Inventory"))
+
+            cost = float(p.get("cost") or 0)
+            self._finder_table.setItem(i, 4, mk(f"${cost:,.2f}"))
+            price = float(p.get("selling_price") or 0)
+            self._finder_table.setItem(i, 5, mk(f"${price:,.2f}"))
+            margin = ((price - cost) / price * 100) if price > 0 and cost > 0 else 0
+            m_item = mk(f"{margin:.0f}%")
+            if margin < 10:
+                m_item.setForeground(QColor("#c62828"))
+            elif margin < 30:
+                m_item.setForeground(QColor("#f59e0b"))
+            else:
+                m_item.setForeground(QColor("#2e7d32"))
+            self._finder_table.setItem(i, 6, m_item)
+
+        self._finder_table.resizeColumnsToContents()
+        self._finder_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch
+        )
+
+    def _on_finder_xref(self) -> None:
+        """Cross-reference lookup: OEM part -> aftermarket alternatives."""
+        query = self._finder_input.text().strip()
+        if not query:
+            return
+
+        try:
+            from db.xref_chain_service import search_aftermarket_by_oem
+            result = search_aftermarket_by_oem(query)
+        except Exception:
+            result = None
+
+        self._finder_results = []
+        if result and result.aftermarket_options:
+            opts = result.aftermarket_options
+            self._finder_table.setRowCount(len(opts))
+            for i, opt in enumerate(opts):
+                def mk(text: str) -> QTableWidgetItem:
+                    it = QTableWidgetItem(str(text) if text else "")
+                    it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    return it
+
+                pn = opt.aftermarket_part_number
+                prod = get_product_by_sku(f"JAKS-{pn}") if pn else None
+                pid = prod.get("id", "") if prod else ""
+
+                self._finder_results.append({
+                    "id": pid,
+                    "sku": prod.get("sku", pn) if prod else pn,
+                    "title": prod.get("title", "") if prod else "",
+                    "supplier": opt.aftermarket_manufacturer or "",
+                    "cost": float(prod.get("cost") or 0) if prod else (opt.price_hint or 0),
+                    "selling_price": float(prod.get("selling_price") or 0) if prod else 0,
+                    "core_charge": float(prod.get("core_sell_price") or prod.get("core_charge") or 0) if prod else 0,
+                    "confidence": opt.confidence,
+                    "source": opt.source or "",
+                })
+
+                r = self._finder_results[-1]
+                self._finder_table.setItem(i, 0, mk(pid))
+                self._finder_table.setItem(i, 1, mk(r["sku"]))
+                self._finder_table.setItem(
+                    i, 2, mk(r["title"] or f"({opt.confidence} conf)")
+                )
+                self._finder_table.setItem(i, 3, mk(r["source"] or r["supplier"]))
+
+                cost = r["cost"]
+                self._finder_table.setItem(i, 4, mk(f"${cost:,.2f}"))
+                price = r["selling_price"]
+                self._finder_table.setItem(i, 5, mk(f"${price:,.2f}"))
+                margin = ((price - cost) / price * 100) if price > 0 and cost > 0 else 0
+                m_item = mk(f"{margin:.0f}%")
+                if margin < 10:
+                    m_item.setForeground(QColor("#c62828"))
+                elif margin < 30:
+                    m_item.setForeground(QColor("#f59e0b"))
+                else:
+                    m_item.setForeground(QColor("#2e7d32"))
+                self._finder_table.setItem(i, 6, m_item)
+
+                # Color-code by confidence
+                conf_colors = {
+                    "high": QColor("#e8f5e9"),
+                    "medium": QColor("#fff8e1"),
+                    "low": QColor("#fce4ec"),
+                }
+                bg = conf_colors.get(opt.confidence, QColor("#fff"))
+                for col in range(1, 7):
+                    cell = self._finder_table.item(i, col)
+                    if cell:
+                        cell.setBackground(bg)
+
+            self._finder_table.resizeColumnsToContents()
+            self._finder_table.horizontalHeader().setSectionResizeMode(
+                2, QHeaderView.ResizeMode.Stretch
+            )
+
+            self._esn_info_label.setText(
+                f"<b>OEM Part:</b> {result.oem_part_number}<br>"
+                f"<b>Options:</b> {result.total_options} "
+                f"({'✓ verified' if result.has_verified else 'unverified'})"
+            )
+            self._esn_card.show()
+        else:
+            self._finder_table.setRowCount(0)
+            self._esn_info_label.setText(
+                f"No cross-references found for <b>{query}</b>."
+            )
+            self._esn_card.show()
+
+    def _on_finder_search(self) -> None:
+        """General inventory search from the finder panel."""
+        query = self._finder_input.text().strip()
+        if not query:
+            return
+
+        results = search_by_part_number(query)
+        browse_results = browse_products(search=query, limit=30)
+        seen_ids = {r.get("id") or r.get("product_id") for r in results}
+        for br in browse_results:
+            if br.get("id") not in seen_ids:
+                results.append(br)
+
+        results = results[:30]
+        self._finder_results = results
+        self._finder_table.setRowCount(len(results))
+
+        for i, p in enumerate(results):
+            def mk(text: str) -> QTableWidgetItem:
+                it = QTableWidgetItem(str(text) if text else "")
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                return it
+
+            pid = p.get("id") or p.get("product_id", "")
+            self._finder_table.setItem(i, 0, mk(pid))
+            self._finder_table.setItem(i, 1, mk(p.get("sku", "")))
+            self._finder_table.setItem(i, 2, mk(p.get("title", "")))
+            self._finder_table.setItem(i, 3, mk(p.get("supplier", "")))
+
+            cost = float(p.get("cost") or 0)
+            self._finder_table.setItem(i, 4, mk(f"${cost:,.2f}"))
+            price = float(p.get("selling_price") or 0)
+            self._finder_table.setItem(i, 5, mk(f"${price:,.2f}"))
+            margin = ((price - cost) / price * 100) if price > 0 and cost > 0 else 0
+            m_item = mk(f"{margin:.0f}%")
+            if margin < 10:
+                m_item.setForeground(QColor("#c62828"))
+            elif margin < 30:
+                m_item.setForeground(QColor("#f59e0b"))
+            else:
+                m_item.setForeground(QColor("#2e7d32"))
+            self._finder_table.setItem(i, 6, m_item)
+
+        self._finder_table.resizeColumnsToContents()
+        self._finder_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch
+        )
+
+    def _on_add_from_finder(self) -> None:
+        """Add the selected finder result to the quote."""
+        row = self._finder_table.currentRow()
+        if row < 0 or row >= len(self._finder_results):
+            return
+        p = self._finder_results[row]
+
+        pid = p.get("id") or p.get("product_id")
+        if pid:
+            full = get_product_by_id(int(pid))
+            if full:
+                p = full
+
+        desc = p.get("invoice_description") or p.get("title", p.get("sku", ""))
+        price = float(p.get("selling_price") or 0)
+        cost = float(p.get("cost") or 0)
+        core = float(p.get("core_sell_price") or p.get("core_charge") or 0)
+        supplier = p.get("supplier", "")
+
+        if not self._quote_id:
+            self._create_quote_in_db()
+
+        add_quote_line(
+            quote_id=self._quote_id,
+            product_id=int(pid) if pid else None,
+            description=desc,
+            supplier=supplier,
+            qty=1,
+            unit_price=price,
+            unit_cost=cost,
+            core_charge=core,
+        )
+
+        self._quote = get_quote(self._quote_id)
+        self._refresh_lines()
+
+    # ==================================================================
+    #  ACTIONS (status changes, conversions)
+    # ==================================================================
+    def _on_tax_changed(self, val: float) -> None:
+        # Live preview before DB roundtrip.
+        if hasattr(self, "_tax_amount_label") and self._quote:
+            subtotal = float(self._quote.get("subtotal") or 0)
+            self._tax_amount_label.setText(f"= ${subtotal * val / 100.0:,.2f}")
+        if self._quote_id:
+            update_quote(self._quote_id, tax=val)
+            self._quote = get_quote(self._quote_id)
+            self._update_totals_display()
+
+    def _on_fuel_changed(self, val: float) -> None:
+        """Phase J — persist fuel surcharge and recompute totals."""
+        if not self._quote_id:
+            return
+        update_quote(self._quote_id, fuel_surcharge=val)
+        self._quote = get_quote(self._quote_id) or self._quote
+        self._update_totals_display()
+
+    def _maybe_prompt_delivery_fuel(self, force: bool = False) -> None:
+        """Show the Delivery & Fuel dialog before sending if surcharge is unset.
+
+        Skips silently when:
+          * no quote / no customer with a ZIP, OR
+          * a non-zero ``fuel_surcharge`` is already set (unless ``force=True``), OR
+          * the user has already been prompted for this quote in the current
+            session — even if they chose $0 — so reprints don't re-ask
+            (UAT 1.4).  Use ``force=True`` (Reset shipping) to bypass.
+        """
+        if not self._quote_id:
+            return
+        q = get_quote(self._quote_id) or {}
+        current = float(q.get("fuel_surcharge") or 0)
+        if current > 0 and not force:
+            return
+        if self._fuel_prompted and not force:
+            return
+        # Resolve customer ZIP.
+        zip_code = ""
+        cust_id = q.get("customer_id")
+        if cust_id:
+            try:
+                from db.inventory import get_customer
+                cust = get_customer(int(cust_id)) or {}
+                zip_code = str(cust.get("zip") or "").strip()
+            except Exception:
+                zip_code = ""
+        if not zip_code and not force:
+            # No ZIP — don't pester the user, leave whatever they set manually.
+            return
+        try:
+            from .delivery_fuel_dialog import DeliveryFuelDialog
+        except Exception:
+            return
+        ok, amount, _reason = DeliveryFuelDialog.run(
+            self, ship_to_zip=zip_code, current_amount=current,
+        )
+        if not ok:
+            return
+        # Mark as answered for this session — even amount=0 is a valid answer.
+        self._fuel_prompted = True
+        update_quote(self._quote_id, fuel_surcharge=amount)
+        self._quote = get_quote(self._quote_id) or self._quote
+        # Sync the spinbox in the Shipping tab.
+        try:
+            self._fuel_spin.blockSignals(True)
+            self._fuel_spin.setValue(float(amount))
+            self._fuel_spin.blockSignals(False)
+        except Exception:
+            pass
+        self._update_totals_display()
+
+    def _on_cc_fee_toggled(self, checked: bool) -> None:
+        """Persist the 3% CC convenience-fee toggle."""
+        if not self._quote_id:
+            return
+        update_quote(self._quote_id, cc_fee_enabled=1 if checked else 0)
+        self._quote = get_quote(self._quote_id) or self._quote
+        self._update_totals_display()
+
+    def _on_fuel_suggest_zip(self) -> None:
+        """Open the Delivery & Fuel dialog to confirm/override a surcharge."""
+        if not self._quote_id:
+            return
+        # ``force=True`` so the dialog opens even when a value is already set.
+        self._maybe_prompt_delivery_fuel(force=True)
+
+    def _on_mark_sent(self) -> None:
+        if not self._quote_id:
+            QMessageBox.warning(self, "No Quote", "Save the quote first.")
+            return
+        update_quote(self._quote_id, status="sent")
+        self._quote = get_quote(self._quote_id)
+        self._status_label.setText("SENT")
+        self._update_status_style("SENT")
+
+    def _on_set_follow_up(self) -> None:
+        """Open the unified close-out dialog (reschedule / won / lost / void)."""
+        if not self._quote_id:
+            QMessageBox.warning(self, "No Quote", "Save the quote first.")
+            return
+        # Refresh from DB so the dialog sees the latest follow_up / lost fields.
+        self._quote = get_quote(self._quote_id) or self._quote
+
+        from .quotes_screen import _QuoteCloseOutDialog
+        dlg = _QuoteCloseOutDialog(self._quote or {}, parent=self)
+        if not dlg.exec():
+            return
+
+        status = (self._quote or {}).get("status", "") or "draft"
+
+        if dlg.outcome == "pending":
+            new_status = status
+            # Don't demote final / positive outcomes; otherwise promote draft→sent.
+            if status in ("", "draft", "needs_follow_up", "expired"):
+                new_status = "needs_follow_up"
+            update_quote(
+                self._quote_id,
+                status=new_status,
+                follow_up_date=dlg.follow_up_date,
+                next_action=dlg.next_action,
+            )
+            self._status_label.setText(new_status.upper().replace("_", " "))
+            self._update_status_style(new_status.upper().replace("_", " "))
+            QMessageBox.information(
+                self, "Follow-Up Scheduled",
+                f"Follow-up set for {dlg.follow_up_date}.",
+            )
+        elif dlg.outcome == "won":
+            update_quote(self._quote_id, status="accepted")
+            self._status_label.setText("ACCEPTED")
+            self._update_status_style("ACCEPTED")
+        elif dlg.outcome == "lost":
+            update_quote(
+                self._quote_id,
+                status="lost",
+                lost_reason=dlg.lost_reason,
+                lost_notes=dlg.lost_notes,
+            )
+            self._status_label.setText("LOST")
+            self._update_status_style("LOST")
+        elif dlg.outcome == "void":
+            update_quote(self._quote_id, status="void")
+            self._status_label.setText("VOID")
+            self._update_status_style("VOID")
+
+        self._quote = get_quote(self._quote_id)
+
+    def _on_push_to_qbo_estimate(self) -> None:
+        """Push this quote to QuickBooks Online as an Estimate (Phase 5)."""
+        from PySide6.QtWidgets import QMessageBox
+
+        if not self._quote_id:
+            QMessageBox.information(
+                self, "Save first",
+                "Save the quote before pushing it to QuickBooks Online.",
+            )
+            return
+
+        # Refresh the in-memory quote so we push the latest values.
+        try:
+            from db.inventory import get_quote
+            self._quote = get_quote(self._quote_id) or self._quote
+        except Exception:
+            pass
+
+        # Build the push payload from the current quote dict.
+        q = dict(self._quote or {})
+        q["id"] = self._quote_id
+
+        try:
+            from qbo.push import push_quotes_to_qbo
+            from db.database import get_db
+            from datetime import datetime
+
+            def _on_success(qid: int, qbo_id: str) -> None:
+                try:
+                    with get_db() as conn:
+                        conn.execute(
+                            "UPDATE quotes SET qbo_estimate_id = ?, "
+                            "qbo_estimate_synced_at = ? WHERE id = ?",
+                            (str(qbo_id),
+                             datetime.utcnow().isoformat(timespec="seconds"),
+                             int(qid)),
+                        )
+                        conn.commit()
+                except Exception:
+                    pass
+
+            summary = push_quotes_to_qbo([q], on_success=_on_success)
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "QBO push failed",
+                f"Could not push to QuickBooks Online:\n{type(exc).__name__}: {exc}",
+            )
+            return
+
+        if summary["ok"]:
+            qbo_id = summary["results"][0].get("qbo_id") or "(unknown)"
+            QMessageBox.information(
+                self, "Pushed to QBO",
+                f"Quote pushed as Estimate {qbo_id}.",
+            )
+            try:
+                self._refresh_qbo_estimate_badge()
+            except Exception:
+                pass
+        elif summary["skipped"]:
+            reason = summary["results"][0].get("reason") or "skipped"
+            QMessageBox.information(
+                self, "QBO push skipped",
+                f"Skipped: {reason}",
+            )
+        else:
+            err = summary["results"][0].get("error") or "unknown error"
+            QMessageBox.warning(
+                self, "QBO push failed", f"Error: {err}",
+            )
+
+    def _on_reopen_lost(self) -> None:
+        """Reopen a lost quote: reset status to 'sent', clear lost fields."""
+        if not self._quote_id:
+            return
+        status = ((self._quote or {}).get("status") or "").lower()
+        if status != "lost":
+            return
+        resp = QMessageBox.question(
+            self, "Reopen Lost Quote?",
+            "Reopen this quote? Status will be reset to <b>Sent</b> and the "
+            "lost reason/notes will be cleared. The transition is logged.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if resp != QMessageBox.StandardButton.Yes:
+            return
+
+        from db.inventory import reopen_lost_quote
+        result = reopen_lost_quote(self._quote_id, reason="User reopened from QuoteDialog")
+        if not result.get("success"):
+            QMessageBox.warning(self, "Reopen failed", result.get("error", "Unknown error"))
+            return
+
+        self._quote = get_quote(self._quote_id)
+        self._status_label.setText("SENT")
+        self._update_status_style("SENT")
+        QMessageBox.information(self, "Reopened", "Quote is back to Sent and ready to be worked.")
+
+    def _on_convert_to_invoice(self) -> None:
+        if not self._quote_id:
+            QMessageBox.warning(self, "No Quote", "Save the quote first.")
+            return
+
+        # G2: flush any pending edits and re-fetch before validation so the
+        # customer/terms/etc just typed by the user are persisted.
+        if not self._sync_pending_edits():
+            return
+        q = self._quote
+
+        selected_lines = [l for l in q.get("lines", []) if l.get("is_selected")]
+        if not selected_lines:
+            QMessageBox.warning(
+                self, "No Lines Selected",
+                "Check at least one line item to include in the invoice.",
+            )
+            return
+
+        if self._skip_convert_prompts:
+            reply = QMessageBox.StandardButton.Yes
+        else:
+            reply = QMessageBox.question(
+                self, "Convert to Invoice",
+                f"Create an invoice with {len(selected_lines)} selected line(s)?\n\n"
+                "This will mark the quote as INVOICED.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            result = convert_quote_to_invoice(self._quote_id)
+            inv_id = result.get("invoice_id")
+            QMessageBox.information(
+                self, "Invoice Created",
+                f"Invoice #{result.get('invoice_number', inv_id)} created successfully.\n\n"
+                "Open it from the Invoices screen.",
+            )
+            self._quote = get_quote(self._quote_id)
+            self._status_label.setText("INVOICED")
+            self._update_status_style("INVOICED")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to convert:\n{e}")
+
+    def _on_convert_to_so(self) -> None:
+        if not self._quote_id:
+            QMessageBox.warning(self, "No Quote", "Save the quote first.")
+            return
+
+        # G2: flush any pending edits and re-fetch before validation so the
+        # customer/terms/etc just typed by the user are persisted.
+        if not self._sync_pending_edits():
+            return
+        q = self._quote
+
+        selected_lines = [l for l in q.get("lines", []) if l.get("is_selected")]
+        if not selected_lines:
+            QMessageBox.warning(
+                self, "No Lines Selected",
+                "Check at least one line item to include in the sales order.",
+            )
+            return
+
+        # If the quote uses option groups, force the user to pick one before
+        # converting so we know which alternative to carry into the SO.
+        groups: list[str] = []
+        seen = set()
+        for _l in selected_lines:
+            g = (_l.get("option_group") or "").strip()
+            if g and g not in seen:
+                seen.add(g)
+                groups.append(g)
+        if groups:
+            from PySide6.QtWidgets import QInputDialog
+            current = (q.get("selected_option_group") or "").strip() or groups[0]
+            if self._skip_convert_prompts and current in groups:
+                chosen = current
+            else:
+                try:
+                    default_idx = groups.index(current)
+                except ValueError:
+                    default_idx = 0
+                choice, ok = QInputDialog.getItem(
+                    self, "Pick Option Bundle",
+                    "Multiple options on this quote — pick which one to convert:",
+                    [f"Option {g}" for g in groups], default_idx, False,
+                )
+                if not ok:
+                    return
+                chosen = choice.replace("Option ", "").strip()
+            update_quote(self._quote_id, selected_option_group=chosen)
+            self._quote = get_quote(self._quote_id)
+            q = self._quote
+
+        from PySide6.QtWidgets import QInputDialog
+        priorities = ["normal", "rush", "will-call"]
+        if self._skip_convert_prompts:
+            priority = (q.get("priority") or "normal")
+            if priority not in priorities:
+                priority = "normal"
+        else:
+            priority, ok = QInputDialog.getItem(
+                self, "Sales Order Priority",
+                f"Create a sales order with {len(selected_lines)} selected line(s).\n\nPriority:",
+                priorities, 0, False,
+            )
+            if not ok:
+                return
+
+        try:
+            result = convert_quote_to_so(self._quote_id, priority=priority)
+            if not result.get("success"):
+                # P1.6 — offer override when credit-limit check fails but
+                # customer is NOT on hold.
+                if result.get("overridable"):
+                    credit = result.get("credit_check") or {}
+                    detail = (
+                        f"{result.get('error', 'Credit limit exceeded')}\n\n"
+                        f"Outstanding: ${credit.get('outstanding_balance', 0):,.2f}\n"
+                        f"Credit limit: ${credit.get('eff_credit_limit', 0):,.2f}\n\n"
+                        "Override and create the sales order anyway?"
+                    )
+                    reply = QMessageBox.question(
+                        self, "Credit Limit Exceeded", detail,
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                    )
+                    if reply != QMessageBox.Yes:
+                        return
+                    result = convert_quote_to_so(
+                        self._quote_id, priority=priority,
+                        allow_credit_override=True,
+                    )
+                    if not result.get("success"):
+                        QMessageBox.warning(
+                            self, "Error",
+                            result.get("error", "Conversion failed"),
+                        )
+                        return
+                else:
+                    QMessageBox.warning(
+                        self, "Error", result.get("error", "Conversion failed"),
+                    )
+                    return
+
+            so_number = result.get("so_number", "")
+            so_id = result.get("so_id")
+            self._quote = get_quote(self._quote_id)
+            self._status_label.setText("ACCEPTED")
+            self._update_status_style("ACCEPTED")
+
+            # Close this quote dialog and open the new SO directly. We used to
+            # only stash `_created_so_id` and rely on the parent quotes screen
+            # to call `_maybe_open_created_so` after exec() returned, but that
+            # path silently no-ops when the quote dialog was opened from a
+            # non-list context (e.g. brand-new unsaved quote \u2192 unified
+            # convert). open_so_detail is idempotent (uses _OPEN_SO_DIALOGS),
+            # so calling it both here and from the parent screen is safe.
+            if so_id:
+                self._created_so_id = int(so_id)
+                rush_note = ""
+                if priority == "rush":
+                    rush_note = (
+                        "\n\nThis is a RUSH order \u2014 consider creating a PO immediately."
+                    )
+                QMessageBox.information(
+                    self, "Sales Order Created",
+                    f"Sales Order {so_number} created successfully.{rush_note}",
+                )
+                try:
+                    from .so_detail_dialog import open_so_detail
+                    parent_widget = self.parent() or self
+                    open_so_detail(int(so_id), parent=parent_widget)
+                except Exception as exc:
+                    QMessageBox.warning(
+                        self, "Open Sales Order",
+                        f"Sales order created but could not be opened:\n{exc}",
+                    )
+                self.accept()
+                return
+            else:
+                msg = f"Sales Order {so_number} created successfully."
+                if priority == "rush":
+                    msg += (
+                        "\n\nThis is a RUSH order — consider creating a PO immediately\n"
+                        "from the Sales Orders screen."
+                    )
+                QMessageBox.information(self, "Sales Order Created", msg)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to convert:\n{e}")
+
+    # ==================================================================
+    #  COMMENTS
+    # ==================================================================
+    def _refresh_comments(self) -> None:
+        """Load comments for this quote into the activity feed."""
+        self._comments_list.clear()
+        if not self._quote_id:
+            return
+        try:
+            from db import get_quote_comments
+            comments = get_quote_comments(self._quote_id)
+        except Exception:
+            return
+
+        from html import escape
+
+        def _initials(name: str) -> str:
+            parts = [p for p in (name or "").split() if p]
+            if not parts:
+                return "?"
+            if len(parts) == 1:
+                return parts[0][:2].upper()
+            return (parts[0][0] + parts[-1][0]).upper()
+
+        # Pastel palette keyed off author name for stable per-user color.
+        _palette = [
+            "#3B82F6", "#10B981", "#F59E0B", "#EF4444",
+            "#8B5CF6", "#EC4899", "#14B8A6", "#F97316",
+        ]
+
+        rows: list[str] = []
+        for c in comments:
+            ts = (c.get("created_at") or "")[:16].replace("T", " ")
+            author = c.get("author") or "User"
+            text = c.get("comment") or ""
+            color = _palette[hash(author) % len(_palette)]
+            rows.append(
+                f'<div style="margin: 2px 0; padding: 3px 0; '
+                f'border-bottom: 1px solid #f1f5f9;">'
+                f'<span style="display:inline-block; min-width:22px; '
+                f'background:{color}; color:white; border-radius:11px; '
+                f'padding:1px 4px; font-size:8pt; font-weight:bold; '
+                f'text-align:center;">{escape(_initials(author))}</span>'
+                f' <span style="color:#6b7280; font-size:8pt;">{escape(ts)}</span>'
+                f' <b>{escape(author)}</b>: {escape(text)}'
+                f'</div>'
+            )
+        html = (
+            f'<div style="font-family: sans-serif;">{"".join(rows)}</div>'
+            if rows else
+            '<div style="color:#9ca3af; font-style:italic; padding:4px;">'
+            'No activity yet.</div>'
+        )
+        self._comments_list.setHtml(html)
+        # Scroll to bottom (latest entry).
+        sb = self._comments_list.verticalScrollBar()
+        if sb is not None:
+            sb.setValue(sb.maximum())
+
+    def _on_add_comment(self) -> None:
+        """Post a new comment on this quote."""
+        text = self._comment_input.text().strip()
+        if not text:
+            return
+        if not self._quote_id:
+            self._create_quote_in_db()
+        if not self._quote_id:
+            return
+        try:
+            from db import add_quote_comment
+            add_quote_comment(self._quote_id, text)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not save comment:\n{e}")
+            return
+        self._comment_input.clear()
+        self._refresh_comments()
+
+    def _on_save(self) -> None:
+        # Required-field highlighting before save.
+        if not self._validate_required_for_save():
+            return
+        self._on_save_silent()
+        self._post_save_prompt()
+        self.accept()
+
+    def _validate_required_for_save(self) -> bool:
+        """Highlight missing required fields and return True iff valid."""
+        ok_customer = self._customer_combo.currentData() is not None
+        self._highlight_required(
+            self._customer_combo, ok_customer, "Customer is required."
+        )
+        # Lines table: must have at least one row.
+        has_lines = self._lines_table.rowCount() > 0
+        self._highlight_required(
+            self._lines_table, has_lines, "Add at least one line."
+        )
+        if not ok_customer:
+            QMessageBox.warning(
+                self, "Customer Required",
+                "Please pick a customer before saving the quote.",
+            )
+            self._customer_combo.setFocus()
+            return False
+        if not has_lines:
+            QMessageBox.warning(
+                self, "No Lines",
+                "Add at least one line before saving the quote.",
+            )
+            return False
+        return True
+
+    def _on_duplicate(self) -> None:
+        """Ctrl+D — Duplicate the current quote into a new draft."""
+        if not self._quote_id:
+            QMessageBox.information(
+                self, "Duplicate Quote",
+                "Save the quote first, then duplicate.",
+            )
+            return
+        ans = QMessageBox.question(
+            self, "Duplicate Quote",
+            "Create a new draft quote with the same lines and customer?",
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        # Flush pending edits first.
+        try:
+            self._sync_pending_edits()
+        except Exception:
+            pass
+        try:
+            from db.inventory import duplicate_quote
+            res = duplicate_quote(self._quote_id)
+        except Exception as e:
+            QMessageBox.critical(self, "Duplicate Failed", f"{e}")
+            return
+        if not res.get("success"):
+            QMessageBox.critical(
+                self, "Duplicate Failed",
+                str(res.get("error") or "Unknown error"),
+            )
+            return
+        new_id = res["quote_id"]
+        new_num = res.get("quote_number", "")
+        QMessageBox.information(
+            self, "Quote Duplicated",
+            f"New draft created: {new_num}\nClose this quote and open the new one?",
+        )
+        self._duplicated_to_quote_id = new_id
+        self.accept()
+
+    def _prompt_unsaved_convert_choice(self) -> str:
+        """For an unsaved quote, ask whether to convert, save, or cancel.
+
+        Returns one of: ``"convert"``, ``"save_quote"``, ``"cancel"``.
+        """
+        dlg = QDialog(self)
+        dlg.setWindowTitle("New Quote — Choose Action")
+        dlg.setMinimumWidth(380)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel(
+            "This quote hasn't been saved yet. What do you want to do?"
+        ))
+        lay.addSpacing(6)
+
+        result = {"value": "cancel"}
+
+        btn_so = QPushButton("➡  Proceed to Sales Order")
+        btn_so.setStyleSheet(
+            "QPushButton { background: #1565c0; color: white; font-weight: bold; "
+            "padding: 8px 14px; border-radius: 3px; text-align: left; }"
+            "QPushButton:hover { background: #1976d2; }"
+        )
+        btn_so.setDefault(True)
+        def _pick_so():
+            result["value"] = "convert"
+            dlg.accept()
+        btn_so.clicked.connect(_pick_so)
+        lay.addWidget(btn_so)
+
+        btn_save = QPushButton("💾  Save as Quote")
+        btn_save.setStyleSheet(
+            "QPushButton { background: #2e7d32; color: white; font-weight: bold; "
+            "padding: 8px 14px; border-radius: 3px; text-align: left; }"
+            "QPushButton:hover { background: #388e3c; }"
+        )
+        def _pick_save():
+            result["value"] = "save_quote"
+            dlg.accept()
+        btn_save.clicked.connect(_pick_save)
+        lay.addWidget(btn_save)
+
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(dlg.reject)
+        lay.addWidget(btn_cancel)
+
+        dlg.exec()
+        return result["value"]
+
+    def _on_unified_convert(self) -> None:
+        """Open a single dialog letting user pick destination + warranty option."""
+        if not self._quote_id:
+            # New / unsaved quote — ask the user how to proceed instead of
+            # bailing out. Three choices:
+            #   • Proceed to Sales Order — save behind the scenes, then convert
+            #   • Save as Quote — just save (no conversion), then close
+            #   • Cancel — do nothing
+            choice = self._prompt_unsaved_convert_choice()
+            if choice == "cancel":
+                return
+            if choice == "save_quote":
+                self._on_save()
+                return
+            # choice == "convert": validate + save silently, then fall through.
+            if not self._validate_required_for_save():
+                return
+            try:
+                self._on_save_silent()
+            except Exception as exc:
+                QMessageBox.critical(
+                    self, "Save Failed",
+                    f"Could not save the quote before converting:\n{exc}",
+                )
+                return
+            if not self._quote_id:
+                # Save did not produce a quote_id — abort silently; the
+                # silent-save path will have surfaced any error already.
+                return
+        # Flush + revalidate (fixes G2 stale-customer issue).
+        self._sync_pending_edits()
+        if not self._quote or not self._quote.get("customer_id"):
+            QMessageBox.warning(
+                self, "Pick a Customer",
+                "Assign a customer before converting.",
+            )
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Convert Quote")
+        dlg.setMinimumWidth(380)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel(f"Convert quote {self._quote.get('quote_number','')}:"))
+
+        # Destination — quotes always convert to a Sales Order. Invoices are
+        # generated downstream from the SO once items ship/are picked, so the
+        # Invoice option is intentionally not offered here.
+        from PySide6.QtWidgets import QRadioButton, QButtonGroup
+        from PySide6.QtCore import Qt as _Qt
+        dest_box = QGroupBox("Destination")
+        dl = QVBoxLayout(dest_box)
+        dest_lbl = QLabel("Sales Order")
+        dest_lbl.setStyleSheet("font-weight: bold; color: #2e7d32; padding: 4px;")
+        dl.addWidget(dest_lbl)
+        hint = QLabel(
+            "<i><font color='#666' size='2'>Invoices are generated from the "
+            "Sales Order after items ship.</font></i>"
+        )
+        hint.setTextFormat(_Qt.RichText)
+        dl.addWidget(hint)
+        lay.addWidget(dest_box)
+
+        # Priority (SO only) — radio group with keyboard + click support.
+        pri_box = QGroupBox("Priority (Sales Order)")
+        pl = QHBoxLayout(pri_box)
+        pl.setContentsMargins(10, 6, 10, 6)
+        pl.setSpacing(16)
+        rb_normal = QRadioButton("Normal", pri_box)
+        rb_rush = QRadioButton("Rush", pri_box)
+        rb_will = QRadioButton("Will Call", pri_box)
+        # Object names for QSS / test hooks
+        rb_normal.setObjectName("priorityNormal")
+        rb_rush.setObjectName("priorityRush")
+        rb_will.setObjectName("priorityWillCall")
+        # Accessibility
+        rb_normal.setAccessibleName("Priority Normal")
+        rb_rush.setAccessibleName("Priority Rush")
+        rb_will.setAccessibleName("Priority Will Call")
+        # Make sure clicks land on the radio (not blocked by a transparent
+        # overlay or stale focus proxy from a previous layout).
+        for rb in (rb_normal, rb_rush, rb_will):
+            rb.setFocusPolicy(_Qt.StrongFocus)
+            rb.setAutoExclusive(True)
+            pl.addWidget(rb)
+        # Keep a reference on the dialog so the group survives the function
+        # scope even though Qt also parents it.
+        pri_grp = QButtonGroup(dlg)
+        pri_grp.setExclusive(True)
+        pri_grp.addButton(rb_normal, 0)
+        pri_grp.addButton(rb_rush, 1)
+        pri_grp.addButton(rb_will, 2)
+        dlg._priority_group = pri_grp  # type: ignore[attr-defined]
+
+        # Map existing quote priority to the radio selection; default Normal.
+        _existing_pri = (self._quote.get("priority") or "normal").strip().lower()
+        _pri_map = {
+            "normal": rb_normal,
+            "rush": rb_rush,
+            "will-call": rb_will,
+            "will_call": rb_will,
+            "willcall": rb_will,
+        }
+        _pri_map.get(_existing_pri, rb_normal).setChecked(True)
+
+        # Tab order: Normal → Rush → Will Call
+        QWidget.setTabOrder(rb_normal, rb_rush)
+        QWidget.setTabOrder(rb_rush, rb_will)
+        rb_normal.setFocus()
+        lay.addWidget(pri_box)
+
+        groups = sorted({
+            (l.get("option_group") or "").strip()
+            for l in (self._quote.get("lines") or [])
+            if (l.get("option_group") or "").strip()
+        })
+
+        # NOTE: The legacy Warranty A/B picker was removed. Each warranty
+        # is now its own optional add-on line, so the rep accepts/declines
+        # them via the line-level optional flag instead of an A/B choice.
+        warranty_choice: dict = {}
+
+        # Option-group picker (only when groups exist)
+        group_choice = {"value": None}
+        if groups:
+            g_box = QGroupBox("Option Group")
+            gl = QVBoxLayout(g_box)
+            g_combo = QComboBox()
+            for g in groups:
+                g_combo.addItem(f"Option {g}", g)
+            current = (self._quote.get("selected_option_group") or "").strip()
+            if current:
+                idx = g_combo.findData(current)
+                if idx >= 0:
+                    g_combo.setCurrentIndex(idx)
+            gl.addWidget(g_combo)
+            lay.addWidget(g_box)
+            group_choice["combo"] = g_combo
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dlg.reject)
+        ok_btn = QPushButton("Convert")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(ok_btn)
+        lay.addLayout(btn_row)
+
+        if not dlg.exec():
+            return
+
+        # Persist option group selection.
+        if "combo" in group_choice:
+            sel = group_choice["combo"].currentData() or None
+            try:
+                update_quote(self._quote_id, selected_option_group=sel)
+            except Exception:
+                pass
+
+        # Refresh local state so downstream methods see the persisted choice.
+        try:
+            self._quote = get_quote(self._quote_id)
+        except Exception:
+            pass
+
+        # Destination is always Sales Order now — set priority and convert.
+        pri = ("rush" if rb_rush.isChecked()
+               else "will-call" if rb_will.isChecked() else "normal")
+        try:
+            update_quote(self._quote_id, priority=pri)
+        except Exception:
+            pass
+        self._skip_convert_prompts = True
+        try:
+            self._on_convert_to_so()
+        finally:
+            self._skip_convert_prompts = False
+
+    def _post_save_prompt(self) -> None:
+        """Show post-save action prompt with email, print, SMS options."""
+        if not self._quote_id:
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Quote Saved")
+        dlg.setFixedWidth(320)
+        lay = QVBoxLayout(dlg)
+
+        lay.addWidget(QLabel("Quote saved successfully. Select actions:"))
+        lay.addSpacing(8)
+
+        email_cb = QCheckBox("📧 Email to customer")
+        email_cb.setChecked(True)
+        lay.addWidget(email_cb)
+
+        print_cb = QCheckBox("🖨️ Print quote")
+        print_cb.setChecked(True)
+        lay.addWidget(print_cb)
+
+        sms_cb = QCheckBox("📱 SMS to customer")
+        sms_cb.setChecked(True)
+        lay.addWidget(sms_cb)
+
+        lay.addSpacing(8)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        go_btn = QPushButton("Go")
+        go_btn.setStyleSheet(
+            "QPushButton { background: #2e7d32; color: white; font-weight: bold; "
+            "padding: 6px 20px; border-radius: 3px; }"
+            "QPushButton:hover { background: #388e3c; }"
+        )
+        go_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(go_btn)
+        skip_btn = QPushButton("Skip")
+        skip_btn.clicked.connect(dlg.reject)
+        btn_row.addWidget(skip_btn)
+        lay.addLayout(btn_row)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            if email_cb.isChecked():
+                self._on_send_email()
+            if sms_cb.isChecked():
+                self._on_send_sms()
+            if print_cb.isChecked():
+                self._print_current_quote()
+
+    def _print_current_quote(self) -> None:
+        """Print the current quote. Falls back to a timestamped filename if
+        the default PDF is locked by an open viewer so the user can reprint."""
+        if not self._quote_id:
+            return
+        # Ensure any pending header edits (equipment, ESN, VIN, etc.) are saved
+        # before we regenerate the PDF from the DB row.
+        self._on_save_silent()
+        # Pre-send: confirm delivery / fuel surcharge if not already set.
+        self._maybe_prompt_delivery_fuel()
+        q = get_quote(self._quote_id)
+        if not q:
+            return
+        try:
+            from jaks_inventory.utils.quote_pdf import generate_quote_pdf
+            try:
+                pdf_path = generate_quote_pdf(q)
+            except PermissionError:
+                # Default file is open in a viewer — write to a unique copy.
+                from datetime import datetime
+                from jaks_inventory.utils.quote_pdf import OUTPUT_DIR
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                safe = str(q.get("quote_number") or "DRAFT").replace("/", "-").replace("\\", "-")
+                fallback = str(OUTPUT_DIR / f"{safe}_{stamp}.pdf")
+                pdf_path = generate_quote_pdf(q, output_path=fallback)
+            import subprocess
+            subprocess.Popen(["start", "", str(pdf_path)], shell=True)
+        except ImportError:
+            QMessageBox.warning(
+                self, "Print",
+                f"Could not print quote {q.get('quote_number', '')} — "
+                "ReportLab is not installed. Run: pip install reportlab",
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not print:\n{e}")
+
+    def _on_save_silent(self) -> None:
+        """Save/create the quote without closing the dialog."""
+        # If no quote exists yet, create one before closing
+        if not self._quote_id:
+            self._create_quote_in_db()
+
+        if not self._quote_id:
+            return
+
+        customer_id = self._customer_combo.currentData()
+        qdate = self._quote_date.date().toString("yyyy-MM-dd")
+        exp = self._exp_date.date().toString("yyyy-MM-dd")
+        terms = self._terms_edit.currentText().strip() or None
+        notes = self._notes_edit.toPlainText().strip() or None
+        tax = self._tax_spin.value()
+        esn = self._esn_edit.text().strip() or None
+        vin = self._vin_edit.text().strip() or None
+        manufacturer = self._banner_mfr.currentText() or None
+        job_number = self._job_edit.text().strip() or None
+        priority = self._priority_combo.currentData() or "medium"
+        equipment_type = self._banner_equip_type.currentData() or None
+        equipment_make = manufacturer
+        equipment_model = self._banner_equip_model.text().strip() or None
+
+        update_quote(
+            self._quote_id,
+            customer_id=customer_id,
+            expiration_date=exp,
+            terms=terms,
+            notes=notes,
+            tax=tax,
+            esn=esn,
+            vin=vin,
+            manufacturer=manufacturer,
+            job_number=job_number,
+            priority=priority,
+            equipment_type=equipment_type,
+            equipment_make=equipment_make,
+            equipment_model=equipment_model,
+        )
+
+        # Auto-promote draft → sent on explicit Save, unless the user has
+        # parked the quote in a "waiting" state (those should stay DRAFT
+        # until the customer/vendor responds).
+        try:
+            current_status = (self._quote.get("status") or "draft").lower() if self._quote else "draft"
+        except Exception:
+            current_status = "draft"
+        if current_status == "draft" and priority not in (
+            "waiting_on_customer",
+            "waiting_on_vendor",
+        ):
+            try:
+                update_quote(self._quote_id, status="sent")
+                if self._quote is not None:
+                    self._quote["status"] = "sent"
+                self._refresh_status_badge()
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # Save & New
+    # ------------------------------------------------------------------
+
+    def _on_save_and_new(self) -> None:
+        """Save the current quote, then signal caller to open a fresh one."""
+        self._save_and_new = True
+        self._on_save()  # creates / updates + calls self.accept()
+
+    # ------------------------------------------------------------------
+    # Send Quote via SMS
+    # ------------------------------------------------------------------
+
+    def _on_send_sms(self) -> None:
+        """Save the quote, then send it to the customer via SMS."""
+        from jaks_inventory.utils.sms_service import is_configured, send_quote_sms, get_sms_log
+
+        if not is_configured():
+            QMessageBox.warning(
+                self, "SMS Not Configured",
+                "Twilio is not set up.\n\n"
+                "Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and\n"
+                "TWILIO_PHONE_NUMBER to your .env file, then restart."
+            )
+            return
+
+        # Must have a customer selected
+        cust_idx = self._customer_combo.currentIndex()
+        cust_id = self._customer_combo.currentData()
+        if not cust_id:
+            QMessageBox.warning(self, "No Customer", "Select a customer before sending SMS.")
+            return
+
+        # Get customer phone
+        from db.inventory import get_customer
+        customer = get_customer(cust_id)
+        if not customer:
+            QMessageBox.warning(self, "Error", "Customer not found.")
+            return
+        phone = customer.get("phone", "").strip()
+        if not phone:
+            QMessageBox.warning(
+                self, "No Phone Number",
+                f"Customer '{customer.get('name', '')}' has no phone number.\n"
+                "Edit the customer to add one first."
+            )
+            return
+
+        # Save the quote first (ensure it has an ID)
+        self._on_save_silent()
+
+        if not self._quote_id:
+            QMessageBox.warning(self, "Error", "Quote must be saved before sending SMS.")
+            return
+
+        # Fetch full quote data
+        from db.inventory import get_quote
+        quote = get_quote(self._quote_id)
+        if not quote:
+            QMessageBox.warning(self, "Error", "Could not load quote data.")
+            return
+
+        # Confirm before sending
+        answer = QMessageBox.question(
+            self, "Send SMS",
+            f"Send quote {quote.get('quote_number', '')} via text to:\n"
+            f"📱 {phone}\n\n"
+            f"Customer: {customer.get('name', '')}\n"
+            f"Total: ${float(quote.get('total', 0) or 0):,.2f}\n\n"
+            "Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        result = send_quote_sms(quote, phone)
+
+        if result.get("success"):
+            # Update quote status to 'sent'
+            from db.inventory import update_quote
+            update_quote(self._quote_id, status="sent")
+            self._status_label.setText("SENT")
+            self._status_label.setStyleSheet(
+                "background: #fff3e0; color: #e65100; font-weight: bold; "
+                "padding: 2px 10px; border-radius: 3px;"
+            )
+            QMessageBox.information(
+                self, "SMS Sent",
+                f"Quote texted to {phone}.\n"
+                "When the customer replies 'Yes', the quote will be\n"
+                "automatically marked as Accepted."
+            )
+        else:
+            QMessageBox.critical(
+                self, "SMS Failed",
+                f"Could not send SMS:\n{result.get('error', 'Unknown error')}"
+            )
+
+    # ------------------------------------------------------------------
+    # Send Quote via Email
+    # ------------------------------------------------------------------
+    def _on_send_email(self) -> None:
+        """Save the quote, then send it to the customer via email."""
+        from jaks_inventory.utils.notification_service import email_configured, send_quote_email
+
+        if not email_configured():
+            QMessageBox.warning(
+                self, "Email Not Configured",
+                "SMTP is not set up.\n\n"
+                "Go to Settings → Email / SMTP to configure your\n"
+                "outgoing mail server."
+            )
+            return
+
+        cust_id = self._customer_combo.currentData()
+        if not cust_id:
+            QMessageBox.warning(self, "No Customer", "Select a customer before sending email.")
+            return
+
+        from db.inventory import get_customer
+        customer = get_customer(cust_id)
+        if not customer:
+            QMessageBox.warning(self, "Error", "Customer not found.")
+            return
+        email = (customer.get("email", "") or "").strip()
+        if not email:
+            QMessageBox.warning(
+                self, "No Email Address",
+                f"Customer '{customer.get('name', '')}' has no email address.\n"
+                "Edit the customer to add one first."
+            )
+            return
+
+        # Save the quote first
+        self._on_save_silent()
+        if not self._quote_id:
+            QMessageBox.warning(self, "Error", "Quote must be saved before sending email.")
+            return
+
+        from db.inventory import get_quote
+        quote = get_quote(self._quote_id)
+        if not quote:
+            QMessageBox.warning(self, "Error", "Could not load quote data.")
+            return
+
+        answer = QMessageBox.question(
+            self, "Send Email",
+            f"Send quote {quote.get('quote_number', '')} via email to:\n"
+            f"📧 {email}\n\n"
+            f"Customer: {customer.get('name', '')}\n"
+            f"Total: ${float(quote.get('total', 0) or 0):,.2f}\n\n"
+            "Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        from jaks_inventory.utils.email_worker import EmailWorker
+
+        self._email_worker = EmailWorker(
+            lambda: send_quote_email(quote, email), parent=self,
+        )
+
+        def _on_result(result: dict) -> None:
+            if result.get("success"):
+                from db.inventory import update_quote
+                update_quote(self._quote_id, status="sent")
+                self._status_label.setText("SENT")
+                self._status_label.setStyleSheet(
+                    "background: #fff3e0; color: #e65100; font-weight: bold; "
+                    "padding: 2px 10px; border-radius: 3px;"
+                )
+                QMessageBox.information(
+                    self, "Email Sent",
+                    f"Quote emailed to {email} successfully."
+                )
+            else:
+                QMessageBox.critical(
+                    self, "Email Failed",
+                    f"Could not send email:\n{result.get('error', 'Unknown error')}"
+                )
+
+        self._email_worker.finished_result.connect(_on_result)
+        self._email_worker.start()
+
+    # ------------------------------------------------------------------
+    # Disable auto-default (fixes Enter key triggering Sales Order)
+    # ------------------------------------------------------------------
+
+    def _disable_auto_default(self) -> None:
+        for btn in self.findChildren(QPushButton):
+            btn.setAutoDefault(False)
+            btn.setDefault(False)
+
+    # ------------------------------------------------------------------
+    # New Part (create product from quote)
+    # ------------------------------------------------------------------
+
+    def _on_new_part(self) -> None:
+        from .edit_product_dialog import EditProductDialog
+
+        dlg = EditProductDialog(create_mode=True, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            new_id = dlg._product_id
+            if new_id:
+                prod = get_product_by_id(new_id)
+                if prod:
+                    if not self._quote_id:
+                        self._create_quote_in_db()
+                    desc = prod.get("invoice_description") or prod.get("title", prod.get("sku", ""))
+                    add_quote_line(
+                        quote_id=self._quote_id,
+                        product_id=new_id,
+                        description=desc,
+                        supplier=prod.get("supplier", ""),
+                        qty=1,
+                        unit_price=float(prod.get("selling_price") or 0),
+                        unit_cost=float(prod.get("cost") or 0),
+                        core_charge=float(prod.get("core_sell_price") or prod.get("core_charge") or 0),
+                    )
+                    self._quote = get_quote(self._quote_id)
+                    self._refresh_lines()
+
+    # ------------------------------------------------------------------
+    # Double-click line → open product editor
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Right-click context menu on line items
+    # ------------------------------------------------------------------
+    def _show_line_context_menu(self, pos) -> None:
+        """Show context menu on right-click in the line items table."""
+        item = self._lines_table.itemAt(pos)
+        if not item:
+            return
+        row = item.row()
+        line_id_item = self._lines_table.item(row, _L_ID)
+        if not line_id_item:
+            return
+
+        sku = (self._lines_table.item(row, _L_SKU).text() or "Part") if self._lines_table.item(row, _L_SKU) else "Part"
+
+        # Look up whether line is currently optional + its option group
+        is_optional = False
+        current_group = ""
+        if self._quote:
+            for ln in self._quote.get("lines", []):
+                if ln.get("id") == int(line_id_item.text()):
+                    is_optional = bool(ln.get("is_optional"))
+                    current_group = (ln.get("option_group") or "").strip()
+                    break
+
+        # Collect existing groups for the submenu
+        existing_groups: list[str] = []
+        if self._quote:
+            seen = set()
+            for ln in self._quote.get("lines", []):
+                g = (ln.get("option_group") or "").strip()
+                if g and g not in seen:
+                    seen.add(g)
+                    existing_groups.append(g)
+        # Always offer A,B,C as a starting set
+        for default_g in ("A", "B", "C"):
+            if default_g not in existing_groups:
+                existing_groups.append(default_g)
+
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu { background: white; border: 1px solid #ccc; padding: 4px; }"
+            "QMenu::item { padding: 6px 24px; }"
+            "QMenu::item:selected { background: #e3f2fd; color: #0d47a1; }"
+        )
+        comment_action = menu.addAction("💬 Add Comment")
+        eta_action = menu.addAction("📅 Set ETA")
+        menu.addSeparator()
+        option_label = "⬜ Remove Option" if is_optional else "🟢 Make Optional"
+        option_action = menu.addAction(option_label)
+
+        # Option-group submenu
+        opt_menu = menu.addMenu("🔀 Option Group")
+        group_actions = {}
+        for g in existing_groups:
+            label = f"  ✓ {g}" if g == current_group else f"     {g}"
+            act = opt_menu.addAction(label)
+            group_actions[act] = g
+        opt_menu.addSeparator()
+        custom_group_action = opt_menu.addAction("✏️  Custom label…")
+        clear_group_action = opt_menu.addAction("✖  Remove from group")
+
+        shipping_action = menu.addAction("🚚 Set Part Shipping")
+        menu.addSeparator()
+        clear_action = menu.addAction("🗑️ Clear Notes")
+        delete_action = menu.addAction("❌ Delete Line")
+        menu.addSeparator()
+        xref_action = menu.addAction("🔄 Swap with Cross-Ref")
+
+        action = menu.exec(self._lines_table.viewport().mapToGlobal(pos))
+        if not action:
+            return
+
+        line_id = int(line_id_item.text())
+        if action == comment_action:
+            self._add_line_comment(row, line_id, sku)
+        elif action == eta_action:
+            self._set_line_eta(row, line_id, sku)
+        elif action == option_action:
+            self._toggle_optional(line_id, not is_optional)
+        elif action in group_actions:
+            self._set_line_option_group(line_id, group_actions[action])
+        elif action == custom_group_action:
+            text, ok = QInputDialog.getText(
+                self, "Option Group", "Group label (e.g. Premium, Budget):",
+                text=current_group,
+            )
+            if ok and text.strip():
+                self._set_line_option_group(line_id, text.strip())
+        elif action == clear_group_action:
+            self._set_line_option_group(line_id, None)
+        elif action == shipping_action:
+            self._set_line_shipping(row, line_id, sku)
+        elif action == clear_action:
+            self._clear_line_notes(row, line_id)
+        elif action == delete_action:
+            self._delete_line(row, line_id, sku)
+        elif action == xref_action:
+            self._swap_with_xref(row, line_id, sku)
+
+    def _add_line_comment(self, row: int, line_id: int, sku: str) -> None:
+        """Prompt user for a comment and append it to the line's notes.
+        Uses single-line input so Enter saves and closes."""
+        text, ok = QInputDialog.getText(
+            self, "Add Comment", f"Comment for {sku}:"
+        )
+        if not ok or not text.strip():
+            return
+
+        # Read raw notes from the DB (not display text which may have freight prefix)
+        raw_notes = ""
+        if self._quote:
+            for ln in self._quote.get("lines", []):
+                if ln.get("id") == line_id:
+                    raw_notes = (ln.get("notes") or "").strip()
+                    break
+        new_notes = f"{raw_notes}\n{text.strip()}" if raw_notes else text.strip()
+
+        update_quote_line(line_id, notes=new_notes)
+        self._quote = get_quote(self._quote_id)
+        self._refresh_lines()
+
+    def _on_pe_eta_clicked(self) -> None:
+        """Toolbar '📅 ETA' button: open the ETA dialog for the selected line."""
+        rows = self._lines_table.selectionModel().selectedRows()
+        if not rows:
+            return
+        row = rows[0].row()
+        line_id_item = self._lines_table.item(row, _L_ID)
+        sku_item = self._lines_table.item(row, _L_SKU)
+        if not line_id_item:
+            return
+        self._set_line_eta(
+            row,
+            int(line_id_item.text()),
+            sku_item.text() if sku_item else "",
+        )
+
+    def _set_line_eta(self, row: int, line_id: int, sku: str) -> None:
+        """Show computed ETA + let the user override it.
+
+        Auto-fills from `engine.eta.compute_line_eta` (in-stock / open-PO /
+        vendor lead) and offers a manual date override. The chosen date is
+        stored on `quote_lines.eta_date`; an ``[ETA: …]`` tag is also kept
+        in the line's notes so legacy PDF/email rendering still works.
+        """
+        from PySide6.QtWidgets import (
+            QDialog, QFormLayout, QDateEdit, QRadioButton, QButtonGroup,
+            QDialogButtonBox, QLabel, QVBoxLayout,
+        )
+        from PySide6.QtCore import QDate
+        from datetime import date as _date
+
+        # Find the line in the cached quote.
+        ln = None
+        if self._quote:
+            for _l in self._quote.get("lines", []):
+                if _l.get("id") == line_id:
+                    ln = _l
+                    break
+        if ln is None:
+            return
+
+        product_id = ln.get("product_id")
+        qty = int(ln.get("qty") or 1)
+        current_eta = (ln.get("eta_date") or "").strip() or None
+
+        try:
+            from engine.eta import compute_line_eta
+            eta = compute_line_eta(int(product_id) if product_id else None, qty)
+        except Exception:
+            eta = {"eta_date": None, "eta_text": "", "source": "vendor_lead"}
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"ETA — {sku}")
+        outer = QVBoxLayout(dlg)
+
+        info = QLabel(
+            f"<b>Suggested:</b> {eta.get('eta_text') or '—'}<br>"
+            f"<span style='color:#666'>Available now: "
+            f"{eta.get('available_qty', 0)} on hand</span>"
+        )
+        info.setTextFormat(__import__('PySide6.QtCore', fromlist=['Qt']).Qt.RichText)
+        outer.addWidget(info)
+
+        form = QFormLayout()
+        outer.addLayout(form)
+
+        rb_auto = QRadioButton("Use suggested ETA")
+        rb_manual = QRadioButton("Pick a specific date")
+        rb_clear = QRadioButton("Clear ETA")
+        grp = QButtonGroup(dlg)
+        grp.addButton(rb_auto)
+        grp.addButton(rb_manual)
+        grp.addButton(rb_clear)
+
+        date_edit = QDateEdit()
+        date_edit.setCalendarPopup(True)
+        date_edit.setDisplayFormat("yyyy-MM-dd")
+        if current_eta:
+            try:
+                y, m, d = current_eta.split("-")
+                date_edit.setDate(QDate(int(y), int(m), int(d)))
+                rb_manual.setChecked(True)
+            except Exception:
+                date_edit.setDate(QDate.currentDate())
+                rb_auto.setChecked(True)
+        else:
+            date_edit.setDate(QDate.currentDate())
+            rb_auto.setChecked(True)
+
+        form.addRow(rb_auto)
+        form.addRow(rb_manual, date_edit)
+        form.addRow(rb_clear)
+
+        def _sync():
+            date_edit.setEnabled(rb_manual.isChecked())
+        rb_auto.toggled.connect(lambda _c: _sync())
+        rb_manual.toggled.connect(lambda _c: _sync())
+        rb_clear.toggled.connect(lambda _c: _sync())
+        _sync()
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        outer.addWidget(btns)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        if rb_clear.isChecked():
+            new_eta = None
+            new_text = ""
+        elif rb_manual.isChecked():
+            qd = date_edit.date()
+            new_eta = f"{qd.year():04d}-{qd.month():02d}-{qd.day():02d}"
+            try:
+                today = _date.today()
+                pick = _date.fromisoformat(new_eta)
+                days = (pick - today).days
+                new_text = "Available now" if days <= 0 else f"ETA ~ {new_eta}"
+            except Exception:
+                new_text = f"ETA ~ {new_eta}"
+        else:  # rb_auto
+            new_eta = eta.get("eta_date")
+            new_text = eta.get("eta_text") or ""
+
+        # Update notes: replace any existing [ETA: ...] tag with the new label.
+        import re
+        raw_notes = (ln.get("notes") or "").strip()
+        cleaned = re.sub(r"\[ETA:[^\]]*\]\n?", "", raw_notes).strip()
+        if new_text:
+            new_notes = f"[ETA: {new_text}]\n{cleaned}" if cleaned else f"[ETA: {new_text}]"
+        else:
+            new_notes = cleaned
+
+        update_quote_line(line_id, eta_date=new_eta, notes=new_notes)
+        self._quote = get_quote(self._quote_id)
+        self._refresh_lines()
+
+    def _clear_line_notes(self, row: int, line_id: int) -> None:
+        """Clear all notes/comments from a line item."""
+        update_quote_line(line_id, notes="")
+        self._quote = get_quote(self._quote_id)
+        self._refresh_lines()
+
+    def _toggle_optional(self, line_id: int, make_optional: bool) -> None:
+        """Toggle a line between required and optional."""
+        update_quote_line(line_id, is_optional=1 if make_optional else 0)
+        self._quote = get_quote(self._quote_id)
+        self._refresh_lines()
+
+    def _set_line_option_group(self, line_id: int, group: str | None) -> None:
+        """Tag (or untag) a line as belonging to an A/B/C-style option group.
+
+        Lines in a group are alternative bundles — only the selected group
+        is carried into the resulting sales order / invoice.
+        """
+        update_quote_line(line_id, option_group=(group or None))
+        self._quote = get_quote(self._quote_id)
+        self._refresh_option_pills()
+        self._refresh_lines()
+
+    def _set_line_shipping(self, row: int, line_id: int, sku: str) -> None:
+        """Set per-line shipping/freight cost."""
+        current = 0.0
+        if self._quote:
+            for ln in self._quote.get("lines", []):
+                if ln.get("id") == line_id:
+                    current = float(ln.get("line_shipping") or 0)
+                    break
+        val, ok = QInputDialog.getDouble(
+            self, "Part Shipping", f"Freight cost for {sku}:",
+            current, 0, 99999, 2,
+        )
+        if not ok:
+            return
+        update_quote_line(line_id, line_shipping=val)
+        self._quote = get_quote(self._quote_id)
+        self._refresh_lines()
+
+    def _on_ship_method_changed(self, method: str) -> None:
+        """Show/hide shipping fee option based on selected method."""
+        show_fee = method != "Customer Pickup"
+        self._ship_fee_label.setVisible(show_fee)
+        self._ship_fee_check.setVisible(show_fee)
+        if not show_fee:
+            self._ship_fee_check.setChecked(False)
+
+    def _delete_line(self, row: int, line_id: int, sku: str) -> None:
+        """Delete a line item after confirmation."""
+        ans = QMessageBox.question(
+            self, "Delete Line",
+            f"Remove \"{sku}\" and all its notes from this quote?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        remove_quote_line(self._quote_id, line_id)
+        self._quote = get_quote(self._quote_id)
+        self._refresh_lines()
+
+    def _swap_with_xref(self, row: int, line_id: int, sku: str) -> None:
+        """Show cross-referenced alternatives and swap the line item."""
+        try:
+            from db.xref_chain_service import search_aftermarket_by_oem, find_related_products
+        except ImportError:
+            QMessageBox.information(self, "Not Available", "Cross-reference service not available.")
+            return
+
+        # Search for cross-refs using the part number (strip JAKS- prefix)
+        part = sku.replace("JAKS-", "") if sku.startswith("JAKS-") else sku
+        result = search_aftermarket_by_oem(part)
+
+        options = []
+        if result and result.aftermarket_options:
+            for opt in result.aftermarket_options:
+                pn = opt.aftermarket_part_number
+                prod = get_product_by_sku(f"JAKS-{pn}") if pn else None
+                options.append({
+                    "part_number": pn,
+                    "manufacturer": opt.aftermarket_manufacturer or "",
+                    "confidence": opt.confidence,
+                    "product": prod,
+                })
+
+        if not options:
+            # Try reverse lookup
+            related = find_related_products(part)
+            for xref in related:
+                pn = xref.aftermarket_part_number if xref.oem_part_number == part else xref.oem_part_number
+                prod = get_product_by_sku(f"JAKS-{pn}") if pn else None
+                options.append({
+                    "part_number": pn,
+                    "manufacturer": getattr(xref, "aftermarket_manufacturer", "") or "",
+                    "confidence": xref.confidence,
+                    "product": prod,
+                })
+
+        if not options:
+            QMessageBox.information(self, "No Cross-Refs", f"No cross-referenced parts found for {sku}.")
+            return
+
+        # Show selection dialog
+        items = []
+        for opt in options:
+            pn = opt["part_number"]
+            mfr = opt["manufacturer"]
+            conf = opt["confidence"]
+            prod = opt["product"]
+            price_str = f"${float(prod.get('selling_price') or 0):,.2f}" if prod else "N/A"
+            items.append(f"{pn} — {mfr} ({conf}) — {price_str}")
+
+        choice, ok = QInputDialog.getItem(
+            self, "Swap with Cross-Ref",
+            f"Select replacement for {sku}:",
+            items, 0, False,
+        )
+        if not ok:
+            return
+
+        idx = items.index(choice)
+        selected = options[idx]
+        prod = selected["product"]
+        if not prod:
+            QMessageBox.warning(self, "Not in Inventory",
+                f"Part {selected['part_number']} is not in inventory. Add it first.")
+            return
+
+        # Swap the line item
+        update_quote_line(
+            line_id,
+            product_id=prod.get("id"),
+            description=prod.get("invoice_description") or prod.get("title", ""),
+            supplier=prod.get("supplier", ""),
+            unit_price=float(prod.get("selling_price") or 0),
+            unit_cost=float(prod.get("cost") or 0),
+            core_charge=float(prod.get("core_sell_price") or prod.get("core_charge") or 0),
+        )
+        self._quote = get_quote(self._quote_id)
+        self._refresh_lines()
+
+    def _on_line_double_click(self, index) -> None:
+        col = index.column()
+        # Let editable columns (Qty, Price, Core, Notes) be edited inline
+        if col in (_L_QTY, _L_PRICE, _L_CORE, _L_NOTES):
+            return
+        row = index.row()
+        if not self._quote:
+            return
+        # Resolve the line via the hidden line-id column, NOT row index:
+        # _refresh_lines reorders visually as required + optional, so
+        # self._quote["lines"][row] is not the same as the displayed row.
+        line_id_item = self._lines_table.item(row, _L_ID)
+        if not line_id_item or not line_id_item.text():
+            return
+        try:
+            line_id = int(line_id_item.text())
+        except (TypeError, ValueError):
+            return
+        pid = None
+        for ln in self._quote.get("lines", []):
+            if int(ln.get("id") or 0) == line_id:
+                pid = ln.get("product_id")
+                break
+        if not pid:
+            return
+        prod = get_product_by_id(int(pid))
+        if not prod:
+            return
+
+        from .edit_product_dialog import EditProductDialog
+
+        sku = prod.get("sku") or ""
+        dlg = EditProductDialog(sku=sku, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._refresh_lines()
+
+    # ------------------------------------------------------------------
+    # Preview Quote
+    # ------------------------------------------------------------------
+
+    def _open_document_settings(self) -> None:
+        """Show the Document Settings modal so the user can tweak quote
+        presentation (SKU column, logo size, default terms, …) without
+        leaving the quote screen."""
+        from jaks_inventory.ui.document_settings_dialog import DocumentSettingsDialog
+        dlg = DocumentSettingsDialog(self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            # Settings affect the next preview/PDF render; reload totals
+            # in case anything visible depends on them.
+            self._update_totals_display()
+
+    def _on_preview_quote(self) -> None:
+        if not self._quote:
+            QMessageBox.information(self, "Preview", "No quote to preview.")
+            return
+
+        import re as _re
+        lines = self._quote.get("lines", [])
+        q = self._quote
+        cust = self._customer_combo.currentText()
+        qnum = q.get("quote_number", "—")
+        qdate = self._quote_date.date().toString("MMM dd, yyyy")
+        exp = self._exp_date.date().toString("MMM dd, yyyy")
+        esn = self._esn_edit.text().strip() or "—"
+        vin = self._vin_edit.text().strip() or "—"
+        mfr = self._banner_mfr.currentText() or "—"
+        job = self._job_edit.text().strip() or "—"
+        terms = self._terms_edit.currentText().strip() or "—"
+        notes = self._notes_edit.toPlainText().strip() or ""
+
+        html = f"""
+        <h2 style='color:#3d4a38;'>Quote {qnum}</h2>
+        <table style='margin-bottom:12px;'>
+          <tr><td><b>Customer:</b></td><td>{cust}</td></tr>
+          <tr><td><b>Date:</b></td><td>{qdate}</td></tr>
+          <tr><td><b>Expires:</b></td><td>{exp}</td></tr>
+          <tr><td><b>Terms:</b></td><td>{terms}</td></tr>
+          <tr><td><b>ESN:</b></td><td>{esn}</td></tr>
+          <tr><td><b>VIN:</b></td><td>{vin}</td></tr>
+          <tr><td><b>Manufacturer:</b></td><td>{mfr}</td></tr>
+          <tr><td><b>Job #:</b></td><td>{job}</td></tr>
+        </table>
+        <table border='1' cellpadding='6' cellspacing='0'
+               style='border-collapse:collapse; width:100%;'>
+          <tr style='background:#3d4a38; color:white;'>
+            <th>SKU</th><th>Description</th><th>Qty</th>
+            <th>Price</th><th>Core</th><th>Warranty</th><th>Total</th>
+          </tr>
+        """
+
+        # Sort: required first, then optional
+        required = [l for l in lines if not l.get("is_optional")]
+        optional = [l for l in lines if l.get("is_optional")]
+        sorted_lines = required + optional
+
+        subtotal = 0.0
+        core_total = 0.0
+        warranty_total = 0.0
+        freight_total = 0.0
+        has_optional = bool(optional)
+        in_optional_section = False
+
+        for ln in sorted_lines:
+            if not ln.get("is_selected"):
+                continue
+
+            is_opt = bool(ln.get("is_optional"))
+            if is_opt and not in_optional_section and has_optional:
+                html += """<tr><td colspan='7' style='background:#e8f5e9; color:#2e7d32;
+                    font-weight:bold; padding:4px 8px;'>── Optional Items ──</td></tr>"""
+                in_optional_section = True
+
+            sku = ln.get("sku", "")
+            desc = ln.get("description", "")
+            qty = int(ln.get("qty") or 1)
+            price = float(ln.get("unit_price") or 0)
+            core = float(ln.get("core_charge") or 0)
+            w_years = int(ln.get("warranty_years") or 0)
+            w_price = float(ln.get("warranty_price") or 0)
+            line_ship = float(ln.get("line_shipping") or 0)
+            line_total = float(ln.get("line_total") or 0) + (w_price * qty) + line_ship
+            notes_raw = (ln.get("notes") or "").strip()
+
+            subtotal += float(ln.get("line_total") or 0)
+            core_total += core * qty
+            warranty_total += w_price * qty
+            freight_total += line_ship
+
+            # Build description extras
+            desc_html = desc
+            if is_opt:
+                desc_html = f"<span style='color:#2e7d32;'><i>{desc}</i></span>"
+
+            extras = []
+            if notes_raw:
+                eta_match = _re.search(r"\[ETA:[^\]]*\]", notes_raw)
+                if eta_match:
+                    extras.append(f"<span style='color:#c62828; font-weight:bold;'>{eta_match.group()}</span>")
+                plain = _re.sub(r"\[ETA:[^\]]*\]\n?", "", notes_raw).strip()
+                if plain:
+                    display = plain[:80] + ("..." if len(plain) > 80 else "")
+                    extras.append(f"<span style='color:#666; font-style:italic;'>{display}</span>")
+            if line_ship > 0:
+                extras.append(f"<span style='color:#666;'>Freight: ${line_ship:,.2f}</span>")
+
+            if extras:
+                desc_html += "<br/>" + "<br/>".join(extras)
+
+            # Warranty cell
+            w_cell = f"+{w_years}yr ${w_price:,.0f}" if w_years > 0 else "—"
+
+            row_style = "background:#e8f5e9;" if is_opt else ""
+            html += f"""
+            <tr style='{row_style}'>
+              <td>{sku}</td><td>{desc_html}</td><td style='text-align:center;'>{qty}</td>
+              <td style='text-align:right;'>${price:,.2f}</td>
+              <td style='text-align:right;'>${core:,.2f}</td>
+              <td style='text-align:center; color:#1565c0;'>{w_cell}</td>
+              <td style='text-align:right;'><b>${line_total:,.2f}</b></td>
+            </tr>"""
+
+        html += "</table>"
+
+        # Totals
+        tax_rate = float(q.get("tax") or 0)
+        tax_amount = subtotal * (tax_rate / 100) if tax_rate > 0 else 0
+        grand = subtotal + core_total + warranty_total + freight_total + tax_amount
+
+        html += "<table style='margin-left:auto; margin-top:12px;'>"
+        html += f"<tr><td align='right'><b>Subtotal:</b></td><td align='right'>${subtotal:,.2f}</td></tr>"
+        if core_total > 0:
+            html += f"<tr><td align='right'><b>Core Charges:</b></td><td align='right'>${core_total:,.2f}</td></tr>"
+        if warranty_total > 0:
+            html += f"<tr><td align='right'><b>Extended Warranty:</b></td><td align='right'>${warranty_total:,.2f}</td></tr>"
+        if freight_total > 0:
+            html += f"<tr><td align='right'><b>Freight:</b></td><td align='right'>${freight_total:,.2f}</td></tr>"
+        if tax_rate > 0:
+            html += f"<tr><td align='right'><b>Tax ({tax_rate:.1f}%):</b></td><td align='right'>${tax_amount:,.2f}</td></tr>"
+        html += f"""<tr><td align='right' style='border-top:2px solid #3d4a38;'>
+            <b style='color:#3d4a38; font-size:14px;'>Quote Total:</b></td>
+            <td align='right' style='border-top:2px solid #3d4a38;'>
+            <b style='color:#3d4a38; font-size:14px;'>${grand:,.2f}</b></td></tr>"""
+        html += "</table>"
+
+        if notes:
+            html += f"<p><b>Notes:</b><br>{notes}</p>"
+
+        from PySide6.QtWidgets import QTextBrowser
+
+        preview = QDialog(self)
+        preview.setWindowTitle(f"Quote Preview — {qnum}")
+        preview.resize(750, 650)
+        lay = QVBoxLayout(preview)
+        browser = QTextBrowser()
+        browser.setHtml(html)
+        lay.addWidget(browser)
+
+        btn_row = QHBoxLayout()
+        print_btn = QPushButton("Print PDF")
+        print_btn.setStyleSheet("background:#3d4a38; color:white; padding:6px 18px;")
+        print_btn.clicked.connect(lambda: self._print_from_preview(preview))
+        btn_row.addWidget(print_btn)
+        btn_row.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(preview.accept)
+        btn_row.addWidget(close_btn)
+        lay.addLayout(btn_row)
+        preview.exec()
+
+    def _print_from_preview(self, preview_dlg: QDialog) -> None:
+        """Generate PDF and open it from the preview dialog."""
+        if not self._quote_id:
+            return
+        self._on_save_silent()
+        self._maybe_prompt_delivery_fuel()
+        q = get_quote(self._quote_id)
+        if not q:
+            return
+        try:
+            from jaks_inventory.utils.quote_pdf import generate_quote_pdf
+            pdf_path = generate_quote_pdf(q)
+            import subprocess
+            subprocess.Popen(["start", "", str(pdf_path)], shell=True)
+            preview_dlg.accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not generate PDF:\n{e}")
+
+    # ------------------------------------------------------------------
+    # Inline cell editing (Qty, Price, Core, Notes)
+    # ------------------------------------------------------------------
+
+    def _on_line_cell_edited(self, row: int, col: int) -> None:
+        """Handle inline edits to Qty, Price, Core, Freight, or Notes cells."""
+        if col not in (_L_QTY, _L_PRICE, _L_CORE, _L_FREIGHT, _L_NOTES):
+            return
+        if not self._quote:
+            return
+        lines = self._quote.get("lines", [])
+        if row >= len(lines):
+            return
+
+        line_id_item = self._lines_table.item(row, _L_ID)
+        if not line_id_item:
+            return
+        line_id = int(line_id_item.text())
+        cell_text = (self._lines_table.item(row, col).text() or "").strip()
+
+        if col == _L_QTY:
+            try:
+                val = max(1, int(cell_text))
+            except ValueError:
+                val = 1
+            update_quote_line(line_id, qty=val)
+        elif col == _L_PRICE:
+            try:
+                val = float(cell_text.replace("$", "").replace(",", ""))
+            except ValueError:
+                val = 0.0
+            update_quote_line(line_id, unit_price=val)
+        elif col == _L_CORE:
+            try:
+                val = float(cell_text.replace("$", "").replace(",", ""))
+            except ValueError:
+                val = 0.0
+            update_quote_line(line_id, core_charge=val)
+        elif col == _L_FREIGHT:
+            # "—" or empty parses to 0.
+            txt = cell_text.replace("$", "").replace(",", "").replace("—", "").strip()
+            try:
+                val = float(txt) if txt else 0.0
+            except ValueError:
+                val = 0.0
+            update_quote_line(line_id, line_shipping=val)
+        elif col == _L_NOTES:
+            update_quote_line(line_id, notes=cell_text)
+
+        self._quote = get_quote(self._quote_id)
+        # If freight changed, do a full refresh so the row's total and
+        # the section totals re-render. Otherwise just refresh totals.
+        if col == _L_FREIGHT:
+            self._refresh_lines()
+        else:
+            self._update_totals_display()
+
+    # ------------------------------------------------------------------
+    # Drag-and-drop reorder via vertical header
+    # ------------------------------------------------------------------
+
+    def _on_lines_reordered(self, logical: int, old_visual: int, new_visual: int) -> None:
+        """Persist new line order after user drags a row via the vertical header."""
+        if not self._quote_id:
+            return
+        row_count = self._lines_table.rowCount()
+        vh = self._lines_table.verticalHeader()
+        line_ids = []
+        for visual in range(row_count):
+            logical_row = vh.logicalIndex(visual)
+            id_item = self._lines_table.item(logical_row, _L_ID)
+            if id_item:
+                line_ids.append(int(id_item.text()))
+        if line_ids:
+            reorder_quote_lines(self._quote_id, line_ids)
+            self._quote = get_quote(self._quote_id)
+
+    # ------------------------------------------------------------------
+    # Part Finder integration
+    # ------------------------------------------------------------------
+
+    def _open_part_finder(self) -> None:
+        """Open the Part Finder dialog and wire its signals."""
+        from .part_finder_dialog import PartFinderDialog
+        from .vendor_import_dialog import VendorImportDialog
+
+        dlg = PartFinderDialog(parent=self)
+
+        # When user clicks "Add to Quote" in Part Finder
+        dlg.add_to_quote_requested.connect(self._add_product_from_finder)
+
+        # When user clicks "Open Product"
+        dlg.open_product_requested.connect(self._open_product_from_finder)
+
+        # When user clicks "Import to Inventory"
+        dlg.import_requested.connect(
+            lambda data: self._open_vendor_import(data, dlg)
+        )
+
+        dlg.exec()
+
+    def _add_product_from_finder(self, product_info: dict) -> None:
+        """Add a product found via Part Finder to the current quote."""
+        # Block pre-inventory items
+        pid_check = product_info.get("product_id")
+        if pid_check:
+            _p = get_product_by_id(int(pid_check))
+            if _p and _p.get("inventory_status") == "pre_inventory":
+                QMessageBox.warning(
+                    self, "Pre-Inventory Item",
+                    "This item is still in Pre-Inventory and cannot be added to a quote.\n"
+                    "Approve it in the Pre-Inventory Review screen first.",
+                )
+                return
+
+        if not self._quote_id:
+            self._create_quote_in_db()
+
+        product_id = product_info.get("product_id")
+        sku = product_info.get("sku", "")
+        title = product_info.get("title", "")
+        price = float(product_info.get("price") or 0)
+        cost = float(product_info.get("cost") or 0)
+        supplier = product_info.get("supplier", "")
+
+        add_quote_line(
+            self._quote_id,
+            product_id=product_id,
+            description=title,
+            supplier=supplier,
+            qty=1,
+            unit_price=price,
+            unit_cost=cost,
+        )
+
+        self._quote = get_quote(self._quote_id)
+        self._refresh_lines()
+        self._recalc_totals()
+
+    def _open_product_from_finder(self, product_id: int) -> None:
+        """Open a product detail view from Part Finder."""
+        try:
+            from .product_detail_dialog import ProductDetailDialog
+            dlg = ProductDetailDialog(product_id, parent=self)
+            dlg.exec()
+        except Exception:
+            QMessageBox.information(
+                self, "Product", f"Product ID: {product_id}"
+            )
+
+    def _open_vendor_import(self, vendor_data: dict, finder_dlg=None) -> None:
+        """Open vendor import dialog and handle the result."""
+        from .vendor_import_dialog import VendorImportDialog
+
+        dlg = VendorImportDialog(vendor_data, parent=self)
+
+        def _on_created(result: dict):
+            action = result.get("action", "save")
+            product_id = result.get("id")
+            sku = result.get("sku", "")
+
+            if action == "save_quote" and product_id:
+                # Fetch the newly created product and add to quote
+                prod = get_product_by_id(product_id) if product_id else None
+                if prod:
+                    self._add_product_from_finder({
+                        "product_id": product_id,
+                        "sku": sku,
+                        "title": prod.get("title", ""),
+                        "price": prod.get("selling_price", 0),
+                        "cost": prod.get("cost", 0),
+                        "supplier": prod.get("supplier", ""),
+                    })
+            elif action == "save_open" and product_id:
+                self._open_product_from_finder(product_id)
+
+        dlg.product_created.connect(_on_created)
+        dlg.exec()
+
+    # ------------------------------------------------------------------
+    # Auto-save draft
+    # ------------------------------------------------------------------
+
+    def _apply_locked_state(self) -> None:
+        """If the quote has been converted to an SO, lock editing.
+
+        The dialog is still useful for review, but new edits would not
+        sync to the sales order — so we hide Save / Convert and disable
+        all editor widgets, while showing a banner with a jump button.
+        """
+        self._is_locked = False
+        so_id = (self._quote or {}).get("converted_so_id")
+        if not so_id:
+            return
+        self._is_locked = True
+
+        # Hide / disable mutating actions.
+        for name in (
+            "_to_so_btn", "_convert_btn", "_save_btn", "_save_new_btn",
+            "_send_btn",
+        ):
+            w = getattr(self, name, None)
+            if w is not None:
+                try:
+                    w.hide()
+                except Exception:
+                    pass
+
+        # Disable common editors.
+        for name in (
+            "_customer_combo", "_quote_date", "_exp_date", "_terms_edit",
+            "_notes_edit", "_tax_spin", "_esn_edit", "_vin_edit",
+            "_job_edit", "_priority_combo", "_lines_table",
+            "_price_editor_frame", "_banner_mfr", "_banner_equip_type",
+            "_banner_equip_model",
+        ):
+            w = getattr(self, name, None)
+            if w is not None:
+                try:
+                    w.setEnabled(False)
+                except Exception:
+                    pass
+
+        # Stop the autosave timer if any.
+        try:
+            self._autosave_timer.stop()
+        except Exception:
+            pass
+
+        # Inject a banner at the top of the layout.
+        try:
+            from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton
+            banner = QFrame(self)
+            banner.setStyleSheet(
+                "QFrame { background: #fde68a; border: 1px solid #d97706; border-radius: 4px; }"
+                "QLabel { color: #92400e; font-weight: bold; }"
+            )
+            row = QHBoxLayout(banner)
+            row.setContentsMargins(8, 4, 8, 4)
+            row.addWidget(QLabel(
+                "🔒 This quote was converted to a sales order — read-only. "
+                "Edit the sales order instead."
+            ))
+            row.addStretch()
+            jump_btn = QPushButton("Open Sales Order →")
+            jump_btn.setStyleSheet(
+                "QPushButton { background: #1565c0; color: white; padding: 4px 12px;"
+                " border-radius: 3px; font-weight: bold; }"
+                "QPushButton:hover { background: #1976d2; }"
+            )
+
+            def _jump():
+                try:
+                    from .so_detail_dialog import open_so_detail
+                    open_so_detail(int(so_id), parent=self)
+                except Exception as exc:
+                    QMessageBox.warning(self, "Open Sales Order",
+                                        f"Could not open SO:\n{exc}")
+            jump_btn.clicked.connect(_jump)
+            row.addWidget(jump_btn)
+
+            top_layout = self.layout()
+            if top_layout is not None:
+                top_layout.insertWidget(0, banner)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Customer / PO helpers (Phase K Batch 1)
+    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # D1: QBO Estimate badge + overflow menu
+    # ------------------------------------------------------------------
+    def _refresh_qbo_estimate_badge(self) -> None:
+        """Show/hide the green ✓ badge based on quote.qbo_estimate_id."""
+        if not hasattr(self, "_qbo_status_label"):
+            return
+        q = self._quote or {}
+        qbo_id = (q.get("qbo_estimate_id") or "").strip() if isinstance(q, dict) else ""
+        synced_at = (q.get("qbo_estimate_synced_at") or "") if isinstance(q, dict) else ""
+        if qbo_id:
+            self._qbo_status_label.setText(f"✓ Linked · {qbo_id}")
+            self._qbo_status_label.setStyleSheet(
+                "QLabel { color: #2E7D32; font-weight: 600; padding: 0 6px; }"
+            )
+            tip = f"Linked to QBO Estimate {qbo_id}"
+            if synced_at:
+                tip += f"\nLast synced: {synced_at}"
+            self._qbo_status_label.setToolTip(tip)
+            self._qbo_status_label.setVisible(True)
+            try:
+                self._qbo_push_btn.setText("📤 Re-sync")
+            except Exception:
+                pass
+        else:
+            self._qbo_status_label.setVisible(False)
+            try:
+                self._qbo_push_btn.setText("📤 QBO")
+            except Exception:
+                pass
+
+    def _show_qbo_estimate_menu(self, pos) -> None:
+        """Context-menu on the QBO push button: Open in QBO / Unlink."""
+        from PySide6.QtWidgets import QMenu, QMessageBox
+        menu = QMenu(self)
+        q = self._quote or {}
+        qbo_id = (q.get("qbo_estimate_id") or "").strip() if isinstance(q, dict) else ""
+
+        act_push = menu.addAction("Push / Re-sync to QBO")
+        act_push.triggered.connect(self._on_push_to_qbo_estimate)
+
+        if qbo_id:
+            menu.addSeparator()
+            act_open = menu.addAction("Open in QBO…")
+            act_open.triggered.connect(self._open_qbo_estimate_in_browser)
+            act_unlink = menu.addAction("Unlink from QBO…")
+            act_unlink.triggered.connect(self._unlink_qbo_estimate)
+        else:
+            act_open = menu.addAction("Open in QBO…")
+            act_open.setEnabled(False)
+
+        try:
+            menu.exec(self._qbo_push_btn.mapToGlobal(pos))
+        except Exception:
+            menu.exec()
+
+    def _open_qbo_estimate_in_browser(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+        q = self._quote or {}
+        qbo_id = (q.get("qbo_estimate_id") or "").strip() if isinstance(q, dict) else ""
+        if not qbo_id:
+            return
+        try:
+            from qbo.links import qbo_web_url
+            from qbo.config import describe as _qbo_describe
+            info = _qbo_describe() or {}
+            realm = info.get("realm_id") or info.get("company_id")
+            env = info.get("environment") or "sandbox"
+            if not realm:
+                QMessageBox.information(
+                    self, "Open in QBO",
+                    "No QBO realm/company id configured — cannot build link.",
+                )
+                return
+            url = qbo_web_url(str(realm), str(env), "Estimate", qbo_id)
+        except Exception as exc:
+            QMessageBox.warning(self, "Open failed", f"{type(exc).__name__}: {exc}")
+            return
+        if not url:
+            QMessageBox.information(
+                self, "Open in QBO",
+                "This estimate has a mock id — no live QBO page exists.",
+            )
+            return
+        try:
+            from PySide6.QtGui import QDesktopServices
+            from PySide6.QtCore import QUrl
+            QDesktopServices.openUrl(QUrl(url))
+        except Exception as exc:
+            QMessageBox.warning(self, "Open failed", f"{type(exc).__name__}: {exc}")
+
+    def _unlink_qbo_estimate(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+        if not self._quote_id:
+            return
+        confirm = QMessageBox.question(
+            self, "Unlink from QBO",
+            "Remove this quote's QBO Estimate link?\n\n"
+            "The Estimate stays in QuickBooks — this only clears the local "
+            "crosswalk so a future push creates a new Estimate.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from db.database import get_db
+            with get_db() as conn:
+                conn.execute(
+                    "UPDATE quotes SET qbo_estimate_id = NULL, "
+                    "qbo_estimate_synced_at = NULL WHERE id = ?",
+                    (int(self._quote_id),),
+                )
+                conn.commit()
+        except Exception as exc:
+            QMessageBox.warning(self, "Unlink failed", f"{type(exc).__name__}: {exc}")
+            return
+        # Update in-memory quote and badge.
+        try:
+            if isinstance(self._quote, dict):
+                self._quote["qbo_estimate_id"] = None
+                self._quote["qbo_estimate_synced_at"] = None
+        except Exception:
+            pass
+        self._refresh_qbo_estimate_badge()
+
+    def _refresh_po_badge(self) -> None:
+        """Update the title-bar badge to show the current Job/PO# (if any)."""
+        try:
+            po = (self._job_edit.text() or "").strip()
+        except Exception:
+            po = ""
+        if po:
+            self._acct_badge.setText(f"PO #: {po}")
+            self._acct_badge.show()
+        else:
+            self._acct_badge.hide()
+
+    def _highlight_required(self, widget, ok: bool, msg: str = "Required") -> None:
+        """Toggle a red 'required' border on ``widget``."""
+        try:
+            if ok:
+                widget.setProperty("requiredMissing", False)
+                widget.setStyleSheet("")
+                widget.setToolTip("")
+            else:
+                widget.setProperty("requiredMissing", True)
+                widget.setStyleSheet(
+                    "QComboBox, QLineEdit, QTableWidget { border: 2px solid "
+                    "#c62828; border-radius: 3px; padding: 2px 4px; }"
+                )
+                widget.setToolTip(msg)
+        except Exception:
+            pass
+
+    def _require_customer(self) -> int | None:
+        """Return the live customer id, or warn + focus combo and return None."""
+        cid = None
+        try:
+            cid = self._customer_combo.currentData()
+        except Exception:
+            cid = None
+        if not cid:
+            QMessageBox.information(
+                self, "Pick a Customer First",
+                "Select a customer in the left sidebar before adding lines.\n\n"
+                "Quote pricing depends on the customer's tier.",
+            )
+            try:
+                self._highlight_required(self._customer_combo, False,
+                                         "Customer is required")
+                self._customer_combo.setFocus()
+            except Exception:
+                pass
+            return None
+        # Clear the red border now that we have one
+        self._highlight_required(self._customer_combo, True)
+        return int(cid)
+
+    def _sync_pending_edits(self) -> bool:
+        """G2: flush UI edits to DB and refresh ``self._quote``.
+
+        Used by Convert flows so the in-memory quote reflects what the
+        user just typed/picked. Validates that a customer is set and
+        shows the warning here so callers don't have to. Returns True
+        on success, False if the user must fix something first.
+        """
+        if not self._quote_id:
+            return False
+        try:
+            self._autosave_draft()
+        except Exception:
+            pass
+        # Re-pull from DB so downstream code sees the latest header.
+        try:
+            self._quote = get_quote(self._quote_id) or self._quote
+        except Exception:
+            pass
+        cid = self._customer_combo.currentData() if hasattr(self, "_customer_combo") else None
+        if not cid and not (self._quote or {}).get("customer_id"):
+            QMessageBox.warning(
+                self, "No Customer",
+                "Assign a customer before converting.",
+            )
+            return False
+        return True
+
+    def _autosave_draft(self) -> None:
+        """Silently save the current quote state every 60s."""
+        if not self._quote_id:
+            return
+        if getattr(self, "_is_locked", False):
+            return
+        customer_id = self._customer_combo.currentData()
+        exp = self._exp_date.date().toString("yyyy-MM-dd")
+        terms = self._terms_edit.currentText().strip() or None
+        notes = self._notes_edit.toPlainText().strip() or None
+        tax = self._tax_spin.value()
+        esn = self._esn_edit.text().strip() or None
+        vin = self._vin_edit.text().strip() or None
+        update_quote(
+            self._quote_id,
+            customer_id=customer_id,
+            expiration_date=exp,
+            terms=terms,
+            notes=notes,
+            tax=tax,
+            esn=esn,
+            vin=vin,
+        )

@@ -208,7 +208,8 @@ class CoreSlip(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     printed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
-    customer: Mapped[Customer | None] = relationship("Customer")
+    # customer_id is NOT NULL — the relationship is always present (not Optional)
+    customer: Mapped[Customer] = relationship("Customer")
     core_charges: Mapped[list[CoreCharge]] = relationship(
         "CoreCharge", foreign_keys="CoreCharge.core_slip_id", back_populates="core_slip"
     )

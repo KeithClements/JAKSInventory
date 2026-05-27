@@ -16,9 +16,9 @@
     </p>
     {% for r in products %}
     <a href="/products/{{ r.product_id }}"
-       class="flex items-center gap-3 px-3 py-2 hover:bg-blue-50 transition-colors"
+       class="flex items-center gap-3 px-3 py-2 hover:bg-brand-50 transition-colors"
        @click="open = false">
-      <span class="font-mono text-xs font-semibold text-blue-700 shrink-0 w-24 truncate">
+      <span class="font-mono text-xs font-semibold text-brand-700 shrink-0 w-24 truncate">
         {{ r.part_number }}
       </span>
       <span class="flex-1 text-sm text-gray-800 truncate min-w-0">{{ r.description }}</span>
@@ -42,7 +42,7 @@
     </p>
     {% for c in customers %}
     <a href="/customers/{{ c.id }}"
-       class="flex items-center gap-3 px-3 py-2 hover:bg-blue-50 transition-colors"
+       class="flex items-center gap-3 px-3 py-2 hover:bg-brand-50 transition-colors"
        @click="open = false">
       <svg class="w-4 h-4 text-gray-300 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"

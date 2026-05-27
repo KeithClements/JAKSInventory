@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Products screen + Inventory tabs redesign — JAK's Diesel PRO</title>
+<style>
+  :root{
+    --bg:#0f1419; --panel:#1a2128; --panel2:#232c35; --border:#2d3a45;
+    --text:#e6edf3; --muted:#8a939d; --dim:#6b7480;
+    --accent:#ff8c42; --orange:#f0a850;
+    --green:#3fb950; --red:#f85149; --amber:#d29922; --blue:#58a6ff;
+    --purple:#bc8cff; --teal:#39d0d8;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#0a0e12;color:var(--text);font:13px/1.45 -apple-system,Segoe UI,Roboto,sans-serif}
+  h1,h2,h3,h4{margin:0}
+  .wrap{max-width:1480px;margin:0 auto;padding:28px}
+  .section-title{font-size:11px;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase;font-weight:800;margin:36px 0 12px}
+  .section-title:first-child{margin-top:0}
+  .lede{color:var(--muted);font-size:13px;margin:-6px 0 18px;max-width:900px}
+
+  /* Window chrome */
+  .win{background:var(--bg);border:1px solid var(--border);border-radius:10px;overflow:hidden;box-shadow:0 8px 28px rgba(0,0,0,.35)}
+  .titlebar{height:24px;background:#0a0e12;border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 10px;color:var(--dim);font-size:11px}
+  .topnav{height:42px;background:#161b20;border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 16px;gap:18px}
+  .brand{color:var(--orange);font-weight:800;letter-spacing:.5px;font-size:13px}
+  .topnav .cat{color:var(--muted);font-weight:700;font-size:10.5px;letter-spacing:.5px;cursor:pointer}
+  .topnav .cat:hover{color:var(--text)}
+  .topnav .cat.active{color:var(--orange);border-bottom:3px solid var(--orange);padding-bottom:10px;margin-top:13px}
+  .topnav .right{margin-left:auto;display:flex;gap:14px;align-items:center}
+  .search{background:#1a2128;border:1px solid var(--border);border-radius:6px;color:var(--muted);font-size:11px;padding:5px 10px;width:240px}
+  .meta{color:var(--muted);font-size:11px}
+  .gear{color:var(--muted);font-size:14px}
+
+  /* Sub-tabs */
+  .subtabs{background:#1a1f24;border-bottom:1px solid #2f3942;height:36px;display:flex;align-items:center;padding:0 12px;gap:0}
+  .stab{color:#cfd5dc;font-size:10.5px;padding:0 16px;height:36px;display:inline-flex;align-items:center;cursor:pointer}
+  .stab:hover{color:#fff}
+  .stab.active{color:#fff;font-weight:700;border-bottom:2px solid var(--orange)}
+  .stab.new{color:var(--teal)}
+  .stab.removed{color:var(--red);text-decoration:line-through}
+
+  /* Body */
+  .body{padding:18px 22px}
+  .row{display:flex;align-items:center;gap:12px}
+  .grow{flex:1}
+
+  /* Page header */
+  .page-h{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px}
+  .page-h h2{font-size:20px;font-weight:700}
+  .page-h .sub{color:var(--muted);font-size:12px;margin-left:10px}
+  .btn{background:transparent;color:var(--text);border:1px solid var(--border);padding:7px 12px;border-radius:6px;font-size:11.5px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+  .btn:hover{border-color:#3d4a56;background:#1a2128}
+  .btn.primary{background:var(--orange);border-color:var(--orange);color:#0f1419}
+  .btn.primary:hover{background:#ffb066}
+  .btn.ai{border-color:var(--purple);color:var(--purple)}
+  .btn.danger{border-color:var(--red);color:var(--red)}
+  .toolbar{display:flex;gap:8px;flex-wrap:wrap}
+
+  /* KPI cards */
+  .kpis{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:10px;margin-bottom:14px}
+  .kpi{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:12px 14px;border-left:3px solid var(--blue)}
+  .kpi .l{font-size:10px;color:var(--muted);letter-spacing:.6px;text-transform:uppercase;font-weight:700}
+  .kpi .v{font-size:22px;font-weight:800;margin-top:4px;color:var(--text)}
+  .kpi .s{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .kpi.green{border-left-color:var(--green)}.kpi.green .v{color:var(--green)}
+  .kpi.amber{border-left-color:var(--amber)}.kpi.amber .v{color:var(--amber)}
+  .kpi.red{border-left-color:var(--red)}.kpi.red .v{color:var(--red)}
+  .kpi.blue .v{color:var(--blue)}
+  .kpi.purple{border-left-color:var(--purple)}.kpi.purple .v{color:var(--purple)}
+
+  /* Needs attention chips */
+  .attn{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:9px 14px;margin-bottom:14px}
+  .attn .label{font-size:11px;font-weight:700;color:var(--amber);display:flex;align-items:center;gap:6px}
+  .chip{background:#2a323b;border:1px solid #3a4452;border-radius:14px;padding:3px 10px 3px 7px;font-size:11px;color:var(--text);display:inline-flex;align-items:center;gap:6px;cursor:pointer}
+  .chip:hover{border-color:#566373}
+  .chip .n{display:inline-flex;justify-content:center;align-items:center;min-width:18px;height:18px;border-radius:9px;font-size:10.5px;font-weight:800;color:#0f1419;padding:0 6px}
+  .chip.red .n{background:var(--red)}
+  .chip.amber .n{background:var(--amber)}
+  .chip.green .n{background:var(--green)}
+  .chip.blue .n{background:var(--blue)}
+  .chip.purple .n{background:var(--purple)}
+  .chip.muted .n{background:#4a5360;color:var(--muted)}
+  .chip.muted{opacity:.5}
+
+  /* Filter row */
+  .filterbar{display:flex;gap:10px;align-items:center;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:10px;flex-wrap:wrap}
+  .input{background:#0f1419;border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;font-size:11.5px;height:30px}
+  .input.search{flex:1;min-width:220px}
+  select.input{padding-right:24px;background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);background-position:calc(100% - 14px) 13px,calc(100% - 9px) 13px;background-size:5px 5px;background-repeat:no-repeat;appearance:none}
+  .right-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+
+  /* Table */
+  .tbl{background:var(--panel);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+  table{width:100%;border-collapse:collapse;font-size:11.5px}
+  thead th{background:#161c22;color:var(--muted);font-weight:700;text-transform:uppercase;font-size:10px;letter-spacing:.7px;text-align:left;padding:10px 8px;border-bottom:1px solid var(--border);white-space:nowrap}
+  tbody td{padding:10px 8px;border-bottom:1px solid #232c35;vertical-align:middle}
+  tbody tr:hover{background:#1d242c}
+  .sku{color:var(--orange);font-family:Consolas,monospace;font-weight:700}
+  .item-main{color:var(--text);font-weight:600}
+  .item-sub{color:var(--dim);font-size:10.5px}
+  .num{font-variant-numeric:tabular-nums}
+  .num.pos{color:var(--green)}.num.neg{color:var(--red)}.num.warn{color:var(--amber)}
+  .num.dim{color:var(--muted)}
+
+  /* Type chip */
+  .type{font-size:9.5px;font-weight:800;padding:2px 8px;border-radius:3px;letter-spacing:.5px}
+  .type.reman{background:#3a2a4a;color:var(--purple);border:1px solid #57417a}
+  .type.kit{background:#3a2f1a;color:var(--orange);border:1px solid #6e4f24}
+  .type.new{background:#1d3a2e;color:var(--green);border:1px solid #2c5d49}
+  .type.used{background:#3a2f1f;color:var(--amber);border:1px solid #5d4a30}
+  .type.core{background:#1e3050;color:var(--blue);border:1px solid #345080}
+
+  /* Status pill */
+  .status{font-size:10px;font-weight:800;letter-spacing:.5px;border-radius:11px;padding:2px 11px;display:inline-block;text-transform:uppercase}
+  .status.in{background:#16341d;color:var(--green);border:1px solid #1f5e2e}
+  .status.out{background:#3a1a1c;color:var(--red);border:1px solid #6e2a30}
+  .status.low{background:#3a2f10;color:var(--amber);border:1px solid #6e5424}
+  .status.on{background:#1a2f4a;color:var(--blue);border:1px solid #2a4c7a}
+
+  /* Avail bar */
+  .avail{display:inline-block;width:80px;height:5px;background:#2c343d;border-radius:3px;vertical-align:middle;margin-left:6px;overflow:hidden}
+  .avail i{display:block;height:100%;background:var(--green)}
+  .avail.warn i{background:var(--amber)}
+  .avail.bad i{background:var(--red)}
+
+  /* Activity icons */
+  .acts{display:flex;gap:3px;flex-wrap:nowrap}
+  .act{width:18px;height:18px;border-radius:3px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:#0f1419}
+  .act.q{background:var(--green)}      /* on quote */
+  .act.s{background:var(--blue)}       /* on sales order */
+  .act.p{background:var(--amber)}      /* on PO */
+  .act.r{background:var(--purple)}     /* recent receipt */
+  .act.a{background:var(--teal)}       /* recent adjustment */
+  .act.k{background:#9aa6b2}           /* in kit */
+  .act.muted{background:#2c343d;color:var(--dim)}
+
+  /* Section comparison cards */
+  .compare{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:10px}
+  .col{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:18px}
+  .col h3{font-size:11px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;font-weight:800;margin-bottom:14px}
+  .col h3.bad{color:var(--red)} .col h3.good{color:var(--green)}
+  .tablist{list-style:none;padding:0;margin:0}
+  .tablist li{padding:9px 0;border-bottom:1px dashed #2a323b;display:flex;align-items:center;gap:10px;font-size:12.5px}
+  .tablist li:last-child{border-bottom:none}
+  .tag{font-size:9.5px;font-weight:800;padding:2px 7px;border-radius:10px;letter-spacing:.4px;text-transform:uppercase}
+  .tag.keep{background:#16341d;color:var(--green)}
+  .tag.drop{background:#3a1a1c;color:var(--red)}
+  .tag.move{background:#3a2f1f;color:var(--amber)}
+  .tag.rename{background:#1a2f4a;color:var(--blue)}
+  .tag.new{background:#3a2a4a;color:var(--purple)}
+  .why{color:var(--muted);font-size:11px;margin-left:auto;text-align:right;max-width:340px}
+
+  /* tab strip preview */
+  .preview-tabs{background:#1a1f24;border:1px solid var(--border);border-radius:8px;padding:0 4px;display:flex;align-items:center;flex-wrap:wrap;margin-top:6px}
+
+  /* footer note */
+  .footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--border);color:var(--muted);font-size:11.5px}
+
+  /* legend */
+  .legend{display:flex;gap:14px;flex-wrap:wrap;margin:8px 0 16px;font-size:11px;color:var(--muted)}
+  .legend .lk{display:inline-flex;align-items:center;gap:6px}
+  .legend .swatch{width:14px;height:14px;border-radius:3px;display:inline-block}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1 style="font-size:22px;margin-bottom:4px">Products screen + Inventory tabs redesign</h1>
+<div class="lede">Goal: make the live Products screen match the approved mockup, and rationalize the Inventory sub-tabs. Today there are <b>9 inventory tabs</b> — half are landing pages or workflows that should live somewhere smarter. Target: <b>6 tabs</b>, no dead ends.</div>
+
+<!-- ============================================================== -->
+<!--  SECTION 1 — Products screen target                              -->
+<!-- ============================================================== -->
+<div class="section-title">1 · Products screen — target layout</div>
+
+<div class="win">
+  <div class="titlebar">JAKS Inventory</div>
+
+  <!-- Top nav -->
+  <div class="topnav">
+    <div class="brand">JAK'S DIESEL PRO</div>
+    <div class="cat">DASHBOARD</div>
+    <div class="cat">SALES</div>
+    <div class="cat active">INVENTORY</div>
+    <div class="cat">PURCHASING</div>
+    <div class="cat">CUSTOMERS</div>
+    <div class="cat">ACCOUNTING</div>
+    <div class="right">
+      <input class="search" placeholder="🔍  Search anything…  (Ctrl+K)" />
+      <span class="meta">Tue, May 19 · 04:32 PM</span>
+      <span class="gear">⚙</span>
+    </div>
+  </div>
+
+  <!-- Sub-tabs: proposed new set -->
+  <div class="subtabs">
+    <div class="stab active">Products</div>
+    <div class="stab">Adjustments</div>
+    <div class="stab">Warehouses &amp; Bins</div>
+    <div class="stab">Kits</div>
+    <div class="stab">Cycle Counts</div>
+    <div class="stab new">Categories &amp; Brands</div>
+  </div>
+
+  <div class="body">
+    <!-- Page header -->
+    <div class="page-h">
+      <div>
+        <h2 style="display:inline">Products</h2>
+        <span class="sub">SKU master · on-hand · reorder · pricing</span>
+      </div>
+      <div class="toolbar">
+        <button class="btn">📥 Import CSV</button>
+        <button class="btn">📤 Export</button>
+        <button class="btn">🖨 Print Labels</button>
+        <button class="btn ai">✨ AI Catalog Import</button>
+        <button class="btn primary">＋ New Product</button>
+      </div>
+    </div>
+
+    <!-- KPI strip -->
+    <div class="kpis">
+      <div class="kpi blue"><div class="l">Active SKUs</div><div class="v">3,847</div><div class="s">12 added MTD</div></div>
+      <div class="kpi green"><div class="l">On-hand value</div><div class="v">$1.42M</div><div class="s">at avg cost</div></div>
+      <div class="kpi amber"><div class="l">Low stock</div><div class="v">47</div><div class="s">below reorder pt</div></div>
+      <div class="kpi red"><div class="l">Out of stock</div><div class="v">23</div><div class="s">9 with open SO</div></div>
+      <div class="kpi blue"><div class="l">On order (PO)</div><div class="v">186</div><div class="s">across 28 POs</div></div>
+      <div class="kpi purple"><div class="l">Dead stock</div><div class="v">94</div><div class="s">no sale 180d</div></div>
+      <div class="kpi green"><div class="l">Avg margin</div><div class="v">38.2%</div><div class="s">trailing 30d</div></div>
+    </div>
+
+    <!-- Needs attention -->
+    <div class="attn">
+      <div class="label">⚠ Needs attention</div>
+      <span class="chip red"><span class="n">9</span> Out — open sales order</span>
+      <span class="chip amber"><span class="n">4</span> Negative on-hand</span>
+      <span class="chip amber"><span class="n">47</span> Below reorder point</span>
+      <span class="chip blue"><span class="n">18</span> No cost on file</span>
+      <span class="chip purple"><span class="n">12</span> Missing photo</span>
+      <span class="chip red"><span class="n">6</span> Price &lt; cost</span>
+      <span class="chip muted"><span class="n">0</span> Duplicate UPC</span>
+    </div>
+
+    <!-- Filter / action row -->
+    <div class="filterbar">
+      <input class="input search" placeholder="🔍  Search SKU, name, OEM #, UPC, vendor…" />
+      <select class="input"><option>All Categories</option></select>
+      <select class="input"><option>All Types</option></select>
+      <select class="input"><option>All Status</option></select>
+      <select class="input"><option>All Warehouses</option></select>
+      <select class="input"><option>All Vendors</option></select>
+      <div class="right-actions">
+        <button class="btn">👁 View / Edit</button>
+        <button class="btn">📋 Cycle Count</button>
+        <button class="btn">🛒 Create PO</button>
+        <button class="btn primary">✏ Bulk Edit</button>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div class="tbl">
+      <table>
+        <thead>
+          <tr>
+            <th>SKU</th>
+            <th>Item</th>
+            <th>Type</th>
+            <th>Category</th>
+            <th class="num">On Hand</th>
+            <th class="num">Alloc</th>
+            <th class="num">Avail</th>
+            <th class="num">Reorder</th>
+            <th class="num">Cost</th>
+            <th class="num">List</th>
+            <th class="num">Margin</th>
+            <th>Vendor</th>
+            <th>Status</th>
+            <th>Activity</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="sku">JAKS-3682821</td>
+            <td><div class="item-main">Cummins ISX 15 Cylinder Head Assy</div><div class="item-sub">OEM 3682821 · loaded · 24v</div></td>
+            <td><span class="type reman">REMAN</span></td>
+            <td>Engine — Heads</td>
+            <td class="num pos">14</td>
+            <td class="num dim">3</td>
+            <td class="num pos">11<span class="avail"><i style="width:72%"></i></span></td>
+            <td class="num dim">5</td>
+            <td class="num">$2,180</td>
+            <td class="num">$3,495</td>
+            <td class="num pos">37.6%</td>
+            <td>Diesel USA</td>
+            <td><span class="status in">In Stock</span></td>
+            <td><div class="acts"><div class="act q">✓</div><div class="act s">$</div><div class="act p">P</div><div class="act muted">·</div><div class="act r">R</div></div></td>
+          </tr>
+          <tr>
+            <td class="sku">JAKS-DUSA-P190011</td>
+            <td><div class="item-main">DS60 Reman Connecting Rod</div><div class="item-sub">Detroit Series 60 · 14L · machined</div></td>
+            <td><span class="type reman">REMAN</span></td>
+            <td>Rotating Assy</td>
+            <td class="num pos">38</td>
+            <td class="num dim">6</td>
+            <td class="num pos">32<span class="avail"><i style="width:85%"></i></span></td>
+            <td class="num dim">10</td>
+            <td class="num">$148</td>
+            <td class="num">$245</td>
+            <td class="num pos">39.6%</td>
+            <td>Diesel USA</td>
+            <td><span class="status in">In Stock</span></td>
+            <td><div class="acts"><div class="act q">✓</div><div class="act s">$</div><div class="act p">P</div><div class="act muted">·</div><div class="act r">R</div></div></td>
+          </tr>
+          <tr>
+            <td class="sku">JAKS-141181</td>
+            <td><div class="item-main">ISX Front Crankshaft Seal Kit</div><div class="item-sub">OEM 4089154 · includes wear sleeve</div></td>
+            <td><span class="type kit">KIT</span></td>
+            <td>Gaskets / Seals</td>
+            <td class="num warn">3</td>
+            <td class="num dim">5</td>
+            <td class="num neg">−2<span class="avail bad"><i style="width:0%"></i></span></td>
+            <td class="num dim">12</td>
+            <td class="num">$19</td>
+            <td class="num">$42</td>
+            <td class="num pos">54.8%</td>
+            <td>Cummins OEM</td>
+            <td><span class="status out">Out</span></td>
+            <td><div class="acts"><div class="act q">✓</div><div class="act s">$</div><div class="act p">P</div><div class="act a">A</div><div class="act muted">·</div></div></td>
+          </tr>
+          <tr>
+            <td class="sku">JAKS-23532555</td>
+            <td><div class="item-main">DS60 14L Connecting Rod (Reman)</div><div class="item-sub">DDC 23532555 · re-bushed · weight-matched</div></td>
+            <td><span class="type reman">REMAN</span></td>
+            <td>Rotating Assy</td>
+            <td class="num pos">22</td>
+            <td class="num dim">4</td>
+            <td class="num pos">18<span class="avail"><i style="width:78%"></i></span></td>
+            <td class="num dim">8</td>
+            <td class="num">$188</td>
+            <td class="num">$315</td>
+            <td class="num pos">40.3%</td>
+            <td>Detroit Reman</td>
+            <td><span class="status in">In Stock</span></td>
+            <td><div class="acts"><div class="act q">✓</div><div class="act s">$</div><div class="act muted">·</div><div class="act muted">·</div><div class="act r">R</div></div></td>
+          </tr>
+          <tr>
+            <td class="sku">JAKS-CORE-ISX-HD</td>
+            <td><div class="item-main">ISX 15 Cylinder Head — CORE</div><div class="item-sub">return-only · refund credit</div></td>
+            <td><span class="type core">CORE</span></td>
+            <td>Engine — Heads</td>
+            <td class="num pos">9</td>
+            <td class="num dim">0</td>
+            <td class="num pos">9<span class="avail"><i style="width:100%"></i></span></td>
+            <td class="num dim">—</td>
+            <td class="num">$650</td>
+            <td class="num">$650</td>
+            <td class="num dim">—</td>
+            <td>(core program)</td>
+            <td><span class="status in">In Stock</span></td>
+            <td><div class="acts"><div class="act muted">·</div><div class="act s">$</div><div class="act muted">·</div><div class="act muted">·</div><div class="act r">R</div></div></td>
+          </tr>
+          <tr>
+            <td class="sku">JAKS-DD15-EGR-VLV</td>
+            <td><div class="item-main">DD15 EGR Valve Assembly</div><div class="item-sub">DDC A4721400060 · electronic actuator</div></td>
+            <td><span class="type new">NEW</span></td>
+            <td>Turbo / EGR</td>
+            <td class="num warn">2</td>
+            <td class="num dim">2</td>
+            <td class="num warn">0<span class="avail warn"><i style="width:8%"></i></span></td>
+            <td class="num dim">6</td>
+            <td class="num">$612</td>
+            <td class="num">$985</td>
+            <td class="num pos">37.9%</td>
+            <td>Detroit Reman</td>
+            <td><span class="status low">Low</span></td>
+            <td><div class="acts"><div class="act q">✓</div><div class="act s">$</div><div class="act p">P</div><div class="act muted">·</div><div class="act muted">·</div></div></td>
+          </tr>
+          <tr>
+            <td class="sku">JAKS-ISX-EGR-CLR</td>
+            <td><div class="item-main">ISX EGR Cooler — Heavy Duty</div><div class="item-sub">OEM 2882146 · upgraded core</div></td>
+            <td><span class="type new">NEW</span></td>
+            <td>Turbo / EGR</td>
+            <td class="num dim">0</td>
+            <td class="num dim">3</td>
+            <td class="num neg">−3<span class="avail bad"><i style="width:0%"></i></span></td>
+            <td class="num dim">4</td>
+            <td class="num">$1,180</td>
+            <td class="num">$1,795</td>
+            <td class="num pos">34.3%</td>
+            <td>Cummins OEM</td>
+            <td><span class="status on">On Order</span></td>
+            <td><div class="acts"><div class="act q">✓</div><div class="act s">$</div><div class="act p">P</div><div class="act muted">·</div><div class="act muted">·</div></div></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="legend">
+      <span style="font-weight:700">Activity legend:</span>
+      <span class="lk"><span class="swatch" style="background:var(--green)"></span> on quote</span>
+      <span class="lk"><span class="swatch" style="background:var(--blue)"></span> on sales order</span>
+      <span class="lk"><span class="swatch" style="background:var(--amber)"></span> on PO</span>
+      <span class="lk"><span class="swatch" style="background:var(--teal)"></span> recent adjustment</span>
+      <span class="lk"><span class="swatch" style="background:var(--purple)"></span> recent receipt</span>
+      <span class="lk"><span class="swatch" style="background:#9aa6b2"></span> in a kit</span>
+    </div>
+  </div>
+</div>
+
+
+<!-- ============================================================== -->
+<!--  SECTION 2 — Gap analysis vs current Products screen             -->
+<!-- ============================================================== -->
+<div class="section-title">2 · Gap analysis — current Products vs target</div>
+
+<div class="compare">
+  <div class="col">
+    <h3 class="bad">Current Products screen</h3>
+    <ul class="tablist">
+      <li><span class="tag drop">Fix</span> Table has only <b>SKU · Item · On Hand · Cost · List · Margin · Status</b></li>
+      <li><span class="tag drop">Fix</span> No <b>Type</b> chip column (Reman / Kit / Core / New / Used)</li>
+      <li><span class="tag drop">Fix</span> No <b>Category</b> column</li>
+      <li><span class="tag drop">Fix</span> No <b>Alloc / Avail</b> split (the daily question: "can I sell it?")</li>
+      <li><span class="tag drop">Fix</span> No <b>Reorder point</b> column</li>
+      <li><span class="tag drop">Fix</span> No <b>Vendor</b> column</li>
+      <li><span class="tag drop">Fix</span> No <b>Avail progress bar</b> — hard to spot stockout risk at a glance</li>
+      <li><span class="tag drop">Fix</span> No <b>Activity icons</b> column (on quote / SO / PO / adjustment / kit)</li>
+      <li><span class="tag drop">Fix</span> <b>Item</b> column wraps weirdly to a second line with stale data</li>
+      <li><span class="tag drop">Fix</span> Big <b>Product Detail panel</b> hardcoded at bottom — duplicates row info, eats vertical space</li>
+      <li><span class="tag move">Move</span> AI buttons + "Scrape Selected" + "Columns" + "More" crowd the filter bar</li>
+    </ul>
+  </div>
+  <div class="col">
+    <h3 class="good">Target (this mockup)</h3>
+    <ul class="tablist">
+      <li><span class="tag keep">Keep</span> 7 KPI cards across the top — already present, just restyled</li>
+      <li><span class="tag new">New</span> <b>14-column table</b> with Type chip, Avail bar, Vendor, Activity icons</li>
+      <li><span class="tag new">New</span> <b>Needs-attention chip row</b> — clickable filters for the 7 most common product-hygiene problems</li>
+      <li><span class="tag new">New</span> Header buttons: Import CSV · Export · Print Labels · AI Catalog Import · <b>+ New Product</b> (orange CTA)</li>
+      <li><span class="tag new">New</span> Filter row condensed to: Search · 5 dropdowns · View/Edit · Cycle Count · Create PO · Bulk Edit</li>
+      <li><span class="tag move">Move</span> Product Detail panel → opens as a right-side slide-over on row click (not always-on)</li>
+      <li><span class="tag move">Move</span> Scrape Selected / Columns / More → tucked into a "More ▾" overflow button</li>
+      <li><span class="tag keep">Keep</span> Status pill (In Stock / Low / Out / On Order), now color-coded properly</li>
+    </ul>
+  </div>
+</div>
+
+
+<!-- ============================================================== -->
+<!--  SECTION 3 — Inventory tabs review                               -->
+<!-- ============================================================== -->
+<div class="section-title">3 · Inventory tabs — current vs proposed</div>
+
+<div class="compare">
+  <div class="col">
+    <h3 class="bad">Current (9 tabs)</h3>
+    <ul class="tablist">
+      <li><b>Overview</b><span class="tag drop">Drop</span><span class="why">Duplicates Dashboard. Forces an extra click before users reach Products.</span></li>
+      <li><b>Products</b><span class="tag keep">Keep</span><span class="why">Already the default landing — the SKU master.</span></li>
+      <li><b>Pricing</b><span class="tag move">Demote</span><span class="why">Daily users don't bulk-edit pricing. Make it a button on Products → opens Pricing Lists / Maintenance / Tiered as a drawer.</span></li>
+      <li><b>Adjustments</b><span class="tag keep">Keep</span><span class="why">Manual qty + cost adjustments — daily workflow.</span></li>
+      <li><b>Locations</b><span class="tag rename">Rename</span><span class="why">→ <b>Warehouses &amp; Bins</b>. Locations is ambiguous (warehouse? bin? row?).</span></li>
+      <li><b>Kits</b><span class="tag keep">Keep</span><span class="why">Bundle / assembly definitions.</span></li>
+      <li><b>Bulk Import</b><span class="tag drop">Demote</span><span class="why">Not a "place" — it's a one-shot workflow. Live as a button on Products header.</span></li>
+      <li><b>Cores</b><span class="tag move">Move</span><span class="why">Core processing is a <b>sales-side</b> workflow (returns / refund credit). Belongs under <b>Sales → Cores</b> or the Customer Profile.</span></li>
+      <li><b>Audit</b><span class="tag rename">Rename</span><span class="why">→ <b>Cycle Counts</b>. "Audit" is vague; cycle counting is the actual operational concept.</span></li>
+    </ul>
+  </div>
+  <div class="col">
+    <h3 class="good">Proposed (6 tabs)</h3>
+    <ul class="tablist">
+      <li><b>Products</b><span class="tag keep">Keep</span><span class="why">Now lands here by default with the new 14-column layout above.</span></li>
+      <li><b>Adjustments</b><span class="tag keep">Keep</span><span class="why">Unchanged.</span></li>
+      <li><b>Warehouses &amp; Bins</b><span class="tag rename">Renamed</span><span class="why">Warehouse hierarchy + bin slotting + zone heatmap.</span></li>
+      <li><b>Kits</b><span class="tag keep">Keep</span><span class="why">Unchanged.</span></li>
+      <li><b>Cycle Counts</b><span class="tag rename">Renamed</span><span class="why">Scheduled counts + variance dashboard. Replaces "Audit".</span></li>
+      <li><b>Categories &amp; Brands</b><span class="tag new">New</span><span class="why">Taxonomy management — today buried in Settings and dropdowns. Should be first-class.</span></li>
+    </ul>
+  </div>
+</div>
+
+<div class="section-title">Visual tab strip preview</div>
+
+<div style="margin-bottom:10px;color:var(--muted);font-size:12px">Before — 9 tabs, two of them dead ends:</div>
+<div class="preview-tabs">
+  <div class="stab removed">Overview</div>
+  <div class="stab active">Products</div>
+  <div class="stab">Pricing</div>
+  <div class="stab">Adjustments</div>
+  <div class="stab">Locations</div>
+  <div class="stab">Kits</div>
+  <div class="stab removed">Bulk Import</div>
+  <div class="stab removed">Cores</div>
+  <div class="stab">Audit</div>
+</div>
+
+<div style="margin:18px 0 10px;color:var(--muted);font-size:12px">After — 6 tabs, all daily-usable:</div>
+<div class="preview-tabs">
+  <div class="stab active">Products</div>
+  <div class="stab">Adjustments</div>
+  <div class="stab">Warehouses &amp; Bins</div>
+  <div class="stab">Kits</div>
+  <div class="stab">Cycle Counts</div>
+  <div class="stab new">Categories &amp; Brands</div>
+</div>
+
+<!-- ============================================================== -->
+<!--  SECTION 4 — Additional suggestions                              -->
+<!-- ============================================================== -->
+<div class="section-title">4 · Additional suggestions for Inventory</div>
+
+<div class="compare">
+  <div class="col">
+    <h3>Worth considering (medium effort)</h3>
+    <ul class="tablist">
+      <li><span class="tag new">Idea</span> <b>Stock Movements ledger</b> — read-only timeline of every qty/cost change per SKU (receipt, sale, adjustment, kit build, transfer). Reachable from each row, no top-level tab needed.</li>
+      <li><span class="tag new">Idea</span> <b>Saved views</b> on Products — "My low-stock list", "AI-enriched needs review", "Negative on-hand". Saved per-user.</li>
+      <li><span class="tag new">Idea</span> <b>Right-side slide-over detail</b> instead of always-on bottom panel. Click row → 420 px drawer with photo, OEM cross-refs, supplier history, last 10 sales, on-quotes.</li>
+      <li><span class="tag new">Idea</span> <b>Reorder simulator</b> button next to "Create PO" — picks vendor, fills qty using velocity × lead time × safety factor; one click sends to PO draft.</li>
+      <li><span class="tag new">Idea</span> <b>Photo / cross-ref completeness</b> as a passive nudge — when "Missing photo (12)" chip is clicked, jump into a focused single-screen wizard, not the full grid.</li>
+    </ul>
+  </div>
+  <div class="col">
+    <h3>Worth considering (small effort, big payoff)</h3>
+    <ul class="tablist">
+      <li><span class="tag new">Idea</span> <b>Density toggle</b> (Compact / Comfortable) in the More menu. Today's row height eats screen real estate.</li>
+      <li><span class="tag new">Idea</span> <b>Right-click row menu</b> — Edit · Duplicate · Adjust qty · Create PO line · Add to active quote · Mark dead.</li>
+      <li><span class="tag new">Idea</span> <b>Sticky filter bar</b> + sticky table header on scroll.</li>
+      <li><span class="tag new">Idea</span> <b>Last-edited stamp</b> on row hover ("edited 2h ago by Keith").</li>
+      <li><span class="tag new">Idea</span> <b>Bulk Edit</b> opens a modal with a column picker — not the current full-table inline edit which is dangerous.</li>
+      <li><span class="tag new">Idea</span> Move <b>"AI · Find missing data"</b> and <b>"AI · Suggest reorders"</b> into the gear menu under <b>Tools → AI helpers</b> — keep the Products header for the 4 most-used buttons only.</li>
+    </ul>
+  </div>
+</div>
+
+
+<!-- ============================================================== -->
+<!--  SECTION 5 — Implementation order if approved                    -->
+<!-- ============================================================== -->
+<div class="section-title">5 · Implementation order (if approved)</div>
+
+<ol style="line-height:1.8;color:var(--text);max-width:900px;padding-left:22px">
+  <li><b>Sub-tab cleanup</b> — drop Overview, demote Bulk Import to header button, move Cores out, rename Audit→Cycle Counts, Locations→Warehouses &amp; Bins, add Categories &amp; Brands placeholder.</li>
+  <li><b>Products table columns</b> — add Type chip, Category, Alloc, Avail bar, Reorder, Vendor, Activity icons. Hide the existing always-on detail panel; reuse it as a slide-over.</li>
+  <li><b>Needs-attention chip row</b> — wire the 7 chips to existing filters (most already exist as flags).</li>
+  <li><b>Header buttons polish</b> — keep Import CSV · Export · Print Labels · AI Catalog Import · + New Product visible; move others to overflow.</li>
+  <li><b>Activity icons</b> — compute from the same data the bulk-flag query already returns; just render them in the last column.</li>
+  <li><b>Slide-over detail</b> — port the existing detail panel into a drawer triggered by row click + a close button.</li>
+</ol>
+
+<div class="footer">
+  Source mockup: <code>mockups/products_and_inventory_tabs_redesign.html</code>.
+  Earlier related mockup: <code>mockups/main_window_dashboard_redesign.html</code>.
+</div>
+
+</div>
+</body>
+</html>

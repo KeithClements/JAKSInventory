@@ -1,0 +1,1287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>JAK's Diesel PRO — Inventory · Products Mockup</title>
+<style>
+  :root {
+    --bg:#0f1419; --panel:#1a2128; --panel2:#232c35;
+    --border:#2d3a45; --border-hi:#3d4d5c;
+    --text:#e6edf3; --dim:#8b98a5; --faint:#5d6b78;
+    --accent:#ff8c42; --accent-dim:#b85d1f;
+    --green:#3fb950; --red:#f85149; --amber:#d29922;
+    --blue:#58a6ff; --purple:#bc8cff; --teal:#39d0d8;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:13px/1.4 "Segoe UI", system-ui, sans-serif; }
+
+  /* ─── Top nav ─── */
+  .topnav { display:flex; align-items:center; gap:24px;
+            background:#11161c; border-bottom:1px solid var(--border);
+            padding:0 18px; height:48px; }
+  .brand { color:var(--accent); font-weight:900; font-size:13px;
+           letter-spacing:0.5px; }
+  .topnav .cats { display:flex; gap:4px; flex:1; }
+  .topnav .cats a { color:var(--dim); text-decoration:none;
+                    font-weight:600; font-size:11px; letter-spacing:0.8px;
+                    padding:14px 12px; border-bottom:2px solid transparent;
+                    cursor:pointer; }
+  .topnav .cats a.active { color:var(--accent);
+                           border-bottom-color:var(--accent); }
+  .topnav .cats a:hover { color:var(--text); }
+  .topnav .right { display:flex; align-items:center; gap:12px;
+                   color:var(--dim); font-size:11px; }
+  .topnav .right .user { color:var(--accent); }
+  .topnav .right .gear { font-size:15px; color:var(--text); cursor:pointer; }
+
+  /* ─── Sub tabs ─── */
+  .subtabs { display:flex; gap:6px; padding:10px 18px 0;
+             background:var(--bg); border-bottom:1px solid var(--border); }
+  .subtab { padding:8px 14px; font-size:11px; font-weight:600;
+            color:var(--dim); border:1px solid transparent;
+            border-bottom:none; border-radius:6px 6px 0 0; cursor:pointer;
+            letter-spacing:0.3px; }
+  .subtab.active { background:var(--accent); color:white;
+                   border-color:var(--accent); }
+  .subtab:hover:not(.active) { color:var(--text); background:var(--panel2); }
+
+  /* ─── Body wrapper ─── */
+  .body { padding:14px 18px 30px; }
+  .h1 { font-size:20px; font-weight:700; margin:0; }
+  .h1 small { color:var(--dim); font-weight:500; font-size:12px;
+              margin-left:10px; }
+  .headerrow { display:flex; align-items:baseline; justify-content:space-between;
+               margin-bottom:14px; }
+  .btn { padding:8px 14px; border-radius:6px; border:none;
+         font-weight:600; font-size:12px; cursor:pointer;
+         display:inline-flex; align-items:center; gap:6px; }
+  .btn-primary { background:var(--accent); color:white; }
+  .btn-primary:hover { background:var(--accent-dim); }
+  .btn-ghost { background:var(--panel2); color:var(--text);
+               border:1px solid var(--border); }
+  .btn-ghost:hover { border-color:var(--border-hi); }
+  .btn-green { background:var(--green); color:white; }
+  .btn-green:hover { background:#2ea043; }
+  .btn-red { background:transparent; color:var(--red);
+             border:1px solid var(--border); }
+  .btn-red:hover { background:rgba(248,81,73,.08); }
+
+  /* ─── AI buttons ─── */
+  .btn-ai {
+    background:linear-gradient(135deg, #6e3bff 0%, #bc8cff 60%, #39d0d8 100%);
+    color:white; border:none; position:relative;
+    box-shadow:0 0 0 1px rgba(188,140,255,0.35),
+               0 0 12px rgba(110,59,255,0.25);
+  }
+  .btn-ai:hover { box-shadow:0 0 0 1px rgba(188,140,255,0.6),
+                            0 0 18px rgba(110,59,255,0.45); }
+  .btn-ai-ghost {
+    background:rgba(110,59,255,0.08); color:var(--purple);
+    border:1px solid rgba(188,140,255,0.45);
+    padding:6px 10px; border-radius:5px; font-weight:600;
+    font-size:11px; cursor:pointer;
+    display:inline-flex; align-items:center; gap:5px;
+  }
+  .btn-ai-ghost:hover { background:rgba(110,59,255,0.18);
+                        border-color:var(--purple); color:var(--text); }
+  .btn-ai-sm {
+    background:linear-gradient(135deg, #6e3bff 0%, #bc8cff 100%);
+    color:white; border:none; padding:4px 9px; border-radius:4px;
+    font-size:10px; font-weight:700; cursor:pointer;
+    display:inline-flex; align-items:center; gap:4px;
+    letter-spacing:0.3px;
+  }
+  .btn-ai-sm:hover { filter:brightness(1.15); }
+  .spark { font-size:11px; }
+
+  /* AI banner inside modal */
+  .ai-banner {
+    background:linear-gradient(90deg, rgba(110,59,255,0.18) 0%,
+                                       rgba(57,208,216,0.10) 100%);
+    border:1px solid rgba(188,140,255,0.35); border-radius:8px;
+    padding:10px 14px; margin-bottom:14px;
+    display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+  }
+  .ai-banner .ai-title { color:var(--purple); font-weight:700;
+                         font-size:12px; letter-spacing:0.4px; }
+  .ai-banner .ai-sub { color:var(--dim); font-size:11px; flex:1; }
+  .ai-banner .ai-input { flex:1; min-width:240px;
+                         background:var(--bg); color:var(--text);
+                         border:1px solid var(--border-hi); border-radius:5px;
+                         padding:6px 10px; font-size:12px; }
+
+  /* "AI suggested" inline tag */
+  .ai-tag { display:inline-flex; align-items:center; gap:3px;
+            background:rgba(110,59,255,0.15); color:var(--purple);
+            border:1px solid rgba(188,140,255,0.35);
+            border-radius:3px; padding:1px 5px; font-size:9px;
+            font-weight:700; letter-spacing:0.3px; margin-left:6px; }
+
+  /* Section header right-side AI button slot */
+  .section h3 .ai-slot { margin-left:auto; display:flex; gap:6px; }
+
+  /* ─── KPI row ─── */
+  .kpis { display:grid; grid-template-columns:repeat(7,1fr); gap:8px;
+          margin-bottom:14px; }
+  .kpi { background:var(--panel); border:1px solid var(--border);
+         border-radius:8px; padding:10px 12px; min-height:64px; }
+  .kpi .lbl { font-size:9px; font-weight:700; letter-spacing:0.8px;
+              color:var(--dim); text-transform:uppercase; }
+  .kpi .val { font-size:20px; font-weight:700; margin-top:4px; }
+  .kpi .sub { font-size:10px; color:var(--faint); margin-top:2px; }
+  .c-blue { color:var(--blue); } .c-amber { color:var(--amber); }
+  .c-green { color:var(--green); } .c-red { color:var(--red); }
+  .c-accent { color:var(--accent); } .c-purple { color:var(--purple); }
+  .c-teal { color:var(--teal); }
+
+  /* ─── Needs Attention ─── */
+  .attn { background:var(--panel); border:1px solid var(--border);
+          border-radius:8px; padding:8px 12px; display:flex;
+          align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  .attn .head { font-size:10px; font-weight:700; letter-spacing:0.8px;
+                color:var(--amber); margin-right:6px; }
+  .chip { display:inline-flex; align-items:center; gap:6px;
+          background:var(--panel2); border:1px solid var(--border);
+          border-radius:14px; padding:3px 10px 3px 4px; font-size:11px;
+          font-weight:600; color:var(--text); cursor:pointer; }
+  .chip:hover { border-color:var(--border-hi); }
+  .chip .badge { width:20px; height:20px; border-radius:50%;
+                 color:white; font-size:10px; font-weight:700;
+                 display:flex; align-items:center; justify-content:center; }
+  .chip.zero { color:var(--faint); }
+  .chip.zero .badge { background:var(--border); }
+
+  /* ─── Filter row ─── */
+  .filters { display:flex; gap:8px; align-items:center;
+             margin-bottom:10px; flex-wrap:wrap; }
+  .search { flex:0 1 280px; background:var(--panel2); color:var(--text);
+            border:1px solid var(--border); border-radius:6px;
+            padding:7px 10px; font-size:12px; }
+  .select { background:var(--panel2); color:var(--text);
+            border:1px solid var(--border); border-radius:6px;
+            padding:7px 28px 7px 10px; font-size:12px;
+            appearance:none; min-width:120px;
+            background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),
+                             linear-gradient(135deg,var(--dim) 50%,transparent 50%);
+            background-position:calc(100% - 14px) center,
+                                calc(100% - 9px) center;
+            background-size:5px 5px,5px 5px; background-repeat:no-repeat; }
+  .spacer { flex:1; }
+
+  /* ─── Table ─── */
+  table { width:100%; border-collapse:collapse;
+          background:var(--panel); border:1px solid var(--border);
+          border-radius:8px; overflow:hidden; }
+  th { font-size:10px; font-weight:600; text-transform:uppercase;
+       letter-spacing:0.5px; color:var(--dim); text-align:left;
+       padding:10px 12px; background:var(--panel2);
+       border-bottom:1px solid var(--border); }
+  td { padding:10px 12px; border-bottom:1px solid var(--border);
+       font-size:12px; vertical-align:middle; }
+  tr:nth-child(even) td { background:#1f262e; }
+  tr:hover td { background:rgba(255,140,66,0.05); cursor:pointer; }
+  .sku { color:var(--accent); font-weight:700; font-family:Consolas,monospace;
+         font-size:11px; }
+  .desc-main { font-weight:600; }
+  .desc-sub { color:var(--dim); font-size:10px; margin-top:2px; }
+  .right { text-align:right; }
+  .center { text-align:center; }
+  .mono { font-family:Consolas,monospace; }
+
+  /* Pills */
+  .pill { display:inline-block; padding:2px 8px; border-radius:10px;
+          font-size:10px; font-weight:700; text-transform:uppercase;
+          letter-spacing:0.3px; border:1px solid; }
+  .p-stock   { color:var(--green);  border-color:rgba(63,185,80,.5);   background:rgba(63,185,80,.12); }
+  .p-low     { color:var(--amber);  border-color:rgba(210,153,34,.5);  background:rgba(210,153,34,.12); }
+  .p-out     { color:var(--red);    border-color:rgba(248,81,73,.5);   background:rgba(248,81,73,.12); }
+  .p-onorder { color:var(--blue);   border-color:rgba(88,166,255,.5);  background:rgba(88,166,255,.12); }
+  .p-disc    { color:var(--faint);  border-color:var(--border);        background:var(--panel2); }
+  .p-serial  { color:var(--purple); border-color:rgba(188,140,255,.5); background:rgba(188,140,255,.12); }
+  .p-core    { color:var(--teal);   border-color:rgba(57,208,216,.5);  background:rgba(57,208,216,.12); }
+
+  /* Activity / flag badges */
+  .acts { display:flex; gap:3px; }
+  .act { width:18px; height:18px; border-radius:4px;
+         display:flex; align-items:center; justify-content:center;
+         color:white; font-size:10px; font-weight:700; }
+  .act.off { background:var(--panel2); color:var(--faint);
+             border:1px solid var(--border); }
+  .act.blue { background:var(--blue); } .act.green { background:var(--green); }
+  .act.amber { background:var(--amber); } .act.red { background:var(--red); }
+  .act.purple { background:var(--purple); } .act.teal { background:var(--teal); }
+
+  /* Margin indicator */
+  .marg { font-weight:700; }
+  .marg.good { color:var(--green); }
+  .marg.ok   { color:var(--amber); }
+  .marg.bad  { color:var(--red); }
+
+  /* Inline stock bar */
+  .stockbar { width:90px; height:6px; background:var(--panel2);
+              border-radius:3px; overflow:hidden; }
+  .stockbar > span { display:block; height:100%; background:var(--green); }
+
+  .footer { color:var(--dim); font-size:11px; margin-top:10px; }
+
+  /* ─── Add Product modal ─── */
+  .scrim { position:fixed; inset:0; background:rgba(0,0,0,0.55);
+           display:flex; align-items:flex-start; justify-content:center;
+           overflow:auto; padding:36px 24px; z-index:100; }
+  .modal { width:min(1100px,100%); background:var(--panel);
+           border:1px solid var(--border-hi); border-radius:10px;
+           box-shadow:0 24px 60px rgba(0,0,0,0.6); }
+  .modal-head { display:flex; align-items:center; justify-content:space-between;
+                padding:14px 18px; border-bottom:1px solid var(--border); }
+  .modal-head h2 { margin:0; font-size:16px; font-weight:700; }
+  .modal-head small { color:var(--dim); font-size:11px; margin-left:8px; }
+  .modal-tabs { display:flex; gap:2px; padding:0 18px;
+                border-bottom:1px solid var(--border);
+                background:#161c22; }
+  .mtab { padding:10px 14px; font-size:11px; font-weight:600;
+          color:var(--dim); border-bottom:2px solid transparent;
+          cursor:pointer; letter-spacing:0.3px; }
+  .mtab.active { color:var(--accent); border-bottom-color:var(--accent); }
+  .mtab:hover:not(.active) { color:var(--text); }
+  .modal-body { padding:18px; }
+  .modal-foot { display:flex; align-items:center; justify-content:space-between;
+                gap:10px; padding:12px 18px;
+                background:#161c22; border-top:1px solid var(--border);
+                border-radius:0 0 10px 10px; }
+  .modal-foot .left { color:var(--dim); font-size:11px;
+                      display:flex; align-items:center; gap:8px; }
+  .dot-warn { width:8px; height:8px; border-radius:50%; background:var(--amber); }
+  .dot-ok   { width:8px; height:8px; border-radius:50%; background:var(--green); }
+
+  /* Form layout */
+  .grid { display:grid; gap:14px; }
+  .g2 { grid-template-columns:1fr 1fr; }
+  .g3 { grid-template-columns:1fr 1fr 1fr; }
+  .g4 { grid-template-columns:1fr 1fr 1fr 1fr; }
+  .span2 { grid-column:span 2; }
+  .span3 { grid-column:span 3; }
+  .span4 { grid-column:span 4; }
+
+  .section { background:#161c22; border:1px solid var(--border);
+             border-radius:8px; padding:14px; margin-bottom:14px; }
+  .section h3 { margin:0 0 12px; font-size:11px; font-weight:700;
+                letter-spacing:0.8px; color:var(--accent);
+                text-transform:uppercase; display:flex;
+                align-items:center; gap:8px; }
+  .section h3 .num { display:inline-flex; align-items:center;
+                     justify-content:center; width:18px; height:18px;
+                     border-radius:50%; background:var(--accent);
+                     color:white; font-size:10px; }
+
+  .field { display:flex; flex-direction:column; gap:4px; }
+  .field label { font-size:10px; font-weight:700; color:var(--dim);
+                 letter-spacing:0.4px; text-transform:uppercase; }
+  .field label .req { color:var(--accent); margin-left:2px; }
+  .field input, .field select, .field textarea {
+    background:var(--bg); color:var(--text);
+    border:1px solid var(--border); border-radius:5px;
+    padding:7px 10px; font-size:12px; font-family:inherit;
+  }
+  .field input:focus, .field select:focus, .field textarea:focus {
+    outline:none; border-color:var(--accent);
+  }
+  .field textarea { resize:vertical; min-height:60px; }
+  .field .help { color:var(--faint); font-size:10px; margin-top:1px; }
+
+  /* Checkbox row */
+  .checkrow { display:flex; gap:18px; flex-wrap:wrap; }
+  .check { display:inline-flex; align-items:center; gap:6px;
+           font-size:11px; color:var(--text); cursor:pointer; }
+  .check input { accent-color:var(--accent); width:14px; height:14px; }
+
+  /* Inline button */
+  .pill-btn { background:var(--panel2); border:1px solid var(--border);
+              border-radius:14px; padding:3px 10px; font-size:10px;
+              color:var(--text); cursor:pointer; }
+  .pill-btn:hover { border-color:var(--accent); color:var(--accent); }
+
+  /* Image dropzone */
+  .drop { border:2px dashed var(--border); border-radius:8px;
+          padding:18px; text-align:center; color:var(--dim);
+          font-size:11px; background:var(--bg); cursor:pointer; }
+  .drop:hover { border-color:var(--accent); color:var(--text); }
+  .thumbs { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+  .thumb { width:64px; height:64px; background:var(--panel2);
+           border:1px solid var(--border); border-radius:6px;
+           display:flex; align-items:center; justify-content:center;
+           color:var(--faint); font-size:18px; position:relative; }
+  .thumb .x { position:absolute; top:-6px; right:-6px;
+              width:16px; height:16px; border-radius:50%;
+              background:var(--red); color:white; font-size:10px;
+              display:flex; align-items:center; justify-content:center; }
+
+  /* Vendor / pricing rows */
+  .row-table { width:100%; border-collapse:collapse;
+               background:var(--bg); border-radius:6px; overflow:hidden; }
+  .row-table th { background:transparent; padding:6px 10px;
+                  border-bottom:1px solid var(--border); font-size:9px; }
+  .row-table td { padding:6px 10px; border-bottom:1px solid var(--border);
+                  font-size:11px; }
+  .row-table input { background:transparent; border:none; color:var(--text);
+                     width:100%; padding:2px 0; font-size:11px;
+                     font-family:inherit; }
+  .row-table input:focus { outline:none; }
+  .add-row { padding:8px; color:var(--accent); font-size:11px;
+             font-weight:600; cursor:pointer; }
+  .add-row:hover { color:var(--text); }
+  .badge-pref { background:rgba(255,140,66,0.18); color:var(--accent);
+                border:1px solid var(--accent); padding:1px 6px;
+                border-radius:8px; font-size:9px; font-weight:700; }
+
+  /* Margin live indicator inside form */
+  .live { display:flex; gap:12px; padding:10px 12px;
+          background:var(--bg); border:1px solid var(--border);
+          border-radius:6px; align-items:center; }
+  .live .k { font-size:9px; color:var(--dim); letter-spacing:0.5px;
+             text-transform:uppercase; }
+  .live .v { font-size:14px; font-weight:700; margin-top:2px; }
+</style>
+</head>
+<body>
+
+<!-- ── Top nav ── -->
+<div class="topnav">
+  <div class="brand">JAK'S DIESEL PRO</div>
+  <div class="cats">
+    <a>DASHBOARD</a>
+    <a>SALES</a>
+    <a>CORE PROCESSING</a>
+    <a class="active">INVENTORY</a>
+    <a>PURCHASING</a>
+    <a>PRICING</a>
+    <a>CUSTOMERS</a>
+    <a>MARKETING</a>
+    <a>ACCOUNTING</a>
+    <a>TOOLS</a>
+  </div>
+  <div class="right">
+    <span>Tue, May 19 • 03:42 PM</span>
+    <span>•</span>
+    <span class="user">Mike R. (Inside Sales)</span>
+    <span class="gear">⚙</span>
+  </div>
+</div>
+
+<!-- ── Sub tabs ── -->
+<div class="subtabs">
+  <div class="subtab active">Products</div>
+  <div class="subtab">Serialized Units</div>
+  <div class="subtab">Cores</div>
+  <div class="subtab">Locations / Bins</div>
+  <div class="subtab">Movements</div>
+  <div class="subtab">Adjustments</div>
+  <div class="subtab">Cycle Counts</div>
+  <div class="subtab">Reports</div>
+</div>
+
+<div class="body">
+  <!-- Header row -->
+  <div class="headerrow">
+    <h1 class="h1">Products <small>Catalog · Costing · Reorder · Vendors</small></h1>
+    <div style="display:flex; gap:8px;">
+      <button class="btn btn-ai">✨ AI Catalog Import</button>
+      <button class="btn btn-ghost">📥 Import CSV</button>
+      <button class="btn btn-ghost">📤 Export</button>
+      <button class="btn btn-ghost">🏷 Print Labels</button>
+      <button class="btn btn-primary">+ Add New Product</button>
+    </div>
+  </div>
+
+  <!-- KPI strip -->
+  <div class="kpis">
+    <div class="kpi"><div class="lbl">Active SKUs</div>
+      <div class="val c-blue">4,287</div><div class="sub">in catalog</div></div>
+    <div class="kpi"><div class="lbl">On-hand Value</div>
+      <div class="val c-accent">$1.84M</div><div class="sub">at cost</div></div>
+    <div class="kpi"><div class="lbl">Stocked Items</div>
+      <div class="val c-green">2,193</div><div class="sub">qty &gt; 0</div></div>
+    <div class="kpi"><div class="lbl">Low Stock</div>
+      <div class="val c-amber">68</div><div class="sub">below reorder pt</div></div>
+    <div class="kpi"><div class="lbl">Out of Stock</div>
+      <div class="val c-red">23</div><div class="sub">qty = 0</div></div>
+    <div class="kpi"><div class="lbl">On Order</div>
+      <div class="val c-purple">142</div><div class="sub">across 38 POs</div></div>
+    <div class="kpi"><div class="lbl">Avg Margin</div>
+      <div class="val c-teal">34.6%</div><div class="sub">last 90 days</div></div>
+  </div>
+
+  <!-- Needs Attention -->
+  <div class="attn">
+    <span class="head">⚠ NEEDS ATTENTION</span>
+    <span class="chip"><span class="badge" style="background:var(--red)">23</span> Out of stock</span>
+    <span class="chip"><span class="badge" style="background:var(--amber)">68</span> Below reorder point</span>
+    <span class="chip"><span class="badge" style="background:var(--purple)">15</span> Negative on-hand</span>
+    <span class="chip"><span class="badge" style="background:var(--blue)">7</span> No primary vendor</span>
+    <span class="chip"><span class="badge" style="background:var(--teal)">12</span> Missing cost</span>
+    <span class="chip"><span class="badge" style="background:var(--red)">4</span> Margin &lt; 10%</span>
+    <span class="chip"><span class="badge" style="background:var(--amber)">31</span> Stale (no movement 180d)</span>
+    <span class="chip zero"><span class="badge">0</span> Cycle count overdue</span>
+    <span style="flex:1"></span>
+    <button class="btn-ai-ghost">✨ AI · Find missing data (47 SKUs)</button>
+    <button class="btn-ai-ghost">✨ AI · Suggest reorders</button>
+  </div>
+
+  <!-- Filter row -->
+  <div class="filters">
+    <input class="search" placeholder="🔍   Search SKU, OEM #, description, engine, ESN…" />
+    <select class="select"><option>All Categories</option>
+      <option>Inframe Kits</option><option>Injectors</option>
+      <option>Turbos</option><option>EGR Coolers</option>
+      <option>Water Pumps</option><option>Gasket Sets</option>
+      <option>Filters</option><option>Cylinder Heads</option></select>
+    <select class="select"><option>All Brands</option>
+      <option>CMNS</option><option>PAI</option><option>HOLST</option>
+      <option>FLEET</option><option>VICT</option></select>
+    <select class="select"><option>All Engines</option>
+      <option>Cummins ISX15</option><option>Detroit DD15</option>
+      <option>CAT C15</option><option>PACCAR MX-13</option></select>
+    <select class="select"><option>All Warehouses</option>
+      <option>Main · Milwaukee</option><option>West · Phoenix</option></select>
+    <select class="select"><option>Stock Status</option>
+      <option>In Stock</option><option>Low</option><option>Out</option>
+      <option>On Order</option><option>Discontinued</option></select>
+    <div class="spacer"></div>
+    <button class="btn btn-ghost">View / Edit</button>
+    <button class="btn btn-ghost">↻ Reorder</button>
+    <button class="btn btn-ghost">📋 Adjust Qty</button>
+    <button class="btn btn-ghost">🏷 Labels</button>
+    <button class="btn btn-primary">+ Add Product</button>
+  </div>
+
+  <!-- Table -->
+  <table>
+    <thead><tr>
+      <th>SKU</th>
+      <th>Description</th>
+      <th>Brand</th>
+      <th>Category</th>
+      <th class="right">Cost</th>
+      <th class="right">List</th>
+      <th class="center">Margin</th>
+      <th class="center">On Hand</th>
+      <th class="center">Reorder Pt</th>
+      <th class="center">On Order</th>
+      <th>Location</th>
+      <th>Status</th>
+      <th>Flags</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td class="sku">JAKS-PAI-C15103-010</td>
+        <td>
+          <div class="desc-main">Inframe Kit · CAT C15</div>
+          <div class="desc-sub">OEM 1015103 · PAI Industries</div>
+        </td>
+        <td>PAI</td><td>Inframe Kits</td>
+        <td class="right mono">$3,186.83</td>
+        <td class="right mono">$4,552.61</td>
+        <td class="center marg good">30.0%</td>
+        <td class="center"><b>9</b></td>
+        <td class="center">4</td>
+        <td class="center">2</td>
+        <td class="mono">A-12</td>
+        <td><span class="pill p-stock">● IN STOCK</span></td>
+        <td><div class="acts">
+          <span class="act teal" title="Has core">♻</span>
+          <span class="act off">🔒</span>
+          <span class="act blue" title="Lot tracked">L</span>
+          <span class="act off">📸</span>
+        </div></td>
+      </tr>
+      <tr>
+        <td class="sku">CMNS-4307516</td>
+        <td>
+          <div class="desc-main">Injector, ISX15 (reman)</div>
+          <div class="desc-sub">OEM 4307516 · Cummins · Serialized</div>
+        </td>
+        <td>CMNS</td><td>Injectors</td>
+        <td class="right mono">$285.00</td>
+        <td class="right mono">$485.00</td>
+        <td class="center marg good">41.2%</td>
+        <td class="center"><b>24</b></td>
+        <td class="center">12</td>
+        <td class="center">0</td>
+        <td class="mono">A-12</td>
+        <td><span class="pill p-stock">● IN STOCK</span></td>
+        <td><div class="acts">
+          <span class="act purple" title="Serialized">S</span>
+          <span class="act teal" title="Core">♻</span>
+          <span class="act blue">L</span>
+          <span class="act green" title="Has photo">📸</span>
+        </div></td>
+      </tr>
+      <tr>
+        <td class="sku">HOLST-2882079</td>
+        <td>
+          <div class="desc-main">Turbocharger, HE451VE</div>
+          <div class="desc-sub">OEM 2882079 · Holset · Reman</div>
+        </td>
+        <td>HOLST</td><td>Turbos</td>
+        <td class="right mono">$1,640.00</td>
+        <td class="right mono">$2,390.00</td>
+        <td class="center marg good">31.4%</td>
+        <td class="center"><b>3</b></td>
+        <td class="center">2</td>
+        <td class="center">2</td>
+        <td class="mono">B-04</td>
+        <td><span class="pill p-low">⚠ LOW</span></td>
+        <td><div class="acts">
+          <span class="act purple">S</span>
+          <span class="act teal">♻</span>
+          <span class="act off">L</span>
+          <span class="act green">📸</span>
+        </div></td>
+      </tr>
+      <tr>
+        <td class="sku">CMNS-4089649</td>
+        <td>
+          <div class="desc-main">EGR Cooler, ISX15</div>
+          <div class="desc-sub">OEM 4089649 · Cummins · Reman</div>
+        </td>
+        <td>CMNS</td><td>EGR Coolers</td>
+        <td class="right mono">$680.00</td>
+        <td class="right mono">$1,090.00</td>
+        <td class="center marg good">37.6%</td>
+        <td class="center"><b>5</b></td>
+        <td class="center">3</td>
+        <td class="center">0</td>
+        <td class="mono">C-22</td>
+        <td><span class="pill p-stock">● IN STOCK</span></td>
+        <td><div class="acts">
+          <span class="act off">S</span>
+          <span class="act teal">♻</span>
+          <span class="act off">L</span>
+          <span class="act off">📸</span>
+        </div></td>
+      </tr>
+      <tr>
+        <td class="sku">CMNS-5579220</td>
+        <td>
+          <div class="desc-main">Water Pump Kit · ISX15</div>
+          <div class="desc-sub">OEM 5579220 · Cummins</div>
+        </td>
+        <td>CMNS</td><td>Water Pumps</td>
+        <td class="right mono">$185.00</td>
+        <td class="right mono">$298.00</td>
+        <td class="center marg good">37.9%</td>
+        <td class="center"><b>11</b></td>
+        <td class="center">6</td>
+        <td class="center">0</td>
+        <td class="mono">A-31</td>
+        <td><span class="pill p-stock">● IN STOCK</span></td>
+        <td><div class="acts">
+          <span class="act off">S</span><span class="act off">♻</span>
+          <span class="act blue">L</span><span class="act green">📸</span>
+        </div></td>
+      </tr>
+      <tr>
+        <td class="sku">FLEET-3680763</td>
+        <td>
+          <div class="desc-main">Fuel Filter Set (3-pc)</div>
+          <div class="desc-sub">OEM 3680763 · Fleetguard</div>
+        </td>
+        <td>FLEET</td><td>Filters</td>
+        <td class="right mono">$18.40</td>
+        <td class="right mono">$42.50</td>
+        <td class="center marg good">56.7%</td>
+        <td class="center"><b>148</b></td>
+        <td class="center">40</td>
+        <td class="center">100</td>
+        <td class="mono">D-08</td>
+        <td><span class="pill p-stock">● IN STOCK</span></td>
+        <td><div class="acts">
+          <span class="act off">S</span><span class="act off">♻</span>
+          <span class="act blue">L</span><span class="act green">📸</span>
+        </div></td>
+      </tr>
+      <tr>
+        <td class="sku">CMNS-4955505</td>
+        <td>
+          <div class="desc-main">Coolant Thermostat 180°F</div>
+          <div class="desc-sub">OEM 4955505 · Cummins</div>
+        </td>
+        <td>CMNS</td><td>Thermostats</td>
+        <td class="right mono">$78.00</td>
+        <td class="right mono">$142.00</td>
+        <td class="center marg good">45.1%</td>
+        <td class="center" style="color:var(--red)"><b>0</b></td>
+        <td class="center">8</td>
+        <td class="center">20</td>
+        <td class="mono">B-19</td>
+        <td><span class="pill p-onorder">↻ ON ORDER</span></td>
+        <td><div class="acts">
+          <span class="act off">S</span><span class="act off">♻</span>
+          <span class="act off">L</span><span class="act off">📸</span>
+        </div></td>
+      </tr>
+      <tr>
+        <td class="sku">VICT-3104206</td>
+        <td>
+          <div class="desc-main">Gasket Set, Cyl Head · ISX15</div>
+          <div class="desc-sub">OEM 3104206 · Victor Reinz</div>
+        </td>
+        <td>VICT</td><td>Gasket Sets</td>
+        <td class="right mono">$412.00</td>
+        <td class="right mono">$640.00</td>
+        <td class="center marg good">35.6%</td>
+        <td class="center" style="color:var(--amber)"><b>1</b></td>
+        <td class="center">3</td>
+        <td class="center">0</td>
+        <td class="mono">B-19</td>
+        <td><span class="pill p-low">⚠ LOW</span></td>
+        <td><div class="acts">
+          <span class="act off">S</span><span class="act off">♻</span>
+          <span class="act blue">L</span><span class="act green">📸</span>
+        </div></td>
+      </tr>
+      <tr>
+        <td class="sku">JAKS-RM-ISX15-CH</td>
+        <td>
+          <div class="desc-main">Cylinder Head, ISX15 (reman) — serialized</div>
+          <div class="desc-sub">JAKS shop reman · Core required</div>
+        </td>
+        <td>JAKS</td><td>Cylinder Heads</td>
+        <td class="right mono">$2,180.00</td>
+        <td class="right mono">$3,495.00</td>
+        <td class="center marg good">37.6%</td>
+        <td class="center"><b>4</b></td>
+        <td class="center">2</td>
+        <td class="center">1</td>
+        <td class="mono">SHOP-H</td>
+        <td><span class="pill p-serial">★ SERIALIZED</span></td>
+        <td><div class="acts">
+          <span class="act purple">S</span>
+          <span class="act teal">♻</span>
+          <span class="act blue">L</span>
+          <span class="act green">📸</span>
+        </div></td>
+      </tr>
+      <tr>
+        <td class="sku">CMNS-3680309-OLD</td>
+        <td>
+          <div class="desc-main">Oil Cooler · ISX15 (superseded)</div>
+          <div class="desc-sub">OEM 3680309 → 4955091</div>
+        </td>
+        <td>CMNS</td><td>Oil Coolers</td>
+        <td class="right mono">$540.00</td>
+        <td class="right mono">$845.00</td>
+        <td class="center marg ok">26.1%</td>
+        <td class="center"><b>2</b></td>
+        <td class="center">0</td>
+        <td class="center">0</td>
+        <td class="mono">E-04</td>
+        <td><span class="pill p-disc">DISCONTINUED</span></td>
+        <td><div class="acts">
+          <span class="act off">S</span><span class="act teal">♻</span>
+          <span class="act off">L</span><span class="act off">📸</span>
+        </div></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="footer">10 of 4,287 products shown · $1.84M on-hand value · 68 below reorder · 23 out of stock · last sync to QBO 2m ago</div>
+</div>
+
+
+<!-- ────────────────────────────────────────────────────────────── -->
+<!-- ADD NEW PRODUCT — detailed entry screen (modal)                -->
+<!-- ────────────────────────────────────────────────────────────── -->
+<div class="scrim">
+  <div class="modal">
+    <div class="modal-head">
+      <div>
+        <h2>Add New Product
+          <small>· auto SKU will be assigned on save</small></h2>
+      </div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-ghost">⌨ Keyboard shortcuts</button>
+        <button class="btn btn-red">✕ Cancel</button>
+      </div>
+    </div>
+
+    <div class="modal-tabs">
+      <div class="mtab active">① Identity</div>
+      <div class="mtab">② Categorization &amp; Fitment</div>
+      <div class="mtab">③ Costing &amp; Pricing</div>
+      <div class="mtab">④ Vendors</div>
+      <div class="mtab">⑤ Inventory &amp; Reorder</div>
+      <div class="mtab">⑥ Core &amp; Warranty</div>
+      <div class="mtab">⑦ Shipping &amp; Packaging</div>
+      <div class="mtab">⑧ Accounting / QBO</div>
+      <div class="mtab">⑨ Images &amp; Docs</div>
+      <div class="mtab">⑩ Notes</div>
+      <div style="flex:1"></div>
+      <div class="mtab" style="color:var(--purple); border-bottom-color:transparent;">✨ AI Activity Log</div>
+    </div>
+
+    <div class="modal-body">
+
+      <!-- ── AI assistant banner ── -->
+      <div class="ai-banner">
+        <span class="ai-title">✨ AI ASSISTANT</span>
+        <input class="ai-input" placeholder="Paste a PAI / Cummins / Holset URL, OEM #, or vendor invoice PDF — I'll auto-fill everything…" />
+        <button class="btn btn-ai">🌐 Scrape &amp; Fill</button>
+        <button class="btn-ai-ghost">📷 OCR Invoice</button>
+        <button class="btn-ai-ghost">🔍 Cross-ref Lookup</button>
+        <span class="ai-sub" style="flex:0; white-space:nowrap;">
+          Last run: <b style="color:var(--green)">PAI · 1015103 ✓</b> · 14 fields populated</span>
+      </div>
+
+      <!-- ① Identity ────────────────────────────────────────── -->
+      <div class="section">
+        <h3><span class="num">1</span> Identity
+          <span class="ai-slot">
+            <button class="btn-ai-sm">✨ Auto-fill from OEM #</button>
+            <button class="btn-ai-sm">✨ Find Cross-refs</button>
+          </span>
+        </h3>
+        <div class="grid g4">
+          <div class="field">
+            <label>SKU<span class="req">*</span></label>
+            <input value="JAKS-PAI-C15103-010" />
+            <span class="help">auto-generated from brand + OEM, editable</span>
+          </div>
+          <div class="field">
+            <label>OEM Part #<span class="req">*</span></label>
+            <input value="1015103" />
+          </div>
+          <div class="field">
+            <label>Brand / Mfr<span class="req">*</span></label>
+            <select>
+              <option>PAI Industries</option><option>Cummins</option>
+              <option>Holset</option><option>Fleetguard</option>
+              <option>Victor Reinz</option><option>JAKS (in-house)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Item Type</label>
+            <select>
+              <option>Stock part</option>
+              <option>Serialized unit (reman engine, head, injector)</option>
+              <option>Kit / assembly</option>
+              <option>Service / labor</option>
+              <option>Freight charge</option>
+            </select>
+          </div>
+
+          <div class="field span2">
+            <label>Short Description<span class="req">*</span>
+              <span class="ai-tag">✨ AI</span></label>
+            <input value="[Inframe Kits] CAT C15 — Inframe Engine Kit (PAI)" />
+            <span class="help">appears on quotes / invoices / labels · <a style="color:var(--purple); cursor:pointer">✨ rewrite shorter</a> · <a style="color:var(--purple); cursor:pointer">✨ rewrite SEO</a></span>
+          </div>
+          <div class="field">
+            <label>Catalog Status</label>
+            <select>
+              <option>Active</option><option>New (hidden)</option>
+              <option>Discontinued</option><option>Superseded</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Replaced By</label>
+            <input placeholder="optional SKU lookup…" />
+          </div>
+
+          <div class="field span4">
+            <label>Long Description
+              <span class="ai-tag">✨ AI GENERATED</span>
+              <span style="float:right; display:inline-flex; gap:5px;">
+                <button class="btn-ai-sm">✨ Regenerate</button>
+                <button class="btn-ai-sm">✨ Make shorter</button>
+                <button class="btn-ai-sm">✨ Add bullets</button>
+                <button class="btn-ai-sm">✨ Translate ES</button>
+              </span></label>
+            <textarea>Complete in-frame overhaul kit for CAT C15 (single turbo / pre-2007). Includes 6 pistons, rings, cylinder liners with O-rings, rod &amp; main bearings, complete gasket set (head, oil pan, valve cover), and timing components. Pistons forged-aluminum, oil-gallery-cooled.</textarea>
+          </div>
+
+          <div class="field">
+            <label>UPC / EAN</label>
+            <input placeholder="optional" />
+          </div>
+          <div class="field">
+            <label>Cross-ref / Alt #s</label>
+            <input value="1015103, 10R1103, 2197162" />
+            <span class="help">comma separated — used in part search</span>
+          </div>
+          <div class="field">
+            <label>Country of Origin</label>
+            <select><option>USA</option><option>Mexico</option>
+              <option>India</option><option>China</option></select>
+          </div>
+          <div class="field">
+            <label>HS / Tariff Code</label>
+            <input value="8409.99.91" />
+          </div>
+        </div>
+      </div>
+
+      <!-- ② Categorization & Fitment ──────────────────────────── -->
+      <div class="section">
+        <h3><span class="num">2</span> Categorization &amp; Fitment
+          <span class="ai-slot">
+            <button class="btn-ai-sm">✨ Suggest Category</button>
+            <button class="btn-ai-sm">✨ Suggest Fitment</button>
+            <button class="btn-ai-sm">✨ Suggest Tags</button>
+          </span>
+        </h3>
+        <div class="grid g4">
+          <div class="field">
+            <label>Category<span class="req">*</span></label>
+            <select><option>Inframe Kits</option><option>Injectors</option>
+              <option>Turbos</option><option>EGR Coolers</option>
+              <option>Gasket Sets</option><option>Cylinder Heads</option></select>
+          </div>
+          <div class="field">
+            <label>Sub-Category</label>
+            <select><option>Overhaul Kit</option><option>In-frame</option>
+              <option>Out-of-frame</option></select>
+          </div>
+          <div class="field">
+            <label>Engine Family</label>
+            <select><option>CAT C15</option><option>Cummins ISX15</option>
+              <option>Detroit DD15</option><option>PACCAR MX-13</option></select>
+          </div>
+          <div class="field">
+            <label>Year Range</label>
+            <input value="1999 – 2006" />
+          </div>
+
+          <div class="field span2">
+            <label>Vehicle / Equipment Fitment</label>
+            <input value="Class-8 OTR · marine · industrial" />
+          </div>
+          <div class="field">
+            <label>Position / Side</label>
+            <select><option>—</option><option>Left</option>
+              <option>Right</option><option>Front</option>
+              <option>Rear</option><option>Inboard</option>
+              <option>Outboard</option></select>
+          </div>
+          <div class="field">
+            <label>Notes / Restrictions</label>
+            <input placeholder="e.g. pre-EGR only" value="Single turbo only" />
+          </div>
+        </div>
+
+        <div style="margin-top:12px;">
+          <div style="font-size:10px; color:var(--dim); font-weight:700;
+                      letter-spacing:0.5px; text-transform:uppercase;
+                      margin-bottom:6px;">Tags</div>
+          <div class="checkrow">
+            <span class="pill-btn">+ overhaul</span>
+            <span class="pill-btn">+ in-frame</span>
+            <span class="pill-btn">+ heavy-duty</span>
+            <span class="pill-btn">+ marine-approved</span>
+            <span class="pill-btn">+ add tag…</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ③ Costing & Pricing ────────────────────────────────── -->
+      <div class="section">
+        <h3><span class="num">3</span> Costing &amp; Pricing
+          <span class="ai-slot">
+            <button class="btn-ai-sm">✨ Suggest Tier Pricing</button>
+            <button class="btn-ai-sm">✨ Competitor Scan</button>
+            <button class="btn-ai-sm">✨ MAP Check</button>
+          </span>
+        </h3>
+        <div class="grid g4">
+          <div class="field">
+            <label>Costing Method</label>
+            <select><option>Average (default)</option>
+              <option>FIFO</option><option>Last Cost</option>
+              <option>Standard</option></select>
+          </div>
+          <div class="field">
+            <label>Standard Cost</label>
+            <input value="$3,186.83" />
+          </div>
+          <div class="field">
+            <label>Last Cost</label>
+            <input value="$3,186.83" />
+          </div>
+          <div class="field">
+            <label>Average Cost</label>
+            <input value="$3,186.83" />
+          </div>
+
+          <div class="field">
+            <label>List Price<span class="req">*</span></label>
+            <input value="$4,552.61" />
+          </div>
+          <div class="field">
+            <label>MAP Price</label>
+            <input value="$4,295.00" />
+            <span class="help">minimum advertised</span>
+          </div>
+          <div class="field">
+            <label>Floor Price</label>
+            <input value="$3,612.00" />
+            <span class="help">never sell below</span>
+          </div>
+          <div class="field">
+            <label>Target Margin %</label>
+            <input value="30.0%" />
+          </div>
+
+          <div class="field">
+            <label>Tier 1 — Fleet</label>
+            <input value="$4,395.00" />
+          </div>
+          <div class="field">
+            <label>Tier 2 — Dealer</label>
+            <input value="$4,140.00" />
+          </div>
+          <div class="field">
+            <label>Tier 3 — Wholesale</label>
+            <input value="$3,810.00" />
+          </div>
+          <div class="field">
+            <label>Special / Promo</label>
+            <input placeholder="—" />
+          </div>
+
+          <div class="span4">
+            <div class="live">
+              <div><div class="k">Margin @ List</div>
+                <div class="v c-green">30.0%</div></div>
+              <div><div class="k">Markup</div>
+                <div class="v">42.9%</div></div>
+              <div><div class="k">$ Profit</div>
+                <div class="v c-green">$1,365.78</div></div>
+              <div><div class="k">Floor Margin</div>
+                <div class="v c-amber">11.8%</div></div>
+              <div style="flex:1"></div>
+              <div><div class="k">Effective from</div>
+                <div class="v">May 19, 2026</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ④ Vendors ──────────────────────────────────────────── -->
+      <div class="section">
+        <h3><span class="num">4</span> Vendors &amp; Sourcing
+          <span class="ai-slot">
+            <button class="btn-ai-sm">🌐 PAI Scrape</button>
+            <button class="btn-ai-sm">🌐 Cummins Scrape</button>
+            <button class="btn-ai-sm">🌐 Holset Scrape</button>
+            <button class="btn-ai-sm">✨ Find Alt Vendors</button>
+          </span>
+        </h3>
+        <table class="row-table">
+          <thead><tr>
+            <th>Pref</th><th>Vendor</th><th>Vendor SKU</th>
+            <th class="right">Cost</th><th class="right">Min Qty</th>
+            <th class="right">Lead Time</th><th>Pkg</th><th>Notes</th><th></th>
+          </tr></thead>
+          <tbody>
+            <tr>
+              <td><span class="badge-pref">PRIMARY</span></td>
+              <td><input value="PAI Industries" /></td>
+              <td><input value="C15103-010" /></td>
+              <td class="right"><input value="3186.83" /></td>
+              <td class="right"><input value="1" /></td>
+              <td class="right"><input value="3 days" /></td>
+              <td><input value="Box (1)" /></td>
+              <td><input value="Drop-ship available" /></td>
+              <td style="color:var(--red); cursor:pointer">✕</td>
+            </tr>
+            <tr>
+              <td><span class="pill-btn">make primary</span></td>
+              <td><input value="Diesel USA Group" /></td>
+              <td><input value="DUG-INF-C15-103" /></td>
+              <td class="right"><input value="3245.00" /></td>
+              <td class="right"><input value="1" /></td>
+              <td class="right"><input value="5 days" /></td>
+              <td><input value="Pallet" /></td>
+              <td><input value="freight included" /></td>
+              <td style="color:var(--red); cursor:pointer">✕</td>
+            </tr>
+            <tr><td colspan="9" class="add-row">＋ Add vendor source</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- ⑤ Inventory & Reorder ──────────────────────────────── -->
+      <div class="section">
+        <h3><span class="num">5</span> Inventory &amp; Reorder
+          <span class="ai-slot">
+            <button class="btn-ai-sm">✨ Suggest Reorder Pt</button>
+            <button class="btn-ai-sm">✨ Suggest Bin</button>
+          </span>
+        </h3>
+        <div class="grid g4">
+          <div class="field">
+            <label>Track inventory?</label>
+            <select><option>Yes — track qty</option>
+              <option>No — service/labor</option>
+              <option>Drop-ship only (no on-hand)</option></select>
+          </div>
+          <div class="field">
+            <label>Unit of Measure</label>
+            <select><option>each</option><option>set</option>
+              <option>kit</option><option>pair</option>
+              <option>case</option><option>hr</option></select>
+          </div>
+          <div class="field">
+            <label>Default Warehouse</label>
+            <select><option>Main · Milwaukee</option>
+              <option>West · Phoenix</option></select>
+          </div>
+          <div class="field">
+            <label>Default Bin / Location</label>
+            <input value="A-12" />
+          </div>
+
+          <div class="field">
+            <label>Opening Qty</label>
+            <input value="9" />
+          </div>
+          <div class="field">
+            <label>Reorder Point</label>
+            <input value="4" />
+          </div>
+          <div class="field">
+            <label>Reorder Qty</label>
+            <input value="6" />
+          </div>
+          <div class="field">
+            <label>Max Stock</label>
+            <input value="12" />
+          </div>
+
+          <div class="field span4">
+            <label>Tracking flags</label>
+            <div class="checkrow">
+              <label class="check"><input type="checkbox" checked /> Lot tracked</label>
+              <label class="check"><input type="checkbox" /> Serial tracked</label>
+              <label class="check"><input type="checkbox" /> Cycle-count quarterly</label>
+              <label class="check"><input type="checkbox" checked /> Reorder via auto-PO</label>
+              <label class="check"><input type="checkbox" /> Hazmat</label>
+              <label class="check"><input type="checkbox" /> Allow backorder</label>
+              <label class="check"><input type="checkbox" /> Allow negative on-hand</label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ⑥ Core & Warranty ──────────────────────────────────── -->
+      <div class="section">
+        <h3><span class="num">6</span> Core &amp; Warranty
+          <span class="ai-slot">
+            <button class="btn-ai-sm">✨ Suggest Core Deposit</button>
+          </span>
+        </h3>
+        <div class="grid g4">
+          <div class="field">
+            <label>Core deposit?</label>
+            <select><option>Yes — require core</option>
+              <option>No core</option>
+              <option>Optional (deposit waived if returned)</option></select>
+          </div>
+          <div class="field">
+            <label>Core Deposit Amount</label>
+            <input value="$650.00" />
+          </div>
+          <div class="field">
+            <label>Core Return Window</label>
+            <input value="60 days" />
+          </div>
+          <div class="field">
+            <label>Core Disposition</label>
+            <select><option>Reman in-house</option>
+              <option>Send to upstream vendor</option>
+              <option>Scrap</option></select>
+          </div>
+
+          <div class="field">
+            <label>Warranty</label>
+            <select><option>1 year / 100k mi (std)</option>
+              <option>2 year / 200k mi</option>
+              <option>3 year / 300k mi</option>
+              <option>No warranty</option></select>
+          </div>
+          <div class="field">
+            <label>Std Warranty Price</label>
+            <input value="$0.00" />
+          </div>
+          <div class="field">
+            <label>Extended Warranty Price</label>
+            <input value="$185.00" />
+          </div>
+          <div class="field">
+            <label>Returnable?</label>
+            <select><option>Yes — 30 days, restock 15%</option>
+              <option>No returns</option></select>
+          </div>
+        </div>
+      </div>
+
+      <!-- ⑦ Shipping & Packaging ─────────────────────────────── -->
+      <div class="section">
+        <h3><span class="num">7</span> Shipping &amp; Packaging
+          <span class="ai-slot">
+            <button class="btn-ai-sm">✨ Lookup Freight Class</button>
+            <button class="btn-ai-sm">✨ NMFC Lookup</button>
+            <button class="btn-ai-sm">✨ Estimate Weight/Dims</button>
+          </span>
+        </h3>
+        <div class="grid g4">
+          <div class="field"><label>Weight (lbs)</label><input value="148.0" /></div>
+          <div class="field"><label>Length (in)</label><input value="36" /></div>
+          <div class="field"><label>Width (in)</label><input value="18" /></div>
+          <div class="field"><label>Height (in)</label><input value="14" /></div>
+
+          <div class="field"><label>Freight Class</label>
+            <select><option>85</option><option>92.5</option>
+              <option>100</option><option>125</option></select></div>
+          <div class="field"><label>NMFC #</label><input value="120580" /></div>
+          <div class="field"><label>Default Ship Method</label>
+            <select><option>LTL Freight</option><option>FedEx Ground</option>
+              <option>UPS Ground</option><option>Customer pickup</option></select></div>
+          <div class="field"><label>Default Carrier</label>
+            <select><option>SAIA</option><option>R+L Carriers</option>
+              <option>FedEx Freight</option></select></div>
+
+          <div class="field span2"><label>Handling Notes</label>
+            <input value="Top-load only · do not stack · pallet must be banded" /></div>
+          <div class="field">
+            <label>Pkg Type</label>
+            <select><option>Pallet</option><option>Crate</option>
+              <option>Box</option></select>
+          </div>
+          <div class="field">
+            <label>Units / Pkg</label><input value="1" />
+          </div>
+        </div>
+      </div>
+
+      <!-- ⑧ Accounting / QBO ─────────────────────────────────── -->
+      <div class="section">
+        <h3><span class="num">8</span> Accounting &amp; QuickBooks
+          <span class="ai-slot">
+            <button class="btn-ai-sm">✨ Suggest GL Accounts</button>
+            <button class="btn-ai-sm">✨ HS / Tax Lookup</button>
+          </span>
+        </h3>
+        <div class="grid g4">
+          <div class="field"><label>Income Account</label>
+            <select><option>4000 · Parts Sales</option>
+              <option>4010 · Reman Sales</option>
+              <option>4100 · Core Charges</option></select></div>
+          <div class="field"><label>COGS Account</label>
+            <select><option>5000 · Cost of Parts Sold</option>
+              <option>5010 · Reman COGS</option></select></div>
+          <div class="field"><label>Asset Account</label>
+            <select><option>1300 · Inventory Asset</option></select></div>
+          <div class="field"><label>Tax Code</label>
+            <select><option>Taxable (Auto)</option>
+              <option>Non-taxable</option>
+              <option>Resale Cert</option></select></div>
+
+          <div class="field"><label>QBO Item ID</label>
+            <input placeholder="will sync on save" disabled
+                   style="color:var(--faint)" /></div>
+          <div class="field"><label>QBO Sync</label>
+            <select><option>Sync on save (default)</option>
+              <option>Do not sync</option>
+              <option>Sync when active</option></select></div>
+          <div class="field"><label>Shopify SKU</label>
+            <input value="JAKS-PAI-C15103-010" /></div>
+          <div class="field"><label>Web visibility</label>
+            <select><option>Public</option><option>Logged-in only</option>
+              <option>Hidden</option></select></div>
+        </div>
+      </div>
+
+      <!-- ⑨ Images & Docs ────────────────────────────────────── -->
+      <div class="section">
+        <h3><span class="num">9</span> Images &amp; Documents
+          <span class="ai-slot">
+            <button class="btn-ai-sm">🌐 Fetch from Vendor Site</button>
+            <button class="btn-ai-sm">✨ Google Image Search</button>
+            <button class="btn-ai-sm">✨ AI Background Remove</button>
+            <button class="btn-ai-sm">✨ Find Spec Sheet PDF</button>
+          </span>
+        </h3>
+        <div class="grid g2">
+          <div>
+            <div class="drop">📁 Drop product photos here or click to upload<br>
+              <span style="color:var(--faint); font-size:10px;">
+                JPG / PNG · up to 10 MB each · first image is the hero</span></div>
+            <div class="thumbs">
+              <div class="thumb">📷<span class="x">✕</span></div>
+              <div class="thumb">📷<span class="x">✕</span></div>
+              <div class="thumb" style="color:var(--accent); font-size:11px;
+                                       font-weight:700;">HERO<span class="x">✕</span></div>
+            </div>
+          </div>
+          <div>
+            <div class="drop">📄 Drop spec sheets, install guides, MSDS, COA…<br>
+              <span style="color:var(--faint); font-size:10px;">
+                PDF preferred · attached to invoice when sold</span></div>
+            <div class="thumbs">
+              <div class="thumb" style="font-size:10px;">PDF<span class="x">✕</span></div>
+              <div class="thumb" style="font-size:10px;">PDF<span class="x">✕</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ⑩ Notes ────────────────────────────────────────────── -->
+      <div class="section">
+        <h3><span class="num">10</span> Internal Notes &amp; Substitutions
+          <span class="ai-slot">
+            <button class="btn-ai-sm">✨ Find Substitutes</button>
+            <button class="btn-ai-sm">✨ Common Mistakes</button>
+          </span>
+        </h3>
+        <div class="grid g2">
+          <div class="field">
+            <label>Internal Notes (not customer-facing)</label>
+            <textarea placeholder="purchasing notes, vendor quirks, common mistakes…">PAI ships from Memphis — orders before 2pm CT ship same day. Watch piston P/N revision; box label has rev D but parts inside are rev E (confirmed OK).</textarea>
+          </div>
+          <div class="field">
+            <label>Customer-facing Notes</label>
+            <textarea placeholder="appears on quote / invoice line if filled">Pistons are forged aluminum with oil-gallery cooling. Liners are cast-iron, finish-honed.</textarea>
+          </div>
+          <div class="field span2">
+            <label>Substitutes / Alternatives</label>
+            <input value="JAKS-PAI-C15103-020 (out-of-frame variant), CMNS-OEM-C15-INFRAME" />
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="modal-foot">
+      <div class="left">
+        <span class="dot-ok"></span>
+        <span>Validation passed · ready to save</span>
+        <span style="margin:0 6px;">·</span>
+        <span class="dot-warn"></span>
+        <span>1 warning — no spec sheet attached</span>
+        <span style="margin:0 6px;">·</span>
+        <span class="ai-tag">✨ AI</span>
+        <span>14 fields auto-filled · <a style="color:var(--purple); cursor:pointer">review</a></span>
+      </div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-ghost">Save Draft</button>
+        <button class="btn btn-ghost">Save &amp; Add Another</button>
+        <button class="btn btn-ghost">Save &amp; Duplicate</button>
+        <button class="btn btn-green">✓ Save &amp; Close  (Ctrl+S)</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>JAK's Diesel PRO — Inventory · Products (REDESIGN)</title>
+<style>
+  :root {
+    --bg:#0f1419; --panel:#1a2128; --panel2:#232c35;
+    --border:#2d3a45; --border-hi:#3d4d5c;
+    --text:#e6edf3; --dim:#8b98a5; --faint:#5d6b78;
+    --accent:#ff8c42; --accent-dim:#b85d1f;
+    --green:#3fb950; --red:#f85149; --amber:#d29922;
+    --blue:#58a6ff; --purple:#bc8cff; --teal:#39d0d8;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:13px/1.4 "Segoe UI", system-ui, sans-serif; }
+
+  /* Top nav */
+  .topnav { display:flex; align-items:center; gap:24px;
+            background:#11161c; border-bottom:1px solid var(--border);
+            padding:0 18px; height:48px; }
+  .brand { color:var(--accent); font-weight:900; font-size:13px; letter-spacing:0.5px; }
+  .topnav .cats { display:flex; gap:4px; flex:1; }
+  .topnav .cats a { color:var(--dim); font-weight:600; font-size:11px;
+                    letter-spacing:0.8px; padding:14px 12px;
+                    border-bottom:2px solid transparent; cursor:pointer; }
+  .topnav .cats a.active { color:var(--accent); border-bottom-color:var(--accent); }
+  .topnav .right { display:flex; align-items:center; gap:12px; color:var(--dim); font-size:11px; }
+  .topnav .right .user { color:var(--accent); }
+
+  /* Sub-tabs */
+  .subtabs { display:flex; gap:6px; padding:10px 18px 0;
+             background:var(--bg); border-bottom:1px solid var(--border); }
+  .subtab { padding:8px 14px; font-size:11px; font-weight:600;
+            color:var(--dim); border:1px solid transparent;
+            border-bottom:none; border-radius:6px 6px 0 0; cursor:pointer; }
+  .subtab.active { background:var(--accent); color:white; border-color:var(--accent); }
+
+  /* Body */
+  .body { padding:14px 18px 30px; }
+  .h1 { font-size:20px; font-weight:700; margin:0; }
+  .h1 small { color:var(--dim); font-weight:500; font-size:12px; margin-left:10px; }
+  .headerrow { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:14px; }
+  .btn { padding:7px 12px; border-radius:6px; border:none; font-weight:600;
+         font-size:12px; cursor:pointer; display:inline-flex; align-items:center; gap:6px; }
+  .btn-primary { background:var(--accent); color:white; }
+  .btn-ghost { background:var(--panel2); color:var(--text); border:1px solid var(--border); }
+  .btn-ai { background:linear-gradient(135deg,#6e3bff 0%,#bc8cff 60%,#39d0d8 100%);
+            color:white; border:none;
+            box-shadow:0 0 0 1px rgba(188,140,255,0.35),0 0 12px rgba(110,59,255,0.25); }
+  .btn-ai-ghost { background:rgba(110,59,255,0.08); color:var(--purple);
+                  border:1px solid rgba(188,140,255,0.45); padding:5px 10px;
+                  border-radius:5px; font-weight:600; font-size:11px; }
+
+  /* KPI strip — 7 cards */
+  .kpis { display:grid; grid-template-columns:repeat(7,1fr); gap:8px; margin-bottom:14px; }
+  .kpi { background:var(--panel); border:1px solid var(--border); border-radius:8px;
+         padding:10px 12px; min-height:64px; cursor:pointer; }
+  .kpi:hover { border-color:var(--border-hi); }
+  .kpi .lbl { font-size:9px; font-weight:700; letter-spacing:0.8px; color:var(--dim);
+              text-transform:uppercase; }
+  .kpi .val { font-size:20px; font-weight:700; margin-top:4px; }
+  .kpi .sub { font-size:10px; color:var(--faint); margin-top:2px; }
+  .c-blue{color:var(--blue);} .c-amber{color:var(--amber);} .c-green{color:var(--green);}
+  .c-red{color:var(--red);}  .c-accent{color:var(--accent);} .c-purple{color:var(--purple);}
+  .c-teal{color:var(--teal);}
+
+  /* Needs Attention */
+  .attn { background:var(--panel); border:1px solid var(--border); border-radius:8px;
+          padding:8px 12px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+          margin-bottom:12px; }
+  .attn .head { font-size:10px; font-weight:700; letter-spacing:0.8px;
+                color:var(--amber); margin-right:6px; }
+  .chip { display:inline-flex; align-items:center; gap:6px;
+          background:var(--panel2); border:1px solid var(--border);
+          border-radius:14px; padding:3px 10px 3px 4px; font-size:11px;
+          font-weight:600; color:var(--text); cursor:pointer; }
+  .chip:hover { border-color:var(--border-hi); }
+  .chip .badge { width:20px; height:20px; border-radius:50%;
+                 color:white; font-size:10px; font-weight:700;
+                 display:flex; align-items:center; justify-content:center; }
+  .chip.zero { color:var(--faint); }
+  .chip.zero .badge { background:var(--border); }
+
+  /* SINGLE filter row */
+  .filters { display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap; }
+  .search { flex:1 1 300px; background:var(--panel2); color:var(--text);
+            border:1px solid var(--border); border-radius:6px;
+            padding:7px 10px; font-size:12px; }
+  .select { background:var(--panel2); color:var(--text); border:1px solid var(--border);
+            border-radius:6px; padding:7px 28px 7px 10px; font-size:12px;
+            min-width:130px; appearance:none;
+            background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),
+                             linear-gradient(135deg,var(--dim) 50%,transparent 50%);
+            background-position:calc(100% - 14px) center,calc(100% - 9px) center;
+            background-size:5px 5px,5px 5px; background-repeat:no-repeat; }
+
+  /* Table */
+  table { width:100%; border-collapse:collapse;
+          background:var(--panel); border:1px solid var(--border);
+          border-radius:8px; overflow:hidden; }
+  th { font-size:10px; font-weight:600; text-transform:uppercase;
+       letter-spacing:0.5px; color:var(--dim); text-align:left;
+       padding:10px 12px; background:var(--panel2);
+       border-bottom:1px solid var(--border); }
+  td { padding:10px 12px; border-bottom:1px solid var(--border);
+       font-size:12px; vertical-align:middle; }
+  tr:nth-child(even) td { background:#1f262e; }
+  tr:hover td { background:rgba(255,140,66,0.05); cursor:pointer; }
+  .sku { color:var(--accent); font-weight:700; font-family:Consolas,monospace; font-size:11px; }
+  .desc-main { font-weight:600; }
+  .desc-sub { color:var(--dim); font-size:10px; margin-top:2px; }
+  .right { text-align:right; } .center { text-align:center; }
+  .mono { font-family:Consolas,monospace; }
+
+  /* Pills */
+  .pill { display:inline-block; padding:2px 8px; border-radius:10px;
+          font-size:10px; font-weight:700; text-transform:uppercase;
+          letter-spacing:0.3px; border:1px solid; }
+  .p-stock   { color:var(--green);  border-color:rgba(63,185,80,.5);   background:rgba(63,185,80,.12); }
+  .p-low     { color:var(--amber);  border-color:rgba(210,153,34,.5);  background:rgba(210,153,34,.12); }
+  .p-out     { color:var(--red);    border-color:rgba(248,81,73,.5);   background:rgba(248,81,73,.12); }
+  .p-onorder { color:var(--blue);   border-color:rgba(88,166,255,.5);  background:rgba(88,166,255,.12); }
+  .p-disc    { color:var(--faint);  border-color:var(--border);        background:var(--panel2); }
+
+  /* Activity flags */
+  .acts { display:flex; gap:3px; }
+  .act { width:18px; height:18px; border-radius:4px;
+         display:flex; align-items:center; justify-content:center;
+         color:white; font-size:10px; font-weight:700; }
+  .act.off    { background:var(--panel2); color:var(--faint); border:1px solid var(--border); }
+  .act.blue   { background:var(--blue); }   .act.green  { background:var(--green); }
+  .act.amber  { background:var(--amber); }  .act.red    { background:var(--red); }
+  .act.purple { background:var(--purple); } .act.teal   { background:var(--teal); }
+
+  .marg { font-weight:700; }
+  .marg.good { color:var(--green); }
+  .marg.ok   { color:var(--amber); }
+  .marg.bad  { color:var(--red); }
+
+  .footer { color:var(--dim); font-size:11px; margin-top:10px; }
+
+  /* Annotation callouts (REDESIGN docs) */
+  .anno { background:rgba(110,59,255,0.10); border:1px solid rgba(188,140,255,0.45);
+          color:var(--purple); border-radius:6px; padding:6px 10px;
+          font-size:11px; margin:10px 0; }
+  .anno b { color:#fff; }
+  .strike { background:rgba(248,81,73,0.10); border-color:rgba(248,81,73,0.5); color:var(--red); }
+  .strike b { color:#fff; }
+</style>
+</head>
+<body>
+
+<!-- Top nav -->
+<div class="topnav">
+  <div class="brand">JAK'S DIESEL PRO</div>
+  <div class="cats">
+    <a>DASHBOARD</a><a>SALES</a><a>CORE PROCESSING</a>
+    <a class="active">INVENTORY</a>
+    <a>PURCHASING</a><a>PRICING</a><a>CUSTOMERS</a>
+    <a>MARKETING</a><a>ACCOUNTING</a><a>TOOLS</a>
+  </div>
+  <div class="right">
+    <span>Tue, May 19 • 04:51 PM</span><span>•</span>
+    <span class="user">User</span><span>⚙</span>
+  </div>
+</div>
+
+<!-- Sub-tabs (current set) -->
+<div class="subtabs">
+  <div class="subtab active">Products</div>
+  <div class="subtab">Bulk Import</div>
+  <div class="subtab">Adjustments</div>
+  <div class="subtab">Locations</div>
+  <div class="subtab">Kits</div>
+  <div class="subtab">Audit</div>
+</div>
+
+<div class="body">
+
+  <!-- HEADER -->
+  <div class="headerrow">
+    <h1 class="h1">Products <small>Catalog · Costing · Reorder · Vendors</small></h1>
+    <div style="display:flex; gap:8px;">
+      <button class="btn btn-ghost">📁 Import CSV</button>
+      <button class="btn btn-ghost">📤 Export</button>
+      <button class="btn btn-ghost">🏷 Print Labels</button>
+      <button class="btn btn-primary">+ New Product</button>
+      <button class="btn btn-ai">✨ AI Catalog Import</button>
+    </div>
+  </div>
+
+  <!-- KPI strip -->
+  <div class="kpis">
+    <div class="kpi"><div class="lbl">Active SKUs</div><div class="val c-blue">95</div><div class="sub">in catalog</div></div>
+    <div class="kpi"><div class="lbl">On-hand Value</div><div class="val c-green">$61.4K</div><div class="sub">at avg cost</div></div>
+    <div class="kpi"><div class="lbl">Low Stock</div><div class="val c-amber">0</div><div class="sub">below reorder pt</div></div>
+    <div class="kpi"><div class="lbl">Out of Stock</div><div class="val c-red">67</div><div class="sub">qty = 0</div></div>
+    <div class="kpi"><div class="lbl">On Order (PO)</div><div class="val c-purple">0</div><div class="sub">across open POs</div></div>
+    <div class="kpi"><div class="lbl">Dead Stock</div><div class="val c-accent">28</div><div class="sub">no sale 180d</div></div>
+    <div class="kpi"><div class="lbl">Avg Margin</div><div class="val c-teal">47.5%</div><div class="sub">trailing 30d</div></div>
+  </div>
+
+  <!-- Needs Attention -->
+  <div class="attn">
+    <span class="head">⚠ NEEDS ATTENTION</span>
+    <span class="chip"><span class="badge" style="background:var(--red)">67</span> Out — open sales order</span>
+    <span class="chip"><span class="badge" style="background:var(--purple)">1</span> Negative on-hand</span>
+    <span class="chip zero"><span class="badge">0</span> Below reorder point</span>
+    <span class="chip"><span class="badge" style="background:var(--teal)">8</span> No cost on file</span>
+    <span class="chip"><span class="badge" style="background:var(--blue)">95</span> Missing photo</span>
+    <span class="chip zero"><span class="badge">0</span> Price &lt; cost</span>
+    <span class="chip zero"><span class="badge">0</span> Duplicate UPC</span>
+    <span style="flex:1"></span>
+    <button class="btn-ai-ghost">✨ AI · Find missing data</button>
+    <button class="btn-ai-ghost">✨ AI · Suggest reorders</button>
+  </div>
+
+  <!-- SINGLE FILTER ROW (consolidated) -->
+  <div class="filters">
+    <input class="search" placeholder="🔍   Search SKU, OEM #, description, vendor SKU, ESN…" />
+    <select class="select"><option>All Categories</option></select>
+    <select class="select"><option>All Brands</option></select>
+    <select class="select"><option>All Vendors</option></select>
+    <select class="select"><option>All Warehouses</option></select>
+    <select class="select"><option>Stock Status</option><option>In Stock</option><option>Low</option><option>Out</option><option>On Order</option></select>
+    <select class="select"><option>All Types</option><option>NEW</option><option>REMAN</option><option>USED</option><option>CORE</option><option>KIT</option></select>
+    <span style="flex:1"></span>
+    <button class="btn btn-ghost">✏️ Edit</button>
+    <button class="btn btn-ghost">📋 Bulk Edit</button>
+    <button class="btn btn-ghost">🕷️ Scrape</button>
+    <button class="btn btn-ghost">⋯ More</button>
+  </div>
+
+  <!-- TABLE (new column layout) -->
+  <table>
+    <thead><tr>
+      <th style="width:34px"><input type="checkbox" /></th>
+      <th>SKU</th>
+      <th>Item</th>
+      <th>Type</th>
+      <th>Category</th>
+      <th class="center">On Hand</th>
+      <th class="center">Reorder</th>
+      <th class="center">On Order</th>
+      <th class="right">Cost</th>
+      <th class="right">List</th>
+      <th class="center">Margin</th>
+      <th>Vendor</th>
+      <th>Status</th>
+      <th>Flags</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td><input type="checkbox" /></td>
+        <td class="sku">JAKS-3682821</td>
+        <td><div class="desc-main">Cummins ISX 15 Cylinder Head Assy</div>
+            <div class="desc-sub">OEM 3682821 · loaded · 24V</div></td>
+        <td><span class="pill p-stock" style="background:rgba(63,185,80,.10)">REMAN</span></td>
+        <td>Engine — Heads</td>
+        <td class="center"><b>14</b></td>
+        <td class="center">5</td>
+        <td class="center">2</td>
+        <td class="right mono">$2,180</td>
+        <td class="right mono">$3,495</td>
+        <td class="center marg good">37.6%</td>
+        <td>Diesel USA</td>
+        <td><span class="pill p-stock">● IN STOCK</span></td>
+        <td><div class="acts">
+          <span class="act green" title="Has photo">📸</span>
+          <span class="act teal" title="Core">♻</span>
+          <span class="act blue" title="Lot tracked">L</span>
+          <span class="act off" title="No spec">📄</span>
+        </div></td>
+      </tr>
+      <tr>
+        <td><input type="checkbox" /></td>
+        <td class="sku">JAKS-23532555</td>
+        <td><div class="desc-main">Detroit Series 60 14L Connecting Rod (Reman)</div>
+            <div class="desc-sub">DDC 23532555 · re-bushed · weight-matched</div></td>
+        <td><span class="pill p-stock" style="background:rgba(63,185,80,.10)">REMAN</span></td>
+        <td>Rotating Assy</td>
+        <td class="center"><b>22</b></td>
+        <td class="center">8</td>
+        <td class="center">0</td>
+        <td class="right mono">$188</td>
+        <td class="right mono">$315</td>
+        <td class="center marg good">40.3%</td>
+        <td>Detroit Reman</td>
+        <td><span class="pill p-stock">● IN STOCK</span></td>
+        <td><div class="acts">
+          <span class="act green">📸</span><span class="act off">♻</span>
+          <span class="act blue">L</span><span class="act green">📄</span>
+        </div></td>
+      </tr>
+      <tr>
+        <td><input type="checkbox" /></td>
+        <td class="sku">JAKS-DUSA-P190011</td>
+        <td><div class="desc-main">Reman connecting rod for Detroit Series 60 14.0L</div>
+            <div class="desc-sub">magnafluxed and resized</div></td>
+        <td><span class="pill p-stock" style="background:rgba(63,185,80,.10)">REMAN</span></td>
+        <td>Rotating Assy</td>
+        <td class="center" style="color:var(--red)"><b>0</b></td>
+        <td class="center">12</td>
+        <td class="center">0</td>
+        <td class="right mono">$0.00</td>
+        <td class="right mono">$148</td>
+        <td class="center marg bad">—</td>
+        <td>Diesel USA</td>
+        <td><span class="pill p-out">● OUT</span></td>
+        <td><div class="acts">
+          <span class="act off">📸</span><span class="act off">♻</span>
+          <span class="act off">L</span><span class="act off">📄</span>
+        </div></td>
+      </tr>
+      <tr>
+        <td><input type="checkbox" /></td>
+        <td class="sku">WARRANTY-CHILD-4d7dd25a</td>
+        <td><div class="desc-main">Warranty Child Test Head</div>
+            <div class="desc-sub">internal tracking SKU</div></td>
+        <td><span class="pill p-disc">CORE</span></td>
+        <td>Internal</td>
+        <td class="center" style="color:var(--red)"><b>0</b></td>
+        <td class="center">0</td>
+        <td class="center">0</td>
+        <td class="right mono">$1,000</td>
+        <td class="right mono">$2,000</td>
+        <td class="center marg good">50.0%</td>
+        <td>—</td>
+        <td><span class="pill p-out">● OUT</span></td>
+        <td><div class="acts">
+          <span class="act off">📸</span><span class="act teal">♻</span>
+          <span class="act off">L</span><span class="act off">📄</span>
+        </div></td>
+      </tr>
+      <tr>
+        <td><input type="checkbox" /></td>
+        <td class="sku">DEBUG-FRESH-1</td>
+        <td><div class="desc-main">DEBUG-FRESH-1</div>
+            <div class="desc-sub">debug fixture</div></td>
+        <td><span class="pill p-disc">USED</span></td>
+        <td>—</td>
+        <td class="center" style="color:var(--red)"><b>0</b></td>
+        <td class="center">0</td>
+        <td class="center">0</td>
+        <td class="right mono">$5</td>
+        <td class="right mono">$10</td>
+        <td class="center marg good">50.0%</td>
+        <td>—</td>
+        <td><span class="pill p-out">● OUT</span></td>
+        <td><div class="acts">
+          <span class="act off">📸</span><span class="act off">♻</span>
+          <span class="act off">L</span><span class="act off">📄</span>
+        </div></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="footer">5 of 95 products shown · $61.4K on-hand value · 0 below reorder · 67 out of stock · last sync to QBO 2m ago</div>
+
+  <!-- ─── REDESIGN annotations ─── -->
+  <div class="anno strike"><b>REMOVE — duplicate / clutter</b><br>
+    • Second "Add Product" button in the action row (now only in header)<br>
+    • "Import Vendor Product" mid-row button → move into More ▾ menu<br>
+    • Separate "Search:" label and dedicated 🔍 / ✕ buttons (search field auto-debounces + clear with Esc)<br>
+    • "View:" dropdown (Browse / Reorder / Pricing) — replace with column-preset chips inside Columns ▾<br>
+    • "Group:" dropdown — move into More ▾ menu (rarely used)<br>
+    • "Mfr:" / "Category:" / "Supplier:" / "Stock:" labels (placeholders inside the combos are enough)<br>
+    • Gray "All products — 95 results · 67 out of stock" status row (KPIs already show this)<br>
+    • Bottom "Recent Activity" rail (move to Audit sub-tab)
+  </div>
+
+  <div class="anno"><b>ADD — to match mockup pattern</b><br>
+    • Bulk-select checkbox column (first column) replacing the legacy "Tag for PO" column<br>
+    • Description column with 2-line layout: bold title + dim sub-line (OEM, mfr, condition)<br>
+    • Type pill (NEW / REMAN / USED / CORE / KIT) inferred from product_type / category<br>
+    • Reorder Pt + On Order numeric columns (was hidden in "Reorder" view preset)<br>
+    • Separate Cost / List columns (currently one "Cost" + "Price")<br>
+    • Vendor column (primary supplier name from supplier_id)<br>
+    • Status pill (IN STOCK / LOW / OUT / ON ORDER / DISCONTINUED)<br>
+    • Flags column with 4 small icons: 📸 photo · ♻ core · L lot/serial tracked · 📄 spec sheet<br>
+    • Type filter dropdown · Brand filter (rename Mfr) · Warehouse filter
+  </div>
+
+  <div class="anno"><b>KEEP — already aligned</b><br>
+    • 7-card KPI strip (already updated to mockup labels)<br>
+    • Needs Attention chips (already updated)<br>
+    • Header action quartet: Import CSV · Export · Print Labels · + New Product<br>
+    • AI Catalog Import gradient button (extra capability beyond mockup)<br>
+    • Product Detail drawer below the table (KEEP, currently collapsed by default)
+  </div>
+
+</div>
+</body>
+</html>

@@ -14,7 +14,7 @@
 {% block content %}
 
 {# ── KPI stat cards ── #}
-<div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-6 mb-4">
+<div class="grid grid-cols-2 gap-4 sm:grid-cols-4 xl:grid-cols-7 mb-4">
   <div class="stat-card">
     <p class="stat-label">Today's Payments</p>
     <p class="stat-value text-green-700">${{ "%.2f"|format(today_payments) }}</p>
@@ -32,7 +32,12 @@
   <div class="stat-card">
     <p class="stat-label">Open Quotes</p>
     <p class="stat-value">{{ open_quotes }}</p>
-    <a href="/quotes/" class="text-xs link">View all →</a>
+    <a href="/quotes/?status=draft" class="text-xs link">Draft quotes →</a>
+  </div>
+  <div class="stat-card">
+    <p class="stat-label">Open SOs</p>
+    <p class="stat-value {% if open_sos > 0 %}text-brand-700{% endif %}">{{ open_sos }}</p>
+    <a href="/sales-orders/" class="text-xs link">View all →</a>
   </div>
   <div class="stat-card">
     <p class="stat-label">Open POs</p>
@@ -74,8 +79,10 @@
         </thead>
         <tbody>
           {% for inv in recent_invoices %}
-          <tr class="tbl-row cursor-pointer" onclick="location.href='/invoices/{{ inv.id }}'">
-            <td class="tbl-td font-mono font-semibold text-brand-700">{{ inv.invoice_number }}</td>
+          <tr class="tbl-row">
+            <td class="tbl-td">
+              <a href="/invoices/{{ inv.id }}" class="tbl-link font-mono text-xs">{{ inv.invoice_number }}</a>
+            </td>
             <td class="tbl-td text-gray-600">{{ inv.customer.company_name }}</td>
             <td class="tbl-td-r font-medium">${{ "%.2f"|format(inv.total) }}</td>
             <td class="tbl-td">
@@ -102,7 +109,7 @@
     <div class="card">
       <div class="card-header">
         <h2 class="card-title">Follow-Up Due</h2>
-        <a href="/quotes/?status=draft" class="text-xs link">All quotes →</a>
+        <a href="/quotes/?follow_up=due" class="text-xs link">Follow-ups due →</a>
       </div>
       {% if overdue_followups %}
       {% set fu_colors = {

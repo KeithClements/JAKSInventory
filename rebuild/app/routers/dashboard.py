@@ -7,10 +7,10 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
-from app.constants import CoreStatus, InvoiceStatus, QuoteOutcome, QuoteStatus
+from app.constants import CoreStatus, InvoiceStatus, QuoteOutcome, QuoteStatus, SOStatus
 from app.deps import get_db
 from app.models.invoice import Invoice, Payment
-from app.models.quote import Quote
+from app.models.quote import Quote, SalesOrder
 from app.models.purchase_order import PurchaseOrder
 from app.models.core import CoreCharge
 from app.models.product import Product
@@ -37,7 +37,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         db.query(Invoice)
         .options(
             joinedload(Invoice.lines),
-            joinedload(Invoice.payment_allocations),
+            joinedload(Invoice.allocations),
         )
         .filter(Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL]))
         .all()
@@ -49,6 +49,13 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     open_quotes = (
         db.query(func.count(Quote.id))
         .filter(Quote.status == "draft")
+        .scalar() or 0
+    )
+
+    # Open SOs (open / partial / hold — not fulfilled, invoiced, or cancelled)
+    open_sos = (
+        db.query(func.count(SalesOrder.id))
+        .filter(SalesOrder.status.in_([SOStatus.OPEN, SOStatus.PARTIAL, SOStatus.HOLD]))
         .scalar() or 0
     )
 
@@ -117,6 +124,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         "ar_balance": ar_balance,
         "overdue_count": overdue_count,
         "open_quotes": open_quotes,
+        "open_sos": open_sos,
         "open_pos": open_pos,
         "open_cores": open_cores,
         "low_stock": low_stock,

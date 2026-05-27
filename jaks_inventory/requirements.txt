@@ -1,0 +1,56 @@
+# JAKS Inventory - Python Dependencies
+# Generated: 2026-01-06 (Phase 1 Verification)
+#
+# Install with: pip install -r requirements.txt
+# Python 3.10+ required (using 3.14.2 in development)
+
+# ============================================
+# CORE UI FRAMEWORK
+# ============================================
+PySide6>=6.6.0              # Qt 6 for Python - UI framework
+
+# ============================================
+# DATABASE
+# ============================================
+# Note: 'db' package is external (from jaks_scraper parent)
+# Requires: sqlalchemy, psycopg2 (PostgreSQL) or sqlite3 (built-in)
+
+# ============================================
+# SHOPIFY INTEGRATION
+# ============================================
+requests>=2.31.0            # HTTP client for Shopify API
+
+# ============================================
+# QUICKBOOKS ONLINE INTEGRATION
+# ============================================
+intuit-oauth>=1.2.6         # Intuit OAuth 2.0 authentication
+python-quickbooks>=0.9.7    # QuickBooks Online Python SDK (imported as 'quickbooks')
+
+# ============================================
+# BARCODE GENERATION (OPTIONAL)
+# ============================================
+python-barcode>=0.15.1      # Barcode generation (imported as 'barcode')
+Pillow>=10.0.0              # Required by python-barcode for ImageWriter
+
+# ============================================
+# PDF GENERATION
+# ============================================
+reportlab>=4.0               # PDF invoice / report generation
+
+# ============================================
+# SPREADSHEET SUPPORT (OPTIONAL)
+# ============================================
+openpyxl>=3.1.0              # Excel (.xlsx) import/export
+
+# ============================================
+# CONFIGURATION
+# ============================================
+# Note: Uses 'dotenv_simple' - appears to be custom/internal
+# Alternative: python-dotenv>=1.0.0
+
+# ============================================
+# DEVELOPMENT DEPENDENCIES (optional)
+# ============================================
+# pytest>=7.4.0             # Testing framework
+# black>=23.0               # Code formatter
+# mypy>=1.5                 # Type checking

@@ -74,11 +74,23 @@ async def list_quotes(
     request: Request,
     status: str = "",
     q: str = "",
+    follow_up: str = "",
     db: Session = Depends(get_db),
 ):
+    from datetime import datetime
     from sqlalchemy import or_
+
+    from app.constants import QuoteOutcome
+
     query = db.query(Quote).join(Customer)
-    if status:
+    if follow_up == "due":
+        now = datetime.utcnow()
+        query = query.filter(
+            Quote.follow_up_date <= now,
+            Quote.outcome == QuoteOutcome.PENDING,
+            Quote.status.notin_([QuoteStatus.CONVERTED, QuoteStatus.DECLINED]),
+        )
+    elif status:
         query = query.filter(Quote.status == status)
     if q:
         query = query.filter(
@@ -94,6 +106,7 @@ async def list_quotes(
             "request": request,
             "quotes": quotes,
             "status_filter": status,
+            "follow_up_filter": follow_up,
             "q": q,
             "QuoteStatus": QuoteStatus,
         },

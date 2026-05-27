@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 
 from app.constants import (
     AuditAction, CoreCreditMethod, CoreDirection,
-    CoreStatus, CoreVendorStatus, EntityType,
+    CoreInspectionOutcome, CoreStatus, CoreVendorStatus, EntityType,
 )
 from app.models.core import CoreCharge, CoreReturnEvent, CoreSlip
 from app.models.customer import Customer
@@ -79,10 +79,18 @@ class CoreService(BaseService):
         core_charge_id: int,
         qty_returned: int,
         condition: str | None = None,
+        inspection_outcome: str = CoreInspectionOutcome.ACCEPTED,
     ) -> CoreReturnEvent:
         """
         Record a partial or full core return from a customer.
-        Issues account credit = qty_returned * customer_unit_charge.
+
+        inspection_outcome controls whether credit is issued immediately:
+          ACCEPTED — core passes inspection; account credit issued now.
+          HOLD     — core physically received but needs closer look; credit deferred
+                     until complete_inspection() is called.
+          REJECTED — core refused (wrong/damaged); no credit issued; charge closed.
+
+        Credit is NOT issued for HOLD or REJECTED outcomes.
         """
         core = self._get_or_404(core_charge_id)
         if core.direction != CoreDirection.CUSTOMER_OWES_RETURN:
@@ -92,37 +100,113 @@ class CoreService(BaseService):
                 f"Cannot return {qty_returned} — only {core.qty_outstanding} outstanding"
             )
 
+        # Credit amount: only meaningful when outcome is ACCEPTED
+        credit_amount = (
+            round(qty_returned * core.customer_unit_charge, 2)
+            if inspection_outcome == CoreInspectionOutcome.ACCEPTED
+            else 0.0
+        )
+
         event = CoreReturnEvent(
             core_charge_id=core_charge_id,
             qty_returned=qty_returned,
             returned_at=datetime.utcnow(),
             credit_method=CoreCreditMethod.ACCOUNT_CREDIT,
-            credit_amount=round(qty_returned * core.customer_unit_charge, 2),
+            credit_amount=credit_amount,
             processed_by_id=self.current_user_id,
             notes=condition or "",
         )
         self.db.add(event)
 
         core.qty_returned += qty_returned
-        core.status = CoreStatus.RETURNED if core.qty_outstanding == 0 else CoreStatus.PARTIAL
+        core.inspection_outcome = inspection_outcome
+        core.inspected_at = datetime.utcnow()
+        core.inspected_by_id = self.current_user_id
 
-        # Delegate credit balance update to CRMService — sole owner of credit_balance
-        if core.customer_id and event.credit_amount > 0:
-            from app.services.crm_service import CRMService
-            CRMService(self.db, self.current_user_id).add_credit(
-                customer_id=core.customer_id,
-                amount=event.credit_amount,
-                reason=f"Core return #{core_charge_id}",
-            )
+        if inspection_outcome == CoreInspectionOutcome.REJECTED:
+            # Bad core — close it; no credit issued
+            core.status = CoreStatus.CLOSED
+        elif inspection_outcome == CoreInspectionOutcome.HOLD:
+            # Physically received but deferred — keep in PARTIAL/RETURNED
+            # so it appears in the pending_inspection query, not Stage 1
+            core.status = CoreStatus.RETURNED if core.qty_outstanding == 0 else CoreStatus.PARTIAL
+        else:
+            # ACCEPTED — normal path
+            core.status = CoreStatus.RETURNED if core.qty_outstanding == 0 else CoreStatus.PARTIAL
+
+        # Issue credit only for accepted returns
+        if inspection_outcome == CoreInspectionOutcome.ACCEPTED:
+            if core.customer_id and credit_amount > 0:
+                from app.services.crm_service import CRMService
+                CRMService(self.db, self.current_user_id).add_credit(
+                    customer_id=core.customer_id,
+                    amount=credit_amount,
+                    reason=f"Core return #{core_charge_id}",
+                )
 
         self.audit(
             entity_type=EntityType.CORE_CHARGE,
             entity_id=core_charge_id,
             action=AuditAction.CORE_RECEIVED,
-            new_value={"qty_returned": qty_returned, "credit": event.credit_amount},
+            new_value={
+                "qty_returned": qty_returned,
+                "inspection_outcome": inspection_outcome,
+                "credit": credit_amount,
+            },
         )
         self.db.commit()
         return event
+
+    def complete_inspection(
+        self,
+        core_charge_id: int,
+        final_outcome: str,
+        notes: str | None = None,
+    ) -> None:
+        """
+        Finalise a HOLD inspection — called from the Pending Inspection section.
+
+        final_outcome must be ACCEPTED or REJECTED:
+          ACCEPTED — issue the deferred customer credit now.
+          REJECTED — close with no credit.
+        """
+        if final_outcome not in (CoreInspectionOutcome.ACCEPTED, CoreInspectionOutcome.REJECTED):
+            raise ValueError("final_outcome must be 'accepted' or 'rejected'")
+
+        core = self._get_or_404(core_charge_id)
+        if core.inspection_outcome != CoreInspectionOutcome.HOLD:
+            raise ValueError(
+                f"CoreCharge {core_charge_id} is not in HOLD status (current: {core.inspection_outcome})"
+            )
+
+        core.inspection_outcome = final_outcome
+        core.inspected_at = datetime.utcnow()
+        core.inspected_by_id = self.current_user_id
+        if notes:
+            core.notes = (core.notes + "\n" + notes).strip()
+
+        if final_outcome == CoreInspectionOutcome.ACCEPTED:
+            # Issue the deferred credit
+            credit_amount = round(core.qty_returned * core.customer_unit_charge, 2)
+            if core.customer_id and credit_amount > 0:
+                from app.services.crm_service import CRMService
+                CRMService(self.db, self.current_user_id).add_credit(
+                    customer_id=core.customer_id,
+                    amount=credit_amount,
+                    reason=f"Core return #{core_charge_id} (inspection passed)",
+                )
+            # Status stays RETURNED — normal progression to vendor shipment
+        else:
+            # Rejected after hold — close the charge
+            core.status = CoreStatus.CLOSED
+
+        self.audit(
+            entity_type=EntityType.CORE_CHARGE,
+            entity_id=core_charge_id,
+            action=AuditAction.CORE_RECEIVED,
+            new_value={"inspection_final": final_outcome, "notes": notes},
+        )
+        self.db.commit()
 
     # ── Core Slip ─────────────────────────────────────────────────────────────
 
@@ -130,9 +214,16 @@ class CoreService(BaseService):
         """
         Generate a customer core return slip (CORE-YYYY-XXXX) for a returned charge.
         Links the CoreCharge to the new slip.  Safe to call after the return is committed.
+
+        Raises ValueError if the core charge has no associated customer (vendor-direction
+        cores do not have a customer and cannot have a customer-facing slip).
         """
         from app.constants import CoreSlipStatus
         core = self._get_or_404(core_charge_id)
+        if core.customer_id is None:
+            raise ValueError(
+                f"CoreCharge {core_charge_id} has no customer — cannot create a customer slip"
+            )
         year = datetime.utcnow().year
         slip_number = bump_counter(self.db, "next_core_slip_number", "CORE", year)
         slip = CoreSlip(

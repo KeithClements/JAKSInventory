@@ -1,0 +1,2889 @@
+from __future__ import annotations
+
+import csv
+import hashlib
+import json
+import logging
+from datetime import datetime
+from typing import Any
+
+from PySide6.QtCore import Qt, QTimer, QEvent
+from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QShortcut
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QMenu,
+    QProgressBar,
+    QPushButton,
+    QSplitter,
+    QStyledItemDelegate,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextBrowser,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+from db import (
+    search_by_part_number,
+    browse_products,
+    get_all_manufacturers,
+    get_all_categories,
+    get_all_suppliers,
+    get_inventory_transactions,
+    get_sync_status,
+    get_setting,
+    set_setting,
+    update_product,
+    create_purchase_order,
+    get_product_by_id,
+    get_interchanges,
+    get_product_locations,
+    get_all_xrefs_for_product,
+    get_last_scrape_run,
+    get_product_by_sku,
+    get_scrape_dates_for_product,
+    delete_product,
+    get_customers_who_bought,
+    get_product_sales_stats,
+    adjust_product_quantity,
+    create_quote,
+    add_quote_line,
+    get_sales_summary_batch,
+)
+
+from .product_detail_dialog import ProductDetailDialog
+from .edit_product_dialog import EditProductDialog
+from .bulk_edit_dialog import BulkEditDialog
+from .scraper_review_dialog import ScraperReviewDialog
+from .quick_entry_dialog import QuickEntryDialog
+from ..scraper import ScraperWorker
+
+
+# ── Full-cell checkbox delegate ────────────────────────
+class _FullCellCheckDelegate(QStyledItemDelegate):
+    """Makes the entire cell a checkbox click target, not just the indicator."""
+
+    def editorEvent(self, event, model, option, index):
+        if (
+            index.column() == COL_TAG
+            and event.type() == QEvent.Type.MouseButtonRelease
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            cur = model.data(index, Qt.ItemDataRole.CheckStateRole)
+            new = (
+                Qt.CheckState.Unchecked
+                if cur == Qt.CheckState.Checked
+                else Qt.CheckState.Checked
+            )
+            model.setData(index, new, Qt.ItemDataRole.CheckStateRole)
+            return True
+        return super().editorEvent(event, model, option, index)
+
+
+# ── Sortable numeric item ──────────────────────────────
+class _NumericItem(QTableWidgetItem):
+    """QTableWidgetItem that sorts numerically."""
+
+    def __init__(self, value: float | int, display: str = "") -> None:
+        super().__init__(display or str(value))
+        self._sort_value = value
+        self.setFlags(self.flags() & ~Qt.ItemFlag.ItemIsEditable)
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        if isinstance(other, _NumericItem):
+            return self._sort_value < other._sort_value
+        return super().__lt__(other)
+
+
+# ── Column definitions ─────────────────────────────────
+# Index constants for readability
+COL_TAG = 0
+COL_STATUS = 1
+COL_SKU = 2
+COL_TITLE = 3
+COL_MFR = 4
+COL_SUPPLIER = 5
+COL_CATEGORY = 6
+COL_QTY = 7
+COL_MIN = 8
+COL_MAX = 9
+COL_SUGGESTED = 10
+COL_COST = 11
+COL_MARGIN = 12
+COL_PRICE = 13
+COL_MATCH = 14
+COL_TIER = 15
+COL_LAST_SCRAPE = 16
+COL_LAST_SOLD = 17
+COL_TIMES_SOLD = 18
+NUM_COLS = 19
+
+HEADERS = [
+    "",          # Select / Tag for PO
+    "Status",
+    "SKU",
+    "Product Name",
+    "Manufacturer / Platform",
+    "Supplier",
+    "Category",
+    "Qty",
+    "Min",
+    "Max",
+    "Suggested",
+    "Cost",
+    "Margin",
+    "Price",
+    "Match",
+    "Tier",
+    "Last Scrape",
+    "Last Sold",
+    "Sold (12 mo)",
+]
+
+VIEW_PRESETS: dict[str, set[int]] = {
+    "browse": {
+        COL_TAG, COL_STATUS, COL_SKU, COL_TITLE, COL_MFR,
+        COL_QTY, COL_COST, COL_MARGIN, COL_PRICE,
+        COL_LAST_SOLD, COL_TIMES_SOLD,
+    },
+    "reorder": {
+        COL_TAG, COL_STATUS, COL_SKU, COL_TITLE, COL_SUPPLIER,
+        COL_QTY, COL_MIN, COL_MAX, COL_SUGGESTED, COL_COST,
+    },
+    "pricing": {
+        COL_SKU, COL_TITLE, COL_SUPPLIER, COL_PRICE,
+        COL_COST, COL_MARGIN, COL_TIER, COL_LAST_SCRAPE,
+    },
+}
+
+import html as _html_mod
+
+# ── Supplier color palette ─────────────────────────────
+_SUPPLIER_COLORS: dict[str, QColor] = {}
+
+
+def _esc(text: str) -> str:
+    """HTML-escape text for use in the detail drawer."""
+    return _html_mod.escape(str(text)) if text else ""
+
+
+def _supplier_bg(name: str) -> QColor | None:
+    """Return a light pastel background for a supplier (deterministic)."""
+    if not name:
+        return None
+    if name not in _SUPPLIER_COLORS:
+        h = int(hashlib.md5(name.encode()).hexdigest()[:8], 16)
+        hue = h % 360
+        _SUPPLIER_COLORS[name] = QColor.fromHsl(hue, 40, 235)
+    return _SUPPLIER_COLORS[name]
+
+
+log = logging.getLogger(__name__)
+
+
+class ProductsScreen(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+
+        self._last_results: list[dict[str, Any]] = []
+        self._displayed_results: list[dict[str, Any]] = []
+        self._product_map: dict[int, dict[str, Any]] = {}  # id → product dict
+
+        # ── Filter dropdowns ──
+        self._mfr_combo = QComboBox()
+        self._mfr_combo.addItem("All Manufacturers", "")
+        self._mfr_combo.currentIndexChanged.connect(self._on_filter_changed)
+
+        self._cat_combo = QComboBox()
+        self._cat_combo.addItem("All Categories", "")
+        self._cat_combo.currentIndexChanged.connect(self._on_filter_changed)
+
+        self._supplier_combo = QComboBox()
+        self._supplier_combo.addItem("All Suppliers", "")
+        self._supplier_combo.currentIndexChanged.connect(self._on_filter_changed)
+
+        self._stock_combo = QComboBox()
+        for label, data in [
+            ("All Stock Levels", "all"),
+            ("In Stock", "in_stock"),
+            ("Low Stock (Below Min)", "low"),
+            ("Out of Stock", "out"),
+            ("Pricing Review", "pricing_review"),
+            ("Need Review", "need_review"),
+            ("Tagged for PO", "tagged"),
+        ]:
+            self._stock_combo.addItem(label, data)
+        self._stock_combo.currentIndexChanged.connect(self._on_filter_changed)
+
+        self._view_combo = QComboBox()
+        self._view_combo.addItem("Browse", "browse")
+        self._view_combo.addItem("Reorder", "reorder")
+        self._view_combo.addItem("Pricing", "pricing")
+        self._view_combo.currentIndexChanged.connect(self._on_view_mode_changed)
+
+        # ── Search ──
+        self._query = QLineEdit()
+        self._query.setPlaceholderText("Search SKU, description, category, supplier, part numbers…")
+        self._query.returnPressed.connect(self._on_search)
+
+        # Live search with debounce (250ms)
+        self._search_timer = QTimer()
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(250)
+        self._search_timer.timeout.connect(self._on_search)
+        self._query.textChanged.connect(self._on_search_text_changed)
+
+        self._search_btn = QPushButton("🔍 Search")
+        self._search_btn.clicked.connect(self._on_search)
+
+        self._clear_btn = QPushButton("✕ Clear")
+        self._clear_btn.setStyleSheet(
+            "QPushButton { padding: 4px 8px; border: 1px solid #aaa; "
+            "border-radius: 4px; font-size: 9pt; color: #c62828; }"
+            "QPushButton:hover { background-color: #fce4ec; }"
+        )
+        self._clear_btn.setToolTip("Clear search and show all products")
+        self._clear_btn.clicked.connect(self._on_clear_search)
+
+        # ── Shared button styles ──
+        _BTN_PRIMARY = (
+            "QPushButton { background-color: #4a6741; color: white; "
+            "font-weight: bold; padding: 4px 10px; border-radius: 4px; font-size: 9pt; }"
+            "QPushButton:hover { background-color: #5a7a51; }"
+            "QPushButton:disabled { background-color: #ccc; color: #888; }"
+        )
+        _BTN_SECONDARY = (
+            "QPushButton { padding: 4px 8px; border: 1px solid #aaa; "
+            "border-radius: 4px; font-size: 9pt; }"
+            "QPushButton:hover { background-color: #ececec; }"
+        )
+        _BTN_ACCENT = (
+            "QPushButton { background-color: #1565c0; color: white; "
+            "font-weight: bold; padding: 4px 10px; border-radius: 4px; font-size: 9pt; }"
+            "QPushButton:hover { background-color: #1976d2; }"
+        )
+
+        # ── Action buttons ──
+        self._add_btn = QPushButton("➕ Add Product")
+        self._add_btn.setStyleSheet(_BTN_PRIMARY)
+        self._add_btn.clicked.connect(self._on_add_product)
+
+        self._quick_entry_btn = QPushButton("⚡ Quick Entry")
+        self._quick_entry_btn.setStyleSheet(_BTN_PRIMARY)
+        self._quick_entry_btn.setToolTip("Compact keyboard-first product creation (Ctrl+Q)")
+        self._quick_entry_btn.clicked.connect(self._on_quick_entry)
+
+        self._edit_btn = QPushButton("✏️ Edit")
+        self._edit_btn.setStyleSheet(_BTN_SECONDARY)
+        self._edit_btn.clicked.connect(self._on_edit_selected)
+        self._edit_btn.setEnabled(False)
+        self._edit_btn.setToolTip("Edit selected product (Ctrl+E)")
+
+        self._bulk_btn = QPushButton("✏️ Bulk Edit")
+        self._bulk_btn.setStyleSheet(_BTN_SECONDARY)
+        self._bulk_btn.clicked.connect(self._on_bulk_edit)
+        self._bulk_btn.setEnabled(False)
+        self._bulk_btn.setToolTip("Edit fields on 2+ selected products at once")
+
+        self._create_po_btn = QPushButton("🛒 Create PO")
+        self._create_po_btn.clicked.connect(self._on_create_po_from_tagged)
+        self._create_po_btn.setToolTip("Disabled in Products screen. Use Purchase Orders workflow.")
+        self._create_po_btn.setStyleSheet(_BTN_ACCENT)
+        self._create_po_btn.setVisible(False)
+        self._create_po_btn.setEnabled(False)
+
+        self._export_btn = QPushButton("📥 Export")
+        self._export_btn.setStyleSheet(_BTN_SECONDARY)
+        self._export_btn.clicked.connect(self._export_to_csv)
+
+        self._refresh_btn = QPushButton("↻ Refresh")
+        self._refresh_btn.setStyleSheet(_BTN_SECONDARY)
+        self._refresh_btn.clicked.connect(self._full_refresh)
+
+        self._columns_btn = QToolButton()
+        self._columns_btn.setText("Columns ▾")
+        self._columns_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._columns_menu = QMenu(self)
+        self._columns_btn.setMenu(self._columns_menu)
+
+        self._results_label = QLabel("")
+        self._results_label.setStyleSheet("font-weight: bold;")
+
+        # ── Quick select tools (compact menu) ──
+        self._bulk_select_btn = QToolButton()
+        self._bulk_select_btn.setText("Bulk Select ▾")
+        self._bulk_select_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._bulk_select_menu = QMenu(self)
+        self._bulk_select_btn.setMenu(self._bulk_select_menu)
+
+        self._act_sel_oos = QAction("Select Out of Stock", self)
+        self._act_sel_oos.triggered.connect(self._select_out_of_stock)
+        self._bulk_select_menu.addAction(self._act_sel_oos)
+
+        self._act_sel_below = QAction("Select Below Min", self)
+        self._act_sel_below.triggered.connect(self._select_below_min)
+        self._bulk_select_menu.addAction(self._act_sel_below)
+
+        self._act_sel_suggested = QAction("Select Suggested > 0", self)
+        self._act_sel_suggested.triggered.connect(self._select_suggested)
+        self._bulk_select_menu.addAction(self._act_sel_suggested)
+
+        self._bulk_select_menu.addSeparator()
+
+        self._act_sel_visible = QAction("Select All Visible", self)
+        self._act_sel_visible.triggered.connect(self._select_all_visible)
+        self._bulk_select_menu.addAction(self._act_sel_visible)
+
+        self._act_sel_clear = QAction("Clear Selection", self)
+        self._act_sel_clear.triggered.connect(self._table_clear_selection)
+        self._bulk_select_menu.addAction(self._act_sel_clear)
+
+        self._selection_info_label = QLabel("")
+        self._selection_info_label.setStyleSheet("color: #555; font-size: 11px;")
+
+        # ── Scrape Selected dropdown ────────────────────────
+        self._scrape_btn = QToolButton()
+        self._scrape_btn.setText("🕷️ Scrape Selected ▾")
+        self._scrape_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._scrape_btn.setStyleSheet(
+            "QToolButton { background-color: #6a1b9a; color: white; "
+            "font-weight: bold; padding: 4px 10px; border-radius: 4px; }"
+            "QToolButton:hover { background-color: #7b1fa2; }"
+            "QToolButton::menu-indicator { image: none; }"
+        )
+        self._scrape_menu = QMenu(self)
+        self._act_scrape_pricing = QAction("💲 Scrape Selected for Pricing", self)
+        self._act_scrape_pricing.triggered.connect(lambda: self._scrape_selected("pricing"))
+        self._scrape_menu.addAction(self._act_scrape_pricing)
+        self._act_scrape_xref = QAction("🔗 Scrape Selected for Crosses", self)
+        self._act_scrape_xref.triggered.connect(lambda: self._scrape_selected("xref"))
+        self._scrape_menu.addAction(self._act_scrape_xref)
+        self._act_scrape_both = QAction("🕷️ Scrape Selected for Both", self)
+        self._act_scrape_both.triggered.connect(lambda: self._scrape_selected("both"))
+        self._scrape_menu.addAction(self._act_scrape_both)
+        self._scrape_menu.addSeparator()
+        self._act_scrape_tagged = QAction("🏷️ Scrape All Tagged Products", self)
+        self._act_scrape_tagged.triggered.connect(self._scrape_tagged)
+        self._scrape_menu.addAction(self._act_scrape_tagged)
+        self._scrape_btn.setMenu(self._scrape_menu)
+
+        # Scrape progress bar (hidden until needed)
+        self._scrape_progress = QProgressBar()
+        self._scrape_progress.setMaximumHeight(16)
+        self._scrape_progress.setMaximumWidth(260)
+        self._scrape_progress.hide()
+        self._scrape_status_label = QLabel("")
+        self._scrape_status_label.setStyleSheet("color: #6a1b9a; font-size: 10px;")
+        self._scrape_status_label.hide()
+        self._scrape_worker: ScraperWorker | None = None
+        self._scrape_queue: list[dict] = []
+        self._scrape_job_type: str = "both"
+        self._scrape_total: int = 0
+        self._scrape_completed: int = 0
+
+        # ── Summary strip (hidden — stats shown in results label) ──
+        self._stat_total_btn = QPushButton("0 Products")
+        self._stat_tagged_btn = QPushButton("0 Tagged")
+        self._stat_out_btn = QPushButton("0 Out of Stock")
+        self._stat_below_btn = QPushButton("0 Below Min")
+        for btn in (
+            self._stat_total_btn,
+            self._stat_tagged_btn,
+            self._stat_out_btn,
+            self._stat_below_btn,
+        ):
+            btn.hide()
+
+        self._stat_total_btn.clicked.connect(lambda: self._set_stock_filter("all"))
+        self._stat_tagged_btn.clicked.connect(lambda: self._set_stock_filter("tagged"))
+        self._stat_out_btn.clicked.connect(lambda: self._set_stock_filter("out"))
+        self._stat_below_btn.clicked.connect(lambda: self._set_stock_filter("low"))
+
+        # ── Main table ──
+        self._table = QTableWidget(0, NUM_COLS)
+        self._table.setHorizontalHeaderLabels(HEADERS)
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._table.setSortingEnabled(True)
+        self._table.horizontalHeader().setSortIndicatorShown(True)
+        hdr = self._table.horizontalHeader()
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        hdr.setStretchLastSection(True)
+        hdr.setMinimumSectionSize(40)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setAlternatingRowColors(True)
+        self._table.setStyleSheet(
+            "QTableWidget { gridline-color: #e0e0e0; font-size: 10pt; }"
+            "QTableWidget::item:alternate { background-color: #fafafa; }"
+            "QTableWidget::item:selected { background-color: #d4e6d1; color: black; }"
+            "QTableWidget::item:selected:alternate { background-color: #d4e6d1; color: black; }"
+        )
+        self._table.verticalHeader().setDefaultSectionSize(26)  # slightly more room
+        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._show_context_menu)
+        self._table.cellDoubleClicked.connect(self._on_edit_from_dblclick)
+        self._table.cellClicked.connect(self._on_cell_clicked)
+        self._table.itemSelectionChanged.connect(self._on_selection_changed)
+        self._table.cellChanged.connect(self._on_cell_changed)
+
+        # Full-cell checkbox delegate so clicking anywhere in COL_TAG toggles
+        self._table.setItemDelegateForColumn(COL_TAG, _FullCellCheckDelegate(self._table))
+
+        # Column widths
+        self._table.setColumnWidth(COL_TAG, 60)
+        # Lock the tag/select column at a fixed width so the header
+        # checkbox isn't clipped when the user resizes neighbouring columns.
+        hdr.setSectionResizeMode(COL_TAG, QHeaderView.ResizeMode.Fixed)
+        self._table.setColumnWidth(COL_STATUS, 110)
+        self._table.setColumnWidth(COL_TITLE, 400)
+        self._table.setColumnWidth(COL_MFR, 200)
+
+        # Tooltip on select/tag column header
+        self._table.horizontalHeaderItem(COL_TAG).setToolTip(
+            "Check to select for bulk actions or tag for purchase order")
+
+        # ── Select-All checkbox in header ──
+        self._select_all_cb = QCheckBox(self._table.horizontalHeader())
+        self._select_all_cb.setToolTip("Select / Deselect all visible rows")
+        self._select_all_cb.stateChanged.connect(self._on_select_all_toggled)
+        # Position the checkbox in the header (will be repositioned on resize)
+        self._table.horizontalHeader().sectionResized.connect(self._reposition_select_all_cb)
+        self._table.horizontalHeader().geometriesChanged.connect(self._reposition_select_all_cb)
+        self._reposition_select_all_cb()
+
+        # ── Recent Activity panel (collapsible, default collapsed) ──
+        self._recent_frame = QFrame()
+        self._recent_frame.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Sunken)
+        self._recent_frame.setMaximumHeight(130)
+        self._recent_frame.setStyleSheet("QFrame { background-color: #f8f8f8; }")
+
+        self._recent_table = QTableWidget(0, 5)
+        self._recent_table.setHorizontalHeaderLabels(["Time", "SKU", "Type", "Change", "Notes"])
+        self._recent_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._recent_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._recent_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self._recent_table.setMaximumHeight(90)
+        self._recent_table.verticalHeader().setVisible(False)
+
+        self._recent_toggle = QPushButton("▶ Recent Activity")
+        self._recent_toggle.setFlat(True)
+        self._recent_toggle.setStyleSheet(
+            "QPushButton { text-align: left; font-weight: bold; padding: 2px 6px; }"
+        )
+        self._recent_toggle.clicked.connect(self._toggle_recent)
+
+        recent_layout = QVBoxLayout()
+        recent_layout.setContentsMargins(5, 2, 5, 2)
+        recent_layout.addWidget(self._recent_toggle)
+        recent_layout.addWidget(self._recent_table)
+        self._recent_frame.setLayout(recent_layout)
+
+        # Default collapsed
+        self._recent_table.setVisible(False)
+        self._recent_frame.setMaximumHeight(28)
+
+        # ── Sync status ──
+        self._sync_status_label = QLabel()
+        self._sync_status_label.setStyleSheet("padding: 4px 8px; border-radius: 4px;")
+
+        # ── Group By dropdown ──
+        self._group_combo = QComboBox()
+        self._group_combo.addItem("No Grouping", "")
+        self._group_combo.addItem("Group by Supplier", "supplier")
+        self._group_combo.addItem("Group by Category", "category")
+        self._group_combo.addItem("Group by Manufacturer", "manufacturer")
+        self._group_combo.currentIndexChanged.connect(self._on_group_changed)
+
+        # ── Detail Drawer (below table) ──
+        self._detail_panel = QFrame()
+        self._detail_panel.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Sunken)
+        self._detail_panel.setStyleSheet(
+            "QFrame { background-color: #fdfdfd; border: 1px solid #d0d0d0; }"
+        )
+
+        self._detail_toggle = QPushButton("▶ Product Detail")
+        self._detail_toggle.setFlat(True)
+        self._detail_toggle.setStyleSheet(
+            "QPushButton { text-align: left; font-weight: bold; padding: 2px 6px; border: none; background: transparent; }"
+        )
+        self._detail_toggle.clicked.connect(self._toggle_detail_drawer)
+
+        self._detail_browser = QTextBrowser()
+        self._detail_browser.setOpenExternalLinks(True)
+        self._detail_browser.setStyleSheet(
+            "QTextBrowser { border: none; background: transparent; font-size: 12px; }"
+        )
+        self._detail_browser.setHtml(
+            '<p style="color:#888;">Select a product row to see details here.</p>'
+        )
+
+        detail_layout = QVBoxLayout()
+        detail_layout.setContentsMargins(6, 2, 6, 4)
+        detail_layout.addWidget(self._detail_toggle)
+        detail_layout.addWidget(self._detail_browser, 1)
+        self._detail_panel.setLayout(detail_layout)
+
+        # Default: drawer visible
+        self._detail_expanded = True
+
+        # ═══════════════════════════════════════
+        #  LAYOUT
+        # ═══════════════════════════════════════
+        # Row 1: Filters
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("Mfr:"))
+        filter_row.addWidget(self._mfr_combo)
+        filter_row.addWidget(QLabel("Category:"))
+        filter_row.addWidget(self._cat_combo)
+        filter_row.addWidget(QLabel("Supplier:"))
+        filter_row.addWidget(self._supplier_combo)
+        filter_row.addWidget(QLabel("Stock:"))
+        filter_row.addWidget(self._stock_combo)
+        filter_row.addWidget(QLabel("View:"))
+        filter_row.addWidget(self._view_combo)
+        filter_row.addWidget(QLabel("Group:"))
+        filter_row.addWidget(self._group_combo)
+
+        # Row 2: Search + actions
+        action_row = QHBoxLayout()
+        action_row.addWidget(QLabel("Search:"))
+        action_row.addWidget(self._query, 1)
+        action_row.addWidget(self._search_btn)
+        action_row.addWidget(self._clear_btn)
+        action_row.addWidget(self._add_btn)
+
+        # Import Vendor Product button
+        self._from_vendor_btn = QPushButton("📥 Import Vendor Product")
+        self._from_vendor_btn.setStyleSheet(_BTN_ACCENT)
+        self._from_vendor_btn.setToolTip("Import a product from a vendor search result")
+        self._from_vendor_btn.clicked.connect(self._on_add_from_vendor)
+        action_row.addWidget(self._from_vendor_btn)
+
+        action_row.addWidget(self._edit_btn)
+        action_row.addWidget(self._bulk_btn)
+
+        # "More" overflow menu for secondary actions
+        self._more_btn = QToolButton()
+        self._more_btn.setText("More ▾")
+        self._more_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._more_btn.setStyleSheet(
+            "QToolButton { padding: 4px 8px; border: 1px solid #aaa; "
+            "border-radius: 4px; font-size: 9pt; }"
+            "QToolButton:hover { background-color: #ececec; }"
+            "QToolButton::menu-indicator { image: none; }"
+        )
+        more_menu = QMenu(self)
+        more_menu.addAction("📥 Export CSV", self._export_to_csv)
+        more_menu.addAction("↻ Refresh", self._full_refresh)
+        more_menu.addSeparator()
+        more_menu.addAction("�🔍 Part Finder", self._on_open_part_finder)
+        more_menu.addAction("⚡ Quick Entry", self._on_quick_entry)
+        more_menu.addSeparator()
+        # Scrape submenu
+        scrape_sub = more_menu.addMenu("🕷️ Scrape")
+        scrape_sub.addAction("💲 Scrape Selected for Pricing", lambda: self._scrape_selected("pricing"))
+        scrape_sub.addAction("🔗 Scrape Selected for Crosses", lambda: self._scrape_selected("xref"))
+        scrape_sub.addAction("🕷️ Scrape Selected for Both", lambda: self._scrape_selected("both"))
+        scrape_sub.addSeparator()
+        scrape_sub.addAction("🏷️ Scrape All Tagged Products", self._scrape_tagged)
+        # Bulk Select submenu
+        bulk_sel_sub = more_menu.addMenu("☑️ Bulk Select")
+        bulk_sel_sub.addAction("Select Out of Stock", self._select_out_of_stock)
+        bulk_sel_sub.addAction("Select Below Min", self._select_below_min)
+        bulk_sel_sub.addAction("Select Suggested > 0", self._select_suggested)
+        bulk_sel_sub.addSeparator()
+        bulk_sel_sub.addAction("Select All Visible", self._select_all_visible)
+        bulk_sel_sub.addAction("Clear Selection", self._table_clear_selection)
+        self._more_btn.setMenu(more_menu)
+        action_row.addWidget(self._columns_btn)
+        action_row.addWidget(self._more_btn)
+
+        # Row 3: Summary + status
+        status_row = QHBoxLayout()
+        status_row.addWidget(self._results_label)
+        status_row.addStretch()
+        status_row.addWidget(self._scrape_progress)
+        status_row.addWidget(self._scrape_status_label)
+        status_row.addWidget(self._selection_info_label)
+        status_row.addWidget(self._sync_status_label)
+
+        # Splitter: table on top, detail drawer on bottom
+        self._splitter = QSplitter(Qt.Orientation.Vertical)
+        self._splitter.addWidget(self._table)
+
+        # Bottom container: detail + recent
+        bottom_container = QWidget()
+        bottom_layout = QVBoxLayout()
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(2)
+        bottom_layout.addWidget(self._detail_panel, 1)
+        bottom_layout.addWidget(self._recent_frame)
+        bottom_container.setLayout(bottom_layout)
+        self._splitter.addWidget(bottom_container)
+
+        self._splitter.setStretchFactor(0, 3)  # table gets more space
+        self._splitter.setStretchFactor(1, 1)  # detail drawer
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.addLayout(filter_row)
+        layout.addLayout(action_row)
+        layout.addLayout(status_row)
+        layout.addWidget(self._splitter, 1)
+        self.setLayout(layout)
+
+        self._column_actions: dict[int, QAction] = {}
+        self._build_columns_menu()
+        self._load_saved_column_layout()
+
+        self._setup_shortcuts()
+        self._load_filters()           # populates combos + triggers initial browse
+        self._load_recent_transactions()
+        self._update_sync_status()
+
+    # ────────────────────────────────────────────
+    #  KEYBOARD SHORTCUTS
+    # ────────────────────────────────────────────
+    def _setup_shortcuts(self) -> None:
+        QShortcut(QKeySequence("F5"), self).activated.connect(self._full_refresh)
+        QShortcut(QKeySequence("Ctrl+F"), self).activated.connect(self._focus_search)
+        QShortcut(QKeySequence("Ctrl+E"), self).activated.connect(self._on_edit_selected)
+        QShortcut(QKeySequence("Ctrl+N"), self).activated.connect(self._on_add_product)
+        QShortcut(QKeySequence("Ctrl+B"), self).activated.connect(self._on_bulk_edit)
+        QShortcut(QKeySequence("Ctrl+Q"), self).activated.connect(self._on_quick_entry)
+        QShortcut(QKeySequence("Ctrl+A"), self._table).activated.connect(self._select_all_visible)
+        QShortcut(QKeySequence("Return"), self._table).activated.connect(self._on_open_selected)
+        QShortcut(QKeySequence("Space"), self._table).activated.connect(self._toggle_tag_selected)
+        QShortcut(QKeySequence("Shift+Space"), self._table).activated.connect(self._toggle_tag_and_advance)
+
+    def _focus_search(self) -> None:
+        self._query.setFocus()
+        self._query.selectAll()
+
+    def _toggle_tag_selected(self) -> None:
+        """Space bar toggles the Order checkbox on the selected row."""
+        row = self._table.currentRow()
+        if row < 0:
+            return
+        item = self._table.item(row, COL_TAG)
+        if item is None:
+            return
+        new_state = (
+            Qt.CheckState.Unchecked
+            if item.checkState() == Qt.CheckState.Checked
+            else Qt.CheckState.Checked
+        )
+        item.setCheckState(new_state)  # triggers _on_cell_changed
+
+    def _toggle_tag_and_advance(self) -> None:
+        """Shift+Space — toggle Order checkbox and move down one row (rapid tagging)."""
+        row = self._table.currentRow()
+        if row < 0:
+            return
+        item = self._table.item(row, COL_TAG)
+        if item is not None:
+            new_state = (
+                Qt.CheckState.Unchecked
+                if item.checkState() == Qt.CheckState.Checked
+                else Qt.CheckState.Checked
+            )
+            item.setCheckState(new_state)
+        # Advance to next row
+        if row + 1 < self._table.rowCount():
+            self._table.setCurrentCell(row + 1, self._table.currentColumn())
+
+    def _on_cell_clicked(self, row: int, col: int) -> None:
+        """Select the row when clicking in the checkbox column."""
+        if col == COL_TAG:
+            self._table.selectRow(row)
+
+    # ────────────────────────────────────────────
+    #  RIGHT-CLICK CONTEXT MENU
+    # ────────────────────────────────────────────
+    def _show_context_menu(self, pos) -> None:
+        """Build and show the right-click context menu for a product row."""
+        row = self._table.rowAt(pos.y())
+        if row < 0:
+            return
+        product = self._product_for_row(row)
+        if not product:
+            return
+
+        self._table.selectRow(row)
+        menu = QMenu(self)
+        sku = str(product.get("sku", "") or "")
+        pid = product.get("id")
+        tagged = bool(product.get("tagged_for_po", 0))
+
+        # ── Core ──
+        menu.addAction("📝  Edit Product", lambda: self._ctx_edit(sku))
+        menu.addAction("📋  Duplicate Product", lambda: self._ctx_duplicate(product))
+        menu.addAction("🔍  View Product Details", lambda: self._ctx_view_details(sku))
+        menu.addAction("🗑️  Delete Product", lambda: self._ctx_delete(pid, sku))
+        menu.addSeparator()
+
+        # ── Sales ──
+        sales = menu.addMenu("💰  Sales")
+        sales.addAction("Add to Quote", lambda: self._ctx_add_to_quote(product))
+        sales.addAction("View Sales History", lambda: self._ctx_sales_history(pid, sku))
+        sales.addAction("View Who Bought This", lambda: self._ctx_who_bought(pid, sku))
+        menu.addSeparator()
+
+        # ── Cross-Reference / Diesel ──
+        xref = menu.addMenu("🔁  Cross References")
+        xref.addAction("View Cross References", lambda: self._ctx_view_xrefs(sku))
+        xref.addAction("Add Cross Reference", lambda: self._ctx_add_xref(product))
+        xref.addAction("Find Related Parts", lambda: self._ctx_find_related(product))
+        menu.addSeparator()
+
+        # ── Pricing & Margin ──
+        pricing = menu.addMenu("📊  Pricing")
+        pricing.addAction("Adjust Price…", lambda: self._ctx_adjust_price(row, product))
+        pricing.addAction("Apply Margin %…", lambda: self._ctx_apply_margin(row, product))
+        pricing.addSeparator()
+        pricing.addAction("Mark for Pricing Review", lambda: self._ctx_mark_pricing_review(row, product))
+
+        # ── Status ──
+        status_menu = menu.addMenu("🚦  Status")
+        inv_status = str(product.get("inventory_status", "") or "active").strip().lower()
+
+        act_active = status_menu.addAction("🟢 Active (Auto Status)")
+        act_active.setCheckable(True)
+        act_active.setChecked(inv_status in ("", "active"))
+        act_active.triggered.connect(lambda _=False: self._ctx_set_inventory_status(row, product, "active"))
+
+        act_review = status_menu.addAction("🟠 Need Review")
+        act_review.setCheckable(True)
+        act_review.setChecked(inv_status == "need_review")
+        act_review.triggered.connect(lambda _=False: self._ctx_set_inventory_status(row, product, "need_review"))
+
+        act_pricing = status_menu.addAction("🔵 Pricing Review")
+        act_pricing.setCheckable(True)
+        act_pricing.setChecked(inv_status == "pricing_review")
+        act_pricing.triggered.connect(lambda _=False: self._ctx_set_inventory_status(row, product, "pricing_review"))
+
+        act_pre = status_menu.addAction("🟣 Pre-Inventory")
+        act_pre.setCheckable(True)
+        act_pre.setChecked(inv_status == "pre_inventory")
+        act_pre.triggered.connect(lambda _=False: self._ctx_set_inventory_status(row, product, "pre_inventory"))
+
+        menu.addSeparator()
+
+        # ── Inventory ──
+        inv = menu.addMenu("📦  Inventory")
+        inv.addAction("Adjust Quantity…", lambda: self._ctx_adjust_qty(product))
+        inv.addAction("Set Min / Max…", lambda: self._ctx_set_min_max(row, product))
+        inv.addAction("View Locations", lambda: self._ctx_view_locations(pid, sku))
+        tag_label = "Untag for PO" if tagged else "Tag for PO"
+        inv.addAction(f"{'📌' if not tagged else '📍'}  {tag_label}", lambda: self._ctx_toggle_tag(row, product))
+
+        menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    # ── Context menu action handlers ──────────────────────
+
+    def _ctx_edit(self, sku: str) -> None:
+        dlg = EditProductDialog(sku=sku, parent=self)
+        if dlg.exec():
+            self._do_browse()
+
+    def _ctx_view_details(self, sku: str) -> None:
+        dlg = ProductDetailDialog(sku=sku, parent=self)
+        dlg.exec()
+        self._do_browse()
+
+    def _ctx_duplicate(self, product: dict) -> None:
+        """Create a copy of a product with a new SKU."""
+        from db import create_product
+        old_sku = str(product.get("sku", "") or "")
+        new_sku, ok = QMessageBox.question(self, "", ""), False  # placeholder
+        # Use input dialog for new SKU
+        from PySide6.QtWidgets import QInputDialog
+        new_sku, ok = QInputDialog.getText(
+            self, "Duplicate Product",
+            f"Enter SKU for the copy of {old_sku}:",
+        )
+        if not ok or not new_sku.strip():
+            return
+        fields = {}
+        for key in [
+            "title", "category", "manufacturer", "supplier", "engine",
+            "condition", "cost", "pai_cost", "selling_price", "core_charge",
+            "min_qty", "max_qty", "description_html", "brief_description",
+            "invoice_description",
+        ]:
+            if product.get(key) is not None:
+                fields[key] = product[key]
+        result = create_product(sku=new_sku.strip(), **fields)
+        if result.get("success"):
+            QMessageBox.information(self, "Duplicated", f"Created {new_sku.strip()}")
+            self._do_browse()
+        else:
+            QMessageBox.warning(self, "Error", result.get("error", "Unknown error"))
+
+    def _ctx_delete(self, pid: int, sku: str) -> None:
+        # Check if multiple rows are checked — offer bulk delete
+        checked = self._get_checked_products()
+        if len(checked) > 1:
+            skus = [str(p.get("sku", "?")) for p in checked]
+            preview = "\n".join(f"  • {s}" for s in skus[:10])
+            if len(skus) > 10:
+                preview += f"\n  … and {len(skus) - 10} more"
+            reply = QMessageBox.warning(
+                self, "Delete Products",
+                f"Delete {len(checked)} checked products?\n\n{preview}\n\n"
+                "This cannot be undone.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            failed = 0
+            for p in checked:
+                r = delete_product(p.get("id"))
+                if not r.get("success"):
+                    failed += 1
+            if failed:
+                QMessageBox.warning(self, "Partial Failure",
+                                    f"{failed} of {len(checked)} deletions failed.")
+            self._do_browse()
+            return
+
+        # Single product delete
+        reply = QMessageBox.warning(
+            self, "Delete Product",
+            f"Permanently delete {sku}?\n\nThis cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        result = delete_product(pid)
+        if result.get("success"):
+            self._do_browse()
+        else:
+            QMessageBox.warning(self, "Error", result.get("error", "Delete failed"))
+
+    def _ctx_add_to_quote(self, product: dict) -> None:
+        """Open a new quote with this product pre-added."""
+        from .quote_dialog import QuoteDialog
+        pid = product.get("id")
+        sku = str(product.get("sku", "") or "")
+        title = str(product.get("title", "") or "")
+        price = float(product.get("selling_price", 0) or 0)
+        cost = float(product.get("pai_cost", 0) or 0) or float(product.get("cost", 0) or 0)
+        core = float(product.get("core_charge", 0) or 0)
+        supplier = str(product.get("supplier", "") or "")
+
+        # Create quote in DB first, then open dialog on it
+        result = create_quote(
+            lines=[{
+                "product_id": pid,
+                "description": title,
+                "supplier": supplier,
+                "qty": 1,
+                "unit_price": price,
+                "unit_cost": cost,
+                "core_charge": core,
+            }],
+        )
+        if result.get("success"):
+            dlg = QuoteDialog(quote_id=result["quote_id"], parent=self)
+            dlg.exec()
+        else:
+            QMessageBox.warning(self, "Error", result.get("error", "Failed to create quote"))
+
+    def _ctx_sales_history(self, pid: int, sku: str) -> None:
+        """Show sales history (inventory transactions) for this product."""
+        txns = get_inventory_transactions(product_id=pid, limit=50)
+        if not txns:
+            QMessageBox.information(self, "Sales History", f"No transactions found for {sku}.")
+            return
+        lines = [f"<b>Transaction History — {_esc(sku)}</b><br><table border='1' cellpadding='4'>"]
+        lines.append("<tr><th>Date</th><th>Type</th><th>Change</th><th>After</th><th>Ref</th><th>Notes</th></tr>")
+        for t in txns:
+            lines.append(
+                f"<tr><td>{_esc(str(t.get('created_at','')))}</td>"
+                f"<td>{_esc(str(t.get('transaction_type','')))}</td>"
+                f"<td>{t.get('quantity_change',0):+d}</td>"
+                f"<td>{t.get('quantity_after','')}</td>"
+                f"<td>{_esc(str(t.get('reference','')))}</td>"
+                f"<td>{_esc(str(t.get('notes','')))}</td></tr>"
+            )
+        lines.append("</table>")
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Sales History")
+        dlg.setTextFormat(Qt.TextFormat.RichText)
+        dlg.setText("".join(lines))
+        dlg.exec()
+
+    def _ctx_who_bought(self, pid: int, sku: str) -> None:
+        buyers = get_customers_who_bought(pid)
+        if not buyers:
+            QMessageBox.information(self, "Who Bought This", f"No purchase history for {sku}.")
+            return
+        lines = [f"<b>Customers who bought {_esc(sku)}</b><br><table border='1' cellpadding='4'>"]
+        lines.append("<tr><th>Customer</th><th>Company</th><th>Total Qty</th><th>Last Purchase</th></tr>")
+        for b in buyers:
+            lines.append(
+                f"<tr><td>{_esc(str(b.get('customer_name','')))}</td>"
+                f"<td>{_esc(str(b.get('company','')))}</td>"
+                f"<td>{b.get('total_qty',0)}</td>"
+                f"<td>{_esc(str(b.get('last_date','')))}</td></tr>"
+            )
+        lines.append("</table>")
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Who Bought This")
+        dlg.setTextFormat(Qt.TextFormat.RichText)
+        dlg.setText("".join(lines))
+        dlg.exec()
+
+    def _ctx_view_xrefs(self, sku: str) -> None:
+        xrefs = get_all_xrefs_for_product(sku)
+        if not xrefs:
+            QMessageBox.information(self, "Cross References", f"No cross-references for {sku}.")
+            return
+        lines = [f"<b>Cross References — {_esc(sku)}</b><br><table border='1' cellpadding='4'>"]
+        lines.append("<tr><th>Part Number</th><th>Type</th><th>Manufacturer</th></tr>")
+        for x in xrefs:
+            lines.append(
+                f"<tr><td>{_esc(str(x.get('number','')))}</td>"
+                f"<td>{_esc(str(x.get('type','')))}</td>"
+                f"<td>{_esc(str(x.get('manufacturer','')))}</td></tr>"
+            )
+        lines.append("</table>")
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Cross References")
+        dlg.setTextFormat(Qt.TextFormat.RichText)
+        dlg.setText("".join(lines))
+        dlg.exec()
+
+    def _ctx_add_xref(self, product: dict) -> None:
+        """Quick-add a cross reference from the context menu."""
+        sku = str(product.get("sku", "") or "")
+        dlg = EditProductDialog(sku=sku, parent=self)
+        dlg.exec()
+        self._do_browse()
+
+    def _ctx_find_related(self, product: dict) -> None:
+        """Show related parts via cross-reference chains."""
+        from db.xref_chain_service import find_related_products
+        sku = str(product.get("sku", "") or "")
+        # Try OEM part number first, then SKU without JAKS- prefix
+        search_pn = str(product.get("oem_part_number", "") or "")
+        if not search_pn:
+            search_pn = sku.replace("JAKS-", "")
+        related = find_related_products(search_pn)
+        if not related:
+            QMessageBox.information(self, "Related Parts", f"No related parts found for {sku}.")
+            return
+        lines = [f"<b>Related Parts — {_esc(sku)}</b><br><table border='1' cellpadding='4'>"]
+        lines.append("<tr><th>OEM Part</th><th>OEM Mfr</th><th>Aftermarket</th><th>AM Mfr</th><th>Source</th></tr>")
+        for r in related[:20]:
+            lines.append(
+                f"<tr><td>{_esc(str(r.oem_part_number))}</td>"
+                f"<td>{_esc(str(r.oem_manufacturer or ''))}</td>"
+                f"<td>{_esc(str(r.aftermarket_part_number))}</td>"
+                f"<td>{_esc(str(r.aftermarket_manufacturer or ''))}</td>"
+                f"<td>{_esc(str(r.source or ''))}</td></tr>"
+            )
+        lines.append("</table>")
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Related Parts")
+        dlg.setTextFormat(Qt.TextFormat.RichText)
+        dlg.setText("".join(lines))
+        dlg.exec()
+
+    def _ctx_adjust_price(self, row: int, product: dict) -> None:
+        """Quick price adjustment dialog."""
+        from PySide6.QtWidgets import QInputDialog
+        cur_price = float(product.get("selling_price", 0) or 0)
+        new_price, ok = QInputDialog.getDouble(
+            self, "Adjust Price",
+            f"New selling price for {product.get('sku', '')}:",
+            cur_price, 0, 999999, 2,
+        )
+        if not ok:
+            return
+        pid = product.get("id")
+        update_product(pid, selling_price=new_price)
+        product["selling_price"] = new_price
+        self._table.blockSignals(True)
+        pi = self._table.item(row, COL_PRICE)
+        if pi:
+            pi.setText(f"{new_price:,.2f}")
+        self._table.blockSignals(False)
+        self._refresh_margin_cell(row, product)
+
+    def _ctx_apply_margin(self, row: int, product: dict) -> None:
+        """Calculate price from cost + target margin %."""
+        from PySide6.QtWidgets import QInputDialog
+        cost = float(product.get("pai_cost", 0) or 0) or float(product.get("cost", 0) or 0)
+        if cost <= 0:
+            QMessageBox.warning(self, "Apply Margin", "Cost is zero — cannot calculate margin-based price.")
+            return
+        margin, ok = QInputDialog.getDouble(
+            self, "Apply Margin %",
+            f"Target margin % for {product.get('sku', '')} (cost: ${cost:,.2f}):",
+            35.0, 0, 99.9, 1,
+        )
+        if not ok:
+            return
+        new_price = round(cost / (1 - margin / 100), 2)
+        pid = product.get("id")
+        update_product(pid, selling_price=new_price)
+        product["selling_price"] = new_price
+        self._table.blockSignals(True)
+        pi = self._table.item(row, COL_PRICE)
+        if pi:
+            pi.setText(f"{new_price:,.2f}")
+        self._table.blockSignals(False)
+        self._refresh_margin_cell(row, product)
+        QMessageBox.information(
+            self, "Margin Applied",
+            f"Price set to ${new_price:,.2f} ({margin:.1f}% margin on ${cost:,.2f} cost)",
+        )
+
+    def _ctx_mark_pricing_review(self, row: int, product: dict) -> None:
+        """Mark product for pricing review so it stands out in the Status column."""
+        self._ctx_set_inventory_status(row, product, "pricing_review")
+
+    def _ctx_set_inventory_status(self, row: int, product: dict, new_status: str) -> None:
+        """Set manual inventory status (active / pricing_review / need_review / pre_inventory)."""
+        pid = product.get("id")
+        if pid is None:
+            return
+        try:
+            update_product(pid, inventory_status=new_status)
+            product["inventory_status"] = new_status
+            self._refresh_status_cell(row, product)
+        except Exception as e:
+            QMessageBox.warning(self, "Status", f"Failed to update status: {e}")
+
+    def _ctx_adjust_qty(self, product: dict) -> None:
+        """Open the Adjust Quantity dialog."""
+        from .adjust_qty_dialog import AdjustQtyDialog
+        sku = str(product.get("sku", "") or "")
+        dlg = AdjustQtyDialog(sku=sku, parent=self)
+        if dlg.exec():
+            self._do_browse()
+
+    def _ctx_set_min_max(self, row: int, product: dict) -> None:
+        """Quick min/max dialog."""
+        from PySide6.QtWidgets import QInputDialog
+        pid = product.get("id")
+        cur_min = int(product.get("min_qty", 0) or 0)
+        cur_max = int(product.get("max_qty", 0) or 0)
+        new_min, ok = QInputDialog.getInt(
+            self, "Set Min", f"Minimum stock for {product.get('sku', '')}:", cur_min, 0, 99999,
+        )
+        if not ok:
+            return
+        new_max, ok = QInputDialog.getInt(
+            self, "Set Max", f"Maximum stock for {product.get('sku', '')}:", cur_max, 0, 99999,
+        )
+        if not ok:
+            return
+        update_product(pid, min_qty=new_min, max_qty=new_max)
+        product["min_qty"] = new_min
+        product["max_qty"] = new_max
+        self._table.blockSignals(True)
+        mi = self._table.item(row, COL_MIN)
+        if mi:
+            mi.setText(str(new_min))
+        mx = self._table.item(row, COL_MAX)
+        if mx:
+            mx.setText(str(new_max))
+        self._table.blockSignals(False)
+        self._refresh_status_cell(row, product)
+        self._refresh_suggested_cell(row, product)
+
+    def _ctx_view_locations(self, pid: int, sku: str) -> None:
+        locs = get_product_locations(pid)
+        if not locs:
+            QMessageBox.information(self, "Locations", f"No locations assigned for {sku}.")
+            return
+        lines = [f"<b>Locations — {_esc(sku)}</b><br><table border='1' cellpadding='4'>"]
+        lines.append("<tr><th>Location</th><th>Zone</th><th>Qty</th><th>Primary</th></tr>")
+        for loc in locs:
+            name = str(loc.get("name", "") or loc.get("code", ""))
+            lines.append(
+                f"<tr><td>{_esc(name)}</td>"
+                f"<td>{_esc(str(loc.get('zone','')))}</td>"
+                f"<td>{loc.get('quantity', 0)}</td>"
+                f"<td>{'✓' if loc.get('is_primary') else ''}</td></tr>"
+            )
+        lines.append("</table>")
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Inventory Locations")
+        dlg.setTextFormat(Qt.TextFormat.RichText)
+        dlg.setText("".join(lines))
+        dlg.exec()
+
+    def _ctx_toggle_tag(self, row: int, product: dict) -> None:
+        """Toggle the tagged_for_po flag on a product."""
+        item = self._table.item(row, COL_TAG)
+        if item is None:
+            return
+        new_state = (
+            Qt.CheckState.Unchecked
+            if item.checkState() == Qt.CheckState.Checked
+            else Qt.CheckState.Checked
+        )
+        item.setCheckState(new_state)  # triggers _on_cell_changed
+
+    # ────────────────────────────────────────────
+    #  SELECT-ALL CHECKBOX HELPERS
+    # ────────────────────────────────────────────
+    def _reposition_select_all_cb(self, *_args) -> None:
+        """Keep the select-all checkbox centred in the COL_TAG header cell."""
+        hdr = self._table.horizontalHeader()
+        # Use the viewport position so horizontal scrolling doesn't push the
+        # checkbox off-screen.
+        x = hdr.sectionViewportPosition(COL_TAG)
+        w = hdr.sectionSize(COL_TAG)
+        cb_w = self._select_all_cb.sizeHint().width()
+        cb_h = self._select_all_cb.sizeHint().height()
+        self._select_all_cb.setGeometry(
+            max(0, x + (w - cb_w) // 2),
+            max(0, (hdr.height() - cb_h) // 2),
+            cb_w,
+            cb_h,
+        )
+        self._select_all_cb.raise_()
+
+    def _on_select_all_toggled(self, state: int) -> None:
+        """Toggle all visible row checkboxes when select-all is clicked."""
+        checked = state == Qt.CheckState.Checked.value
+        self._table.blockSignals(True)
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, COL_TAG)
+            if item is not None:
+                item.setCheckState(
+                    Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+                )
+                # Also update the product dict + DB
+                product = self._product_for_row(row)
+                if product:
+                    pid = product.get("id")
+                    try:
+                        update_product(pid, tagged_for_po=int(checked))
+                        product["tagged_for_po"] = int(checked)
+                    except Exception:
+                        pass
+                    self._style_tagged_row(row, checked)
+        self._table.blockSignals(False)
+        self._recount_tagged()
+        self._update_checked_selection()
+
+    def _get_checked_products(self) -> list[dict]:
+        """Return product dicts for all rows with checked checkboxes."""
+        products = []
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, COL_TAG)
+            if item is not None and item.checkState() == Qt.CheckState.Checked:
+                p = self._product_for_row(row)
+                if p:
+                    products.append(p)
+        return products
+
+    def _update_checked_selection(self) -> None:
+        """Enable bulk edit if enough rows are checked OR selected."""
+        checked = self._get_checked_products()
+        selected = self._table.selectionModel().selectedRows()
+        # Use whichever is larger
+        n = max(len(checked), len(selected))
+        self._bulk_btn.setEnabled(n >= 2)
+        if n >= 2:
+            self._bulk_btn.setText(f"✏️ Bulk Edit ({n})")
+        else:
+            self._bulk_btn.setText("✏️ Bulk Edit")
+
+    def _toggle_recent(self) -> None:
+        """Toggle the recent activity panel visibility."""
+        visible = not self._recent_table.isVisible()
+        self._recent_table.setVisible(visible)
+        if visible:
+            self._recent_toggle.setText("▼ Recent Activity")
+            self._recent_frame.setMaximumHeight(130)
+        else:
+            self._recent_toggle.setText("▶ Recent Activity")
+            self._recent_frame.setMaximumHeight(28)
+
+    # ────────────────────────────────────────────
+    #  DETAIL DRAWER
+    # ────────────────────────────────────────────
+    def _toggle_detail_drawer(self) -> None:
+        self._detail_expanded = not self._detail_expanded
+        self._detail_browser.setVisible(self._detail_expanded)
+        if self._detail_expanded:
+            self._detail_toggle.setText("▼ Product Detail")
+        else:
+            self._detail_toggle.setText("▶ Product Detail")
+
+    def _populate_detail_drawer(self, product: dict[str, Any]) -> None:
+        """Build HTML summary card for the selected product."""
+        pid = product.get("id")
+        sku = product.get("sku", "")
+        title = product.get("title", "") or product.get("description", "") or ""
+
+        # ── Status badge ──
+        qty = int(product.get("qty_on_hand", 0) or 0)
+        min_q = int(product.get("min_qty", 0) or 0)
+        max_q = int(product.get("max_qty", 0) or 0)
+        tagged = bool(product.get("tagged_for_po", 0))
+        if tagged:
+            badge_text, badge_bg = "Tagged for PO", "#e65100"
+        else:
+            status_text, status_color = self._compute_status_display(product)
+            # Strip icon for compact badge text.
+            badge_text = status_text.split(" ", 1)[1] if " " in status_text else status_text
+            badge_bg = status_color.name()
+
+        # ── Values ──
+        mfr = product.get("manufacturer", "") or ""
+        supplier = product.get("supplier", "") or ""
+        category = product.get("category", "") or ""
+        subcategory = product.get("subcategory", "") or ""
+        condition = product.get("condition", "") or ""
+        price = float(product.get("selling_price", 0) or product.get("price", 0) or 0)
+        cost = float(product.get("pai_cost", 0) or product.get("cost", 0) or 0)
+        margin = ((price - cost) / price * 100) if price > 0 and cost > 0 else 0
+        vendor_sku = product.get("pai_sku", "") or product.get("vendor_sku", "") or ""
+        oem_part = product.get("oem_part_number", "") or ""
+        notes = product.get("notes", "") or ""
+        engine = product.get("engine", "") or ""
+
+        css = (
+            "body { font-family: 'Segoe UI', sans-serif; font-size: 12px; margin: 0; padding: 0; color: #333; }"
+            ".card { border: 1px solid #ddd; border-radius: 6px; padding: 10px 14px; background: #fff; }"
+            ".hdr { display: flex; align-items: center; gap: 10px; padding-bottom: 8px; "
+            "border-bottom: 1px solid #e0e0e0; margin-bottom: 8px; }"
+            ".hdr-title { font-size: 14px; font-weight: bold; color: #222; }"
+            ".hdr-sub { font-size: 11px; color: #666; }"
+            ".badge { display: inline-block; font-size: 10px; font-weight: bold; color: white; "
+            "padding: 2px 8px; border-radius: 10px; }"
+            ".cols { display: flex; gap: 32px; flex-wrap: wrap; }"
+            ".col { min-width: 160px; }"
+            ".row { margin: 3px 0; font-size: 12px; }"
+            ".row b { color: #555; font-weight: 600; }"
+            ".row .val { color: #111; }"
+            ".money { font-family: Consolas, monospace; }"
+            ".margin-good { color: #2e7d32; font-weight: bold; }"
+            ".margin-low { color: #e65100; font-weight: bold; }"
+            ".margin-neg { color: #c62828; font-weight: bold; }"
+            ".section-title { font-weight: 600; color: #444; margin: 8px 0 4px; font-size: 12px; "
+            "border-top: 1px solid #eee; padding-top: 6px; }"
+            ".xref-tag { display: inline-block; background: #eef2ee; border: 1px solid #ccd; "
+            "border-radius: 3px; padding: 1px 6px; margin: 1px 2px; font-size: 11px; }"
+            ".note { background: #fafafa; border-left: 3px solid #4a6741; padding: 4px 8px; "
+            "margin: 4px 0; font-size: 11px; color: #555; }"
+        )
+
+        h = [f"<style>{css}</style>", '<div class="card">']
+
+        # ── Header with status badge ──
+        h.append('<div class="hdr">')
+        h.append(f'<div><span class="hdr-title">{_esc(sku)}</span>')
+        h.append(f'<br><span class="hdr-sub">{_esc(title)}</span></div>')
+        h.append(f'<span class="badge" style="background:{badge_bg};">{badge_text}</span>')
+        h.append('</div>')
+
+        # ── Two-column grid ──
+        h.append('<div class="cols">')
+
+        # Left column — identity
+        h.append('<div class="col">')
+        if mfr:
+            h.append(f'<div class="row"><b>Manufacturer:</b> <span class="val">{_esc(mfr)}</span></div>')
+        if supplier:
+            h.append(f'<div class="row"><b>Supplier:</b> <span class="val">{_esc(supplier)}</span></div>')
+        cat_display = _esc(category)
+        if subcategory:
+            cat_display += f" › {_esc(subcategory)}"
+        if category:
+            h.append(f'<div class="row"><b>Category:</b> <span class="val">{cat_display}</span></div>')
+        if condition:
+            h.append(f'<div class="row"><b>Condition:</b> <span class="val">{_esc(condition)}</span></div>')
+        if engine:
+            h.append(f'<div class="row"><b>Engine:</b> <span class="val">{_esc(engine)}</span></div>')
+        if vendor_sku:
+            h.append(f'<div class="row"><b>Vendor SKU:</b> <span class="val">{_esc(vendor_sku)}</span></div>')
+        if oem_part:
+            h.append(f'<div class="row"><b>OEM Part #:</b> <span class="val">{_esc(oem_part)}</span></div>')
+        h.append('</div>')
+
+        # Right column — inventory & pricing
+        h.append('<div class="col">')
+        h.append(f'<div class="row"><b>Qty on Hand:</b> <span class="val">{qty}</span></div>')
+        h.append(f'<div class="row"><b>Min / Max:</b> <span class="val">{min_q} / {max_q}</span></div>')
+        if max_q > 0 and qty < max_q:
+            suggested = max_q - qty
+            h.append(f'<div class="row"><b>Suggested Order:</b> <span class="val">{suggested}</span></div>')
+        h.append(f'<div class="row"><b>Price:</b> <span class="val money">${price:,.2f}</span></div>')
+        h.append(f'<div class="row"><b>Cost:</b> <span class="val money">${cost:,.2f}</span></div>')
+        if price > 0 and cost > 0:
+            m_cls = "margin-good" if margin >= 30 else ("margin-low" if margin >= 15 else "margin-neg")
+            h.append(f'<div class="row"><b>Margin:</b> <span class="{m_cls}">{margin:.1f}%</span></div>')
+        h.append('</div>')
+
+        h.append('</div>')  # end cols
+
+        # ── Notes ──
+        if notes:
+            h.append(f'<div class="note">{_esc(notes)}</div>')
+
+        # ── Interchanges ──
+        try:
+            xrefs = get_all_xrefs_for_product(sku) if sku else []
+            if pid:
+                interchanges = get_interchanges(pid)
+                existing = {str(x.get("number", "")).upper() for x in xrefs}
+                for ic in interchanges:
+                    num = str(ic.get("interchange_number", "") or "")
+                    if num.upper() not in existing:
+                        xrefs.append({
+                            "number": num,
+                            "type": ic.get("interchange_type", ""),
+                            "manufacturer": ic.get("manufacturer", "") or "",
+                        })
+                        existing.add(num.upper())
+        except Exception:
+            xrefs = []
+
+        if xrefs:
+            parts = []
+            for x in xrefs[:20]:
+                num = x.get("number", "") or x.get("interchange_number", "")
+                xtype = x.get("type", "") or x.get("interchange_type", "")
+                mfr_x = x.get("manufacturer", "")
+                tip = ""
+                if xtype:
+                    tip += _esc(xtype)
+                if mfr_x:
+                    tip += f" - {_esc(mfr_x)}" if tip else _esc(mfr_x)
+                title_attr = f' title="{tip}"' if tip else ""
+                parts.append(f'<span class="xref-tag"{title_attr}>{_esc(num)}</span>')
+            more = f" … +{len(xrefs) - 20} more" if len(xrefs) > 20 else ""
+            h.append(
+                f'<div class="section-title">Interchanges ({len(xrefs)})</div>'
+                + "".join(parts) + more
+            )
+
+        # ── Locations ──
+        try:
+            locations = get_product_locations(pid) if pid else []
+        except Exception:
+            locations = []
+
+        if locations:
+            loc_parts = [_esc(loc.get("location_code", "") or loc.get("code", "") or loc.get("name", "")) for loc in locations]
+            h.append(f'<div class="section-title">Locations</div>' + ", ".join(loc_parts))
+
+        # ── Last scraped ──
+        try:
+            last_run = get_last_scrape_run(pid) if pid else None
+        except Exception:
+            last_run = None
+
+        if last_run:
+            run_at = last_run.get("created_at", "") or ""
+            status = last_run.get("status", "") or ""
+            h.append(
+                f'<div style="color:#888;font-size:10px;margin-top:6px;">'
+                f'Last scraped: {_esc(str(run_at))} ({_esc(status)})</div>'
+            )
+
+        h.append('</div>')  # end card
+        self._detail_browser.setHtml("\n".join(h))
+        self._detail_toggle.setText(f"▼ Product Detail — {_esc(sku)}")
+
+    # ────────────────────────────────────────────
+    #  GROUP BY
+    # ────────────────────────────────────────────
+    def _on_group_changed(self) -> None:
+        self._apply_stock_filter_and_populate()
+
+    def _apply_grouping(self) -> None:
+        """If a group-by field is selected, insert separator header rows."""
+        field = self._group_combo.currentData() or ""
+        if not field or not self._displayed_results:
+            return
+
+        # Determine sort key
+        key_map = {
+            "supplier": "supplier",
+            "category": "category",
+            "manufacturer": "manufacturer",
+        }
+        db_key = key_map.get(field)
+        if not db_key:
+            return
+
+        # Build group → rows mapping
+        groups: dict[str, list[int]] = {}
+        for row in range(self._table.rowCount()):
+            product = self._product_for_row(row)
+            if product is None:
+                continue
+            val = str(product.get(db_key, "") or "") or "(None)"
+            groups.setdefault(val, []).append(row)
+
+        if len(groups) <= 1:
+            return
+
+        # Sort groups alphabetically, insert separator rows top-down
+        self._table.blockSignals(True)
+        self._table.setSortingEnabled(False)
+
+        sorted_groups = sorted(groups.keys())
+        # Collect all rows in group order
+        ordered_pids: list[int] = []
+        for g in sorted_groups:
+            for row in groups[g]:
+                product = self._product_for_row(row)
+                if product:
+                    ordered_pids.append(product["id"])
+
+        # Rebuild table with group headers
+        results_by_group: list[tuple[str, list[dict]]] = []
+        for g in sorted_groups:
+            group_products = []
+            for row in groups[g]:
+                product = self._product_for_row(row)
+                if product:
+                    group_products.append(product)
+            results_by_group.append((g, group_products))
+
+        # Count total rows needed: product rows + header rows
+        total = sum(len(prods) for _, prods in results_by_group) + len(results_by_group)
+        self._table.setRowCount(total)
+
+        insert_row = 0
+        header_bg = QColor("#e3f2fd")
+        header_fg = QColor("#1565c0")
+
+        for group_name, products in results_by_group:
+            # Insert group header row
+            header_text = f"  ── {group_name} ({len(products)}) ──"
+            for col in range(NUM_COLS):
+                hi = QTableWidgetItem(header_text if col == 0 else "")
+                hi.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                hi.setBackground(header_bg)
+                hi.setForeground(header_fg)
+                if col == 0:
+                    f = hi.font()
+                    f.setBold(True)
+                    hi.setFont(f)
+                self._table.setItem(insert_row, col, hi)
+            self._table.setSpan(insert_row, 0, 1, NUM_COLS)
+            insert_row += 1
+
+            # Re-populate product rows from stored data
+            for product in products:
+                self._fill_product_row(insert_row, product)
+                insert_row += 1
+
+        self._table.setSortingEnabled(False)  # Keep sorting off when grouped
+        self._table.blockSignals(False)
+
+    def _on_view_mode_changed(self) -> None:
+        self._apply_view_mode(self._view_combo.currentData() or "browse")
+
+    def _apply_view_mode(self, mode: str) -> None:
+        visible_cols = VIEW_PRESETS.get(mode, VIEW_PRESETS["browse"])
+        for col in range(NUM_COLS):
+            self._set_column_visible(col, col in visible_cols)
+        self._sync_column_actions()
+
+    def _set_column_visible(self, col: int, visible: bool) -> None:
+        self._table.setColumnHidden(col, not visible)
+
+    def _sync_column_actions(self) -> None:
+        for col, action in self._column_actions.items():
+            action.blockSignals(True)
+            action.setChecked(not self._table.isColumnHidden(col))
+            action.blockSignals(False)
+
+    def _build_columns_menu(self) -> None:
+        self._columns_menu.clear()
+        self._column_actions.clear()
+
+        for col, label in enumerate(HEADERS):
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.setChecked(not self._table.isColumnHidden(col))
+            action.toggled.connect(lambda checked, c=col: self._set_column_visible(c, checked))
+            self._columns_menu.addAction(action)
+            self._column_actions[col] = action
+
+        self._columns_menu.addSeparator()
+        save_action = QAction("Save current layout as default", self)
+        save_action.triggered.connect(self._save_column_layout_default)
+        self._columns_menu.addAction(save_action)
+
+        reset_action = QAction("Reset to current view mode", self)
+        reset_action.triggered.connect(lambda: self._apply_view_mode(self._view_combo.currentData() or "browse"))
+        self._columns_menu.addAction(reset_action)
+
+    def _save_column_layout_default(self) -> None:
+        visible_cols = [i for i in range(NUM_COLS) if not self._table.isColumnHidden(i)]
+        payload = {
+            "mode": self._view_combo.currentData() or "browse",
+            "visible": visible_cols,
+        }
+        try:
+            set_setting("products_columns_layout", json.dumps(payload))
+            QMessageBox.information(self, "Columns", "Current layout saved as default.")
+        except Exception as e:
+            QMessageBox.warning(self, "Columns", f"Failed to save layout: {e}")
+
+    def _load_saved_column_layout(self) -> None:
+        raw = get_setting("products_columns_layout")
+        if not raw:
+            self._apply_view_mode("browse")
+            return
+        try:
+            data = json.loads(raw)
+            mode = data.get("mode", "browse")
+            visible = set(int(c) for c in data.get("visible", []))
+            idx = self._view_combo.findData(mode)
+            if idx >= 0:
+                self._view_combo.blockSignals(True)
+                self._view_combo.setCurrentIndex(idx)
+                self._view_combo.blockSignals(False)
+            if visible:
+                for col in range(NUM_COLS):
+                    self._set_column_visible(col, col in visible)
+            else:
+                self._apply_view_mode(mode)
+            self._sync_column_actions()
+        except Exception:
+            self._apply_view_mode("browse")
+
+    def _set_stock_filter(self, key: str) -> None:
+        for i in range(self._stock_combo.count()):
+            if self._stock_combo.itemData(i) == key:
+                self._stock_combo.setCurrentIndex(i)
+                return
+
+    # ────────────────────────────────────────────
+    #  SYNC STATUS
+    # ────────────────────────────────────────────
+    def _update_sync_status(self) -> None:
+        try:
+            status = get_sync_status()
+            pending = status.get("needs_update", 0)
+            if pending > 0:
+                self._sync_status_label.setText(f"⚠️ {pending} pending Shopify update")
+                self._sync_status_label.setStyleSheet(
+                    "padding: 4px 8px; border-radius: 4px; "
+                    "background-color: #fff3cd; color: #856404; font-weight: bold;"
+                )
+            else:
+                total = status.get("synced_products", 0)
+                self._sync_status_label.setText(f"✅ {total} synced")
+                self._sync_status_label.setStyleSheet(
+                    "padding: 4px 8px; border-radius: 4px; "
+                    "background-color: #d4edda; color: #155724;"
+                )
+        except Exception:
+            self._sync_status_label.setText("")
+
+    # ────────────────────────────────────────────
+    #  RECENT TRANSACTIONS
+    # ────────────────────────────────────────────
+    def _load_recent_transactions(self) -> None:
+        try:
+            recent = get_inventory_transactions(limit=6)
+        except Exception:
+            recent = []
+
+        self._recent_table.setRowCount(len(recent))
+        for row_idx, txn in enumerate(recent):
+            created = str(txn.get("created_at", "") or "")[:16]
+            sku = str(txn.get("sku", "") or "")
+            txn_type = str(txn.get("transaction_type", "") or "")
+            change = int(txn.get("quantity_change", 0) or 0)
+            change_str = f"+{change}" if change > 0 else str(change)
+            reference = str(txn.get("reference", "") or "")
+            notes = str(txn.get("notes", "") or "")
+
+            def item(text: str) -> QTableWidgetItem:
+                it = QTableWidgetItem(text)
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                return it
+
+            self._recent_table.setItem(row_idx, 0, item(created))
+            self._recent_table.setItem(row_idx, 1, item(sku))
+            self._recent_table.setItem(row_idx, 2, item(txn_type))
+
+            ci = item(change_str)
+            if change > 0:
+                ci.setForeground(QColor("green"))
+            elif change < 0:
+                ci.setForeground(QColor("red"))
+            self._recent_table.setItem(row_idx, 3, ci)
+            self._recent_table.setItem(row_idx, 4, item(f"{reference} {notes}".strip()))
+        self._recent_table.resizeColumnsToContents()
+
+    # ────────────────────────────────────────────
+    #  FILTERS
+    # ────────────────────────────────────────────
+    def _load_filters(self) -> None:
+        """Load filter options and refresh the grid."""
+        self._mfr_combo.blockSignals(True)
+        self._cat_combo.blockSignals(True)
+        self._supplier_combo.blockSignals(True)
+        try:
+            while self._mfr_combo.count() > 1:
+                self._mfr_combo.removeItem(1)
+            while self._cat_combo.count() > 1:
+                self._cat_combo.removeItem(1)
+            while self._supplier_combo.count() > 1:
+                self._supplier_combo.removeItem(1)
+
+            for mfr in get_all_manufacturers():
+                self._mfr_combo.addItem(mfr, mfr)
+            for cat in get_all_categories():
+                self._cat_combo.addItem(cat, cat)
+            for sup in get_all_suppliers():
+                self._supplier_combo.addItem(sup, sup)
+        except Exception as e:
+            self._results_label.setText(f"Error loading filters: {e}")
+        finally:
+            self._mfr_combo.blockSignals(False)
+            self._cat_combo.blockSignals(False)
+            self._supplier_combo.blockSignals(False)
+
+        # Always populate the grid after loading filters
+        self._do_browse()
+
+    def _full_refresh(self) -> None:
+        """Full refresh: reload filters + data + recent."""
+        self._load_filters()
+        self._load_recent_transactions()
+        self._update_sync_status()
+
+    def _on_filter_changed(self) -> None:
+        self._do_browse()
+
+    # ────────────────────────────────────────────
+    #  SEARCH / BROWSE
+    # ────────────────────────────────────────────
+    def _on_search_text_changed(self, _text: str) -> None:
+        """Restart debounce timer on each keystroke."""
+        self._search_timer.start()
+
+    def _on_search(self) -> None:
+        self._search_timer.stop()  # Cancel pending debounce if manual trigger
+        self._do_browse()
+
+    def _on_clear_search(self) -> None:
+        """Clear search box and all filters, refresh to show all products."""
+        self._query.clear()
+        self._mfr_combo.setCurrentIndex(0)
+        self._cat_combo.setCurrentIndex(0)
+        self._supplier_combo.setCurrentIndex(0)
+        self._stock_combo.setCurrentIndex(0)
+        self._do_browse()
+
+    def _do_browse(self) -> None:
+        mfr = self._mfr_combo.currentData() or None
+        cat = self._cat_combo.currentData() or None
+        sup = self._supplier_combo.currentData() or None
+        search = (self._query.text() or "").strip() or None
+
+        self._table.setRowCount(0)
+        self._last_results = []
+
+        try:
+            results = browse_products(
+                manufacturer=mfr,
+                category=cat,
+                supplier=sup,
+                search=search,
+                limit=500,
+            )
+        except Exception as e:
+            self._results_label.setText(f"Browse failed: {e}")
+            return
+
+        self._last_results = list(results or [])
+        self._apply_stock_filter_and_populate()
+
+    def _apply_stock_filter_and_populate(self) -> None:
+        """Apply the stock status filter, then populate."""
+        stock_filter = self._stock_combo.currentData() or "all"
+        if stock_filter == "all":
+            filtered = self._last_results
+        elif stock_filter == "in_stock":
+            filtered = [r for r in self._last_results if int(r.get("qty_on_hand", 0) or 0) > 0]
+        elif stock_filter == "low":
+            filtered = []
+            for r in self._last_results:
+                qty = int(r.get("qty_on_hand", 0) or 0)
+                mn = int(r.get("min_qty", 0) or 0)
+                if qty > 0 and mn > 0 and qty < mn:
+                    filtered.append(r)
+                elif qty > 0 and mn == 0 and qty <= 5:
+                    filtered.append(r)
+        elif stock_filter == "out":
+            filtered = [r for r in self._last_results if int(r.get("qty_on_hand", 0) or 0) <= 0]
+        elif stock_filter == "pricing_review":
+            filtered = [
+                r for r in self._last_results
+                if str(r.get("inventory_status", "") or "").strip().lower() == "pricing_review"
+            ]
+        elif stock_filter == "need_review":
+            filtered = [
+                r for r in self._last_results
+                if str(r.get("inventory_status", "") or "").strip().lower() == "need_review"
+            ]
+        elif stock_filter == "tagged":
+            filtered = [r for r in self._last_results if r.get("tagged_for_po")]
+        else:
+            filtered = self._last_results
+
+        self._displayed_results = filtered
+
+        # Build status text
+        parts = []
+        mfr = self._mfr_combo.currentData() or ""
+        cat = self._cat_combo.currentData() or ""
+        sup = self._supplier_combo.currentData() or ""
+        if mfr:
+            parts.append(f"Mfr: {mfr}")
+        if cat:
+            parts.append(f"Cat: {cat}")
+        if sup:
+            parts.append(f"Supplier: {sup}")
+        if stock_filter != "all":
+            parts.append(f"Stock: {self._stock_combo.currentText()}")
+        label = " | ".join(parts) if parts else "All products"
+        showing = len(filtered)
+        total = len(self._last_results)
+        if showing != total:
+            self._results_label.setText(f"{label} — {showing} shown (of {total})")
+        else:
+            self._results_label.setText(f"{label} — {total} results")
+
+        self._update_summary_strip()
+        self._populate_table(filtered)
+        self._apply_grouping()
+
+    # ────────────────────────────────────────────
+    #  POPULATE TABLE
+    # ────────────────────────────────────────────
+    def _populate_table(self, results: list[dict[str, Any]]) -> None:
+        self._table.blockSignals(True)
+        self._table.setSortingEnabled(False)
+        self._table.setRowCount(len(results))
+
+        # Enrich with sales stats (single batch query)
+        pids = [r["id"] for r in results if r.get("id")]
+        try:
+            sales_map = get_sales_summary_batch(pids) if pids else {}
+        except Exception:
+            sales_map = {}
+        for r in results:
+            pid = r.get("id")
+            info = sales_map.get(pid, {})
+            r["_last_sold"] = info.get("last_sold") or ""
+            r["_times_sold_12m"] = info.get("qty_12m", 0)
+
+        # Build id → product lookup for sort-safe access
+        self._product_map = {r["id"]: r for r in results if "id" in r}
+
+        tagged_count = 0
+
+        for row_idx, r in enumerate(results):
+            if r.get("tagged_for_po"):
+                tagged_count += 1
+            self._fill_product_row(row_idx, r)
+
+        self._table.resizeColumnsToContents()
+        # Keep checkbox column slim after resize
+        self._table.setColumnWidth(COL_TAG, 50)
+        self._table.setSortingEnabled(True)
+        self._table.blockSignals(False)
+
+        # Update tagged count badge
+        self._update_tagged_count(tagged_count)
+
+    def _fill_product_row(self, row_idx: int, r: dict[str, Any]) -> None:
+        """Fill a single table row with product data."""
+        sku = str(r.get("sku", "") or "")
+        title = str(r.get("title", "") or "")
+        manufacturer = str(r.get("manufacturer", "") or "")
+        engine = str(r.get("engine", "") or "")
+        truck_model = str(r.get("truck_model", "") or "")
+        supplier = str(r.get("supplier", "") or "")
+        category = str(r.get("category", "") or "")
+        qty = int(r.get("qty_on_hand", 0) or 0)
+        min_qty = int(r.get("min_qty", 0) or 0)
+        max_qty = int(r.get("max_qty", 0) or 0)
+        price = float(r.get("selling_price", 0) or 0)
+        cost = float(r.get("pai_cost", 0) or 0) or float(r.get("cost", 0) or 0)
+        match_part = str(r.get("matched_part", "") or "")
+        tagged = bool(r.get("tagged_for_po", 0))
+
+        # Suggested order: max - qty (only if max is set)
+        if max_qty > 0 and qty < max_qty:
+            suggested = max_qty - qty
+        else:
+            suggested = 0
+
+        status_text, status_color = self._compute_status_display(r)
+
+        def text_item(text: str) -> QTableWidgetItem:
+            it = QTableWidgetItem(text)
+            it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            return it
+
+        # Col 0: Select checkbox — store product ID for sort-safe lookup
+        tag_item = QTableWidgetItem()
+        tag_item.setFlags(
+            Qt.ItemFlag.ItemIsUserCheckable
+            | Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+        )
+        tag_item.setCheckState(Qt.CheckState.Checked if tagged else Qt.CheckState.Unchecked)
+        tag_item.setData(Qt.ItemDataRole.UserRole, r.get("id"))
+        self._table.setItem(row_idx, COL_TAG, tag_item)
+
+        # Col 1: Status badge
+        si = text_item(status_text)
+        si.setForeground(status_color)
+        self._table.setItem(row_idx, COL_STATUS, si)
+
+        # Col 2-6: Text columns
+        self._table.setItem(row_idx, COL_SKU, text_item(sku))
+        try:
+            _core_charge = float(r.get("core_charge", 0) or 0)
+            _core_sell = float(r.get("core_sell_price", 0) or 0)
+        except Exception:
+            _core_charge = _core_sell = 0.0
+        if _core_charge > 0 or _core_sell > 0:
+            title_item = text_item(f"\U0001F504 {title}")
+            _amt = _core_sell if _core_sell > 0 else _core_charge
+            title_item.setToolTip(f"Has core charge: ${_amt:,.2f}")
+        else:
+            title_item = text_item(title)
+        self._table.setItem(row_idx, COL_TITLE, title_item)
+        platform_text = manufacturer
+        if engine:
+            platform_text = f"{manufacturer} / {engine}" if manufacturer else engine
+        elif truck_model:
+            platform_text = f"{manufacturer} / {truck_model}" if manufacturer else truck_model
+        self._table.setItem(row_idx, COL_MFR, text_item(platform_text))
+
+        # Supplier — EDITABLE inline
+        sup_item = QTableWidgetItem(supplier)
+        sup_item.setFlags(
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsEditable
+        )
+        sup_item.setToolTip("Double-click to edit supplier")
+        sup_bg = _supplier_bg(supplier)
+        if sup_bg:
+            sup_item.setBackground(sup_bg)
+        self._table.setItem(row_idx, COL_SUPPLIER, sup_item)
+
+        # Category — EDITABLE inline
+        cat_item = QTableWidgetItem(category)
+        cat_item.setFlags(
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsEditable
+        )
+        cat_item.setToolTip("Double-click to edit category")
+        self._table.setItem(row_idx, COL_CATEGORY, cat_item)
+
+        # Col 7: Qty
+        self._table.setItem(row_idx, COL_QTY, _NumericItem(qty))
+
+        # Col 8-9: Min/Max — EDITABLE inline
+        min_item = QTableWidgetItem(str(min_qty))
+        min_item.setFlags(
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsEditable
+        )
+        min_item.setToolTip("Click to edit minimum stock level")
+        self._table.setItem(row_idx, COL_MIN, min_item)
+
+        max_item = QTableWidgetItem(str(max_qty))
+        max_item.setFlags(
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsEditable
+        )
+        max_item.setToolTip("Click to edit maximum stock level")
+        self._table.setItem(row_idx, COL_MAX, max_item)
+
+        # Col 10: Suggested — highlight if > 0
+        sug_item = _NumericItem(suggested)
+        if suggested > 0:
+            sug_item.setBackground(QColor("#fff3e0"))
+            sug_item.setForeground(QColor("#e65100"))
+        self._table.setItem(row_idx, COL_SUGGESTED, sug_item)
+
+        # Col 11-12: Price/Cost — EDITABLE inline
+        price_item = QTableWidgetItem(f"{price:,.2f}")
+        price_item.setFlags(
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsEditable
+        )
+        price_item.setToolTip("Double-click to edit price")
+        self._table.setItem(row_idx, COL_PRICE, price_item)
+
+        cost_item = QTableWidgetItem(f"{cost:,.2f}")
+        cost_item.setFlags(
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsEditable
+        )
+        cost_item.setToolTip("Double-click to edit cost")
+        self._table.setItem(row_idx, COL_COST, cost_item)
+
+        # Col 13: Match
+        self._table.setItem(row_idx, COL_MATCH, text_item(match_part))
+
+        # Col 14: Margin
+        if price > 0 and cost > 0:
+            margin_pct = ((price - cost) / price) * 100
+            margin_text = f"{margin_pct:.1f}%"
+        else:
+            margin_text = ""
+        self._table.setItem(row_idx, COL_MARGIN, text_item(margin_text))
+
+        # Col 15: Tier pricing indicator
+        tier_val = r.get("tier_pricing") or r.get("has_tier_pricing")
+        tier_text = "Yes" if tier_val else ""
+        self._table.setItem(row_idx, COL_TIER, text_item(tier_text))
+
+        # Col 16: Last Scrape — per-source dates
+        pid = r.get("id")
+        if pid:
+            try:
+                dates = get_scrape_dates_for_product(pid)
+                if dates:
+                    scrape_text = " | ".join(f"{k}: {v}" for k, v in sorted(dates.items()))
+                else:
+                    scrape_text = ""
+            except Exception:
+                scrape_text = ""
+        else:
+            scrape_text = ""
+        scrape_item = text_item(scrape_text)
+        if scrape_text:
+            scrape_item.setToolTip(scrape_text)
+        self._table.setItem(row_idx, COL_LAST_SCRAPE, scrape_item)
+
+        # Col 17: Last Sold date
+        last_sold = str(r.get("_last_sold", "") or "")
+        self._table.setItem(row_idx, COL_LAST_SOLD, text_item(last_sold))
+
+        # Col 18: Times Sold (12 months)
+        times_sold = int(r.get("_times_sold_12m", 0) or 0)
+        ts_item = _NumericItem(times_sold)
+        if times_sold > 0:
+            ts_item.setForeground(QColor("#1b5e20"))
+        self._table.setItem(row_idx, COL_TIMES_SOLD, ts_item)
+
+        # Apply tagged row highlight (wins over status tint)
+        if tagged:
+            self._style_tagged_row(row_idx, True)
+        else:
+            self._apply_status_row_color(row_idx, r)
+
+    # ────────────────────────────────────────────
+    #  SORT-SAFE ROW → PRODUCT LOOKUP
+    # ────────────────────────────────────────────
+    def _product_for_row(self, visual_row: int) -> dict[str, Any] | None:
+        """Get the product dict for a visual table row (safe after sorting)."""
+        tag_item = self._table.item(visual_row, COL_TAG)
+        if tag_item is None:
+            return None
+        pid = tag_item.data(Qt.ItemDataRole.UserRole)
+        if pid is None:
+            return None
+        return self._product_map.get(pid)
+
+    # ────────────────────────────────────────────
+    #  TAG FOR PO — checkbox handler
+    # ────────────────────────────────────────────
+    def _on_cell_changed(self, row: int, col: int) -> None:
+        product = self._product_for_row(row)
+        if product is None:
+            return
+        pid = product.get("id")
+        if pid is None:
+            return
+
+        # ── Order checkbox toggled ──
+        if col == COL_TAG:
+            item = self._table.item(row, COL_TAG)
+            if item is None:
+                return
+            checked = item.checkState() == Qt.CheckState.Checked
+            try:
+                update_product(pid, tagged_for_po=int(checked))
+                product["tagged_for_po"] = int(checked)
+                self._refresh_status_cell(row, product)
+                self._style_tagged_row(row, checked)
+                self._recount_tagged()
+                self._update_checked_selection()
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to update tag: {e}")
+            return
+
+        # ── Inline Min edit ──
+        if col == COL_MIN:
+            item = self._table.item(row, COL_MIN)
+            if item is None:
+                return
+            try:
+                new_val = max(0, int(item.text()))
+            except ValueError:
+                new_val = int(product.get("min_qty", 0) or 0)
+                item.setText(str(new_val))
+                return
+            try:
+                update_product(pid, min_qty=new_val)
+                product["min_qty"] = new_val
+                item.setText(str(new_val))
+                self._refresh_status_cell(row, product)
+                self._refresh_suggested_cell(row, product)
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to update min: {e}")
+            return
+
+        # ── Inline Max edit ──
+        if col == COL_MAX:
+            item = self._table.item(row, COL_MAX)
+            if item is None:
+                return
+            try:
+                new_val = max(0, int(item.text()))
+            except ValueError:
+                new_val = int(product.get("max_qty", 0) or 0)
+                item.setText(str(new_val))
+                return
+            try:
+                update_product(pid, max_qty=new_val)
+                product["max_qty"] = new_val
+                item.setText(str(new_val))
+                self._refresh_suggested_cell(row, product)
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to update max: {e}")
+            return
+
+        # ── Inline Price edit ──
+        if col == COL_PRICE:
+            item = self._table.item(row, COL_PRICE)
+            if item is None:
+                return
+            raw = item.text().replace("$", "").replace(",", "").strip()
+            try:
+                new_val = max(0.0, float(raw))
+            except ValueError:
+                new_val = float(product.get("selling_price", 0) or 0)
+            try:
+                update_product(pid, selling_price=new_val)
+                product["selling_price"] = new_val
+                self._table.blockSignals(True)
+                item.setText(f"{new_val:,.2f}")
+                self._table.blockSignals(False)
+                self._refresh_margin_cell(row, product)
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to update price: {e}")
+            return
+
+        # ── Inline Cost edit ──
+        if col == COL_COST:
+            item = self._table.item(row, COL_COST)
+            if item is None:
+                return
+            raw = item.text().replace("$", "").replace(",", "").strip()
+            try:
+                new_val = max(0.0, float(raw))
+            except ValueError:
+                new_val = float(product.get("cost", 0) or product.get("pai_cost", 0) or 0)
+            try:
+                update_product(pid, cost=new_val)
+                product["cost"] = new_val
+                self._table.blockSignals(True)
+                item.setText(f"{new_val:,.2f}")
+                self._table.blockSignals(False)
+                self._refresh_margin_cell(row, product)
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to update cost: {e}")
+            return
+
+        # ── Inline Supplier edit ──
+        if col == COL_SUPPLIER:
+            item = self._table.item(row, COL_SUPPLIER)
+            if item is None:
+                return
+            new_val = item.text().strip()
+            try:
+                update_product(pid, supplier=new_val)
+                product["supplier"] = new_val
+                sup_bg = _supplier_bg(new_val)
+                if sup_bg:
+                    item.setBackground(sup_bg)
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to update supplier: {e}")
+            return
+
+        # ── Inline Category edit ──
+        if col == COL_CATEGORY:
+            item = self._table.item(row, COL_CATEGORY)
+            if item is None:
+                return
+            new_val = item.text().strip()
+            try:
+                update_product(pid, category=new_val)
+                product["category"] = new_val
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to update category: {e}")
+            return
+
+    def _refresh_status_cell(self, row: int, product: dict) -> None:
+        """Recalculate and update the status badge for a row."""
+        status_text, status_color = self._compute_status_display(product)
+        si = self._table.item(row, COL_STATUS)
+        if si:
+            si.setText(status_text)
+            si.setForeground(status_color)
+        # Re-apply row tint (tagged highlight wins; see _apply_status_row_color)
+        if not bool(product.get("tagged_for_po", 0)):
+            self._apply_status_row_color(row, product)
+
+    def _status_row_bg(self, product: dict) -> QColor | None:
+        """Pale row-background tint matching the status badge. Returns None for normal."""
+        inv_status = str(product.get("inventory_status", "") or "active").strip().lower()
+        qty = int(product.get("qty_on_hand", 0) or 0)
+        min_qty = int(product.get("min_qty", 0) or 0)
+        if inv_status in ("discontinued", "inactive"):
+            return QColor("#eeeeee")
+        if product.get("tagged_for_po") or product.get("on_po"):
+            return QColor("#e3f2fd")
+        if inv_status == "pricing_review":
+            return QColor("#e3f2fd")
+        if inv_status == "need_review":
+            return QColor("#fff3e0")
+        if inv_status == "pre_inventory":
+            return QColor("#f3e5f5")
+        if qty <= 0 and min_qty > 0:
+            return QColor("#ffebee")
+        if min_qty > 0 and qty < min_qty:
+            return QColor("#fff8e1")
+        if qty > 0:
+            return QColor("#e8f5e9")
+        return None
+
+    def _apply_status_row_color(self, row: int, product: dict) -> None:
+        """Tint all cells of a row based on status. Skips tag/supplier/suggested columns."""
+        bg = self._status_row_bg(product)
+        if bg is None:
+            bg = QColor(255, 255, 255, 0)
+        for col in range(NUM_COLS):
+            item = self._table.item(row, col)
+            if item is None:
+                continue
+            # Skip cells whose own coloring should win.
+            if col in (COL_TAG, COL_SUPPLIER, COL_SUGGESTED, COL_STATUS):
+                continue
+            item.setBackground(bg)
+
+    def _compute_status_display(self, product: dict) -> tuple[str, QColor]:
+        """Compute user-facing status label/color from manual and stock state."""
+        inv_status = str(product.get("inventory_status", "") or "active").strip().lower()
+        qty = int(product.get("qty_on_hand", 0) or 0)
+        min_qty = int(product.get("min_qty", 0) or 0)
+
+        if inv_status in ("discontinued", "inactive"):
+            return "⚫ Discontinued", QColor("#616161")
+        if inv_status == "pricing_review":
+            return "🔵 Pricing Review", QColor("#1565c0")
+        if inv_status == "need_review":
+            return "🟠 Need Review", QColor("#ef6c00")
+        if inv_status == "pre_inventory":
+            return "🟣 Pre-Inventory", QColor("#6a1b9a")
+        if qty <= 0:
+            if min_qty <= 0:
+                return "🟢 Out of Stock", QColor("#2e7d32")
+            return "🔴 Out of Stock", QColor("#c62828")
+        if min_qty > 0 and qty < min_qty:
+            return "🟡 Low Stock", QColor("#f57c00")
+        return "🟢 In Stock", QColor("#2e7d32")
+
+    def _refresh_margin_cell(self, row: int, product: dict) -> None:
+        """Recalculate and update the margin cell for a row."""
+        price = float(product.get("selling_price", 0) or 0)
+        cost = float(product.get("pai_cost", 0) or 0) or float(product.get("cost", 0) or 0)
+        if price > 0 and cost > 0:
+            margin_text = f"{((price - cost) / price) * 100:.1f}%"
+        else:
+            margin_text = ""
+        mi = self._table.item(row, COL_MARGIN)
+        if mi:
+            self._table.blockSignals(True)
+            mi.setText(margin_text)
+            self._table.blockSignals(False)
+
+    def _style_tagged_row(self, row: int, tagged: bool) -> None:
+        """Apply or remove green highlight + bold for a tagged row."""
+        bg = QColor("#d4edda") if tagged else QColor(255, 255, 255, 0)
+        bold_font = QFont()
+        bold_font.setBold(tagged)
+        for col in range(NUM_COLS):
+            item = self._table.item(row, col)
+            if item is None:
+                continue
+            item.setFont(bold_font)
+            # Keep checkbox cell on native palette so the check indicator stays visible.
+            if col not in (COL_TAG, COL_SUPPLIER, COL_SUGGESTED, COL_STATUS):
+                item.setBackground(bg)
+
+    def _refresh_suggested_cell(self, row: int, product: dict) -> None:
+        """Recalculate and update the suggested order qty for a row."""
+        qty = int(product.get("qty_on_hand", 0) or 0)
+        max_qty = int(product.get("max_qty", 0) or 0)
+        suggested = (max_qty - qty) if (max_qty > 0 and qty < max_qty) else 0
+        self._table.blockSignals(True)
+        sug_item = _NumericItem(suggested)
+        if suggested > 0:
+            sug_item.setBackground(QColor("#fff3e0"))
+            sug_item.setForeground(QColor("#e65100"))
+        self._table.setItem(row, COL_SUGGESTED, sug_item)
+        self._table.blockSignals(False)
+
+    def _update_tagged_count(self, count: int | None = None) -> None:
+        """Keep legacy PO button hidden; PO creation is handled in PO workflows."""
+        self._create_po_btn.setVisible(False)
+        self._create_po_btn.setEnabled(False)
+
+    def _update_summary_strip(self) -> None:
+        """Refresh summary counts and update tagged count."""
+        total = len(self._last_results)
+        tagged = 0
+        out = 0
+        below = 0
+        for r in self._last_results:
+            qty = int(r.get("qty_on_hand", 0) or 0)
+            mn = int(r.get("min_qty", 0) or 0)
+            if r.get("tagged_for_po"):
+                tagged += 1
+            if qty <= 0:
+                out += 1
+            elif mn > 0 and qty < mn:
+                below += 1
+
+        # Append health stats to results label
+        existing = self._results_label.text().split("  ·")[0]  # base text before stats
+        stats = existing
+        if tagged:
+            stats += f"  ·  {tagged} tagged"
+        if out:
+            stats += f"  ·  {out} out of stock"
+        if below:
+            stats += f"  ·  {below} below min"
+        self._results_label.setText(stats)
+        self._update_tagged_count(tagged)
+
+    def _recount_tagged(self) -> None:
+        self._update_summary_strip()
+
+    def _filter_to_tagged(self) -> None:
+        """Click on tagged count → switch stock filter to 'Tagged for PO'."""
+        self._set_stock_filter("tagged")
+
+    # ────────────────────────────────────────────
+    #  QUICK SELECT BUTTONS
+    # ────────────────────────────────────────────
+    def _select_rows_by_condition(self, predicate) -> int:
+        """Select rows matching predicate(product) → bool. Returns count selected."""
+        self._table.clearSelection()
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        count = 0
+        for row in range(self._table.rowCount()):
+            product = self._product_for_row(row)
+            if product and predicate(product):
+                self._table.selectRow(row)
+                count += 1
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._update_selection_info()
+        return count
+
+    def _select_out_of_stock(self) -> None:
+        """Select all rows where qty on hand = 0."""
+        n = self._select_rows_by_condition(
+            lambda p: int(p.get("qty_on_hand", 0) or 0) <= 0
+        )
+        self._selection_info_label.setText(f"{n} out-of-stock selected")
+
+    def _select_below_min(self) -> None:
+        """Select all rows where qty < min."""
+        def below_min(p):
+            qty = int(p.get("qty_on_hand", 0) or 0)
+            mn = int(p.get("min_qty", 0) or 0)
+            return mn > 0 and qty < mn
+        n = self._select_rows_by_condition(below_min)
+        self._selection_info_label.setText(f"{n} below-min selected")
+
+    def _select_suggested(self) -> None:
+        """Select all rows with suggested reorder > 0."""
+        def has_suggested(p):
+            qty = int(p.get("qty_on_hand", 0) or 0)
+            mx = int(p.get("max_qty", 0) or 0)
+            return mx > 0 and qty < mx
+        n = self._select_rows_by_condition(has_suggested)
+        self._selection_info_label.setText(f"{n} needing reorder selected")
+
+    def _select_all_visible(self) -> None:
+        """Select all currently visible rows."""
+        self._table.selectAll()
+        self._update_selection_info()
+
+    def _table_clear_selection(self) -> None:
+        """Clear all row selections."""
+        self._table.clearSelection()
+        self._selection_info_label.setText("")
+
+    def _update_selection_info(self) -> None:
+        """Update the 'X selected (Y checked, Z hidden)' label."""
+        selected = len(self._table.selectionModel().selectedRows())
+        checked = len(self._get_checked_products())
+        total_displayed = self._table.rowCount()
+        total_data = len(self._last_results)
+        hidden = total_data - total_displayed
+        parts = []
+        if selected:
+            parts.append(f"{selected} selected")
+        if checked:
+            parts.append(f"{checked} checked")
+        if hidden > 0:
+            parts.append(f"{hidden} hidden by filter")
+        self._selection_info_label.setText(" · ".join(parts))
+
+    # ────────────────────────────────────────────
+    #  EXPORT CSV
+    # ────────────────────────────────────────────
+    def _export_to_csv(self) -> None:
+        data = self._displayed_results or self._last_results
+        if not data:
+            QMessageBox.information(self, "Export", "No data to export.")
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Products to CSV",
+            f"inventory_export_{timestamp}.csv",
+            "CSV Files (*.csv)",
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    "Tagged", "Status", "SKU", "Product Name", "Manufacturer",
+                    "Supplier", "Category", "Qty", "Min", "Max",
+                    "Suggested", "Price", "Cost", "Margin", "Tier",
+                ])
+                for r in data:
+                    qty = int(r.get("qty_on_hand", 0) or 0)
+                    mn = int(r.get("min_qty", 0) or 0)
+                    mx = int(r.get("max_qty", 0) or 0)
+                    tagged = bool(r.get("tagged_for_po", 0))
+                    if tagged:
+                        st = "Tagged"
+                    elif qty <= 0:
+                        st = "Out of Stock"
+                    elif mn > 0 and qty < mn:
+                        st = "Below Min"
+                    else:
+                        st = "Healthy"
+                    sug = (mx - qty) if mx > 0 and qty < mx else 0
+                    price = float(r.get("selling_price", 0) or 0)
+                    cost = float(r.get("pai_cost", 0) or 0) or float(r.get("cost", 0) or 0)
+                    margin = ""
+                    if price > 0 and cost > 0:
+                        margin = f"{((price - cost) / price) * 100:.1f}%"
+                    tier_val = r.get("tier_pricing") or r.get("has_tier_pricing")
+                    writer.writerow([
+                        "Yes" if tagged else "",
+                        st,
+                        r.get("sku", ""),
+                        r.get("title", ""),
+                        r.get("manufacturer", ""),
+                        r.get("supplier", ""),
+                        r.get("category", ""),
+                        qty,
+                        mn,
+                        mx,
+                        sug,
+                        price,
+                        cost,
+                        margin,
+                        "Yes" if tier_val else "",
+                    ])
+            QMessageBox.information(
+                self, "Export Complete",
+                f"Exported {len(data)} products to:\n{path}",
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Export Failed", f"Error writing CSV:\n{e}")
+
+    # ────────────────────────────────────────────
+    #  ROW ACTIONS
+    # ────────────────────────────────────────────
+    def _on_open_selected(self) -> None:
+        """Enter key → open product detail (read-only view)."""
+        row = self._table.currentRow()
+        product = self._product_for_row(row)
+        if not product:
+            return
+        sku = str(product.get("sku", "") or "")
+        if not sku:
+            return
+        dlg = ProductDetailDialog(sku=sku, parent=self)
+        dlg.exec()
+        self._do_browse()
+
+    def _on_edit_from_dblclick(self, row: int, col: int) -> None:
+        """Double-click → inline edit for editable cols, else open full editor."""
+        # Editable inline columns – let Qt handle the cell editor
+        if col in (COL_TAG, COL_MIN, COL_MAX, COL_PRICE, COL_COST, COL_SUPPLIER, COL_CATEGORY):
+            return
+        product = self._product_for_row(row)
+        if not product:
+            return
+        sku = str(product.get("sku", "") or "")
+        if not sku:
+            return
+        pid = product.get("id")
+        inv_status = str(product.get("inventory_status", "") or "active").strip().lower()
+        is_pricing_review = inv_status == "pricing_review"
+        dlg = EditProductDialog(
+            sku=sku,
+            initial_section="PRICING" if is_pricing_review else None,
+            parent=self,
+        )
+        if dlg.exec():
+            if is_pricing_review and pid is not None:
+                try:
+                    # Confirming pricing sends the item back to normal auto stock status.
+                    update_product(pid, inventory_status="active")
+                    product["inventory_status"] = "active"
+                except Exception as e:
+                    QMessageBox.warning(
+                        self,
+                        "Pricing Review",
+                        f"Saved, but failed to clear Pricing Review status: {e}",
+                    )
+            self._do_browse()
+
+    def _on_selection_changed(self) -> None:
+        selected = self._table.selectionModel().selectedRows()
+        checked = self._get_checked_products()
+        n = max(len(checked), len(selected))
+        self._edit_btn.setEnabled(len(selected) == 1)
+        self._bulk_btn.setEnabled(n >= 2)
+        if n >= 2:
+            self._bulk_btn.setText(f"✏️ Bulk Edit ({n})")
+        else:
+            self._bulk_btn.setText("✏️ Bulk Edit")
+        self._update_selection_info()
+
+        # Populate detail drawer on single selection
+        if len(selected) == 1:
+            product = self._product_for_row(selected[0].row())
+            if product:
+                self._populate_detail_drawer(product)
+        elif len(selected) == 0:
+            self._detail_browser.setHtml(
+                '<p style="color:#888;">Select a product row to see details here.</p>'
+            )
+            self._detail_toggle.setText("▼ Product Detail")
+
+    def _on_edit_selected(self) -> None:
+        """Edit button / Ctrl+E → open Edit Product dialog."""
+        row = self._table.currentRow()
+        product = self._product_for_row(row)
+        if not product:
+            return
+        sku = str(product.get("sku", "") or "")
+        if not sku:
+            return
+        dlg = EditProductDialog(sku=sku, parent=self)
+        if dlg.exec():
+            self._do_browse()
+
+    def _on_add_product(self) -> None:
+        from .quick_entry_dialog import QuickEntryDialog
+
+        # Simple 2-option chooser dialog
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Add Product")
+        dlg.setFixedSize(340, 160)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("How would you like to add a product?"))
+
+        quick_btn = QPushButton("⚡  Quick Entry")
+        quick_btn.setToolTip("Compact keyboard-first form for rapid product creation")
+        quick_btn.setStyleSheet(
+            "QPushButton { background-color: #4a6741; color: white; font-weight: bold; "
+            "padding: 10px; border-radius: 4px; font-size: 10pt; }"
+            "QPushButton:hover { background-color: #5a7a51; }"
+        )
+        detail_btn = QPushButton("📝  Detailed Entry")
+        detail_btn.setToolTip("Full product editor with all fields")
+        detail_btn.setStyleSheet(
+            "QPushButton { background-color: #1565c0; color: white; font-weight: bold; "
+            "padding: 10px; border-radius: 4px; font-size: 10pt; }"
+            "QPushButton:hover { background-color: #1976d2; }"
+        )
+
+        quick_btn.clicked.connect(lambda: dlg.done(1))
+        detail_btn.clicked.connect(lambda: dlg.done(2))
+        lay.addWidget(quick_btn)
+        lay.addWidget(detail_btn)
+
+        choice = dlg.exec()
+        if choice == 1:
+            # Quick Entry
+            while True:
+                qe = QuickEntryDialog(parent=self)
+                if qe.exec():
+                    self._load_filters()
+                    self._do_browse()
+                    if qe.should_duplicate:
+                        continue
+                break
+        elif choice == 2:
+            # Detailed Entry (full editor in create mode)
+            while True:
+                ed = EditProductDialog(create_mode=True, parent=self)
+                if ed.exec():
+                    self._load_filters()
+                    if ed.should_open_new:
+                        continue
+                break
+
+    def _on_quick_entry(self) -> None:
+        """Open compact Quick Entry dialog for rapid product creation."""
+        while True:
+            dlg = QuickEntryDialog(parent=self)
+            if dlg.exec():
+                self._load_filters()
+                self._do_browse()
+                if dlg.should_duplicate or dlg.should_open_new:
+                    continue
+            break
+
+    def _on_bulk_edit(self) -> None:
+        """Open bulk edit dialog for checked or selected products."""
+        # Prefer checked (tagged) rows; fall back to Qt selection
+        products = self._get_checked_products()
+        if len(products) < 2:
+            selected_rows = self._table.selectionModel().selectedRows()
+            products = []
+            for idx in selected_rows:
+                p = self._product_for_row(idx.row())
+                if p:
+                    products.append(p)
+        if len(products) < 2:
+            QMessageBox.information(self, "Bulk Edit",
+                                    "Check or select at least 2 products.")
+            return
+        dlg = BulkEditDialog(products, parent=self)
+        if dlg.exec():
+            self._do_browse()
+
+    # ────────────────────────────────────────────
+    #  CREATE PO FROM TAGGED
+    # ────────────────────────────────────────────
+    def _on_create_po_from_tagged(self) -> None:
+        """PO creation from Products is intentionally disabled to prevent accidental PO generation."""
+        QMessageBox.information(
+            self,
+            "PO Creation Moved",
+            "Creating Purchase Orders from the Products screen is disabled.\n\n"
+            "Use Purchase Orders -> Auto-Restock (wizard) or the Sales Order PO workflow instead.",
+        )
+
+    # ==================================================================
+    # SCRAPER — Bulk scrape selected products
+    # ==================================================================
+
+    def _get_selected_products(self) -> list[dict]:
+        """Return product dicts for all selected (highlighted) or checked rows."""
+        seen_ids = set()
+        products = []
+        # Highlighted rows
+        for idx in self._table.selectionModel().selectedRows():
+            p = self._product_for_row(idx.row())
+            if p and p.get("sku") and p.get("id") not in seen_ids:
+                seen_ids.add(p["id"])
+                products.append(p)
+        # Checked rows (checkboxes in COL_TAG)
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, COL_TAG)
+            if item and item.checkState() == Qt.CheckState.Checked:
+                p = self._product_for_row(row)
+                if p and p.get("sku") and p.get("id") not in seen_ids:
+                    seen_ids.add(p["id"])
+                    products.append(p)
+        return products
+
+    def _scrape_tagged(self) -> None:
+        """Launch scrape for all tagged-for-PO products."""
+        if self._scrape_worker is not None:
+            QMessageBox.information(self, "Busy", "A scrape is already running.")
+            return
+
+        tagged = [r for r in self._last_results if r.get("tagged_for_po") and r.get("sku")]
+        if not tagged:
+            QMessageBox.warning(self, "No Tagged Items", "No tagged products to scrape.")
+            return
+
+        reply = QMessageBox.question(
+            self, "Confirm Scrape",
+            f"Scrape {len(tagged)} tagged product(s) for pricing + cross-references?\n\n"
+            "Results will go to Pending Review.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self._scrape_job_type = "both"
+        self._scrape_queue = list(tagged)
+        self._scrape_total = len(tagged)
+        self._scrape_completed = 0
+
+        self._scrape_btn.setEnabled(False)
+        self._scrape_progress.setValue(0)
+        self._scrape_progress.setMaximum(self._scrape_total)
+        self._scrape_progress.show()
+        self._scrape_status_label.show()
+        self._scrape_status_label.setText(f"Scraping 0/{self._scrape_total}…")
+
+        self._scrape_next()
+
+    def _scrape_selected(self, job_type: str) -> None:
+        """Launch scrape for all selected products."""
+        if self._scrape_worker is not None:
+            QMessageBox.information(self, "Busy", "A scrape is already running.")
+            return
+
+        products = self._get_selected_products()
+        if not products:
+            QMessageBox.warning(
+                self, "No Selection",
+                "Select one or more products to scrape.",
+            )
+            return
+
+        reply = QMessageBox.question(
+            self, "Confirm Scrape",
+            f"Scrape {len(products)} product(s) for {job_type}?\n\n"
+            "Results will go to Pending Review — nothing is written to live data automatically.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self._scrape_job_type = job_type
+        self._scrape_queue = list(products)
+        self._scrape_total = len(products)
+        self._scrape_completed = 0
+
+        self._scrape_btn.setEnabled(False)
+        self._scrape_progress.setValue(0)
+        self._scrape_progress.setMaximum(self._scrape_total)
+        self._scrape_progress.show()
+        self._scrape_status_label.show()
+        self._scrape_status_label.setText(f"Scraping 0/{self._scrape_total}…")
+
+        self._scrape_next()
+
+    def _scrape_next(self) -> None:
+        """Pop the next product from the queue and start scraping."""
+        if not self._scrape_queue:
+            self._on_scrape_batch_done()
+            return
+
+        product = self._scrape_queue.pop(0)
+        pid = product.get("id")
+        # Resolve search value: vendor SKU → OEM part# → extract from SKU
+        vendor_sku = str(product.get("pai_sku", "") or "").strip()
+        oem_pn = str(product.get("oem_part_number", "") or "").strip()
+        search_value = vendor_sku or oem_pn
+        display_sku = str(product.get("sku", ""))
+
+        # Collect alternate search terms for fallback
+        alt_terms: list[str] = []
+        if oem_pn and oem_pn != search_value:
+            alt_terms.append(oem_pn)
+        if vendor_sku and vendor_sku != search_value and vendor_sku not in alt_terms:
+            alt_terms.append(vendor_sku)
+
+        if not search_value:
+            # Fall back: strip JAKS- prefix from SKU to get the part number
+            raw = display_sku.strip()
+            if raw.upper().startswith("JAKS-"):
+                remainder = raw[5:]
+                parts = remainder.split("-", 1)
+                if len(parts) == 2 and parts[0].isalpha() and len(parts[0]) <= 6:
+                    search_value = parts[1]
+                else:
+                    search_value = remainder
+            else:
+                search_value = raw
+        if not search_value:
+            self._scrape_completed += 1
+            self._scrape_progress.setValue(self._scrape_completed)
+            self._scrape_status_label.setText(
+                f"Skipped {display_sku} — no vendor SKU or OEM part#"
+            )
+            self._scrape_next()
+            return
+
+        self._scrape_status_label.setText(
+            f"Scraping {self._scrape_completed + 1}/{self._scrape_total}: {search_value}"
+        )
+
+        self._scrape_worker = ScraperWorker(
+            self._scrape_job_type, search_value,
+            alt_terms=alt_terms or None,
+            product_id=pid,
+        )
+        self._scrape_worker.progress.connect(self._on_scrape_progress)
+        self._scrape_worker.finished.connect(self._on_scrape_one_done)
+        self._scrape_worker.error.connect(self._on_scrape_one_error)
+        self._scrape_worker.start()
+
+    def _on_scrape_progress(self, current: int, total: int, message: str) -> None:
+        self._scrape_status_label.setText(
+            f"[{self._scrape_completed + 1}/{self._scrape_total}] {message}"
+        )
+
+    def _on_scrape_one_done(self, _result: dict) -> None:
+        self._scrape_worker = None
+        self._scrape_completed += 1
+        self._scrape_progress.setValue(self._scrape_completed)
+        self._scrape_next()
+
+    def _on_scrape_one_error(self, error_msg: str) -> None:
+        self._scrape_worker = None
+        self._scrape_completed += 1
+        self._scrape_progress.setValue(self._scrape_completed)
+        self._scrape_status_label.setText(f"⚠ Error: {error_msg[:80]}")
+        log.warning("Scrape error: %s", error_msg)
+        # Continue with next product despite error
+        self._scrape_next()
+
+    def _on_scrape_batch_done(self) -> None:
+        """All products in the batch finished scraping."""
+        self._scrape_btn.setEnabled(True)
+        self._scrape_progress.hide()
+        self._scrape_status_label.setText(
+            f"✅ Scrape complete — {self._scrape_total} product(s) processed"
+        )
+
+        reply = QMessageBox.question(
+            self, "Scrape Complete",
+            f"Scraped {self._scrape_total} product(s).\n\n"
+            "Open review dialog to accept/reject results?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            dlg = ScraperReviewDialog(product_id=None, parent=self)
+            dlg.exec()
+
+    # ------------------------------------------------------------------
+    # Part Finder / Vendor Import
+    # ------------------------------------------------------------------
+
+    def _on_open_part_finder(self) -> None:
+        """Open the Part Finder dialog."""
+        from .part_finder_dialog import PartFinderDialog
+        from .vendor_import_dialog import VendorImportDialog
+
+        dlg = PartFinderDialog(parent=self)
+
+        dlg.add_to_quote_requested.connect(self._pf_add_to_quote)
+        dlg.open_product_requested.connect(self._pf_open_product)
+        dlg.import_requested.connect(lambda data: self._pf_import(data, dlg))
+
+        dlg.exec()
+        self._full_refresh()
+
+    def _on_add_from_vendor(self) -> None:
+        """Open a blank vendor import dialog."""
+        from .vendor_import_dialog import VendorImportDialog
+
+        dlg = VendorImportDialog({}, parent=self)
+        dlg.product_created.connect(lambda r: self._full_refresh())
+        dlg.exec()
+
+    def _pf_add_to_quote(self, product_info: dict) -> None:
+        """Create a new quote with the product from Part Finder."""
+        from .quote_dialog import QuoteDialog
+
+        product_id = product_info.get("product_id")
+        sku = product_info.get("sku", "")
+        title = product_info.get("title", "")
+        price = float(product_info.get("price") or 0)
+        cost = float(product_info.get("cost") or 0)
+        supplier = product_info.get("supplier", "")
+
+        try:
+            result = create_quote(lines=[{
+                "product_id": product_id,
+                "description": title,
+                "supplier": supplier,
+                "qty": 1,
+                "unit_price": price,
+                "unit_cost": cost,
+            }])
+            if result and result.get("id"):
+                dlg = QuoteDialog(quote_id=result["id"], parent=self)
+                dlg.exec()
+        except Exception as exc:
+            QMessageBox.warning(self, "Error", f"Could not create quote: {exc}")
+
+    def _pf_open_product(self, product_id: int) -> None:
+        """Open product detail from Part Finder."""
+        dlg = ProductDetailDialog(product_id, parent=self)
+        dlg.exec()
+        self._full_refresh()
+
+    def _pf_import(self, vendor_data: dict, finder_dlg=None) -> None:
+        """Open vendor import from Part Finder result."""
+        from .vendor_import_dialog import VendorImportDialog
+
+        dlg = VendorImportDialog(vendor_data, parent=self)
+        dlg.product_created.connect(lambda r: self._full_refresh())
+        dlg.exec()

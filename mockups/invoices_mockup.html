@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>JAK's Diesel PRO — Invoices Mockup</title>
+<style>
+  :root {
+    --bg:#0f1419; --panel:#1a2128; --panel2:#232c35;
+    --border:#2d3a45; --border-hi:#3d4d5c;
+    --text:#e6edf3; --dim:#8b98a5; --faint:#5d6b78;
+    --accent:#ff8c42; --accent-dim:#b85d1f;
+    --green:#3fb950; --red:#f85149; --amber:#d29922;
+    --blue:#58a6ff; --purple:#bc8cff; --teal:#39d0d8;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:13px/1.4 "Segoe UI", system-ui, sans-serif; }
+
+  /* ─── Top nav ─── */
+  .topnav { display:flex; align-items:center; gap:24px;
+            background:#11161c; border-bottom:1px solid var(--border);
+            padding:0 18px; height:48px; }
+  .brand { color:var(--accent); font-weight:900; font-size:13px; }
+  .topnav .cats { display:flex; gap:4px; flex:1; }
+  .topnav .cats a { color:var(--dim); text-decoration:none;
+                    font-weight:600; font-size:11px; letter-spacing:0.8px;
+                    padding:14px 12px; border-bottom:2px solid transparent; }
+  .topnav .cats a.active { color:var(--accent);
+                           border-bottom-color:var(--accent); }
+  .topnav .cats a:hover { color:var(--text); }
+  .topnav .right { display:flex; align-items:center; gap:12px;
+                   color:var(--dim); font-size:11px; }
+  .topnav .right .user { color:var(--accent); }
+  .topnav .right .gear { font-size:15px; color:var(--text); }
+
+  /* ─── Sub tabs ─── */
+  .subtabs { display:flex; gap:6px; padding:10px 18px 0;
+             background:var(--bg); border-bottom:1px solid var(--border); }
+  .subtab { padding:8px 14px; font-size:11px; font-weight:600;
+            color:var(--dim); border:1px solid transparent;
+            border-bottom:none; border-radius:6px 6px 0 0; cursor:pointer; }
+  .subtab.active { background:var(--accent); color:white;
+                   border-color:var(--accent); }
+  .subtab:hover:not(.active) { color:var(--text); background:var(--panel2); }
+
+  .body { padding:14px 18px 30px; }
+  .h1 { font-size:20px; font-weight:700; margin:0; }
+  .h1 small { color:var(--dim); font-weight:500; font-size:12px;
+              margin-left:10px; }
+  .headerrow { display:flex; align-items:baseline; justify-content:space-between;
+               margin-bottom:14px; }
+  .btn { padding:8px 14px; border-radius:6px; border:none;
+         font-weight:600; font-size:12px; cursor:pointer; }
+  .btn-primary { background:var(--accent); color:white; }
+  .btn-primary:hover { background:var(--accent-dim); }
+  .btn-ghost { background:var(--panel2); color:var(--text);
+               border:1px solid var(--border); }
+  .btn-ghost:hover { border-color:var(--border-hi); }
+
+  /* KPIs */
+  .kpis { display:grid; grid-template-columns:repeat(7,1fr); gap:8px;
+          margin-bottom:14px; }
+  .kpi { background:var(--panel); border:1px solid var(--border);
+         border-radius:8px; padding:10px 12px; min-height:64px; }
+  .kpi .lbl { font-size:9px; font-weight:700; letter-spacing:0.8px;
+              color:var(--dim); text-transform:uppercase; }
+  .kpi .val { font-size:20px; font-weight:700; margin-top:4px; }
+  .kpi .sub { font-size:10px; color:var(--faint); margin-top:2px; }
+  .c-blue { color:var(--blue); } .c-amber { color:var(--amber); }
+  .c-green { color:var(--green); } .c-red { color:var(--red); }
+  .c-accent { color:var(--accent); } .c-purple { color:var(--purple); }
+  .c-teal { color:var(--teal); }
+
+  /* Needs Attention */
+  .attn { background:var(--panel); border:1px solid var(--border);
+          border-radius:8px; padding:8px 12px; display:flex;
+          align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  .attn .head { font-size:10px; font-weight:700; letter-spacing:0.8px;
+                color:var(--amber); margin-right:6px; }
+  .chip { display:inline-flex; align-items:center; gap:6px;
+          background:var(--panel2); border:1px solid var(--border);
+          border-radius:14px; padding:3px 10px 3px 4px; font-size:11px;
+          font-weight:600; color:var(--text); cursor:pointer; }
+  .chip:hover { border-color:var(--border-hi); }
+  .chip .badge { width:20px; height:20px; border-radius:50%;
+                 color:white; font-size:10px; font-weight:700;
+                 display:flex; align-items:center; justify-content:center; }
+  .chip.zero { color:var(--faint); }
+  .chip.zero .badge { background:var(--border); }
+
+  /* Filters */
+  .filters { display:flex; gap:8px; align-items:center; margin-bottom:10px; }
+  .search { flex:0 1 260px; background:var(--panel2); color:var(--text);
+            border:1px solid var(--border); border-radius:6px;
+            padding:7px 10px; font-size:12px; }
+  .select { background:var(--panel2); color:var(--text);
+            border:1px solid var(--border); border-radius:6px;
+            padding:7px 28px 7px 10px; font-size:12px;
+            appearance:none; min-width:120px;
+            background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),
+                             linear-gradient(135deg,var(--dim) 50%,transparent 50%);
+            background-position:calc(100% - 14px) center,
+                                calc(100% - 9px) center;
+            background-size:5px 5px,5px 5px; background-repeat:no-repeat; }
+  .spacer { flex:1; }
+
+  /* Table */
+  table { width:100%; border-collapse:collapse;
+          background:var(--panel); border:1px solid var(--border);
+          border-radius:8px; overflow:hidden; }
+  th { font-size:10px; font-weight:600; text-transform:uppercase;
+       letter-spacing:0.5px; color:var(--dim); text-align:left;
+       padding:10px 12px; background:var(--panel2);
+       border-bottom:1px solid var(--border); }
+  td { padding:10px 12px; border-bottom:1px solid var(--border);
+       font-size:12px; vertical-align:middle; }
+  tr:nth-child(even) td { background:#1f262e; }
+  tr:hover td { background:rgba(255,140,66,0.05); }
+  .inv-num { color:var(--accent); font-weight:700; }
+  .cust-name { font-weight:600; }
+  .cust-sub { color:var(--dim); font-size:10px; }
+  .right { text-align:right; }
+
+  /* Aging pill (no border, solid bg) */
+  .age { display:inline-block; padding:1px 8px; border-radius:10px;
+         font-size:10px; font-weight:700; }
+  .age.current { background:rgba(63,185,80,.18); color:var(--green); }
+  .age.a30 { background:rgba(88,166,255,.18); color:var(--blue); }
+  .age.a60 { background:rgba(210,153,34,.18); color:var(--amber); }
+  .age.a90 { background:rgba(248,81,73,.18); color:var(--red); }
+
+  /* Status pill */
+  .pill { display:inline-block; padding:2px 8px; border-radius:10px;
+          font-size:10px; font-weight:700; text-transform:uppercase;
+          letter-spacing:0.3px; border:1px solid; }
+  .p-draft   { color:var(--blue);   border-color:rgba(88,166,255,.5);  background:rgba(88,166,255,.10); }
+  .p-sent    { color:var(--purple); border-color:rgba(188,140,255,.5); background:rgba(188,140,255,.10); }
+  .p-partial { color:var(--teal);   border-color:rgba(57,208,216,.5);  background:rgba(57,208,216,.10); }
+  .p-paid    { color:var(--green);  border-color:rgba(63,185,80,.5);   background:rgba(63,185,80,.10); }
+  .p-overdue { color:var(--red);    border-color:rgba(248,81,73,.5);   background:rgba(248,81,73,.10); }
+  .p-void    { color:var(--faint);  border-color:var(--border);        background:transparent; }
+
+  /* Activity badges */
+  .acts { display:flex; gap:3px; }
+  .act { width:18px; height:18px; border-radius:4px;
+         display:flex; align-items:center; justify-content:center;
+         color:white; font-size:10px; font-weight:700; }
+  .act.off { background:var(--panel2); color:var(--faint);
+             border:1px solid var(--border); }
+  .act.blue   { background:var(--blue); }
+  .act.green  { background:var(--green); }
+  .act.amber  { background:var(--amber); }
+  .act.red    { background:var(--red); }
+  .act.purple { background:var(--purple); }
+  .act.teal   { background:var(--teal); }
+
+  /* QBO sync indicator */
+  .qbo { display:inline-flex; align-items:center; gap:4px;
+         font-size:10px; font-weight:700; }
+  .qbo.synced { color:var(--green); }
+  .qbo.pending { color:var(--amber); }
+  .qbo.err { color:var(--red); }
+  .qbo .dot { width:6px; height:6px; border-radius:50%;
+              background:currentColor; display:inline-block; }
+
+  .footer { color:var(--dim); font-size:11px; margin-top:10px;
+            display:flex; gap:18px; }
+  .footer b { color:var(--text); }
+</style>
+</head>
+<body>
+
+<!-- ── Top nav ── -->
+<div class="topnav">
+  <div class="brand">JAK'S DIESEL PRO</div>
+  <div class="cats">
+    <a>DASHBOARD</a>
+    <a class="active">SALES</a>
+    <a>CORE PROCESSING</a>
+    <a>INVENTORY</a>
+    <a>PURCHASING</a>
+    <a>PRICING</a>
+    <a>CUSTOMERS</a>
+    <a>MARKETING</a>
+    <a>ACCOUNTING</a>
+    <a>TOOLS</a>
+  </div>
+  <div class="right">
+    <span>Tue, May 19 • 03:42 PM</span>
+    <span>•</span>
+    <span class="user">User</span>
+    <span class="gear">⚙</span>
+  </div>
+</div>
+
+<!-- ── Sub tabs ── -->
+<div class="subtabs">
+  <div class="subtab">Quote List</div>
+  <div class="subtab">Sales Orders</div>
+  <div class="subtab active">Invoices</div>
+  <div class="subtab">Payments / Receive</div>
+</div>
+
+<div class="body">
+  <!-- Header -->
+  <div class="headerrow">
+    <h1 class="h1">Invoices <small>A/R · Aging · QBO sync</small></h1>
+    <div>
+      <button class="btn btn-ghost">↻ Sync QBO</button>
+      <button class="btn btn-primary" style="margin-left:6px">+ New Invoice</button>
+    </div>
+  </div>
+
+  <!-- KPIs -->
+  <div class="kpis">
+    <div class="kpi"><div class="lbl">A/R Outstanding</div>
+      <div class="val c-accent">$162,840</div><div class="sub">53 open invoices</div></div>
+    <div class="kpi"><div class="lbl">Current</div>
+      <div class="val c-green">$94,210</div><div class="sub">0–30 days</div></div>
+    <div class="kpi"><div class="lbl">31–60</div>
+      <div class="val c-blue">$38,920</div><div class="sub">17 invoices</div></div>
+    <div class="kpi"><div class="lbl">61–90</div>
+      <div class="val c-amber">$19,310</div><div class="sub">8 invoices</div></div>
+    <div class="kpi"><div class="lbl">90+ Days</div>
+      <div class="val c-red">$10,400</div><div class="sub">5 invoices · CALL</div></div>
+    <div class="kpi"><div class="lbl">Collected MTD</div>
+      <div class="val c-green">$201,540</div><div class="sub">▲ 12.4%</div></div>
+    <div class="kpi"><div class="lbl">DSO</div>
+      <div class="val c-purple">28.4d</div><div class="sub">▼ 1.6d vs avg</div></div>
+  </div>
+
+  <!-- Needs Attention -->
+  <div class="attn">
+    <span class="head">⚠ NEEDS ATTENTION</span>
+    <span class="chip"><span class="badge" style="background:var(--red)">5</span> 90+ days overdue</span>
+    <span class="chip"><span class="badge" style="background:var(--amber)">12</span> Overdue</span>
+    <span class="chip"><span class="badge" style="background:var(--blue)">7</span> Payment promised</span>
+    <span class="chip"><span class="badge" style="background:var(--purple)">3</span> Disputed</span>
+    <span class="chip"><span class="badge" style="background:var(--red)">2</span> QBO sync failed</span>
+    <span class="chip"><span class="badge" style="background:var(--teal)">4</span> Partial payment</span>
+    <span class="chip zero"><span class="badge">0</span> Refund pending</span>
+  </div>
+
+  <!-- Filters -->
+  <div class="filters">
+    <input class="search" placeholder="🔍   Search by invoice #, customer, PO #…" />
+    <select class="select"><option>All Status</option><option>Draft</option>
+      <option>Sent</option><option>Partial</option><option>Paid</option>
+      <option>Overdue</option><option>Void</option></select>
+    <select class="select"><option>All Aging</option><option>Current</option>
+      <option>31–60</option><option>61–90</option><option>90+ days</option></select>
+    <select class="select"><option>All Reps</option><option>Mike R.</option>
+      <option>Sarah K.</option><option>Dan T.</option></select>
+    <select class="select"><option>Last 30 days</option><option>Last 7 days</option>
+      <option>Last 90 days</option><option>This year</option><option>All time</option></select>
+    <div class="spacer"></div>
+    <button class="btn btn-ghost">View / Edit</button>
+    <button class="btn btn-ghost">📧 Resend</button>
+    <button class="btn btn-ghost">$ Receive Payment</button>
+    <button class="btn btn-ghost">Void</button>
+    <button class="btn btn-primary">📞 Collection Call</button>
+  </div>
+
+  <!-- Table -->
+  <table>
+    <thead><tr>
+      <th>Invoice #</th>
+      <th>Customer</th>
+      <th>SO / PO</th>
+      <th class="right">Total</th>
+      <th class="right">Balance</th>
+      <th>Status</th>
+      <th>Issued</th>
+      <th>Due</th>
+      <th>Aging</th>
+      <th>QBO</th>
+      <th>Activity</th>
+    </tr></thead>
+    <tbody>
+      <tr><td class="inv-num">INV-24851</td>
+        <td><div class="cust-name">Hauling Bros LLC</div><div class="cust-sub">Toledo, OH · Net 30</div></td>
+        <td>SO-1042 · PO# 88421</td>
+        <td class="right">$10,287.00</td>
+        <td class="right" style="color:var(--accent); font-weight:700">$10,287.00</td>
+        <td><span class="pill p-sent">SENT</span></td>
+        <td>May 17</td><td>Jun 16</td>
+        <td><span class="age current">Current</span></td>
+        <td><span class="qbo synced"><span class="dot"></span>SYNCED</span></td>
+        <td><div class="acts">
+          <span class="act blue">✉</span><span class="act green">✓</span>
+          <span class="act off">$</span><span class="act off">⏰</span>
+          <span class="act off">⚠</span><span class="act off">↻</span>
+        </div></td></tr>
+
+      <tr><td class="inv-num">INV-24850</td>
+        <td><div class="cust-name">Midwest Logistics Co</div><div class="cust-sub">Detroit, MI · Net 15</div></td>
+        <td>SO-1041 · PO# 11203</td>
+        <td class="right">$18,420.00</td>
+        <td class="right" style="color:var(--red); font-weight:700">$18,420.00</td>
+        <td><span class="pill p-overdue">OVERDUE</span></td>
+        <td>Apr 18</td><td><span style="color:var(--red)">May 3</span></td>
+        <td><span class="age a30">31–60</span></td>
+        <td><span class="qbo synced"><span class="dot"></span>SYNCED</span></td>
+        <td><div class="acts">
+          <span class="act blue">✉</span><span class="act green">✓</span>
+          <span class="act off">$</span><span class="act amber">⏰</span>
+          <span class="act red">⚠</span><span class="act off">↻</span>
+        </div></td></tr>
+
+      <tr><td class="inv-num">INV-24849</td>
+        <td><div class="cust-name">Ridgeline Trucking</div><div class="cust-sub">Indianapolis, IN</div></td>
+        <td>SO-1040</td>
+        <td class="right">$4,290.00</td>
+        <td class="right" style="color:var(--green); font-weight:700">$0.00</td>
+        <td><span class="pill p-paid">✓ PAID</span></td>
+        <td>May 12</td><td>Jun 11</td>
+        <td><span class="age current">Current</span></td>
+        <td><span class="qbo synced"><span class="dot"></span>SYNCED</span></td>
+        <td><div class="acts">
+          <span class="act blue">✉</span><span class="act green">✓</span>
+          <span class="act green">$</span><span class="act off">⏰</span>
+          <span class="act off">⚠</span><span class="act off">↻</span>
+        </div></td></tr>
+
+      <tr><td class="inv-num">INV-24848</td>
+        <td><div class="cust-name">Patel Diesel Repair</div><div class="cust-sub">Columbus, OH · COD</div></td>
+        <td>SO-1039</td>
+        <td class="right">$2,840.00</td>
+        <td class="right" style="color:var(--green); font-weight:700">$0.00</td>
+        <td><span class="pill p-paid">✓ PAID</span></td>
+        <td>May 16</td><td>May 16</td>
+        <td><span class="age current">Current</span></td>
+        <td><span class="qbo synced"><span class="dot"></span>SYNCED</span></td>
+        <td><div class="acts">
+          <span class="act blue">✉</span><span class="act green">✓</span>
+          <span class="act green">$</span><span class="act off">⏰</span>
+          <span class="act off">⚠</span><span class="act off">↻</span>
+        </div></td></tr>
+
+      <tr><td class="inv-num">INV-24847</td>
+        <td><div class="cust-name">Frontline Fleet Svcs</div><div class="cust-sub">Chicago, IL · Net 30</div></td>
+        <td>SO-1031 · PO# CK-5589</td>
+        <td class="right">$31,250.00</td>
+        <td class="right" style="color:var(--red); font-weight:700">$15,625.00</td>
+        <td><span class="pill p-partial">PARTIAL</span></td>
+        <td>Feb 25</td><td><span style="color:var(--red)">Mar 27</span></td>
+        <td><span class="age a90">90+</span></td>
+        <td><span class="qbo err"><span class="dot"></span>SYNC FAILED</span></td>
+        <td><div class="acts">
+          <span class="act blue">✉</span><span class="act green">✓</span>
+          <span class="act teal">$</span><span class="act amber">⏰</span>
+          <span class="act red">⚠</span><span class="act red">↻</span>
+        </div></td></tr>
+
+      <tr><td class="inv-num">INV-24846</td>
+        <td><div class="cust-name">Bayou Hauling Inc</div><div class="cust-sub">New Orleans, LA</div></td>
+        <td>SO-1037</td>
+        <td class="right">$1,180.00</td>
+        <td class="right" style="color:var(--accent); font-weight:700">$1,180.00</td>
+        <td><span class="pill p-draft">DRAFT</span></td>
+        <td>—</td><td>—</td>
+        <td><span class="age current">—</span></td>
+        <td><span class="qbo pending"><span class="dot"></span>PENDING</span></td>
+        <td><div class="acts">
+          <span class="act off">✉</span><span class="act off">✓</span>
+          <span class="act off">$</span><span class="act off">⏰</span>
+          <span class="act off">⚠</span><span class="act off">↻</span>
+        </div></td></tr>
+
+      <tr><td class="inv-num">INV-24845</td>
+        <td><div class="cust-name">Northern Star Express</div><div class="cust-sub">Minneapolis, MN</div></td>
+        <td>SO-1029 · PO# NSX-771</td>
+        <td class="right">$6,740.00</td>
+        <td class="right" style="color:var(--red); font-weight:700">$6,740.00</td>
+        <td><span class="pill p-overdue">OVERDUE</span></td>
+        <td>Mar 22</td><td><span style="color:var(--red)">Apr 21</span></td>
+        <td><span class="age a60">61–90</span></td>
+        <td><span class="qbo synced"><span class="dot"></span>SYNCED</span></td>
+        <td><div class="acts">
+          <span class="act blue">✉</span><span class="act green">✓</span>
+          <span class="act off">$</span><span class="act amber">⏰</span>
+          <span class="act amber">⚠</span><span class="act off">↻</span>
+        </div></td></tr>
+
+      <tr><td class="inv-num">INV-24844</td>
+        <td><div class="cust-name">Carolina Diesel &amp; Tire</div><div class="cust-sub">Charlotte, NC</div></td>
+        <td>SO-1028</td>
+        <td class="right">$920.00</td>
+        <td class="right" style="color:var(--faint)">$920.00</td>
+        <td><span class="pill p-void">VOID</span></td>
+        <td>May 14</td><td>—</td>
+        <td><span class="age current" style="opacity:.4">—</span></td>
+        <td><span class="qbo synced"><span class="dot"></span>VOIDED</span></td>
+        <td><div class="acts">
+          <span class="act blue">✉</span><span class="act off">✓</span>
+          <span class="act off">$</span><span class="act off">⏰</span>
+          <span class="act off">⚠</span><span class="act off">↻</span>
+        </div></td></tr>
+
+      <tr><td class="inv-num">INV-24843</td>
+        <td><div class="cust-name">Big Sky Transport</div><div class="cust-sub">Billings, MT · Net 30</div></td>
+        <td>SO-1035 · PO# BST-9912</td>
+        <td class="right">$14,380.00</td>
+        <td class="right" style="color:var(--accent); font-weight:700">$14,380.00</td>
+        <td><span class="pill p-sent">SENT</span></td>
+        <td>May 16</td><td>Jun 15</td>
+        <td><span class="age current">Current</span></td>
+        <td><span class="qbo synced"><span class="dot"></span>SYNCED</span></td>
+        <td><div class="acts">
+          <span class="act blue">✉</span><span class="act green">✓</span>
+          <span class="act off">$</span><span class="act off">⏰</span>
+          <span class="act off">⚠</span><span class="act off">↻</span>
+        </div></td></tr>
+
+      <tr><td class="inv-num">INV-24842</td>
+        <td><div class="cust-name">Eastside Towing</div><div class="cust-sub">Pittsburgh, PA</div></td>
+        <td>SO-1034</td>
+        <td class="right">$540.00</td>
+        <td class="right" style="color:var(--green); font-weight:700">$0.00</td>
+        <td><span class="pill p-paid">✓ PAID</span></td>
+        <td>May 18</td><td>May 18</td>
+        <td><span class="age current">Current</span></td>
+        <td><span class="qbo synced"><span class="dot"></span>SYNCED</span></td>
+        <td><div class="acts">
+          <span class="act blue">✉</span><span class="act green">✓</span>
+          <span class="act green">$</span><span class="act off">⏰</span>
+          <span class="act off">⚠</span><span class="act off">↻</span>
+        </div></td></tr>
+    </tbody>
+  </table>
+
+  <div class="footer">
+    <span>53 invoices · <b>$162,840</b> outstanding</span>
+    <span>Collected today: <b style="color:var(--green)">$8,420</b></span>
+    <span>Overdue: <b style="color:var(--red)">17</b> · <b style="color:var(--red)">$29,710</b></span>
+    <span>QBO last sync: <b>2 min ago</b></span>
+  </div>
+</div>
+</body>
+</html>

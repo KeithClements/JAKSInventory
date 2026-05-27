@@ -53,7 +53,7 @@ def reports_ar_aging(request: Request, db: Session = Depends(get_db)):
         db.query(Invoice)
         .options(
             joinedload(Invoice.lines),
-            joinedload(Invoice.payment_allocations),
+            joinedload(Invoice.allocations),
             joinedload(Invoice.customer),
         )
         .filter(Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL]))
@@ -201,7 +201,7 @@ def reports_sales(
         .options(
             joinedload(Invoice.lines),
             joinedload(Invoice.customer),
-            joinedload(Invoice.payment_allocations),
+            joinedload(Invoice.allocations),
         )
         .filter(
             Invoice.status.in_([

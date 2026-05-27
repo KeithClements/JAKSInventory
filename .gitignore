@@ -1,0 +1,118 @@
+# ── Python ─────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ── Test / coverage ────────────────────────────────────────────
+.tox/
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# ── IDE / OS ───────────────────────────────────────────────────
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/tasks.json
+!.vscode/launch.json
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Local tool / editor config (machine-specific, not project code) ───────
+.claude/
+pai_portal_session/
+
+# ── App-specific: data, logs, secrets, generated ───────────────
+# Live SQLite DBs and backups — never commit these.
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+output/
+backups/
+exports/
+
+# Logs / crash dumps
+*.log
+*.log.*
+logs/
+_crashlog.txt
+crash_*.txt
+
+# Local probe / scratch files
+_probe_*.py
+_scratch_*.py
+scratch/
+tmp/
+temp/
+
+# Stray shell output / diagnostic files
+=
+_launch_out.txt
+_runlog.txt
+_*.txt
+
+# Secrets / credentials / env
+.env
+.env.*
+*.env
+secrets/
+credentials/
+*.pem
+*.key
+*.pfx
+*.p12
+config.local.*
+*_secret.*
+*_secrets.*
+oauth_token*.json
+qbo_token*.json
+.qbo_tokens.json
+shopify_token*.json
+api_keys*.json
+
+# Cached scrapes / large binaries
+cache/
+.cache/
+*.cache
+
+# User-uploaded product images / artifacts (regenerate on demand)
+product_images_local/
+uploaded_images/
+ai_cache/
+
+# Build artifacts
+*.exe
+*.msi
+*.dmg
+dist-electron/
+
+# Jupyter
+.ipynb_checkpoints/

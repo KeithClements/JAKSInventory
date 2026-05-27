@@ -78,31 +78,57 @@
               </button>
             </td>
           </tr>
-          <tr x-show="open" style="display:none">
+          <tr x-show="open" x-data="{ outcome: 'accepted' }" style="display:none">
             <td colspan="7" class="px-5 pb-4 pt-1 bg-gray-50 border-b border-gray-100">
               <form method="post" action="/cores/{{ core.id }}/return"
-                    class="flex items-end gap-3 flex-wrap">
-                <div>
-                  <label class="form-label">Qty Returned</label>
-                  <input type="number" name="qty_returned"
-                         min="1" max="{{ core.qty_outstanding }}"
-                         value="{{ core.qty_outstanding }}"
-                         class="w-24 border border-gray-300 rounded-lg px-3 py-1.5 text-sm
-                                focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+                    class="space-y-3">
+                <div class="flex items-end gap-3 flex-wrap">
+                  <div>
+                    <label class="form-label">Qty Returned</label>
+                    <input type="number" name="qty_returned"
+                           min="1" max="{{ core.qty_outstanding }}"
+                           value="{{ core.qty_outstanding }}"
+                           class="w-24 border border-gray-300 rounded-lg px-3 py-1.5 text-sm
+                                  focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+                  </div>
+                  <div>
+                    <label class="form-label">Inspection</label>
+                    <select name="inspection_outcome" x-model="outcome"
+                            class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm bg-white
+                                   focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400">
+                      <option value="accepted">✓ Accept — issue credit now</option>
+                      <option value="hold">⏸ Hold — inspect later, defer credit</option>
+                      <option value="rejected">✗ Reject — bad core, no credit</option>
+                    </select>
+                  </div>
+                  <div class="flex-1 min-w-44">
+                    <label class="form-label">Condition Notes</label>
+                    <input type="text" name="condition"
+                           placeholder="Good condition, clean, no damage…"
+                           class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm
+                                  focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+                  </div>
                 </div>
-                <div class="flex-1 min-w-52">
-                  <label class="form-label">Condition Notes</label>
-                  <input type="text" name="condition"
-                         placeholder="Good condition, clean, no damage…"
-                         class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm
-                                focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+                <div class="flex items-center gap-3">
+                  <button type="submit"
+                          :class="outcome === 'rejected' ? 'btn-danger' : (outcome === 'hold' ? 'btn-secondary' : 'btn-primary')"
+                          class="btn-primary">
+                    <span x-show="outcome === 'accepted'">Record Return &amp; Credit Account</span>
+                    <span x-show="outcome === 'hold'">Record Return — Hold for Inspection</span>
+                    <span x-show="outcome === 'rejected'">Refuse Core — Close Charge</span>
+                  </button>
+                  <p class="text-xs text-gray-400">
+                    <span x-show="outcome === 'accepted'">
+                      Credit ${{ '%.2f' | format(core.customer_unit_charge) }}/ea applied immediately.
+                    </span>
+                    <span x-show="outcome === 'hold'">
+                      Core logged; credit deferred until inspection complete.
+                    </span>
+                    <span x-show="outcome === 'rejected'">
+                      No credit issued; charge will be closed.
+                    </span>
+                  </p>
                 </div>
-                <button type="submit" class="btn-primary">
-                  Record Return &amp; Credit Account
-                </button>
-                <p class="w-full text-xs text-gray-400">
-                  Account credit = qty × ${{ '%.2f' | format(core.customer_unit_charge) }}/ea, applied immediately to customer balance.
-                </p>
               </form>
             </td>
           </tr>
@@ -117,6 +143,88 @@
     {% endif %}
   </div>
 
+
+  {# ══════════════════════════════════════════════════════════════════════════
+     STAGE 1.5 — Pending Inspection (cores received, on hold)
+     ══════════════════════════════════════════════════════════════════════════ #}
+  {% if pending_inspection %}
+  <div class="card border-amber-200">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title text-amber-700">Pending Inspection</h2>
+        <p class="text-xs text-gray-400 mt-0.5">Cores received — credit deferred until inspected</p>
+      </div>
+      <span class="text-xs font-semibold text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-2.5 py-0.5">
+        {{ pending_inspection | length }} on hold
+      </span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">Customer</th>
+            <th class="tbl-th">SKU</th>
+            <th class="tbl-th">Description</th>
+            <th class="tbl-th-r">Qty</th>
+            <th class="tbl-th-r">Credit if Accepted</th>
+            <th class="tbl-th">Decision</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for core in pending_inspection %}
+          <tr class="tbl-row" x-data="{ open: false }">
+            <td class="tbl-td font-medium text-gray-900">
+              {% if core.customer %}
+              <a href="/customers/{{ core.customer.id }}" class="link">{{ core.customer.company_name }}</a>
+              {% else %}—{% endif %}
+            </td>
+            <td class="tbl-td font-mono text-xs text-brand-700">
+              {{ core.product.sku if core.product else '—' }}
+            </td>
+            <td class="tbl-td text-gray-600 text-sm">
+              {{ core.product.title if core.product else '—' }}
+            </td>
+            <td class="tbl-td-r font-medium">{{ core.qty_returned }}</td>
+            <td class="tbl-td-r font-semibold text-green-700">
+              ${{ '%.2f' | format(core.customer_unit_charge * core.qty_returned) }}
+            </td>
+            <td class="tbl-td">
+              <button type="button" @click="open = !open"
+                      class="text-xs font-medium text-amber-700 hover:text-amber-600 underline underline-offset-2">
+                <span x-text="open ? 'Cancel' : 'Record Decision'"></span>
+              </button>
+            </td>
+          </tr>
+          <tr x-show="open" style="display:none">
+            <td colspan="6" class="px-5 pb-4 pt-1 bg-amber-50 border-b border-gray-100">
+              <form method="post" action="/cores/{{ core.id }}/complete-inspection"
+                    class="flex items-end gap-3 flex-wrap">
+                <div>
+                  <label class="form-label">Inspection Decision</label>
+                  <select name="final_outcome"
+                          class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm bg-white
+                                 focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400">
+                    <option value="accepted">✓ Accept — issue credit ${{ '%.2f' | format(core.customer_unit_charge * core.qty_returned) }}</option>
+                    <option value="rejected">✗ Reject — close charge, no credit</option>
+                  </select>
+                </div>
+                <div class="flex-1 min-w-52">
+                  <label class="form-label">Notes (optional)</label>
+                  <input type="text" name="notes"
+                         placeholder="Inspection notes…"
+                         class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm
+                                focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+                </div>
+                <button type="submit" class="btn-primary">Submit Decision</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
 
   {# ══════════════════════════════════════════════════════════════════════════
      STAGE 2 — Ready to Ship to Vendor

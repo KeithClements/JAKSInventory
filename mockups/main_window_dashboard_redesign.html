@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>JAK's Diesel PRO — Main Window + Dashboard Redesign</title>
+<style>
+  :root{
+    --bg:#0f1419; --panel:#1a2128; --panel2:#232c35; --border:#2d3a45;
+    --text:#e6edf3; --dim:#8b949e; --muted:#6e7681;
+    --accent:#ff8c42; --accent2:#ffb84d;
+    --green:#3fb950; --red:#f85149; --amber:#d29922; --blue:#58a6ff;
+    --purple:#bc8cff; --teal:#39d0d8; --pink:#ff7eb6;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font:13px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;background:#06090c;color:var(--text);padding:24px}
+  h1{font-size:20px;margin:0 0 6px}
+  h2{font-size:14px;color:var(--accent);margin:24px 0 8px;letter-spacing:.5px;text-transform:uppercase}
+  .note{color:var(--dim);font-size:12px;margin-bottom:14px}
+  .app{background:var(--bg);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:28px}
+
+  /* ───── TOP NAV ───── */
+  .topbar{display:flex;align-items:center;height:44px;background:#0b1014;border-bottom:1px solid var(--border);padding:0 14px;gap:14px}
+  .brand{color:var(--accent);font-weight:700;font-size:14px;letter-spacing:.5px;white-space:nowrap}
+  .nav{display:flex;align-items:center;gap:2px;flex:1;height:100%}
+  .nav button{
+    background:transparent;border:none;color:var(--text);font:600 12px/1 inherit;
+    padding:0 14px;height:100%;letter-spacing:.5px;cursor:pointer;position:relative;
+  }
+  .nav button:hover{color:var(--accent2);background:rgba(255,140,66,.06)}
+  .nav button.active{color:var(--accent)}
+  .nav button.active::after{
+    content:"";position:absolute;left:10px;right:10px;bottom:0;height:3px;background:var(--accent);border-radius:2px;
+  }
+  .global-search{
+    flex:0 0 280px;background:var(--panel);border:1px solid var(--border);border-radius:6px;
+    padding:6px 10px;color:var(--dim);font-size:12px;display:flex;align-items:center;gap:8px;
+  }
+  .kbd{background:var(--panel2);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:10px;color:var(--dim)}
+  .topbar .clock{color:var(--dim);font-size:12px;white-space:nowrap}
+  .topbar .icon-btn{background:transparent;border:none;color:var(--dim);font-size:16px;cursor:pointer;padding:4px 8px;border-radius:6px}
+  .topbar .icon-btn:hover{background:var(--panel);color:var(--text)}
+
+  /* ───── SUB-TAB BAR ───── */
+  .subtabs{display:flex;align-items:center;height:34px;background:#0e131a;border-bottom:1px solid var(--border);padding:0 8px;gap:2px;overflow-x:auto}
+  .subtabs .tab{
+    background:transparent;border:none;color:var(--dim);font:500 12px/1 inherit;
+    padding:0 12px;height:100%;cursor:pointer;border-bottom:2px solid transparent;
+  }
+  .subtabs .tab:hover{color:var(--text)}
+  .subtabs .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+  .subtabs .count{display:inline-block;background:var(--panel2);color:var(--dim);font-size:10px;padding:1px 6px;border-radius:10px;margin-left:6px}
+
+  /* ───── DASHBOARD BODY ───── */
+  .body{padding:18px;display:flex;flex-direction:column;gap:18px}
+
+  /* Hero strip */
+  .hero{display:flex;align-items:center;justify-content:space-between;gap:14px}
+  .hero .greet h1{font-size:22px;font-weight:700}
+  .hero .greet h1 .small{color:var(--dim);font-weight:400;font-size:14px;margin-left:8px}
+  .hero .greet .sub{color:var(--dim);font-size:12px;margin-top:2px}
+  .hero .quick{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+  .qa{
+    background:var(--panel);border:1px solid var(--border);border-radius:8px;
+    color:var(--text);padding:8px 14px;font-size:12px;font-weight:600;cursor:pointer;
+    display:inline-flex;align-items:center;gap:8px;
+  }
+  .qa:hover{border-color:var(--accent);color:var(--accent)}
+  .qa.primary{background:var(--accent);border-color:var(--accent);color:#000}
+  .qa.primary:hover{background:var(--accent2)}
+
+  /* KPI grid */
+  .grid{display:grid;gap:12px}
+  .grid-4{grid-template-columns:repeat(4,1fr)}
+  .grid-6{grid-template-columns:repeat(6,1fr)}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;position:relative}
+  .card .label{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+  .card .value{font-size:26px;font-weight:700;margin:6px 0 2px}
+  .card .sub{color:var(--dim);font-size:11px}
+  .card .icon{position:absolute;top:14px;right:14px;font-size:18px;opacity:.6}
+  .card.alert{border-color:rgba(248,81,73,.4)}
+  .card.alert .value{color:var(--red)}
+  .card.alert .icon{color:var(--red);opacity:1}
+  .card.warn{border-color:rgba(210,153,34,.45)}
+  .card.warn .value{color:var(--amber)}
+  .card.warn .icon{color:var(--amber)}
+  .card.ok{border-color:rgba(63,185,80,.4)}
+  .card.ok .value{color:var(--green)}
+  .card.ok .icon{color:var(--green)}
+  .card.info .value{color:var(--blue)}
+  .card.info .icon{color:var(--blue)}
+  .card .action{margin-top:10px;display:flex;gap:6px}
+  .pillbtn{
+    background:var(--panel2);border:1px solid var(--border);border-radius:6px;
+    color:var(--text);font:600 10px/1 inherit;padding:6px 10px;cursor:pointer;letter-spacing:.3px;
+  }
+  .pillbtn:hover{border-color:var(--accent);color:var(--accent)}
+  .pillbtn.red{background:rgba(248,81,73,.12);border-color:rgba(248,81,73,.4);color:var(--red)}
+  .pillbtn.amber{background:rgba(210,153,34,.12);border-color:rgba(210,153,34,.4);color:var(--amber)}
+  .pillbtn.green{background:rgba(63,185,80,.12);border-color:rgba(63,185,80,.4);color:var(--green)}
+  .pillbtn.blue{background:rgba(88,166,255,.12);border-color:rgba(88,166,255,.4);color:var(--blue)}
+
+  /* All-clear card */
+  .allclear{
+    background:linear-gradient(135deg,rgba(63,185,80,.06),rgba(63,185,80,.02));
+    border:1px solid rgba(63,185,80,.3);border-radius:10px;padding:14px;
+    display:flex;align-items:center;gap:14px;
+  }
+  .allclear .big{font-size:28px}
+  .allclear .title{color:var(--green);font-weight:700;font-size:14px}
+  .allclear .desc{color:var(--dim);font-size:12px;margin-top:2px}
+
+  /* Two-column section */
+  .row{display:grid;grid-template-columns:1.4fr 1fr;gap:12px}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px}
+  .panel h3{font-size:13px;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+  .panel h3 .badge{background:var(--panel2);color:var(--dim);padding:2px 8px;border-radius:10px;font-size:10px;font-weight:500}
+
+  /* Activity feed */
+  .feed{display:flex;flex-direction:column;gap:8px;max-height:240px;overflow-y:auto}
+  .feed .item{display:flex;gap:10px;padding:8px;border-radius:6px;border:1px solid transparent}
+  .feed .item:hover{background:var(--panel2);border-color:var(--border)}
+  .feed .icon{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}
+  .feed .icon.green{background:rgba(63,185,80,.15);color:var(--green)}
+  .feed .icon.blue{background:rgba(88,166,255,.15);color:var(--blue)}
+  .feed .icon.purple{background:rgba(188,140,255,.15);color:var(--purple)}
+  .feed .icon.amber{background:rgba(210,153,34,.15);color:var(--amber)}
+  .feed .body-text{flex:1}
+  .feed .body-text .t{font-size:12px}
+  .feed .body-text .s{font-size:11px;color:var(--dim)}
+
+  /* Charts panel */
+  .charts{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:12px}
+  .chart-box{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;min-height:240px}
+  .chart-box h3{font-size:13px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center}
+  .chart-box .pick{background:var(--panel2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:11px;padding:4px 8px}
+
+  /* Status bar */
+  .statusbar{height:30px;background:#0b1014;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 14px;font-size:11px;color:var(--dim)}
+  .statusbar .pill{display:inline-flex;align-items:center;gap:6px;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:3px 10px;font-size:11px}
+  .statusbar .pill .dot{width:8px;height:8px;border-radius:50%}
+  .statusbar .pill.green .dot{background:var(--green);box-shadow:0 0 6px var(--green)}
+  .statusbar .pill.red .dot{background:var(--red);box-shadow:0 0 6px var(--red)}
+  .statusbar .pill.amber .dot{background:var(--amber);box-shadow:0 0 6px var(--amber)}
+
+  /* Annotation cards */
+  .anno{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:24px}
+  .anno .box{padding:14px;border-radius:10px;border:1px solid var(--border)}
+  .anno .box h3{margin-bottom:10px;font-size:13px;letter-spacing:.5px}
+  .anno .box ul{padding-left:18px}
+  .anno .box li{margin:4px 0;font-size:12px;color:var(--text)}
+  .anno .box li code{background:var(--panel2);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:11px}
+  .anno .nav-change h3{color:var(--accent)}
+  .anno .dash-change h3{color:var(--purple)}
+  .anno .removed h3{color:var(--red)}
+  .anno .added h3{color:var(--green)}
+
+  /* SVG mini chart fillers */
+  svg.spark{display:block;width:100%;height:160px}
+
+  /* Compact nav comparison */
+  .compare{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:24px}
+  .compare .col h3{margin-bottom:8px;font-size:13px}
+  .compare .col.before h3{color:var(--red)}
+  .compare .col.after h3{color:var(--green)}
+  .compare .navlist{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px}
+  .compare .navlist .item{padding:6px 0;border-bottom:1px solid var(--border)}
+  .compare .navlist .item:last-child{border-bottom:none}
+  .compare .navlist .item .name{color:var(--accent);font-weight:600}
+  .compare .navlist .item .kids{color:var(--dim);font-size:11px;margin-top:2px}
+</style>
+</head>
+<body>
+
+<h1>JAK's Diesel PRO — Main Window + Dashboard Redesign</h1>
+<p class="note">Goal: condense 10 top-level menus → 6, keep your "click → sub-tabs" pattern, redesign dashboard as a true command center with quick actions, focused alerts, and a clean activity feed. Palette matches existing dark theme.</p>
+
+<!-- ──────────────────────────────────────── -->
+<!-- NAV COMPARISON                           -->
+<!-- ──────────────────────────────────────── -->
+<h2>1 · Top Navigation — Before vs After</h2>
+<div class="compare">
+  <div class="col before">
+    <h3>BEFORE — 10 top-level items</h3>
+    <div class="navlist">
+      <div class="item"><span class="name">DASHBOARD</span></div>
+      <div class="item"><span class="name">SALES</span><div class="kids">Quotes · Lost Sales · Sales Orders · Invoices · Deliveries · CRM · Returns</div></div>
+      <div class="item"><span class="name">CORE PROCESSING</span><div class="kids">Dashboard · Customer Cores · Vendor Returns</div></div>
+      <div class="item"><span class="name">INVENTORY</span><div class="kids">Products · Bulk Import · Adjustments · Locations · Kits · Audit</div></div>
+      <div class="item"><span class="name">PURCHASING</span><div class="kids">POs · Receipts · Vendors · Low Stock</div></div>
+      <div class="item"><span class="name">PRICING</span><div class="kids">Price Lists · Maintenance · Tiered</div></div>
+      <div class="item"><span class="name">CUSTOMERS</span><div class="kids">Customers Hub</div></div>
+      <div class="item"><span class="name">MARKETING</span><div class="kids">Messaging · SMS Campaigns · Automation</div></div>
+      <div class="item"><span class="name">ACCOUNTING</span><div class="kids">Margins · QBO Sync · Reconciliation · Aging · Reports</div></div>
+      <div class="item"><span class="name">TOOLS</span><div class="kids">Part Finder · Barcodes · Import · HHP Scraper · Scraper Admin</div></div>
+    </div>
+  </div>
+  <div class="col after">
+    <h3>AFTER — 6 top-level items</h3>
+    <div class="navlist">
+      <div class="item"><span class="name">DASHBOARD</span></div>
+      <div class="item"><span class="name">SALES</span><div class="kids">Quotes · Sales Orders · Invoices · Deliveries · Returns · Lost Sales · CRM</div></div>
+      <div class="item"><span class="name">INVENTORY</span><div class="kids">Products · Pricing · Adjustments · Locations · Kits · Bulk Import · Audit · Cores</div></div>
+      <div class="item"><span class="name">PURCHASING</span><div class="kids">Purchase Orders · Receipts · Vendors · Low Stock · Vendor Returns</div></div>
+      <div class="item"><span class="name">CUSTOMERS</span><div class="kids">Customers · Messaging · Campaigns · Automation</div></div>
+      <div class="item"><span class="name">ACCOUNTING</span><div class="kids">QBO Sync · Reconciliation · Aging AR · Margins · Reports</div></div>
+      <div class="item" style="margin-top:8px;color:var(--dim);font-size:11px">⚙ gear icon (top-right): Settings · Tools (Part Finder, Barcodes, Import, Scrapers) · Help</div>
+    </div>
+  </div>
+</div>
+
+<div class="anno">
+  <div class="box nav-change">
+    <h3>How the 10 → 6 reorganization works</h3>
+    <ul>
+      <li><strong>CORE PROCESSING dissolves:</strong> Customer Cores moves into INVENTORY (it's stock you owe to customers). Vendor Returns moves into PURCHASING (it's the inverse of receiving).</li>
+      <li><strong>PRICING merges into INVENTORY:</strong> price is a product attribute. Three pricing sub-tabs become sub-tabs of Inventory.</li>
+      <li><strong>MARKETING merges into CUSTOMERS:</strong> messaging, campaigns, and automation all target customers. Same area, same audience.</li>
+      <li><strong>TOOLS demotes to the gear menu:</strong> these are admin utilities, not daily-driver workflows. One click from anywhere.</li>
+      <li><strong>SETTINGS stays in the gear menu</strong> with a refreshed dark layout (Wave 8 in the tracker).</li>
+    </ul>
+  </div>
+  <div class="box dash-change">
+    <h3>Dashboard redesign goals</h3>
+    <ul>
+      <li><strong>Greet + Quick Actions strip</strong> — the first thing you see is what you can <em>do</em>, not what's broken.</li>
+      <li><strong>Critical Alerts only when critical</strong> — collapse zero-value alert cards into a single "All clear" pill. No more wall of red zeros.</li>
+      <li><strong>Pipeline grid stays</strong> — it's the heart of the screen — but tighter, fewer cards, more meaningful numbers (revenue today, gross margin today).</li>
+      <li><strong>Activity feed</strong> — replaces empty space. Last 20 events across the app (sale recorded, PO received, payment posted, QBO sync, etc.).</li>
+      <li><strong>Analytics row stays</strong> — Revenue, Quote Conversion, Top Customers. Same charts, better framing.</li>
+      <li><strong>Status bar</strong> — QBO pill + sync queue + last refresh, always visible.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ──────────────────────────────────────── -->
+<!-- NEW SHELL + DASHBOARD MOCKUP             -->
+<!-- ──────────────────────────────────────── -->
+<h2>2 · New Main Window + Dashboard (full mockup)</h2>
+
+<div class="app">
+  <!-- TOP NAV -->
+  <div class="topbar">
+    <span class="brand">JAK'S DIESEL PRO</span>
+    <div class="nav">
+      <button class="active">DASHBOARD</button>
+      <button>SALES</button>
+      <button>INVENTORY</button>
+      <button>PURCHASING</button>
+      <button>CUSTOMERS</button>
+      <button>ACCOUNTING</button>
+    </div>
+    <div class="global-search">🔍 Search anything… <span style="flex:1"></span><span class="kbd">Ctrl K</span></div>
+    <span class="clock">Tue, May 19 · 05:29 PM</span>
+    <button class="icon-btn" title="Notifications">🔔</button>
+    <button class="icon-btn" title="Settings / Tools / Help">⚙</button>
+  </div>
+
+  <!-- SUB-TAB BAR (would be hidden on Dashboard since it has no sub-tabs; shown here for reference) -->
+  <div class="subtabs">
+    <button class="tab active">Overview</button>
+    <button class="tab">My Day</button>
+    <button class="tab">This Week</button>
+    <button class="tab">This Month</button>
+  </div>
+
+  <!-- BODY -->
+  <div class="body">
+
+    <!-- HERO STRIP -->
+    <div class="hero">
+      <div class="greet">
+        <h1>Good evening, Keith <span class="small">— here's where the shop stands</span></h1>
+        <div class="sub">Last data refresh 12 s ago · QBO live · 64 sync errors need attention</div>
+      </div>
+      <div class="quick">
+        <button class="qa primary">＋ New Quote</button>
+        <button class="qa">⚡ Quick Sale</button>
+        <button class="qa">📦 Receive PO</button>
+        <button class="qa">💵 Record Payment</button>
+        <button class="qa">🔎 Find Part</button>
+      </div>
+    </div>
+
+    <!-- CRITICAL ALERTS (compressed — only non-zero shown; rest collapsed into All-Clear) -->
+    <div>
+      <h2 style="margin:0 0 8px;color:var(--red)">🛑 Critical Alerts</h2>
+      <div class="grid grid-4">
+        <div class="card warn">
+          <span class="icon">⚠</span>
+          <div class="label">QBO Sync Errors</div>
+          <div class="value">64</div>
+          <div class="sub">failed in the last 24 h</div>
+          <div class="action">
+            <button class="pillbtn amber">Open Sync Center</button>
+            <button class="pillbtn">Retry All</button>
+          </div>
+        </div>
+        <div class="allclear" style="grid-column:span 3">
+          <div class="big">✅</div>
+          <div>
+            <div class="title">Everything else is clear</div>
+            <div class="desc">No low stock · No out of stock · No overdue cores · No overdue invoices · No inventory drift</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SALES & PIPELINE -->
+    <div>
+      <h2 style="margin:0 0 8px;color:var(--accent)">📊 Sales & Pipeline</h2>
+      <div class="grid grid-6">
+        <div class="card info">
+          <span class="icon">📋</span>
+          <div class="label">Quotes Pending</div>
+          <div class="value">170</div>
+          <div class="sub">$673,507 pipeline</div>
+          <div class="action"><button class="pillbtn blue">View All</button></div>
+        </div>
+        <div class="card warn">
+          <span class="icon">📞</span>
+          <div class="label">Needs Follow-up</div>
+          <div class="value">0</div>
+          <div class="sub">no quotes stale &gt;3 d</div>
+        </div>
+        <div class="card info">
+          <span class="icon">📦</span>
+          <div class="label">Open Sales Orders</div>
+          <div class="value">55</div>
+          <div class="sub">awaiting fulfillment</div>
+          <div class="action"><button class="pillbtn blue">View</button></div>
+        </div>
+        <div class="card alert">
+          <span class="icon">📑</span>
+          <div class="label">Open Invoices</div>
+          <div class="value">2</div>
+          <div class="sub">unpaid · $4,210</div>
+          <div class="action"><button class="pillbtn red">View</button></div>
+        </div>
+        <div class="card">
+          <span class="icon">🚚</span>
+          <div class="label">Pending POs</div>
+          <div class="value">0</div>
+          <div class="sub">awaiting receipt</div>
+        </div>
+        <div class="card">
+          <span class="icon">📉</span>
+          <div class="label">Lost Sales (30 d)</div>
+          <div class="value">0</div>
+          <div class="sub">$0 lost</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TODAY/WEEK NUMBERS + ACTIVITY FEED -->
+    <div class="row">
+      <div class="panel">
+        <h3>💰 Today's Numbers <span class="badge">since 12:00 AM</span></h3>
+        <div class="grid grid-4" style="margin-top:4px">
+          <div class="card ok"><span class="icon">$</span><div class="label">Revenue</div><div class="value">$0</div><div class="sub">0 invoices</div></div>
+          <div class="card info"><span class="icon">%</span><div class="label">Gross Margin</div><div class="value">—</div><div class="sub">no sales yet</div></div>
+          <div class="card"><span class="icon">📋</span><div class="label">Quotes Created</div><div class="value">0</div><div class="sub">$0 pipeline added</div></div>
+          <div class="card"><span class="icon">📦</span><div class="label">Items Received</div><div class="value">0</div><div class="sub">0 PO lines</div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>🕓 Recent Activity <span class="badge">last 20 events</span></h3>
+        <div class="feed">
+          <div class="item"><div class="icon green">💵</div><div class="body-text"><div class="t">Payment $1,250 received from <b>Dukes Diesel</b></div><div class="s">14 min ago · Invoice #18421</div></div></div>
+          <div class="item"><div class="icon blue">📦</div><div class="body-text"><div class="t">PO #2138 received from Atlantic Diesel</div><div class="s">42 min ago · 8 lines / 47 units</div></div></div>
+          <div class="item"><div class="icon purple">📋</div><div class="body-text"><div class="t">Quote #Q-4421 sent to <b>TEST Customer</b></div><div class="s">1 h ago · $2,310</div></div></div>
+          <div class="item"><div class="icon amber">🔄</div><div class="body-text"><div class="t">QBO sync error on Invoice #18419</div><div class="s">2 h ago · "Tax code not found"</div></div></div>
+          <div class="item"><div class="icon green">✅</div><div class="body-text"><div class="t">PO #2137 created and emailed to Cummins</div><div class="s">3 h ago · 4 lines / $8,422</div></div></div>
+          <div class="item"><div class="icon blue">👤</div><div class="body-text"><div class="t">New customer <b>Roadside Truck Repair</b> added</div><div class="s">3 h ago · via Quote dialog</div></div></div>
+          <div class="item"><div class="icon purple">🏷️</div><div class="body-text"><div class="t">Tiered pricing recalculated</div><div class="s">4 h ago · 1,204 products updated</div></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ANALYTICS -->
+    <div>
+      <h2 style="margin:0 0 8px;color:var(--blue)">📈 Analytics</h2>
+      <div class="charts">
+        <div class="chart-box">
+          <h3>Revenue Trend <select class="pick"><option>30 Days</option><option>7 Days</option><option>This Quarter</option></select></h3>
+          <svg class="spark" viewBox="0 0 400 160" preserveAspectRatio="none">
+            <defs><linearGradient id="rg" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#58a6ff" stop-opacity=".4"/><stop offset="100%" stop-color="#58a6ff" stop-opacity="0"/></linearGradient></defs>
+            <polyline fill="url(#rg)" stroke="none" points="0,140 40,135 80,130 120,120 160,118 200,40 240,90 280,100 320,110 360,108 400,105 400,160 0,160"/>
+            <polyline fill="none" stroke="#58a6ff" stroke-width="2" points="0,140 40,135 80,130 120,120 160,118 200,40 240,90 280,100 320,110 360,108 400,105"/>
+            <polyline fill="none" stroke="#3fb950" stroke-width="2" stroke-dasharray="3 3" points="0,150 40,148 80,144 120,138 160,135 200,90 240,118 280,124 320,130 360,128 400,126"/>
+          </svg>
+          <div style="display:flex;gap:14px;font-size:11px;color:var(--dim);margin-top:8px"><span>● Revenue</span><span style="color:var(--green)">● Profit</span></div>
+        </div>
+        <div class="chart-box">
+          <h3>Quote Conversion <span class="badge" style="background:var(--panel2);padding:2px 8px;border-radius:10px;color:var(--dim);font-size:10px">30 d</span></h3>
+          <svg class="spark" viewBox="0 0 200 160">
+            <circle cx="100" cy="80" r="60" fill="none" stroke="#2d3a45" stroke-width="22"/>
+            <circle cx="100" cy="80" r="60" fill="none" stroke="#3fb950" stroke-width="22" stroke-dasharray="120 377" stroke-dashoffset="0" transform="rotate(-90 100 80)"/>
+          </svg>
+          <div style="display:flex;gap:14px;font-size:11px;color:var(--dim);margin-top:8px;justify-content:center"><span style="color:var(--green)">● Accepted 32%</span><span>● Draft 68%</span></div>
+        </div>
+        <div class="chart-box">
+          <h3>Top Customers <span class="badge" style="background:var(--panel2);padding:2px 8px;border-radius:10px;color:var(--dim);font-size:10px">YTD</span></h3>
+          <svg class="spark" viewBox="0 0 200 160" preserveAspectRatio="none">
+            <rect x="20"  y="20"  width="40" height="120" fill="#3fb950"/>
+            <rect x="80"  y="90"  width="40" height="50"  fill="#3fb950" opacity=".7"/>
+            <rect x="140" y="110" width="40" height="30"  fill="#3fb950" opacity=".5"/>
+          </svg>
+          <div style="display:flex;justify-content:space-around;font-size:11px;color:var(--dim);margin-top:4px"><span>Dukes</span><span>TEST</span><span>Atlantic</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STATUS BAR -->
+  <div class="statusbar">
+    <span>Viewing: Dashboard</span>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span class="pill green"><span class="dot"></span>Auto-refresh on · last 12 s ago</span>
+      <span class="pill amber"><span class="dot"></span>QBO read-write · 64 failed</span>
+    </div>
+  </div>
+</div>
+
+<!-- ──────────────────────────────────────── -->
+<!-- WHAT'S DIFFERENT — REMOVE / ADD / KEEP    -->
+<!-- ──────────────────────────────────────── -->
+<h2>3 · Plan summary — REMOVE / ADD / KEEP</h2>
+<div class="anno">
+  <div class="box removed">
+    <h3>🗑 REMOVE</h3>
+    <ul>
+      <li>4 of the 10 top-nav buttons: <code>CORE PROCESSING</code>, <code>PRICING</code>, <code>MARKETING</code>, <code>TOOLS</code> (moved into other categories or gear menu)</li>
+      <li>5 always-zero red alert cards on Dashboard (collapsed into one "All clear" pill when truly clear)</li>
+      <li>Page title "JAKS Diesel — Command Center" (the new greeting line covers it)</li>
+      <li>Standalone Refresh & Settings buttons in dashboard body (moved to top bar)</li>
+    </ul>
+  </div>
+  <div class="box added">
+    <h3>➕ ADD</h3>
+    <ul>
+      <li>Global search bar (Ctrl+K) in the top bar — jumps to any product / customer / quote / PO</li>
+      <li>Greet line with last-refresh + QBO status one-liner</li>
+      <li>Quick Actions row: <code>+ New Quote</code> · <code>Quick Sale</code> · <code>Receive PO</code> · <code>Record Payment</code> · <code>Find Part</code></li>
+      <li>Today's Numbers panel (Revenue / Margin / Quotes / Items received)</li>
+      <li>Recent Activity feed (last 20 events across the app)</li>
+      <li>"All clear" rollup card for empty alert states</li>
+      <li>Status bar with auto-refresh timer + QBO pill always visible</li>
+      <li>Optional sub-tab strip on Dashboard: <code>Overview · My Day · This Week · This Month</code> (use the same pattern you already like)</li>
+    </ul>
+  </div>
+</div>
+<div class="anno">
+  <div class="box" style="border-color:var(--purple)">
+    <h3 style="color:var(--purple)">✓ KEEP</h3>
+    <ul>
+      <li>Click-into-tabs navigation pattern (Sales → Quotes/SOs/Invoices…) — just with fewer top-level entries</li>
+      <li>Sales & Pipeline KPI grid (your most-used cards) — same numbers, tighter layout</li>
+      <li>Three analytics charts at the bottom (Revenue / Conversion / Top Customers)</li>
+      <li>Existing dark palette (accent orange, panel grays, semantic colors)</li>
+      <li>Per-card action pillbuttons (View All, Auto PO, View Cores, etc.)</li>
+    </ul>
+  </div>
+  <div class="box" style="border-color:var(--accent)">
+    <h3 style="color:var(--accent)">🛠 Implementation order</h3>
+    <ul>
+      <li><b>1.</b> Edit <code>_NAV_STRUCTURE</code> in <code>main_window.py</code> — collapse 10 → 6 categories. Re-parent screens. No screen file changes needed.</li>
+      <li><b>2.</b> Add gear menu (top-right) with Settings · Tools submenu · Help.</li>
+      <li><b>3.</b> Add global-search box + Ctrl+K shortcut (stub backend OK at first).</li>
+      <li><b>4.</b> Rebuild <code>dashboard_screen.py</code> with: greet strip, quick actions, alerts (with All-clear rollup), pipeline grid, Today panel, activity feed, charts row.</li>
+      <li><b>5.</b> Add status bar widget (auto-refresh timer + QBO pill).</li>
+      <li><b>6.</b> Wire Recent Activity feed to a new <code>db.get_recent_events(limit=20)</code> query (audit log + invoice/po/quote tables UNION).</li>
+    </ul>
+  </div>
+</div>
+
+</body>
+</html>

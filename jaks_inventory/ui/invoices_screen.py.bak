@@ -1,0 +1,663 @@
+"""Invoices management screen."""
+from __future__ import annotations
+
+import os
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QPushButton,
+    QComboBox,
+    QMessageBox,
+    QAbstractItemView,
+    QLabel,
+)
+from PySide6.QtGui import QColor, QAction
+from PySide6.QtWidgets import QMenu
+
+from db import get_all_invoices, get_invoice, update_invoice_status, record_payment, get_customer, finalize_invoice
+from core.badges import INVOICE_BADGES, badge_colors
+from core.format import format_date, format_money
+from .invoice_dialog import InvoiceDialog
+from .payment_dialog import PaymentDialog
+from ..utils.pdf_invoice import generate_invoice_pdf
+from ..utils.notification_service import (
+    send_invoice_sms,
+    send_invoice_email,
+    send_tracking_sms,
+    send_tracking_email,
+    get_customer_contact,
+    email_configured,
+)
+from ..utils.sms_service import is_configured as sms_configured
+
+
+class InvoicesScreen(QWidget):
+    """Screen for managing invoices."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._build_ui()
+        self._load_invoices()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._load_invoices()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout()
+
+        # Toolbar
+        toolbar = QHBoxLayout()
+        
+        toolbar.addWidget(QLabel("Status:"))
+        self._status_combo = QComboBox()
+        self._status_combo.addItems(["All", "Draft", "Sent", "Partial", "Paid", "Void"])
+        self._status_combo.currentTextChanged.connect(self._on_status_filter)
+        toolbar.addWidget(self._status_combo)
+        
+        toolbar.addStretch()
+        
+        self._new_btn = QPushButton("➕ New Invoice")
+        self._new_btn.clicked.connect(self._on_new)
+        toolbar.addWidget(self._new_btn)
+        
+        self._view_btn = QPushButton("👁️ View")
+        self._view_btn.clicked.connect(self._on_view)
+        self._view_btn.setEnabled(False)
+        toolbar.addWidget(self._view_btn)
+        
+        self._finalize_btn = QPushButton("✓ Finalize")
+        self._finalize_btn.setToolTip(
+            "Commit this invoice: deducts inventory, materializes core returns "
+            "and warranty certificates, locks the lines."
+        )
+        self._finalize_btn.clicked.connect(self._on_finalize)
+        self._finalize_btn.setEnabled(False)
+        self._finalize_btn.setStyleSheet(
+            "QPushButton { background: #f59e0b; color: white; font-weight: bold; }"
+        )
+        toolbar.addWidget(self._finalize_btn)
+
+        self._payment_btn = QPushButton("💵 Record Payment")
+        self._payment_btn.clicked.connect(self._on_payment)
+        self._payment_btn.setEnabled(False)
+        toolbar.addWidget(self._payment_btn)
+
+        self._core_return_btn = QPushButton("↩ Process Core Return")
+        self._core_return_btn.setToolTip(
+            "Receive a returned core and issue credit to the customer "
+            "without leaving the invoice list."
+        )
+        self._core_return_btn.clicked.connect(self._on_process_core_return)
+        self._core_return_btn.setEnabled(False)
+        self._core_return_btn.setStyleSheet(
+            "QPushButton { background: #0f766e; color: white; }"
+        )
+        toolbar.addWidget(self._core_return_btn)
+        
+        self._pdf_btn = QPushButton("📄 Print PDF")
+        self._pdf_btn.clicked.connect(self._on_print_pdf)
+        self._pdf_btn.setEnabled(False)
+        toolbar.addWidget(self._pdf_btn)
+
+        self._void_btn = QPushButton("❌ Void")
+        self._void_btn.clicked.connect(self._on_void)
+        self._void_btn.setEnabled(False)
+        toolbar.addWidget(self._void_btn)
+
+        self._sms_btn = QPushButton("📱 Send SMS")
+        self._sms_btn.setToolTip("Send invoice or tracking via SMS")
+        self._sms_btn.clicked.connect(self._on_send_sms)
+        self._sms_btn.setEnabled(False)
+        self._sms_btn.setStyleSheet("QPushButton { background: #7c3aed; color: white; }")
+        toolbar.addWidget(self._sms_btn)
+
+        self._email_btn = QPushButton("📧 Send Email")
+        self._email_btn.setToolTip("Send invoice or tracking via email")
+        self._email_btn.clicked.connect(self._on_send_email)
+        self._email_btn.setEnabled(False)
+        self._email_btn.setStyleSheet("QPushButton { background: #2563eb; color: white; }")
+        toolbar.addWidget(self._email_btn)
+        
+        self._refresh_btn = QPushButton("🔄")
+        self._refresh_btn.setToolTip("Refresh")
+        self._refresh_btn.clicked.connect(self._load_invoices)
+        toolbar.addWidget(self._refresh_btn)
+        
+        layout.addLayout(toolbar)
+
+        # Table
+        self._table = QTableWidget(0, 9)
+        self._table.setHorizontalHeaderLabels([
+            "ID", "Invoice #", "Customer", "Date", "Due", "Total", "Paid", "Status", "Tracking #"
+        ])
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._table.setSortingEnabled(True)
+        header = self._table.horizontalHeader()
+        # All columns interactive (user-resizable). Customer column gets a generous default
+        # width but can still be dragged narrower so the divider with Date is reachable.
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(False)
+        self._table.setColumnHidden(0, True)  # Hide ID column
+        # Sensible default widths
+        self._table.setColumnWidth(1, 110)   # Invoice #
+        self._table.setColumnWidth(2, 280)   # Customer
+        self._table.setColumnWidth(3, 100)   # Date
+        self._table.setColumnWidth(4, 100)   # Due
+        self._table.setColumnWidth(5, 100)   # Total
+        self._table.setColumnWidth(6, 100)   # Paid
+        self._table.setColumnWidth(7, 90)    # Status
+        self._table.setColumnWidth(8, 140)   # Tracking #
+
+        self._table.selectionModel().selectionChanged.connect(self._on_selection_changed)
+        self._table.doubleClicked.connect(self._on_view)
+        # Right-click context menu
+        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._on_context_menu)
+        
+        layout.addWidget(self._table)
+
+        # Summary
+        self._summary_label = QLabel("")
+        layout.addWidget(self._summary_label)
+
+        self.setLayout(layout)
+
+    def _load_invoices(self) -> None:
+        """Load invoices into the table."""
+        self._table.setSortingEnabled(False)
+        self._table.setRowCount(0)
+        
+        status_filter = self._status_combo.currentText().lower()
+        if status_filter == "all":
+            status_filter = None
+        
+        invoices = get_all_invoices(status=status_filter, limit=200)
+        self._table.setRowCount(len(invoices))
+
+        total_outstanding = 0
+        total_paid = 0
+        total_drafts = 0
+        draft_count = 0
+
+        for row_idx, inv in enumerate(invoices):
+            status = str(inv.get("status") or "draft").lower()
+            finalized = bool(inv.get("finalized_at"))
+            needs_finalize = not finalized and status != "void"
+
+            def item(text: str) -> QTableWidgetItem:
+                it = QTableWidgetItem(str(text) if text else "")
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                return it
+
+            self._table.setItem(row_idx, 0, item(inv.get("id")))
+            self._table.setItem(row_idx, 1, item(inv.get("invoice_number")))
+
+            customer_name = inv.get("customer_name", "")
+            if inv.get("customer_company"):
+                customer_name = f"{customer_name} ({inv.get('customer_company')})"
+            self._table.setItem(row_idx, 2, item(customer_name))
+
+            self._table.setItem(row_idx, 3, item(format_date(inv.get("invoice_date"))))
+            self._table.setItem(row_idx, 4, item(format_date(inv.get("due_date"))))
+
+            total = float(inv.get("total") or 0)
+            self._table.setItem(row_idx, 5, item(format_money(total)))
+
+            paid = float(inv.get("amount_paid") or 0)
+            self._table.setItem(row_idx, 6, item(format_money(paid)))
+
+            # Status badge (bg/fg only on the status cell, like the other screens).
+            # Unfinalized invoices are always called out because inventory,
+            # serials, cores and warranties have not been committed yet.
+            if needs_finalize:
+                bg, fg = "#FEF3C7", "#92400E"
+                status_text = f"{status.upper()} - NEEDS FINALIZE"
+            else:
+                bg, fg = badge_colors(status, INVOICE_BADGES)
+                status_text = status.upper() if status else ""
+            status_item = QTableWidgetItem(status_text)
+            status_item.setFlags(status_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            status_item.setBackground(QColor(bg))
+            status_item.setForeground(QColor(fg))
+            status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setItem(row_idx, 7, status_item)
+
+            tracking = inv.get("tracking_number", "") or ""
+            self._table.setItem(row_idx, 8, item(tracking))
+
+            # Track totals
+            if needs_finalize:
+                total_drafts += total
+                draft_count += 1
+            elif status in ("sent", "partial"):
+                total_outstanding += (total - paid)
+            elif status == "draft":
+                total_drafts += total
+                draft_count += 1
+            total_paid += paid
+
+        self._table.setSortingEnabled(True)
+        # Do NOT resizeColumnsToContents() - it overrides our defaults and prevents the
+        # user from dragging the Customer/Date divider.
+
+        # Update summary
+        summary = (
+            f"Total: {len(invoices)} invoices | "
+            f"Outstanding: {format_money(total_outstanding)} | "
+            f"Collected: {format_money(total_paid)}"
+        )
+        if draft_count:
+            summary += f"  |  Drafts: {format_money(total_drafts)} across {draft_count}"
+        self._summary_label.setText(summary)
+
+    def _on_status_filter(self, text: str) -> None:
+        """Handle status filter change."""
+        self._load_invoices()
+
+    def _on_selection_changed(self) -> None:
+        """Update button states based on selection."""
+        invoice = self._get_selected_invoice()
+        has_selection = invoice is not None
+        
+        self._view_btn.setEnabled(has_selection)
+        self._pdf_btn.setEnabled(has_selection)
+
+        status = str(invoice.get("status") or "").lower() if invoice else ""
+        finalized = bool(invoice.get("finalized_at")) if invoice else False
+
+        # Finalize whenever inventory has not been committed yet. Status is
+        # payment/customer-facing and must not trap sent/partial invoices.
+        can_finalize = has_selection and not finalized and status != "void"
+        self._finalize_btn.setEnabled(can_finalize)
+
+        # Payment only after finalization commits inventory/cores/serials.
+        can_pay = has_selection and finalized and status in ("sent", "partial")
+        self._payment_btn.setEnabled(can_pay)
+
+        # Core return only when this invoice has at least one actionable core
+        # (pending or received). Cheap query — single indexed lookup.
+        can_core = False
+        if has_selection:
+            try:
+                from db import get_core_returns_for_invoice
+                cores = get_core_returns_for_invoice(int(invoice.get("id"))) or []
+                can_core = any(
+                    str(c.get("status") or "").lower() in ("pending", "received")
+                    for c in cores
+                )
+            except Exception:
+                can_core = False
+        self._core_return_btn.setEnabled(can_core)
+
+        # Void only for non-void, non-paid
+        can_void = has_selection and invoice.get("status") not in ("void", "paid")
+        self._void_btn.setEnabled(can_void)
+
+        # SMS / Email for non-draft invoices. Draft preview/print stays in the
+        # invoice dialog; list-level notifications should be final/customer docs.
+        can_notify = has_selection and finalized and status != "draft"
+        self._sms_btn.setEnabled(can_notify)
+        self._email_btn.setEnabled(can_notify)
+
+    def _get_selected_invoice_id(self) -> int | None:
+        """Get the ID of the selected invoice."""
+        selected = self._table.selectedItems()
+        if not selected:
+            return None
+        row = selected[0].row()
+        id_item = self._table.item(row, 0)
+        return int(id_item.text()) if id_item else None
+
+    def _get_selected_invoice(self) -> dict | None:
+        """Get the selected invoice data."""
+        inv_id = self._get_selected_invoice_id()
+        if not inv_id:
+            return None
+        return get_invoice(inv_id)
+
+    def _on_new(self) -> None:
+        """Create a new invoice."""
+        dialog = InvoiceDialog(parent=self)
+        if dialog.exec():
+            self._load_invoices()
+
+    def _on_view(self) -> None:
+        """View/edit selected invoice."""
+        invoice_id = self._get_selected_invoice_id()
+        if not invoice_id:
+            return
+        
+        dialog = InvoiceDialog(invoice_id=invoice_id, parent=self)
+        if dialog.exec():
+            self._load_invoices()
+
+    def _on_payment(self) -> None:
+        """Record a payment on selected invoice using the full PaymentDialog."""
+        invoice = self._get_selected_invoice()
+        if not invoice:
+            return
+
+        balance = float(invoice.get("balance_due") or 0)
+        if balance <= 0:
+            # Fall back to total - paid if balance_due not populated
+            balance = float(invoice.get("total") or 0) - float(invoice.get("amount_paid") or 0)
+
+        dlg = PaymentDialog(invoice_id=invoice["id"], current_balance=balance, parent=self)
+        if dlg.exec():
+            self._load_invoices()
+
+    def _on_print_pdf(self) -> None:
+        """Generate and open a PDF for the selected invoice."""
+        invoice = self._get_selected_invoice()
+        if not invoice:
+            return
+        from ..utils.pdf_helpers import safe_generate_pdf
+        pdf_path = safe_generate_pdf(generate_invoice_pdf, invoice, parent=self)
+        if pdf_path:
+            try:
+                self.window().statusBar().showMessage(f"PDF saved: {pdf_path}")
+            except Exception:
+                pass
+
+    def _on_print_core_receipt(self) -> None:
+        """Generate the customer-signable core return receipt for this invoice."""
+        invoice = self._get_selected_invoice()
+        if not invoice:
+            return
+        from ..utils.pdf_helpers import safe_generate_pdf
+        from ..utils.pdf_core_receipt import generate_core_receipt_pdf
+        try:
+            pdf_path = safe_generate_pdf(
+                generate_core_receipt_pdf, int(invoice["id"]), parent=self,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Core Receipt Failed", str(exc))
+            return
+        if pdf_path:
+            try:
+                self.window().statusBar().showMessage(f"Core receipt saved: {pdf_path}")
+            except Exception:
+                pass
+
+    def _on_process_core_return(self) -> None:
+        """Receive a returned core and issue credit, all from the invoices list."""
+        invoice = self._get_selected_invoice()
+        if not invoice:
+            return
+        from .core_return_flow import process_core_return_for_invoice
+        if process_core_return_for_invoice(int(invoice["id"]), parent=self):
+            self._load_invoices()
+
+    def _on_finalize(self) -> None:
+        """Commit an unfinalized invoice: deduct stock, create cores + warranty certs."""
+        invoice = self._get_selected_invoice()
+        if not invoice:
+            return
+        status = str(invoice.get("status") or "").lower()
+        if invoice.get("finalized_at"):
+            QMessageBox.information(
+                self, "Already Finalized",
+                "This invoice has already been finalized.",
+            )
+            return
+        if status == "void":
+            QMessageBox.information(
+                self, "Cannot Finalize",
+                "Voided invoices cannot be finalized.",
+            )
+            return
+        extra = ""
+        if status and status != "draft":
+            extra = (
+                f"\n\nNote: this invoice status is currently '{status}', but "
+                "it has not been finalized yet. Finalizing will commit "
+                "inventory, cores, serials, and warranties without using "
+                "status as the gate."
+            )
+        reply = QMessageBox.question(
+            self, "Finalize Invoice",
+            f"Finalize invoice {invoice.get('invoice_number')}?\n\n"
+            "This will:\n"
+            "  • deduct inventory for every line\n"
+            "  • create core-return rows for any core charges\n"
+            "  • issue warranty certificates for warrantied parts\n"
+            "  • lock the invoice for editing\n\n"
+            "This action cannot be undone except by reverting/voiding the invoice."
+            f"{extra}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            result = finalize_invoice(int(invoice["id"]))
+            if not result.get("success"):
+                QMessageBox.critical(
+                    self,
+                    "Finalize Failed",
+                    result.get("error") or "Unknown error.",
+                )
+                return
+        except Exception as exc:
+            QMessageBox.critical(self, "Finalize Failed", str(exc))
+            return
+        try:
+            self.window().statusBar().showMessage(
+                f"Invoice {invoice.get('invoice_number')} finalized.", 5000,
+            )
+        except Exception:
+            pass
+        self._load_invoices()
+
+    def _on_void(self) -> None:
+        """Void selected invoice."""
+        invoice = self._get_selected_invoice()
+        if not invoice:
+            return
+        
+        reply = QMessageBox.question(
+            self, "Void Invoice",
+            f"Void invoice {invoice.get('invoice_number')}?\n\n"
+            "Note: This will NOT reverse inventory deductions.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            update_invoice_status(invoice["id"], "void")
+            self._load_invoices()
+
+    # ------------------------------------------------------------------
+    # Context menu
+    # ------------------------------------------------------------------
+    def _on_context_menu(self, pos) -> None:
+        """Show right-click context menu for the invoice row under the cursor."""
+        index = self._table.indexAt(pos)
+        if not index.isValid():
+            return
+        # Select the row under the cursor so the helper getters work
+        self._table.selectRow(index.row())
+        invoice = self._get_selected_invoice()
+        if not invoice:
+            return
+
+        status = invoice.get("status", "draft")
+        menu = QMenu(self)
+
+        act_open = QAction("👁️  Open", self)
+        act_open.triggered.connect(self._on_view)
+        menu.addAction(act_open)
+
+        act_pdf = QAction("📄  Print PDF", self)
+        act_pdf.triggered.connect(self._on_print_pdf)
+        menu.addAction(act_pdf)
+
+        # Core return receipt — only enabled when this invoice has linked cores.
+        try:
+            from db import get_core_returns_for_invoice
+            cores_on_inv = get_core_returns_for_invoice(int(invoice.get("id"))) or []
+        except Exception:
+            cores_on_inv = []
+        has_cores = bool(cores_on_inv)
+        has_actionable_cores = any(
+            str(c.get("status") or "").lower() in ("pending", "received")
+            for c in cores_on_inv
+        )
+        act_core_pdf = QAction("🖨  Print Core Receipt", self)
+        act_core_pdf.setEnabled(has_cores)
+        act_core_pdf.triggered.connect(self._on_print_core_receipt)
+        menu.addAction(act_core_pdf)
+
+        act_core_proc = QAction("↩  Process Core Return…", self)
+        act_core_proc.setEnabled(has_actionable_cores)
+        act_core_proc.triggered.connect(self._on_process_core_return)
+        menu.addAction(act_core_proc)
+
+        menu.addSeparator()
+
+        act_finalize = QAction("✓  Finalize Invoice…", self)
+        finalized = bool(invoice.get("finalized_at"))
+        act_finalize.setEnabled(not finalized and status != "void")
+        act_finalize.triggered.connect(self._on_finalize)
+        menu.addAction(act_finalize)
+
+        act_pay = QAction("💵  Record Payment…", self)
+        act_pay.setEnabled(finalized and status in ("sent", "partial"))
+        act_pay.triggered.connect(self._on_payment)
+        menu.addAction(act_pay)
+
+        act_email = QAction("📧  Send Email…", self)
+        act_email.setEnabled(finalized and status != "draft")
+        act_email.triggered.connect(self._on_send_email)
+        menu.addAction(act_email)
+
+        act_sms = QAction("📱  Send SMS…", self)
+        act_sms.setEnabled(status != "draft")
+        act_sms.triggered.connect(self._on_send_sms)
+        menu.addAction(act_sms)
+
+        menu.addSeparator()
+
+        act_void = QAction("❌  Void", self)
+        act_void.setEnabled(status not in ("void", "paid"))
+        act_void.triggered.connect(self._on_void)
+        menu.addAction(act_void)
+
+        menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    # ------------------------------------------------------------------
+    # SMS / Email notification
+    # ------------------------------------------------------------------
+    def _on_send_sms(self) -> None:
+        """Send invoice or tracking info via SMS."""
+        invoice = self._get_selected_invoice()
+        if not invoice:
+            return
+
+        if not sms_configured():
+            QMessageBox.warning(self, "SMS Not Configured",
+                                "Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and "
+                                "TWILIO_PHONE_NUMBER in your .env file.")
+            return
+
+        contact = get_customer_contact(invoice["customer_id"])
+        phone = contact["phone"]
+        if not phone:
+            QMessageBox.warning(self, "No Phone",
+                                "This customer has no phone number on file.\n"
+                                "Add one via Customers → Customer Maintenance.")
+            return
+
+        # Let user choose what to send
+        tracking = invoice.get("tracking_number", "")
+        choices = ["Invoice Summary"]
+        if tracking:
+            choices.append(f"Tracking Number ({tracking})")
+
+        from PySide6.QtWidgets import QInputDialog
+        choice, ok = QInputDialog.getItem(
+            self, "Send SMS",
+            f"Sending to {contact['name']} ({phone}):",
+            choices, 0, False,
+        )
+        if not ok:
+            return
+
+        if "Tracking" in choice:
+            result = send_tracking_sms(invoice, phone)
+        else:
+            result = send_invoice_sms(invoice, phone)
+
+        if result.get("success"):
+            QMessageBox.information(self, "SMS Sent",
+                                    f"SMS sent to {phone} successfully.")
+        else:
+            QMessageBox.critical(self, "SMS Failed", result.get("error", "Unknown error"))
+
+    def _on_send_email(self) -> None:
+        """Send invoice or tracking info via email."""
+        invoice = self._get_selected_invoice()
+        if not invoice:
+            return
+
+        if not email_configured():
+            QMessageBox.warning(self, "Email Not Configured",
+                                "Configure SMTP settings in Settings → Email/SMTP.")
+            return
+
+        contact = get_customer_contact(invoice["customer_id"])
+        email = contact["email"]
+        if not email:
+            QMessageBox.warning(self, "No Email",
+                                "This customer has no email address on file.\n"
+                                "Add one via Customers → Customer Maintenance.")
+            return
+
+        tracking = invoice.get("tracking_number", "")
+        choices = ["Invoice Summary"]
+        if tracking:
+            choices.append(f"Tracking Number ({tracking})")
+
+        from PySide6.QtWidgets import QInputDialog
+        choice, ok = QInputDialog.getItem(
+            self, "Send Email",
+            f"Sending to {contact['name']} ({email}):",
+            choices, 0, False,
+        )
+        if not ok:
+            return
+
+        from jaks_inventory.utils.email_worker import EmailWorker
+
+        if "Tracking" in choice:
+            func = lambda: send_tracking_email(invoice, email)
+        else:
+            func = lambda: send_invoice_email(invoice, email)
+
+        self._email_btn.setEnabled(False)
+        self._email_btn.setText("⏳ Sending…")
+        self._email_worker = EmailWorker(func, parent=self)
+
+        def _on_result(result: dict) -> None:
+            self._email_btn.setEnabled(True)
+            self._email_btn.setText("📧 Send Email")
+            if result.get("success"):
+                QMessageBox.information(self, "Email Sent",
+                                        f"Email sent to {email} successfully.")
+            else:
+                QMessageBox.critical(self, "Email Failed", result.get("error", "Unknown error"))
+
+        self._email_worker.finished_result.connect(_on_result)
+        self._email_worker.start()
+
+    def refresh(self) -> None:
+        """Public method to refresh the invoice list."""
+        self._load_invoices()

@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>JAK's Diesel PRO — Core Processing Mockup</title>
+<style>
+  :root {
+    --bg:#0f1419; --panel:#1a2128; --panel2:#232c35;
+    --border:#2d3a45; --border-hi:#3d4d5c;
+    --text:#e6edf3; --dim:#8b98a5; --faint:#5d6b78;
+    --accent:#ff8c42; --accent-dim:#b85d1f;
+    --green:#3fb950; --red:#f85149; --amber:#d29922;
+    --blue:#58a6ff; --purple:#bc8cff; --teal:#39d0d8;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:13px/1.4 "Segoe UI", system-ui, sans-serif; }
+
+  /* Top nav */
+  .topnav { display:flex; align-items:center; gap:24px;
+            background:#11161c; border-bottom:1px solid var(--border);
+            padding:0 18px; height:48px; }
+  .brand { color:var(--accent); font-weight:900; font-size:13px;
+           letter-spacing:0.5px; }
+  .topnav .cats { display:flex; gap:4px; flex:1; }
+  .topnav .cats a { color:var(--dim); text-decoration:none;
+                    font-weight:600; font-size:11px; letter-spacing:0.8px;
+                    padding:14px 12px; border-bottom:2px solid transparent;
+                    cursor:pointer; }
+  .topnav .cats a.active { color:var(--accent);
+                           border-bottom-color:var(--accent); }
+  .topnav .cats a:hover { color:var(--text); }
+  .topnav .right { display:flex; align-items:center; gap:12px;
+                   color:var(--dim); font-size:11px; }
+  .topnav .right .user { color:var(--accent); }
+  .topnav .right .gear { font-size:15px; color:var(--text); cursor:pointer; }
+
+  /* Sub-tabs */
+  .subtabs { display:flex; gap:6px; padding:10px 18px 0;
+             background:var(--bg); border-bottom:1px solid var(--border); }
+  .subtab { padding:8px 14px; font-size:11px; font-weight:600;
+            color:var(--dim); border:1px solid transparent;
+            border-bottom:none; border-radius:6px 6px 0 0; cursor:pointer;
+            letter-spacing:0.3px; }
+  .subtab.active { background:var(--accent); color:white;
+                   border-color:var(--accent); }
+  .subtab:hover:not(.active) { color:var(--text); background:var(--panel2); }
+
+  .body { padding:14px 18px 30px; }
+  .h1 { font-size:20px; font-weight:700; margin:0; }
+  .h1 small { color:var(--dim); font-weight:500; font-size:12px;
+              margin-left:10px; }
+  .headerrow { display:flex; align-items:baseline; justify-content:space-between;
+               margin-bottom:14px; }
+  .btn { padding:8px 14px; border-radius:6px; border:none;
+         font-weight:600; font-size:12px; cursor:pointer;
+         display:inline-flex; align-items:center; gap:6px; }
+  .btn-primary { background:var(--accent); color:white; }
+  .btn-primary:hover { background:var(--accent-dim); }
+  .btn-ghost { background:var(--panel2); color:var(--text);
+               border:1px solid var(--border); }
+  .btn-ghost:hover { border-color:var(--border-hi); }
+  .btn-green { background:var(--green); color:white; }
+  .btn-green:hover { background:#2ea043; }
+  .btn-red   { background:transparent; color:var(--red);
+               border:1px solid var(--border); }
+  .btn-red:hover { background:rgba(248,81,73,.08); }
+
+  /* KPI row */
+  .kpis { display:grid; grid-template-columns:repeat(7,1fr); gap:8px;
+          margin-bottom:14px; }
+  .kpi { background:var(--panel); border:1px solid var(--border);
+         border-radius:8px; padding:10px 12px; min-height:64px; }
+  .kpi .lbl { font-size:9px; font-weight:700; letter-spacing:0.8px;
+              color:var(--dim); text-transform:uppercase; }
+  .kpi .val { font-size:20px; font-weight:700; margin-top:4px; }
+  .kpi .sub { font-size:10px; color:var(--faint); margin-top:2px; }
+  .c-blue { color:var(--blue); } .c-amber { color:var(--amber); }
+  .c-green { color:var(--green); } .c-red { color:var(--red); }
+  .c-accent { color:var(--accent); } .c-purple { color:var(--purple); }
+  .c-teal { color:var(--teal); }
+
+  /* Needs Attention */
+  .attn { background:var(--panel); border:1px solid var(--border);
+          border-radius:8px; padding:8px 12px; display:flex;
+          align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  .attn .head { font-size:10px; font-weight:700; letter-spacing:0.8px;
+                color:var(--amber); margin-right:6px; }
+  .chip { display:inline-flex; align-items:center; gap:6px;
+          background:var(--panel2); border:1px solid var(--border);
+          border-radius:14px; padding:3px 10px 3px 4px; font-size:11px;
+          font-weight:600; color:var(--text); cursor:pointer; }
+  .chip:hover { border-color:var(--border-hi); }
+  .chip .badge { width:20px; height:20px; border-radius:50%;
+                 color:white; font-size:10px; font-weight:700;
+                 display:flex; align-items:center; justify-content:center; }
+  .chip.zero { color:var(--faint); }
+  .chip.zero .badge { background:var(--border); }
+
+  /* Filter row */
+  .filters { display:flex; gap:8px; align-items:center;
+             margin-bottom:10px; flex-wrap:wrap; }
+  .search { flex:0 1 280px; background:var(--panel2); color:var(--text);
+            border:1px solid var(--border); border-radius:6px;
+            padding:7px 10px; font-size:12px; }
+  .select { background:var(--panel2); color:var(--text);
+            border:1px solid var(--border); border-radius:6px;
+            padding:7px 28px 7px 10px; font-size:12px;
+            appearance:none; min-width:120px;
+            background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),
+                             linear-gradient(135deg,var(--dim) 50%,transparent 50%);
+            background-position:calc(100% - 14px) center,
+                                calc(100% - 9px) center;
+            background-size:5px 5px,5px 5px; background-repeat:no-repeat; }
+  .spacer { flex:1; }
+
+  /* Pipeline strip */
+  .pipeline { display:grid; grid-template-columns:repeat(6,1fr); gap:8px;
+              margin-bottom:14px; }
+  .stage { background:var(--panel); border:1px solid var(--border);
+           border-radius:8px; padding:10px 12px; position:relative; }
+  .stage .lbl { font-size:9px; font-weight:700; letter-spacing:0.6px;
+                color:var(--dim); text-transform:uppercase; }
+  .stage .ct { font-size:22px; font-weight:800; margin-top:2px; }
+  .stage .sub { font-size:10px; color:var(--faint); margin-top:2px; }
+  .stage::after { content:"›"; position:absolute; right:-12px;
+                  top:50%; transform:translateY(-50%); color:var(--border-hi);
+                  font-size:20px; font-weight:700; z-index:1; }
+  .stage:last-child::after { content:""; }
+  .st-owed     { border-left:3px solid var(--amber); }
+  .st-awaiting { border-left:3px solid var(--blue); }
+  .st-received { border-left:3px solid var(--purple); }
+  .st-graded   { border-left:3px solid var(--teal); }
+  .st-vendor   { border-left:3px solid var(--accent); }
+  .st-closed   { border-left:3px solid var(--green); }
+
+  /* Table */
+  table { width:100%; border-collapse:collapse;
+          background:var(--panel); border:1px solid var(--border);
+          border-radius:8px; overflow:hidden; }
+  th { font-size:10px; font-weight:600; text-transform:uppercase;
+       letter-spacing:0.5px; color:var(--dim); text-align:left;
+       padding:10px 12px; background:var(--panel2);
+       border-bottom:1px solid var(--border); }
+  td { padding:10px 12px; border-bottom:1px solid var(--border);
+       font-size:12px; vertical-align:middle; }
+  tr:nth-child(even) td { background:#1f262e; }
+  tr:hover td { background:rgba(255,140,66,0.05); cursor:pointer; }
+  .sku { color:var(--accent); font-weight:700; font-family:Consolas,monospace;
+         font-size:11px; }
+  .right { text-align:right; }
+  .center { text-align:center; }
+  .mono { font-family:Consolas,monospace; }
+  .cust { line-height:1.25; }
+  .cust .nm { font-weight:600; }
+  .cust .sb { color:var(--dim); font-size:10px; margin-top:1px; }
+
+  /* Pills */
+  .pill { display:inline-block; padding:2px 8px; border-radius:10px;
+          font-size:10px; font-weight:700; text-transform:uppercase;
+          letter-spacing:0.3px; border:1px solid; }
+  .p-owed     { color:var(--amber);  border-color:rgba(210,153,34,.5);  background:rgba(210,153,34,.12); }
+  .p-await    { color:var(--blue);   border-color:rgba(88,166,255,.5);  background:rgba(88,166,255,.12); }
+  .p-rcvd     { color:var(--purple); border-color:rgba(188,140,255,.5); background:rgba(188,140,255,.12); }
+  .p-graded   { color:var(--teal);   border-color:rgba(57,208,216,.5);  background:rgba(57,208,216,.12); }
+  .p-shipped  { color:var(--accent); border-color:rgba(255,140,66,.5);  background:rgba(255,140,66,.12); }
+  .p-credit   { color:var(--green);  border-color:rgba(63,185,80,.5);   background:rgba(63,185,80,.12); }
+  .p-scrap    { color:var(--red);    border-color:rgba(248,81,73,.5);   background:rgba(248,81,73,.12); }
+  .p-overdue  { color:var(--red);    border-color:rgba(248,81,73,.5);   background:rgba(248,81,73,.12); }
+
+  /* Grade pills */
+  .grade { display:inline-block; width:22px; height:22px; border-radius:50%;
+           text-align:center; line-height:22px; font-weight:800; font-size:11px; }
+  .grade.A { background:var(--green); color:white; }
+  .grade.B { background:var(--blue);  color:white; }
+  .grade.C { background:var(--amber); color:white; }
+  .grade.X { background:var(--red);   color:white; }
+  .grade.un { background:var(--panel2); color:var(--faint); border:1px solid var(--border); }
+
+  .acts { display:flex; gap:3px; }
+  .act { width:18px; height:18px; border-radius:4px;
+         display:flex; align-items:center; justify-content:center;
+         color:white; font-size:10px; font-weight:700; }
+  .act.off { background:var(--panel2); color:var(--faint);
+             border:1px solid var(--border); }
+  .act.blue { background:var(--blue); } .act.green { background:var(--green); }
+  .act.amber { background:var(--amber); } .act.red { background:var(--red); }
+  .act.purple { background:var(--purple); } .act.teal { background:var(--teal); }
+
+  .footer { color:var(--dim); font-size:11px; margin-top:10px; }
+  .arrow { color:var(--dim); margin:0 4px; }
+</style>
+</head>
+<body>
+
+<!-- Top nav (CORE PROCESSING active) -->
+<div class="topnav">
+  <div class="brand">JAK'S DIESEL PRO</div>
+  <div class="cats">
+    <a>DASHBOARD</a><a>SALES</a>
+    <a class="active">CORE PROCESSING</a>
+    <a>INVENTORY</a><a>PURCHASING</a><a>PRICING</a>
+    <a>CUSTOMERS</a><a>MARKETING</a><a>ACCOUNTING</a><a>TOOLS</a>
+  </div>
+  <div class="right">
+    Tue, May 19 · 04:26 PM <span>·</span> <span class="user">User</span>
+    <span class="gear">⚙</span>
+  </div>
+</div>
+
+<!-- Sub-tabs (Dashboard active) -->
+<div class="subtabs">
+  <div class="subtab active">Dashboard</div>
+  <div class="subtab">Owed by Customer</div>
+  <div class="subtab">Receiving</div>
+  <div class="subtab">Grading / Inspection</div>
+  <div class="subtab">Vendor Returns</div>
+  <div class="subtab">Core Credits</div>
+</div>
+
+<div class="body">
+
+  <div class="headerrow">
+    <h1 class="h1">Core Processing
+      <small>Receive · Grade · Return to vendor · Credit customer</small>
+    </h1>
+    <div>
+      <button class="btn btn-ghost">📤 Export Aging</button>
+      <button class="btn btn-ghost">📦 Vendor Pack-out</button>
+      <button class="btn btn-primary">+ Receive Core</button>
+    </div>
+  </div>
+
+  <!-- KPI strip -->
+  <div class="kpis">
+    <div class="kpi"><div class="lbl">$ at Risk</div>
+      <div class="val c-red">$18.4k</div><div class="sub">unreturned core charges</div></div>
+    <div class="kpi"><div class="lbl">Cores Owed</div>
+      <div class="val c-amber">47</div><div class="sub">by customer</div></div>
+    <div class="kpi"><div class="lbl">On Shelf</div>
+      <div class="val c-purple">23</div><div class="sub">awaiting grade / pack-out</div></div>
+    <div class="kpi"><div class="lbl">Out to Vendor</div>
+      <div class="val c-accent">11</div><div class="sub">awaiting deposit</div></div>
+    <div class="kpi"><div class="lbl">Credits Issued MTD</div>
+      <div class="val c-green">$9.2k</div><div class="sub">to customers</div></div>
+    <div class="kpi"><div class="lbl">Vendor Refunds MTD</div>
+      <div class="val c-blue">$12.6k</div><div class="sub">received from OEMs</div></div>
+    <div class="kpi"><div class="lbl">Avg Days to Return</div>
+      <div class="val c-teal">14d</div><div class="sub">cust → grade → vendor</div></div>
+  </div>
+
+  <!-- Pipeline strip -->
+  <div class="pipeline">
+    <div class="stage st-owed"><div class="lbl">Owed by Customer</div>
+      <div class="ct c-amber">47</div><div class="sub">$18,420</div></div>
+    <div class="stage st-awaiting"><div class="lbl">Awaiting Receipt</div>
+      <div class="ct c-blue">12</div><div class="sub">tracking provided</div></div>
+    <div class="stage st-received"><div class="lbl">Received / Quarantine</div>
+      <div class="ct c-purple">8</div><div class="sub">awaiting grade</div></div>
+    <div class="stage st-graded"><div class="lbl">Graded — Ready</div>
+      <div class="ct c-teal">15</div><div class="sub">pack-out queue</div></div>
+    <div class="stage st-vendor"><div class="lbl">Out to Vendor</div>
+      <div class="ct c-accent">11</div><div class="sub">awaiting deposit</div></div>
+    <div class="stage st-closed"><div class="lbl">Closed MTD</div>
+      <div class="ct c-green">63</div><div class="sub">full cycle</div></div>
+  </div>
+
+  <!-- Needs Attention -->
+  <div class="attn">
+    <span class="head">⚠ NEEDS ATTENTION</span>
+    <span class="chip"><span class="badge" style="background:var(--red)">7</span>Cores 60+ days overdue</span>
+    <span class="chip"><span class="badge" style="background:var(--amber)">5</span>Auto-bill window closing</span>
+    <span class="chip"><span class="badge" style="background:var(--blue)">3</span>Received — no inspection</span>
+    <span class="chip"><span class="badge" style="background:var(--purple)">2</span>Grade C — vendor decision</span>
+    <span class="chip"><span class="badge" style="background:var(--red)">1</span>Scrapped — credit denied</span>
+    <span class="chip"><span class="badge" style="background:var(--amber)">4</span>Vendor refund overdue</span>
+    <span class="chip"><span class="badge" style="background:var(--blue)">2</span>ESN mismatch</span>
+  </div>
+
+  <!-- Filters -->
+  <div class="filters">
+    <input class="search" placeholder="🔍   Search by core #, ESN, customer, invoice…" />
+    <select class="select">
+      <option>All Stages</option>
+      <option>Owed by Customer</option><option>Awaiting Receipt</option>
+      <option>Received / Quarantine</option><option>Graded — Ready</option>
+      <option>Out to Vendor</option><option>Closed</option>
+    </select>
+    <select class="select">
+      <option>All Grades</option>
+      <option>A — Rebuildable</option><option>B — Repairable</option>
+      <option>C — Marginal</option><option>X — Scrap</option>
+    </select>
+    <select class="select">
+      <option>All Engine Families</option>
+      <option>Cummins ISX</option><option>Detroit DD15</option>
+      <option>Detroit Series 60</option><option>CAT C15</option>
+    </select>
+    <select class="select">
+      <option>All Vendors</option>
+      <option>Cummins Reman</option><option>Detroit Reman</option>
+      <option>JASPER</option>
+    </select>
+    <select class="select">
+      <option>Aging — All</option><option>0–30d</option><option>31–60d</option>
+      <option>61–90d</option><option>90+ days</option>
+    </select>
+    <div class="spacer"></div>
+    <button class="btn btn-ghost">View / Edit</button>
+    <button class="btn btn-ghost" style="color:var(--blue)">📥 Receive</button>
+    <button class="btn btn-ghost" style="color:var(--teal)">⚒ Grade</button>
+    <button class="btn btn-ghost" style="color:var(--accent)">📦 Pack to Vendor</button>
+    <button class="btn btn-green">$ Issue Credit</button>
+  </div>
+
+  <!-- Table — unified core workflow list -->
+  <table>
+    <thead><tr>
+      <th>Core #</th><th>Customer</th><th>Part / ESN</th>
+      <th class="center">Stage</th><th class="center">Grade</th>
+      <th class="right">Core $</th><th>Invoice</th>
+      <th>Vendor</th><th class="center">Days</th>
+      <th>Activity</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td class="sku">CR-3041</td>
+        <td><div class="cust"><div class="nm">Acme Trucking LLC</div>
+            <div class="sb">Spokane, WA · Net 30</div></div></td>
+        <td><div class="cust"><div class="nm">JAKS-3682821</div>
+            <div class="sb">Cummins ISX 15 Cyl Head · ESN 79462384</div></div></td>
+        <td class="center"><span class="pill p-owed">OWED</span></td>
+        <td class="center"><span class="grade un">—</span></td>
+        <td class="right mono">$1,500.00</td>
+        <td class="sku">INV-10234</td>
+        <td>Cummins Reman</td>
+        <td class="center c-red mono">68d</td>
+        <td><div class="acts">
+          <span class="act blue">✉</span><span class="act amber">⏰</span>
+          <span class="act red">⚠</span><span class="act off">📷</span>
+          <span class="act off">⚒</span><span class="act off">$</span></div></td>
+      </tr>
+      <tr>
+        <td class="sku">CR-3040</td>
+        <td><div class="cust"><div class="nm">Northwest Fleet Services</div>
+            <div class="sb">Boise, ID · Net 30</div></div></td>
+        <td><div class="cust"><div class="nm">JAKS-DUSA-P190011</div>
+            <div class="sb">DS60 Connecting Rod · ESN 23914887</div></div></td>
+        <td class="center"><span class="pill p-await">IN TRANSIT</span></td>
+        <td class="center"><span class="grade un">—</span></td>
+        <td class="right mono">$148.00</td>
+        <td class="sku">INV-10221</td>
+        <td>Detroit Reman</td>
+        <td class="center c-amber mono">12d</td>
+        <td><div class="acts">
+          <span class="act green">✉</span><span class="act green">📦</span>
+          <span class="act off">⏰</span><span class="act off">📷</span>
+          <span class="act off">⚒</span><span class="act off">$</span></div></td>
+      </tr>
+      <tr>
+        <td class="sku">CR-3039</td>
+        <td><div class="cust"><div class="nm">JB Truck Repair</div>
+            <div class="sb">Yakima, WA · COD</div></div></td>
+        <td><div class="cust"><div class="nm">JAKS-23532555</div>
+            <div class="sb">DS60 14L Rod (Reman) · ESN 41258003</div></div></td>
+        <td class="center"><span class="pill p-rcvd">RECEIVED</span></td>
+        <td class="center"><span class="grade un">?</span></td>
+        <td class="right mono">$188.00</td>
+        <td class="sku">INV-10198</td>
+        <td>Detroit Reman</td>
+        <td class="center c-blue mono">3d</td>
+        <td><div class="acts">
+          <span class="act green">✉</span><span class="act green">📦</span>
+          <span class="act blue">📥</span><span class="act purple">📷</span>
+          <span class="act off">⚒</span><span class="act off">$</span></div></td>
+      </tr>
+      <tr>
+        <td class="sku">CR-3038</td>
+        <td><div class="cust"><div class="nm">Highline Diesel Inc.</div>
+            <div class="sb">Pasco, WA · Net 15</div></div></td>
+        <td><div class="cust"><div class="nm">JAKS-DD15-TURBO</div>
+            <div class="sb">DD15 Turbocharger · ESN T-90412</div></div></td>
+        <td class="center"><span class="pill p-graded">GRADED</span></td>
+        <td class="center"><span class="grade A">A</span></td>
+        <td class="right mono">$850.00</td>
+        <td class="sku">INV-10184</td>
+        <td>Detroit Reman</td>
+        <td class="center mono">7d</td>
+        <td><div class="acts">
+          <span class="act green">✉</span><span class="act green">📦</span>
+          <span class="act green">📥</span><span class="act green">📷</span>
+          <span class="act teal">⚒</span><span class="act off">$</span></div></td>
+      </tr>
+      <tr>
+        <td class="sku">CR-3037</td>
+        <td><div class="cust"><div class="nm">Pacific Auto Parts</div>
+            <div class="sb">Seattle, WA · Net 30</div></div></td>
+        <td><div class="cust"><div class="nm">JAKS-3682821</div>
+            <div class="sb">Cummins ISX 15 Cyl Head · ESN 79460112</div></div></td>
+        <td class="center"><span class="pill p-shipped">OUT TO VENDOR</span></td>
+        <td class="center"><span class="grade B">B</span></td>
+        <td class="right mono">$1,500.00</td>
+        <td class="sku">INV-10166</td>
+        <td>Cummins Reman</td>
+        <td class="center c-amber mono">22d</td>
+        <td><div class="acts">
+          <span class="act green">✉</span><span class="act green">📦</span>
+          <span class="act green">📥</span><span class="act green">📷</span>
+          <span class="act green">⚒</span><span class="act amber">$</span></div></td>
+      </tr>
+      <tr>
+        <td class="sku">CR-3036</td>
+        <td><div class="cust"><div class="nm">Acme Trucking LLC</div>
+            <div class="sb">Spokane, WA · Net 30</div></div></td>
+        <td><div class="cust"><div class="nm">JAKS-141181</div>
+            <div class="sb">ISX Front Crank Seal Kit · ESN N/A</div></div></td>
+        <td class="center"><span class="pill p-credit">CREDITED</span></td>
+        <td class="center"><span class="grade A">A</span></td>
+        <td class="right mono">$95.00</td>
+        <td class="sku">INV-10142</td>
+        <td>Cummins Reman</td>
+        <td class="center c-green mono">11d</td>
+        <td><div class="acts">
+          <span class="act green">✉</span><span class="act green">📦</span>
+          <span class="act green">📥</span><span class="act green">📷</span>
+          <span class="act green">⚒</span><span class="act green">$</span></div></td>
+      </tr>
+      <tr>
+        <td class="sku">CR-3035</td>
+        <td><div class="cust"><div class="nm">Big Sky Hauling</div>
+            <div class="sb">Missoula, MT · Net 30</div></div></td>
+        <td><div class="cust"><div class="nm">JAKS-DD15-EGR</div>
+            <div class="sb">DD15 EGR Cooler · ESN E-44291</div></div></td>
+        <td class="center"><span class="pill p-scrap">SCRAPPED</span></td>
+        <td class="center"><span class="grade X">X</span></td>
+        <td class="right mono">$425.00</td>
+        <td class="sku">INV-10128</td>
+        <td>Detroit Reman</td>
+        <td class="center mono">9d</td>
+        <td><div class="acts">
+          <span class="act green">✉</span><span class="act green">📦</span>
+          <span class="act green">📥</span><span class="act red">📷</span>
+          <span class="act red">⚒</span><span class="act red">⚠</span></div></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="footer">
+    7 of 117 cores shown  ·  $4,706 in motion this view  ·
+    next auto-bill batch runs 05/21 (cores &gt; 90d on customer)
+  </div>
+
+</div>
+</body>
+</html>

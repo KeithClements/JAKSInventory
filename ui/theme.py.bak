@@ -1,0 +1,425 @@
+"""UI theme stylesheet."""
+
+from __future__ import annotations
+
+__all__ = [
+    "THEME_COLORS",
+    "STATUS_BADGE_COLORS",
+    "BUTTON_STYLES",
+    "get_theme_stylesheet",
+    "get_status_badge_style",
+    "get_button_style",
+]
+
+# Olive green color scheme
+THEME_COLORS = {
+    "primary": "#6B7A4A",        # Olive green - primary actions
+    "primary_hover": "#5A6A3A",
+    "success": "#4A7A4A",        # Forest green - success/ready states  
+    "warning": "#B8860B",        # Dark goldenrod - warnings
+    "danger": "#DC2626",         # Red - errors/danger
+    "danger_hover": "#B91C1C",   # Darker red for hover
+    "bg": "#F5F5F0",             # Light cream background
+    "panel": "#FFFFFF",          # White panels
+    "field": "#FFFFFF",          # White input fields
+    "border": "#A0A090",         # Olive gray border
+    "text": "#2D2D2D",           # Dark text
+    "text_muted": "#606050",     # Muted olive text
+    "header_bg": "#E8E8E0",      # Light olive header background
+}
+
+# Status badge color schemes
+STATUS_BADGE_COLORS = {
+    "ready": {"bg": "#DCFCE7", "text": "#166534", "border": "#86EFAC"},
+    "uploaded": {"bg": "#DBEAFE", "text": "#1E40AF", "border": "#93C5FD"},
+    "pending": {"bg": "#FEF9C3", "text": "#854D0E", "border": "#FDE047"},
+    "review": {"bg": "#FEF9C3", "text": "#854D0E", "border": "#FDE047"},
+    "error": {"bg": "#FEE2E2", "text": "#991B1B", "border": "#FCA5A5"},
+    "draft": {"bg": "#F3F4F6", "text": "#4B5563", "border": "#D1D5DB"},
+    "modified": {"bg": "#F3E8FF", "text": "#6B21A8", "border": "#C4B5FD"},
+    "synced": {"bg": "#DBEAFE", "text": "#1E40AF", "border": "#93C5FD"},
+    "low_stock": {"bg": "#FEF3C7", "text": "#92400E", "border": "#FCD34D"},
+    "out_of_stock": {"bg": "#FEE2E2", "text": "#991B1B", "border": "#FCA5A5"},
+}
+
+# Button variant styles
+BUTTON_STYLES = {
+    "primary": {
+        "bg": "#6B7A4A",
+        "bg_hover": "#5A6A3A",
+        "text": "#FFFFFF",
+        "border": "none",
+    },
+    "secondary": {
+        "bg": "transparent",
+        "bg_hover": "#F3F4F6",
+        "text": "#6B7A4A",
+        "border": "1px solid #6B7A4A",
+    },
+    "success": {
+        "bg": "#4A7A4A",
+        "bg_hover": "#3D6A3D",
+        "text": "#FFFFFF",
+        "border": "none",
+    },
+    "danger": {
+        "bg": "#DC2626",
+        "bg_hover": "#B91C1C",
+        "text": "#FFFFFF",
+        "border": "none",
+    },
+    "warning": {
+        "bg": "#F59E0B",
+        "bg_hover": "#D97706",
+        "text": "#FFFFFF",
+        "border": "none",
+    },
+}
+
+
+def get_status_badge_style(status: str) -> str:
+    """Get CSS style for a status badge."""
+    colors = STATUS_BADGE_COLORS.get(status.lower(), STATUS_BADGE_COLORS["draft"])
+    return f"""
+        background-color: {colors['bg']};
+        color: {colors['text']};
+        border: 1px solid {colors['border']};
+        border-radius: 10px;
+        padding: 2px 8px;
+        font-size: 11px;
+        font-weight: bold;
+    """
+
+
+def get_button_style(variant: str = "primary") -> str:
+    """Get stylesheet for a button variant.
+    
+    Args:
+        variant: One of 'primary', 'secondary', 'success', 'danger', 'warning'
+    """
+    style = BUTTON_STYLES.get(variant, BUTTON_STYLES["primary"])
+    return f"""
+        QPushButton {{
+            background-color: {style['bg']};
+            color: {style['text']};
+            border: {style['border']};
+            border-radius: 4px;
+            padding: 8px 16px;
+            font-weight: 500;
+        }}
+        QPushButton:hover {{
+            background-color: {style['bg_hover']};
+        }}
+        QPushButton:disabled {{
+            background-color: #E5E7EB;
+            color: #9CA3AF;
+            border: 1px solid #D1D5DB;
+        }}
+    """
+
+
+def get_theme_stylesheet(*, dark: bool = False) -> str:
+    """Return olive green theme stylesheet.
+    
+    Args:
+        dark: If True, return dark mode variant (currently not implemented).
+    """
+    c = THEME_COLORS
+
+    # Build absolute path to checkmark SVG for QSS image: url(...)
+    import pathlib as _pathlib
+    _check_svg = _pathlib.Path(__file__).resolve().parent.parent / "jaks_inventory" / "assets" / "checkmark.svg"
+    _check_url = str(_check_svg).replace("\\", "/")
+    
+    return f"""
+QMainWindow, QWidget {{
+    background-color: {c['bg']};
+    color: {c['text']};
+    font-family: 'Segoe UI', Arial, sans-serif;
+}}
+
+QLabel {{
+    color: {c['text']};
+}}
+
+QLineEdit, QComboBox, QSpinBox {{
+    background-color: {c['field']};
+    color: {c['text']};
+    border: 1px solid {c['border']};
+    border-radius: 4px;
+    padding: 5px 8px;
+    min-height: 20px;
+}}
+
+QLineEdit:focus, QComboBox:focus {{
+    border-color: {c['primary']};
+}}
+
+QTextEdit {{
+    background-color: {c['field']};
+    color: {c['text']};
+    border: 1px solid {c['border']};
+    border-radius: 4px;
+    padding: 4px;
+}}
+
+QTableWidget {{
+    background-color: {c['panel']};
+    color: {c['text']};
+    border: 1px solid {c['border']};
+    border-radius: 4px;
+    gridline-color: {c['border']};
+    alternate-background-color: #F8F8F5;
+}}
+
+QTableWidget::item {{
+    padding: 6px 8px;
+}}
+
+QTableWidget::item:selected {{
+    background-color: {c['primary']};
+    color: white;
+}}
+
+QTableWidget::item:hover:!selected {{
+    background-color: #EEEEE8;
+}}
+
+QPushButton {{
+    background-color: {c['primary']};
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 8px 16px;
+    font-weight: 500;
+}}
+
+QPushButton:hover {{
+    background-color: {c['primary_hover']};
+}}
+
+QPushButton:pressed {{
+    background-color: #1E40AF;
+}}
+
+QPushButton:disabled {{
+    background-color: #E5E7EB;
+    color: #6B7280;
+    border: 1px solid #D1D5DB;
+}}
+
+QPushButton:checked {{
+    background-color: {c['success']};
+}}
+
+QPushButton#phase_button {{
+    background-color: {c['success']};
+}}
+
+QPushButton#phase_button:hover {{
+    background-color: #15803D;
+}}
+
+QTabWidget::pane {{
+    border: 1px solid {c['border']};
+    background: {c['panel']};
+    border-radius: 4px;
+}}
+
+QTabBar::tab {{
+    background: {c['header_bg']};
+    border: 1px solid {c['border']};
+    padding: 8px 16px;
+    margin-right: 2px;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+}}
+
+QTabBar::tab:selected {{
+    background: {c['panel']};
+    border-bottom-color: {c['panel']};
+}}
+
+QTabBar::tab:hover {{
+    background: {c['panel']};
+}}
+
+QGroupBox {{
+    font-weight: bold;
+    border: 1px solid {c['border']};
+    border-radius: 4px;
+    margin-top: 12px;
+    padding-top: 8px;
+}}
+
+QGroupBox::title {{
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 8px;
+    color: {c['text']};
+}}
+
+QProgressBar {{
+    border: 1px solid {c['border']};
+    border-radius: 4px;
+    text-align: center;
+    background: {c['field']};
+}}
+
+QProgressBar::chunk {{
+    background-color: {c['primary']};
+    border-radius: 3px;
+}}
+
+QScrollBar:vertical {{
+    border: none;
+    background: {c['bg']};
+    width: 10px;
+    margin: 0;
+}}
+
+QScrollBar::handle:vertical {{
+    background: {c['border']};
+    min-height: 20px;
+    border-radius: 5px;
+}}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0;
+}}
+
+QScrollBar:horizontal {{
+    border: none;
+    background: {c['bg']};
+    height: 10px;
+    margin: 0;
+}}
+
+QScrollBar::handle:horizontal {{
+    background: {c['border']};
+    min-width: 20px;
+    border-radius: 5px;
+}}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0;
+}}
+
+QHeaderView::section {{
+    background-color: {c['header_bg']};
+    color: {c['text']};
+    padding: 8px;
+    border: none;
+    border-right: 1px solid {c['border']};
+    border-bottom: 1px solid {c['border']};
+    font-weight: 500;
+}}
+
+QCheckBox {{
+    color: {c['text']};
+    spacing: 8px;
+}}
+
+QCheckBox::indicator {{
+    width: 18px;
+    height: 18px;
+    border: 2px solid {c['border']};
+    border-radius: 4px;
+    background: {c['field']};
+}}
+
+QCheckBox::indicator:checked {{
+    background-color: {c['primary']};
+    border-color: {c['primary']};
+    image: url("{_check_url}");
+}}
+
+QCheckBox::indicator:checked:hover {{
+    background-color: {c['primary_hover']};
+    border-color: {c['primary_hover']};
+}}
+
+QCheckBox::indicator:hover {{
+    border-color: {c['primary']};
+}}
+
+QCheckBox::indicator:disabled {{
+    background: #E5E7EB;
+    border-color: #D1D5DB;
+}}
+
+QCheckBox::indicator:checked:disabled {{
+    background: #9CA3AF;
+    border-color: #9CA3AF;
+}}
+
+QTableWidget::indicator {{
+    width: 18px;
+    height: 18px;
+    border: 2px solid {c['border']};
+    border-radius: 4px;
+    background: {c['field']};
+}}
+
+QTableWidget::indicator:checked {{
+    background-color: {c['primary']};
+    border-color: {c['primary']};
+    image: url("{_check_url}");
+}}
+
+QTableWidget::indicator:unchecked {{
+    background: {c['field']};
+    border-color: {c['border']};
+}}
+
+QToolBar {{
+    background: {c['header_bg']};
+    border: none;
+    spacing: 4px;
+    padding: 4px;
+}}
+
+QToolButton {{
+    background: transparent;
+    border: none;
+    padding: 6px;
+    border-radius: 4px;
+}}
+
+QToolButton:hover {{
+    background: {c['panel']};
+}}
+
+QToolButton:pressed {{
+    background: {c['border']};
+}}
+
+QMenu {{
+    background: {c['panel']};
+    border: 1px solid {c['border']};
+    padding: 4px;
+}}
+
+QMenu::item {{
+    padding: 8px 24px;
+    border-radius: 4px;
+}}
+
+QMenu::item:selected {{
+    background: {c['primary']};
+    color: white;
+}}
+
+QMenuBar {{
+    background: {c['header_bg']};
+    border-bottom: 1px solid {c['border']};
+}}
+
+QMenuBar::item {{
+    padding: 8px 12px;
+}}
+
+QMenuBar::item:selected {{
+    background: {c['panel']};
+}}
+"""

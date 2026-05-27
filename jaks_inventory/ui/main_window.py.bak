@@ -1,0 +1,1121 @@
+﻿from __future__ import annotations
+
+import logging
+import sys
+from pathlib import Path
+
+from collections import deque
+
+from PySide6.QtCore import Qt, QEvent, QPoint, QTimer, Signal
+from PySide6.QtGui import QFont, QShortcut, QKeySequence, QCursor
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QSplitter,
+    QStackedWidget,
+    QToolButton,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
+from db import init_db
+
+log = logging.getLogger(__name__)
+
+# Import theme from parent ui module
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from ui.theme import get_theme_stylesheet
+
+from .products_screen import ProductsScreen
+from .vendors_screen import VendorsScreen
+from .po_screen import POScreen, POReceiptsScreen
+from .customers_screen import CustomersScreen
+from .invoices_screen import InvoicesScreen
+from .reports_screen import ReportsScreen
+from .barcode_screen import BarcodeScreen
+from .settings_screen import SettingsScreen
+from .locations_screen import LocationsScreen
+from .cores_screen import CoresScreen
+from .dashboard_screen import DashboardScreen
+from .audit_screen import AuditScreen
+from .sales_orders_screen import SalesOrdersScreen
+from .returns_screen import ReturnsScreen
+from .price_lists_screen import PriceListsScreen
+from .vendor_returns_screen import VendorReturnsScreen  # deprecated, kept for deep-links
+from .vendor_returns_combined_screen import VendorReturnsCombinedScreen
+from .processing_center_screen import ProcessingCenterScreen
+from .customer_cores_screen import CustomerCoresScreen
+from .kits_screen import KitsScreen
+from .margin_screen import MarginScreen
+from .import_screen import ImportScreen
+from .crm_screen import CRMScreen
+from .aging_screen import AgingARScreen
+from .qbo_screen import QBOScreen
+from .sync_center import QBOSyncCenterScreen
+from .low_stock_screen import LowStockScreen
+from .quotes_screen import QuotesScreen
+from .lost_sales_screen import LostSalesScreen
+from .scraper_screen import ScraperScreen
+from .hhp_scraper_screen import HHPScraperScreen
+from .category_overview_screen import CategoryOverviewScreen
+from .quick_nav_dialog import QuickNavDialog
+from .pricing_overview_screen import PricingOverviewScreen
+from .pricing_maintenance_screen import PricingMaintenanceScreen
+from .tiered_pricing_screen import TieredPricingScreen
+from .customer_list_screen import CustomerListScreen
+
+from .customer_core_report_screen import CustomerCoreReportScreen
+from .marketing_screen import MarketingScreen
+from .messaging_screen import MessagingScreen
+from .automation_screen import AutomationScreen
+from .bulk_import_screen import BulkImportScreen
+from .part_finder_screen import PartFinderScreen
+from .adjustments_screen import AdjustmentsScreen
+from .deliveries_screen import DeliveriesScreen
+
+# Role for storing the stack index on tree items
+_STACK_INDEX_ROLE = Qt.ItemDataRole.UserRole
+_CAT_KEY_ROLE = Qt.ItemDataRole.UserRole + 1
+_CAT_CHILDREN_ROLE = Qt.ItemDataRole.UserRole + 2
+
+
+class InventoryMainWindow(QMainWindow):
+    # Cross-window data-change signals (Phase M). Other dialogs/screens can
+    # subscribe to these to refresh themselves when something changes in
+    # another window. Each signal carries the affected row id.
+    customer_changed = Signal(int)
+    product_changed = Signal(int)
+    quote_changed = Signal(int)
+    so_changed = Signal(int)
+    invoice_changed = Signal(int)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("JAKS Inventory")
+        self.setMinimumSize(1000, 650)
+
+        # Apply olive green theme
+        self.setStyleSheet(get_theme_stylesheet())
+
+        try:
+            init_db()
+            self._apply_migrations()
+        except Exception as e:
+            QMessageBox.critical(self, "Database Error", f"Failed to initialize database:\n{e}")
+
+        # Roll any past-due warranties to "expired" once per launch.
+        try:
+            from db import expire_due_warranties
+            expire_due_warranties()
+        except Exception:
+            pass
+
+        self._build_ui()
+
+        if self._migration_errors:
+            count = len(self._migration_errors)
+            preview = "\n".join(f"  • {name}: {msg}" for name, msg in self._migration_errors[:5])
+            more = "" if count <= 5 else f"\n  … and {count - 5} more"
+            self.statusBar().showMessage(
+                f"⚠ {count} migration warning(s) — see details on startup"
+            )
+            QMessageBox.warning(
+                self,
+                "Migration warnings",
+                f"{count} migration file(s) reported errors (the app will still run):\n\n{preview}{more}",
+            )
+        else:
+            self.statusBar().showMessage("Ready")
+        self.setWindowModality(Qt.WindowModality.NonModal)
+
+        # Tier 4: drain QBO webhook events in the background every 60s.
+        # No-ops when the table is empty, so safe to run unconditionally.
+        try:
+            self._qbo_webhook_timer = QTimer(self)
+            self._qbo_webhook_timer.setInterval(60_000)
+            self._qbo_webhook_timer.timeout.connect(self._drain_qbo_webhook_events)
+            self._qbo_webhook_timer.timeout.connect(self._refresh_qbo_status_pill)
+            self._qbo_webhook_timer.start()
+        except Exception:
+            pass
+
+        # A4: QBO health pill in the status bar.
+        try:
+            self._install_qbo_status_pill()
+        except Exception as exc:
+            log.debug("QBO status pill skipped: %s", exc)
+
+    # ------------------------------------------------------------------
+    # A4: QBO status pill (always-visible health indicator)
+    # ------------------------------------------------------------------
+    def _install_qbo_status_pill(self) -> None:
+        """Put a clickable QBO health pill on the right side of the status bar.
+
+        Shows: ``● <mode> · <N> pending · <N> failed``. Click navigates
+        to the QBO Sync Center so the user can drill in.
+        """
+        self._qbo_pill = QPushButton("● QBO …")
+        self._qbo_pill.setFlat(True)
+        self._qbo_pill.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._qbo_pill.setToolTip(
+            "QBO sync status — click to open the QBO Sync Center."
+        )
+        self._qbo_pill.setStyleSheet(
+            "QPushButton {"
+            "  padding: 2px 10px; border-radius: 9px;"
+            "  background: #ECEFF1; color: #263238;"
+            "  font-weight: 600;"
+            "}"
+            "QPushButton:hover { background: #CFD8DC; }"
+        )
+        self._qbo_pill.clicked.connect(
+            lambda: self._navigate_to_screen("QBO Sync Center")
+        )
+        try:
+            self.statusBar().addPermanentWidget(self._qbo_pill)
+        except Exception as exc:
+            log.debug("status bar add pill failed: %s", exc)
+            return
+        self._refresh_qbo_status_pill()
+
+    def _refresh_qbo_status_pill(self) -> None:
+        """Recompute the pill label + color from current QBO state.
+
+        Defensive — never raises, so a transient DB / QBO outage cannot
+        crash the shell.
+        """
+        pill = getattr(self, "_qbo_pill", None)
+        if pill is None:
+            return
+        # Mode
+        try:
+            from qbo.config import describe as _qbo_describe
+            info = _qbo_describe() or {}
+        except Exception:
+            info = {}
+        mode = (info.get("mode") or "unknown").replace("_", " ")
+        mock = bool(info.get("mock"))
+
+        # Pending webhook events
+        pending = 0
+        try:
+            from qbo.webhook_worker import pending_count
+            pending = int(pending_count() or 0)
+        except Exception:
+            pending = 0
+
+        # Unresolved sync failures
+        failed = 0
+        try:
+            from db.database import get_db
+            with get_db() as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM qbo_sync_log "
+                    "WHERE status = 'failed' AND resolved_at IS NULL"
+                ).fetchone()
+                failed = int((row[0] if row else 0) or 0)
+        except Exception:
+            failed = 0
+
+        parts = [f"● QBO {mode}"]
+        if pending:
+            parts.append(f"{pending} pending")
+        if failed:
+            parts.append(f"{failed} failed")
+        pill.setText(" · ".join(parts))
+
+        # Color: green=live read/write, yellow=mock, red=failures
+        if failed:
+            bg, fg = "#FFEBEE", "#B71C1C"     # red-ish
+        elif mock or "mock" in mode:
+            bg, fg = "#FFF8E1", "#F57F17"     # amber
+        elif "write" in mode:
+            bg, fg = "#E8F5E9", "#1B5E20"     # green
+        else:
+            bg, fg = "#E3F2FD", "#0D47A1"     # blue (read only)
+        pill.setStyleSheet(
+            "QPushButton {"
+            "  padding: 2px 10px; border-radius: 9px;"
+            f"  background: {bg}; color: {fg};"
+            "  font-weight: 600;"
+            "}"
+            "QPushButton:hover { background: #CFD8DC; }"
+        )
+
+    def _drain_qbo_webhook_events(self) -> None:
+        """Process pending QBO webhook events (best-effort, silent)."""
+        try:
+            from qbo.webhook_worker import pending_count, process_pending
+            if pending_count() <= 0:
+                return
+            result = process_pending(limit=50)
+            if result.get("failed"):
+                log.warning("QBO webhook drain: %s", result)
+        except Exception as exc:
+            log.debug("QBO webhook drain skipped: %s", exc)
+
+    # Populated by _apply_migrations so the window can surface failures.
+    _migration_errors: list[tuple[str, str]] = []
+
+    @classmethod
+    def _apply_migrations(cls) -> None:
+        """Run all numbered migration files against the current DB.
+
+        Errors are collected (not silently swallowed) so the window can
+        display a banner if any migration fails. Idempotent "already
+        applied" errors are still collected but easy to spot in logs.
+
+        Before running, take a timestamped backup of the SQLite database
+        (skipped when running on Postgres).
+        """
+        import importlib
+        import logging
+        from pathlib import Path
+        from db.database import get_db, get_database_url
+
+        log = logging.getLogger(__name__)
+        cls._migration_errors = []
+
+        # Pre-migration backup (SQLite only)
+        try:
+            cls._backup_sqlite_db(get_database_url())
+        except Exception as exc:  # pragma: no cover — backup is best-effort
+            log.warning("Pre-migration backup skipped: %s", exc)
+
+        migrations_dir = Path(__file__).resolve().parent.parent.parent / "db" / "migrations"
+        if not migrations_dir.is_dir():
+            return
+        migration_files = sorted(migrations_dir.glob("[0-9]*.py"))
+        with get_db() as conn:
+            for mf in migration_files:
+                mod_name = f"db.migrations.{mf.stem}"
+                try:
+                    mod = importlib.import_module(mod_name)
+                    if hasattr(mod, "migrate"):
+                        mod.migrate(conn)
+                    elif hasattr(mod, "up"):
+                        mod.up(conn)
+                    elif hasattr(mod, "run"):
+                        mod.run(conn)
+                    elif hasattr(mod, "run_migration"):
+                        mod.run_migration()
+                except Exception as exc:
+                    msg = f"{type(exc).__name__}: {exc}"
+                    log.warning("Migration %s failed: %s", mf.stem, msg)
+                    cls._migration_errors.append((mf.stem, msg))
+            conn.commit()
+
+    @staticmethod
+    def _backup_sqlite_db(database_url: str, *, keep: int = 30) -> None:
+        """Copy the SQLite DB to output/backups/<timestamp>.db before migrating.
+
+        - No-op for non-SQLite URLs.
+        - No-op when the DB file does not yet exist (fresh install).
+        - Trims old backups beyond `keep` newest copies.
+        """
+        import shutil
+        from datetime import datetime
+        from pathlib import Path
+
+        if not database_url.startswith("sqlite"):
+            return
+        # sqlite:///<path>
+        db_path = database_url.split("sqlite:///", 1)[-1]
+        src = Path(db_path)
+        if not src.is_file() or src.stat().st_size == 0:
+            return
+        backup_dir = src.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = backup_dir / f"{src.stem}_{stamp}.db"
+        shutil.copy2(src, dest)
+        # Keep only the newest `keep` backups
+        snaps = sorted(backup_dir.glob(f"{src.stem}_*.db"), reverse=True)
+        for old in snaps[keep:]:
+            try:
+                old.unlink()
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # Sidebar structure: categories -> screens
+    # ------------------------------------------------------------------
+    _NAV_STRUCTURE = [
+        ("DASHBOARD", None, [
+            ("Dashboard", DashboardScreen),
+        ]),
+        ("SALES", None, [
+            ("Quotes", QuotesScreen),
+            ("Lost Sales", LostSalesScreen),
+            ("Sales Orders", SalesOrdersScreen),
+            ("Invoices", InvoicesScreen),
+            ("Deliveries", DeliveriesScreen),
+            ("CRM", CRMScreen),
+            ("Returns", ReturnsScreen),
+        ]),
+        ("CORE PROCESSING", None, [
+            ("Processing Dashboard", ProcessingCenterScreen),
+            ("Customer Cores", CustomerCoresScreen),
+            ("Vendor Returns", VendorReturnsCombinedScreen),
+        ]),
+        ("INVENTORY", None, [
+            ("Products", ProductsScreen),
+            ("Bulk Import", BulkImportScreen),
+            ("Adjustments", AdjustmentsScreen),
+            ("Locations", LocationsScreen),
+            ("Kits", KitsScreen),
+            ("Audit", AuditScreen),
+        ]),
+        ("PURCHASING", None, [
+            ("Purchase Orders", POScreen),
+            ("PO Receipts", POReceiptsScreen),
+            ("Vendors", VendorsScreen),
+            ("Low Stock & Reorder", LowStockScreen),
+        ]),
+        ("PRICING", None, [
+            ("Price Lists", PriceListsScreen),
+            ("Pricing Maintenance", PricingMaintenanceScreen),
+            ("Tiered Pricing", TieredPricingScreen),
+        ]),
+        ("CUSTOMERS", None, [
+            ("Customer Maintenance", CustomersScreen),
+        ]),
+        ("MARKETING", None, [
+            ("Text Messaging", MessagingScreen),
+            ("SMS Campaigns", MarketingScreen),
+            ("Automation", AutomationScreen),
+        ]),
+        ("ACCOUNTING", None, [
+            ("Margins", MarginScreen),
+            ("QBO Sync Center", QBOSyncCenterScreen),
+            ("QBO Reconciliation", QBOScreen),
+            ("Aging AR", AgingARScreen),
+            ("Reports", ReportsScreen),
+        ]),
+        ("TOOLS", None, [
+            ("Part Finder", PartFinderScreen),
+            ("Barcodes", BarcodeScreen),
+            ("Import", ImportScreen),
+            ("HHP Scraper", HHPScraperScreen),
+            ("Scraper Admin", ScraperScreen),
+        ]),
+    ]
+
+    def _build_ui(self) -> None:
+        """Build the main window with sidebar categories + hover flyout menus."""
+        central = QWidget()
+        root_layout = QVBoxLayout(central)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        # ── Build stacked widget with all screens ──
+        self._stack = QStackedWidget()
+        stack_index = 0
+        self._products_stack_index = 0
+        self._screen_name_to_index: dict[str, int] = {}
+        self._index_to_screen_name: dict[int, str] = {}
+        # Map category tree items to their children's indices for flyout menus
+        self._cat_children: dict[int, list[tuple[str, int]]] = {}
+        # Map child stack index → parent category QTreeWidgetItem (for active reflection)
+        self._index_to_cat_item: dict[int, QTreeWidgetItem] = {}
+        # All category items, in order — for searching/iterating
+        self._cat_items: list[QTreeWidgetItem] = []
+        # Recently visited screen names (most recent first), capped
+        self._recent_screens: deque[str] = deque(maxlen=6)
+
+        cat_font = QFont()
+        cat_font.setBold(True)
+        cat_font.setPointSize(9)
+
+        # ── Sidebar list — categories only (no tree expansion) ──
+        self._nav_tree = QTreeWidget()
+        self._nav_tree.setHeaderHidden(True)
+        self._nav_tree.setMinimumWidth(160)
+        self._nav_tree.setMaximumWidth(200)
+        self._nav_tree.setIndentation(0)
+        self._nav_tree.setRootIsDecorated(False)
+        self._nav_tree.setExpandsOnDoubleClick(False)
+        self._nav_tree.setAnimated(False)
+        self._nav_tree.setStyleSheet("""
+            QTreeWidget {
+                background-color: #3d4a38;
+                color: white;
+                border: none;
+                font-size: 11pt;
+                outline: none;
+            }
+            QTreeWidget::item {
+                padding: 8px 10px 8px 13px;
+                border-bottom: 1px solid rgba(255,255,255,0.06);
+                border-left: 3px solid transparent;
+            }
+            QTreeWidget::item:selected {
+                background-color: #4d5a48;
+                color: #f5f7e8;
+                font-weight: bold;
+                border-left: 3px solid #cdd944;
+            }
+            QTreeWidget::item:hover:!selected {
+                background-color: #4d5a48;
+            }
+        """)
+
+        for label, screen_cls, children in self._NAV_STRUCTURE:
+            if children is not None:
+                cat_key = label.split()[-1]  # DASHBOARD, SALES, …
+
+                # Register child screens into stack
+                child_entries: list[tuple[str, int]] = []
+                first_child_index = stack_index
+                for child_label, child_cls in children:
+                    if child_cls is ProductsScreen:
+                        self._products_stack_index = stack_index
+                    self._screen_name_to_index[child_label.strip()] = stack_index
+                    screen = child_cls(parent=self)
+                    if hasattr(screen, "navigate_to"):
+                        screen.navigate_to.connect(self._navigate_to_screen)
+                    if hasattr(screen, "navigate_to_settings"):
+                        screen.navigate_to_settings.connect(
+                            self._on_qbo_navigate_to_settings
+                        )
+                    self._stack.addWidget(screen)
+                    child_entries.append((child_label, stack_index))
+                    stack_index += 1
+
+                # Category overview screen
+                if cat_key == "DASHBOARD":
+                    overview_index = first_child_index
+                elif cat_key == "PRICING":
+                    overview = PricingOverviewScreen(parent=self)
+                    if hasattr(overview, "navigate_to"):
+                        overview.navigate_to.connect(self._navigate_to_screen)
+                    self._stack.addWidget(overview)
+                    overview_index = stack_index
+                    stack_index += 1
+                elif cat_key == "CUSTOMERS":
+                    overview = CustomerListScreen(parent=self)
+                    if hasattr(overview, "navigate_to"):
+                        overview.navigate_to.connect(self._navigate_to_screen)
+                    self._stack.addWidget(overview)
+                    overview_index = stack_index
+                    stack_index += 1
+                else:
+                    overview = CategoryOverviewScreen(cat_key, parent=self)
+                    overview.navigate_to.connect(self._navigate_to_screen)
+                    self._stack.addWidget(overview)
+                    overview_index = stack_index
+                    stack_index += 1
+
+                # Add category item with expandable children (inline dropdown)
+                cat_item = QTreeWidgetItem(self._nav_tree, [label])
+                cat_item.setFont(0, cat_font)
+                cat_item.setData(0, _STACK_INDEX_ROLE, overview_index)
+                cat_item.setData(0, _CAT_KEY_ROLE, cat_key)
+                cat_item.setData(0, _CAT_CHILDREN_ROLE, child_entries)
+                cat_item.setToolTip(0, f"{label} \u2014 hover for screens")
+                # QBO-style: children are NOT added as tree children. They
+                # appear in a flyout menu when the user hovers the category.
+                self._cat_children[id(cat_item)] = child_entries
+                self._cat_items.append(cat_item)
+                for _child_label, _child_index in child_entries:
+                    self._index_to_cat_item[_child_index] = cat_item
+                self._index_to_cat_item[overview_index] = cat_item
+                # Map index → screen display name (for recent-list display)
+                for _child_label, _child_index in child_entries:
+                    self._index_to_screen_name[_child_index] = _child_label.strip()
+
+        # Keep Settings as a dedicated bottom action (not a sidebar category).
+        self._screen_name_to_index["Settings"] = stack_index
+        settings_screen = SettingsScreen(parent=self)
+        if hasattr(settings_screen, "navigate_to"):
+            settings_screen.navigate_to.connect(self._navigate_to_screen)
+        self._stack.addWidget(settings_screen)
+        self._index_to_screen_name[stack_index] = "Settings"
+        stack_index += 1
+
+        self._nav_tree.currentItemChanged.connect(self._on_nav_changed)
+        self._nav_tree.itemActivated.connect(self._on_nav_activated)
+        self._nav_tree.installEventFilter(self)  # capture key + leave events
+
+        # QBO-style hover flyout: enable mouse tracking + per-item hover.
+        self._nav_tree.setMouseTracking(True)
+        self._nav_tree.viewport().setMouseTracking(True)
+        self._nav_tree.viewport().installEventFilter(self)
+        self._nav_tree.itemEntered.connect(self._on_nav_item_hovered)
+
+        self._flyout_menu: QMenu | None = None
+        self._hovered_item = None
+        self._hover_expanded_item = None
+        self._active_category = None
+
+        # ── Sidebar search box (filters categories + child screens) ──
+        self._sidebar_search = QLineEdit()
+        self._sidebar_search.setPlaceholderText("\U0001F50D  Find screen…")
+        self._sidebar_search.setClearButtonEnabled(True)
+        self._sidebar_search.setStyleSheet(
+            "QLineEdit { background: #2f3a2c; color: #e8efd5; border: none; "
+            "padding: 6px 10px; font-size: 10pt; "
+            "border-bottom: 1px solid rgba(255,255,255,0.10); }"
+        )
+        self._sidebar_search.textChanged.connect(self._on_sidebar_search)
+        self._sidebar_search.returnPressed.connect(self._on_sidebar_search_enter)
+
+        # ── Sidebar widget: nav + buttons ──
+        # NOTE: Keep this a FIXED width — earlier the sidebar was placed in
+        # a draggable splitter, which let users widen it past the layout's
+        # designed width and made the right-hand content unreadable.
+        sidebar = QWidget()
+        sidebar.setFixedWidth(200)
+        sidebar.setStyleSheet("background-color: #3d4a38;")
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_layout.setSpacing(0)
+        sidebar_layout.addWidget(self._sidebar_search)
+        sidebar_layout.addWidget(self._nav_tree)
+
+        self._quick_nav_btn = QPushButton("Quick Nav  (F1)")
+        self._quick_nav_btn.setStyleSheet(
+            "QPushButton { background-color: #4a5a3a; color: #d4e4c0; "
+            "font-weight: bold; padding: 5px 8px; font-size: 10pt; "
+            "border: none; border-top: 1px solid #5A6A3A; }"
+            "QPushButton:hover { background-color: #5A6A3A; }"
+        )
+        self._quick_nav_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._quick_nav_btn.clicked.connect(self._on_quick_nav)
+        sidebar_layout.addWidget(self._quick_nav_btn)
+
+        self._quick_quote_btn = QPushButton("Quick Quote  (F2)")
+        self._quick_quote_btn.setStyleSheet(
+            "QPushButton { background-color: #6B7A4A; color: white; "
+            "font-weight: bold; padding: 5px 8px; font-size: 10pt; "
+            "border: none; border-top: 1px solid #5A6A3A; }"
+            "QPushButton:hover { background-color: #5A6A3A; }"
+        )
+        self._quick_quote_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._quick_quote_btn.clicked.connect(self._on_quick_quote)
+        sidebar_layout.addWidget(self._quick_quote_btn)
+
+        self._quick_customer_btn = QPushButton("Find Customer  (F3)")
+        self._quick_customer_btn.setStyleSheet(
+            "QPushButton { background-color: #4a5a3a; color: #d4e4c0; "
+            "font-weight: bold; padding: 5px 8px; font-size: 10pt; "
+            "border: none; border-top: 1px solid #5A6A3A; }"
+            "QPushButton:hover { background-color: #5A6A3A; }"
+        )
+        self._quick_customer_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._quick_customer_btn.clicked.connect(self._on_quick_customer)
+        sidebar_layout.addWidget(self._quick_customer_btn)
+
+        # NOTE: the redundant sidebar "Settings" button was removed in favor
+        # of the top-right gear icon (Ctrl+,). One entry point only.
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Hide and lock the splitter handle so the sidebar can't be resized.
+        splitter.setHandleWidth(0)
+        splitter.setChildrenCollapsible(False)
+        splitter.addWidget(sidebar)
+        splitter.addWidget(self._stack)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([200, 1000])
+        # Disable interaction with the (now zero-width) handle entirely.
+        handle = splitter.handle(1)
+        if handle is not None:
+            handle.setEnabled(False)
+
+        # ── Top bar with gear icon (Settings) on the right ──
+        top_bar = QWidget()
+        top_bar.setFixedHeight(34)
+        top_bar.setStyleSheet(
+            "QWidget { background-color: #2f3a2c; border-bottom: 1px solid #5A6A3A; }"
+        )
+        top_bar_layout = QHBoxLayout(top_bar)
+        top_bar_layout.setContentsMargins(10, 2, 6, 2)
+        top_bar_layout.setSpacing(6)
+
+        self._top_title = QLabel("JAKS Inventory")
+        self._top_title.setStyleSheet(
+            "color: #d4e4c0; font-weight: bold; font-size: 10pt; background: transparent;"
+        )
+        top_bar_layout.addWidget(self._top_title)
+        top_bar_layout.addStretch(1)
+
+        self._top_gear_btn = QToolButton()
+        self._top_gear_btn.setText("⚙")
+        self._top_gear_btn.setToolTip("Settings (Ctrl+,)")
+        self._top_gear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._top_gear_btn.setAutoRaise(True)
+        self._top_gear_btn.setStyleSheet(
+            "QToolButton { color: #e8efd5; background: transparent; border: none; "
+            "padding: 2px 10px; font-size: 16pt; }"
+            "QToolButton:hover { background-color: #4a5a3a; border-radius: 4px; }"
+        )
+        self._top_gear_btn.clicked.connect(
+            lambda: self._navigate_to_screen("Settings")
+        )
+        top_bar_layout.addWidget(self._top_gear_btn)
+
+        root_layout.addWidget(top_bar)
+        root_layout.addWidget(splitter)
+        self.setCentralWidget(central)
+
+        # Ctrl+, shortcut to open Settings
+        settings_sc = QShortcut(
+            QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_Comma), self
+        )
+        settings_sc.activated.connect(
+            lambda: self._navigate_to_screen("Settings")
+        )
+
+        # F1 global shortcut for Quick Nav
+        f1 = QShortcut(QKeySequence(Qt.Key.Key_F1), self)
+        f1.activated.connect(self._on_quick_nav)
+
+        # F2 global shortcut for New Quote
+        f2 = QShortcut(QKeySequence(Qt.Key.Key_F2), self)
+        f2.activated.connect(self._on_quick_quote)
+
+        # F3 global shortcut for Find Customer
+        f3 = QShortcut(QKeySequence(Qt.Key.Key_F3), self)
+        f3.activated.connect(self._on_quick_customer)
+
+        # Global shortcuts that dispatch to the active screen when supported.
+        # Each handler calls the first method on the active widget that exists
+        # (from a list of candidate names), so screens opt-in by simply
+        # implementing e.g. `on_shortcut_new` / `on_shortcut_find`.
+        for seq, handler in (
+            (QKeySequence.StandardKey.New, self._shortcut_new),
+            (QKeySequence.StandardKey.Save, self._shortcut_save),
+            (QKeySequence.StandardKey.Print, self._shortcut_print),
+            (QKeySequence.StandardKey.Find, self._shortcut_find),
+        ):
+            sc = QShortcut(seq, self)
+            sc.activated.connect(handler)
+
+        self._go_to_index(self._products_stack_index)
+
+    # ------------------------------------------------------------------
+    # Navigation helpers
+    # ------------------------------------------------------------------
+    def _go_to_index(self, index: int) -> None:
+        """Switch to a screen by stack index and reflect active state."""
+        self._stack.setCurrentIndex(index)
+        # Only sync the tree selection if the current item doesn't already
+        # point at this index. Avoids fighting the user's selection when they
+        # click a child item directly.
+        current = self._nav_tree.currentItem()
+        current_idx = current.data(0, _STACK_INDEX_ROLE) if current is not None else None
+        if current_idx != index:
+            target = self._find_item_by_index(index)
+            # In QBO-flyout mode the tree only has category rows, so child
+            # screens won't have a direct row — fall back to highlighting
+            # the parent category.
+            if target is None:
+                target = self._index_to_cat_item.get(index)
+            if target is not None:
+                blocker = self._nav_tree.blockSignals(True)
+                try:
+                    self._nav_tree.setCurrentItem(target)
+                finally:
+                    self._nav_tree.blockSignals(blocker)
+        # Make sure the selected child is visible (auto-expand its parent).
+        cat_item = self._index_to_cat_item.get(index)
+        if cat_item is not None and cat_item.childCount() > 0 and not cat_item.isExpanded():
+            cat_item.setExpanded(True)
+        # Track recent screens (skip overview screens that have no display name).
+        name = self._index_to_screen_name.get(index)
+        if name:
+            try:
+                self._recent_screens.remove(name)
+            except ValueError:
+                pass
+            self._recent_screens.appendleft(name)
+        # Reflect current screen in the top bar title.
+        if hasattr(self, "_top_title"):
+            display = name or "JAKS Inventory"
+            self._top_title.setText(f"JAKS Inventory  ›  {display}" if name else "JAKS Inventory")
+
+    def _find_item_by_index(self, index: int) -> "QTreeWidgetItem | None":
+        """Locate the tree item whose stack index matches ``index``."""
+        for cat in self._cat_items:
+            if cat.data(0, _STACK_INDEX_ROLE) == index:
+                return cat
+            for i in range(cat.childCount()):
+                child = cat.child(i)
+                if child.data(0, _STACK_INDEX_ROLE) == index:
+                    return child
+        return None
+
+    def _on_open_settings(self) -> None:
+        self._navigate_to_screen("Settings")
+
+    def _select_screen_by_index(self, target_index: int) -> None:
+        """Select the sidebar item matching the given stack index."""
+        self._go_to_index(target_index)
+
+    # ------------------------------------------------------------------
+    # Global shortcut dispatch (Ctrl+N / Ctrl+S / Ctrl+P / Ctrl+F)
+    # ------------------------------------------------------------------
+    def _dispatch_shortcut(self, candidates: tuple[str, ...]) -> None:
+        """Call the first matching method name on the current screen widget."""
+        widget = self._stack.currentWidget()
+        if widget is None:
+            return
+        for name in candidates:
+            fn = getattr(widget, name, None)
+            if callable(fn):
+                try:
+                    fn()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("shortcut %s failed: %s", name, exc)
+                return
+
+    def _shortcut_new(self) -> None:
+        self._dispatch_shortcut((
+            "on_shortcut_new", "_on_new", "_on_create", "_on_add",
+        ))
+
+    def _shortcut_save(self) -> None:
+        self._dispatch_shortcut((
+            "on_shortcut_save", "_on_save", "_save",
+        ))
+
+    def _shortcut_print(self) -> None:
+        self._dispatch_shortcut((
+            "on_shortcut_print", "_on_print", "_print",
+        ))
+
+    def _shortcut_find(self) -> None:
+        widget = self._stack.currentWidget()
+        if widget is None:
+            return
+        # Prefer explicit hook; otherwise focus a common search box.
+        hook = getattr(widget, "on_shortcut_find", None)
+        if callable(hook):
+            hook()
+            return
+        for attr in ("_search", "_search_edit", "_search_box", "_filter_edit", "_search_input"):
+            search_widget = getattr(widget, attr, None)
+            if search_widget is not None and hasattr(search_widget, "setFocus"):
+                search_widget.setFocus()
+                if hasattr(search_widget, "selectAll"):
+                    search_widget.selectAll()
+                return
+
+    def _on_nav_changed(self, current, _previous=None) -> None:
+        """Handle navigation item selection — navigate to its screen."""
+        if current is None:
+            return
+        idx = current.data(0, _STACK_INDEX_ROLE)
+        if idx is None or idx < 0:
+            return
+        self._stack.setCurrentIndex(idx)
+        label = current.text(0).strip()
+        self.statusBar().showMessage(f"Viewing: {label}")
+
+    def _on_nav_activated(self, item, _column=0) -> None:
+        """Activated by Enter or double-click — navigate; categories also expand."""
+        if item is None:
+            return
+        if item.childCount() > 0:
+            item.setExpanded(not item.isExpanded())
+        idx = item.data(0, _STACK_INDEX_ROLE)
+        if idx is not None and idx >= 0:
+            self._go_to_index(idx)
+
+    # ------------------------------------------------------------------
+    # Hover flyout popup — shows child items to the right of sidebar
+    # ------------------------------------------------------------------
+    def _on_nav_item_hovered(self, item, _column=0) -> None:
+        """User moved mouse onto a sidebar row — show flyout if it's a category."""
+        if item is None:
+            return
+        # Only categories have children in the flyout map.
+        children = item.data(0, _CAT_CHILDREN_ROLE) or self._cat_children.get(id(item))
+        if not children:
+            # Hovering a leaf (rare here) → close any open flyout.
+            self._dismiss_flyout()
+            return
+        if self._hovered_item is item and self._flyout_menu is not None and self._flyout_menu.isVisible():
+            return  # already showing for this item
+        self._hovered_item = item
+        self._show_flyout()
+
+    def eventFilter(self, obj, event):
+        # Dismiss the flyout when the cursor leaves the sidebar viewport
+        # (unless it has moved into the flyout menu itself).
+        if obj is self._nav_tree.viewport() and event.type() == QEvent.Type.Leave:
+            self._dismiss_flyout_if_not_hovered()
+            return False
+        # Keyboard navigation on the tree itself.
+        if obj is self._nav_tree and event.type() == QEvent.Type.KeyPress:
+            key = event.key()
+            item = self._nav_tree.currentItem()
+            if key == Qt.Key.Key_Space:
+                # Space toggles expand/collapse on category items
+                if item is not None and item.childCount() > 0:
+                    item.setExpanded(not item.isExpanded())
+                    return True
+            elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                # Enter activates the current item (navigate to its screen)
+                if item is not None:
+                    idx = item.data(0, _STACK_INDEX_ROLE)
+                    if idx is not None and idx >= 0:
+                        self._go_to_index(idx)
+                        return True
+            elif key == Qt.Key.Key_Right:
+                # Right expands a collapsed category (default Qt behavior)
+                if item is not None and item.childCount() > 0 and not item.isExpanded():
+                    item.setExpanded(True)
+                    return True
+            elif key == Qt.Key.Key_Left:
+                # Left collapses an expanded category
+                if item is not None and item.childCount() > 0 and item.isExpanded():
+                    item.setExpanded(False)
+                    return True
+        return super().eventFilter(obj, event)
+
+    def _show_flyout(self) -> None:
+        """Show a flyout popup to the right of the hovered category."""
+        item = self._hovered_item
+        if item is None:
+            return
+        children = item.data(0, _CAT_CHILDREN_ROLE) or self._cat_children.get(id(item))
+        if not children:
+            return
+
+        self._dismiss_flyout()
+
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #3d4a38;
+                color: white;
+                border: 1px solid #6B8E23;
+                padding: 4px 0;
+                font-size: 10pt;
+            }
+            QMenu::item {
+                padding: 8px 28px 8px 16px;
+            }
+            QMenu::item:selected {
+                background-color: #6B8E23;
+            }
+        """)
+
+        # Recents at the top (only when this is the first/dashboard category).
+        is_first_cat = self._cat_items and item is self._cat_items[0]
+        if is_first_cat and self._recent_screens:
+            recents_header = menu.addAction("Recent")
+            recents_header.setEnabled(False)
+            recent_font = QFont()
+            recent_font.setBold(True)
+            recents_header.setFont(recent_font)
+            for name in list(self._recent_screens)[:5]:
+                act = menu.addAction("  \u2937  " + name)
+                act.triggered.connect(
+                    lambda checked=False, n=name: self._navigate_to_screen(n)
+                )
+            menu.addSeparator()
+
+        current_index = self._stack.currentIndex()
+        bold = QFont()
+        bold.setBold(True)
+        for child_label, child_index in children:
+            action = menu.addAction(child_label)
+            if child_index == current_index:
+                action.setFont(bold)
+                action.setText(f"\u25B8 {child_label}")
+            action.triggered.connect(
+                lambda checked=False, i=child_index: self._flyout_navigate(i)
+            )
+
+        # Reset hovered item when menu hides so re-hover works
+        menu.aboutToHide.connect(self._on_flyout_hidden)
+
+        # Position to the right of the sidebar item
+        rect = self._nav_tree.visualItemRect(item)
+        global_pos = self._nav_tree.viewport().mapToGlobal(
+            QPoint(self._nav_tree.viewport().width(), rect.top())
+        )
+        self._flyout_menu = menu
+        menu.popup(global_pos)
+
+    def _flyout_navigate(self, index: int) -> None:
+        """Navigate to a screen from flyout and clean up."""
+        self._dismiss_flyout()
+        self._hovered_item = None
+        self._go_to_index(index)
+
+    def _on_flyout_hidden(self) -> None:
+        """Reset hover state when flyout menu closes."""
+        self._flyout_menu = None
+        self._hovered_item = None
+
+    def _dismiss_flyout(self) -> None:
+        if self._flyout_menu is not None:
+            self._flyout_menu.close()
+            self._flyout_menu = None
+        self._hovered_item = None
+
+    def _dismiss_flyout_if_not_hovered(self) -> None:
+        """Dismiss the flyout only if the mouse isn't over it or the sidebar."""
+        if self._flyout_menu is not None and self._flyout_menu.isVisible():
+            # Check if cursor is within the flyout menu
+            cursor_pos = QCursor.pos()
+            if self._flyout_menu.geometry().contains(cursor_pos):
+                return
+            # Check if cursor is within the sidebar
+            sidebar_rect = self._nav_tree.viewport().rect()
+            sidebar_global = self._nav_tree.viewport().mapToGlobal(sidebar_rect.topLeft())
+            from PySide6.QtCore import QRect
+            global_sidebar = QRect(sidebar_global, sidebar_rect.size())
+            if global_sidebar.contains(cursor_pos):
+                return
+        self._dismiss_flyout()
+
+    # ------------------------------------------------------------------
+    # Dashboard navigation support
+    # ------------------------------------------------------------------
+    def _navigate_to_screen(self, screen_name: str) -> None:
+        """Navigate to a screen by its display name (called from dashboard cards)."""
+        idx = self._screen_name_to_index.get(screen_name)
+        if idx is not None:
+            self._select_screen_by_index(idx)
+
+    def _on_qbo_navigate_to_settings(self, op_key: str) -> None:
+        """Handle Sync Center → Settings navigation requests.
+
+        Sync Center's Manual Sync Actions buttons emit `navigate_to_settings(op_key)`
+        because the operational implementations (and worker plumbing) currently
+        live in `settings_screen._build_qbo_tab`. We switch to Settings → QBO
+        tab, expand the (now collapsed-by-default) "Daily Operations" section,
+        and trigger the matching button.
+        """
+        idx = self._screen_name_to_index.get("Settings")
+        if idx is None:
+            return
+        self._select_screen_by_index(idx)
+        settings = self._stack.widget(idx)
+        if settings is None:
+            return
+        # Switch to QBO tab (currently index 5: Company, Invoice, Inventory,
+        # Purchase Orders, Email/SMTP, QBO, System, Scraper).
+        tabs = getattr(settings, "_tabs", None)
+        if tabs is not None:
+            for i in range(tabs.count()):
+                if tabs.tabText(i).strip().upper().startswith("QBO"):
+                    tabs.setCurrentIndex(i)
+                    break
+        # Map op_key → settings button attribute.
+        button_map = {
+            "sync_products": "_qbo_sync_products_btn",
+            "sync_invoices": "_qbo_sync_invoices_btn",
+            "sync_customers": "_qbo_sync_customers_btn",
+            "sync_vendors": "_qbo_sync_vendors_btn",
+            "push_inventory_qty": "_qbo_push_qty_btn",
+            "import_customers": "_qbo_import_customers_btn",
+            "import_vendors": "_qbo_import_vendors_btn",
+            "import_products": "_qbo_import_products_btn",
+        }
+        attr = button_map.get(op_key)
+        if attr and hasattr(settings, attr):
+            btn = getattr(settings, attr)
+            try:
+                btn.click()
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Failed to trigger settings button %s", attr
+                )
+    # ------------------------------------------------------------------
+    # Sidebar search (filter categories + jump to matching screen)
+    # ------------------------------------------------------------------
+    def _on_sidebar_search(self, text: str) -> None:
+        """Hide categories that have no matching child or matching label."""
+        needle = (text or "").strip().lower()
+        for cat in self._cat_items:
+            if not needle:
+                cat.setHidden(False)
+                continue
+            label_match = needle in cat.text(0).lower()
+            children = cat.data(0, _CAT_CHILDREN_ROLE) or []
+            child_match = any(needle in c[0].lower() for c in children)
+            cat.setHidden(not (label_match or child_match))
+
+    def _on_sidebar_search_enter(self) -> None:
+        """Press Enter in sidebar search → jump to first matching child screen."""
+        needle = self._sidebar_search.text().strip().lower()
+        if not needle:
+            return
+        for cat in self._cat_items:
+            if cat.isHidden():
+                continue
+            for child_label, child_index in (cat.data(0, _CAT_CHILDREN_ROLE) or []):
+                if needle in child_label.lower():
+                    self._sidebar_search.clear()  # also clears filter via textChanged
+                    self._go_to_index(child_index)
+                    return
+            # Fall back to category overview if only the category label matched.
+            cat_idx = cat.data(0, _STACK_INDEX_ROLE)
+            if cat_idx is not None and needle in cat.text(0).lower():
+                self._sidebar_search.clear()
+                self._go_to_index(cat_idx)
+                return
+
+    # ------------------------------------------------------------------
+    # Global search
+    # ------------------------------------------------------------------
+    def _on_global_search(self) -> None:
+        """Navigate to Products screen and trigger search with the entered text."""
+        text = self._global_search.text().strip()
+        if not text:
+            return
+        # Switch to products screen
+        self._select_screen_by_index(self._products_stack_index)
+        # Push search text into the products screen search box
+        products_screen = self._stack.widget(self._products_stack_index)
+        if hasattr(products_screen, "_search_edit"):
+            products_screen._search_edit.setText(text)
+            if hasattr(products_screen, "_on_search"):
+                products_screen._on_search()
+
+    # ------------------------------------------------------------------
+    # Quick Quote
+    # ------------------------------------------------------------------
+    def _on_quick_nav(self) -> None:
+        dlg = QuickNavDialog(parent=self)
+        dlg.navigate_to.connect(self._navigate_to_screen)
+        dlg.exec()
+
+    def _on_quick_quote(self) -> None:
+        """Open a new quote dialog from anywhere in the app."""
+        from .quote_dialog import QuoteDialog
+        open_new = True
+        while open_new:
+            open_new = False
+            dlg = QuoteDialog(parent=self)
+            dlg.exec()
+            if dlg._save_and_new:
+                open_new = True
+
+    def _on_quick_customer(self) -> None:
+        """F3: open Customer Quick-Pick → flows into Customer Profile."""
+        from .customer_picker_dialog import CustomerPickerDialog
+        from .customer_detail_dialog import CustomerDetailDialog
+
+        picker = CustomerPickerDialog(parent=self)
+        if picker.exec() != picker.DialogCode.Accepted:
+            return
+        if picker.create_new_requested:
+            CustomerDetailDialog(customer_id=None, parent=self).exec()
+            return
+        cid = picker.selected_customer_id
+        if cid:
+            CustomerDetailDialog(customer_id=int(cid), parent=self).exec()

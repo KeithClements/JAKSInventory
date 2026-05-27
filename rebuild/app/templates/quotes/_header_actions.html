@@ -1,0 +1,158 @@
+{# Quote workspace — header actions: one primary CTA + overflow menu #}
+{% set quote_status_badges = {
+  'draft':     'badge-gray',
+  'sent':      'badge-blue',
+  'accepted':  'badge-green',
+  'converted': 'badge-green',
+  'declined':  'badge-red',
+  'expired':   'badge-amber',
+} %}
+
+<div class="flex items-center gap-2 flex-wrap justify-end"
+     x-data="{ moreOpen: false, showSO: false, showLost: false, reason: '' }">
+
+  <span class="{{ quote_status_badges.get(quote.status, 'badge-gray') }}">
+    {{ quote.status | title }}{% if quote.is_expired and quote.status == 'sent' %} · Expired{% endif %}
+  </span>
+
+  <span class="text-sm font-medium text-gray-700 hidden sm:inline max-w-[10rem] truncate"
+        title="{{ quote.customer.company_name }}">
+    {{ quote.customer.company_name }}
+  </span>
+
+  {% if quote.status == QuoteStatus.DRAFT %}
+
+    <form action="/quotes/{{ quote.id }}/send" method="post" class="inline">
+      <button type="submit" class="btn-primary btn-sm">Send to Customer</button>
+    </form>
+
+    <div class="relative inline-block">
+      <button type="button" @click="showSO = !showSO" class="btn-secondary btn-sm">
+        → Sales Order ▾
+      </button>
+      <div x-show="showSO" x-cloak @click.away="showSO = false"
+           class="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 p-4 w-56">
+        <p class="section-title mb-2">Payment at SO</p>
+        <form action="/quotes/{{ quote.id }}/convert-to-so" method="post" class="space-y-3">
+          <label class="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="radio" name="payment_mode" value="{{ SOPaymentMode.NONE }}" checked class="form-checkbox" />
+            No deposit
+          </label>
+          <label class="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="radio" name="payment_mode" value="{{ SOPaymentMode.DEPOSIT }}" class="form-checkbox" />
+            Deposit required
+          </label>
+          <label class="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="radio" name="payment_mode" value="{{ SOPaymentMode.FULL }}" class="form-checkbox" />
+            Full payment
+          </label>
+          <button type="submit" class="btn-primary btn-sm w-full">Create Sales Order →</button>
+        </form>
+      </div>
+    </div>
+
+  {% elif quote.status == QuoteStatus.SENT %}
+
+    <div class="relative inline-block">
+      <button type="button" @click="showSO = !showSO" class="btn-primary btn-sm">
+        → Sales Order ▾
+      </button>
+      <div x-show="showSO" x-cloak @click.away="showSO = false"
+           class="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 p-4 w-56">
+        <p class="section-title mb-2">Payment at SO</p>
+        <form action="/quotes/{{ quote.id }}/convert-to-so" method="post" class="space-y-3">
+          <label class="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="radio" name="payment_mode" value="{{ SOPaymentMode.NONE }}" checked class="form-checkbox" />
+            No deposit
+          </label>
+          <label class="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="radio" name="payment_mode" value="{{ SOPaymentMode.DEPOSIT }}" class="form-checkbox" />
+            Deposit required
+          </label>
+          <label class="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="radio" name="payment_mode" value="{{ SOPaymentMode.FULL }}" class="form-checkbox" />
+            Full payment
+          </label>
+          <button type="submit" class="btn-primary btn-sm w-full">Create Sales Order →</button>
+        </form>
+      </div>
+    </div>
+
+  {% elif quote.status in (QuoteStatus.DECLINED, QuoteStatus.EXPIRED) %}
+
+    <form action="/quotes/{{ quote.id }}/reactivate" method="post" class="inline">
+      <button type="submit" class="btn-primary btn-sm">Reactivate Quote</button>
+    </form>
+
+  {% elif quote.status == QuoteStatus.CONVERTED %}
+
+    <span class="text-sm text-gray-500 hidden sm:inline">
+      Converted
+      {% if quote.converted_to_so_id %}
+      → <a href="/sales-orders/{{ quote.converted_to_so_id }}" class="link">SO</a>
+      {% endif %}
+      {% if quote.converted_to_invoice_id %}
+      → <a href="/invoices/{{ quote.converted_to_invoice_id }}" class="link">Invoice</a>
+      {% endif %}
+    </span>
+
+  {% endif %}
+
+  {# Overflow: convert, mark lost, PDF, print #}
+  {% if quote.status in (QuoteStatus.DRAFT, QuoteStatus.SENT, QuoteStatus.DECLINED, QuoteStatus.EXPIRED) %}
+  <div class="relative inline-block">
+    <button type="button" @click="moreOpen = !moreOpen" class="btn-secondary btn-sm">
+      More ▾
+    </button>
+    <div x-show="moreOpen" x-cloak @click.away="moreOpen = false"
+         class="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 py-1 min-w-[11rem]">
+
+      {% if quote.status in (QuoteStatus.DRAFT, QuoteStatus.SENT) %}
+      <form action="/quotes/{{ quote.id }}/convert-to-invoice" method="post"
+            onsubmit="return confirm('Convert{% if quote.status == QuoteStatus.DRAFT %} this quote directly {% endif %}to an invoice?')">
+        <button type="submit" @click="moreOpen = false"
+                class="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">
+          → Invoice
+        </button>
+      </form>
+      {% endif %}
+
+      {% if quote.status == QuoteStatus.SENT %}
+      <button type="button" @click="moreOpen = false; showLost = true"
+              class="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50">
+        Mark Lost…
+      </button>
+      {% endif %}
+
+      <a href="/quotes/{{ quote.id }}/pdf" @click="moreOpen = false"
+         class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Download PDF</a>
+      <a href="/quotes/{{ quote.id }}/print" target="_blank" rel="noopener" @click="moreOpen = false"
+         class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Print preview</a>
+    </div>
+  </div>
+  {% else %}
+  <a href="/quotes/{{ quote.id }}/pdf" class="btn-secondary btn-sm">PDF</a>
+  <a href="/quotes/{{ quote.id }}/print" target="_blank" rel="noopener" class="btn-ghost btn-sm">Print</a>
+  {% endif %}
+
+  {# Mark Lost popover (sent only) #}
+  {% if quote.status == QuoteStatus.SENT %}
+  <div x-show="showLost" x-cloak @click.away="showLost = false"
+       class="fixed inset-0 z-[60] flex items-start justify-center pt-24 px-4 bg-black/30"
+       @keydown.escape.window="showLost = false">
+    <div class="bg-white border border-gray-200 rounded-xl shadow-xl p-4 w-full max-w-sm" @click.stop>
+      <p class="text-sm font-semibold text-gray-800 mb-2">Why was this quote lost?</p>
+      <input x-model="reason" type="text" placeholder="Competitor price, timing, no decision…"
+             class="form-input mb-3"
+             @keydown.enter.prevent="if(reason.trim()) $el.closest('div').querySelector('form').submit()" />
+      <form action="/quotes/{{ quote.id }}/mark-lost" method="post" class="flex gap-2 justify-end">
+        <input type="hidden" name="lost_reason" :value="reason" />
+        <button type="button" @click="showLost = false" class="btn-secondary btn-sm">Cancel</button>
+        <button type="submit" :disabled="!reason.trim()" class="btn-danger btn-sm">Confirm: Mark Lost</button>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+  <a href="/quotes/" class="hidden lg:inline text-sm link-subtle">← All quotes</a>
+</div>

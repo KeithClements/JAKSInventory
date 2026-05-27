@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>JAK's Diesel PRO — Inventory · Products Mockup</title>
+<style>
+  :root {
+    --bg:#0f1419; --panel:#1a2128; --panel2:#232c35;
+    --border:#2d3a45; --border-hi:#3d4d5c;
+    --text:#e6edf3; --dim:#8b98a5; --faint:#5d6b78;
+    --accent:#ff8c42; --accent-dim:#b85d1f;
+    --green:#3fb950; --red:#f85149; --amber:#d29922;
+    --blue:#58a6ff; --purple:#bc8cff; --teal:#39d0d8;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:13px/1.4 "Segoe UI", system-ui, sans-serif; }
+  .topnav { display:flex; align-items:center; gap:24px;
+            background:#11161c; border-bottom:1px solid var(--border);
+            padding:0 18px; height:48px; }
+  .brand { color:var(--accent); font-weight:900; font-size:13px;
+           letter-spacing:0.5px; }
+  .topnav .cats { display:flex; gap:4px; flex:1; }
+  .topnav .cats a { color:var(--dim); text-decoration:none;
+                    font-weight:600; font-size:11px; letter-spacing:0.8px;
+                    padding:14px 12px; border-bottom:2px solid transparent;
+                    cursor:pointer; }
+  .topnav .cats a.active { color:var(--accent);
+                           border-bottom-color:var(--accent); }
+  .topnav .cats a:hover { color:var(--text); }
+  .topnav .right { display:flex; align-items:center; gap:12px;
+                   color:var(--dim); font-size:11px; }
+  .topnav .right .user { color:var(--accent); }
+  .topnav .right .gear { font-size:15px; color:var(--text); cursor:pointer; }
+
+  .subtabs { display:flex; gap:6px; padding:10px 18px 0;
+             background:var(--bg); border-bottom:1px solid var(--border); }
+  .subtab { padding:8px 14px; font-size:11px; font-weight:600;
+            color:var(--dim); border:1px solid transparent;
+            border-bottom:none; border-radius:6px 6px 0 0; cursor:pointer;
+            letter-spacing:0.3px; }
+  .subtab.active { background:var(--accent); color:white;
+                   border-color:var(--accent); }
+  .subtab:hover:not(.active) { color:var(--text); background:var(--panel2); }
+
+  .body { padding:14px 18px 30px; }
+  .h1 { font-size:20px; font-weight:700; margin:0; }
+  .h1 small { color:var(--dim); font-weight:500; font-size:12px;
+              margin-left:10px; }
+  .headerrow { display:flex; align-items:baseline; justify-content:space-between;
+               margin-bottom:14px; }
+  .btn { padding:8px 14px; border-radius:6px; border:none;
+         font-weight:600; font-size:12px; cursor:pointer;
+         display:inline-flex; align-items:center; gap:6px; }
+  .btn-primary { background:var(--accent); color:white; }
+  .btn-primary:hover { background:var(--accent-dim); }
+  .btn-ghost { background:var(--panel2); color:var(--text);
+               border:1px solid var(--border); }
+  .btn-ghost:hover { border-color:var(--border-hi); }
+
+  .kpis { display:grid; grid-template-columns:repeat(7,1fr); gap:8px;
+          margin-bottom:14px; }
+  .kpi { background:var(--panel); border:1px solid var(--border);
+         border-radius:8px; padding:10px 12px; min-height:64px; }
+  .kpi .lbl { font-size:9px; font-weight:700; letter-spacing:0.8px;
+              color:var(--dim); text-transform:uppercase; }
+  .kpi .val { font-size:20px; font-weight:700; margin-top:4px; }
+  .kpi .sub { font-size:10px; color:var(--faint); margin-top:2px; }
+  .c-blue { color:var(--blue); } .c-amber { color:var(--amber); }
+  .c-green { color:var(--green); } .c-red { color:var(--red); }
+  .c-accent { color:var(--accent); } .c-purple { color:var(--purple); }
+  .c-teal { color:var(--teal); }
+
+  .attn { background:var(--panel); border:1px solid var(--border);
+          border-radius:8px; padding:8px 12px; display:flex;
+          align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  .attn .head { font-size:10px; font-weight:700; letter-spacing:0.8px;
+                color:var(--amber); margin-right:6px; }
+  .chip { display:inline-flex; align-items:center; gap:6px;
+          background:var(--panel2); border:1px solid var(--border);
+          border-radius:14px; padding:3px 10px 3px 4px; font-size:11px;
+          font-weight:600; color:var(--text); cursor:pointer; }
+  .chip:hover { border-color:var(--border-hi); }
+  .chip .badge { width:20px; height:20px; border-radius:50%;
+                 color:white; font-size:10px; font-weight:700;
+                 display:flex; align-items:center; justify-content:center; }
+  .chip.zero { color:var(--faint); }
+  .chip.zero .badge { background:var(--border); }
+
+  .filters { display:flex; gap:8px; align-items:center;
+             margin-bottom:10px; flex-wrap:wrap; }
+  .search { flex:0 1 280px; background:var(--panel2); color:var(--text);
+            border:1px solid var(--border); border-radius:6px;
+            padding:7px 10px; font-size:12px; }
+  .select { background:var(--panel2); color:var(--text);
+            border:1px solid var(--border); border-radius:6px;
+            padding:7px 28px 7px 10px; font-size:12px;
+            appearance:none; min-width:120px;
+            background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),
+                             linear-gradient(135deg,var(--dim) 50%,transparent 50%);
+            background-position:calc(100% - 14px) center,
+                                calc(100% - 9px) center;
+            background-size:5px 5px,5px 5px; background-repeat:no-repeat; }
+  .spacer { flex:1; }
+
+  table { width:100%; border-collapse:collapse;
+          background:var(--panel); border:1px solid var(--border);
+          border-radius:8px; overflow:hidden; }
+  th { font-size:10px; font-weight:600; text-transform:uppercase;
+       letter-spacing:0.5px; color:var(--dim); text-align:left;
+       padding:10px 12px; background:var(--panel2);
+       border-bottom:1px solid var(--border); }
+  td { padding:10px 12px; border-bottom:1px solid var(--border);
+       font-size:12px; vertical-align:middle; }
+  tr:nth-child(even) td { background:#1f262e; }
+  tr:hover td { background:rgba(255,140,66,0.05); cursor:pointer; }
+  .sku { color:var(--accent); font-weight:700; font-family:Consolas,monospace;
+         font-size:11px; }
+  .right { text-align:right; }
+  .center { text-align:center; }
+  .mono { font-family:Consolas,monospace; }
+  .item { line-height:1.25; }
+  .item .nm { font-weight:600; }
+  .item .sb { color:var(--dim); font-size:10px; margin-top:1px; }
+
+  .pill { display:inline-block; padding:2px 8px; border-radius:10px;
+          font-size:10px; font-weight:700; text-transform:uppercase;
+          letter-spacing:0.3px; border:1px solid; }
+  .p-stock     { color:var(--green); border-color:rgba(63,185,80,.5);  background:rgba(63,185,80,.12); }
+  .p-low       { color:var(--amber); border-color:rgba(210,153,34,.5); background:rgba(210,153,34,.12); }
+  .p-out       { color:var(--red);   border-color:rgba(248,81,73,.5);  background:rgba(248,81,73,.12); }
+  .p-onorder   { color:var(--blue);  border-color:rgba(88,166,255,.5); background:rgba(88,166,255,.12); }
+  .p-discont   { color:var(--faint); border-color:var(--border);       background:var(--panel2); }
+  .p-newprod   { color:var(--purple);border-color:rgba(188,140,255,.5);background:rgba(188,140,255,.12); }
+
+  .type { display:inline-block; padding:1px 7px; border-radius:4px;
+          font-size:9px; font-weight:700; letter-spacing:0.4px;
+          text-transform:uppercase; border:1px solid var(--border);
+          background:var(--panel2); color:var(--dim); }
+  .type.reman   { color:var(--teal);   border-color:rgba(57,208,216,.4); }
+  .type.new     { color:var(--blue);   border-color:rgba(88,166,255,.4); }
+  .type.used    { color:var(--amber);  border-color:rgba(210,153,34,.4); }
+  .type.core    { color:var(--accent); border-color:rgba(255,140,66,.4); }
+  .type.kit     { color:var(--purple); border-color:rgba(188,140,255,.4); }
+
+  .qty-up   { color:var(--green); font-weight:700; }
+  .qty-down { color:var(--red);   font-weight:700; }
+  .qty-zero { color:var(--faint); }
+
+  .bar { display:inline-block; width:60px; height:6px;
+         background:var(--panel2); border:1px solid var(--border);
+         border-radius:3px; overflow:hidden; vertical-align:middle;
+         margin-left:6px; }
+  .bar > i { display:block; height:100%; }
+  .bar.ok  > i { background:var(--green); }
+  .bar.lo  > i { background:var(--amber); }
+  .bar.cr  > i { background:var(--red); }
+
+  .acts { display:flex; gap:3px; }
+  .act { width:18px; height:18px; border-radius:4px;
+         display:flex; align-items:center; justify-content:center;
+         color:white; font-size:10px; font-weight:700; }
+  .act.off { background:var(--panel2); color:var(--faint);
+             border:1px solid var(--border); }
+  .act.blue { background:var(--blue); } .act.green { background:var(--green); }
+  .act.amber { background:var(--amber); } .act.red { background:var(--red); }
+  .act.purple { background:var(--purple); } .act.teal { background:var(--teal); }
+
+  .footer { color:var(--dim); font-size:11px; margin-top:10px; }
+</style>
+</head>
+<body>
+
+<div class="topnav">
+  <div class="brand">JAK'S DIESEL PRO</div>
+  <div class="cats">
+    <a>DASHBOARD</a><a>SALES</a><a>CORE PROCESSING</a>
+    <a class="active">INVENTORY</a><a>PURCHASING</a><a>PRICING</a>
+    <a>CUSTOMERS</a><a>MARKETING</a><a>ACCOUNTING</a><a>TOOLS</a>
+  </div>
+  <div class="right">
+    Tue, May 19 · 04:32 PM <span>·</span> <span class="user">User</span>
+    <span class="gear">⚙</span>
+  </div>
+</div>
+
+<div class="subtabs">
+  <div class="subtab active">Products</div>
+  <div class="subtab">Adjustments</div>
+  <div class="subtab">Locations</div>
+  <div class="subtab">Kits</div>
+</div>
+
+<div class="body">
+
+  <div class="headerrow">
+    <h1 class="h1">Products
+      <small>SKU master · on-hand · reorder · pricing</small>
+    </h1>
+    <div>
+      <button class="btn btn-ghost">📥 Import CSV</button>
+      <button class="btn btn-ghost">📤 Export</button>
+      <button class="btn btn-ghost">🖨 Print Labels</button>
+      <button class="btn btn-primary">+ New Product</button>
+    </div>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="lbl">Active SKUs</div>
+      <div class="val c-blue">3,847</div><div class="sub">12 added MTD</div></div>
+    <div class="kpi"><div class="lbl">On-Hand Value</div>
+      <div class="val c-green">$1.42M</div><div class="sub">at avg cost</div></div>
+    <div class="kpi"><div class="lbl">Low Stock</div>
+      <div class="val c-amber">47</div><div class="sub">below reorder pt</div></div>
+    <div class="kpi"><div class="lbl">Out of Stock</div>
+      <div class="val c-red">23</div><div class="sub">9 with open SO</div></div>
+    <div class="kpi"><div class="lbl">On Order (PO)</div>
+      <div class="val c-blue">186</div><div class="sub">across 28 POs</div></div>
+    <div class="kpi"><div class="lbl">Dead Stock</div>
+      <div class="val c-purple">94</div><div class="sub">no sale 180d</div></div>
+    <div class="kpi"><div class="lbl">Avg Margin</div>
+      <div class="val c-accent">38.2%</div><div class="sub">trailing 30d</div></div>
+  </div>
+
+  <div class="attn">
+    <span class="head">⚠ NEEDS ATTENTION</span>
+    <span class="chip"><span class="badge" style="background:var(--red)">9</span>Out — open sales order</span>
+    <span class="chip"><span class="badge" style="background:var(--red)">4</span>Negative on-hand</span>
+    <span class="chip"><span class="badge" style="background:var(--amber)">47</span>Below reorder point</span>
+    <span class="chip"><span class="badge" style="background:var(--amber)">18</span>No cost on file</span>
+    <span class="chip"><span class="badge" style="background:var(--blue)">12</span>Missing photo</span>
+    <span class="chip"><span class="badge" style="background:var(--purple)">6</span>Price &lt; cost</span>
+    <span class="chip zero"><span class="badge">0</span>Duplicate UPC</span>
+  </div>
+
+  <div class="filters">
+    <input class="search" placeholder="🔍   Search SKU, name, OEM #, UPC, vendor…" />
+    <select class="select"><option>All Categories</option>
+      <option>Engine — Heads</option><option>Engine — Blocks</option>
+      <option>Rotating Assy</option><option>Fuel System</option>
+      <option>Turbo / EGR</option><option>Gaskets / Seals</option>
+      <option>Kits</option></select>
+    <select class="select"><option>All Types</option>
+      <option>Reman</option><option>New</option>
+      <option>Used</option><option>Core</option><option>Kit</option></select>
+    <select class="select"><option>All Status</option>
+      <option>In Stock</option><option>Low</option>
+      <option>Out</option><option>On Order</option>
+      <option>Discontinued</option><option>New Product</option></select>
+    <select class="select"><option>All Warehouses</option>
+      <option>WH-Main</option><option>WH-East</option><option>Shop Floor</option></select>
+    <select class="select"><option>All Vendors</option>
+      <option>Diesel USA</option><option>JASPER</option>
+      <option>Detroit Reman</option><option>Cummins OEM</option></select>
+    <div class="spacer"></div>
+    <button class="btn btn-ghost">View / Edit</button>
+    <button class="btn btn-ghost">📋 Cycle Count</button>
+    <button class="btn btn-ghost">📦 Create PO</button>
+    <button class="btn btn-primary">⚙ Bulk Edit</button>
+  </div>
+
+  <table>
+    <thead><tr>
+      <th>SKU</th><th>Item</th><th>Type</th><th>Category</th>
+      <th class="right">On Hand</th><th class="right">Alloc</th>
+      <th class="right">Avail</th><th class="right">Reorder</th>
+      <th class="right">Cost</th><th class="right">List</th>
+      <th class="right">Margin</th><th>Vendor</th>
+      <th>Status</th><th>Activity</th>
+    </tr></thead>
+    <tbody>
+      <tr><td class="sku">JAKS-3682821</td>
+        <td><div class="item"><div class="nm">Cummins ISX 15 Cylinder Head Assy</div>
+          <div class="sb">OEM 3682821 · loaded · 24v</div></div></td>
+        <td><span class="type reman">REMAN</span></td>
+        <td>Engine — Heads</td>
+        <td class="right qty-up">14</td>
+        <td class="right">3</td>
+        <td class="right qty-up">11<span class="bar ok"><i style="width:80%"></i></span></td>
+        <td class="right mono">5</td>
+        <td class="right mono">$2,180</td>
+        <td class="right mono">$3,495</td>
+        <td class="right c-green">37.6%</td>
+        <td>Diesel USA</td>
+        <td><span class="pill p-stock">IN STOCK</span></td>
+        <td><div class="acts">
+          <span class="act green">✓</span><span class="act green">$</span>
+          <span class="act blue">📷</span><span class="act off">⚠</span>
+          <span class="act purple">📦</span></div></td></tr>
+
+      <tr><td class="sku">JAKS-DUSA-P190011</td>
+        <td><div class="item"><div class="nm">DS60 Reman Connecting Rod</div>
+          <div class="sb">Detroit Series 60 · 14L · machined</div></div></td>
+        <td><span class="type reman">REMAN</span></td>
+        <td>Rotating Assy</td>
+        <td class="right qty-up">38</td>
+        <td class="right">6</td>
+        <td class="right qty-up">32<span class="bar ok"><i style="width:90%"></i></span></td>
+        <td class="right mono">10</td>
+        <td class="right mono">$148</td>
+        <td class="right mono">$245</td>
+        <td class="right c-green">39.6%</td>
+        <td>Diesel USA</td>
+        <td><span class="pill p-stock">IN STOCK</span></td>
+        <td><div class="acts">
+          <span class="act green">✓</span><span class="act green">$</span>
+          <span class="act blue">📷</span><span class="act off">⚠</span>
+          <span class="act off">📦</span></div></td></tr>
+
+      <tr><td class="sku">JAKS-141181</td>
+        <td><div class="item"><div class="nm">ISX Front Crankshaft Seal Kit</div>
+          <div class="sb">OEM 4089154 · includes wear sleeve</div></div></td>
+        <td><span class="type kit">KIT</span></td>
+        <td>Gaskets / Seals</td>
+        <td class="right qty-down">3</td>
+        <td class="right">5</td>
+        <td class="right qty-down">−2<span class="bar cr"><i style="width:15%"></i></span></td>
+        <td class="right mono">12</td>
+        <td class="right mono">$19</td>
+        <td class="right mono">$42</td>
+        <td class="right c-green">54.8%</td>
+        <td>Cummins OEM</td>
+        <td><span class="pill p-out">OUT</span></td>
+        <td><div class="acts">
+          <span class="act red">⚠</span><span class="act green">$</span>
+          <span class="act blue">📷</span><span class="act amber">📦</span>
+          <span class="act off">✓</span></div></td></tr>
+
+      <tr><td class="sku">JAKS-23532555</td>
+        <td><div class="item"><div class="nm">DS60 14L Connecting Rod (Reman)</div>
+          <div class="sb">DDC 23532555 · re-bushed · weight-matched</div></div></td>
+        <td><span class="type reman">REMAN</span></td>
+        <td>Rotating Assy</td>
+        <td class="right qty-up">22</td>
+        <td class="right">4</td>
+        <td class="right qty-up">18<span class="bar ok"><i style="width:75%"></i></span></td>
+        <td class="right mono">8</td>
+        <td class="right mono">$188</td>
+        <td class="right mono">$315</td>
+        <td class="right c-green">40.3%</td>
+        <td>Detroit Reman</td>
+        <td><span class="pill p-stock">IN STOCK</span></td>
+        <td><div class="acts">
+          <span class="act green">✓</span><span class="act green">$</span>
+          <span class="act off">📷</span><span class="act off">⚠</span>
+          <span class="act blue">📦</span></div></td></tr>
+
+      <tr><td class="sku">JAKS-CORE-ISX-HD</td>
+        <td><div class="item"><div class="nm">ISX 15 Cylinder Head — CORE</div>
+          <div class="sb">return-only · refund credit</div></div></td>
+        <td><span class="type core">CORE</span></td>
+        <td>Engine — Heads</td>
+        <td class="right qty-up">9</td>
+        <td class="right">0</td>
+        <td class="right qty-up">9<span class="bar ok"><i style="width:60%"></i></span></td>
+        <td class="right mono">—</td>
+        <td class="right mono">$650</td>
+        <td class="right mono">$650</td>
+        <td class="right c-faint">—</td>
+        <td>(core program)</td>
+        <td><span class="pill p-stock">IN STOCK</span></td>
+        <td><div class="acts">
+          <span class="act teal">⚒</span><span class="act off">$</span>
+          <span class="act off">📷</span><span class="act off">⚠</span>
+          <span class="act purple">📦</span></div></td></tr>
+
+      <tr><td class="sku">JAKS-DD15-EGR-VLV</td>
+        <td><div class="item"><div class="nm">DD15 EGR Valve Assembly</div>
+          <div class="sb">DDC A4721400060 · electronic actuator</div></div></td>
+        <td><span class="type new">NEW</span></td>
+        <td>Turbo / EGR</td>
+        <td class="right qty-down">2</td>
+        <td class="right">2</td>
+        <td class="right qty-zero">0<span class="bar lo"><i style="width:20%"></i></span></td>
+        <td class="right mono">6</td>
+        <td class="right mono">$612</td>
+        <td class="right mono">$985</td>
+        <td class="right c-green">37.9%</td>
+        <td>Detroit Reman</td>
+        <td><span class="pill p-low">LOW</span></td>
+        <td><div class="acts">
+          <span class="act amber">⚠</span><span class="act green">$</span>
+          <span class="act blue">📷</span><span class="act blue">📦</span>
+          <span class="act off">✓</span></div></td></tr>
+
+      <tr><td class="sku">JAKS-C15-INJ-RM</td>
+        <td><div class="item"><div class="nm">Cat C15 Reman Injector (Set of 6)</div>
+          <div class="sb">CAT 10R-7224 · flow-tested</div></div></td>
+        <td><span class="type reman">REMAN</span></td>
+        <td>Fuel System</td>
+        <td class="right qty-up">11</td>
+        <td class="right">0</td>
+        <td class="right qty-up">11<span class="bar ok"><i style="width:55%"></i></span></td>
+        <td class="right mono">4</td>
+        <td class="right mono">$1,820</td>
+        <td class="right mono">$2,895</td>
+        <td class="right c-green">37.1%</td>
+        <td>JASPER</td>
+        <td><span class="pill p-stock">IN STOCK</span></td>
+        <td><div class="acts">
+          <span class="act green">✓</span><span class="act green">$</span>
+          <span class="act blue">📷</span><span class="act off">⚠</span>
+          <span class="act off">📦</span></div></td></tr>
+
+      <tr><td class="sku">JAKS-ISX-EGR-CLR</td>
+        <td><div class="item"><div class="nm">ISX EGR Cooler — Heavy Duty</div>
+          <div class="sb">OEM 2882146 · upgraded core</div></div></td>
+        <td><span class="type new">NEW</span></td>
+        <td>Turbo / EGR</td>
+        <td class="right qty-zero">0</td>
+        <td class="right">3</td>
+        <td class="right qty-down">−3<span class="bar cr"><i style="width:5%"></i></span></td>
+        <td class="right mono">4</td>
+        <td class="right mono">$1,180</td>
+        <td class="right mono">$1,795</td>
+        <td class="right c-green">34.3%</td>
+        <td>Cummins OEM</td>
+        <td><span class="pill p-onorder">ON ORDER</span></td>
+        <td><div class="acts">
+          <span class="act red">⚠</span><span class="act green">$</span>
+          <span class="act off">📷</span><span class="act blue">📦</span>
+          <span class="act off">✓</span></div></td></tr>
+
+      <tr><td class="sku">JAKS-DD15-BLK-USD</td>
+        <td><div class="item"><div class="nm">DD15 Bare Block — Used / Tested</div>
+          <div class="sb">DDC A4720104408 · mag'd · bore mic'd</div></div></td>
+        <td><span class="type used">USED</span></td>
+        <td>Engine — Blocks</td>
+        <td class="right qty-up">4</td>
+        <td class="right">1</td>
+        <td class="right qty-up">3<span class="bar lo"><i style="width:35%"></i></span></td>
+        <td class="right mono">2</td>
+        <td class="right mono">$2,950</td>
+        <td class="right mono">$4,495</td>
+        <td class="right c-green">34.4%</td>
+        <td>(yard pull)</td>
+        <td><span class="pill p-low">LOW</span></td>
+        <td><div class="acts">
+          <span class="act amber">⚠</span><span class="act green">$</span>
+          <span class="act blue">📷</span><span class="act off">📦</span>
+          <span class="act green">✓</span></div></td></tr>
+
+      <tr><td class="sku">JAKS-N14-WTRPMP</td>
+        <td><div class="item"><div class="nm">Cummins N14 Water Pump (Reman)</div>
+          <div class="sb">OEM 3803403 · new bearings/seal</div></div></td>
+        <td><span class="type reman">REMAN</span></td>
+        <td>Engine — Heads</td>
+        <td class="right qty-up">17</td>
+        <td class="right">2</td>
+        <td class="right qty-up">15<span class="bar ok"><i style="width:85%"></i></span></td>
+        <td class="right mono">6</td>
+        <td class="right mono">$165</td>
+        <td class="right mono">$285</td>
+        <td class="right c-green">42.1%</td>
+        <td>Diesel USA</td>
+        <td><span class="pill p-stock">IN STOCK</span></td>
+        <td><div class="acts">
+          <span class="act green">✓</span><span class="act green">$</span>
+          <span class="act blue">📷</span><span class="act off">⚠</span>
+          <span class="act off">📦</span></div></td></tr>
+
+      <tr><td class="sku">JAKS-PACCAR-MX13-OVH</td>
+        <td><div class="item"><div class="nm">PACCAR MX-13 Overhaul Kit</div>
+          <div class="sb">pistons · rings · liners · bearings · gaskets</div></div></td>
+        <td><span class="type kit">KIT</span></td>
+        <td>Kits</td>
+        <td class="right qty-up">6</td>
+        <td class="right">1</td>
+        <td class="right qty-up">5<span class="bar ok"><i style="width:50%"></i></span></td>
+        <td class="right mono">3</td>
+        <td class="right mono">$3,640</td>
+        <td class="right mono">$5,895</td>
+        <td class="right c-green">38.3%</td>
+        <td>Diesel USA</td>
+        <td><span class="pill p-newprod">NEW</span></td>
+        <td><div class="acts">
+          <span class="act purple">⚒</span><span class="act green">$</span>
+          <span class="act blue">📷</span><span class="act off">⚠</span>
+          <span class="act off">📦</span></div></td></tr>
+
+      <tr><td class="sku">JAKS-3406E-INJ-OLD</td>
+        <td><div class="item"><div class="nm">Cat 3406E Mech Injector</div>
+          <div class="sb">discontinued · superseded by C15</div></div></td>
+        <td><span class="type used">USED</span></td>
+        <td>Fuel System</td>
+        <td class="right qty-up">3</td>
+        <td class="right">0</td>
+        <td class="right qty-up">3<span class="bar lo"><i style="width:10%"></i></span></td>
+        <td class="right mono">—</td>
+        <td class="right mono">$95</td>
+        <td class="right mono">$185</td>
+        <td class="right c-green">48.6%</td>
+        <td>(yard pull)</td>
+        <td><span class="pill p-discont">DISCONT</span></td>
+        <td><div class="acts">
+          <span class="act off">⚒</span><span class="act amber">$</span>
+          <span class="act off">📷</span><span class="act off">⚠</span>
+          <span class="act off">📦</span></div></td></tr>
+    </tbody>
+  </table>
+
+  <div class="footer">
+    12 of 3,847 SKUs  ·  on-hand value $1.42M  ·  47 low / 23 out  ·
+    last sync: 05/19 04:31 PM
+  </div>
+
+</div>
+</body>
+</html>

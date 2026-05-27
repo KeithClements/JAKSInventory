@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>JAK's Diesel PRO — Inventory · Adjustments Mockup</title>
+<style>
+  :root {
+    --bg:#0f1419; --panel:#1a2128; --panel2:#232c35;
+    --border:#2d3a45; --border-hi:#3d4d5c;
+    --text:#e6edf3; --dim:#8b98a5; --faint:#5d6b78;
+    --accent:#ff8c42; --accent-dim:#b85d1f;
+    --green:#3fb950; --red:#f85149; --amber:#d29922;
+    --blue:#58a6ff; --purple:#bc8cff; --teal:#39d0d8;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:13px/1.4 "Segoe UI", system-ui, sans-serif; }
+  .topnav { display:flex; align-items:center; gap:24px;
+            background:#11161c; border-bottom:1px solid var(--border);
+            padding:0 18px; height:48px; }
+  .brand { color:var(--accent); font-weight:900; font-size:13px;
+           letter-spacing:0.5px; }
+  .topnav .cats { display:flex; gap:4px; flex:1; }
+  .topnav .cats a { color:var(--dim); text-decoration:none;
+                    font-weight:600; font-size:11px; letter-spacing:0.8px;
+                    padding:14px 12px; border-bottom:2px solid transparent;
+                    cursor:pointer; }
+  .topnav .cats a.active { color:var(--accent);
+                           border-bottom-color:var(--accent); }
+  .topnav .cats a:hover { color:var(--text); }
+  .topnav .right { display:flex; align-items:center; gap:12px;
+                   color:var(--dim); font-size:11px; }
+  .topnav .right .user { color:var(--accent); }
+  .topnav .right .gear { font-size:15px; color:var(--text); cursor:pointer; }
+
+  .subtabs { display:flex; gap:6px; padding:10px 18px 0;
+             background:var(--bg); border-bottom:1px solid var(--border); }
+  .subtab { padding:8px 14px; font-size:11px; font-weight:600;
+            color:var(--dim); border:1px solid transparent;
+            border-bottom:none; border-radius:6px 6px 0 0; cursor:pointer;
+            letter-spacing:0.3px; }
+  .subtab.active { background:var(--accent); color:white;
+                   border-color:var(--accent); }
+  .subtab:hover:not(.active) { color:var(--text); background:var(--panel2); }
+
+  .body { padding:14px 18px 30px; }
+  .h1 { font-size:20px; font-weight:700; margin:0; }
+  .h1 small { color:var(--dim); font-weight:500; font-size:12px;
+              margin-left:10px; }
+  .headerrow { display:flex; align-items:baseline; justify-content:space-between;
+               margin-bottom:14px; }
+  .btn { padding:8px 14px; border-radius:6px; border:none;
+         font-weight:600; font-size:12px; cursor:pointer;
+         display:inline-flex; align-items:center; gap:6px; }
+  .btn-primary { background:var(--accent); color:white; }
+  .btn-primary:hover { background:var(--accent-dim); }
+  .btn-ghost { background:var(--panel2); color:var(--text);
+               border:1px solid var(--border); }
+  .btn-ghost:hover { border-color:var(--border-hi); }
+
+  .kpis { display:grid; grid-template-columns:repeat(7,1fr); gap:8px;
+          margin-bottom:14px; }
+  .kpi { background:var(--panel); border:1px solid var(--border);
+         border-radius:8px; padding:10px 12px; min-height:64px; }
+  .kpi .lbl { font-size:9px; font-weight:700; letter-spacing:0.8px;
+              color:var(--dim); text-transform:uppercase; }
+  .kpi .val { font-size:20px; font-weight:700; margin-top:4px; }
+  .kpi .sub { font-size:10px; color:var(--faint); margin-top:2px; }
+  .c-blue { color:var(--blue); } .c-amber { color:var(--amber); }
+  .c-green { color:var(--green); } .c-red { color:var(--red); }
+  .c-accent { color:var(--accent); } .c-purple { color:var(--purple); }
+  .c-teal { color:var(--teal); }
+
+  .attn { background:var(--panel); border:1px solid var(--border);
+          border-radius:8px; padding:8px 12px; display:flex;
+          align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  .attn .head { font-size:10px; font-weight:700; letter-spacing:0.8px;
+                color:var(--amber); margin-right:6px; }
+  .chip { display:inline-flex; align-items:center; gap:6px;
+          background:var(--panel2); border:1px solid var(--border);
+          border-radius:14px; padding:3px 10px 3px 4px; font-size:11px;
+          font-weight:600; color:var(--text); cursor:pointer; }
+  .chip:hover { border-color:var(--border-hi); }
+  .chip .badge { width:20px; height:20px; border-radius:50%;
+                 color:white; font-size:10px; font-weight:700;
+                 display:flex; align-items:center; justify-content:center; }
+  .chip.zero { color:var(--faint); }
+  .chip.zero .badge { background:var(--border); }
+
+  .filters { display:flex; gap:8px; align-items:center;
+             margin-bottom:10px; flex-wrap:wrap; }
+  .search { flex:0 1 280px; background:var(--panel2); color:var(--text);
+            border:1px solid var(--border); border-radius:6px;
+            padding:7px 10px; font-size:12px; }
+  .select { background:var(--panel2); color:var(--text);
+            border:1px solid var(--border); border-radius:6px;
+            padding:7px 28px 7px 10px; font-size:12px;
+            appearance:none; min-width:120px;
+            background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),
+                             linear-gradient(135deg,var(--dim) 50%,transparent 50%);
+            background-position:calc(100% - 14px) center,
+                                calc(100% - 9px) center;
+            background-size:5px 5px,5px 5px; background-repeat:no-repeat; }
+  .spacer { flex:1; }
+
+  table { width:100%; border-collapse:collapse;
+          background:var(--panel); border:1px solid var(--border);
+          border-radius:8px; overflow:hidden; }
+  th { font-size:10px; font-weight:600; text-transform:uppercase;
+       letter-spacing:0.5px; color:var(--dim); text-align:left;
+       padding:10px 12px; background:var(--panel2);
+       border-bottom:1px solid var(--border); }
+  td { padding:10px 12px; border-bottom:1px solid var(--border);
+       font-size:12px; vertical-align:middle; }
+  tr:nth-child(even) td { background:#1f262e; }
+  tr:hover td { background:rgba(255,140,66,0.05); cursor:pointer; }
+  .sku { color:var(--accent); font-weight:700; font-family:Consolas,monospace;
+         font-size:11px; }
+  .right { text-align:right; }
+  .center { text-align:center; }
+  .mono { font-family:Consolas,monospace; }
+  .cust { line-height:1.25; }
+  .cust .nm { font-weight:600; }
+  .cust .sb { color:var(--dim); font-size:10px; margin-top:1px; }
+
+  .pill { display:inline-block; padding:2px 8px; border-radius:10px;
+          font-size:10px; font-weight:700; text-transform:uppercase;
+          letter-spacing:0.3px; border:1px solid; }
+  .p-pending  { color:var(--amber);  border-color:rgba(210,153,34,.5);  background:rgba(210,153,34,.12); }
+  .p-approved { color:var(--blue);   border-color:rgba(88,166,255,.5);  background:rgba(88,166,255,.12); }
+  .p-posted   { color:var(--green);  border-color:rgba(63,185,80,.5);   background:rgba(63,185,80,.12); }
+  .p-reversed { color:var(--faint);  border-color:var(--border);        background:var(--panel2); }
+  .p-rejected { color:var(--red);    border-color:rgba(248,81,73,.5);   background:rgba(248,81,73,.12); }
+
+  .qty-up   { color:var(--green); font-weight:700; }
+  .qty-down { color:var(--red);   font-weight:700; }
+
+  .acts { display:flex; gap:3px; }
+  .act { width:18px; height:18px; border-radius:4px;
+         display:flex; align-items:center; justify-content:center;
+         color:white; font-size:10px; font-weight:700; }
+  .act.off { background:var(--panel2); color:var(--faint);
+             border:1px solid var(--border); }
+  .act.blue { background:var(--blue); } .act.green { background:var(--green); }
+  .act.amber { background:var(--amber); } .act.red { background:var(--red); }
+  .act.purple { background:var(--purple); } .act.teal { background:var(--teal); }
+
+  .footer { color:var(--dim); font-size:11px; margin-top:10px; }
+</style>
+</head>
+<body>
+
+<div class="topnav">
+  <div class="brand">JAK'S DIESEL PRO</div>
+  <div class="cats">
+    <a>DASHBOARD</a><a>SALES</a><a>CORE PROCESSING</a>
+    <a class="active">INVENTORY</a><a>PURCHASING</a><a>PRICING</a>
+    <a>CUSTOMERS</a><a>MARKETING</a><a>ACCOUNTING</a><a>TOOLS</a>
+  </div>
+  <div class="right">
+    Tue, May 19 · 04:26 PM <span>·</span> <span class="user">User</span>
+    <span class="gear">⚙</span>
+  </div>
+</div>
+
+<div class="subtabs">
+  <div class="subtab">Products</div>
+  <div class="subtab active">Adjustments</div>
+  <div class="subtab">Locations</div>
+  <div class="subtab">Kits</div>
+</div>
+
+<div class="body">
+
+  <div class="headerrow">
+    <h1 class="h1">Inventory Adjustments
+      <small>Counts · Damage · Write-offs · Found stock</small>
+    </h1>
+    <div>
+      <button class="btn btn-ghost">📋 Cycle Count</button>
+      <button class="btn btn-ghost">📤 Variance Report</button>
+      <button class="btn btn-primary">+ New Adjustment</button>
+    </div>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="lbl">Adjustments MTD</div>
+      <div class="val c-blue">142</div><div class="sub">37 today</div></div>
+    <div class="kpi"><div class="lbl">Qty Up</div>
+      <div class="val c-green">+318</div><div class="sub">found stock</div></div>
+    <div class="kpi"><div class="lbl">Qty Down</div>
+      <div class="val c-red">−441</div><div class="sub">damage / count loss</div></div>
+    <div class="kpi"><div class="lbl">$ Variance MTD</div>
+      <div class="val c-amber">−$2.1k</div><div class="sub">net at cost</div></div>
+    <div class="kpi"><div class="lbl">Pending Approval</div>
+      <div class="val c-amber">6</div><div class="sub">awaiting sign-off</div></div>
+    <div class="kpi"><div class="lbl">Cycle Counts Due</div>
+      <div class="val c-purple">14</div><div class="sub">bins scheduled</div></div>
+    <div class="kpi"><div class="lbl">Shrinkage YTD</div>
+      <div class="val c-red">0.7%</div><div class="sub">target &lt;1%</div></div>
+  </div>
+
+  <div class="attn">
+    <span class="head">⚠ NEEDS ATTENTION</span>
+    <span class="chip"><span class="badge" style="background:var(--red)">3</span>Unapproved &gt; $500</span>
+    <span class="chip"><span class="badge" style="background:var(--red)">2</span>Negative on-hand</span>
+    <span class="chip"><span class="badge" style="background:var(--amber)">14</span>Cycle count overdue</span>
+    <span class="chip"><span class="badge" style="background:var(--amber)">5</span>Variance &gt;10%</span>
+    <span class="chip"><span class="badge" style="background:var(--blue)">8</span>Missing reason code</span>
+    <span class="chip zero"><span class="badge">0</span>Reversal requested</span>
+  </div>
+
+  <div class="filters">
+    <input class="search" placeholder="🔍   Search SKU, adjustment #, user, note…" />
+    <select class="select"><option>All Types</option><option>Count</option>
+      <option>Damage</option><option>Write-off</option>
+      <option>Found</option><option>Cycle Count</option>
+      <option>Return to Stock</option></select>
+    <select class="select"><option>All Warehouses</option>
+      <option>WH-Main</option><option>WH-East</option><option>Shop Floor</option></select>
+    <select class="select"><option>All Users</option><option>Keith</option>
+      <option>Mike</option><option>Sarah</option></select>
+    <select class="select"><option>All Reasons</option>
+      <option>Damaged in transit</option><option>Mis-count</option>
+      <option>Customer return</option><option>Obsolete</option></select>
+    <select class="select"><option>Last 30 days</option>
+      <option>Last 7 days</option><option>Last 90 days</option><option>All time</option></select>
+    <div class="spacer"></div>
+    <button class="btn btn-ghost">View / Edit</button>
+    <button class="btn btn-ghost" style="color:var(--green)">✓ Approve</button>
+    <button class="btn btn-ghost" style="color:var(--red)">↶ Reverse</button>
+    <button class="btn btn-primary">📋 Bulk Count</button>
+  </div>
+
+  <table>
+    <thead><tr>
+      <th>Date</th><th>Adj #</th><th>Type</th>
+      <th>SKU / Item</th><th>Location</th>
+      <th class="right">Qty Δ</th><th>Reason</th>
+      <th class="right">$ Impact</th><th>User</th>
+      <th>Status</th><th>Activity</th>
+    </tr></thead>
+    <tbody>
+      <tr><td class="mono">05/19 03:14p</td><td class="sku">ADJ-04812</td>
+        <td><span class="pill p-pending">COUNT</span></td>
+        <td><div class="cust"><div class="nm">JAKS-3682821</div>
+            <div class="sb">Cummins ISX 15 Cyl Head Assy</div></div></td>
+        <td class="mono">WH-Main · A-12-03</td>
+        <td class="right qty-down">−4</td><td>Mis-count vs scan</td>
+        <td class="right qty-down mono">−$1,824</td><td>Mike</td>
+        <td><span class="pill p-pending">PENDING</span></td>
+        <td><div class="acts">
+          <span class="act amber">⚒</span><span class="act off">✓</span>
+          <span class="act off">$</span><span class="act red">⚠</span>
+          <span class="act off">📷</span></div></td></tr>
+      <tr><td class="mono">05/19 11:02a</td><td class="sku">ADJ-04811</td>
+        <td><span class="pill p-pending">DAMAGE</span></td>
+        <td><div class="cust"><div class="nm">JAKS-DUSA-P190011</div>
+            <div class="sb">DS60 Reman Connecting Rod</div></div></td>
+        <td class="mono">WH-Main · B-04-11</td>
+        <td class="right qty-down">−2</td><td>Forklift drop</td>
+        <td class="right qty-down mono">−$296</td><td>Keith</td>
+        <td><span class="pill p-approved">APPROVED</span></td>
+        <td><div class="acts">
+          <span class="act green">⚒</span><span class="act green">✓</span>
+          <span class="act off">$</span><span class="act amber">⚠</span>
+          <span class="act purple">📷</span></div></td></tr>
+      <tr><td class="mono">05/19 09:48a</td><td class="sku">ADJ-04810</td>
+        <td><span class="pill p-posted">FOUND</span></td>
+        <td><div class="cust"><div class="nm">JAKS-23532555</div>
+            <div class="sb">DS60 14L Connecting Rod (Reman)</div></div></td>
+        <td class="mono">WH-East · R-22-A</td>
+        <td class="right qty-up">+6</td><td>Mis-located — moved to bin</td>
+        <td class="right qty-up mono">+$1,128</td><td>Sarah</td>
+        <td><span class="pill p-posted">POSTED</span></td>
+        <td><div class="acts">
+          <span class="act green">⚒</span><span class="act green">✓</span>
+          <span class="act green">$</span><span class="act off">⚠</span>
+          <span class="act blue">📷</span></div></td></tr>
+      <tr><td class="mono">05/18 04:55p</td><td class="sku">ADJ-04809</td>
+        <td><span class="pill p-pending">WRITE-OFF</span></td>
+        <td><div class="cust"><div class="nm">JAKS-141181</div>
+            <div class="sb">ISX Front Crankshaft Seal Kit</div></div></td>
+        <td class="mono">Shop Floor · BENCH-3</td>
+        <td class="right qty-down">−12</td><td>Obsolete / scrapped</td>
+        <td class="right qty-down mono">−$60</td><td>Keith</td>
+        <td><span class="pill p-pending">PENDING</span></td>
+        <td><div class="acts">
+          <span class="act amber">⚒</span><span class="act off">✓</span>
+          <span class="act off">$</span><span class="act amber">⚠</span>
+          <span class="act off">📷</span></div></td></tr>
+      <tr><td class="mono">05/18 02:13p</td><td class="sku">ADJ-04808</td>
+        <td><span class="pill p-posted">CYCLE</span></td>
+        <td><div class="cust"><div class="nm">JAKS-23532555</div>
+            <div class="sb">DS60 14L Connecting Rod (Reman)</div></div></td>
+        <td class="mono">WH-Main · B-04-08</td>
+        <td class="right qty-up">+1</td><td>Cycle count true-up</td>
+        <td class="right qty-up mono">+$188</td><td>Mike</td>
+        <td><span class="pill p-posted">POSTED</span></td>
+        <td><div class="acts">
+          <span class="act green">⚒</span><span class="act green">✓</span>
+          <span class="act green">$</span><span class="act off">⚠</span>
+          <span class="act off">📷</span></div></td></tr>
+      <tr><td class="mono">05/17 10:09a</td><td class="sku">ADJ-04807</td>
+        <td><span class="pill p-reversed">RETURN</span></td>
+        <td><div class="cust"><div class="nm">JAKS-141181</div>
+            <div class="sb">ISX Front Crank Seal Kit</div></div></td>
+        <td class="mono">WH-Main · A-09-02</td>
+        <td class="right qty-up">+3</td><td>Customer return — re-stocked</td>
+        <td class="right qty-up mono">+$57</td><td>Sarah</td>
+        <td><span class="pill p-reversed">REVERSED</span></td>
+        <td><div class="acts">
+          <span class="act green">⚒</span><span class="act green">✓</span>
+          <span class="act off">$</span><span class="act amber">⚠</span>
+          <span class="act off">📷</span></div></td></tr>
+    </tbody>
+  </table>
+
+  <div class="footer">
+    6 of 142 adjustments  ·  net qty −8  ·  net $ −$807  ·
+    last cycle count: 05/16 by Mike
+  </div>
+
+</div>
+</body>
+</html>
