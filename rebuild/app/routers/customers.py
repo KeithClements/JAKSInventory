@@ -9,6 +9,7 @@ import logging
 from fastapi import APIRouter, Depends, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.constants import CallOutcome, CallType, PaymentTerms, QuoteStatus
@@ -39,9 +40,45 @@ def customer_list(request: Request, q: str = "", db: Session = Depends(get_db)):
             | Customer.phone.ilike(like)
         )
     customers = query.order_by(Customer.company_name).all()
+
+    # Bulk activity counts — two queries, no N+1
+    customer_ids = [c.id for c in customers]
+    if customer_ids:
+        open_invoice_counts = dict(
+            db.query(Invoice.customer_id, func.count(Invoice.id))
+            .filter(
+                Invoice.customer_id.in_(customer_ids),
+                Invoice.status.in_(["draft", "open", "partial"]),
+            )
+            .group_by(Invoice.customer_id)
+            .all()
+        )
+        open_quote_counts = dict(
+            db.query(Quote.customer_id, func.count(Quote.id))
+            .filter(
+                Quote.customer_id.in_(customer_ids),
+                Quote.status.notin_([
+                    QuoteStatus.CONVERTED,
+                    QuoteStatus.DECLINED,
+                    QuoteStatus.EXPIRED,
+                ]),
+            )
+            .group_by(Quote.customer_id)
+            .all()
+        )
+    else:
+        open_invoice_counts = {}
+        open_quote_counts = {}
+
     return templates.TemplateResponse(
         "customers/list.html",
-        {"request": request, "customers": customers, "q": q},
+        {
+            "request": request,
+            "customers": customers,
+            "q": q,
+            "open_invoice_counts": open_invoice_counts,
+            "open_quote_counts": open_quote_counts,
+        },
     )
 
 
@@ -667,3 +704,125 @@ def customer_deactivate(
         c.is_active = False
         db.commit()
     return RedirectResponse("/customers/", status_code=303)
+
+
+# ── Statement ─────────────────────────────────────────────────────────────────
+
+@router.get("/{customer_id}/statement", response_class=HTMLResponse)
+def customer_statement_form(
+    customer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Statement date-range selector page."""
+    from datetime import date
+    c = db.query(Customer).filter(Customer.id == customer_id).first()
+    if c is None:
+        return RedirectResponse("/customers/", status_code=303)
+    today = date.today()
+    # Default: first of current month → today
+    default_start = today.replace(day=1)
+    return templates.TemplateResponse(
+        "customers/statement_form.html",
+        {
+            "request": request,
+            "customer": c,
+            "default_start": default_start.isoformat(),
+            "default_end": today.isoformat(),
+        },
+    )
+
+
+@router.get("/{customer_id}/statement/print", response_class=HTMLResponse)
+def customer_statement_print(
+    customer_id: int,
+    request: Request,
+    start: str = "",
+    end: str = "",
+    db: Session = Depends(get_db),
+):
+    """Print-ready statement HTML. Also used by /pdf to generate the PDF bytes."""
+    from datetime import date
+    from app.services.statement_service import StatementService
+    from app.settings_utils import get_setting_value_db
+
+    today = date.today()
+    try:
+        period_start = date.fromisoformat(start) if start else today.replace(day=1)
+        period_end = date.fromisoformat(end) if end else today
+    except ValueError:
+        period_start = today.replace(day=1)
+        period_end = today
+
+    stmt = StatementService(db).generate_statement(
+        customer_id=customer_id,
+        period_start=period_start,
+        period_end=period_end,
+    )
+    company = {
+        "name":    get_setting_value_db(db, "company_name",    "JAKS Parts"),
+        "address": get_setting_value_db(db, "company_address", ""),
+        "phone":   get_setting_value_db(db, "company_phone",   ""),
+        "email":   get_setting_value_db(db, "company_email",   ""),
+    }
+    return templates.TemplateResponse(
+        "customers/statement_print.html",
+        {"request": request, "stmt": stmt, "company": company},
+    )
+
+
+@router.get("/{customer_id}/statement/pdf")
+def customer_statement_pdf(
+    customer_id: int,
+    request: Request,
+    start: str = "",
+    end: str = "",
+    db: Session = Depends(get_db),
+):
+    """Server-side PDF via WeasyPrint. Falls back to print view if GTK missing."""
+    from datetime import date
+    from urllib.parse import quote as url_quote
+    from app.services.statement_service import StatementService
+    from app.settings_utils import get_setting_value_db
+    from fastapi.responses import Response as FastAPIResponse
+
+    today = date.today()
+    try:
+        period_start = date.fromisoformat(start) if start else today.replace(day=1)
+        period_end = date.fromisoformat(end) if end else today
+    except ValueError:
+        period_start = today.replace(day=1)
+        period_end = today
+
+    stmt = StatementService(db).generate_statement(
+        customer_id=customer_id,
+        period_start=period_start,
+        period_end=period_end,
+    )
+    company = {
+        "name":    get_setting_value_db(db, "company_name",    "JAKS Parts"),
+        "address": get_setting_value_db(db, "company_address", ""),
+        "phone":   get_setting_value_db(db, "company_phone",   ""),
+        "email":   get_setting_value_db(db, "company_email",   ""),
+    }
+    html_str = templates.env.get_template("customers/statement_print.html").render(
+        request=request, stmt=stmt, company=company,
+    )
+    try:
+        from weasyprint import HTML
+        pdf_bytes = HTML(string=html_str, base_url=str(request.base_url)).write_pdf()
+    except Exception:
+        return RedirectResponse(
+            f"/customers/{customer_id}/statement/print?start={start}&end={end}",
+            status_code=302,
+        )
+    safe_name = url_quote(stmt["customer"].company_name.replace("/", "-"))
+    filename = f"Statement_{safe_name}_{period_end.isoformat()}.pdf"
+    return FastAPIResponse(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(pdf_bytes)),
+        },
+    )
