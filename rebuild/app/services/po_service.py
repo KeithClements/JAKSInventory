@@ -18,7 +18,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.constants import (
-    AuditAction, EntityType, InventoryTxnType,
+    AuditAction, EntityType, FulfillmentSource, InventoryTxnType, SOLineStatus,
     POStatus, QBOSyncStatus, VendorBillStatus,
 )
 from app.models.inventory import InventoryTransaction
@@ -27,6 +27,7 @@ from app.models.purchase_order import (
     POLine, POReceipt, POReceiptLine,
     PurchaseOrder, VendorBill, VendorBillLine,
 )
+from app.models.quote import SOLine
 from app.settings_utils import bump_counter
 from app.services.base import BaseService
 from app.services.product_service import ProductService
@@ -151,12 +152,19 @@ class POService(BaseService):
     ) -> POReceipt:
         """
         Record goods receipt against one or more PO lines.
-        For each line:
-          - Creates POReceiptLine
-          - Writes InventoryTransaction (PO_RECEIPT) unless drop-ship
-          - Updates POLine.qty_received and Product.qty_on_order/qty_on_hand cache
-          - Calls ProductService.compare_and_record_cost_change() if cost differs
-        Marks PO RECEIVED if all lines fully received.
+
+        For each line (R6, R7, R11):
+          1. Creates POReceiptLine
+          2. Detects over-receipt (qty_received > qty_ordered) → flags line
+          3. Writes InventoryTransaction (PO_RECEIPT) unless drop-ship
+          4. Updates Product.qty_on_hand cache + qty_on_order
+          5. Updates Product.cost via moving-weighted-average + last_cost
+          6. FIFO-allocates received qty to linked SO lines (any qty leftover
+             goes to general available stock)
+          7. Records ProductCostHistory if vendor source cost differs
+
+        Marks PO RECEIVED if all lines fully received (qty_received + qty_cancelled
+        >= qty_ordered), PARTIAL otherwise.
         """
         receipt = POReceipt(
             vendor_id=vendor_id,
@@ -169,6 +177,9 @@ class POService(BaseService):
         self.db.flush()
 
         product_svc = ProductService(self.db, self.current_user_id)
+        # Lazy import to avoid circular reference at module load time
+        from app.services.inventory_service import InventoryService
+        inv_svc = InventoryService(self.db, self.current_user_id)
 
         for po_line_id, qty in po_line_quantities.items():
             if qty <= 0:
@@ -193,13 +204,21 @@ class POService(BaseService):
             # Update PO line received qty
             po_line.qty_received += qty
 
+            # R6 — Over-receipt detection (do NOT silently inflate qty_ordered)
+            if po_line.qty_received > po_line.qty_ordered:
+                po_line.over_received = True
+                po_line.over_received_qty = po_line.qty_received - po_line.qty_ordered
+
             # Update product inventory cache + ledger (stock receipts only)
             if not is_drop_ship and po_line.product_id:
                 product = self.db.query(Product).filter(Product.id == po_line.product_id).first()
                 if product:
-                    qty_before = product.qty_on_hand
                     product.qty_on_hand += qty
                     product.qty_on_order = max(0, product.qty_on_order - qty)
+
+                    # R11 — moving weighted average cost update
+                    if po_line.unit_cost and po_line.unit_cost > 0:
+                        inv_svc._apply_moving_average_cost(product, qty, po_line.unit_cost)
 
                     txn = InventoryTransaction(
                         product_id=product.id,
@@ -222,11 +241,17 @@ class POService(BaseService):
                         po_id=po_line.po_id,
                     )
 
-            # Mark PO status: PARTIAL or RECEIVED
+                # R7 — FIFO-allocate to linked SO lines before excess goes to stock
+                self._allocate_to_linked_sos(po_line_id, qty, po.po_number)
+
+            # Mark PO status: PARTIAL or RECEIVED.
+            # PO closes when qty_received + qty_cancelled >= qty_ordered on all lines.
             self.db.flush()
-            po_line_fresh = self.db.query(POLine).filter(POLine.id == po_line_id).first()
-            all_received = all(ln.qty_received >= ln.qty_ordered for ln in po.lines)
-            po.status = POStatus.RECEIVED if all_received else POStatus.PARTIAL
+            all_settled = all(
+                (ln.qty_received + ln.qty_cancelled) >= ln.qty_ordered
+                for ln in po.lines
+            )
+            po.status = POStatus.RECEIVED if all_settled else POStatus.PARTIAL
 
         self.audit(
             entity_type=EntityType.PO_RECEIPT,
@@ -236,6 +261,81 @@ class POService(BaseService):
         )
         self.db.commit()
         return receipt
+
+    def _allocate_to_linked_sos(
+        self,
+        po_line_id: int,
+        qty_received: int,
+        po_number: str,
+    ) -> int:
+        """
+        R7 — Allocate newly-received qty to SO lines that link to this po_line,
+        oldest SO first (FIFO).
+
+        For each linked SOLine in FIFO order:
+          - Increment qty_committed on the SO line and product (the new stock
+            is immediately reserved for the customer it was ordered for).
+          - Advance the line's status from AWAITING_PO_RECEIPT → RESERVED_STOCK
+            when its full demand has been met (partial fulfillment keeps it
+            in AWAITING state).
+          - Reduce qty_backordered on the product if the line was backordered.
+
+        Returns the qty consumed by SO allocation. Remaining qty is unallocated
+        (lives in general qty_available).
+        """
+        linked_lines = (
+            self.db.query(SOLine)
+            .filter(SOLine.linked_po_line_id == po_line_id)
+            .order_by(SOLine.id)  # FIFO: lowest id = oldest SO
+            .all()
+        )
+        if not linked_lines:
+            return 0
+
+        remaining = qty_received
+        allocated_total = 0
+
+        for so_line in linked_lines:
+            if remaining <= 0:
+                break
+            outstanding = so_line.qty_ordered - so_line.qty_committed - so_line.qty_invoiced
+            if outstanding <= 0:
+                continue
+
+            take = min(remaining, outstanding)
+            so_line.qty_committed += take
+            allocated_total += take
+            remaining -= take
+
+            # Mirror the commitment on the product cache
+            if so_line.product_id:
+                product = self.db.query(Product).filter(Product.id == so_line.product_id).first()
+                if product:
+                    product.qty_committed += take
+                    product.qty_backordered = max(0, product.qty_backordered - take)
+
+            # Advance line_status when fully met
+            if so_line.qty_committed >= so_line.qty_ordered - so_line.qty_invoiced:
+                so_line.line_status = SOLineStatus.RESERVED_STOCK
+            # else: stay in AWAITING_PO_RECEIPT for partial linked receipt
+
+            # Write ledger row for the reservation
+            txn = InventoryTransaction(
+                product_id=so_line.product_id,
+                transaction_type=InventoryTxnType.SO_COMMITTED,
+                qty_change=-take,  # negative = removed from available
+                qty_after=(self.db.query(Product)
+                          .filter(Product.id == so_line.product_id).first().qty_on_hand
+                          if so_line.product_id else 0),
+                reference_type=EntityType.SALES_ORDER,
+                reference_id=so_line.so_id,
+                performed_by_id=self.current_user_id,
+                notes=f"Linked-PO allocation from PO {po_number} (po_line {po_line_id})",
+            )
+            self.db.add(txn)
+
+        self.db.flush()
+        return allocated_total
 
     def cancel(self, po_id: int) -> None:
         """

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import html
+import json
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -79,14 +82,14 @@ async def vendor_quick_create(request: Request, db: Session = Depends(get_db)):
     )
     db.add(v)
     db.commit()
+    _detail = html.escape(json.dumps({"type": "vendor", "id": v.id, "label": v.name}))
+    _name   = html.escape(v.name)
     return HTMLResponse(
         f"""<span></span>
 <div id="toast-container" hx-swap-oob="beforeend">
   <div x-data x-init="
       setTimeout(() => $el.remove(), 4000);
-      window.dispatchEvent(new CustomEvent('record-created', {{
-        detail: {{ type: 'vendor', id: {v.id}, label: '{v.name.replace("'", "\\'")}' }}
-      }}));
+      window.dispatchEvent(new CustomEvent('record-created', {{ detail: {_detail} }}));
     "
     class="toast toast-success">
     <svg class="w-4 h-4 shrink-0" fill="currentColor" viewBox="0 0 20 20">
@@ -94,7 +97,7 @@ async def vendor_quick_create(request: Request, db: Session = Depends(get_db)):
             d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
             clip-rule="evenodd"/>
     </svg>
-    Vendor created: {v.name}
+    Vendor created: {_name}
   </div>
 </div>"""
     )

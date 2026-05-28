@@ -2,6 +2,10 @@
 {% block title %}Payments — JAKS Inventory{% endblock %}
 {% block heading %}Payments{% endblock %}
 
+{% block header_actions %}
+  <a href="/payments/new" class="btn-primary btn-sm">+ New Payment</a>
+{% endblock %}
+
 {% block content %}
 
 {# ── Filters ── #}
@@ -166,8 +170,8 @@
   {% if q or status_filter %}
   <p class="text-gray-400 text-sm mt-1">Try adjusting your filter.</p>
   {% else %}
-  <p class="text-gray-400 text-sm mt-1">Payments are recorded from the Invoice detail page.</p>
-  <a href="/invoices/" class="mt-3 text-sm link">Go to Invoices →</a>
+  <p class="text-gray-400 text-sm mt-1">Record payments from the invoice detail page or via New Payment.</p>
+  <a href="/payments/new" class="mt-3 btn-primary btn-sm">+ New Payment</a>
   {% endif %}
 </div>
 {% endif %}

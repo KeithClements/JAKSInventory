@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import io
 import csv
 import json
@@ -107,14 +108,14 @@ async def customer_quick_create(request: Request, db: Session = Depends(get_db))
     db.commit()
     # Fire record-created event so the originating field auto-selects this customer.
     # Also show toast. Slide-over closes via htmx:after-request in the calling page.
+    _detail = html.escape(json.dumps({"type": "customer", "id": c.id, "label": c.company_name}))
+    _name   = html.escape(c.company_name)
     return HTMLResponse(
         f"""<span></span>
 <div id="toast-container" hx-swap-oob="beforeend">
   <div x-data x-init="
       setTimeout(() => $el.remove(), 4000);
-      window.dispatchEvent(new CustomEvent('record-created', {{
-        detail: {{ type: 'customer', id: {c.id}, label: '{c.company_name.replace("'", "\\'")}' }}
-      }}));
+      window.dispatchEvent(new CustomEvent('record-created', {{ detail: {_detail} }}));
     "
     class="toast toast-success">
     <svg class="w-4 h-4 shrink-0" fill="currentColor" viewBox="0 0 20 20">
@@ -122,7 +123,7 @@ async def customer_quick_create(request: Request, db: Session = Depends(get_db))
             d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
             clip-rule="evenodd"/>
     </svg>
-    Customer created: {c.company_name}
+    Customer created: {_name}
   </div>
 </div>"""
     )
@@ -208,7 +209,7 @@ async def log_call_global(request: Request, db: Session = Depends(get_db)):
             d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
             clip-rule="evenodd"/>
     </svg>
-    Call logged for {customer.company_name}.
+    Call logged for {html.escape(customer.company_name)}.
   </div>
 </div>"""
     )

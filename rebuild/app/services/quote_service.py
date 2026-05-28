@@ -72,11 +72,18 @@ class QuoteService(BaseService):
         self.db.commit()
         return quote
 
-    def add_line(self, quote_id: int, product_id: int | None, data: dict) -> QuoteLine:
+    def add_line(self, quote_id: int, product_id: int | None, data: dict) -> list[QuoteLine]:
         """
         Add a line to a quote. Auto-populates cost from preferred vendor source.
         line_type: 'product' | 'note' | 'core_charge' | 'misc_charge'
+
+        Returns a list of all newly-created lines: [primary_line] normally, or
+        [primary_line, core_line] when the product carries a core charge and this
+        is a top-level PRODUCT line.  Callers that only need the primary line can
+        still do `lines[0]`.
         """
+        from app.models.product import Product
+
         quote = self._get_or_404(quote_id)
         sort_order = max((ln.sort_order for ln in quote.lines), default=-1) + 1
 
@@ -90,8 +97,34 @@ class QuoteService(BaseService):
             merged["is_included"] = False
 
         line = self._add_line_internal(quote_id, merged, sort_order)
+        added: list[QuoteLine] = [line]
+
+        # Auto-add core charge child line for top-level PRODUCT lines whose product
+        # has a core.  Child lines (parent_line_id set) and non-PRODUCT lines are
+        # skipped so we never nest a core under an upgrade-option or similar.
+        if (
+            product_id is not None
+            and merged.get("line_type", LineType.PRODUCT) == LineType.PRODUCT
+            and not merged.get("parent_line_id")
+        ):
+            product = self.db.query(Product).filter(Product.id == product_id).first()
+            if product and product.has_core and product.customer_core_charge > 0:
+                core_line = self._add_line_internal(quote_id, {
+                    "product_id": product_id,
+                    "description": f"Core — {product.title or product.sku}",
+                    "qty": int(merged.get("qty", 1)),
+                    "unit_price": product.customer_core_charge,
+                    "unit_cost": product.vendor_core_charge,
+                    "line_type": LineType.CORE_CHARGE,
+                    "line_role": LineRole.CORE,
+                    "parent_line_id": line.id,
+                    "is_included": True,
+                    "discount_pct": 0.0,
+                }, sort_order + 1)
+                added.append(core_line)
+
         self.db.commit()
-        return line
+        return added
 
     def update_line(self, line_id: int, data: dict) -> QuoteLine:
         line = self.db.query(QuoteLine).filter(QuoteLine.id == line_id).first()
@@ -104,12 +137,22 @@ class QuoteService(BaseService):
         self.db.commit()
         return line
 
-    def remove_line(self, line_id: int) -> None:
+    def remove_line(self, line_id: int) -> bool:
+        """
+        Delete a quote line and all its children (core, warranty, upgrade options, etc.).
+        Returns True if any children were also deleted (caller may want to refresh the
+        full tbody instead of just removing the single row).
+        """
         line = self.db.query(QuoteLine).filter(QuoteLine.id == line_id).first()
         if line is None:
             raise ValueError(f"QuoteLine {line_id} not found")
+        had_children = bool(line.children)
+        # Delete children first so FK constraints are not violated
+        for child in list(line.children):
+            self.db.delete(child)
         self.db.delete(line)
         self.db.commit()
+        return had_children
 
     def reorder_lines(self, quote_id: int, line_id_order: list[int]) -> None:
         """Update sort_order on all lines to match supplied sequence. Single bulk pass."""
@@ -278,7 +321,11 @@ class QuoteService(BaseService):
         from app.services.invoice_service import InvoiceService
         quote = self._get_or_404(quote_id)
 
-        # Only included lines convert — excluded upgrade options are dropped
+        # Only included PRODUCT lines convert — excluded upgrade options are dropped.
+        # CORE_CHARGE lines are intentionally excluded here: InvoiceService.create_invoice()
+        # auto-adds core charge lines for each product that carries a core.  Including
+        # them from the quote would (a) produce wrong parent_line_id references and
+        # (b) double-count if the invoice service adds its own.
         inv_lines = [
             {
                 "product_id": ln.product_id,
@@ -291,7 +338,7 @@ class QuoteService(BaseService):
                 "allow_zero_stock": True,  # quote-to-invoice: stock check at finalise
             }
             for ln in sorted(quote.lines, key=lambda l: l.sort_order)
-            if ln.is_included
+            if ln.is_included and ln.line_type != LineType.CORE_CHARGE
         ]
 
         inv_svc = InvoiceService(self.db, self.current_user_id)

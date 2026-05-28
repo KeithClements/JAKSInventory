@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+import json
 import uuid
 from pathlib import Path
 
@@ -152,24 +154,22 @@ async def product_quick_create(request: Request, db: Session = Depends(get_db)):
         if (product.price_override and product.price_override > 0)
         else calc_sell_price(product.cost, product.markup_pct or 30.0)
     )
-    sku_js   = product.sku.replace("'", "\\'")
-    title_js = product.title.replace("'", "\\'")
+    _detail = html.escape(json.dumps({
+        "type": "product",
+        "id": product.id,
+        "label": f"{product.sku} — {product.title}",
+        "part_number": product.sku,
+        "description": product.title,
+        "current_cost": product.cost,
+        "suggested_sell": sell,
+    }))
+    _sku = html.escape(product.sku)
     return HTMLResponse(
         f"""<span></span>
 <div id="toast-container" hx-swap-oob="beforeend">
   <div x-data x-init="
       setTimeout(() => $el.remove(), 4000);
-      window.dispatchEvent(new CustomEvent('record-created', {{
-        detail: {{
-          type: 'product',
-          id: {product.id},
-          label: '{sku_js} — {title_js}',
-          part_number: '{sku_js}',
-          description: '{title_js}',
-          current_cost: {product.cost},
-          suggested_sell: {sell}
-        }}
-      }}));
+      window.dispatchEvent(new CustomEvent('record-created', {{ detail: {_detail} }}));
     "
     class="toast toast-success">
     <svg class="w-4 h-4 shrink-0" fill="currentColor" viewBox="0 0 20 20">
@@ -177,7 +177,7 @@ async def product_quick_create(request: Request, db: Session = Depends(get_db)):
             d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
             clip-rule="evenodd"/>
     </svg>
-    Product created: {product.sku}
+    Product created: {_sku}
   </div>
 </div>"""
     )
@@ -417,6 +417,11 @@ async def product_image_upload(
     rel_path = f"uploads/products/{product_id}/{filename}"
 
     content = await file.read()
+    if len(content) > 10 * 1024 * 1024:  # 10 MB server-side limit
+        return HTMLResponse(
+            '<p class="text-sm text-red-600 p-4">Image must be under 10 MB.</p>',
+            status_code=413,
+        )
     (STATIC_DIR / rel_path).write_bytes(content)
 
     _svc(db).add_product_image(product_id, rel_path)

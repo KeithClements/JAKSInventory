@@ -204,11 +204,17 @@ class WarrantyService(BaseService):
 
     def credit_customer(self, claim_id: int) -> None:
         """
-        Apply approved warranty credit to customer.credit_balance.
-        Delegates credit balance update to CRMService (sole owner).
+        Apply approved warranty credit via CreditMemo (R8).
+
+        Creates a CreditMemo with trigger=APPROVED_WARRANTY and auto-closes it
+        so the credit lands on customer.credit_balance — same net effect as the
+        old direct CRMService.add_credit path, but now an auditable CM document
+        exists for the warranty payout.
+
         Transitions claim → CUSTOMER_CREDITED.
         """
-        from app.services.crm_service import CRMService
+        from app.constants import CreditMemoTrigger
+        from app.services.credit_memo_service import CreditMemoService
 
         claim = self._get_claim_or_404(claim_id)
         if claim.status != WarrantyStatus.VENDOR_APPROVED:
@@ -221,14 +227,22 @@ class WarrantyService(BaseService):
                 f"Claim {claim.claim_number} has no credit amount to apply"
             )
 
-        # CRMService.add_credit() commits internally — it is the sole owner of credit_balance.
-        CRMService(self.db, self.current_user_id).add_credit(
+        # R8 — issue credit memo for the warranty amount; auto-close pushes to credit balance.
+        cm = CreditMemoService(self.db, self.current_user_id).create_credit_memo(
             customer_id=claim.customer_id,
-            amount=claim.total_credit_amount,
+            trigger_type=CreditMemoTrigger.APPROVED_WARRANTY,
+            lines=[{
+                "description": f"Warranty credit — claim {claim.claim_number}",
+                "qty": 1,
+                "unit_price": claim.total_credit_amount,
+            }],
+            original_invoice_id=claim.invoice_id,
+            warranty_claim_id=claim.id,
             reason=f"Warranty claim {claim.claim_number}",
+            auto_close_to_credit=True,
         )
 
-        # CRMService committed; now update claim status and commit.
+        # CM service committed; now update claim status and commit.
         claim.status = WarrantyStatus.CUSTOMER_CREDITED
         claim.resolution_type = WarrantyResolution.CREDIT
         self.audit(
@@ -237,7 +251,7 @@ class WarrantyService(BaseService):
             action=AuditAction.STATUS_CHANGED,
             old_value=WarrantyStatus.VENDOR_APPROVED,
             new_value=WarrantyStatus.CUSTOMER_CREDITED,
-            notes=f"account credit: ${claim.total_credit_amount}",
+            notes=f"credit memo {cm.cm_number}: ${claim.total_credit_amount}",
         )
         self.db.commit()
 

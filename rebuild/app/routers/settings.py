@@ -61,6 +61,86 @@ DEFAULTS: dict[str, tuple[str, str]] = {
 
     # ── TaxJar integration ────────────────────────────────────────────────────
     "taxjar_api_key":              ("",        "TaxJar API Key"),
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Phase A additions (Rounds 1–12)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # R1 — Interest defaults (per-customer override exists; this is fallback)
+    "default_interest_grace_days": ("10",      "Default interest grace days"),
+    "default_monthly_interest_rate":("0.0",    "Default monthly interest rate %"),
+
+    # R3 — Core return window
+    "core_return_grace_days":      ("45",      "Days customer has to return cores"),
+    "core_return_reminder_threshold_pct": ("75", "% of grace before reminder"),
+
+    # R5 — Quote follow-up offset
+    "default_followup_offset_days": ("7",      "Default quote follow-up offset days"),
+
+    # R9 — AR aging buckets (comma-separated day cutoffs)
+    "ar_aging_buckets_days":       ("0,30,60,90,120", "AR aging bucket day cutoffs"),
+
+    # R9 — Search
+    "search_results_per_type":     ("10",      "Max results per type in global search"),
+
+    # R10 — Sales tax
+    "default_sales_tax_rate":      ("0.0",     "Default sales tax rate %"),
+    "company_tax_jurisdiction":    ("",        "Company's tax jurisdiction (state)"),
+
+    # R8 — Sandbox/production environment
+    "jaks_env":                    ("sandbox", "sandbox | production"),
+    "qbo_sandbox_prefix":          ("TEST-",   "Prefix for test records in sandbox"),
+
+    # R10 — Time / locale
+    "business_timezone":           ("America/Denver", "Local timezone"),
+
+    # R6 — Inventory
+    "allow_negative_inventory_admin_override": ("true",
+        "Permit admin to allow negative inventory (with audit)"),
+    "low_stock_threshold_default": ("2",       "Default low-stock alert threshold"),
+
+    # R7 — Special orders
+    "special_order_require_deposit_default": ("true",
+        "Require deposit on special orders by default"),
+
+    # R4 — Warranty reserve (JAKS-extended warranty credit source)
+    "jaks_warranty_reserve_account": ("Warranty Reserve",
+        "Accounting category for JAKS-absorbed warranty credits"),
+
+    # R8 — Notification thresholds
+    "notify_invoice_over_amount":  ("5000.0",  "Notify on invoices over this amount"),
+    "notify_payment_over_amount":  ("5000.0",  "Notify on payments over this amount"),
+
+    # R9 — Concurrency
+    "concurrency_check_field":     ("updated_at", "Optimistic-lock check field"),
+
+    # R12 — Communication (provider abstraction)
+    "messaging_email_provider":    ("null",    "null | smtp | m365 | gmail"),
+    "messaging_sms_provider":      ("null",    "null | twilio"),
+    "messaging_log_only_mode":     ("true",    "Phase 1: log only, do not transmit"),
+    "messaging_max_outbound_per_hour": ("100", "Sanity rate limit per hour"),
+    "messaging_max_outbound_per_customer_per_day": ("3",
+        "Avoid spamming a single customer"),
+
+    # R12 — SMTP (Phase 2 use, placeholders now)
+    "smtp_host":                   ("",        ""),
+    "smtp_port":                   ("587",     ""),
+    "smtp_username":               ("",        ""),
+    "smtp_password_encrypted":     ("",        "Encrypted at rest"),
+    "smtp_from_address":           ("",        ""),
+    "smtp_from_name":              ("JAKS Diesel Parts", ""),
+    "smtp_use_tls":                ("true",    ""),
+
+    # R12 — Twilio (Phase 2)
+    "twilio_account_sid":          ("",        ""),
+    "twilio_auth_token_encrypted": ("",        "Encrypted at rest"),
+    "twilio_from_number":          ("",        ""),
+
+    # New document sequences (R8, R11)
+    "next_cm_number":              ("1",       "Credit Memo: CM-2026-XXXX"),
+    "next_vcm_number":             ("1",       "Vendor Credit Memo: VCM-2026-XXXX"),
+    "next_vr_number":              ("1",       "Vendor Return: VR-2026-XXXX"),
+    "next_statement_number":       ("1",       "Customer Statement: ST-2026-XXXX"),
 }
 
 VISIBLE_KEYS = [

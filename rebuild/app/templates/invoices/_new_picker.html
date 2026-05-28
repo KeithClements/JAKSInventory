@@ -1,0 +1,56 @@
+{# Minimal customer picker — opens in slide-over OR works as a standalone page.
+   On submit, POST /invoices/new creates a DRAFT invoice and 303-redirects to
+   /invoices/{id} which renders the full workspace. The picker is NOT the
+   workflow — it's the doorway. The workspace is the workflow. #}
+<form method="post" action="/invoices/new" class="flex flex-col h-full"
+      x-data="{ customerId: '', displayName: '' }"
+      @customer-selected.window="customerId = $event.detail.id; displayName = $event.detail.name">
+
+  <div class="slide-over-body space-y-4">
+    <div class="rounded-lg bg-stone-50 border border-stone-200 px-3 py-2 text-xs text-gray-500">
+      Select a customer to create a draft. The full invoice workspace will open next — add lines, set tax, finalize.
+    </div>
+
+    <div>
+      <label class="form-label">Customer <span class="text-red-500 normal-case">*</span></label>
+      <div class="relative">
+        <input type="text" autocomplete="off"
+               placeholder="Type customer name or phone…"
+               :value="displayName"
+               @input="displayName = $el.value; customerId = ''"
+               class="form-input"
+               hx-get="/customers/search-json"
+               hx-trigger="input changed delay:200ms"
+               hx-target="#new-inv-customer-results"
+               hx-vals='js:{"q": event.target.value}'/>
+        <div id="new-inv-customer-results"
+             class="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-10 max-h-56 overflow-y-auto text-sm"
+             x-show="displayName.length >= 2 && !customerId"
+             x-cloak></div>
+      </div>
+      <input type="hidden" name="customer_id" :value="customerId"/>
+      <p x-show="customerId" x-cloak class="mt-1 text-xs text-brand-700 font-medium">
+        ✓ <span x-text="displayName"></span> — ready to create draft
+      </p>
+    </div>
+
+    <div class="text-xs text-gray-400">
+      Need to add a new customer first?
+      <button type="button" class="link"
+              hx-get="/customers/quick-create-form"
+              hx-target="#create-slide-content"
+              @click="createSlideTitle = 'New Customer'">
+        Quick-add customer →
+      </button>
+    </div>
+  </div>
+
+  <div class="slide-over-footer">
+    <button type="button" class="btn-secondary"
+            @click="createSlideOpen = false">Cancel</button>
+    <button type="submit" class="btn-primary"
+            :disabled="!customerId">
+      Create Draft &amp; Open Workspace →
+    </button>
+  </div>
+</form>

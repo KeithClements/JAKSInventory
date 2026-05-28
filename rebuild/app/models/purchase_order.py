@@ -106,6 +106,18 @@ class POLine(Base):
     # Allocated freight-in cost per unit (computed by POService after receipt)
     landed_cost_per_unit: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # R6 — over-receipt tracking
+    over_received: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    over_received_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # R6 — explicit cancellation (PO closes when qty_received + qty_cancelled = qty_ordered)
+    qty_cancelled: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cancel_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancelled_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+
     notes: Mapped[str] = mapped_column(String(500), nullable=False, default="")
 
     po: Mapped[PurchaseOrder] = relationship("PurchaseOrder", back_populates="lines")

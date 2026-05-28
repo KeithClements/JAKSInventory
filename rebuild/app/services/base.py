@@ -25,9 +25,54 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.constants import Permission, UserRole
 from app.models.audit import AuditLog
+from app.models.user import User
 
 log = logging.getLogger(__name__)
+
+
+class PermissionDeniedError(PermissionError):
+    """Raised when a user lacks the required permission for an action."""
+
+    def __init__(self, permission: str, user_id: int | None, role: str | None = None):
+        self.permission = permission
+        self.user_id = user_id
+        self.role = role
+        msg = f"Permission denied: '{permission}' requires elevated access"
+        if role:
+            msg += f" (current role: {role})"
+        super().__init__(msg)
+
+
+class ConcurrentEditError(RuntimeError):
+    """Raised when an optimistic-lock version check fails."""
+
+    def __init__(self, entity_type: str, entity_id: int):
+        self.entity_type = entity_type
+        self.entity_id = entity_id
+        super().__init__(
+            f"This {entity_type} (#{entity_id}) was changed by another user. "
+            "Refresh and try again."
+        )
+
+
+# R11 — role → granted permissions matrix (Phase A: ADMIN+BOOKKEEPING are Keith/wife).
+# Looked up by assert_can(); never compared directly elsewhere.
+_ROLE_PERMISSIONS: dict[str, set[str]] = {
+    UserRole.ADMIN: {p.value for p in Permission},  # admin gets everything
+    UserRole.BOOKKEEPING: {
+        Permission.REVERSE_PAYMENT,
+        Permission.ISSUE_CREDIT_MEMO,
+        Permission.REPUSH_QBO,
+        Permission.VIEW_AUDIT_LOG,
+        Permission.SEND_EMAIL,
+    },
+    UserRole.SALES: {
+        Permission.SEND_EMAIL,
+    },
+    UserRole.READ_ONLY: set(),
+}
 
 
 class BaseService:
@@ -36,6 +81,70 @@ class BaseService:
     def __init__(self, db: Session, current_user_id: int | None = None) -> None:
         self.db = db
         self.current_user_id = current_user_id
+
+    # ── Permission gating (R11) ───────────────────────────────────────────────
+
+    def assert_can(self, permission: str, *, raise_on_deny: bool = True) -> bool:
+        """
+        Check whether self.current_user_id has the given Permission.
+        Returns True if allowed; raises PermissionDeniedError if not (unless
+        raise_on_deny=False, in which case returns False).
+
+        Use this at the top of any service method that gates a sensitive action:
+            self.assert_can(Permission.INVENTORY_ADJUST)
+
+        Phase A: if current_user_id is None, treat as "system event" and allow.
+        Phase 2 (auth): tighten this — None user means anonymous request.
+        """
+        if self.current_user_id is None:
+            return True  # system / background job
+
+        user = self.db.query(User).filter(User.id == self.current_user_id).first()
+        if user is None:
+            if raise_on_deny:
+                raise PermissionDeniedError(permission, self.current_user_id, None)
+            return False
+
+        allowed = _ROLE_PERMISSIONS.get(user.role, set())
+        if permission in allowed:
+            return True
+        if raise_on_deny:
+            raise PermissionDeniedError(permission, self.current_user_id, user.role)
+        return False
+
+    # ── Optimistic locking (R9) ───────────────────────────────────────────────
+
+    def check_version(self, record, submitted_updated_at) -> None:
+        """
+        Compare record.updated_at to the timestamp the client last saw.
+        If they differ, the record was modified by someone else — raise
+        ConcurrentEditError so the caller can prompt the user to refresh.
+
+        Caller passes the timestamp from a hidden form field or HTMX header.
+        submitted_updated_at may be a datetime or its ISO-string form.
+        """
+        if submitted_updated_at is None:
+            return  # no version to check (legacy save path)
+
+        current = getattr(record, "updated_at", None)
+        if current is None:
+            return
+
+        # Normalize string ISO timestamps for comparison
+        from datetime import datetime as _dt
+        if isinstance(submitted_updated_at, str):
+            try:
+                submitted_updated_at = _dt.fromisoformat(submitted_updated_at)
+            except ValueError:
+                # Unparseable — skip the check rather than fail loudly
+                log.warning("check_version: could not parse submitted_updated_at=%r", submitted_updated_at)
+                return
+
+        # SQLite stores DATETIME without microsecond precision sometimes — compare to second
+        if abs((current - submitted_updated_at).total_seconds()) > 1:
+            entity_type = type(record).__name__
+            entity_id = getattr(record, "id", 0)
+            raise ConcurrentEditError(entity_type, entity_id)
 
     def audit(
         self,

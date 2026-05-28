@@ -4,7 +4,7 @@ from datetime import datetime
 from sqlalchemy import String, Text, Float, Integer, Boolean, ForeignKey, DateTime, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
-from app.constants import WarrantyStatus, WarrantyDecision, WarrantyResolution
+from app.constants import WarrantyStatus, WarrantyDecision, WarrantyResolution, WarrantyType
 
 
 class WarrantyClaim(Base):
@@ -35,6 +35,10 @@ class WarrantyClaim(Base):
     claim_date: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     status: Mapped[str] = mapped_column(
         String(30), nullable=False, default=WarrantyStatus.DRAFT
+    )
+    # R4 — vendor warranty (vendor reimburses) vs jaks_extended (JAKS absorbs / reserve)
+    warranty_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=WarrantyType.VENDOR
     )
     failure_description: Mapped[str] = mapped_column(Text, nullable=False, default="")
 

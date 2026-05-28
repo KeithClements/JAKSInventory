@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from sqlalchemy import String, Text, DateTime, Float, Boolean, Integer, ForeignKey, Index, func
+from sqlalchemy import String, Text, Date, DateTime, Float, Boolean, Integer, ForeignKey, Index, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
-from app.constants import PaymentTerms, DeliveryType, AddressType, CallType, CallOutcome
+from app.constants import (
+    PaymentTerms, DeliveryType, AddressType, CallType, CallOutcome,
+    PreferredContactMethod, SMSConsentMethod,
+)
 
 
 class Customer(Base):
@@ -30,6 +33,9 @@ class Customer(Base):
     is_tax_exempt: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     tax_exempt_cert_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
     tax_exempt_cert_file: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # R10 — cert can expire; system warns but does not hard-block when expired
+    tax_exempt_cert_expiry: Mapped[datetime | None] = mapped_column(Date, nullable=True)
+    tax_exempt_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     tax_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
     # ── Pricing & Terms ───────────────────────────────────────────────────────
@@ -38,6 +44,9 @@ class Customer(Base):
         String(20), nullable=False, default=PaymentTerms.COD
     )
     interest_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # R1 — monthly interest rate (as %), accrues simple interest on overdue balance
+    # after due_date + interest_grace_days
+    interest_grace_days: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
     delivery_type: Mapped[str] = mapped_column(
         String(20), nullable=False, default=DeliveryType.PICKUP
     )
@@ -53,6 +62,23 @@ class Customer(Base):
     # ── Notes ─────────────────────────────────────────────────────────────────
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     internal_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # R10 — preference/quirk notes ("ask for Bob", "text preferred", "needs PO#")
+    communication_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    # ── Communication Preferences (R12) ───────────────────────────────────────
+    preferred_contact_method: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=PreferredContactMethod.PHONE
+    )
+    allow_sms: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    allow_email: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    allow_marketing: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    do_not_contact: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # ── SMS / Email Consent Tracking (R12 — Twilio/A2P compliance) ───────────
+    sms_consent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    sms_consent_method: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    email_consent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    opt_out_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -108,6 +134,7 @@ class Customer(Base):
 
 
 class CustomerAddress(Base):
+    """R11 — multi ship-to addresses per customer."""
     __tablename__ = "customer_addresses"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -116,13 +143,25 @@ class CustomerAddress(Base):
         String(20), nullable=False, default=AddressType.SHIPPING
     )
     is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # R11 — default-per-type flags
+    is_default_shipping: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_default_billing: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     label: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    # Address lines — keep `street` for backward compat, add explicit line1/line2
     street: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    street_line2: Mapped[str] = mapped_column(String(300), nullable=False, default="")
     city: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     state: Mapped[str] = mapped_column(String(50), nullable=False, default="")
     zip_code: Mapped[str] = mapped_column(String(20), nullable=False, default="")
     country: Mapped[str] = mapped_column(String(50), nullable=False, default="US")
+
+    # R11 — per-address contact info (job sites often have a different contact)
+    contact_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    phone: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     customer: Mapped[Customer] = relationship("Customer", back_populates="addresses")
 

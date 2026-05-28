@@ -70,7 +70,10 @@ class Product(Base):
     # ── Pricing ───────────────────────────────────────────────────────────────
     # cost mirrors the preferred vendor source cost for quick access.
     # Source of truth for per-vendor cost is product_vendor_sources.vendor_cost.
+    # R11 — moving weighted average cost; updated on every PO receipt.
     cost: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # R11 — most recent receipt unit cost (vs. avg cost above)
+    last_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     cost_source: Mapped[str] = mapped_column(String(50), nullable=False, default="manual")
     markup_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     price_override: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -91,6 +94,8 @@ class Product(Base):
     qty_on_hand: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     qty_committed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     qty_on_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # R6 — backordered demand (SO lines without stock or linked PO)
+    qty_backordered: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     reorder_point: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_stock_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
     weight_lbs: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
@@ -155,7 +160,11 @@ class Product(Base):
         "ProductImage", back_populates="product", cascade="all, delete-orphan"
     )
     cross_references: Mapped[list[CrossReference]] = relationship(
-        "CrossReference", back_populates="product", cascade="all, delete-orphan"
+        "CrossReference",
+        foreign_keys="CrossReference.product_id",
+        primaryjoin="Product.id == CrossReference.product_id",
+        back_populates="product",
+        cascade="all, delete-orphan",
     )
     cost_history: Mapped[list[ProductCostHistory]] = relationship(
         "ProductCostHistory", back_populates="product"
@@ -289,7 +298,21 @@ class CrossReference(Base):
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="proven")
 
-    product: Mapped[Product] = relationship("Product", back_populates="cross_references")
+    # R5 — bumped on each successful invoice finalization that used this cross-ref.
+    # After 3, ResearchService.suggest_promote_to_proven() returns True.
+    successful_sale_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # R5 — for obsolete cross-refs, link to the replacement product.
+    # Search results display "Obsolete — use replacement [SKU]".
+    replacement_product_id: Mapped[int | None] = mapped_column(
+        ForeignKey("products.id"), nullable=True
+    )
+
+    product: Mapped[Product] = relationship(
+        "Product", foreign_keys=[product_id], back_populates="cross_references"
+    )
+    replacement_product: Mapped[Product | None] = relationship(
+        "Product", foreign_keys=[replacement_product_id]
+    )
 
 
 class ProductCostHistory(Base):

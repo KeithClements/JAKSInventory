@@ -1,12 +1,15 @@
 """
 app/routers/invoices.py
 ========================
-Invoice list, detail, create, finalise, payment recording, and void.
+Invoice list, workspace (create→edit→finalize), payment, void, print/PDF.
 
-Key design rules:
-  - InvoiceService owns invoice.status — no direct model writes here.
-  - PaymentService owns Payment + PaymentAllocation — called for all payment paths.
-  - Lazy service imports inside route bodies to avoid circular imports.
+Phase A — Transaction Workspace pattern:
+  - GET  /invoices/{id}      → workspace.html (renders editable when DRAFT, locked when OPEN+)
+  - GET  /invoices/new       → minimal customer-picker slide-over content (HTMX target)
+  - POST /invoices/new       → create_draft(customer_id), 303 → /invoices/{id}
+  - HTMX endpoints for header / line CRUD return the partial that needs swapping.
+
+All mutations go through InvoiceService (sole owner of invoice.status).
 """
 from __future__ import annotations
 
@@ -23,7 +26,7 @@ from sqlalchemy.orm import Session
 from app.constants import InvoiceStatus, LineType, PaymentMethod
 from app.deps import get_current_user_id, get_db
 from app.models.customer import Customer
-from app.models.invoice import Invoice
+from app.models.invoice import Invoice, InvoiceLine
 from app.models.product import Product
 from app.settings_utils import get_setting_value_db
 
@@ -33,6 +36,45 @@ router = APIRouter(prefix="/invoices", tags=["invoices"])
 templates = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent.parent / "templates")
 )
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _get_invoice_or_redirect(db: Session, invoice_id: int) -> Invoice | RedirectResponse:
+    inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    if not inv:
+        return RedirectResponse("/invoices/", status_code=303)
+    return inv
+
+
+def _workspace_context(db: Session, request: Request, invoice: Invoice) -> dict:
+    """Build the full context dict the workspace template expects."""
+    from app.services.invoice_service import InvoiceService
+    totals = InvoiceService(db, 1).calculate_totals(invoice.id)
+
+    customers = (
+        db.query(Customer)
+        .filter(Customer.is_active == True)  # noqa: E712
+        .order_by(Customer.company_name)
+        .all()
+    )
+    cc_raw = get_setting_value_db(db, "cc_surcharge_pct", "3.0") or "3.0"
+    try:
+        cc_surcharge_pct = float(cc_raw)
+    except (TypeError, ValueError):
+        cc_surcharge_pct = 3.0
+
+    return {
+        "request": request,
+        "invoice": invoice,
+        "totals": totals,
+        "customers": customers,
+        "editable": invoice.status == InvoiceStatus.DRAFT,
+        "cc_surcharge_pct": cc_surcharge_pct,
+        "InvoiceStatus": InvoiceStatus,
+        "LineType": LineType,
+        "PaymentMethod": PaymentMethod,
+    }
 
 
 # ── List ──────────────────────────────────────────────────────────────────────
@@ -74,133 +116,386 @@ def invoice_list(
     )
 
 
-# ── New / Create ───────────────────────────────────────────────────────────────
+# ── New Invoice — minimal customer-picker → create draft → redirect to workspace ─
 
 @router.get("/new", response_class=HTMLResponse)
-def invoice_new(
+def invoice_new_picker(
     request: Request,
     customer_id: int = 0,
-    so_id: int = 0,
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
+    """
+    Two paths:
+      • ?customer_id=N supplied → skip the picker, create draft immediately, 303 → workspace
+      • no customer_id → render the picker (slide-over content OR standalone)
+    The picker is a doorway, never a destination. The workspace is the workflow.
+    """
+    if customer_id:
+        from app.services.invoice_service import InvoiceService
+        try:
+            invoice = InvoiceService(db, user_id).create_draft(customer_id=customer_id)
+            return RedirectResponse(f"/invoices/{invoice.id}", status_code=303)
+        except ValueError as exc:
+            db.rollback()
+            return RedirectResponse(
+                f"/invoices/?error={url_quote(str(exc))}", status_code=303
+            )
+
     customers = (
         db.query(Customer)
         .filter(Customer.is_active == True)  # noqa: E712
         .order_by(Customer.company_name)
         .all()
     )
-    products = (
-        db.query(Product)
-        .filter(Product.is_active == True)  # noqa: E712
-        .order_by(Product.sku)
-        .all()
-    )
-    selected_customer = None
-    if customer_id:
-        selected_customer = db.query(Customer).filter(Customer.id == customer_id).first()
-
-    surcharge_pct = float(get_setting_value_db(db, "cc_surcharge_pct", "3.0"))
-
     return templates.TemplateResponse(
-        "invoices/new.html",
-        {
-            "request": request,
-            "customers": customers,
-            "products": products,
-            "selected_customer": selected_customer,
-            "so_id": so_id,
-            "surcharge_pct": surcharge_pct,
-        },
+        "invoices/_new_picker.html",
+        {"request": request, "customers": customers},
     )
 
 
 @router.post("/new", response_class=RedirectResponse)
-async def invoice_create(
+async def invoice_create_draft(
     request: Request,
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
+    """Create a minimal DRAFT invoice and redirect to its workspace.
+    The workspace is where all editing happens."""
     from app.services.invoice_service import InvoiceService
 
     form = await request.form()
-    surcharge_pct = float(get_setting_value_db(db, "cc_surcharge_pct", "3.0"))
-
-    # Parse due date
-    due_date = None
-    due_raw = str(form.get("due_date", "")).strip()
-    if due_raw:
-        try:
-            due_date = datetime.strptime(due_raw, "%Y-%m-%d")
-        except ValueError:
-            pass
-
-    # Parse SO link
-    so_id_raw = str(form.get("so_id", "")).strip()
-    so_id = int(so_id_raw) if so_id_raw else None
-
-    discount_pct = float(form.get("discount_pct") or 0.0)
-
-    data = {
-        "customer_po_number": str(form.get("customer_po_number", "")).strip() or None,
-        "esn": str(form.get("esn", "")).strip() or None,
-        "engine_manufacturer": str(form.get("engine_manufacturer", "")).strip(),
-        "engine_model": str(form.get("engine_model", "")).strip(),
-        "discount_pct": discount_pct,
-        "is_taxable": bool(form.get("is_taxable")),
-        "tax_rate": float(form.get("tax_rate") or 0.0),
-        "apply_cc_surcharge": bool(form.get("apply_cc_surcharge")),
-        "cc_surcharge_pct": surcharge_pct,
-        "notes": str(form.get("notes", "")).strip(),
-        "due_date": due_date,
-    }
-
-    # Parse parallel-array line fields
-    product_ids = form.getlist("product_id[]")
-    descriptions = form.getlist("description[]")
-    qtys = form.getlist("qty[]")
-    unit_prices = form.getlist("unit_price[]")
-
-    lines = []
-    for i, pid in enumerate(product_ids):
-        desc = descriptions[i] if i < len(descriptions) else ""
-        qty_raw = qtys[i] if i < len(qtys) else "1"
-        price_raw = unit_prices[i] if i < len(unit_prices) else "0"
-
-        if not pid and not desc.strip():
-            continue
-
-        lines.append({
-            "product_id": int(pid) if pid else None,
-            "description": desc.strip(),
-            "qty": max(1, int(qty_raw)) if qty_raw else 1,
-            "unit_price": float(price_raw) if price_raw else 0.0,
-            "line_type": LineType.PRODUCT,
-            "discount_pct": discount_pct,
-        })
-
     customer_id_raw = str(form.get("customer_id", "")).strip()
     if not customer_id_raw:
-        return RedirectResponse("/invoices/new", status_code=303)
-    customer_id = int(customer_id_raw)
-    invoice = InvoiceService(db, user_id).create_invoice(
-        customer_id=customer_id, data=data, so_id=so_id, lines=lines
-    )
+        return RedirectResponse(
+            f"/invoices/?error={url_quote('Customer required to create an invoice.')}",
+            status_code=303,
+        )
+    try:
+        customer_id = int(customer_id_raw)
+        invoice = InvoiceService(db, user_id).create_draft(customer_id=customer_id)
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/invoices/?error={url_quote(str(exc))}", status_code=303
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error creating draft invoice")
+        return RedirectResponse(
+            f"/invoices/?error={url_quote('Unexpected error — invoice was not created.')}",
+            status_code=303,
+        )
     return RedirectResponse(f"/invoices/{invoice.id}", status_code=303)
 
 
-# ── Print / PDF ───────────────────────────────────────────────────────────────
+# ── Workspace (DRAFT editable; OPEN/PARTIAL/PAID/VOID locked read-only) ──────
 
-@router.get("/{invoice_id}/print", response_class=HTMLResponse)
-def invoice_print(
+@router.get("/{invoice_id}", response_class=HTMLResponse)
+def invoice_workspace(invoice_id: int, request: Request, db: Session = Depends(get_db)):
+    """
+    Full workspace. Template uses `editable` flag to switch between input fields
+    (DRAFT) and static text (OPEN/PARTIAL/PAID/VOID).
+    """
+    inv = _get_invoice_or_redirect(db, invoice_id)
+    if isinstance(inv, RedirectResponse):
+        return inv
+    return templates.TemplateResponse(
+        "invoices/workspace.html",
+        _workspace_context(db, request, inv),
+    )
+
+
+# ── Header edits (HTMX) ───────────────────────────────────────────────────────
+
+@router.post("/{invoice_id}/header", response_class=HTMLResponse)
+async def invoice_update_header(
     invoice_id: int,
     request: Request,
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
-    inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
-    if not inv:
-        return RedirectResponse("/invoices/", status_code=303)
+    """Apply header field changes from the workspace. Returns the totals partial
+    since most header fields (tax, discount, CC fee) affect totals."""
+    from app.services.invoice_service import InvoiceService
 
-    # Build customer address lines
+    form = await request.form()
+    data: dict = {}
+
+    for field in ("customer_po_number", "customer_job_number", "esn",
+                  "engine_manufacturer", "engine_model", "notes", "internal_notes"):
+        if field in form:
+            val = str(form.get(field, "")).strip()
+            data[field] = (val or None) if field in {"customer_po_number", "customer_job_number", "esn"} else val
+
+    if "discount_pct" in form:
+        data["discount_pct"] = float(form.get("discount_pct") or 0)
+    if "tax_rate" in form:
+        data["tax_rate"] = float(form.get("tax_rate") or 0)
+    # Checkbox fields use a hidden "0" + checkbox "1" pattern so unchecked state
+    # is explicitly submitted. getlist() reads both values; "1" wins if present.
+    if "is_taxable" in form:
+        data["is_taxable"] = "1" in form.getlist("is_taxable")
+    if "apply_cc_surcharge" in form:
+        data["apply_cc_surcharge"] = "1" in form.getlist("apply_cc_surcharge")
+    if "due_date" in form:
+        due_raw = str(form.get("due_date", "")).strip()
+        try:
+            data["due_date"] = datetime.strptime(due_raw, "%Y-%m-%d") if due_raw else None
+        except ValueError:
+            data["due_date"] = None
+
+    try:
+        InvoiceService(db, user_id).update_header(invoice_id, data)
+    except ValueError as exc:
+        db.rollback()
+        return HTMLResponse(
+            f'<div class="text-xs text-red-600">{exc}</div>', status_code=400
+        )
+
+    inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    return templates.TemplateResponse(
+        "invoices/_totals_panel.html",
+        _workspace_context(db, request, inv),
+    )
+
+
+# ── Change customer (HTMX) ────────────────────────────────────────────────────
+
+@router.post("/{invoice_id}/change-customer", response_class=RedirectResponse)
+async def invoice_change_customer(
+    invoice_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Reassign draft invoice to a new customer.
+    Form fields: customer_id, recalc_pricing (bool)."""
+    from app.services.invoice_service import InvoiceService
+    form = await request.form()
+
+    new_customer_id_raw = str(form.get("customer_id", "")).strip()
+    if not new_customer_id_raw:
+        return RedirectResponse(
+            f"/invoices/{invoice_id}?error={url_quote('Customer required.')}",
+            status_code=303,
+        )
+    recalc = str(form.get("recalc_pricing", "")).lower() in {"1", "true", "on", "yes"}
+
+    try:
+        InvoiceService(db, user_id).change_customer(
+            invoice_id, int(new_customer_id_raw), recalc_pricing=recalc
+        )
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/invoices/{invoice_id}?error={url_quote(str(exc))}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/invoices/{invoice_id}", status_code=303)
+
+
+# ── Line CRUD (HTMX — returns the lines+totals partial) ──────────────────────
+
+@router.post("/{invoice_id}/lines", response_class=HTMLResponse)
+async def invoice_add_line(
+    invoice_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Add a line to a draft invoice. Auto-adds linked core child if product has core."""
+    from app.services.invoice_service import InvoiceService
+
+    form = await request.form()
+    pid_raw = str(form.get("product_id", "")).strip()
+    product_id = int(pid_raw) if pid_raw else None
+
+    qty_raw = str(form.get("qty", "1")).strip()
+    price_raw = str(form.get("unit_price", "0")).strip()
+    cost_raw = str(form.get("unit_cost", "0")).strip()
+
+    data = {
+        "description": str(form.get("description", "")).strip(),
+        "qty": max(1, int(qty_raw)) if qty_raw else 1,
+        "unit_price": float(price_raw) if price_raw else 0.0,
+        "unit_cost": float(cost_raw) if cost_raw else 0.0,
+        "line_type": str(form.get("line_type", LineType.PRODUCT)).strip() or LineType.PRODUCT,
+    }
+
+    try:
+        InvoiceService(db, user_id).add_line(invoice_id, product_id, data)
+    except ValueError as exc:
+        db.rollback()
+        return HTMLResponse(f'<div class="text-xs text-red-600">{exc}</div>', status_code=400)
+
+    inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    return templates.TemplateResponse(
+        "invoices/_lines_and_totals.html",
+        _workspace_context(db, request, inv),
+    )
+
+
+@router.post("/{invoice_id}/lines/{line_id}", response_class=HTMLResponse)
+async def invoice_update_line(
+    invoice_id: int,
+    line_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Update line (qty, description, price, discount). Qty change cascades to locked children."""
+    from app.services.invoice_service import InvoiceService
+
+    form = await request.form()
+    data: dict = {}
+    if "description" in form:
+        data["description"] = str(form.get("description", "")).strip()
+    if "qty" in form:
+        raw = str(form.get("qty", "")).strip()
+        if raw:
+            data["qty"] = max(0, int(raw))
+    if "unit_price" in form:
+        raw = str(form.get("unit_price", "")).strip()
+        if raw:
+            data["unit_price"] = float(raw)
+    if "discount_pct" in form:
+        raw = str(form.get("discount_pct", "")).strip()
+        data["discount_pct"] = float(raw) if raw else 0.0
+
+    try:
+        InvoiceService(db, user_id).update_line(line_id, data)
+    except ValueError as exc:
+        db.rollback()
+        return HTMLResponse(f'<div class="text-xs text-red-600">{exc}</div>', status_code=400)
+
+    inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    return templates.TemplateResponse(
+        "invoices/_lines_and_totals.html",
+        _workspace_context(db, request, inv),
+    )
+
+
+@router.post("/{invoice_id}/lines/{line_id}/delete", response_class=HTMLResponse)
+def invoice_delete_line(
+    invoice_id: int,
+    line_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Delete a line. Cascades to auto-generated children (core lines)."""
+    from app.services.invoice_service import InvoiceService
+    try:
+        InvoiceService(db, user_id).remove_line(line_id)
+    except ValueError as exc:
+        db.rollback()
+        return HTMLResponse(f'<div class="text-xs text-red-600">{exc}</div>', status_code=400)
+
+    inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    return templates.TemplateResponse(
+        "invoices/_lines_and_totals.html",
+        _workspace_context(db, request, inv),
+    )
+
+
+@router.post("/{invoice_id}/lines/{line_id}/unlink", response_class=HTMLResponse)
+def invoice_unlink_line(
+    invoice_id: int,
+    line_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Unlink an auto-generated child (e.g. core) from its parent.
+    Parent edits will no longer cascade after this."""
+    from app.services.invoice_service import InvoiceService
+    try:
+        InvoiceService(db, user_id).unlink_line_from_parent(line_id)
+    except ValueError as exc:
+        db.rollback()
+        return HTMLResponse(f'<div class="text-xs text-red-600">{exc}</div>', status_code=400)
+
+    inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    return templates.TemplateResponse(
+        "invoices/_lines_and_totals.html",
+        _workspace_context(db, request, inv),
+    )
+
+
+# ── Product search (HTMX dropdown) ────────────────────────────────────────────
+
+@router.get("/_/product-search", response_class=HTMLResponse)
+def invoice_product_search(request: Request, q: str = "", db: Session = Depends(get_db)):
+    """Product search dropdown for the workspace line search bar."""
+    from sqlalchemy import or_
+    q = q.strip()
+    if len(q) < 2:
+        return HTMLResponse("")
+    results = (
+        db.query(Product)
+        .filter(
+            Product.is_active == True,  # noqa: E712
+            or_(
+                Product.sku.ilike(f"%{q}%"),
+                Product.title.ilike(f"%{q}%"),
+            ),
+        )
+        .order_by(Product.sku)
+        .limit(15)
+        .all()
+    )
+    return templates.TemplateResponse(
+        "invoices/_search_results.html",
+        {"request": request, "results": results},
+    )
+
+
+# ── Finalize ──────────────────────────────────────────────────────────────────
+
+@router.post("/{invoice_id}/finalise", response_class=RedirectResponse)
+async def invoice_finalise(
+    invoice_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Finalize a DRAFT invoice. Returns to workspace on success (now locked).
+    Form may include allow_negative_inventory=1 for explicit admin override."""
+    from app.services.invoice_service import InvoiceService
+
+    form = await request.form()
+    allow_negative = str(form.get("allow_negative_inventory", "")).lower() in {"1", "true", "on", "yes"}
+
+    try:
+        InvoiceService(db, user_id).finalise(invoice_id, allow_negative_inventory=allow_negative)
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/invoices/{invoice_id}?error={url_quote(str(exc))}",
+            status_code=303,
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error finalising invoice %s", invoice_id)
+        return RedirectResponse(
+            f"/invoices/{invoice_id}?error={url_quote('Unexpected error — invoice was not finalised.')}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        f"/invoices/{invoice_id}?ok={url_quote('Invoice finalized successfully. Status: OPEN')}",
+        status_code=303,
+    )
+
+
+# ── Print / PDF (unchanged) ───────────────────────────────────────────────────
+
+@router.get("/{invoice_id}/print", response_class=HTMLResponse)
+def invoice_print(invoice_id: int, request: Request, db: Session = Depends(get_db)):
+    inv = _get_invoice_or_redirect(db, invoice_id)
+    if isinstance(inv, RedirectResponse):
+        return inv
+
     c = inv.customer
     addr_lines: list[str] = [ln for ln in [c.address_line1, c.address_line2] if ln and ln.strip()]
     city_parts = [p for p in [c.city, c.state] if p and p.strip()]
@@ -214,7 +509,6 @@ def invoice_print(
     if c.phone and c.phone.strip():
         addr_lines.append(c.phone.strip())
 
-    # Discount amount (gross - subtotal)
     gross = round(sum(ln.line_total for ln in inv.lines), 2)
     discount_amount = round(gross - inv.subtotal, 2) if inv.discount_pct else 0.0
 
@@ -235,20 +529,13 @@ def invoice_print(
 
 
 @router.get("/{invoice_id}/pdf")
-def invoice_pdf(
-    invoice_id: int,
-    request: Request,
-    db: Session = Depends(get_db),
-):
-    """
-    Server-side PDF generation via WeasyPrint.
-    Returns a downloadable PDF — no browser print dialog required.
-    """
+def invoice_pdf(invoice_id: int, request: Request, db: Session = Depends(get_db)):
+    """Server-side PDF via WeasyPrint. Falls back to print view if libs missing."""
     from fastapi.responses import Response as FastAPIResponse
 
-    inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
-    if not inv:
-        return RedirectResponse("/invoices/", status_code=303)
+    inv = _get_invoice_or_redirect(db, invoice_id)
+    if isinstance(inv, RedirectResponse):
+        return inv
 
     c = inv.customer
     addr_lines: list[str] = [ln for ln in [c.address_line1, c.address_line2] if ln and ln.strip()]
@@ -280,16 +567,11 @@ def invoice_pdf(
         discount_amount=discount_amount,
         company=company,
     )
-
     try:
         from weasyprint import HTML
         pdf_bytes = HTML(string=html_str, base_url=str(request.base_url)).write_pdf()
     except (OSError, ImportError, Exception):
-        # WeasyPrint system libraries (GTK/Pango) not available on this host.
-        # Fall back to browser print-to-PDF.
-        return RedirectResponse(
-            f"/invoices/{invoice_id}/print", status_code=302
-        )
+        return RedirectResponse(f"/invoices/{invoice_id}/print", status_code=302)
 
     safe_number = inv.invoice_number.replace("/", "-").replace("\\", "-")
     return FastAPIResponse(
@@ -302,54 +584,7 @@ def invoice_pdf(
     )
 
 
-# ── Detail ────────────────────────────────────────────────────────────────────
-
-@router.get("/{invoice_id}", response_class=HTMLResponse)
-def invoice_detail(invoice_id: int, request: Request, db: Session = Depends(get_db)):
-    inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
-    if not inv:
-        return RedirectResponse("/invoices/", status_code=303)
-    active_allocations = [a for a in inv.allocations if not a.is_reversed]
-    return templates.TemplateResponse(
-        "invoices/detail.html",
-        {
-            "request": request,
-            "invoice": inv,
-            "active_allocations": active_allocations,
-            "InvoiceStatus": InvoiceStatus,
-            "PaymentMethod": PaymentMethod,
-        },
-    )
-
-
-# ── Finalise ──────────────────────────────────────────────────────────────────
-
-@router.post("/{invoice_id}/finalise", response_class=RedirectResponse)
-def invoice_finalise(
-    invoice_id: int,
-    db: Session = Depends(get_db),
-    user_id: int = Depends(get_current_user_id),
-):
-    from app.services.invoice_service import InvoiceService
-    try:
-        InvoiceService(db, user_id).finalise(invoice_id)
-    except ValueError as exc:
-        db.rollback()
-        return RedirectResponse(
-            f"/invoices/{invoice_id}?error={url_quote(str(exc))}",
-            status_code=303,
-        )
-    except Exception:
-        db.rollback()
-        log.exception("Unexpected error finalising invoice %s", invoice_id)
-        return RedirectResponse(
-            f"/invoices/{invoice_id}?error={url_quote('Unexpected error — invoice was not finalised.')}",
-            status_code=303,
-        )
-    return RedirectResponse(f"/invoices/{invoice_id}", status_code=303)
-
-
-# ── Payment ───────────────────────────────────────────────────────────────────
+# ── Payment (unchanged) ───────────────────────────────────────────────────────
 
 @router.post("/{invoice_id}/payment", response_class=RedirectResponse)
 async def invoice_payment(
@@ -395,11 +630,10 @@ async def invoice_payment(
             f"/invoices/{invoice_id}?error={url_quote('Unexpected error — payment was not recorded.')}",
             status_code=303,
         )
-
     return RedirectResponse(f"/invoices/{invoice_id}?saved=1", status_code=303)
 
 
-# ── Void ──────────────────────────────────────────────────────────────────────
+# ── Void (unchanged) ──────────────────────────────────────────────────────────
 
 @router.post("/{invoice_id}/void", response_class=RedirectResponse)
 async def invoice_void(
@@ -427,5 +661,4 @@ async def invoice_void(
             f"/invoices/{invoice_id}?error={url_quote('Unexpected error — invoice was not voided.')}",
             status_code=303,
         )
-
     return RedirectResponse(f"/invoices/{invoice_id}", status_code=303)

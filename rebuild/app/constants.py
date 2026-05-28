@@ -118,6 +118,24 @@ class DeliveryType(StrEnum):
 class AddressType(StrEnum):
     BILLING  = "billing"
     SHIPPING = "shipping"
+    JOB_SITE = "job_site"   # R11 — multi ship-to support
+    OTHER    = "other"
+
+
+class PreferredContactMethod(StrEnum):
+    """R12 — customer communication preference."""
+    PHONE = "phone"
+    TEXT  = "text"
+    EMAIL = "email"
+
+
+class SMSConsentMethod(StrEnum):
+    """R12 — how SMS consent was obtained (Twilio/A2P compliance)."""
+    VERBAL       = "verbal"
+    SIGNED_FORM  = "signed_form"
+    ONLINE_FORM  = "online_form"
+    IMPORTED     = "imported"   # legacy customers grandfathered
+    OTHER        = "other"
 
 
 class CallType(StrEnum):
@@ -172,8 +190,41 @@ class SOPaymentMode(StrEnum):
 
 
 class SOLineSource(StrEnum):
+    """Legacy 2-value source — kept for backward compat. New code uses FulfillmentSource."""
     STOCK    = "stock"
     BACKORDER = "backorder"
+
+
+class FulfillmentSource(StrEnum):
+    """R7 — full SO line fulfillment source taxonomy."""
+    STOCK         = "stock"
+    BACKORDER     = "backorder"
+    LINKED_PO     = "linked_po"
+    SPECIAL_ORDER = "special_order"
+    DROPSHIP      = "dropship"
+
+
+class SOLineStatus(StrEnum):
+    """R7 — SO line state machine, varies by fulfillment_source."""
+    # initial states (mirror fulfillment_source)
+    STOCK                       = "stock"
+    BACKORDER                   = "backorder"
+    LINKED_PO                   = "linked_po"
+    SPECIAL_ORDER               = "special_order"
+    DROPSHIP                    = "dropship"
+    # awaiting states
+    AWAITING_STOCK              = "awaiting_stock"
+    AWAITING_PO_RECEIPT         = "awaiting_po_receipt"
+    AWAITING_SPECIAL_ORDER_PO   = "awaiting_special_order_po"
+    # dropship flow
+    VENDOR_CONFIRMED            = "vendor_confirmed"
+    SHIPPED_DIRECT              = "shipped_direct"
+    # reservation + terminal
+    RESERVED_STOCK              = "reserved_stock"
+    FULFILLED                   = "fulfilled"
+    INVOICED                    = "invoiced"
+    CLOSED                      = "closed"
+    CANCELLED                   = "cancelled"
 
 
 # ─── Invoices ─────────────────────────────────────────────────────────────────
@@ -189,7 +240,9 @@ class InvoiceStatus(StrEnum):
 class InvoiceLockReason(StrEnum):
     END_OF_DAY = "end_of_day"
     QBO_SYNC   = "qbo_sync"
+    QBO_PUSHED = "qbo_pushed"  # R8 — alias for QBO_SYNC, clearer naming
     PAID       = "paid"
+    MANUAL     = "manual"
 
 
 class LineType(StrEnum):
@@ -204,7 +257,44 @@ class LineType(StrEnum):
     RESTOCKING_FEE      = "restocking_fee"
     WARRANTY_CREDIT     = "warranty_credit"  # Warranty claim credit back to customer
     NSF_FEE             = "nsf_fee"
+    CC_SURCHARGE        = "cc_surcharge"     # R1 — credit card convenience fee
+    TAX                 = "tax"              # R5 — sales tax line
+    MISC_FEE            = "misc_fee"         # R5 — generic misc fee
     MISC                = "misc"
+
+
+# R5 — line types that NEVER take a discount, even from customer.discount_pct
+NON_DISCOUNTABLE_LINE_TYPES = frozenset({
+    LineType.CORE_CHARGE,
+    LineType.FREIGHT,
+    LineType.SHIPPING,
+    LineType.LOCAL_DELIVERY,
+    LineType.CC_SURCHARGE,
+    LineType.TAX,
+    LineType.WARRANTY,
+    LineType.MISC_FEE,
+    LineType.NSF_FEE,
+    LineType.RESTOCKING_FEE,
+})
+
+# R1 — line types that NEVER take sales tax (Phase 1 default, may vary by
+# jurisdiction in Phase 2 when TaxJar is wired). PRODUCT is taxable by default;
+# explicitly listed types below are not.
+NON_TAXABLE_LINE_TYPES = frozenset({
+    LineType.CORE_CHARGE,           # refundable deposit — not a sale
+    LineType.TAX,                   # tax doesn't tax itself
+    LineType.CC_SURCHARGE,          # itself a fee, not a taxable product
+    LineType.NSF_FEE,               # bank fee, not a sale
+    LineType.DISCOUNT,              # negative adjustment, not sellable
+    LineType.WARRANTY_CREDIT,       # credit, not sellable
+    LineType.RESTOCKING_FEE,        # service fee — typically non-taxable
+    # Freight/delivery — non-taxable in most B2B parts jurisdictions including CO.
+    # Override per-line if a state taxes shipping (e.g. NY, TX inbound).
+    LineType.FREIGHT,
+    LineType.SHIPPING,
+    LineType.LOCAL_DELIVERY,
+    LineType.FUEL_SERVICE_CHARGE,
+})
 
 
 class LineRole(StrEnum):
@@ -453,13 +543,30 @@ class InventoryTxnType(StrEnum):
 
 
 class AdjustmentReason(StrEnum):
-    DAMAGED        = "damaged"
-    LOST           = "lost"
-    CYCLE_COUNT    = "cycle_count"
-    VENDOR_SHORTAGE = "vendor_shortage"
-    WRITE_OFF      = "write_off"
-    OPENING_COUNT  = "opening_count"
-    CORRECTION     = "correction"
+    """R6 — full inventory adjustment reason taxonomy."""
+    CYCLE_COUNT_OVER       = "cycle_count_over"
+    CYCLE_COUNT_SHORT      = "cycle_count_short"
+    CYCLE_COUNT            = "cycle_count"       # legacy, kept for backward compat
+    DAMAGED                = "damaged"
+    LOST                   = "lost"
+    FOUND                  = "found"
+    VENDOR_RETURN          = "vendor_return"
+    VENDOR_SHORTAGE        = "vendor_shortage"   # legacy
+    WARRANTY_SCRAP         = "warranty_scrap"
+    CORE_SCRAP             = "core_scrap"
+    INTERNAL_USE           = "internal_use"
+    INITIAL_INVENTORY_LOAD = "initial_inventory_load"
+    OPENING_COUNT          = "opening_count"     # legacy
+    WRITE_OFF              = "write_off"
+    CORRECTION             = "correction"
+    OTHER                  = "other"
+
+
+# R6 — reasons that REQUIRE a free-text note before save.
+ADJUSTMENT_REASONS_REQUIRING_NOTE = frozenset({
+    AdjustmentReason.OTHER,
+    AdjustmentReason.CORRECTION,
+})
 
 
 class InventoryLocationType(StrEnum):
@@ -583,5 +690,152 @@ class EntityType(StrEnum):
     RETURN_AUTHORIZATION = "return_authorization"
     WARRANTY_CLAIM       = "warranty_claim"
     CORE_CHARGE          = "core_charge"
+    CORE_SLIP            = "core_slip"
     PAYMENT              = "payment"
     SHIPMENT             = "shipment"
+    CREDIT_MEMO          = "credit_memo"
+    VENDOR_CREDIT_MEMO   = "vendor_credit_memo"
+    VENDOR_RETURN        = "vendor_return"
+    CUSTOMER_STATEMENT   = "customer_statement"
+    RESEARCH_ITEM        = "research_item"
+    INVENTORY_ADJUSTMENT = "inventory_adjustment"
+    INVENTORY_TRANSFER   = "inventory_transfer"
+    COMMUNICATION        = "communication"
+
+
+# ─── Warranty Types (R4) ─────────────────────────────────────────────────────
+
+class WarrantyType(StrEnum):
+    """R4 — credit source for warranty claims."""
+    VENDOR        = "vendor"          # vendor reimburses JAKS
+    JAKS_EXTENDED = "jaks_extended"   # JAKS absorbs / warranty reserve
+
+
+# ─── Payments (R11) ──────────────────────────────────────────────────────────
+
+class PaymentDirection(StrEnum):
+    """R11 — direction of money movement. Most payments are from customers."""
+    INCOMING_FROM_CUSTOMER = "incoming_from_customer"
+    REFUND_TO_CUSTOMER     = "refund_to_customer"
+    INCOMING_FROM_VENDOR   = "incoming_from_vendor"
+    REFUND_TO_VENDOR       = "refund_to_vendor"
+
+
+# ─── Credit Memos (R8) ───────────────────────────────────────────────────────
+
+class CreditMemoTrigger(StrEnum):
+    """R8 — what caused the credit memo to be issued."""
+    MANUAL                    = "manual"
+    ACCEPTED_RA               = "accepted_ra"
+    APPROVED_WARRANTY         = "approved_warranty"
+    LOCKED_INVOICE_CORRECTION = "locked_invoice_correction"
+    OVERCHARGE                = "overcharge"
+    PRICING                   = "pricing"
+
+
+class CreditMemoStatus(StrEnum):
+    OPEN     = "open"
+    APPLIED  = "applied"   # fully allocated
+    PARTIAL  = "partial"   # some applied, some remains unapplied
+    REVERSED = "reversed"
+
+
+class VendorCreditMemoTrigger(StrEnum):
+    """R11 — what caused vendor credit memo."""
+    OVERCHARGE              = "overcharge"
+    VENDOR_RETURN_ACCEPTED  = "vendor_return_accepted"
+    DEFECTIVE               = "defective"
+    CORE_DISPUTE            = "core_dispute"
+    FREIGHT_ADJUSTMENT      = "freight_adjustment"
+    WARRANTY_CREDIT         = "warranty_credit"
+
+
+class VendorReturnStatus(StrEnum):
+    """R11 — vendor return (non-core merchandise return to vendor)."""
+    DRAFT     = "draft"
+    SHIPPED   = "shipped"
+    ACCEPTED  = "accepted"
+    REJECTED  = "rejected"
+    PARTIAL   = "partial"
+    CLOSED    = "closed"
+
+
+class VendorReturnLineOutcome(StrEnum):
+    PENDING   = "pending"
+    ACCEPTED  = "accepted"
+    REJECTED  = "rejected"
+    PARTIAL   = "partial"
+
+
+# ─── Notifications (R8) ──────────────────────────────────────────────────────
+
+class NotificationSeverity(StrEnum):
+    """R8 — severity tier for in-app + email notifications."""
+    INFO     = "info"
+    WARNING  = "warning"
+    ERROR    = "error"
+    CRITICAL = "critical"
+
+
+class NotificationType(StrEnum):
+    """R8 — notification kind. Drives icon/routing/template."""
+    VENDOR_BILL_DISCREPANCY    = "vendor_bill_discrepancy"
+    PO_OVER_RECEIPT            = "po_over_receipt"
+    INVENTORY_ADJUSTMENT       = "inventory_adjustment"
+    CORE_OVERDUE               = "core_overdue"
+    WARRANTY_VENDOR_DECISION   = "warranty_vendor_decision"
+    QBO_PUSH_FAILURE           = "qbo_push_failure"
+    QBO_TOKEN_EXPIRED          = "qbo_token_expired"
+    LOW_STOCK                  = "low_stock"
+    INVOICE_OVER_THRESHOLD     = "invoice_over_threshold"
+    PAYMENT_OVER_THRESHOLD     = "payment_over_threshold"
+    SCRAPER_FAILURE            = "scraper_failure"
+    NEGATIVE_INVENTORY_OVERRIDE = "negative_inventory_override"
+    QUOTE_FOLLOWUP_DUE         = "quote_followup_due"
+    INVOICE_OVERDUE            = "invoice_overdue"
+    SPECIAL_ORDER_ARRIVED      = "special_order_arrived"
+
+
+# ─── Communications (R12) ────────────────────────────────────────────────────
+
+class CommunicationChannel(StrEnum):
+    """R12 — outbound channel for customer communication."""
+    EMAIL        = "email"
+    SMS          = "sms"
+    PHONE_CALL   = "phone_call"
+    MANUAL_NOTE  = "manual_note"   # logged but not transmitted
+
+
+class CommunicationDirection(StrEnum):
+    OUTBOUND = "outbound"
+    INBOUND  = "inbound"
+
+
+class CommunicationStatus(StrEnum):
+    """R12 — delivery state of a communication. Phase 1 default is LOGGED_ONLY."""
+    QUEUED       = "queued"
+    SENT         = "sent"
+    DELIVERED    = "delivered"
+    FAILED       = "failed"
+    BOUNCED      = "bounced"
+    LOGGED_ONLY  = "logged_only"   # Phase 1 — NullProvider just records the attempt
+
+
+# ─── Permissions (R11) ───────────────────────────────────────────────────────
+
+class Permission(StrEnum):
+    """R11 — discrete permission flags used by services to gate actions."""
+    INVENTORY_ADJUST            = "inventory_adjust"
+    NEGATIVE_INVENTORY_OVERRIDE = "negative_inventory_override"
+    VOID_LOCKED_INVOICE         = "void_locked_invoice"
+    REPUSH_QBO                  = "repush_qbo"
+    MERGE_CUSTOMERS             = "merge_customers"
+    CHANGE_SETTINGS             = "change_settings"
+    VIEW_AUDIT_LOG              = "view_audit_log"
+    DEACTIVATE_MASTER           = "deactivate_master"
+    REVERSE_PAYMENT             = "reverse_payment"
+    ISSUE_CREDIT_MEMO           = "issue_credit_memo"
+    SEND_SMS                    = "send_sms"
+    SEND_EMAIL                  = "send_email"
+    RECEIVE_WITHOUT_PO          = "receive_without_po"
+    INVENTORY_TRANSFER          = "inventory_transfer"

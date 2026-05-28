@@ -34,8 +34,11 @@ class AuditLog(Base):
     entity_id: Mapped[int] = mapped_column(Integer, nullable=False)
     action: Mapped[str] = mapped_column(String(30), nullable=False)        # AuditAction
 
-    old_value: Mapped[str | None] = mapped_column(Text, nullable=True)    # JSON
-    new_value: Mapped[str | None] = mapped_column(Text, nullable=True)    # JSON
+    # R6 — per-field change tracking. When NULL, old/new are whole-record JSON snapshots.
+    # When set, old_value/new_value hold the specific field's values.
+    field_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    old_value: Mapped[str | None] = mapped_column(Text, nullable=True)    # JSON or scalar
+    new_value: Mapped[str | None] = mapped_column(Text, nullable=True)    # JSON or scalar
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     changed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

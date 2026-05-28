@@ -1239,10 +1239,50 @@ Creates ResearchItem (RI-XXXX) via ResearchService when status is set.
 | Stage 2 (Ready to Ship) — excludes held cores from vendor queue | ✅ Fixed |
 
 **Known pending items before go-live:**
-- Quote PDF (NEXT-2) — weasyprint, still untested on Windows
-- Research Queue widget on dashboard (NEXT-6)
+- Quote PDF (NEXT-2) — WeasyPrint 68.1 requires GTK/Pango on Windows (not pure Python). Browser print ?auto=1 is the working path. Real PDF download requires GTK runtime install.
 - QBO push (STEP 17) — Keith confirmed no hard deadline
-- PHASE_1_PLAN.md NEXT-1: DB recreate still needed for `line_role`/`is_included`/`option_label` columns
+- NEXT-6 — Research Status inline on quote lines (visual flag + status selector per line, creates RI-XXXX)
+
+---
+
+### Session 2026-05-27 (continued) — Payment, Print UX, Plan Audit
+
+| Item | Status |
+|---|---|
+| **Audit** — NEXT-1 through NEXT-5 verified: DB columns present, counter rollover correct, payment workflow built, customer balance panel built in workspace | ✅ Confirmed all done |
+| **BUG FIX: monthly revenue chart** — `func.sum(Invoice.total)` → `func.sum(InvoiceLine.unit_price * qty * (1 - disc/100))` joined through InvoiceLine.invoice | ✅ Fixed |
+| **Dashboard research queue** — `joinedload(QuoteLine.quote).joinedload(Quote.customer)` + `research_status.in_(['researching','waiting_dealer'])` | ✅ Built |
+| **Dashboard monthly revenue chart** — Chart.js 6-month bar chart, monthly_labels_json/monthly_totals_json | ✅ Built |
+| **Print auto-trigger** — `?auto=1` added to Print/Save PDF links in `_header_actions.html` and `invoices/detail.html` | ✅ Done |
+| **Invoice payment date field** — Date input (defaults today) added to Record Payment form; `payment_date` wired through to PaymentService | ✅ Done |
+| **`GET /payments/new`** — Customer dropdown → open invoices list with checkboxes; auto-sums selected balances into Amount field | ✅ Built |
+| **`POST /payments/new`** — Creates Payment + PaymentAllocation records for multi-invoice payments; redirects to payment detail | ✅ Built |
+| `payments/new.html` template — Alpine.js `paymentForm()` component, balance map, toggleAll, recalcAmount, amountWarning | ✅ Built |
+| **"+ New Payment" button** on `/payments/` header and empty-state | ✅ Added |
+| **BUG FIX: Invoice void inventory reversal** — `qty_on_hand += ln.qty` should reverse exactly what was deducted, not the original qty. Finalise uses `max(0,...)` so deduction may be less than ln.qty. Fixed by looking up original INVOICE_SALE `InventoryTransaction.qty_change` to reverse precisely | ✅ Fixed |
+| **BUG FIX: `float(get_setting_value_db(..., "cc_surcharge_pct"))` crash** — empty string in DB (row exists, fallback ignored). Fixed with `strip()` + try/except in both invoice GET and POST /new routes | ✅ Fixed |
+| **BUG FIX: `int(get_setting_value_db(..., "default_core_return_days"))` same empty-string crash** — fixed in `core_service.py` | ✅ Fixed |
+| **Smoke test** — 26/26 pages HTTP 200 with `raise_server_exceptions=True` | ✅ Passing |
+
+---
+
+### Session 2026-05-27 (continued 2) — Core Auto-Add, Research Status Confirmation
+
+| Item | Status |
+|---|---|
+| **CONFIRMED: NEXT-6 Research Status on quote lines is ALREADY BUILT** — color-coded badges, context menu 5 statuses, POST route, ResearchService.create_research_item() on first flag | ✅ Confirmed done |
+| **FEATURE: Core charge auto-add on quotes** — `QuoteService.add_line()` now auto-adds a CORE_CHARGE child line when product.has_core=True and customer_core_charge > 0; returns `list[QuoteLine]` | ✅ Built |
+| **FEATURE: Core charge auto-add on invoices** — `InvoiceService.create_invoice()` auto-adds core lines post-creation; `InvoiceService.add_line()` auto-adds when product line is added to draft | ✅ Built |
+| **FEATURE: Quote→Invoice conversion no double-core** — `convert_to_invoice()` filters out CORE_CHARGE lines from quote (invoice auto-adds fresh ones with correct parent_line_ids) | ✅ Fixed |
+| **Smoke test** — 27/27 pages HTTP 200 with raise_server_exceptions=True | ✅ Passing |
+| **Functional tests** — quote core auto-add, invoice core auto-add, quote→invoice no-double-core | ✅ All PASS |
+| **BUG FIX: `invoices/_new_picker.html` missing** — workspace-flow GET /invoices/new rendered a template that didn't exist; created the slide-over customer picker partial | ✅ Fixed |
+| **InvoiceLine schema migration** — added `is_auto_generated` + `is_locked_to_parent` columns; stale smoke DB deleted and recreated cleanly from init_db() | ✅ Done |
+| **Test harness** — `tests/test_smoke.py` committed to repo (27 parametrized routes, pytest, DB=jaks_test_smoke.db) | ✅ Added |
+
+**Known pending items before go-live:**
+- Quote PDF (NEXT-2) — WeasyPrint 68.1 requires GTK/Pango on Windows (not pure Python). Browser print ?auto=1 is the working path. Real PDF download requires GTK runtime install.
+- QBO push (STEP 17) — Keith confirmed no hard deadline
 
 ---
 
