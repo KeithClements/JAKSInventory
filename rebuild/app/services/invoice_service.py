@@ -551,16 +551,16 @@ class InvoiceService(BaseService):
                 else:
                     product.qty_on_hand = max(0, product.qty_on_hand - ln.qty)
 
-                # R6 — if this line traces back to an SO line, release the matching
-                # qty_committed so we don't double-decrement (qty_committed was
-                # bumped when the SO was created; SalesOrderService.fulfill_and_invoice
-                # may have already released — only release residual here).
+                # R6 — release qty_committed only if fulfill_and_invoice didn't already
+                # do so. After fulfill_and_invoice runs, so_line.qty_committed holds
+                # the REMAINING backorder commitment (< ln.qty for partial fills, 0 for
+                # full fills). Only release when qty_committed >= ln.qty, meaning the
+                # commitment was never touched by fulfill_and_invoice.
                 if ln.so_line_id:
                     so_line = self.db.query(SOLine).filter(SOLine.id == ln.so_line_id).first()
-                    if so_line and so_line.qty_committed > 0:
-                        release = min(ln.qty, so_line.qty_committed)
-                        so_line.qty_committed = max(0, so_line.qty_committed - release)
-                        product.qty_committed = max(0, product.qty_committed - release)
+                    if so_line and so_line.qty_committed >= ln.qty:
+                        so_line.qty_committed = max(0, so_line.qty_committed - ln.qty)
+                        product.qty_committed = max(0, product.qty_committed - ln.qty)
 
                 txn = InventoryTransaction(
                     product_id=product.id,

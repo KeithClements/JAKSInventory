@@ -94,6 +94,9 @@
             <span class="{{ inv_badges.get(inv.status, 'badge-gray') }}">
               {{ inv.status | title }}
             </span>
+            {% if inv.is_locked and inv.status not in ['paid', 'void'] %}
+            <span class="ml-1 badge-amber" title="Locked — {{ inv.lock_reason | replace('_', ' ') | title if inv.lock_reason else '' }}">🔒</span>
+            {% endif %}
             {% if inv.is_overdue %}
             <span class="ml-1 text-xs text-red-500 font-medium">Overdue</span>
             {% endif %}
