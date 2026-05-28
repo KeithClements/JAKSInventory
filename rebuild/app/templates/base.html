@@ -275,8 +275,28 @@
   }"
   @keydown.window="if ((event.ctrlKey || event.metaKey) && event.key === 'k') { event.preventDefault(); $refs.searchInput?.focus(); $refs.searchInput?.select(); }"
   @keydown.escape.window="logCallOpen = false; createSlideOpen = false; sidebarOpen = false"
-  @open-create-slide.window="createSlideOpen = true; if ($event.detail && $event.detail.title) createSlideTitle = $event.detail.title"
+  @open-create-slide.window="
+    createSlideOpen = true;
+    if ($event.detail && $event.detail.title) createSlideTitle = $event.detail.title;
+  "
   @record-created.window="createSlideOpen = false"
+  {# Reset content to loading skeleton 300ms after close — prevents stale form flash on re-open #}
+  @slide-over-closed="setTimeout(() => {
+    const el = document.getElementById('create-slide-content');
+    if (el && !createSlideOpen) el.innerHTML = document.getElementById('create-slide-skeleton').innerHTML;
+  }, 300)"
+  {# HTMX failure inside the slide-over → show readable error #}
+  @htmx:response-error.window="
+    if ($event.detail.elt && $event.detail.elt.id === 'create-slide-content') {
+      $event.detail.elt.innerHTML = '<div class=\'slide-over-body\'><div class=\'rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700\'>Could not load the form. Please close this panel and try again.</div></div>';
+    }
+  "
+  @htmx:send-error.window="
+    if ($event.detail.elt && $event.detail.elt.id === 'create-slide-content') {
+      $event.detail.elt.innerHTML = '<div class=\'slide-over-body\'><div class=\'rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700\'>Network error loading the form. Check your connection and try again.</div></div>';
+    }
+  "
+  x-effect="if (!createSlideOpen) $dispatch('slide-over-closed')"
 >
 <div class="flex h-full min-h-screen">
 
@@ -819,9 +839,58 @@
       </svg>
     </button>
   </div>
-  {# Content loaded by HTMX into this div #}
-  <div id="create-slide-content" class="flex flex-col flex-1 min-h-0"></div>
+  {# Content loaded by HTMX into this div. Starts with skeleton so the panel
+     is NEVER blank — if HTMX is slow or fails, user still sees structure. #}
+  <div id="create-slide-content" class="flex flex-col flex-1 min-h-0">
+    {# Default = loading skeleton (replaced by HTMX swap when content arrives) #}
+    <div class="slide-over-body">
+      <div class="space-y-4 animate-pulse">
+        <div>
+          <div class="h-3 bg-gray-200 rounded w-24 mb-2"></div>
+          <div class="h-9 bg-gray-100 rounded"></div>
+        </div>
+        <div>
+          <div class="h-3 bg-gray-200 rounded w-20 mb-2"></div>
+          <div class="h-9 bg-gray-100 rounded"></div>
+        </div>
+        <div>
+          <div class="h-3 bg-gray-200 rounded w-16 mb-2"></div>
+          <div class="h-9 bg-gray-100 rounded"></div>
+        </div>
+        <div>
+          <div class="h-3 bg-gray-200 rounded w-28 mb-2"></div>
+          <div class="h-9 bg-gray-100 rounded"></div>
+        </div>
+      </div>
+      <div class="mt-6 flex items-center justify-center gap-2 text-xs text-gray-400">
+        <svg class="animate-spin h-3.5 w-3.5" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+        </svg>
+        Loading…
+      </div>
+    </div>
+  </div>
 </div>
+
+{# Skeleton template — referenced by @slide-over-closed handler to reset content cleanly #}
+<template id="create-slide-skeleton">
+  <div class="slide-over-body">
+    <div class="space-y-4 animate-pulse">
+      <div><div class="h-3 bg-gray-200 rounded w-24 mb-2"></div><div class="h-9 bg-gray-100 rounded"></div></div>
+      <div><div class="h-3 bg-gray-200 rounded w-20 mb-2"></div><div class="h-9 bg-gray-100 rounded"></div></div>
+      <div><div class="h-3 bg-gray-200 rounded w-16 mb-2"></div><div class="h-9 bg-gray-100 rounded"></div></div>
+      <div><div class="h-3 bg-gray-200 rounded w-28 mb-2"></div><div class="h-9 bg-gray-100 rounded"></div></div>
+    </div>
+    <div class="mt-6 flex items-center justify-center gap-2 text-xs text-gray-400">
+      <svg class="animate-spin h-3.5 w-3.5" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+      </svg>
+      Loading…
+    </div>
+  </div>
+</template>
 
 </body>
 </html>

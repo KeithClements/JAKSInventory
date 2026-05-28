@@ -8,7 +8,7 @@ from app.models.mixins import QBOSyncMixin
 from app.utils import calc_line_total, calc_margin_pct
 from app.constants import (
     InvoiceStatus, InvoiceLockReason, LineType,
-    PaymentMethod, PaymentStatus, PaymentReversalReason,
+    PaymentMethod, PaymentStatus, PaymentReversalReason, PaymentDirection,
     QBOSyncStatus,
 )
 
@@ -56,6 +56,19 @@ class Invoice(QBOSyncMixin, Base):
     is_taxable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     tax_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
+    # ── R1 Tax Snapshots — captured at invoice creation, frozen at finalize ────
+    tax_rate_snapshot: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    tax_exempt_snapshot: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # R10 — sales tax filing requires per-invoice jurisdiction
+    tax_jurisdiction: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # ── R11 Ship-to ────────────────────────────────────────────────────────────
+    ship_to_address_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customer_addresses.id"), nullable=True
+    )
+    # Snapshot of address text frozen at finalization (in case address record edits later)
+    ship_to_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # ── Dates ────────────────────────────────────────────────────────────────
     due_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -101,13 +114,17 @@ class Invoice(QBOSyncMixin, Base):
 
     @property
     def surcharge_amount(self) -> float:
+        # R1 — surcharge is now applied AT PAYMENT TIME on the card portion only.
+        # This property is preserved as an INFORMATIONAL ESTIMATE — "what surcharge
+        # would be if the whole balance is paid by card" — and is NOT added to total.
         if not self.apply_cc_surcharge:
             return 0.0
         return round((self.subtotal + self.tax_amount) * (self.cc_surcharge_pct / 100), 2)
 
     @property
     def total(self) -> float:
-        return round(self.subtotal + self.tax_amount + self.surcharge_amount, 2)
+        # R1 — surcharge NOT included in total. See surcharge_amount note above.
+        return round(self.subtotal + self.tax_amount, 2)
 
     @property
     def amount_paid(self) -> float:
@@ -154,6 +171,13 @@ class InvoiceLine(Base):
         Float, nullable=False, default=0.0
     )  # snapshot at time of sale — never changes after lock
     discount_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # R5 — true when line discount_pct differs from customer.discount_pct
+    discount_overridden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # R1 — per-line tax fields (some lines like freight may be non-taxable)
+    is_taxable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    tax_amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
     is_core_line: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     parent_line_id: Mapped[int | None] = mapped_column(
         ForeignKey("invoice_lines.id"), nullable=True
@@ -211,12 +235,25 @@ class Payment(QBOSyncMixin, Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id"), nullable=False)
+    # R11 — vendor refunds use vendor_id (Phase G will refactor customer_id → nullable)
+    vendor_id: Mapped[int | None] = mapped_column(ForeignKey("vendors.id"), nullable=True)
+    # R3 — SO deposits stamp the Payment with their SO so fulfill_and_invoice can
+    # auto-allocate the deposit to the resulting invoice. Nullable for non-SO payments.
+    sales_order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("sales_orders.id"), nullable=True
+    )
     payment_date: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     payment_method: Mapped[str] = mapped_column(
         String(20), nullable=False, default=PaymentMethod.CASH
     )
+    # R11 — direction governs all downstream behavior. Most payments are INCOMING_FROM_CUSTOMER.
+    direction: Mapped[str] = mapped_column(
+        String(30), nullable=False, default=PaymentDirection.INCOMING_FROM_CUSTOMER
+    )
     check_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     amount_received: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # R1 — surcharge captured at payment time on card portion only (not pre-baked on invoice)
+    surcharge_amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
     # ── Status & Reversal ─────────────────────────────────────────────────────
     status: Mapped[str] = mapped_column(

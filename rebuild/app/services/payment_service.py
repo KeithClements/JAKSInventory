@@ -16,12 +16,13 @@ from datetime import datetime
 
 from app.constants import (
     AuditAction, EntityType, InvoiceLockReason, InvoiceStatus,
-    LineType, PaymentMethod, PaymentStatus,
+    LineType, PaymentDirection, PaymentMethod, PaymentStatus,
     QBOSyncStatus,
 )
 from app.models.customer import Customer
 from app.models.invoice import Invoice, Payment, PaymentAllocation
 from app.services.base import BaseService
+from app.settings_utils import get_setting_value_db
 
 
 class PaymentService(BaseService):
@@ -35,21 +36,62 @@ class PaymentService(BaseService):
         payment_method: str,
         data: dict,
         invoice_ids: list[int] | None = None,
+        sales_order_id: int | None = None,
+        apply_surcharge: bool = False,
+        surcharge_pct: float | None = None,
     ) -> Payment:
         """
         Record a payment and optionally allocate to one or more invoices.
-        If invoice_ids is None or empty, payment sits as unapplied credit.
+
+        R1 — Credit card surcharge is applied AT PAYMENT TIME on the card portion
+        only, never pre-baked on the invoice. If `apply_surcharge=True` and method
+        is CREDIT_CARD, surcharge is computed and stored on `Payment.surcharge_amount`.
+        amount_received remains the PRINCIPAL (what reduces invoice balance);
+        the customer's effective outflow = amount_received + surcharge_amount.
+
+        Args:
+            customer_id:        target customer
+            amount_received:    principal — what gets applied to invoice balance(s)
+            payment_method:     PaymentMethod value
+            data:               dict — payment_date, check_number, notes, etc.
+            invoice_ids:        optional list to auto-allocate against
+            sales_order_id:     optional SO link for deposits (R3)
+            apply_surcharge:    if True AND card method, compute surcharge
+            surcharge_pct:      override the settings default; only used when apply_surcharge
+
         Validates: sum of allocations <= amount_received.
         """
         if amount_received <= 0:
             raise ValueError("amount_received must be greater than 0")
 
+        # R1 — surcharge computation at payment time
+        surcharge_amount = 0.0
+        if apply_surcharge:
+            if payment_method != PaymentMethod.CREDIT_CARD:
+                raise ValueError(
+                    "Credit card surcharge can only be applied to card payments. "
+                    f"Got method='{payment_method}'."
+                )
+            if surcharge_pct is None:
+                raw = get_setting_value_db(self.db, "cc_surcharge_pct", "3.0") or "3.0"
+                try:
+                    surcharge_pct = float(raw)
+                except (TypeError, ValueError):
+                    surcharge_pct = 3.0
+            surcharge_amount = round(amount_received * surcharge_pct / 100, 2)
+
+        # R11 — payment direction defaults to incoming_from_customer
+        direction = data.get("direction") or PaymentDirection.INCOMING_FROM_CUSTOMER
+
         payment = Payment(
             customer_id=customer_id,
+            sales_order_id=sales_order_id,
             payment_date=data.get("payment_date") or datetime.utcnow(),
             payment_method=payment_method,
+            direction=direction,
             check_number=data.get("check_number"),
             amount_received=amount_received,
+            surcharge_amount=surcharge_amount,
             status=PaymentStatus.APPLIED,
             notes=data.get("notes", ""),
             qbo_sync_status=QBOSyncStatus.PENDING,
@@ -79,8 +121,11 @@ class PaymentService(BaseService):
             action=AuditAction.PAYMENT_APPLIED,
             new_value={
                 "amount": amount_received,
+                "surcharge": surcharge_amount,
                 "method": payment_method,
+                "direction": direction,
                 "invoices": invoice_ids or [],
+                "sales_order_id": sales_order_id,
             },
         )
         self.db.commit()
@@ -140,7 +185,15 @@ class PaymentService(BaseService):
     def reverse_payment(self, payment_id: int, reason: str) -> None:
         """
         Reverse a payment. Marks all allocations reversed and re-opens invoices.
+
+        R2 — If the original payment was paid from customer credit_balance
+        (method=ACCOUNT_CREDIT), the reversal restores the amount back to
+        credit_balance so the customer is made whole.
         """
+        # R11 — BOOKKEEPING/ADMIN only
+        from app.constants import Permission
+        self.assert_can(Permission.REVERSE_PAYMENT)
+
         payment = self._get_payment_or_404(payment_id)
         if payment.status == PaymentStatus.REVERSED:
             raise ValueError(f"Payment {payment_id} is already reversed")
@@ -154,6 +207,15 @@ class PaymentService(BaseService):
                 # Delegate status reset to InvoiceService — sole owner of invoice.status
                 inv_svc.reopen_after_payment_reversal(allocation.invoice_id)
 
+        # R2 — restore credit_balance if this payment drew from it
+        if payment.payment_method == PaymentMethod.ACCOUNT_CREDIT and payment.amount_received > 0:
+            from app.services.crm_service import CRMService
+            CRMService(self.db, self.current_user_id).add_credit(
+                customer_id=payment.customer_id,
+                amount=payment.amount_received,
+                reason=f"Restored after reversal of Payment #{payment_id}: {reason}",
+            )
+
         payment.status = PaymentStatus.REVERSED
         payment.reversed_at = datetime.utcnow()
         payment.reversal_reason = reason
@@ -162,7 +224,7 @@ class PaymentService(BaseService):
             entity_type=EntityType.PAYMENT,
             entity_id=payment_id,
             action=AuditAction.PAYMENT_REVERSED,
-            new_value={"reason": reason},
+            new_value={"reason": reason, "method": payment.payment_method},
         )
         self.db.commit()
 
@@ -253,6 +315,81 @@ class PaymentService(BaseService):
         )
         self.db.commit()
         return allocation
+
+    # ── Refund from Credit (R2 — refund check) ────────────────────────────────
+
+    def refund_from_credit(
+        self,
+        customer_id: int,
+        amount: float,
+        payment_method: str = PaymentMethod.CHECK,
+        check_number: str | None = None,
+        notes: str = "",
+    ) -> Payment:
+        """
+        R2 — Issue a refund from customer.credit_balance.
+
+        Creates a Payment row with direction=REFUND_TO_CUSTOMER and a negative
+        amount_received (representing money flowing OUT to the customer). Decrements
+        customer.credit_balance via CRMService. Wife issues the actual check or
+        transfer manually outside the system — this records the AR side.
+
+        Validates:
+          - customer has at least `amount` of credit_balance
+          - amount is positive
+          - credit_balance never goes below 0
+        """
+        from app.services.crm_service import CRMService
+
+        if amount <= 0:
+            raise ValueError("Refund amount must be positive")
+
+        customer = self.db.query(Customer).filter(Customer.id == customer_id).first()
+        if customer is None:
+            raise ValueError(f"Customer {customer_id} not found")
+
+        if customer.credit_balance < amount - 0.001:
+            raise ValueError(
+                f"Insufficient credit balance: requested ${amount:.2f}, "
+                f"available ${customer.credit_balance:.2f}"
+            )
+
+        # Record the refund as a negative-amount Payment row
+        refund = Payment(
+            customer_id=customer_id,
+            payment_date=datetime.utcnow(),
+            payment_method=payment_method,
+            direction=PaymentDirection.REFUND_TO_CUSTOMER,
+            check_number=check_number,
+            amount_received=-round(amount, 2),  # negative = outflow
+            status=PaymentStatus.APPLIED,
+            notes=notes or f"Refund from credit balance",
+            qbo_sync_status=QBOSyncStatus.PENDING,
+        )
+        self.db.add(refund)
+        self.db.flush()
+
+        # Decrement credit_balance via CRMService (sole owner of credit_balance writes)
+        CRMService(self.db, self.current_user_id).deduct_credit(
+            customer_id=customer_id,
+            amount=amount,
+            reason=f"Refund check issued via Payment #{refund.id}",
+        )
+
+        self.audit(
+            entity_type=EntityType.PAYMENT,
+            entity_id=refund.id,
+            action=AuditAction.PAYMENT_APPLIED,
+            new_value={
+                "type": "refund_from_credit",
+                "amount": amount,
+                "method": payment_method,
+                "check_number": check_number,
+                "direction": PaymentDirection.REFUND_TO_CUSTOMER,
+            },
+        )
+        self.db.commit()
+        return refund
 
     # ── Queries ───────────────────────────────────────────────────────────────
 

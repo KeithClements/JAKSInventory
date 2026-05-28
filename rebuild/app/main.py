@@ -42,9 +42,40 @@ def on_startup() -> None:
         seed_settings(db)
         seed_scraper_sources(db)
         _seed_default_user(db)
+        _seed_core_locations(db)
         _lock_overdue_invoices(db)
     finally:
         db.close()
+
+
+def _seed_core_locations(db: Session) -> None:
+    """
+    R10 — seed the default core location buckets on startup.
+    Idempotent: only inserts locations whose names don't already exist.
+    """
+    from app.models.core import CoreLocation
+
+    existing = {row.name for row in db.query(CoreLocation.name).all()}
+    defaults = [
+        # name, description, vendor_id, is_in_transit, display_order
+        ("Core Shelf",         "Default location for accepted cores",       None, False, 10),
+        ("Core Holding",       "Held for review / decision pending",        None, False, 20),
+        ("Questionable Core",  "Damaged / uncertain — needs decision",      None, False, 30),
+        ("Rejected Core",      "Wrong core or rejected for credit",         None, False, 40),
+        ("In Transit to Vendor", "Shipped to vendor — VCR open",            None, True,  50),
+        ("Scrap Core",         "Scrapped / disposed",                       None, False, 60),
+    ]
+    for name, desc, vendor_id, in_transit, order in defaults:
+        if name not in existing:
+            db.add(CoreLocation(
+                name=name,
+                description=desc,
+                vendor_id=vendor_id,
+                is_in_transit=in_transit,
+                display_order=order,
+                is_active=True,
+            ))
+    db.commit()
 
 
 def _seed_default_user(db: Session) -> None:

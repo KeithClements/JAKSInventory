@@ -61,6 +61,8 @@ class CoreCharge(Base):
         String(30), nullable=False, default=CoreStatus.OPEN
     )
     return_deadline: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # R3 — grace_days snapshot at core creation (default 45, configurable setting)
+    grace_days_snapshot: Mapped[int] = mapped_column(Integer, nullable=False, default=45)
 
     # ── Vendor Decision (when JAKS ships core back and vendor responds) ────────
     vendor_status: Mapped[str] = mapped_column(
@@ -176,13 +178,47 @@ class CoreReturnEvent(Base):
 
 
 class CoreLocation(Base):
-    """Named physical locations for received cores (e.g. 'Staging Shelf A', 'Quarantine Bin')."""
+    """
+    R10 — physical/logical core storage locations.
+    Examples: 'Core Shelf', 'Core Holding', 'Ready for PAI', 'Questionable Core',
+    'Rejected Core', 'In Transit to Vendor', 'Scrap'.
+    """
     __tablename__ = "core_locations"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    # R10 — Ready-to-ship locations are vendor-specific
+    vendor_id: Mapped[int | None] = mapped_column(ForeignKey("vendors.id"), nullable=True)
+    # R10 — "In Transit to Vendor" flag — cores still need a location, even mid-shipment
+    is_in_transit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class CoreLocationMovement(Base):
+    """R10 — audit trail for every core location change. Immutable."""
+    __tablename__ = "core_location_movements"
+    __table_args__ = (
+        Index("ix_core_loc_movements_core_id", "core_charge_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    core_charge_id: Mapped[int] = mapped_column(
+        ForeignKey("core_charges.id"), nullable=False
+    )
+    from_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("core_locations.id"), nullable=True
+    )
+    to_location_id: Mapped[int] = mapped_column(
+        ForeignKey("core_locations.id"), nullable=False
+    )
+    moved_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+    reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class CoreSlip(Base):

@@ -60,6 +60,7 @@ from app.models.core import (
     CoreCharge,
     CoreReturnEvent,
     CoreLocation,
+    CoreLocationMovement,
     CoreSlip,
     VendorCoreReturn,
     VendorCoreReturnLine,
@@ -80,6 +81,19 @@ from app.models.scraper import (
     ScrapedCrossRef,
     ScraperFieldMapping,
 )
+
+# ── Credit Memos + Vendor Credits + Returns (R8, R11) ────────────────────────
+from app.models.credit_memo import CreditMemo, CreditMemoLine, CreditMemoAllocation
+from app.models.vendor_credit import VendorCreditMemo, VendorCreditMemoAllocation
+from app.models.vendor_return import VendorReturn, VendorReturnLine
+
+# ── Statements + Notifications + Communications (R8, R12) ────────────────────
+from app.models.statement import CustomerStatement
+from app.models.notification import Notification
+from app.models.communication import Communication, CommunicationAttachment
+
+# ── Inventory transfers (R6) ──────────────────────────────────────────────────
+from app.models.inventory_transfer import InventoryTransfer
 
 # ── Supporting ────────────────────────────────────────────────────────────────
 from app.models.shipping import Shipment
@@ -138,6 +152,7 @@ __all_models__ = [
     CoreCharge,
     CoreReturnEvent,
     CoreLocation,
+    CoreLocationMovement,
     CoreSlip,
     VendorCoreReturn,
     VendorCoreReturnLine,
@@ -147,6 +162,21 @@ __all_models__ = [
     WarrantyClaimLine,
     ESNLookup,
     EngineConfig,
+    # Credit memos + vendor credits + returns
+    CreditMemo,
+    CreditMemoLine,
+    CreditMemoAllocation,
+    VendorCreditMemo,
+    VendorCreditMemoAllocation,
+    VendorReturn,
+    VendorReturnLine,
+    # Statements + Notifications + Communications
+    CustomerStatement,
+    Notification,
+    Communication,
+    CommunicationAttachment,
+    # Inventory transfers
+    InventoryTransfer,
     # Scraper / Enrichment
     ScraperSource,
     ScrapeRun,

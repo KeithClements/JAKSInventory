@@ -19,7 +19,8 @@ from datetime import datetime, timedelta
 
 from app.constants import (
     AuditAction, EntityType, InventoryTxnType,
-    InvoiceLockReason, InvoiceStatus, LineType, PaymentTerms, QBOSyncStatus,
+    InvoiceLockReason, InvoiceStatus, LineType, NON_TAXABLE_LINE_TYPES,
+    PaymentTerms, Permission, QBOSyncStatus,
 )
 from app.models.customer import Customer
 from app.models.inventory import InventoryTransaction
@@ -88,6 +89,10 @@ class InvoiceService(BaseService):
             cc_surcharge_pct=cc_surcharge_pct,
             is_taxable=is_taxable,
             tax_rate=tax_rate,
+            # R1 — snapshot customer tax settings AT CREATION. These freeze on
+            # finalize and are the source of truth for everything downstream.
+            tax_rate_snapshot=tax_rate,
+            tax_exempt_snapshot=customer.is_tax_exempt,
             due_date=due_date,
             notes="",
             internal_notes="",
@@ -118,6 +123,18 @@ class InvoiceService(BaseService):
         year = datetime.utcnow().year
         inv_number = bump_counter(self.db, "next_invoice_number", "INV", year)
 
+        # R1 — derive tax snapshot from the customer record, unless caller
+        # supplied an explicit override (rare; tests / data migration).
+        customer = self.db.query(Customer).filter(Customer.id == customer_id).first()
+        if customer is None:
+            raise ValueError(f"Customer {customer_id} not found")
+        cust_tax_exempt = customer.is_tax_exempt
+        cust_tax_rate = (
+            0.0 if cust_tax_exempt else (customer.tax_rate or 0.0)
+        )
+        is_taxable_legacy = data.get("is_taxable", not cust_tax_exempt and cust_tax_rate > 0)
+        tax_rate_legacy = data.get("tax_rate", cust_tax_rate)
+
         invoice = Invoice(
             invoice_number=inv_number,
             customer_id=customer_id,
@@ -132,8 +149,11 @@ class InvoiceService(BaseService):
             discount_pct=float(data.get("discount_pct", 0.0)),
             apply_cc_surcharge=bool(data.get("apply_cc_surcharge", False)),
             cc_surcharge_pct=float(data.get("cc_surcharge_pct", 3.0)),
-            is_taxable=bool(data.get("is_taxable", False)),
-            tax_rate=float(data.get("tax_rate", 0.0)),
+            is_taxable=bool(is_taxable_legacy),
+            tax_rate=float(tax_rate_legacy),
+            # R1 — snapshot at creation
+            tax_rate_snapshot=float(cust_tax_rate),
+            tax_exempt_snapshot=cust_tax_exempt,
             due_date=data.get("due_date"),
             notes=data.get("notes", ""),
             internal_notes=data.get("internal_notes", ""),
@@ -453,9 +473,13 @@ class InvoiceService(BaseService):
         """
         Finalize a DRAFT invoice:
           1. Run validate_for_finalise() — raises if any hard block
-          2. Run check_inventory_for_finalise() — raises with shortage details unless override
+          2. Run check_inventory_for_finalise() — HARD BLOCK on shortage unless
+             caller has NEGATIVE_INVENTORY_OVERRIDE permission AND passes
+             allow_negative_inventory=True. Override is audited (R6).
           3. Snapshot unit_cost on each product line
           4. Decrement inventory + write InventoryTransaction(INVOICE_SALE)
+             - For SO-derived lines, release qty_committed (one net decrement,
+               not double)
           5. Create CoreCharge records for core child lines
           6. Set status = OPEN, mark for QBO sync
         """
@@ -463,16 +487,52 @@ class InvoiceService(BaseService):
         if errors:
             raise ValueError("; ".join(errors))
 
-        if not allow_negative_inventory:
-            shortages = self.check_inventory_for_finalise(invoice_id)
-            if shortages:
+        shortages = self.check_inventory_for_finalise(invoice_id)
+        if shortages:
+            if not allow_negative_inventory:
                 pretty = ", ".join(
                     f"{s['sku']} (need {s['requested']}, have {s['available']})"
                     for s in shortages
                 )
-                raise ValueError(f"Insufficient stock: {pretty}")
+                raise ValueError(
+                    f"Insufficient stock: {pretty}. "
+                    f"Admin may override with NEGATIVE_INVENTORY_OVERRIDE permission."
+                )
+            # Override requested — caller must have explicit permission
+            self.assert_can(Permission.NEGATIVE_INVENTORY_OVERRIDE)
+            # Audit the override BEFORE the mutation so it's recorded even if write fails
+            self.audit(
+                entity_type=EntityType.INVOICE,
+                entity_id=invoice_id,
+                action=AuditAction.INVENTORY_ADJUSTED,
+                old_value=None,
+                new_value={"override": "allow_negative_inventory", "shortages": shortages},
+                notes="Negative inventory override at invoice finalize",
+            )
 
         invoice = self._get_or_404(invoice_id)
+
+        from app.models.quote import SOLine  # local import to avoid cycle
+
+        # R1 — ensure tax snapshot is set (in case caller passed a draft with
+        # missing snapshot). Re-read from customer if blank.
+        if invoice.tax_rate_snapshot == 0.0 and invoice.tax_exempt_snapshot is False:
+            cust = self.db.query(Customer).filter(Customer.id == invoice.customer_id).first()
+            if cust and not cust.is_tax_exempt and cust.tax_rate > 0:
+                invoice.tax_rate_snapshot = cust.tax_rate
+            elif cust:
+                invoice.tax_exempt_snapshot = cust.is_tax_exempt
+
+        # R1 — freeze per-line tax_amount based on snapshot at finalize time.
+        # After this, line.tax_amount is the source of truth (calculate_totals reads it).
+        tax_rate = 0.0 if invoice.tax_exempt_snapshot else invoice.tax_rate_snapshot
+        for ln in invoice.lines:
+            if ln.is_taxable and tax_rate > 0:
+                # Discount-adjusted line subtotal
+                discounted = ln.unit_price * ln.qty * (1 - (ln.discount_pct or 0) / 100)
+                ln.tax_amount = round(discounted * tax_rate / 100, 2)
+            else:
+                ln.tax_amount = 0.0
 
         for ln in invoice.lines:
             if ln.line_type != LineType.PRODUCT:
@@ -487,6 +547,18 @@ class InvoiceService(BaseService):
                     product.qty_on_hand = product.qty_on_hand - ln.qty
                 else:
                     product.qty_on_hand = max(0, product.qty_on_hand - ln.qty)
+
+                # R6 — if this line traces back to an SO line, release the matching
+                # qty_committed so we don't double-decrement (qty_committed was
+                # bumped when the SO was created; SalesOrderService.fulfill_and_invoice
+                # may have already released — only release residual here).
+                if ln.so_line_id:
+                    so_line = self.db.query(SOLine).filter(SOLine.id == ln.so_line_id).first()
+                    if so_line and so_line.qty_committed > 0:
+                        release = min(ln.qty, so_line.qty_committed)
+                        so_line.qty_committed = max(0, so_line.qty_committed - release)
+                        product.qty_committed = max(0, product.qty_committed - release)
+
                 txn = InventoryTransaction(
                     product_id=product.id,
                     transaction_type=InventoryTxnType.INVOICE_SALE,
@@ -557,6 +629,76 @@ class InvoiceService(BaseService):
             invoice.lock_reason = None
         self.db.flush()
 
+    # ── Customer Credit Application (R2 — "Apply Available Credit") ──────────
+
+    def apply_customer_credit(
+        self,
+        invoice_id: int,
+        amount: float | None = None,
+    ) -> object:
+        """
+        R2 — Apply customer.credit_balance to an open invoice.
+
+        This is the "Apply Available Credit" button workflow. Validates:
+          - Invoice is not VOID
+          - Customer has sufficient credit_balance (cannot go below 0)
+          - amount <= invoice.balance_due (no overpayment from credit)
+          - If amount is None, applies min(credit_balance, balance_due)
+
+        Delegates to PaymentService.apply_account_credit which creates the
+        Payment + Allocation + decrements credit_balance via CRMService.
+
+        Returns the resulting PaymentAllocation.
+        """
+        from app.services.payment_service import PaymentService
+
+        invoice = self._get_or_404(invoice_id)
+        if invoice.status == InvoiceStatus.VOID:
+            raise ValueError(
+                f"Invoice {invoice.invoice_number} is voided — cannot apply credit"
+            )
+
+        customer = self.db.query(Customer).filter(Customer.id == invoice.customer_id).first()
+        if customer is None:
+            raise ValueError(f"Customer #{invoice.customer_id} not found")
+
+        # Refresh balance from DB so we use the current state
+        self.db.expire(invoice)
+        balance = invoice.balance_due
+        if balance <= 0.001:
+            raise ValueError(
+                f"Invoice {invoice.invoice_number} has no balance due — nothing to apply"
+            )
+        if customer.credit_balance <= 0.001:
+            raise ValueError(
+                f"Customer has no credit balance available "
+                f"(currently ${customer.credit_balance:.2f})"
+            )
+
+        # Default to the lesser of credit available and balance due
+        if amount is None:
+            amount = min(customer.credit_balance, balance)
+        amount = round(amount, 2)
+
+        if amount <= 0:
+            raise ValueError("Amount to apply must be positive")
+        if amount > customer.credit_balance + 0.001:
+            raise ValueError(
+                f"Amount ${amount:.2f} exceeds available credit "
+                f"${customer.credit_balance:.2f}"
+            )
+        if amount > balance + 0.001:
+            raise ValueError(
+                f"Amount ${amount:.2f} exceeds invoice balance ${balance:.2f}"
+            )
+
+        pay_svc = PaymentService(self.db, self.current_user_id)
+        return pay_svc.apply_account_credit(
+            customer_id=invoice.customer_id,
+            invoice_id=invoice_id,
+            amount=amount,
+        )
+
     def refresh_payment_status(self, invoice_id: int) -> None:
         """
         Recalculate and persist invoice.status from current allocations.
@@ -579,10 +721,49 @@ class InvoiceService(BaseService):
     # ── Void ──────────────────────────────────────────────────────────────────
 
     def void_invoice(self, invoice_id: int, reason: str) -> None:
-        """Void an invoice. Reverses inventory and marks allocations reversed."""
+        """
+        Void an invoice. Reverses inventory and marks allocations reversed.
+
+        R4 — Hard rules:
+          - Already VOID → reject (idempotency / explicit failure)
+          - QBO-pushed (qbo_invoice_id set) → reject; use credit memo instead
+            (admin can override via VOID_LOCKED_INVOICE permission for emergency
+            corrections, but the audit trail makes that visible)
+          - Has applied payments → reject; reverse payments first
+        """
         invoice = self._get_or_404(invoice_id)
         if invoice.status == InvoiceStatus.VOID:
             raise ValueError(f"Invoice {invoice.invoice_number} is already void")
+
+        # R4 — QBO-pushed invoices must be corrected via credit memo
+        if invoice.qbo_invoice_id:
+            # Allow admin override via permission
+            try:
+                self.assert_can(Permission.VOID_LOCKED_INVOICE)
+            except Exception:
+                raise ValueError(
+                    f"Invoice {invoice.invoice_number} has been pushed to QBO "
+                    f"(qbo_id={invoice.qbo_invoice_id}). Issue a credit memo to "
+                    f"correct it instead of voiding."
+                )
+            # Override granted — audit it before mutation
+            self.audit(
+                entity_type=EntityType.INVOICE,
+                entity_id=invoice_id,
+                action=AuditAction.VOIDED,
+                old_value={"qbo_invoice_id": invoice.qbo_invoice_id},
+                new_value={"override": "void_qbo_pushed", "reason": reason},
+                notes="Admin override voided QBO-pushed invoice",
+            )
+
+        # R4 — invoices with applied payments must reverse payments first
+        applied_payments = [a for a in invoice.allocations if not a.is_reversed]
+        if applied_payments:
+            total_applied = sum(a.amount_applied for a in applied_payments)
+            raise ValueError(
+                f"Invoice {invoice.invoice_number} has ${total_applied:.2f} in "
+                f"applied payments. Reverse payments first, then void."
+            )
 
         # Use original sale transactions to know exactly how much to put back
         sale_txns: dict[int, int] = {}
@@ -682,16 +863,52 @@ class InvoiceService(BaseService):
         discount_amount = round(parts_subtotal * (invoice.discount_pct / 100), 2) if invoice.discount_pct else 0.0
         parts_after_discount = round(parts_subtotal - discount_amount, 2)
 
-        # Taxable amount = (parts after discount + freight) IF invoice is taxable
-        # — fine-grained per-line taxable flag is a Phase 2 refinement
-        taxable_amount = round(parts_after_discount + freight_subtotal, 2) if invoice.is_taxable else 0.0
-        tax_amount = round(taxable_amount * (invoice.tax_rate / 100), 2) if invoice.is_taxable else 0.0
+        # R1 — Tax computation: prefer frozen per-line tax_amount (set at finalize),
+        # fall back to legacy invoice-level rate for drafts that haven't been finalized.
+        sum_line_tax = round(sum((ln.tax_amount or 0.0) for ln in invoice.lines), 2)
+        if sum_line_tax > 0:
+            # Frozen path: use snapshotted per-line tax_amounts
+            tax_rate_display = invoice.tax_rate_snapshot or invoice.tax_rate
+            is_taxable_display = not invoice.tax_exempt_snapshot
+            taxable_amount = round(
+                sum(
+                    ln.unit_price * ln.qty * (1 - (ln.discount_pct or 0) / 100)
+                    for ln in invoice.lines
+                    if ln.is_taxable
+                ),
+                2,
+            )
+            tax_amount = sum_line_tax
+        else:
+            # Draft / legacy fallback: live calc from invoice-level rate
+            tax_rate_display = invoice.tax_rate_snapshot or invoice.tax_rate
+            is_taxable_display = (
+                not invoice.tax_exempt_snapshot
+                and (invoice.is_taxable or tax_rate_display > 0)
+            )
+            taxable_amount = (
+                round(parts_after_discount + freight_subtotal, 2)
+                if is_taxable_display
+                else 0.0
+            )
+            tax_amount = (
+                round(taxable_amount * (tax_rate_display / 100), 2)
+                if is_taxable_display
+                else 0.0
+            )
 
-        # Pre-CC subtotal includes everything tangible: parts (after discount) + cores + freight + tax
-        subtotal_before_cc = round(parts_after_discount + core_subtotal + freight_subtotal + tax_amount, 2)
+        # R1 — Invoice total does NOT include CC surcharge anymore.
+        # Surcharge is computed AT PAYMENT TIME on the card portion only.
+        # `cc_fee_amount` is now an INFORMATIONAL estimate ("if customer pays
+        # the full balance by card, this is what the surcharge would be") and
+        # is NOT added to the invoice total or balance_due.
+        total = round(parts_after_discount + core_subtotal + freight_subtotal + tax_amount, 2)
 
-        cc_fee_amount = round(subtotal_before_cc * (invoice.cc_surcharge_pct / 100), 2) if invoice.apply_cc_surcharge else 0.0
-        total = round(subtotal_before_cc + cc_fee_amount, 2)
+        cc_surcharge_estimate = (
+            round(total * (invoice.cc_surcharge_pct / 100), 2)
+            if invoice.apply_cc_surcharge or (invoice.cc_surcharge_pct or 0) > 0
+            else 0.0
+        )
 
         return {
             "parts_subtotal":   parts_subtotal,
@@ -700,7 +917,10 @@ class InvoiceService(BaseService):
             "discount_amount":  discount_amount,
             "taxable_amount":   taxable_amount,
             "tax_amount":       tax_amount,
-            "cc_fee_amount":    cc_fee_amount,
+            # Informational only — surcharge isn't added to total. Templates can
+            # show "If paid by card: total + estimated surcharge = $X.XX".
+            "cc_fee_amount":    cc_surcharge_estimate,
+            "cc_surcharge_estimate": cc_surcharge_estimate,
             "total":            total,
             "amount_paid":      invoice.amount_paid,
             "balance_due":      round(total - invoice.amount_paid, 2),
@@ -733,24 +953,53 @@ class InvoiceService(BaseService):
         return inv
 
     def _assert_editable(self, invoice: Invoice) -> None:
-        """Phase A rule: only DRAFT invoices accept content edits."""
-        if invoice.status != InvoiceStatus.DRAFT:
+        """
+        R4 — only DRAFT invoices accept content edits.
+        Once OPEN (finalized), corrections require a credit memo.
+        Once VOID, no changes are possible.
+        """
+        if invoice.status == InvoiceStatus.DRAFT:
+            return
+        if invoice.status == InvoiceStatus.VOID:
             raise ValueError(
-                f"Invoice {invoice.invoice_number} is {invoice.status} — "
-                "void and reissue to make changes."
+                f"Invoice {invoice.invoice_number} is voided — no edits allowed."
             )
+        raise ValueError(
+            f"Invoice {invoice.invoice_number} is locked. "
+            f"Create a credit memo or void/reissue to correct it."
+        )
 
     def _add_line_internal(self, invoice_id: int, data: dict, sort_order: int) -> InvoiceLine:
+        line_type = data.get("line_type", LineType.PRODUCT)
+        # R1 — per-line tax default: non-taxable for fee/credit line types, else
+        # follow the invoice-level taxability snapshot. Caller may override via
+        # data["is_taxable"] for jurisdictional edge cases.
+        if "is_taxable" in data:
+            is_taxable = bool(data["is_taxable"])
+        elif line_type in NON_TAXABLE_LINE_TYPES:
+            is_taxable = False
+        else:
+            # Look up the invoice's snapshot to default per-line
+            inv = self.db.query(Invoice).filter(Invoice.id == invoice_id).first()
+            if inv and inv.tax_exempt_snapshot:
+                is_taxable = False
+            elif inv and (inv.tax_rate_snapshot or 0) > 0:
+                is_taxable = True
+            else:
+                is_taxable = False  # no rate set — line stays non-taxable
+
         line = InvoiceLine(
             invoice_id=invoice_id,
             product_id=data.get("product_id"),
             so_line_id=data.get("so_line_id"),
-            line_type=data.get("line_type", LineType.PRODUCT),
+            line_type=line_type,
             description=data.get("description", ""),
             qty=int(data.get("qty", 1)),
             unit_price=float(data.get("unit_price", 0.0)),
             unit_cost=float(data.get("unit_cost", 0.0)),
             discount_pct=float(data.get("discount_pct", 0.0)),
+            is_taxable=is_taxable,
+            tax_amount=0.0,  # frozen at finalize time
             is_core_line=bool(data.get("is_core_line", False)),
             parent_line_id=data.get("parent_line_id"),
             is_auto_generated=bool(data.get("is_auto_generated", False)),

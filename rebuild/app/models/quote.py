@@ -4,7 +4,12 @@ from datetime import datetime
 from sqlalchemy import String, Text, Float, Integer, Boolean, Date, ForeignKey, DateTime, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
-from app.constants import QuoteStatus, QuoteOutcome, QuoteFollowupStatus, SOStatus, SOPaymentMode, SOLineSource, LineType, LineRole
+from app.constants import (
+    QuoteStatus, QuoteOutcome, QuoteFollowupStatus,
+    SOStatus, SOPaymentMode, SOLineSource,
+    FulfillmentSource, SOLineStatus,
+    LineType, LineRole,
+)
 from app.utils import calc_line_total, calc_margin_pct
 
 
@@ -44,6 +49,12 @@ class Quote(Base):
         ForeignKey("users.id"), nullable=True
     )
     original_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # R5 — track quotes copied via "Duplicate Quote" action.
+    # Original quote stays untouched; the duplicate may have a different customer.
+    is_duplicate_of_quote_id: Mapped[int | None] = mapped_column(
+        ForeignKey("quotes.id"), nullable=True
+    )
 
     # ── Conversion Tracking ───────────────────────────────────────────────────
     converted_to_invoice_id: Mapped[int | None] = mapped_column(
@@ -254,9 +265,30 @@ class SOLine(Base):
     unit_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     discount_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     core_charge: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # Legacy 2-value source — kept for backward compat. New code uses fulfillment_source.
     source: Mapped[str] = mapped_column(
         String(20), nullable=False, default=SOLineSource.STOCK
     )
+
+    # ── R7 Fulfillment routing ───────────────────────────────────────────────
+    fulfillment_source: Mapped[str] = mapped_column(
+        String(30), nullable=False, default=FulfillmentSource.STOCK
+    )
+    line_status: Mapped[str] = mapped_column(
+        String(30), nullable=False, default=SOLineStatus.STOCK
+    )
+    # R7 — when fulfillment_source=linked_po, this points to the specific PO line
+    linked_po_line_id: Mapped[int | None] = mapped_column(
+        ForeignKey("po_lines.id"), nullable=True
+    )
+    # R6 — line-level cancellation tracking
+    qty_cancelled: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cancel_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancelled_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+
     # ── Parent/child linkage (consistent with InvoiceLine / QuoteLine) ───────
     # The existing `core_charge` float field is the legacy per-line core amount;
     # parent_line_id + is_core_line enable the future pattern where cores are
