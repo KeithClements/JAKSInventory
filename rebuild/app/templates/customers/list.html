@@ -94,23 +94,21 @@
   ] %}
 
   <div class="overflow-x-auto">
-    <table class="tbl">
-      <thead class="tbl-head">
-        <tr>
-          <th class="tbl-th">Company</th>
-          <th class="tbl-th hidden md:table-cell">Contact</th>
-          <th class="tbl-th hidden lg:table-cell">Phone</th>
-          <th class="tbl-th hidden sm:table-cell">Terms</th>
-          <th class="tbl-th-r hidden lg:table-cell">Credit</th>
-          <th class="tbl-th text-center">Status</th>
-          <th class="tbl-th w-28"></th>{# hover actions #}
+    <table class="w-full">
+      <thead>
+        <tr class="bg-gray-50 border-b border-gray-200">
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Company</th>
+          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide hidden sm:table-cell">Balance</th>
+          <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide hidden md:table-cell">Activity</th>
+          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Actions</th>
         </tr>
       </thead>
       <tbody>
         {% for c in customers %}
         {% set initials = (c.company_name[:1] | upper) %}
         {% set acolor = avatar_colors[c.company_name | length % (avatar_colors | length)] %}
-        {# Encode preview data as JSON for Alpine (single-quoted attribute = safe for inner double-quotes) #}
+        {% set inv_count = open_invoice_counts.get(c.id, 0) %}
+        {% set q_count = open_quote_counts.get(c.id, 0) %}
         {% set cdata = {
           'id': c.id,
           'name': c.company_name,
@@ -124,94 +122,137 @@
           'initials': initials,
           'acolor': acolor,
         } %}
-        <tr class="tbl-row"
-            :class="preview && preview.id === {{ c.id }} ? 'bg-brand-50/60 !hover:bg-brand-50/60' : ''"
+        <tr class="border-b border-gray-100 hover:bg-brand-50/40 transition-colors cursor-pointer"
+            :class="preview && preview.id === {{ c.id }} ? 'bg-brand-50/60' : ''"
             @click='preview = {{ cdata | tojson }}'
             @contextmenu='showCtx($event, {{ cdata | tojson }})'>
 
-          {# Company with initials avatar #}
-          <td class="tbl-td">
-            <div class="flex items-center gap-3">
-              <div class="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 {{ acolor }}">
+          {# ── Column 1: Company ───────────────────────────────────────── #}
+          <td class="px-4 py-3 align-top">
+            <div class="flex items-start gap-3">
+              <div class="w-9 h-9 rounded-lg flex items-center justify-center text-sm font-bold shrink-0 mt-0.5 {{ acolor }}">
                 {{ initials }}
               </div>
               <div class="min-w-0">
                 <a href="/customers/{{ c.id }}"
-                   class="tbl-link text-sm font-semibold leading-tight block"
+                   class="text-sm font-semibold text-gray-900 hover:text-brand-700 transition-colors leading-tight block"
                    onclick="event.stopPropagation()">{{ c.company_name }}</a>
-                {% if c.address_line1 %}
-                <p class="text-xs text-gray-400 truncate mt-0.5">{{ c.address_line1 }}</p>
-                {% elif c.contact_name %}
-                <p class="text-xs text-gray-400 truncate mt-0.5 md:hidden">{{ c.contact_name }}</p>
+                {# Contact / location sub-line #}
+                {% if c.contact_name or c.city %}
+                <div class="flex flex-wrap items-center gap-x-1.5 mt-0.5 text-xs text-gray-400">
+                  {% if c.contact_name %}<span>{{ c.contact_name }}</span>{% endif %}
+                  {% if c.contact_name and c.city %}<span>&middot;</span>{% endif %}
+                  {% if c.city %}<span>{{ c.city }}{% if c.state %}, {{ c.state }}{% endif %}</span>{% endif %}
+                </div>
                 {% endif %}
+                {# Phone / email sub-line #}
+                {% if c.phone or c.email %}
+                <div class="flex flex-wrap items-center gap-x-2 mt-0.5 text-xs">
+                  {% if c.phone %}
+                  <a href="tel:{{ c.phone }}" onclick="event.stopPropagation()"
+                     class="text-brand-700 font-mono hover:underline">{{ c.phone }}</a>
+                  {% endif %}
+                  {% if c.phone and c.email %}<span class="text-gray-200">&middot;</span>{% endif %}
+                  {% if c.email %}
+                  <a href="mailto:{{ c.email }}" onclick="event.stopPropagation()"
+                     class="text-gray-400 hover:text-gray-600 truncate max-w-[9rem]">{{ c.email }}</a>
+                  {% endif %}
+                </div>
+                {% endif %}
+                {# Tag pills — terms, pricing tier, discount, tax-exempt #}
+                <div class="flex flex-wrap gap-1 mt-1.5">
+                  {% if c.payment_terms == 'cod' %}
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-orange-50 text-orange-700 border border-orange-200">COD</span>
+                  {% elif c.payment_terms == 'net_30' %}
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200">Net 30</span>
+                  {% elif c.payment_terms == 'net_60' %}
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-50 text-purple-700 border border-purple-200">Net 60</span>
+                  {% endif %}
+                  {% if c.pricing_tier and c.pricing_tier != 'standard' %}
+                    {% if c.pricing_tier == 'wholesale' %}
+                    <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-200">Wholesale</span>
+                    {% elif c.pricing_tier == 'fleet' %}
+                    <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-violet-50 text-violet-700 border border-violet-200">Fleet</span>
+                    {% elif c.pricing_tier == 'dealer' %}
+                    <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-teal-50 text-teal-700 border border-teal-200">Dealer</span>
+                    {% endif %}
+                  {% endif %}
+                  {% if c.discount_pct > 0 %}
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-green-50 text-green-700 border border-green-200">{{ "%.0f"|format(c.discount_pct) }}% off</span>
+                  {% endif %}
+                  {% if c.is_tax_exempt %}
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-gray-50 text-gray-500 border border-gray-200">Tax Exempt</span>
+                  {% endif %}
+                </div>
               </div>
             </div>
           </td>
 
-          {# Contact #}
-          <td class="tbl-td hidden md:table-cell text-gray-500 text-sm">
-            {{ c.contact_name or '—' }}
-          </td>
-
-          {# Phone #}
-          <td class="tbl-td hidden lg:table-cell">
-            {% if c.phone %}
-            <a href="tel:{{ c.phone }}" class="text-sm text-gray-600 hover:text-brand-700 transition-colors font-mono"
-               onclick="event.stopPropagation()">{{ c.phone }}</a>
-            {% else %}
-            <span class="text-gray-400">—</span>
-            {% endif %}
-          </td>
-
-          {# Payment Terms badge #}
-          <td class="tbl-td hidden sm:table-cell">
-            <span class="{% if c.payment_terms == 'cod' %}badge-gray{% elif c.payment_terms == 'net_30' %}badge-blue{% else %}badge-purple{% endif %} uppercase">
-              {{ c.payment_terms.replace('_', ' ') }}
-            </span>
-          </td>
-
-          {# Credit Balance #}
-          <td class="tbl-td-r hidden lg:table-cell">
+          {# ── Column 2: Balance + Last Sale ───────────────────────────── #}
+          <td class="px-4 py-3 text-right align-top hidden sm:table-cell">
             {% if c.credit_balance > 0 %}
-            <span class="text-brand-700 font-semibold">${{ "%.2f"|format(c.credit_balance) }}</span>
+            <span class="text-sm font-semibold text-brand-700">${{ "%.2f"|format(c.credit_balance) }}</span>
+            <p class="text-xs text-gray-400 mt-0.5">credit</p>
             {% else %}
-            <span class="text-gray-300">—</span>
+            <span class="text-sm text-gray-300">—</span>
+            {% endif %}
+            {% set last_sale = last_sale_dates.get(c.id) %}
+            {% if last_sale %}
+            <p class="text-xs text-gray-400 mt-1.5">Last: {{ last_sale }}</p>
             {% endif %}
           </td>
 
-          {# Status #}
-          <td class="tbl-td text-center">
-            {% if c.is_active %}
-            <span class="badge-green">Active</span>
-            {% else %}
-            <span class="badge-gray">Inactive</span>
-            {% endif %}
+          {# ── Column 3: Activity ──────────────────────────────────────── #}
+          <td class="px-4 py-3 align-top hidden md:table-cell">
+            <div class="flex items-center justify-center gap-2">
+              {% if inv_count > 0 %}
+              <a href="/customers/{{ c.id }}" onclick="event.stopPropagation()"
+                 class="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-semibold bg-brand-100 text-brand-700 hover:bg-brand-200 transition-colors"
+                 title="{{ inv_count }} open invoice{{ 's' if inv_count != 1 }}">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+                </svg>
+                {{ inv_count }}
+              </a>
+              {% endif %}
+              {% if q_count > 0 %}
+              <a href="/customers/{{ c.id }}" onclick="event.stopPropagation()"
+                 class="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-semibold bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors"
+                 title="{{ q_count }} open quote{{ 's' if q_count != 1 }}">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+                {{ q_count }}
+              </a>
+              {% endif %}
+              {% if inv_count == 0 and q_count == 0 %}
+              <span class="text-sm text-gray-300">—</span>
+              {% endif %}
+            </div>
           </td>
 
-          {# Hover quick-actions (last column) #}
-          <td class="tbl-td" onclick="event.stopPropagation()">
-            <div class="row-actions">
-              {# + Invoice: direct POST creates draft + redirects to workspace #}
+          {# ── Column 4: Actions (always visible) ──────────────────────── #}
+          <td class="px-4 py-3 text-right align-top" onclick="event.stopPropagation()">
+            <div class="flex items-center justify-end gap-1.5 flex-nowrap">
               <form method="post" action="/invoices/new" class="contents">
                 <input type="hidden" name="customer_id" value="{{ c.id }}">
                 <button type="submit" title="New Invoice"
-                        class="px-2 py-1 text-xs text-gray-500 hover:text-brand-700 hover:bg-brand-50 rounded transition-colors font-medium">
+                        class="px-2.5 py-1.5 text-xs font-medium text-brand-700 bg-brand-50 hover:bg-brand-100 border border-brand-200 rounded-lg transition-colors whitespace-nowrap">
                   + Inv
                 </button>
               </form>
-              {# + Quote: direct POST creates draft quote #}
               <form method="post" action="/quotes/new" class="contents">
                 <input type="hidden" name="customer_id" value="{{ c.id }}">
                 <input type="hidden" name="discount_pct" value="{{ c.discount_pct }}">
                 <input type="hidden" name="validity_days" value="30">
                 <input type="hidden" name="notes" value="">
                 <button type="submit" title="New Quote"
-                        class="px-2 py-1 text-xs text-gray-500 hover:text-amber-700 hover:bg-amber-50 rounded transition-colors font-medium">
+                        class="px-2.5 py-1.5 text-xs font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg transition-colors whitespace-nowrap">
                   + Quote
                 </button>
               </form>
               <a href="/customers/{{ c.id }}"
-                 class="px-2 py-1 text-xs text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors"
+                 class="px-2.5 py-1.5 text-xs font-medium text-gray-500 hover:text-gray-700 bg-white hover:bg-gray-50 border border-gray-200 rounded-lg transition-colors whitespace-nowrap"
                  title="View customer">
                 View →
               </a>

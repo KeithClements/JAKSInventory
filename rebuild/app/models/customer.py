@@ -55,6 +55,10 @@ class Customer(Base):
     # Running credit balance — increases from core returns, credit memos, overpayments.
     # Decreases when applied to an invoice.
     credit_balance: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # Maximum credit extended (0 = no limit enforced in Phase 1; checked in Phase 2).
+    credit_limit: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # Pricing tier: standard | wholesale | fleet | dealer
+    pricing_tier: Mapped[str] = mapped_column(String(20), nullable=False, default="standard")
 
     # ── QBO ───────────────────────────────────────────────────────────────────
     qbo_customer_id: Mapped[str] = mapped_column(String(100), nullable=False, default="")

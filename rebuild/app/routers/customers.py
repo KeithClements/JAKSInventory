@@ -12,9 +12,9 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.constants import CallOutcome, CallType, PaymentTerms, QuoteStatus
+from app.constants import AddressType, CallOutcome, CallType, PaymentTerms, PricingTier, QuoteStatus
 from app.deps import get_db
-from app.models.customer import Customer, CustomerCallLog
+from app.models.customer import Customer, CustomerAddress, CustomerCallLog
 from app.models.invoice import Invoice
 from app.models.quote import Quote
 from app.services.crm_service import CRMService
@@ -70,6 +70,28 @@ def customer_list(request: Request, q: str = "", db: Session = Depends(get_db)):
         open_invoice_counts = {}
         open_quote_counts = {}
 
+    # Bulk last-sale date — one query, no N+1. Returns formatted "Mon DD" strings.
+    if customer_ids:
+        _raw_dates = dict(
+            db.query(Invoice.customer_id, func.max(Invoice.created_at))
+            .filter(
+                Invoice.customer_id.in_(customer_ids),
+                Invoice.status != "void",
+            )
+            .group_by(Invoice.customer_id)
+            .all()
+        )
+        last_sale_dates: dict[int, str] = {}
+        for _cid, _val in _raw_dates.items():
+            if _val is None:
+                continue
+            if hasattr(_val, "strftime"):
+                last_sale_dates[_cid] = _val.strftime("%b %d")
+            else:
+                last_sale_dates[_cid] = str(_val)[:10]
+    else:
+        last_sale_dates = {}
+
     return templates.TemplateResponse(
         "customers/list.html",
         {
@@ -78,6 +100,7 @@ def customer_list(request: Request, q: str = "", db: Session = Depends(get_db)):
             "q": q,
             "open_invoice_counts": open_invoice_counts,
             "open_quote_counts": open_quote_counts,
+            "last_sale_dates": last_sale_dates,
         },
     )
 
@@ -106,6 +129,8 @@ async def customer_create(request: Request, db: Session = Depends(get_db)):
         state=str(form.get("state", "")).strip(),
         zip_code=str(form.get("zip_code", "")).strip(),
         payment_terms=str(form.get("payment_terms", PaymentTerms.COD)),
+        pricing_tier=str(form.get("pricing_tier", "standard")),
+        credit_limit=float(form.get("credit_limit") or 0),
         discount_pct=float(form.get("discount_pct") or 0),
         interest_rate=float(form.get("interest_rate") or 0),
         is_tax_exempt=bool(form.get("is_tax_exempt")),
@@ -134,17 +159,67 @@ async def customer_quick_create(request: Request, db: Session = Depends(get_db))
             '<p class="text-sm text-red-600 font-medium px-5 py-3">Company name is required.</p>',
             status_code=422,
         )
+
+    _action = str(form.get("_action", "save"))
+
+    # Checkboxes: absent = unchecked, "on" = checked
+    is_tax_exempt = form.get("is_tax_exempt") is not None
+    ship_same     = form.get("ship_same") is not None
+
     c = Customer(
         company_name=company_name,
         contact_name=str(form.get("contact_name", "")).strip(),
         phone=str(form.get("phone", "")).strip(),
         email=str(form.get("email", "")).strip(),
         payment_terms=str(form.get("payment_terms", PaymentTerms.NET_30)),
+        pricing_tier=str(form.get("pricing_tier", "standard")),
+        credit_limit=float(form.get("credit_limit") or 0),
+        discount_pct=float(form.get("discount_pct") or 0),
+        is_tax_exempt=is_tax_exempt,
+        tax_exempt_cert_number=str(form.get("tax_exempt_cert_number", "")).strip() or None,
+        address_line1=str(form.get("address_line1", "")).strip(),
+        address_line2=str(form.get("address_line2", "")).strip(),
+        city=str(form.get("city", "")).strip(),
+        state=str(form.get("state", "")).strip(),
+        zip_code=str(form.get("zip_code", "")).strip(),
+        notes=str(form.get("notes", "")).strip(),
     )
     db.add(c)
+    db.flush()  # populate c.id before creating child records
+
+    # Create a separate shipping address when the user unchecked "Same as billing"
+    if not ship_same:
+        ship_street = str(form.get("ship_address_line1", "")).strip()
+        if ship_street:  # only if user actually filled something in
+            ship_addr = CustomerAddress(
+                customer_id=c.id,
+                address_type=AddressType.SHIPPING,
+                is_default_shipping=True,
+                street=ship_street,
+                street_line2=str(form.get("ship_address_line2", "")).strip(),
+                city=str(form.get("ship_city", "")).strip(),
+                state=str(form.get("ship_state", "")).strip(),
+                zip_code=str(form.get("ship_zip_code", "")).strip(),
+            )
+            db.add(ship_addr)
+
     db.commit()
-    # Fire record-created event so the originating field auto-selects this customer.
-    # Also show toast. Slide-over closes via htmx:after-request in the calling page.
+
+    # ── Save & New: return fresh form with in-panel success flash ──────────
+    if _action == "save_new":
+        return templates.TemplateResponse(
+            "customers/_quick_create.html",
+            {"request": request, "success_flash": f"✓ {company_name} saved."},
+        )
+
+    # ── Save & Quote: navigate to customer detail (New Quote button is there) ──
+    if _action == "save_quote":
+        return HTMLResponse(
+            "<span></span>",
+            headers={"HX-Redirect": f"/customers/{c.id}"},
+        )
+
+    # ── Default (Save Customer): fire record-created + show toast ──────────
     _detail = html.escape(json.dumps({"type": "customer", "id": c.id, "label": c.company_name}))
     _name   = html.escape(c.company_name)
     return HTMLResponse(
@@ -610,6 +685,7 @@ def customer_detail(
             "recent_invoices": recent_invoices,
             "open_quotes": open_quotes,
             "payment_terms": list(PaymentTerms),
+            "pricing_tiers": list(PricingTier),
             "call_types": list(CallType),
             "call_outcomes": list(CallOutcome),
         },
@@ -639,7 +715,9 @@ async def customer_update(
     c.state = str(form.get("state", "")).strip()
     c.zip_code = str(form.get("zip_code", "")).strip()
     c.payment_terms = str(form.get("payment_terms", PaymentTerms.COD))
-    c.discount_pct = float(form.get("discount_pct") or 0)
+    c.pricing_tier  = str(form.get("pricing_tier", "standard"))
+    c.credit_limit  = float(form.get("credit_limit") or 0)
+    c.discount_pct  = float(form.get("discount_pct") or 0)
     c.interest_rate = float(form.get("interest_rate") or 0)
     c.is_tax_exempt = bool(form.get("is_tax_exempt"))
     c.tax_exempt_cert_number = str(form.get("tax_exempt_cert_number", "")).strip() or None

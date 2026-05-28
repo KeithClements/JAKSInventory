@@ -1,72 +1,203 @@
 {#
   Quick Create Customer slide-over content.
   Loaded via HTMX into #create-slide-content in base.html.
-  On save: closes slide-over, fires 'record-created' event with {type, id, label}.
+
+  _action variants (set by footer buttons before submit):
+    "save"       → fires record-created event + closes slide (default)
+    "save_new"   → returns fresh form with in-panel success flash
+    "save_quote" → HX-Redirect to /customers/{id} (New Quote is there)
 #}
+
+{% if success_flash %}
+<div class="mx-4 mt-4 rounded-lg bg-green-50 border border-green-200 px-3 py-2 text-xs text-green-700 font-medium flex items-center gap-2"
+     x-data x-init="setTimeout(() => $el.remove(), 3500)">
+  <svg class="w-3.5 h-3.5 shrink-0 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+  </svg>
+  {{ success_flash }}
+</div>
+{% endif %}
+
 <form
   class="flex flex-col flex-1 min-h-0"
   hx-post="/customers/quick-create"
   hx-target="#create-slide-content"
   hx-swap="innerHTML"
+  x-data="{ _action: 'save', taxExempt: false, shipSame: true }"
 >
-  <div class="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+  <input type="hidden" name="_action" :value="_action">
 
-    <div>
-      <label class="block text-sm font-medium text-gray-700 mb-1">
-        Company Name <span class="text-red-500">*</span>
-      </label>
-      <input type="text" name="company_name" required autofocus
-             class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg
-                    focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400"
-             placeholder="e.g. Mike's Diesel Service"/>
+  <div class="flex-1 overflow-y-auto px-4 py-4 space-y-5">
+
+    {# ── Identity ──────────────────────────────────────────────────────────── #}
+    <div class="space-y-3">
+      <div>
+        <label class="form-label">Company Name <span class="text-red-500 normal-case">*</span></label>
+        <input type="text" name="company_name" required autofocus
+               class="form-input" placeholder="e.g. Mike's Diesel Service" />
+      </div>
+      <div>
+        <label class="form-label">Contact Name</label>
+        <input type="text" name="contact_name"
+               class="form-input" placeholder="First Last" />
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="form-label">Phone</label>
+          <input type="tel" name="phone"
+                 class="form-input" placeholder="402-555-0100" />
+        </div>
+        <div>
+          <label class="form-label">Email</label>
+          <input type="email" name="email"
+                 class="form-input" placeholder="name@company.com" />
+        </div>
+      </div>
     </div>
 
+    {# ── Terms & Pricing ───────────────────────────────────────────────────── #}
     <div>
-      <label class="block text-sm font-medium text-gray-700 mb-1">Contact Name</label>
-      <input type="text" name="contact_name"
-             class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg
-                    focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400"
-             placeholder="First Last"/>
+      <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wide border-b border-gray-100 pb-1.5 mb-3">Terms &amp; Pricing</h4>
+      <div class="space-y-3">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="form-label">Payment Terms</label>
+            <select name="payment_terms" class="form-select">
+              <option value="cod">COD</option>
+              <option value="net_30" selected>Net 30</option>
+              <option value="net_60">Net 60</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label">Pricing Tier</label>
+            <select name="pricing_tier" class="form-select">
+              <option value="standard" selected>Standard</option>
+              <option value="wholesale">Wholesale</option>
+              <option value="fleet">Fleet</option>
+              <option value="dealer">Dealer</option>
+            </select>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="form-label">Credit Limit</label>
+            <div class="relative">
+              <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
+              <input type="number" name="credit_limit" value="0" min="0" step="100"
+                     class="form-input pl-6" placeholder="0" />
+            </div>
+          </div>
+          <div>
+            <label class="form-label">Discount %</label>
+            <input type="number" name="discount_pct" value="0" min="0" max="100" step="0.5"
+                   class="form-input" placeholder="0" />
+          </div>
+        </div>
+        <div class="space-y-2">
+          <label class="flex items-center gap-2 cursor-pointer select-none">
+            <input type="checkbox" name="is_tax_exempt" x-model="taxExempt" class="form-checkbox" />
+            <span class="text-sm text-gray-700 font-medium">Tax Exempt</span>
+          </label>
+          <div x-show="taxExempt" x-cloak class="pl-6">
+            <label class="form-label">Certificate #</label>
+            <input type="text" name="tax_exempt_cert_number"
+                   class="form-input" placeholder="Cert number or state ID" />
+          </div>
+        </div>
+      </div>
     </div>
 
+    {# ── Billing Address ───────────────────────────────────────────────────── #}
     <div>
-      <label class="block text-sm font-medium text-gray-700 mb-1">Phone</label>
-      <input type="tel" name="phone"
-             class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg
-                    focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400"
-             placeholder="402-555-0100"/>
+      <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wide border-b border-gray-100 pb-1.5 mb-3">Billing Address</h4>
+      <div class="space-y-3">
+        <div>
+          <label class="form-label">Street</label>
+          <input type="text" name="address_line1"
+                 class="form-input" placeholder="123 Main St" />
+        </div>
+        <div>
+          <label class="form-label">Suite / Unit</label>
+          <input type="text" name="address_line2"
+                 class="form-input" placeholder="Apt, suite, dock…" />
+        </div>
+        <div class="grid grid-cols-5 gap-2">
+          <div class="col-span-2">
+            <label class="form-label">City</label>
+            <input type="text" name="city" class="form-input" placeholder="Omaha" />
+          </div>
+          <div>
+            <label class="form-label">State</label>
+            <input type="text" name="state" maxlength="2" class="form-input uppercase" placeholder="NE" />
+          </div>
+          <div class="col-span-2">
+            <label class="form-label">ZIP</label>
+            <input type="text" name="zip_code" class="form-input" placeholder="68101" />
+          </div>
+        </div>
+      </div>
     </div>
 
+    {# ── Shipping Address ──────────────────────────────────────────────────── #}
     <div>
-      <label class="block text-sm font-medium text-gray-700 mb-1">Email</label>
-      <input type="email" name="email"
-             class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg
-                    focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400"
-             placeholder="name@company.com"/>
+      <div class="flex items-center justify-between border-b border-gray-100 pb-1.5 mb-3">
+        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Shipping Address</h4>
+        <label class="flex items-center gap-1.5 cursor-pointer select-none">
+          <input type="checkbox" name="ship_same" x-model="shipSame" class="form-checkbox" />
+          <span class="text-xs text-gray-500">Same as billing</span>
+        </label>
+      </div>
+      <div x-show="!shipSame" x-cloak class="space-y-3">
+        <div>
+          <label class="form-label">Street</label>
+          <input type="text" name="ship_address_line1"
+                 class="form-input" placeholder="123 Main St" />
+        </div>
+        <div>
+          <label class="form-label">Suite / Unit</label>
+          <input type="text" name="ship_address_line2"
+                 class="form-input" placeholder="Apt, suite, dock…" />
+        </div>
+        <div class="grid grid-cols-5 gap-2">
+          <div class="col-span-2">
+            <label class="form-label">City</label>
+            <input type="text" name="ship_city" class="form-input" placeholder="Omaha" />
+          </div>
+          <div>
+            <label class="form-label">State</label>
+            <input type="text" name="ship_state" maxlength="2" class="form-input uppercase" placeholder="NE" />
+          </div>
+          <div class="col-span-2">
+            <label class="form-label">ZIP</label>
+            <input type="text" name="ship_zip_code" class="form-input" placeholder="68101" />
+          </div>
+        </div>
+      </div>
+      <p x-show="shipSame" class="text-xs text-gray-400 italic">Shipping same as billing.</p>
     </div>
 
+    {# ── Notes ─────────────────────────────────────────────────────────────── #}
     <div>
-      <label class="block text-sm font-medium text-gray-700 mb-1">Payment Terms</label>
-      <select name="payment_terms"
-              class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg
-                     focus:outline-none focus:ring-1 focus:ring-brand-400">
-        <option value="cod">COD</option>
-        <option value="net_30" selected>Net 30</option>
-        <option value="net_60">Net 60</option>
-      </select>
+      <label class="form-label">Notes</label>
+      <textarea name="notes" rows="2" class="form-textarea"
+                placeholder="Anything useful about this customer…"></textarea>
     </div>
 
+  </div>{# /scrollable body #}
+
+  {# ── Footer ────────────────────────────────────────────────────────────── #}
+  <div class="shrink-0 border-t border-gray-200 bg-gray-50/40 px-4 py-3">
+    <div class="flex items-center gap-2">
+      <button type="button" @click="createSlideOpen = false"
+              class="btn-secondary btn-sm">Cancel</button>
+      <div class="flex-1"></div>
+      <button type="submit" @click="_action = 'save_new'"
+              class="btn-secondary btn-sm">Save &amp; New</button>
+      <button type="submit" @click="_action = 'save'"
+              class="btn-primary btn-sm">Save Customer</button>
+      <button type="submit" @click="_action = 'save_quote'"
+              class="btn-primary btn-sm">Save &amp; Quote →</button>
+    </div>
   </div>
 
-  <div class="flex justify-end gap-3 px-5 py-4 border-t border-gray-200 shrink-0">
-    <button type="button"
-            @click="createSlideOpen = false"
-            class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
-      Cancel
-    </button>
-    <button type="submit"
-            class="px-4 py-2 text-sm font-medium text-white bg-brand-700 hover:bg-brand-600 rounded-lg">
-      Save &amp; Select
-    </button>
-  </div>
 </form>

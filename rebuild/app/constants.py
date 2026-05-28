@@ -109,6 +109,13 @@ class PaymentTerms(StrEnum):
     NET_60 = "net_60"
 
 
+class PricingTier(StrEnum):
+    STANDARD  = "standard"
+    WHOLESALE = "wholesale"
+    FLEET     = "fleet"
+    DEALER    = "dealer"
+
+
 class DeliveryType(StrEnum):
     LOCAL_DELIVERY = "local_delivery"
     PICKUP         = "pickup"

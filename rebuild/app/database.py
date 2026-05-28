@@ -128,6 +128,10 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     ("so_lines",      "is_core_line",        "BOOLEAN NOT NULL DEFAULT 0"),
     ("so_lines",      "is_auto_generated",   "BOOLEAN NOT NULL DEFAULT 0"),
     ("so_lines",      "is_locked_to_parent", "BOOLEAN NOT NULL DEFAULT 0"),
+
+    # ── Pricing tier & credit limit ───────────────────────────────────────────
+    ("customers", "credit_limit",  "REAL NOT NULL DEFAULT 0.0"),
+    ("customers", "pricing_tier",  "TEXT NOT NULL DEFAULT 'standard'"),
 ]
 
 
