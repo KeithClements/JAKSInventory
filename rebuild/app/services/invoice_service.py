@@ -604,6 +604,11 @@ class InvoiceService(BaseService):
 
         invoice.status = InvoiceStatus.OPEN
         invoice.qbo_sync_status = QBOSyncStatus.PENDING
+        # Lock immediately on finalize — EOD job skips invoices with locked_at set,
+        # and the workspace lock banner relies on is_locked (locked_at is not None).
+        if not invoice.locked_at:
+            invoice.locked_at = datetime.utcnow()
+            invoice.lock_reason = InvoiceLockReason.FINALIZED
 
         self.audit(
             entity_type=EntityType.INVOICE,
@@ -659,10 +664,15 @@ class InvoiceService(BaseService):
     # ── Locking ───────────────────────────────────────────────────────────────
 
     def lock(self, invoice_id: int, reason: str = InvoiceLockReason.END_OF_DAY) -> None:
-        """Lock an invoice — sticky timestamp; does not change status."""
+        """Lock an invoice — sticky timestamp; does not change status.
+
+        FINALIZED is a provisional lock set at finalize time. Any subsequent
+        specific trigger (PAID, QBO_SYNC, END_OF_DAY, MANUAL) upgrades it so
+        the audit trail records the true business reason.
+        """
         invoice = self._get_or_404(invoice_id)
-        if invoice.is_locked:
-            return
+        if invoice.is_locked and invoice.lock_reason != InvoiceLockReason.FINALIZED:
+            return  # Already locked with a specific reason — idempotent
         invoice.locked_at = datetime.utcnow()
         invoice.lock_reason = reason
         self.audit(
@@ -941,7 +951,7 @@ class InvoiceService(BaseService):
 
         invoice.status = InvoiceStatus.VOID
         invoice.locked_at = datetime.utcnow()
-        invoice.lock_reason = InvoiceLockReason.PAID  # closest existing constant
+        invoice.lock_reason = InvoiceLockReason.VOIDED
 
         self.audit(
             entity_type=EntityType.INVOICE,

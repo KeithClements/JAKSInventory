@@ -346,6 +346,47 @@ async def vendor_denied(
     return RedirectResponse(f"/cores/?ok={url_quote('Vendor denial recorded.')}", status_code=303)
 
 
+# ── Vendor Credit Difference Resolution ───────────────────────────────────────
+
+@router.post("/{core_id}/vendor-credit-difference", response_class=RedirectResponse)
+async def vendor_credit_difference(
+    core_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """
+    Record vendor credit difference: vendor paid less than the core was worth.
+    Accepts actual_credit, resolution (absorbed_by_jaks / charged_to_customer /
+    disputed), and optional notes.
+    """
+    from app.services.core_service import CoreService
+    from app.constants import CoreDenialResolution
+
+    form = await request.form()
+    try:
+        actual_credit = float(form.get("actual_credit") or 0)
+        resolution = str(form.get("resolution", CoreDenialResolution.ABSORBED_BY_JAKS)).strip()
+        notes = str(form.get("notes", "")).strip()
+        CoreService(db, user_id).process_vendor_credit_difference(
+            core_charge_id=core_id,
+            actual_credit=actual_credit,
+            resolution=resolution,
+            notes=notes,
+        )
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(f"/cores/?error={url_quote(str(exc))}", status_code=303)
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error processing vendor credit difference for core_charge %s", core_id)
+        return RedirectResponse(
+            f"/cores/?error={url_quote('Unexpected error — credit difference was not recorded.')}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/cores/?ok={url_quote('Vendor credit difference recorded.')}", status_code=303)
+
+
 # ── Core Slip Print (customer receipt when core returned) ─────────────────────
 
 @router.get("/{core_id}/slip-print", response_class=HTMLResponse)

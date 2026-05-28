@@ -245,3 +245,110 @@ async def payment_reverse(
         )
 
     return RedirectResponse(f"/payments/{payment_id}?saved=1", status_code=303)
+
+
+# ── NSF ───────────────────────────────────────────────────────────────────────
+
+@router.post("/{payment_id}/nsf", response_class=RedirectResponse)
+async def payment_nsf(
+    payment_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """
+    Mark payment as NSF (non-sufficient funds / returned check):
+    reverses the payment and creates an NSF-fee invoice.
+    """
+    from app.services.payment_service import PaymentService
+
+    form = await request.form()
+    try:
+        nsf_fee = float(str(form.get("nsf_fee", "35")).strip() or "35")
+    except (ValueError, TypeError):
+        nsf_fee = 35.0
+
+    try:
+        PaymentService(db, current_user_id=user_id).process_nsf(payment_id, nsf_fee)
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/payments/{payment_id}?error={url_quote(str(exc))}",
+            status_code=303,
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error processing NSF for payment %s", payment_id)
+        return RedirectResponse(
+            f"/payments/{payment_id}?error={url_quote('Unexpected error — NSF was not processed.')}",
+            status_code=303,
+        )
+
+    return RedirectResponse(f"/payments/{payment_id}?saved=1", status_code=303)
+
+
+# ── Allocate ──────────────────────────────────────────────────────────────────
+
+@router.post("/{payment_id}/allocate", response_class=RedirectResponse)
+async def payment_allocate(
+    payment_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Manually allocate (part of) a payment to a specific invoice."""
+    from app.services.payment_service import PaymentService
+
+    form = await request.form()
+    try:
+        invoice_id = int(str(form.get("invoice_id", "0")).strip())
+        amount = float(str(form.get("amount", "0")).strip())
+        if invoice_id <= 0 or amount <= 0:
+            raise ValueError("invoice_id and amount are required")
+        PaymentService(db, current_user_id=user_id).allocate(payment_id, invoice_id, amount)
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/payments/{payment_id}?error={url_quote(str(exc))}",
+            status_code=303,
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error allocating payment %s", payment_id)
+        return RedirectResponse(
+            f"/payments/{payment_id}?error={url_quote('Unexpected error — allocation was not recorded.')}",
+            status_code=303,
+        )
+
+    return RedirectResponse(f"/payments/{payment_id}?saved=1", status_code=303)
+
+
+# ── De-allocate ───────────────────────────────────────────────────────────────
+
+@router.post("/{payment_id}/allocations/{alloc_id}/remove", response_class=RedirectResponse)
+def payment_deallocate(
+    payment_id: int,
+    alloc_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Remove a specific allocation — returns the amount to the payment's unallocated pool."""
+    from app.services.payment_service import PaymentService
+
+    try:
+        PaymentService(db, current_user_id=user_id).deallocate(alloc_id)
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/payments/{payment_id}?error={url_quote(str(exc))}",
+            status_code=303,
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error removing allocation %s from payment %s", alloc_id, payment_id)
+        return RedirectResponse(
+            f"/payments/{payment_id}?error={url_quote('Unexpected error — allocation was not removed.')}",
+            status_code=303,
+        )
+
+    return RedirectResponse(f"/payments/{payment_id}?saved=1", status_code=303)

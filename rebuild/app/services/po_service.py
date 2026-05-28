@@ -181,6 +181,7 @@ class POService(BaseService):
         from app.services.inventory_service import InventoryService
         inv_svc = InventoryService(self.db, self.current_user_id)
 
+        po = None  # populated on first processed line; used for status update after loop
         for po_line_id, qty in po_line_quantities.items():
             if qty <= 0:
                 continue
@@ -189,15 +190,17 @@ class POService(BaseService):
             if po_line is None:
                 raise ValueError(f"POLine {po_line_id} not found")
 
-            po = po_line.po
+            po = po_line.po  # all lines belong to the same PO; captured for post-loop status update
             is_drop_ship = po.is_drop_ship
 
-            # Record receipt line
+            # Record receipt line (with optional per-line condition notes)
+            condition_notes_map: dict[int, str] = data.get("condition_notes_map") or {}
             receipt_line = POReceiptLine(
                 receipt_id=receipt.id,
                 po_id=po_line.po_id,
                 po_line_id=po_line_id,
                 qty_received=qty,
+                condition_notes=condition_notes_map.get(po_line_id),
             )
             self.db.add(receipt_line)
 
@@ -253,8 +256,10 @@ class POService(BaseService):
                 # R7 — FIFO-allocate to linked SO lines before excess goes to stock
                 self._allocate_to_linked_sos(po_line_id, qty, po.po_number)
 
-            # Mark PO status: PARTIAL or RECEIVED.
-            # PO closes when qty_received + qty_cancelled >= qty_ordered on all lines.
+        # Mark PO status once after all lines are processed.
+        # Evaluated here (not inside the loop) to avoid redundant DB writes
+        # on multi-line receipts. PO closes when every line is fully settled.
+        if po is not None:
             self.db.flush()
             all_settled = all(
                 (ln.qty_received + ln.qty_cancelled) >= ln.qty_ordered

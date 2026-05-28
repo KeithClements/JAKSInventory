@@ -250,6 +250,8 @@ class InvoiceLockReason(StrEnum):
     QBO_PUSHED = "qbo_pushed"  # R8 — alias for QBO_SYNC, clearer naming
     PAID       = "paid"
     MANUAL     = "manual"
+    FINALIZED  = "finalized"   # set immediately when invoice is finalised to OPEN
+    VOIDED     = "voided"      # set when invoice is voided
 
 
 class LineType(StrEnum):

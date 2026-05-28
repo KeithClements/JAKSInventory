@@ -21,6 +21,12 @@
   ✓ Payment updated successfully.
 </div>
 {% endif %}
+{% set ok_msg = request.query_params.get('ok', '') %}
+{% if ok_msg %}
+<div class="mb-4 px-4 py-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">
+  ✓ {{ ok_msg }}
+</div>
+{% endif %}
 
 <div class="max-w-4xl space-y-4">
 
@@ -137,6 +143,7 @@
             <th class="tbl-th-r">Applied</th>
             <th class="tbl-th">Invoice Status</th>
             <th class="tbl-th">Applied At</th>
+            <th class="tbl-th w-16"></th>
           </tr>
         </thead>
         <tbody>
@@ -158,6 +165,18 @@
               </span>
             </td>
             <td class="tbl-td text-xs text-gray-400">{{ alloc.allocated_at.strftime('%m/%d/%Y') }}</td>
+            <td class="tbl-td text-right">
+              {% if payment.status != PaymentStatus.REVERSED %}
+              <form method="post"
+                    action="/payments/{{ payment.id }}/allocations/{{ alloc.id }}/remove"
+                    onsubmit="return confirm('Remove this allocation? The invoice balance will be restored.')">
+                <button type="submit"
+                        class="text-xs text-red-500 hover:text-red-700 font-medium transition-colors">
+                  Remove
+                </button>
+              </form>
+              {% endif %}
+            </td>
           </tr>
           {% endfor %}
         </tbody>
@@ -173,6 +192,103 @@
     </div>
     {% endif %}
   </div>
+
+  {# ── Apply unapplied balance to an invoice ── #}
+  {% if payment.amount_unallocated > 0.005 and payment.status != PaymentStatus.REVERSED %}
+  <div class="card border-brand-100">
+    <div class="card-header">
+      <div>
+        <h3 class="card-title">Apply Unapplied Balance</h3>
+        <p class="text-xs text-gray-400 mt-0.5">
+          <span class="font-semibold text-amber-600">${{ '%.2f' % payment.amount_unallocated }}</span>
+          unallocated — apply to an open invoice below.
+        </p>
+      </div>
+    </div>
+    {% if open_invoices %}
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">Invoice</th>
+            <th class="tbl-th-r">Balance Due</th>
+            <th class="tbl-th-r w-32">Apply Amount</th>
+            <th class="tbl-th w-20"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for inv in open_invoices %}
+          {% if inv.balance_due > 0.001 %}
+          <tr class="tbl-row">
+            <td class="tbl-td">
+              <a href="/invoices/{{ inv.id }}" class="font-mono text-xs font-semibold link">
+                {{ inv.invoice_number }}
+              </a>
+              {% if inv.customer_po_number %}
+              <span class="ml-1 text-xs text-gray-400">PO {{ inv.customer_po_number }}</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td-r font-medium tabular-nums text-amber-600">
+              ${{ '%.2f' % inv.balance_due }}
+            </td>
+            <td class="tbl-td-r">
+              <form method="post" action="/payments/{{ payment.id }}/allocate"
+                    class="flex items-center gap-1 justify-end">
+                <input type="hidden" name="invoice_id" value="{{ inv.id }}" />
+                <input type="number" name="amount" step="0.01" min="0.01"
+                       max="{{ '%.2f' % [payment.amount_unallocated, inv.balance_due] | min }}"
+                       value="{{ '%.2f' % [payment.amount_unallocated, inv.balance_due] | min }}"
+                       class="w-24 text-right text-sm border border-gray-300 rounded px-1.5 py-1
+                              focus:outline-none focus:ring-1 focus:ring-brand-400" />
+                <button type="submit" class="btn-primary btn-sm whitespace-nowrap">Apply</button>
+              </form>
+            </td>
+          </tr>
+          {% endif %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="tbl-empty">No open invoices for this customer.</div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {# ── NSF action ── #}
+  {% if payment.status == PaymentStatus.APPLIED and not payment.nsf_fee %}
+  <div class="card border-red-100" x-data="{ open: false }">
+    <div class="card-header">
+      <div>
+        <h3 class="card-title">Mark NSF / Returned Check</h3>
+        <p class="text-xs text-gray-400 mt-0.5">
+          Reverses the payment, reopens invoices, and records the NSF fee.
+        </p>
+      </div>
+      <button type="button" @click="open = !open"
+              class="rounded-lg border border-red-200 px-3 py-1.5 text-sm font-medium text-red-600
+                     hover:bg-red-50 transition-colors">
+        Mark NSF…
+      </button>
+    </div>
+    <div x-show="open" x-cloak class="card-body border-t border-gray-100">
+      <form method="post" action="/payments/{{ payment.id }}/nsf" class="flex items-end gap-3">
+        <div>
+          <label class="form-label">NSF Fee</label>
+          <div class="relative">
+            <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
+            <input type="number" name="nsf_fee" step="0.01" min="0" value="35.00"
+                   class="form-input w-28 pl-6 text-right" />
+          </div>
+        </div>
+        <div class="flex gap-2 pb-0.5">
+          <button type="submit" class="btn-danger">Confirm NSF</button>
+          <button type="button" @click="open = false" class="btn-secondary btn-sm">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endif %}
 
   {# ── Reverse action ── #}
   {% if payment.status == PaymentStatus.APPLIED %}

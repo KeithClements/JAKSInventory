@@ -187,9 +187,14 @@
   {# ── Lines section ── #}
   {% include "purchase_orders/_lines_section.html" %}
 
+  {# ── 3-Way Match (PO · Receipt · Bill) ── #}
+  {% if match and match.has_activity %}
+  {% include "purchase_orders/_match_panel.html" %}
+  {% endif %}
+
   {# ── Receive Goods ── #}
   {% if can_receive and unreceived_lines %}
-  <div class="card">
+  <div id="receive" class="card scroll-mt-20">
     <div class="card-header">
       <h2 class="card-title">Receive Goods</h2>
       <span class="text-xs text-gray-400">{{ unreceived_lines | length }} line{{ 's' if unreceived_lines | length != 1 }} outstanding</span>
@@ -207,9 +212,15 @@
               {{ line.description or (line.product.title if line.product else '—') }}
             </span>
             <span class="text-xs text-gray-400 shrink-0">{{ line.qty_outstanding }} outstanding</span>
-            <input type="number" name="recv_{{ line.id }}"
-                   min="0" max="{{ line.qty_outstanding }}" value="{{ line.qty_outstanding }}"
-                   class="w-20 form-input text-right shrink-0" />
+            <div class="flex flex-col shrink-0 gap-1">
+              <input type="number" name="recv_{{ line.id }}"
+                     min="0" max="{{ line.qty_outstanding }}" value="{{ line.qty_outstanding }}"
+                     class="w-20 form-input text-right" />
+              <input type="text" name="condition_{{ line.id }}"
+                     placeholder="Condition notes…"
+                     class="w-44 text-xs border border-gray-200 rounded px-2 py-1 text-gray-500
+                            focus:outline-none focus:ring-1 focus:ring-brand-400" />
+            </div>
             {# Cancel outstanding qty — posts separately from the receive form #}
             <button type="button"
                     class="text-xs text-gray-400 hover:text-red-600 underline shrink-0"
