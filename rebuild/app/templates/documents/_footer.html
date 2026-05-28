@@ -1,0 +1,16 @@
+{# Document footer — small centered company line + optional disclaimer.
+   Required vars:
+     company  (dict) — name/phone/email
+   Optional vars:
+     footer_message (str) — short tagline, e.g. "Thank you for your business"
+     disclaimer    (str)  — small print, shown on its own line above the footer
+#}
+{% if disclaimer %}
+<p style="margin-top:14px;font-size:8pt;color:#aaa;font-style:italic;">{{ disclaimer }}</p>
+{% endif %}
+<div class="doc-footer">
+  {{ footer_message or "Thank you for your business" }}
+  {% if company.name %} &nbsp;·&nbsp; {{ company.name }}{% endif %}
+  {% if company.phone %} &nbsp;·&nbsp; {{ company.phone }}{% endif %}
+  {% if company.email %} &nbsp;·&nbsp; {{ company.email }}{% endif %}
+</div>

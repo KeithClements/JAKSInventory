@@ -1,0 +1,14 @@
+PARTS REQUEST
+Reference: {ri_number}
+
+Part Description:    {part_description}
+OEM Part Number:     {oem_number}
+Engine Serial (ESN): {esn}
+Engine Model:        {engine_model}
+VIN:                 {vin}
+
+Please advise on availability and price.
+Thank you
+
+JAKS Diesel Parts
+{company_phone}

@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}Outstanding Cores — JAKS Inventory{% endblock %}
+{% block heading %}Outstanding Customer Cores{% endblock %}
+
+{% block content %}
+{% set active_report = 'outstanding-cores' %}
+<div class="max-w-6xl space-y-4">
+  {% include "reports/_nav.html" %}
+
+  <div class="flex items-center justify-between">
+    <p class="text-xs text-gray-400">As of {{ today.strftime('%B %d, %Y') }} · Open and partial cores owed back from customers</p>
+    <button type="button" class="btn-secondary btn-sm" disabled title="Coming soon">
+      Export CSV
+    </button>
+  </div>
+
+  {# ── Summary tiles ─────────────────────────────────────────────────────── #}
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div class="stat-card-brand">
+      <p class="stat-label">Outstanding $</p>
+      <p class="stat-value text-brand-700">${{ '%.2f' % totals.amount }}</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Open Cores</p>
+      <p class="stat-value">{{ totals.core_count }}</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Units Owed</p>
+      <p class="stat-value">{{ totals.qty_outstanding }}</p>
+    </div>
+    <div class="stat-card {% if totals.overdue_count > 0 %}stat-card-red{% endif %}">
+      <p class="stat-label {% if totals.overdue_count > 0 %}text-red-700{% endif %}">Overdue</p>
+      <p class="stat-value {% if totals.overdue_count > 0 %}text-red-700{% else %}text-gray-400{% endif %}">
+        {{ totals.overdue_count }}
+      </p>
+      <p class="stat-sub">past return deadline</p>
+    </div>
+  </div>
+
+  {# ── Core table ───────────────────────────────────────────────────────── #}
+  {% if rows %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Open Customer Cores</h2>
+      <span class="text-xs text-gray-400">{{ rows | length }} core{{ 's' if rows | length != 1 }}</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">Customer</th>
+            <th class="tbl-th">SKU</th>
+            <th class="tbl-th">Part</th>
+            <th class="tbl-th">Invoice</th>
+            <th class="tbl-th">Core Slip</th>
+            <th class="tbl-th-r">Qty</th>
+            <th class="tbl-th-r">Amount</th>
+            <th class="tbl-th-r">Age</th>
+            <th class="tbl-th">Deadline</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr class="tbl-row {% if row.overdue %}bg-red-50/40{% endif %}">
+            <td class="tbl-td font-medium text-gray-900">
+              {% if row.customer %}
+              <a href="/customers/{{ row.customer.id }}" class="tbl-link text-sm">{{ row.customer.company_name }}</a>
+              {% else %}
+              <span class="text-gray-400 italic">—</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td">
+              {% if row.product %}
+              <a href="/products/{{ row.product.id }}" class="font-mono text-xs text-brand-700 hover:underline">{{ row.sku }}</a>
+              {% else %}
+              <span class="font-mono text-xs text-gray-400">{{ row.sku }}</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td text-sm text-gray-700 max-w-xs">
+              <span class="truncate block">{{ row.description }}</span>
+            </td>
+            <td class="tbl-td font-mono text-xs">
+              {% if row.invoice_number %}
+              <span class="text-brand-700">{{ row.invoice_number }}</span>
+              {% else %}
+              <span class="text-gray-300">—</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td font-mono text-xs">
+              {% if row.core_slip_number %}
+              <span class="text-brand-700">{{ row.core_slip_number }}</span>
+              {% else %}
+              <span class="text-gray-300">—</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td-r font-medium tabular-nums">{{ row.qty_outstanding }}</td>
+            <td class="tbl-td-r font-semibold text-brand-700 tabular-nums">${{ '%.2f' % row.amount }}</td>
+            <td class="tbl-td-r tabular-nums {% if row.age_days > 60 %}text-red-600 font-medium{% elif row.age_days > 30 %}text-amber-600{% else %}text-gray-600{% endif %}">
+              {{ row.age_days }}d
+            </td>
+            <td class="tbl-td">
+              {% if row.return_deadline %}
+              <span class="{% if row.overdue %}text-red-600 font-medium{% else %}text-gray-700{% endif %}">
+                {{ (row.return_deadline.date() if row.return_deadline.__class__.__name__ == 'datetime' else row.return_deadline).strftime('%m/%d/%Y') }}
+              </span>
+              {% if row.overdue %}<span class="ml-1 text-xs text-red-500 font-semibold">OVERDUE</span>{% endif %}
+              {% else %}
+              <span class="text-gray-300">—</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="border-t-2 border-gray-200 bg-gray-50">
+          <tr>
+            <td colspan="5" class="px-4 py-3 text-sm font-bold text-gray-700">Totals</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-gray-700 tabular-nums">{{ totals.qty_outstanding }}</td>
+            <td class="px-4 py-3 text-right text-lg font-bold text-brand-700 tabular-nums">${{ '%.2f' % totals.amount }}</td>
+            <td colspan="2"></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="card flex flex-col items-center justify-center py-16">
+    <svg class="w-12 h-12 text-green-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    </svg>
+    <p class="text-gray-500 font-medium">No outstanding cores</p>
+    <p class="text-gray-400 text-sm mt-1">All customer cores are returned or closed.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

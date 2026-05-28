@@ -3,6 +3,9 @@
 {% block heading %}{{ claim.claim_number }}{% endblock %}
 
 {% block header_actions %}
+  <a href="/warranty/{{ claim.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
+  <a href="/warranty/{{ claim.id }}/pdf" class="btn-secondary btn-sm">PDF</a>
+
   {# Submit to vendor — DRAFT only #}
   {% if claim.status == WarrantyStatus.DRAFT %}
   <form method="post" action="/warranty/{{ claim.id }}/submit">

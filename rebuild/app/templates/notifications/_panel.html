@@ -1,0 +1,60 @@
+{#
+  notifications/_panel.html
+  Partial for the header bell dropdown body.
+  Context: notifications (list[Notification])
+#}
+{% if not notifications %}
+<div class="flex flex-col items-center justify-center py-10 text-center px-4">
+  <svg class="w-8 h-8 text-gray-200 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+          d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+  </svg>
+  <p class="text-sm text-gray-400">No new notifications</p>
+</div>
+{% else %}
+<div class="divide-y divide-gray-100">
+  {% for n in notifications %}
+  <div class="flex gap-3 px-4 py-3 hover:bg-gray-50 transition-colors group">
+
+    {# Severity dot #}
+    <div class="mt-1.5 shrink-0">
+      {% if n.severity in ('critical', 'error') %}
+        <span class="inline-block w-2 h-2 rounded-full bg-red-500"></span>
+      {% elif n.severity == 'warning' %}
+        <span class="inline-block w-2 h-2 rounded-full bg-amber-400"></span>
+      {% else %}
+        <span class="inline-block w-2 h-2 rounded-full bg-blue-400"></span>
+      {% endif %}
+    </div>
+
+    {# Message + meta #}
+    <div class="flex-1 min-w-0">
+      <p class="text-sm text-gray-800 leading-snug">{{ n.message }}</p>
+      <div class="flex items-center gap-3 mt-1 flex-wrap">
+        <span class="text-xs text-gray-400">{{ n.created_at.strftime('%b %d, %I:%M %p') }}</span>
+        {% if n.action_url %}
+        <a href="{{ n.action_url }}"
+           class="text-xs text-brand-700 hover:underline font-medium"
+           onclick="document.body._x_dataStack?.[0] && (document.body._x_dataStack[0].notifOpen = false)">
+          View →
+        </a>
+        {% endif %}
+      </div>
+    </div>
+
+    {# Acknowledge button #}
+    <button
+      hx-post="/notifications/{{ n.id }}/acknowledge"
+      hx-target="#notif-panel-body"
+      hx-swap="innerHTML"
+      title="Mark as read"
+      class="opacity-0 group-hover:opacity-100 shrink-0 self-start mt-0.5
+             text-gray-300 hover:text-gray-600 transition-opacity focus:opacity-100">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+      </svg>
+    </button>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}

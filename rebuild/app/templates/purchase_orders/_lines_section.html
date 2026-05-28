@@ -155,21 +155,43 @@
                 core = $event.detail.core || '';
                 $nextTick(() => $el.querySelector('[name=qty_ordered]').focus());
               "
+              @record-created.window="
+                if ($event.detail.type === 'product') {
+                  productId = String($event.detail.id);
+                  sku = $event.detail.part_number || '';
+                  desc = $event.detail.description || desc;
+                  cost = $event.detail.current_cost != null ? $event.detail.current_cost : cost;
+                  core = '';
+                  $nextTick(() => $el.querySelector('[name=qty_ordered]').focus());
+                }
+              "
               class="border-t-2 border-dashed border-gray-100">
             <td class="tbl-td">
-              <div class="relative">
-                <input type="text" placeholder="Search SKU…"
-                       :value="sku"
-                       @input.debounce.300ms="
-                         sku = $event.target.value;
-                         productId = '';
-                         htmx.ajax('GET',
-                           '/purchase-orders/_/product-search?q=' + encodeURIComponent($event.target.value),
-                           {target: '#po-product-results', swap: 'innerHTML'});
-                       "
-                       class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs
-                              focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
-                <div id="po-product-results" class="absolute left-0 top-full z-20 w-72 bg-white shadow-lg rounded-lg border border-gray-100 mt-0.5 empty:hidden"></div>
+              <div class="relative flex gap-1 items-start">
+                <div class="flex-1 min-w-0">
+                  <input type="text" placeholder="Search SKU…"
+                         :value="sku"
+                         @input.debounce.300ms="
+                           sku = $event.target.value;
+                           productId = '';
+                           htmx.ajax('GET',
+                             '/purchase-orders/_/product-search?q=' + encodeURIComponent($event.target.value),
+                             {target: '#po-product-results', swap: 'innerHTML'});
+                         "
+                         class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs
+                                focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+                  <div id="po-product-results" class="absolute left-0 top-full z-20 w-72 bg-white shadow-lg rounded-lg border border-gray-100 mt-0.5 empty:hidden"></div>
+                </div>
+                <button type="button"
+                        hx-get="/products/quick-create-form"
+                        hx-target="#create-slide-content"
+                        hx-swap="innerHTML"
+                        @click="$dispatch('open-create-slide', { title: 'New Product' })"
+                        title="Create a new product and add it to this line"
+                        class="shrink-0 px-1.5 py-1 text-xs font-medium text-brand-700 border border-brand-200
+                               rounded bg-brand-50 hover:bg-brand-100 transition-colors">
+                  + New
+                </button>
               </div>
             </td>
             <td class="tbl-td">

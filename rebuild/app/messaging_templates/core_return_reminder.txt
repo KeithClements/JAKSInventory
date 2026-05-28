@@ -1,0 +1,10 @@
+Hi {customer_name},
+
+Just a reminder: we have a core return on file for you (Core Slip {core_slip_number}).
+
+You have {days_remaining} day(s) remaining to return the core for your credit.
+
+Please drop it off at your convenience. Thank you!
+
+JAKS Diesel Parts
+{company_phone}

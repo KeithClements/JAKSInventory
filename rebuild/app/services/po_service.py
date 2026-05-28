@@ -208,6 +208,15 @@ class POService(BaseService):
             if po_line.qty_received > po_line.qty_ordered:
                 po_line.over_received = True
                 po_line.over_received_qty = po_line.qty_received - po_line.qty_ordered
+                from app.services.notification_service import NotificationService
+                NotificationService.build_po_over_receipt(
+                    self.db,
+                    po_id=po.id,
+                    po_number=po.po_number,
+                    sku=po_line.description or str(po_line.product_id),
+                    qty_ordered=po_line.qty_ordered,
+                    qty_received=po_line.qty_received,
+                )
 
             # Update product inventory cache + ledger (stock receipts only)
             if not is_drop_ship and po_line.product_id:
@@ -372,6 +381,64 @@ class POService(BaseService):
         )
         self.db.commit()
 
+    def cancel_line(self, po_line_id: int, reason: str = "") -> POLine:
+        """
+        Cancel the outstanding (unreceived) qty on a single PO line.
+
+        Sets qty_cancelled = qty_ordered - qty_received so the line counts as
+        settled for the "all received?" check. Reduces product.qty_on_order by
+        the cancelled qty. If all PO lines are now settled, marks the PO RECEIVED.
+        """
+        po_line = self.db.query(POLine).filter(POLine.id == po_line_id).first()
+        if po_line is None:
+            raise ValueError(f"POLine {po_line_id} not found")
+
+        po = po_line.po
+        if po.status not in (POStatus.SENT, POStatus.PARTIAL):
+            raise ValueError(
+                f"Cannot cancel a line on a PO with status '{po.status}'. "
+                f"Only SENT or PARTIAL POs allow line cancellation."
+            )
+
+        outstanding = po_line.qty_ordered - po_line.qty_received - po_line.qty_cancelled
+        if outstanding <= 0:
+            raise ValueError("Line has no outstanding qty to cancel.")
+
+        # Cancel the outstanding qty
+        po_line.qty_cancelled += outstanding
+        po_line.cancel_reason = reason or "cancelled"
+        po_line.cancelled_at = datetime.utcnow()
+        po_line.cancelled_by_id = self.current_user_id
+
+        # Reduce on-order count for the product
+        if po_line.product_id:
+            product = self.db.query(Product).filter(Product.id == po_line.product_id).first()
+            if product:
+                product.qty_on_order = max(0, product.qty_on_order - outstanding)
+
+        # Check if all lines are now settled
+        self.db.flush()
+        all_settled = all(
+            (ln.qty_received + ln.qty_cancelled) >= ln.qty_ordered
+            for ln in po.lines
+        )
+        if all_settled:
+            po.status = POStatus.RECEIVED
+
+        self.audit(
+            entity_type=EntityType.PURCHASE_ORDER,
+            entity_id=po.id,
+            action=AuditAction.UPDATED,
+            new_value={
+                "action": "cancel_line",
+                "po_line_id": po_line_id,
+                "qty_cancelled": outstanding,
+                "reason": reason,
+            },
+        )
+        self.db.commit()
+        return po_line
+
     def get_unreceived_lines(self, po_id: int) -> list[POLine]:
         """Return PO lines with qty_received < qty_ordered."""
         return (
@@ -439,6 +506,22 @@ class POService(BaseService):
         bill.total_amount = round(total, 2)
         bill.status = VendorBillStatus.DISCREPANCY if has_discrepancy else VendorBillStatus.APPROVED
 
+        if has_discrepancy:
+            po = self.db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first() if po_id else None
+            po_number = po.po_number if po else str(po_id)
+            from app.services.notification_service import NotificationService
+            NotificationService.build_bill_discrepancy(
+                self.db,
+                bill_id=bill.id,
+                po_id=po_id or 0,
+                po_number=po_number,
+                detail="billed qty exceeds received qty on one or more lines",
+            )
+        elif po_id:
+            po = self.db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()
+            if po:
+                self._advance_po_billed_if_done(po)
+
         self.audit(
             entity_type=EntityType.PURCHASE_ORDER,
             entity_id=po_id or 0,
@@ -448,6 +531,16 @@ class POService(BaseService):
         self.db.commit()
         return bill
 
+    def _advance_po_billed_if_done(self, po: PurchaseOrder) -> None:
+        """Advance PO to BILLED when every received line has been fully billed."""
+        if po.status not in (POStatus.RECEIVED, POStatus.PARTIAL):
+            return
+        received_lines = [ln for ln in po.lines if ln.qty_received > 0]
+        if not received_lines:
+            return
+        if all(ln.qty_billed >= ln.qty_received for ln in received_lines):
+            po.status = POStatus.BILLED
+
     def approve_bill(self, bill_id: int) -> None:
         """Approve vendor bill after discrepancy review. Marks for QBO sync."""
         bill = self.db.query(VendorBill).filter(VendorBill.id == bill_id).first()
@@ -455,6 +548,10 @@ class POService(BaseService):
             raise ValueError(f"VendorBill {bill_id} not found")
         bill.status = VendorBillStatus.APPROVED
         bill.qbo_sync_status = QBOSyncStatus.PENDING
+        if bill.po_id:
+            po = self.db.query(PurchaseOrder).filter(PurchaseOrder.id == bill.po_id).first()
+            if po:
+                self._advance_po_billed_if_done(po)
         self.db.commit()
 
     def get_bills_pending_approval(self) -> list[VendorBill]:
@@ -486,9 +583,10 @@ class POService(BaseService):
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
-    def save_header(self, po_id: int, data: dict) -> None:
+    def save_header(self, po_id: int, data: dict, submitted_updated_at: str | None = None) -> None:
         """Autosave PO header fields. Blocked only on BILLED/CANCELLED."""
         po = self._get_po_or_404(po_id)
+        self.check_version(po, submitted_updated_at)
         if po.status in (POStatus.BILLED, POStatus.CANCELLED):
             raise ValueError(f"Cannot edit a {po.status} PO")
         for field in ("notes", "internal_notes", "vendor_confirmation_number"):

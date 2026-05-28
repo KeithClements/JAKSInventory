@@ -306,13 +306,15 @@
     logCallOpen: false,
     createSlideOpen: false,
     createSlideTitle: '',
+    cmdKOpen: false,
+    notifOpen: false,
     toggleSidebar() {
       this.sidebarCollapsed = !this.sidebarCollapsed;
       localStorage.setItem('sidebarCollapsed', this.sidebarCollapsed ? '1' : '0');
     }
   }"
-  @keydown.window="if ((event.ctrlKey || event.metaKey) && event.key === 'k') { event.preventDefault(); $refs.searchInput?.focus(); $refs.searchInput?.select(); }"
-  @keydown.escape.window="logCallOpen = false; createSlideOpen = false; sidebarOpen = false"
+  @keydown.window="if ((event.ctrlKey || event.metaKey) && event.key === 'k') { event.preventDefault(); cmdKOpen = true; }"
+  @keydown.escape.window="logCallOpen = false; createSlideOpen = false; sidebarOpen = false; cmdKOpen = false; notifOpen = false"
   @open-create-slide.window="
     createSlideOpen = true;
     if ($event.detail && $event.detail.title) createSlideTitle = $event.detail.title;
@@ -586,40 +588,22 @@
 
       <div class="flex-1 min-w-0"></div>
 
-      {# Global search — wider, more prominent #}
-      <div x-data="{ open: false }" @click.away="open = false" class="relative hidden sm:block w-52 md:w-72 lg:w-[380px] shrink-0">
-        <div class="relative">
-          <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
-               fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
-          </svg>
-          <input
-            type="search"
-            name="q"
-            placeholder="Search customers, invoices, parts… (Ctrl+K)"
-            autocomplete="off"
-            x-ref="searchInput"
-            class="w-full pl-9 pr-3 py-2 text-sm border border-stone-200 rounded-lg bg-stone-50/80
-                   placeholder:text-gray-400 text-gray-800
-                   focus:bg-white focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-200
-                   transition-all duration-150"
-            hx-get="/search"
-            hx-trigger="input changed delay:200ms"
-            hx-target="#global-search-results"
-            @focus="open = true"
-            @input="open = $el.value.length >= 2"
-            @keydown.escape="open = false; $el.value = ''; $el.blur()"
-          />
-        </div>
-        <div
-          id="global-search-results"
-          x-show="open"
-          x-cloak
-          class="absolute top-full left-0 right-0 mt-1.5 bg-white border border-gray-200 rounded-xl
-                 shadow-xl overflow-hidden z-50 max-h-96 overflow-y-auto"
-        ></div>
-      </div>
+      {# Global search — opens Ctrl+K overlay #}
+      <button type="button"
+              @click="cmdKOpen = true"
+              class="hidden sm:flex items-center gap-2 w-52 md:w-72 lg:w-[380px] shrink-0
+                     px-3 py-2 text-sm border border-stone-200 rounded-lg bg-stone-50/80
+                     text-gray-400 hover:bg-white hover:border-brand-300 hover:text-gray-500
+                     transition-all duration-150 text-left cursor-text">
+        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
+        </svg>
+        <span class="flex-1 truncate">Search customers, invoices, parts…</span>
+        <kbd class="hidden lg:inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-gray-100 text-gray-400 text-xs rounded font-mono shrink-0">
+          Ctrl+K
+        </kbd>
+      </button>
 
       {# Live / sync status indicator #}
       <div class="hidden xl:flex items-center gap-1.5 text-xs text-gray-400 shrink-0 select-none">
@@ -628,14 +612,49 @@
       </div>
 
       {# Notifications bell #}
-      <button class="relative hidden md:flex items-center justify-center w-9 h-9 text-gray-400
-                     hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors shrink-0"
-              title="Notifications">
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
-                d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
-        </svg>
-      </button>
+      <div class="relative hidden md:flex" @click.away="notifOpen = false">
+        <button
+          @click="notifOpen = !notifOpen"
+          class="relative flex items-center justify-center w-9 h-9 text-gray-400
+                 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors shrink-0"
+          title="Notifications">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
+                  d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+          </svg>
+          {# Count badge — HTMX-loaded on page load, swaps itself #}
+          <span id="notif-count"
+                hx-get="/notifications/count"
+                hx-trigger="load"
+                hx-swap="outerHTML"></span>
+        </button>
+
+        {# Dropdown panel #}
+        <div x-show="notifOpen" x-cloak
+             class="absolute top-full right-0 mt-2 w-80 bg-white rounded-xl shadow-xl
+                    border border-gray-200 z-50 overflow-hidden"
+             x-transition:enter="transition ease-out duration-100"
+             x-transition:enter-start="opacity-0 -translate-y-1 scale-95"
+             x-transition:enter-end="opacity-100 translate-y-0 scale-100"
+             x-transition:leave="transition ease-in duration-75"
+             x-transition:leave-start="opacity-100 translate-y-0 scale-100"
+             x-transition:leave-end="opacity-0 -translate-y-1 scale-95">
+          <div class="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+            <h3 class="text-sm font-semibold text-gray-800">Notifications</h3>
+            <button @click="notifOpen = false"
+                    class="text-xs text-gray-400 hover:text-gray-600 transition-colors">
+              Close
+            </button>
+          </div>
+          <div id="notif-panel-body"
+               class="max-h-96 overflow-y-auto"
+               hx-get="/notifications/panel"
+               hx-trigger="load"
+               hx-swap="innerHTML">
+            <div class="px-4 py-8 text-center text-sm text-gray-400">Loading…</div>
+          </div>
+        </div>
+      </div>
 
       {# Log Call button #}
       <button
@@ -952,6 +971,208 @@
     </div>
   </div>
 </template>
+
+
+{# ════════════════════════════════════════════════════════════════════════════
+   CTRL+K SEARCH OVERLAY
+   Opens via: Ctrl+K shortcut, clicking the header search bar.
+   Searches all 7 entity types via /search/overlay JSON endpoint.
+════════════════════════════════════════════════════════════════════════════ #}
+
+{# Backdrop #}
+<div
+  x-show="cmdKOpen"
+  @click="cmdKOpen = false"
+  class="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm"
+  x-cloak
+  x-transition:enter="transition ease-out duration-100"
+  x-transition:enter-start="opacity-0"
+  x-transition:enter-end="opacity-100"
+  x-transition:leave="transition ease-in duration-75"
+  x-transition:leave-start="opacity-100"
+  x-transition:leave-end="opacity-0"
+></div>
+
+{# Search panel #}
+<div
+  x-show="cmdKOpen"
+  x-cloak
+  x-data="{
+    q: '',
+    groups: [],
+    allItems: [],
+    cursor: -1,
+    loading: false,
+    _timer: null,
+    onInput() {
+      clearTimeout(this._timer);
+      this.cursor = -1;
+      if (this.q.length < 2) { this.groups = []; this.allItems = []; return; }
+      this._timer = setTimeout(() => this.doSearch(), 200);
+    },
+    async doSearch() {
+      this.loading = true;
+      try {
+        const r = await fetch('/search/overlay?q=' + encodeURIComponent(this.q));
+        const data = await r.json();
+        this.groups = data.groups || [];
+        this.allItems = this.groups.flatMap(g => g.items);
+        this.cursor = this.allItems.length > 0 ? 0 : -1;
+      } catch(e) {
+        this.groups = []; this.allItems = [];
+      } finally {
+        this.loading = false;
+      }
+    },
+    nav(dir) {
+      if (!this.allItems.length) return;
+      this.cursor = (this.cursor + dir + this.allItems.length) % this.allItems.length;
+      this.$nextTick(() => {
+        const el = document.querySelector('.cmdk-item[data-active=true]');
+        if (el) el.scrollIntoView({ block: 'nearest' });
+      });
+    },
+    go() {
+      if (this.cursor >= 0 && this.allItems[this.cursor]) {
+        window.location.href = this.allItems[this.cursor].url;
+      }
+    },
+    flatIdx(gi, ii) {
+      let n = 0;
+      for (let i = 0; i < gi; i++) n += this.groups[i].items.length;
+      return n + ii;
+    }
+  }"
+  x-effect="if (cmdKOpen) { q = ''; groups = []; allItems = []; cursor = -1; loading = false; $nextTick(() => $refs.cmdKInput?.focus()); }"
+  @keydown.up.window.prevent="if (cmdKOpen) nav(-1)"
+  @keydown.down.window.prevent="if (cmdKOpen) nav(1)"
+  @keydown.enter.window="if (cmdKOpen) { $event.preventDefault(); go(); }"
+  class="fixed left-1/2 -translate-x-1/2 top-[10vh] z-[61] w-full max-w-2xl px-4"
+  x-transition:enter="transition ease-out duration-150"
+  x-transition:enter-start="opacity-0 -translate-y-3 scale-[0.98]"
+  x-transition:enter-end="opacity-100 translate-y-0 scale-100"
+  x-transition:leave="transition ease-in duration-100"
+  x-transition:leave-start="opacity-100 translate-y-0 scale-100"
+  x-transition:leave-end="opacity-0 -translate-y-2 scale-[0.98]"
+>
+  <div class="bg-white rounded-2xl shadow-2xl border border-gray-200 flex flex-col overflow-hidden" style="max-height: 72vh;">
+
+    {# Search input row #}
+    <div class="flex items-center gap-3 px-4 py-3.5 border-b border-gray-100 shrink-0">
+      <svg class="w-5 h-5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
+      </svg>
+      <input
+        type="text"
+        x-ref="cmdKInput"
+        x-model="q"
+        @input="onInput()"
+        @keydown.escape.prevent="cmdKOpen = false"
+        @keydown.up.prevent="nav(-1)"
+        @keydown.down.prevent="nav(1)"
+        @keydown.enter.prevent="go()"
+        @click.stop
+        placeholder="Search products, customers, invoices, quotes, POs…"
+        autocomplete="off"
+        class="flex-1 text-base bg-transparent placeholder-gray-400 text-gray-800 focus:outline-none"
+      />
+      <kbd @click="cmdKOpen = false"
+           class="cursor-pointer hidden sm:inline-flex items-center px-2 py-0.5 bg-gray-100 hover:bg-gray-200
+                  text-gray-500 text-xs rounded font-mono transition-colors select-none">
+        Esc
+      </kbd>
+    </div>
+
+    {# Results area #}
+    <div class="overflow-y-auto flex-1">
+
+      {# Empty — no query yet #}
+      <template x-if="q.length < 2 && !loading">
+        <div class="flex flex-col items-center justify-center py-14 text-center">
+          <svg class="w-9 h-9 mb-3 text-gray-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
+          </svg>
+          <p class="text-sm text-gray-400">Type to search across all records</p>
+          <p class="text-xs text-gray-300 mt-1">Products, customers, invoices, quotes, SOs, vendors, POs</p>
+        </div>
+      </template>
+
+      {# Loading spinner #}
+      <template x-if="loading">
+        <div class="flex items-center justify-center gap-2 py-12 text-sm text-gray-400">
+          <svg class="animate-spin h-4 w-4 text-brand-700" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+          </svg>
+          Searching…
+        </div>
+      </template>
+
+      {# No results #}
+      <template x-if="!loading && q.length >= 2 && allItems.length === 0">
+        <div class="py-14 text-center">
+          <p class="text-sm text-gray-400">No results for
+            <span class="font-medium text-gray-600" x-text="'&quot;' + q + '&quot;'"></span>
+          </p>
+        </div>
+      </template>
+
+      {# Grouped results #}
+      <template x-if="allItems.length > 0 && !loading">
+        <div>
+          <template x-for="(group, gi) in groups" :key="group.key">
+            <div>
+              <div class="px-3 py-1.5 text-xs font-semibold text-gray-400 uppercase tracking-wider bg-gray-50/80 sticky top-0 border-b border-gray-100/60"
+                   x-text="group.label"></div>
+              <template x-for="(item, ii) in group.items" :key="item.url">
+                <a
+                  :href="item.url"
+                  class="cmdk-item flex items-center gap-3 px-4 py-2.5 border-b border-gray-50 last:border-b-0 transition-colors"
+                  :class="flatIdx(gi, ii) === cursor ? 'bg-brand-50' : 'hover:bg-gray-50'"
+                  :data-active="flatIdx(gi, ii) === cursor"
+                  @mouseenter="cursor = flatIdx(gi, ii)"
+                  @click.stop="cmdKOpen = false"
+                >
+                  <div class="flex-1 min-w-0">
+                    <p class="text-xs font-bold truncate"
+                       :class="flatIdx(gi, ii) === cursor ? 'text-brand-700' : 'text-gray-700 font-mono'"
+                       x-text="item.label"></p>
+                    <p class="text-xs text-gray-400 truncate" x-text="item.sub" x-show="item.sub"></p>
+                  </div>
+                  <template x-if="item.badge">
+                    <span class="text-xs text-amber-600 shrink-0 max-w-[6rem] truncate" x-text="item.badge"></span>
+                  </template>
+                  <span x-show="item.meta" class="text-xs shrink-0 tabular-nums font-medium"
+                        :class="item.meta_class" x-text="item.meta"></span>
+                </a>
+              </template>
+            </div>
+          </template>
+        </div>
+      </template>
+
+    </div>
+
+    {# Footer keyboard hints #}
+    <div x-show="allItems.length > 0"
+         class="border-t border-gray-100 px-4 py-2 flex items-center gap-4 text-xs text-gray-400 bg-gray-50/50 shrink-0 select-none">
+      <span class="flex items-center gap-1">
+        <kbd class="font-mono bg-white border border-gray-200 px-1.5 py-0.5 rounded text-gray-500 shadow-sm">↑↓</kbd>
+        navigate
+      </span>
+      <span class="flex items-center gap-1">
+        <kbd class="font-mono bg-white border border-gray-200 px-1.5 py-0.5 rounded text-gray-500 shadow-sm">↵</kbd>
+        open
+      </span>
+      <span class="flex items-center gap-1">
+        <kbd class="font-mono bg-white border border-gray-200 px-1.5 py-0.5 rounded text-gray-500 shadow-sm">Esc</kbd>
+        close
+      </span>
+    </div>
+
+  </div>
+</div>
+
 
 </body>
 </html>

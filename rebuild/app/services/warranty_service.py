@@ -198,6 +198,13 @@ class WarrantyService(BaseService):
                 "total_credit": claim.total_credit_amount,
             },
         )
+        from app.services.notification_service import NotificationService
+        NotificationService.build_warranty_decision(
+            self.db,
+            claim_id=claim_id,
+            claim_number=claim.claim_number,
+            decision=decision,
+        )
         self.db.commit()
 
     # ── Customer Resolution ───────────────────────────────────────────────────

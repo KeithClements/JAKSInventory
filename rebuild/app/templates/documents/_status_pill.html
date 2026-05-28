@@ -1,0 +1,26 @@
+{# Status pill — renders inside the doc-dates corner.
+   Required vars:
+     status_class (str) — one of: draft, sent, open, partial, received, paid,
+                          billed, closed, cancelled, void, info, pending, shipped.
+                          Unknown values render with the neutral `info` style.
+     status_label (str) — display text (e.g. "Submitted to Vendor").
+#}
+{% set _known = ['draft','sent','open','partial','received','paid','billed',
+                 'closed','cancelled','void','info','pending','shipped',
+                 'verbal_order','submitted_to_vendor','vendor_approved',
+                 'vendor_denied','customer_credited','customer_notified',
+                 'hold','reserved'] %}
+{# Aliases: long status names map to nearest known color #}
+{% set _alias = {
+    'verbal_order': 'draft',
+    'submitted_to_vendor': 'sent',
+    'vendor_approved': 'received',
+    'vendor_denied': 'cancelled',
+    'customer_credited': 'closed',
+    'customer_notified': 'closed',
+    'hold': 'partial',
+    'reserved': 'open',
+} %}
+{% set status_class = _alias.get(status_class, status_class) %}
+{% set _cls = status_class if status_class in _known else 'info' %}
+<span class="doc-status status-{{ _cls }}">{{ status_label }}</span>

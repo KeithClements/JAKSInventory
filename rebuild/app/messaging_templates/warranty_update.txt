@@ -1,0 +1,12 @@
+Hi {customer_name},
+
+We have an update on your warranty claim ({claim_number}).
+
+Status: {status}
+
+{vendor_decision_notes}
+
+Please contact us if you have any questions.
+
+JAKS Diesel Parts
+{company_phone}

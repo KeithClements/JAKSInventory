@@ -1,0 +1,329 @@
+{# Shared print/PDF stylesheet for all document templates.
+   Include inside <head>: {% include "documents/_styles.html" %}
+#}
+<style>
+  /* ── Reset ─────────────────────────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  /* ── Base ──────────────────────────────────────────────────────────────── */
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 Helvetica, Arial, sans-serif;
+    font-size: 10.5pt;
+    color: #111;
+    background: #e8eaf0;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* ── Screen: white page card ───────────────────────────────────────────── */
+  .page-shell {
+    max-width: 8.5in;
+    margin: 0.4in auto 0.8in;
+    background: #fff;
+    box-shadow: 0 2px 32px rgba(0,0,0,.14);
+    padding: 0.65in 0.75in 0.75in;
+  }
+
+  /* ── Screen-only controls (Print + Close) ──────────────────────────────── */
+  .controls {
+    position: fixed; top: 16px; right: 16px;
+    display: flex; gap: 8px; z-index: 9999;
+  }
+  .btn {
+    padding: 8px 18px; border: none; border-radius: 8px;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+    line-height: 1.4;
+  }
+  .btn-primary { background: #4b5320; color: #fff; }
+  .btn-primary:hover { background: #3b4119; }
+  .btn-secondary { background: #e5e7eb; color: #374151; }
+  .btn-secondary:hover { background: #d1d5db; }
+
+  /* ── Document header (company left | doc info right) ──────────────────── */
+  .doc-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding-bottom: 18px;
+    border-bottom: 3px solid #4b5320;
+    margin-bottom: 22px;
+  }
+  .co-name {
+    font-size: 21pt;
+    font-weight: 800;
+    color: #4b5320;
+    letter-spacing: -0.5px;
+    line-height: 1.05;
+  }
+  .co-info {
+    margin-top: 5px;
+    font-size: 8.5pt;
+    color: #6b7280;
+    line-height: 1.8;
+  }
+  .doc-right { text-align: right; }
+  .doc-label {
+    font-size: 7pt; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.13em;
+    color: #9ca3af;
+  }
+  .doc-number {
+    font-size: 15pt; font-weight: 700;
+    color: #4b5320; margin: 2px 0;
+    font-family: monospace;
+  }
+  .doc-dates {
+    font-size: 8.5pt;
+    color: #6b7280;
+    line-height: 1.85;
+  }
+  .doc-dates strong { color: #374151; }
+  .doc-dates .overdue { color: #dc2626; font-weight: 600; }
+
+  /* Inline status pill — corner of every document */
+  .doc-status {
+    display: inline-block;
+    margin-top: 4px;
+    font-size: 7pt; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.09em;
+    padding: 2px 8px; border-radius: 999px;
+    border: 1px solid currentColor;
+    background: #fff;
+  }
+  .status-draft     { color: #92400e; background: #fef3c7; border-color: #fcd34d; }
+  .status-sent      { color: #1e40af; background: #dbeafe; border-color: #bfdbfe; }
+  .status-open      { color: #1e40af; background: #dbeafe; border-color: #bfdbfe; }
+  .status-partial   { color: #92400e; background: #fef3c7; border-color: #fcd34d; }
+  .status-received  { color: #065f46; background: #d1fae5; border-color: #6ee7b7; }
+  .status-paid      { color: #065f46; background: #d1fae5; border-color: #6ee7b7; }
+  .status-billed    { color: #065f46; background: #d1fae5; border-color: #6ee7b7; }
+  .status-closed    { color: #374151; background: #e5e7eb; border-color: #9ca3af; }
+  .status-cancelled { color: #b91c1c; background: #fee2e2; border-color: #fca5a5; }
+  .status-void      { color: #b91c1c; background: #fee2e2; border-color: #fca5a5; }
+  .status-info      { color: #1e3a8a; background: #eff6ff; border-color: #bfdbfe; }
+  .status-pending   { color: #92400e; background: #fef3c7; border-color: #fcd34d; }
+  .status-shipped   { color: #1e40af; background: #dbeafe; border-color: #bfdbfe; }
+
+  /* ── Party block (Bill To / Ship To / Vendor / From / etc.) ───────────── */
+  .party-row {
+    display: flex;
+    gap: 36px;
+    margin-bottom: 22px;
+  }
+  .party-block { flex: 1; }
+  .party-label {
+    font-size: 7pt; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.11em;
+    color: #9ca3af; margin-bottom: 4px;
+  }
+  .party-name { font-size: 12pt; font-weight: 700; color: #111; }
+  .party-detail { font-size: 8.5pt; color: #555; line-height: 1.75; margin-top: 2px; }
+  .party-anon  { font-size: 9pt; color: #9ca3af; font-style: italic; margin-top: 2px; }
+
+  /* ── Reference fields ─────────────────────────────────────────────────── */
+  .ref-block { font-size: 8.5pt; color: #555; line-height: 1.85; }
+  .ref-row { display: flex; gap: 8px; }
+  .ref-label {
+    color: #9ca3af; width: 110px; flex-shrink: 0;
+    font-size: 7.5pt; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  .ref-val { font-family: monospace; color: #374151; }
+
+  /* ── Lines table ──────────────────────────────────────────────────────── */
+  table.lines {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 9.5pt;
+  }
+  /* thead repeats on every printed page; tfoot would too if used */
+  table.lines thead { display: table-header-group; }
+  table.lines tfoot { display: table-footer-group; }
+  table.lines thead tr { background: #4b5320; color: #fff; }
+  table.lines thead th {
+    padding: 7px 8px;
+    font-size: 7pt; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    border: none;
+  }
+  table.lines thead th.lft { text-align: left; }
+  table.lines thead th.rgt { text-align: right; }
+  table.lines thead th.ctr { text-align: center; }
+
+  table.lines tbody tr {
+    border-bottom: 1px solid #f0f0f0;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  table.lines tbody tr:last-child { border-bottom: 2px solid #e5e7eb; }
+  table.lines tbody tr.even-row td { background: #fafafa; }
+  table.lines tbody tr.core-row td { background: #fffbeb; }
+  table.lines tbody td { padding: 8px 8px; vertical-align: top; }
+
+  .td-num { text-align: center; color: #c0c0c0; font-size: 8pt; }
+  .td-rgt { text-align: right; }
+  .td-ctr { text-align: center; }
+  .td-disc { text-align: right; color: #9ca3af; }
+  .td-total { text-align: right; font-weight: 600; }
+
+  /* Part number — shown small below description */
+  .part-num {
+    display: block;
+    font-family: monospace;
+    font-size: 7.5pt;
+    color: #aaa;
+    margin-top: 1px;
+  }
+
+  /* Badge */
+  .badge {
+    display: inline-block;
+    font-size: 6.5pt; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.07em;
+    padding: 1px 4px; border-radius: 3px;
+    vertical-align: middle; margin-right: 4px;
+  }
+  .badge-core     { background: #fef3c7; color: #92400e; }
+  .badge-warranty { background: #dbeafe; color: #1e40af; }
+  .badge-stock    { background: #ecfdf5; color: #065f46; }
+  .badge-bo       { background: #fef3c7; color: #92400e; }
+  .badge-special  { background: #ede9fe; color: #5b21b6; }
+  .badge-dropship { background: #cffafe; color: #155e75; }
+
+  /* Empty row */
+  .td-empty {
+    text-align: center; padding: 18px;
+    color: #aaa; font-style: italic;
+  }
+
+  /* ── Totals block ─────────────────────────────────────────────────────── */
+  .totals-wrap {
+    display: flex;
+    justify-content: flex-end;
+    border-top: 2px solid #e5e7eb;
+    padding-top: 10px;
+    margin-bottom: 18px;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  .totals-inner { width: 260px; }
+  .t-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 3px 0;
+    font-size: 9.5pt;
+  }
+  .t-row .lbl { color: #666; }
+  .t-row .val { font-weight: 500; font-variant-numeric: tabular-nums; }
+  .t-row.disc-row .lbl, .t-row.disc-row .val { color: #dc2626; }
+  .t-row.paid-row .lbl, .t-row.paid-row .val { color: #059669; font-weight: 600; }
+  .t-row.balance-row .lbl, .t-row.balance-row .val { color: #d97706; font-weight: 700; }
+  .t-row.grand {
+    border-top: 2px solid #4b5320;
+    margin-top: 6px; padding-top: 8px;
+    font-size: 12.5pt; font-weight: 700;
+    color: #4b5320;
+  }
+  .t-divider { border: none; border-top: 1px solid #e5e7eb; margin: 4px 0; }
+
+  /* ── Section heading / notes / instructions ───────────────────────────── */
+  .sec-label {
+    font-size: 7pt; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.11em;
+    color: #9ca3af; margin-bottom: 5px;
+  }
+  .notes-section {
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid #e5e7eb;
+  }
+  .notes-body { font-size: 9pt; color: #444; line-height: 1.65; white-space: pre-wrap; }
+
+  .callout {
+    margin-top: 16px;
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-size: 9pt;
+    line-height: 1.55;
+  }
+  .callout-amber { background: #fefce8; border: 1px solid #fde047; color: #713f12; }
+  .callout-blue  { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e3a8a; }
+  .callout-green { background: #f0fdf4; border: 1px solid #86efac; color: #166534; }
+  .callout-red   { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; }
+  .callout strong { color: inherit; }
+
+  /* ── Signature block ──────────────────────────────────────────────────── */
+  .sig-row {
+    display: flex;
+    gap: 36px;
+    margin-top: 28px;
+  }
+  .sig-cell { flex: 1; }
+  .sig-line {
+    margin-top: 28px;
+    border-top: 1px solid #999;
+    padding-top: 3px;
+    font-size: 8pt;
+    color: #888;
+  }
+
+  /* ── Status / watermark ───────────────────────────────────────────────── */
+  .doc-watermark {
+    text-align: center;
+    padding: 6px 0 10px;
+    margin-bottom: 14px;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  .watermark-badge {
+    display: inline-block;
+    font-size: 11pt; font-weight: 800;
+    text-transform: uppercase; letter-spacing: 0.15em;
+    padding: 5px 24px; border-radius: 6px;
+    border-width: 2px; border-style: solid;
+  }
+  .wm-void   { background: #fee2e2; color: #b91c1c; border-color: #fca5a5; }
+  .wm-draft  { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
+  .wm-closed { background: #e5e7eb; color: #374151; border-color: #9ca3af; }
+
+  /* ── Sig row should not split across pages ──────────────────────────── */
+  .sig-row { page-break-inside: avoid; break-inside: avoid; }
+
+  /* ── Callouts shouldn't split ────────────────────────────────────────── */
+  .callout { page-break-inside: avoid; break-inside: avoid; }
+
+  /* ── Footer ───────────────────────────────────────────────────────────── */
+  .doc-footer {
+    margin-top: 36px;
+    padding-top: 12px;
+    border-top: 1px solid #e5e7eb;
+    text-align: center;
+    font-size: 7.5pt;
+    color: #bbb;
+  }
+
+  /* ── Print overrides ──────────────────────────────────────────────────── */
+  @media print {
+    @page { size: letter portrait; margin: 0.6in 0.65in 0.75in 0.65in; }
+    body  { background: none; }
+    .page-shell {
+      max-width: none; margin: 0; padding: 0;
+      box-shadow: none;
+    }
+    .controls { display: none !important; }
+
+    /* Watermarks: lighter on physical paper to save ink and feel less
+       aggressive. Screen keeps full saturation. */
+    .watermark-badge { opacity: 0.75; }
+
+    /* Force pretty borders/background colors to render in print */
+    table.lines thead tr { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .doc-status { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .callout { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+    /* Keep the footer from running into content; small top margin guard */
+    .doc-footer { margin-top: 24px; }
+  }
+</style>

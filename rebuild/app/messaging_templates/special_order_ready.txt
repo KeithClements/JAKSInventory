@@ -1,0 +1,11 @@
+Hi {customer_name},
+
+Good news — your special order part is in!
+
+Part: {part_description}
+Ready date: {ready_date}
+
+Give us a call to arrange pickup or delivery.
+
+JAKS Diesel Parts
+{company_phone}

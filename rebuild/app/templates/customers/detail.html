@@ -40,6 +40,9 @@
       <span class="ml-1 badge-gray">{{ customer.call_logs|length }}</span>
       {% endif %}
     </button>
+    <a href="/customers/{{ customer.id }}/communications" class="tab-inactive">
+      Communications
+    </a>
   </div>
 
   {# ═══════════════════════════════════════════════════════════════════════ #}

@@ -1,0 +1,14 @@
+PARTS AVAILABILITY INQUIRY
+Reference: {ri_number}
+
+Part Description:    {part_description}
+OEM/Cross Reference: {oem_number}
+ESN:                 {esn}
+Engine Model:        {engine_model}
+Urgency:             {urgency}
+
+Please confirm availability, lead time, and pricing.
+Thank you
+
+JAKS Diesel Parts
+{company_phone}

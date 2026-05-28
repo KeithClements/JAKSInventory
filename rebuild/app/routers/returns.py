@@ -25,6 +25,11 @@ from app.models.customer import Customer
 from app.models.invoice import Invoice
 from app.models.product import Product
 from app.models.returns import ReturnAuthorization
+from app.services.document_render import (
+    customer_address_lines,
+    get_company_dict,
+    render_pdf_or_fallback,
+)
 
 log = logging.getLogger(__name__)
 
@@ -341,3 +346,52 @@ def ra_close(
     else:
         msg = "Return closed."
     return RedirectResponse(f"/returns/{ra_id}?ok={url_quote(msg)}", status_code=303)
+
+
+# ── Print / PDF ───────────────────────────────────────────────────────────────
+
+def _ra_print_context(ra: ReturnAuthorization, db: Session) -> dict:
+    company = get_company_dict(db)
+    customer_addr_lines_ = customer_address_lines(ra.customer)
+
+    invoice = None
+    if ra.invoice_id:
+        invoice = db.query(Invoice).filter(Invoice.id == ra.invoice_id).first()
+
+    line_subtotal = round(sum(ln.unit_price * ln.qty for ln in ra.lines), 2)
+    total_restock = round(sum(ln.restocking_fee for ln in ra.lines), 2)
+
+    return {
+        "ra": ra,
+        "invoice": invoice,
+        "company": company,
+        "customer_addr_lines": customer_addr_lines_,
+        "line_subtotal": line_subtotal,
+        "total_restock": total_restock,
+    }
+
+
+@router.get("/{ra_id}/print", response_class=HTMLResponse)
+def ra_print(ra_id: int, request: Request, db: Session = Depends(get_db)):
+    ra = db.query(ReturnAuthorization).filter(ReturnAuthorization.id == ra_id).first()
+    if ra is None:
+        return RedirectResponse("/returns/", status_code=303)
+    ctx = _ra_print_context(ra, db)
+    ctx["request"] = request
+    return templates.TemplateResponse("returns/print.html", ctx)
+
+
+@router.get("/{ra_id}/pdf")
+def ra_pdf(ra_id: int, request: Request, db: Session = Depends(get_db)):
+    ra = db.query(ReturnAuthorization).filter(ReturnAuthorization.id == ra_id).first()
+    if ra is None:
+        return RedirectResponse("/returns/", status_code=303)
+    ctx = _ra_print_context(ra, db)
+    return render_pdf_or_fallback(
+        request=request,
+        templates=templates,
+        template_name="returns/print.html",
+        context=ctx,
+        fallback_print_url=f"/returns/{ra_id}/print",
+        download_filename=ra.ra_number,
+    )

@@ -667,6 +667,23 @@ class SalesOrderService(BaseService):
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
+    def update_header(self, so_id: int, data: dict, submitted_updated_at: str | None = None) -> SalesOrder:
+        """Update editable header fields on an open/partial SO."""
+        so = self._get_so_or_404(so_id)
+        self.check_version(so, submitted_updated_at)
+        if so.status == SOStatus.CANCELLED:
+            raise ValueError("Cannot edit a cancelled sales order")
+        for field in (
+            "customer_po_number", "customer_job_number", "esn",
+            "engine_manufacturer", "engine_model",
+            "notes", "internal_notes", "payment_mode",
+        ):
+            if field in data:
+                val = str(data[field]).strip()
+                setattr(so, field, val or None if field in ("customer_po_number", "customer_job_number", "esn") else val)
+        self.db.commit()
+        return so
+
     def _get_so_or_404(self, so_id: int) -> SalesOrder:
         so = self.db.query(SalesOrder).filter(SalesOrder.id == so_id).first()
         if so is None:

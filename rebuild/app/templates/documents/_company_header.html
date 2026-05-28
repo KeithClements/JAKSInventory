@@ -1,0 +1,15 @@
+{# Company header — left side of doc-header.
+   Required vars:
+     company.name   (str) — company name (e.g. "JAKS Parts")
+     company.address(str, optional) — multi-line OK
+     company.phone  (str, optional)
+     company.email  (str, optional)
+#}
+<div>
+  <div class="co-name">{{ company.name or "JAKS Parts" }}</div>
+  <div class="co-info">
+    {% if company.address %}{{ company.address }}<br>{% endif %}
+    {% if company.phone %}Tel:&nbsp;{{ company.phone }}{% if company.email %}&nbsp;&nbsp;·&nbsp;&nbsp;{% endif %}{% endif %}
+    {% if company.email %}{{ company.email }}{% endif %}
+  </div>
+</div>

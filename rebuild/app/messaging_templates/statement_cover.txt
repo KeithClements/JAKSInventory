@@ -1,0 +1,10 @@
+Hi {customer_name},
+
+Please find enclosed your account statement for {statement_period}.
+
+If you have any questions about any items on this statement, please don't hesitate to call us.
+
+Thank you for your business.
+
+JAKS Diesel Parts
+{company_phone}

@@ -108,42 +108,37 @@ class ResearchService(BaseService):
 
     def generate_dealer_request_template(self, item: ResearchItem) -> str:
         """Returns plain-text template for copy/paste into a dealer email or message."""
-        lines = [
-            "PARTS REQUEST",
-            f"Reference: {item.ri_number}",
-            "",
-        ]
-        if item.search_term:
-            lines.append(f"Part Description: {item.search_term}")
-        if item.oem_number:
-            lines.append(f"OEM Part Number:  {item.oem_number}")
-        if item.esn:
-            lines.append(f"Engine Serial Number (ESN): {item.esn}")
-        if item.engine_model:
-            lines.append(f"Engine Model: {item.engine_model}")
-        if item.vin:
-            lines.append(f"VIN: {item.vin}")
-        lines += ["", "Please advise on availability and price.", "Thank you"]
-        return "\n".join(lines)
+        from app.services.messaging_service import MessagingService
+        from app.settings_utils import get_setting_value_db
+        rendered = MessagingService(self.db, self.current_user_id).render_template(
+            "dealer_parts_request",
+            {
+                "ri_number": item.ri_number or "",
+                "part_description": item.search_term or "",
+                "oem_number": item.oem_number or "",
+                "esn": item.esn or "",
+                "engine_model": item.engine_model or "",
+                "vin": item.vin or "",
+                "company_phone": get_setting_value_db(self.db, "company_phone", ""),
+            },
+        )
+        return rendered.body
 
     def generate_vendor_request_template(self, item: ResearchItem) -> str:
         """Returns plain-text template for copy/paste into a vendor email or message."""
-        lines = [
-            "PARTS AVAILABILITY INQUIRY",
-            f"Reference: {item.ri_number}",
-            "",
-        ]
-        if item.search_term:
-            lines.append(f"Part Description: {item.search_term}")
-        if item.oem_number:
-            lines.append(f"OEM/Cross Reference: {item.oem_number}")
-        if item.esn:
-            lines.append(f"ESN: {item.esn}")
-        if item.engine_model:
-            lines.append(f"Engine: {item.engine_model}")
-        lines += [
-            "",
-            "Please confirm availability, lead time, and pricing.",
-            "Thank you",
-        ]
-        return "\n".join(lines)
+        from app.services.messaging_service import MessagingService
+        from app.settings_utils import get_setting_value_db
+        urgency = getattr(item, "urgency", "") or ""
+        rendered = MessagingService(self.db, self.current_user_id).render_template(
+            "vendor_parts_request",
+            {
+                "ri_number": item.ri_number or "",
+                "part_description": item.search_term or "",
+                "oem_number": item.oem_number or "",
+                "esn": item.esn or "",
+                "engine_model": item.engine_model or "",
+                "urgency": urgency,
+                "company_phone": get_setting_value_db(self.db, "company_phone", ""),
+            },
+        )
+        return rendered.body

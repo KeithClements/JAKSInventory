@@ -9,7 +9,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import extract, func
 from sqlalchemy.orm import Session, joinedload
 
-from app.constants import CoreStatus, InvoiceStatus, QuoteOutcome, QuoteStatus, SOStatus
+from app.constants import CoreStatus, InvoiceStatus, POStatus, QuoteOutcome, QuoteStatus, SOStatus
 from app.deps import get_db
 from app.models.invoice import Invoice, InvoiceLine, Payment
 from app.models.quote import Quote, QuoteLine, SalesOrder
@@ -61,10 +61,12 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         .scalar() or 0
     )
 
-    # Open POs (draft / verbal_order / sent / partial)
+    # Open POs — same statuses as ReportService so dashboard and reports page agree
     open_pos = (
         db.query(func.count(PurchaseOrder.id))
-        .filter(PurchaseOrder.status.in_(["draft", "verbal_order", "sent", "partial"]))
+        .filter(PurchaseOrder.status.in_([
+            POStatus.VERBAL_ORDER, POStatus.DRAFT, POStatus.SENT, POStatus.PARTIAL,
+        ]))
         .scalar() or 0
     )
 

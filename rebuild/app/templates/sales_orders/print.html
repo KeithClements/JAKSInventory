@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ so.so_number }} — {{ so.customer.company_name if so.customer else "Sales Order" }}</title>
+  {% include "documents/_styles.html" %}
+</head>
+<body>
+
+{% include "documents/_controls.html" %}
+
+<div class="page-shell">
+
+  {# ── Watermark ─────────────────────────────────────────────────────── #}
+  {% if so.status == 'cancelled' %}
+  <div class="doc-watermark"><span class="watermark-badge wm-void">Cancelled</span></div>
+  {% elif so.status == 'closed' %}
+  <div class="doc-watermark"><span class="watermark-badge wm-closed">Closed</span></div>
+  {% endif %}
+
+  {# ── Header ────────────────────────────────────────────────────────── #}
+  <div class="doc-header">
+    {% include "documents/_company_header.html" %}
+    <div class="doc-right">
+      <div class="doc-label">Sales Order</div>
+      <div class="doc-number">{{ so.so_number }}</div>
+      <div class="doc-dates">
+        <strong>Date:</strong> {{ so.created_at.strftime('%B %d, %Y') }}<br>
+        {% if so.customer and so.customer.payment_terms %}
+          <strong>Terms:</strong> {{ so.customer.payment_terms | upper }}<br>
+        {% endif %}
+        {% if so.quote_id %}
+          <strong>RE:</strong> Quote #{{ so.quote_id }}<br>
+        {% endif %}
+        {% with status_class=so.status, status_label=(so.status|upper|replace('_', ' ')) %}
+          {% include "documents/_status_pill.html" %}
+        {% endwith %}
+      </div>
+    </div>
+  </div>
+
+  {# ── Customer + Ship-To + Reference ────────────────────────────────── #}
+  <div class="party-row">
+
+    {% with party_label="Bill To",
+            party_name=(so.customer.company_name if so.customer else "—"),
+            party_lines=customer_addr_lines,
+            party_contact=None,
+            party_anonymous=False %}
+      {% include "documents/_party_block.html" %}
+    {% endwith %}
+
+    {% if ship_to_lines %}
+      {% with party_label="Ship To",
+              party_name=ship_to_name,
+              party_lines=ship_to_lines,
+              party_contact=None,
+              party_anonymous=False %}
+        {% include "documents/_party_block.html" %}
+      {% endwith %}
+    {% endif %}
+
+    {# Reference fields #}
+    {% if so.customer_po_number or so.customer_job_number or so.esn or so.engine_manufacturer or so.engine_model %}
+    <div class="party-block">
+      <div class="party-label">Reference</div>
+      <div class="ref-block">
+        {% if so.customer_po_number %}
+        <div class="ref-row">
+          <span class="ref-label">Customer PO</span>
+          <span class="ref-val">{{ so.customer_po_number }}</span>
+        </div>
+        {% endif %}
+        {% if so.customer_job_number %}
+        <div class="ref-row">
+          <span class="ref-label">Job #</span>
+          <span class="ref-val">{{ so.customer_job_number }}</span>
+        </div>
+        {% endif %}
+        {% if so.esn %}
+        <div class="ref-row">
+          <span class="ref-label">ESN</span>
+          <span class="ref-val">{{ so.esn }}</span>
+        </div>
+        {% endif %}
+        {% if so.engine_manufacturer or so.engine_model %}
+        <div class="ref-row">
+          <span class="ref-label">Engine</span>
+          <span class="ref-val">{{ so.engine_manufacturer }} {{ so.engine_model }}</span>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+
+  </div>
+
+  {# ── Line items ────────────────────────────────────────────────────── #}
+  <table class="lines">
+    <thead>
+      <tr>
+        <th class="ctr" style="width:28px">#</th>
+        <th class="lft" style="width:120px">Part #</th>
+        <th class="lft">Description</th>
+        <th class="ctr" style="width:90px">Source</th>
+        <th class="rgt" style="width:48px">Qty</th>
+        <th class="rgt" style="width:90px">Unit Price</th>
+        <th class="rgt" style="width:90px">Extended</th>
+      </tr>
+    </thead>
+    <tbody>
+      {%- set ns = namespace(row=0) -%}
+      {% for line in so.lines %}
+        {%- if line.qty_cancelled and line.qty_cancelled >= line.qty_ordered -%}
+          {# skip fully cancelled lines #}
+        {%- else -%}
+          {%- set ns.row = ns.row + 1 -%}
+          <tr{% if ns.row % 2 == 0 %} class="even-row"{% endif %}>
+            <td class="td-num">{{ ns.row }}</td>
+            <td>
+              <span style="font-family:monospace;font-size:9pt;color:#374151;">
+                {{ (line.product.sku if line.product and line.product.sku else "—") }}
+              </span>
+            </td>
+            <td>
+              {{ line.description or (line.product.title if line.product else "—") }}
+              {% if line.qty_cancelled %}
+              <span class="badge badge-bo" style="margin-top:2px;">
+                {{ line.qty_cancelled }} cancelled
+              </span>
+              {% endif %}
+            </td>
+            <td class="td-ctr">
+              {% set src = line.fulfillment_source or line.source or "stock" %}
+              {% if src == 'stock' %}
+                <span class="badge badge-stock">Stock</span>
+              {% elif src == 'backorder' %}
+                <span class="badge badge-bo">Backorder</span>
+              {% elif src == 'linked_po' %}
+                <span class="badge badge-bo">On PO</span>
+              {% elif src == 'special_order' %}
+                <span class="badge badge-special">Special</span>
+              {% elif src == 'dropship' %}
+                <span class="badge badge-dropship">Drop Ship</span>
+              {% else %}
+                <span class="badge badge-stock">{{ src|title }}</span>
+              {% endif %}
+            </td>
+            <td class="td-rgt">{{ line.qty_ordered }}</td>
+            <td class="td-rgt">${{ "%.2f"|format(line.unit_price) }}</td>
+            <td class="td-total">${{ "%.2f"|format(line.line_total) }}</td>
+          </tr>
+        {%- endif -%}
+      {% else %}
+        <tr><td colspan="7" class="td-empty">No line items.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {# ── Totals ────────────────────────────────────────────────────────── #}
+  <div class="totals-wrap">
+    <div class="totals-inner">
+      <div class="t-row">
+        <span class="lbl">Subtotal</span>
+        <span class="val">${{ "%.2f"|format(so.subtotal) }}</span>
+      </div>
+      <div class="t-row grand">
+        <span class="lbl">Total</span>
+        <span class="val">${{ "%.2f"|format(so.subtotal) }}</span>
+      </div>
+      {% if so.deposit_amount and so.deposit_amount > 0 %}
+      <hr class="t-divider">
+      <div class="t-row paid-row">
+        <span class="lbl">Deposit Collected</span>
+        <span class="val">&#x2212;${{ "%.2f"|format(so.deposit_amount) }}</span>
+      </div>
+      <div class="t-row balance-row">
+        <span class="lbl">Balance at Invoice</span>
+        <span class="val">${{ "%.2f"|format((so.subtotal - so.deposit_amount)|round(2)) }}</span>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Notes ────────────────────────────────────────────────────────── #}
+  {% if so.notes and so.notes.strip() %}
+  <div class="notes-section">
+    <div class="sec-label">Notes</div>
+    <div class="notes-body">{{ so.notes.strip() }}</div>
+  </div>
+  {% endif %}
+
+  {# ── Backorder / pending notice ──────────────────────────────────── #}
+  {% if so.has_backorder %}
+  <div class="callout callout-amber">
+    <strong>Backorder notice:</strong> One or more items on this order are not in
+    stock. We will contact you when they are ready. Final pricing and tax (if
+    applicable) will appear on the invoice.
+  </div>
+  {% endif %}
+
+  {% set disclaimer = "This sales order confirms items reserved for you. An invoice will follow when the order is ready." %}
+  {% set footer_message = "Thank you for your order" %}
+  {% include "documents/_footer.html" %}
+
+</div>{# /page-shell #}
+
+{% include "documents/_auto_print.html" %}
+</body>
+</html>

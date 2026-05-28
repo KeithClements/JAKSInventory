@@ -131,6 +131,15 @@ class InventoryService(BaseService):
                 "cost_after": product.cost,
             },
         )
+        from app.services.notification_service import NotificationService
+        NotificationService.build_inventory_adjustment(
+            self.db,
+            product_id=product_id,
+            sku=product.sku,
+            qty_delta=qty_delta,
+            reason=reason,
+            adjusted_by_user_id=self.current_user_id,
+        )
         self.db.commit()
         return txn
 

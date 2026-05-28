@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ vcr.vcr_number }} — Vendor Core Return</title>
+  {% include "documents/_styles.html" %}
+</head>
+<body>
+
+{% include "documents/_controls.html" %}
+
+<div class="page-shell">
+
+  {% if vcr.status == 'cancelled' %}
+  <div class="doc-watermark"><span class="watermark-badge wm-void">Cancelled</span></div>
+  {% elif vcr.status == 'draft' %}
+  <div class="doc-watermark"><span class="watermark-badge wm-draft">Draft</span></div>
+  {% endif %}
+
+  {# ── Header ────────────────────────────────────────────────────────── #}
+  <div class="doc-header">
+    {% include "documents/_company_header.html" %}
+    <div class="doc-right">
+      <div class="doc-label">Vendor Core Return</div>
+      <div class="doc-number">{{ vcr.vcr_number }}</div>
+      <div class="doc-dates">
+        <strong>Issued:</strong> {{ vcr.created_at.strftime('%B %d, %Y') }}<br>
+        {% if vcr.shipped_at %}
+          <strong>Shipped:</strong> {{ vcr.shipped_at.strftime('%B %d, %Y') }}<br>
+        {% endif %}
+        {% if vcr.rma_number %}
+          <strong>RMA:</strong> {{ vcr.rma_number }}<br>
+        {% endif %}
+        {% with status_class=vcr.status, status_label=(vcr.status|upper|replace('_', ' ')) %}
+          {% include "documents/_status_pill.html" %}
+        {% endwith %}
+      </div>
+    </div>
+  </div>
+
+  {# ── From / To ─────────────────────────────────────────────────────── #}
+  <div class="party-row">
+    {% with party_label="From",
+            party_name=(company.name or "JAKS Parts"),
+            party_lines=company_addr_lines,
+            party_contact=None,
+            party_anonymous=False %}
+      {% include "documents/_party_block.html" %}
+    {% endwith %}
+    {% with party_label="To (Vendor)",
+            party_name=(vendor.name if vendor else "—"),
+            party_lines=vendor_addr_lines,
+            party_contact=None,
+            party_anonymous=False %}
+      {% include "documents/_party_block.html" %}
+    {% endwith %}
+  </div>
+
+  {# ── Shipment reference ───────────────────────────────────────────── #}
+  <div style="margin-bottom:18px;">
+    <div class="party-label">Shipment Reference</div>
+    <div class="ref-block">
+      <div class="ref-row">
+        <span class="ref-label">VCR #</span>
+        <span class="ref-val">{{ vcr.vcr_number }}</span>
+      </div>
+      {% if vcr.rma_number %}
+      <div class="ref-row">
+        <span class="ref-label">RMA #</span>
+        <span class="ref-val">{{ vcr.rma_number }}</span>
+      </div>
+      {% endif %}
+      {% if vcr.tracking_number %}
+      <div class="ref-row">
+        <span class="ref-label">Tracking #</span>
+        <span class="ref-val">{{ vcr.tracking_number }}</span>
+      </div>
+      {% endif %}
+      <div class="ref-row">
+        <span class="ref-label">Cores in Box</span>
+        <span class="ref-val">{{ total_qty }} unit(s) across {{ vcr.lines | length }} line(s)</span>
+      </div>
+      {% if vendor and vendor.account_number %}
+      <div class="ref-row">
+        <span class="ref-label">Account #</span>
+        <span class="ref-val">{{ vendor.account_number }}</span>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Privacy notice — vendor doc must NOT show customer identity ──── #}
+  <div class="callout callout-blue" style="margin-top:0;">
+    This document accompanies a batch of cores being returned for credit.
+    Per JAKS policy, original customer identity is withheld on vendor-facing
+    documents. Reference the JAKS core ref printed on each item for traceability.
+  </div>
+
+  {# ── Line items ───────────────────────────────────────────────────── #}
+  <table class="lines" style="margin-top:18px;">
+    <thead>
+      <tr>
+        <th class="ctr" style="width:28px">#</th>
+        <th class="lft" style="width:130px">Part #</th>
+        <th class="lft">Description</th>
+        <th class="lft" style="width:100px">JAKS Core Ref</th>
+        <th class="rgt" style="width:50px">Qty</th>
+        <th class="rgt" style="width:100px">Expected / ea</th>
+        <th class="rgt" style="width:100px">Expected Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for line in vcr.lines %}
+        <tr{% if loop.index % 2 == 0 %} class="even-row"{% endif %}>
+          <td class="td-num">{{ loop.index }}</td>
+          <td>
+            <span style="font-family:monospace;font-size:9pt;color:#374151;">
+              {{ line.part_number or "—" }}
+            </span>
+          </td>
+          <td>
+            <span class="badge badge-core">Core</span>
+            {{ line.description or "Core part" }}
+          </td>
+          <td>
+            <span style="font-family:monospace;font-size:8.5pt;color:#6b7280;">
+              {% if line.core_charge_id %}CORE-{{ "%05d"|format(line.core_charge_id) }}{% else %}—{% endif %}
+            </span>
+          </td>
+          <td class="td-rgt">{{ line.qty }}</td>
+          <td class="td-rgt">${{ "%.2f"|format(line.expected_unit_credit) }}</td>
+          <td class="td-total">${{ "%.2f"|format(line.qty * line.expected_unit_credit) }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7" class="td-empty">No cores in this batch.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {# ── Expected credit totals ──────────────────────────────────────── #}
+  <div class="totals-wrap">
+    <div class="totals-inner">
+      <div class="t-row">
+        <span class="lbl">Cores Returned</span>
+        <span class="val">{{ total_qty }}</span>
+      </div>
+      <div class="t-row grand">
+        <span class="lbl">Expected Credit</span>
+        <span class="val">${{ "%.2f"|format(vcr.expected_credit) }}</span>
+      </div>
+    </div>
+  </div>
+
+  {# ── Instructions ────────────────────────────────────────────────── #}
+  <div class="callout callout-amber">
+    <strong>Please issue credit of ${{ "%.2f"|format(vcr.expected_credit) }}</strong>
+    to our account upon inspection. If any line is disputed, please reference
+    the JAKS Core Ref number above so we can reconcile with our records.
+  </div>
+
+  {# ── Signature ────────────────────────────────────────────────── #}
+  <div class="sig-row">
+    <div class="sig-cell">
+      <div class="party-label">Packed By (JAKS)</div>
+      <div class="sig-line">Name &amp; Date</div>
+    </div>
+    <div class="sig-cell">
+      <div class="party-label">Received By (Vendor)</div>
+      <div class="sig-line">Name / Date / Signature</div>
+    </div>
+  </div>
+
+  {% set disclaimer = "Vendor-side credit terms apply. Customer identity intentionally withheld on this document." %}
+  {% set footer_message = "Vendor Core Return — Confidential" %}
+  {% include "documents/_footer.html" %}
+
+</div>{# /page-shell #}
+
+{% include "documents/_auto_print.html" %}
+</body>
+</html>

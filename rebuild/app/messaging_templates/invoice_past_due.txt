@@ -1,0 +1,11 @@
+Hi {customer_name},
+
+This is a reminder that invoice {invoice_number} is {days_past_due} day(s) past due.
+
+Balance due: ${balance_due}
+
+Please remit payment at your earliest convenience. If you have any questions, give us a call.
+
+{salesperson_name}
+JAKS Diesel Parts
+{company_phone}

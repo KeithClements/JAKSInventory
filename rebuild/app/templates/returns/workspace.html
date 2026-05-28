@@ -3,6 +3,9 @@
 {% block heading %}{{ ra.ra_number }}{% endblock %}
 
 {% block header_actions %}
+  <a href="/returns/{{ ra.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
+  <a href="/returns/{{ ra.id }}/pdf" class="btn-secondary btn-sm">PDF</a>
+
   {# Approve — DRAFT only #}
   {% if ra.status == RAStatus.DRAFT %}
   <form method="post" action="/returns/{{ ra.id }}/approve">

@@ -29,6 +29,12 @@ from app.models.invoice import Invoice
 from app.models.product import Product
 from app.models.vendor import Vendor
 from app.models.warranty import WarrantyClaim
+from app.services.document_render import (
+    customer_address_lines,
+    get_company_dict,
+    render_pdf_or_fallback,
+    vendor_address_lines,
+)
 
 log = logging.getLogger(__name__)
 
@@ -370,3 +376,49 @@ def warranty_close(
             status_code=303,
         )
     return RedirectResponse(f"/warranty/{claim_id}", status_code=303)
+
+
+# ── Print / PDF ───────────────────────────────────────────────────────────────
+
+def _claim_print_context(claim: WarrantyClaim, db: Session) -> dict:
+    company = get_company_dict(db)
+    customer_addr_lines_ = customer_address_lines(claim.customer)
+    vendor_addr_lines_ = vendor_address_lines(claim.vendor)
+
+    invoice = None
+    if claim.invoice_id:
+        invoice = db.query(Invoice).filter(Invoice.id == claim.invoice_id).first()
+
+    return {
+        "claim": claim,
+        "invoice": invoice,
+        "company": company,
+        "customer_addr_lines": customer_addr_lines_,
+        "vendor_addr_lines": vendor_addr_lines_,
+    }
+
+
+@router.get("/{claim_id}/print", response_class=HTMLResponse)
+def warranty_print(claim_id: int, request: Request, db: Session = Depends(get_db)):
+    claim = db.query(WarrantyClaim).filter(WarrantyClaim.id == claim_id).first()
+    if claim is None:
+        return RedirectResponse("/warranty/", status_code=303)
+    ctx = _claim_print_context(claim, db)
+    ctx["request"] = request
+    return templates.TemplateResponse("warranty/print.html", ctx)
+
+
+@router.get("/{claim_id}/pdf")
+def warranty_pdf(claim_id: int, request: Request, db: Session = Depends(get_db)):
+    claim = db.query(WarrantyClaim).filter(WarrantyClaim.id == claim_id).first()
+    if claim is None:
+        return RedirectResponse("/warranty/", status_code=303)
+    ctx = _claim_print_context(claim, db)
+    return render_pdf_or_fallback(
+        request=request,
+        templates=templates,
+        template_name="warranty/print.html",
+        context=ctx,
+        fallback_print_url=f"/warranty/{claim_id}/print",
+        download_filename=claim.claim_number,
+    )

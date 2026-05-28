@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker, DeclarativeBase
 log = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "jaks.db"
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 DB_URL = f"sqlite:///{DB_PATH}"
 
 engine = create_engine(

@@ -135,7 +135,7 @@ class POLine(Base):
 
     @property
     def qty_outstanding(self) -> int:
-        return self.qty_ordered - self.qty_received
+        return max(0, self.qty_ordered - self.qty_received - self.qty_cancelled)
 
     @property
     def has_billing_discrepancy(self) -> bool:
