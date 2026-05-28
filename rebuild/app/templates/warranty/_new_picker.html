@@ -1,0 +1,86 @@
+<div x-data="{
+  customerId: '{{ selected_customer.id if selected_customer else '' }}',
+  lines: [{ productId: '', qty: 1, credit: '' }],
+  addLine() { this.lines.push({ productId: '', qty: 1, credit: '' }); },
+}">
+  <form method="post" action="/warranty/new" class="space-y-4">
+
+    <div>
+      <label class="form-label">Customer <span class="text-red-500">*</span></label>
+      <select name="customer_id" required x-model="customerId" class="form-select">
+        <option value="">— Select Customer —</option>
+        {% for c in customers %}
+        <option value="{{ c.id }}" {% if selected_customer and selected_customer.id == c.id %}selected{% endif %}>
+          {{ c.company_name }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div>
+      <label class="form-label">Vendor (claim submitted to)</label>
+      <select name="vendor_id" class="form-select">
+        <option value="">— Optional —</option>
+        {% for v in vendors %}
+        <option value="{{ v.id }}">{{ v.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div>
+      <label class="form-label">Failure Description <span class="text-red-500">*</span></label>
+      <textarea name="failure_description" required rows="2"
+                placeholder="Describe what failed and how…"
+                class="form-textarea"></textarea>
+    </div>
+
+    <div>
+      <div class="flex items-center justify-between mb-2">
+        <label class="form-label mb-0">Parts Claimed <span class="text-red-500">*</span></label>
+        <button type="button" @click="addLine()"
+                class="text-xs font-medium text-green-600 hover:text-green-700">+ Add Part</button>
+      </div>
+      <div class="space-y-2">
+        <template x-for="(line, i) in lines" :key="i">
+          <div class="flex items-center gap-2">
+            <select :name="'product_id[]'" x-model="line.productId" required
+                    class="flex-1 rounded border border-gray-200 px-2 py-1.5 text-xs
+                           focus:outline-none focus:ring-1 focus:ring-brand-400">
+              <option value="">— Product —</option>
+              {% for p in products %}
+              <option value="{{ p.id }}">{{ p.sku }} — {{ p.title | truncate(35) }}</option>
+              {% endfor %}
+            </select>
+            <input :name="'qty_claimed[]'" type="number" min="1" x-model="line.qty"
+                   placeholder="Qty"
+                   class="w-14 rounded border border-gray-200 px-2 py-1.5 text-xs text-right
+                          focus:outline-none focus:ring-1 focus:ring-brand-400" />
+            <input :name="'credit_amount[]'" type="number" step="0.01" min="0" x-model="line.credit"
+                   placeholder="Credit $"
+                   class="w-24 rounded border border-gray-200 px-2 py-1.5 text-xs text-right font-mono
+                          focus:outline-none focus:ring-1 focus:ring-brand-400" />
+            <button type="button" @click="lines.length > 1 && lines.splice(i, 1)"
+                    :class="lines.length <= 1 ? 'text-gray-200 cursor-not-allowed' : 'text-gray-300 hover:text-red-500'"
+                    class="transition-colors text-base leading-none shrink-0">✕</button>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <div>
+      <label class="form-label">Internal Notes</label>
+      <textarea name="notes" rows="2" class="form-textarea"
+                placeholder="Internal staff notes…"></textarea>
+    </div>
+
+    <div class="pt-2 flex gap-3">
+      <button type="submit"
+              :disabled="!customerId"
+              :class="customerId ? 'btn-primary' : 'btn-primary opacity-40 cursor-not-allowed'">
+        Create Claim
+      </button>
+      <button type="button" @click="createSlideOpen = false" class="btn-secondary">Cancel</button>
+    </div>
+
+  </form>
+</div>

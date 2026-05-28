@@ -1,0 +1,313 @@
+{% extends "base.html" %}
+{% block title %}{{ ra.ra_number }} — JAKS Inventory{% endblock %}
+{% block heading %}{{ ra.ra_number }}{% endblock %}
+
+{% block header_actions %}
+  {# Approve — DRAFT only #}
+  {% if ra.status == RAStatus.DRAFT %}
+  <form method="post" action="/returns/{{ ra.id }}/approve">
+    <button type="submit" class="btn-primary btn-sm"
+            onclick="return confirm('Approve this return authorization?')">
+      Approve RA →
+    </button>
+  </form>
+  {% endif %}
+
+  {# Close — RECEIVED or OPEN #}
+  {% if ra.status in [RAStatus.RECEIVED, RAStatus.OPEN] %}
+  <form method="post" action="/returns/{{ ra.id }}/close">
+    <button type="submit" class="btn-secondary btn-sm"
+            onclick="return confirm('Close this return and apply account credit?')">
+      Close &amp; Credit (${{ '%.2f' % ra.total_credit }})
+    </button>
+  </form>
+  {% endif %}
+
+  <a href="/returns/" class="text-sm text-gray-500 hover:text-gray-700">← Returns</a>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl space-y-4">
+
+  {# ── Flash messages ── #}
+  {% if request.query_params.get('ok') %}
+  <div class="rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800 flex items-center gap-2">
+    <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+    {{ request.query_params.get('ok') }}
+  </div>
+  {% endif %}
+  {% if request.query_params.get('error') %}
+  <div class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700 flex items-center gap-2">
+    <svg class="w-4 h-4 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+    {{ request.query_params.get('error') }}
+  </div>
+  {% endif %}
+
+  {# ── RA Header ── #}
+  <div class="card">
+    <div class="card-body">
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+        <div>
+          <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Customer</p>
+          <a href="/customers/{{ ra.customer_id }}" class="text-base font-semibold text-gray-800 link block">
+            {{ ra.customer.company_name }}
+          </a>
+          {% if ra.customer.phone %}
+          <p class="text-sm text-gray-500 mt-0.5">{{ ra.customer.phone }}</p>
+          {% endif %}
+        </div>
+
+        <div class="space-y-1.5">
+          {% set ra_status_badges = {
+            'draft':    'badge-gray',
+            'open':     'badge-blue',
+            'received': 'badge-amber',
+            'closed':   'badge-gray',
+          } %}
+          <div class="flex gap-3">
+            <span class="text-gray-400 w-28 shrink-0 text-xs">RA #</span>
+            <span class="font-mono font-semibold text-gray-800 text-xs">{{ ra.ra_number }}</span>
+          </div>
+          <div class="flex gap-3">
+            <span class="text-gray-400 w-28 shrink-0 text-xs">Date</span>
+            <span class="text-xs text-gray-700">{{ ra.requested_at.strftime('%B %d, %Y') }}</span>
+          </div>
+          {% if ra.invoice_id %}
+          <div class="flex gap-3">
+            <span class="text-gray-400 w-28 shrink-0 text-xs">Invoice</span>
+            <a href="/invoices/{{ ra.invoice_id }}" class="text-xs link">View Invoice</a>
+          </div>
+          {% endif %}
+          <div class="flex items-center gap-3">
+            <span class="text-gray-400 w-28 shrink-0 text-xs">Status</span>
+            <span class="{{ ra_status_badges.get(ra.status, 'badge-gray') }}">{{ ra.status | title }}</span>
+          </div>
+        </div>
+
+        <div class="space-y-1.5">
+          <div class="flex gap-3">
+            <span class="text-gray-400 w-28 shrink-0 text-xs">Lines</span>
+            <span class="text-xs text-gray-700">{{ ra.lines | length }} item{{ 's' if ra.lines | length != 1 }}</span>
+          </div>
+          {% if ra.total_credit > 0 %}
+          <div class="flex gap-3">
+            <span class="text-gray-400 w-28 shrink-0 text-xs">Est. Credit</span>
+            <span class="text-xs font-bold text-brand-700">${{ '%.2f' % ra.total_credit }}</span>
+          </div>
+          {% endif %}
+          {% if ra.approved_by_id %}
+          <div class="flex gap-3">
+            <span class="text-gray-400 w-28 shrink-0 text-xs">Approved by</span>
+            <span class="text-xs text-gray-600">Staff #{{ ra.approved_by_id }}</span>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="mt-4 pt-4 border-t border-gray-100">
+        <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Return Reason</p>
+        <p class="text-sm text-gray-700">{{ ra.reason }}</p>
+      </div>
+
+      {% if ra.notes %}
+      <div class="mt-3">
+        <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Notes</p>
+        <p class="text-sm text-gray-500">{{ ra.notes }}</p>
+      </div>
+      {% endif %}
+
+      {% if ra.override_reason %}
+      <div class="mt-3 rounded-md bg-amber-50 border border-amber-100 px-3 py-2">
+        <p class="text-xs font-semibold text-amber-700 uppercase tracking-wide mb-0.5">Override Reason</p>
+        <p class="text-sm text-amber-800">{{ ra.override_reason }}</p>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Return Lines ── #}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Return Lines</h2>
+      <span class="text-xs text-gray-400">{{ ra.lines | length }} item{{ 's' if ra.lines | length != 1 }}</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">Product</th>
+            <th class="tbl-th-r">Qty</th>
+            <th class="tbl-th-r">Unit Price</th>
+            <th class="tbl-th-r">Restocking</th>
+            <th class="tbl-th-r">Line Credit</th>
+            <th class="tbl-th">Disposition</th>
+            {% if ra.status in [RAStatus.RECEIVED, RAStatus.CLOSED] %}
+            <th class="tbl-th-r">To Stock</th>
+            {% endif %}
+          </tr>
+        </thead>
+        <tbody>
+          {% set disp_labels = {
+            'return_to_stock': 'Return to Stock',
+            'quarantine':      'Quarantine',
+            'vendor_return':   'Vendor Return',
+            'damaged':         'Damaged',
+            'warranty_review': 'Warranty Review',
+            'scrap':           'Scrap',
+          } %}
+          {% for line in ra.lines %}
+          <tr class="tbl-row">
+            <td class="tbl-td">
+              {% if line.product %}
+              <a href="/products/{{ line.product_id }}" class="font-mono text-xs link">{{ line.product.sku }}</a>
+              <p class="text-xs text-gray-400 mt-0.5 truncate max-w-xs">{{ line.product.title }}</p>
+              {% elif line.description %}
+              <span class="text-sm text-gray-700">{{ line.description }}</span>
+              {% else %}
+              <span class="text-gray-400 text-xs">Unknown</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td-r">{{ line.qty }}</td>
+            <td class="tbl-td-r">${{ '%.2f' % line.unit_price }}</td>
+            <td class="tbl-td-r {% if line.restocking_fee > 0 %}text-amber-600{% else %}text-gray-400{% endif %}">
+              {% if line.restocking_fee > 0 %}−${{ '%.2f' % line.restocking_fee }}{% else %}—{% endif %}
+            </td>
+            <td class="tbl-td-r font-semibold {% if line.line_credit > 0 %}text-brand-700{% else %}text-gray-400{% endif %}">
+              {% if line.line_credit > 0 %}${{ '%.2f' % line.line_credit }}{% else %}—{% endif %}
+            </td>
+            <td class="tbl-td">
+              {% set disp = line.disposition %}
+              {% if disp == 'return_to_stock' %}
+              <span class="badge-green">Return to Stock</span>
+              {% elif disp == 'quarantine' %}
+              <span class="badge-amber">Quarantine</span>
+              {% elif disp == 'damaged' %}
+              <span class="badge-red">Damaged</span>
+              {% elif disp == 'warranty_review' %}
+              <span class="badge-blue">Warranty Review</span>
+              {% elif disp == 'vendor_return' %}
+              <span class="badge-blue">Vendor Return</span>
+              {% else %}
+              <span class="badge-gray">{{ disp_labels.get(disp, disp | title) }}</span>
+              {% endif %}
+            </td>
+            {% if ra.status in [RAStatus.RECEIVED, RAStatus.CLOSED] %}
+            <td class="tbl-td-r">
+              {% if line.qty_returned_to_stock > 0 %}
+              <span class="font-medium text-green-700">{{ line.qty_returned_to_stock }}</span>
+              {% else %}
+              <span class="text-gray-400">0</span>
+              {% endif %}
+            </td>
+            {% endif %}
+          </tr>
+          {% if line.condition_notes %}
+          <tr class="bg-gray-50/50">
+            <td colspan="7" class="px-4 py-1.5 text-xs text-gray-400 italic">
+              ↳ {{ line.condition_notes }}
+            </td>
+          </tr>
+          {% endif %}
+          {% endfor %}
+        </tbody>
+        {% if ra.total_credit > 0 %}
+        <tfoot class="border-t-2 border-gray-200">
+          <tr class="bg-gray-50">
+            <td colspan="4" class="px-4 py-3 text-right text-sm font-semibold text-gray-700">Total Credit</td>
+            <td class="px-4 py-3 text-right text-lg font-bold text-brand-700 tabular-nums">
+              ${{ '%.2f' % ra.total_credit }}
+            </td>
+            <td colspan="2"></td>
+          </tr>
+        </tfoot>
+        {% endif %}
+      </table>
+    </div>
+  </div>
+
+  {# ── Receive Goods (OPEN only) ── #}
+  {% if ra.status == RAStatus.OPEN %}
+  <div class="card" x-data="{ open: false }">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Receive Returned Goods</h2>
+        <p class="text-xs text-gray-400 mt-0.5">Record condition and inventory disposition when parts arrive.</p>
+      </div>
+      <button type="button" @click="open = !open"
+              class="text-sm text-brand-600 hover:text-brand-700 font-medium transition-colors"
+              x-text="open ? 'Cancel' : 'Record Receipt'">
+      </button>
+    </div>
+    <form x-show="open" style="display:none" method="post" action="/returns/{{ ra.id }}/receive"
+          class="border-t border-gray-100">
+      <div class="overflow-x-auto">
+        <table class="tbl">
+          <thead class="tbl-head">
+            <tr>
+              <th class="tbl-th">Part</th>
+              <th class="tbl-th-r">Ordered Qty</th>
+              <th class="tbl-th">Disposition</th>
+              <th class="tbl-th-r">Qty to Stock</th>
+              <th class="tbl-th">Condition Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for line in ra.lines %}
+            <tr class="tbl-row">
+              <td class="tbl-td">
+                {% if line.product %}
+                <span class="font-mono text-xs text-brand-700">{{ line.product.sku }}</span>
+                {% elif line.description %}
+                <span class="text-xs text-gray-700">{{ line.description }}</span>
+                {% else %}
+                <span class="text-gray-400 text-xs">Unknown</span>
+                {% endif %}
+              </td>
+              <td class="tbl-td-r font-medium">{{ line.qty }}</td>
+              <td class="tbl-td">
+                <select name="line_{{ line.id }}_disposition"
+                        class="rounded border border-gray-200 px-2 py-1 text-xs
+                               focus:outline-none focus:ring-1 focus:ring-brand-400">
+                  <option value="{{ ReturnDisposition.QUARANTINE }}"
+                    {% if line.disposition == ReturnDisposition.QUARANTINE %}selected{% endif %}>Quarantine</option>
+                  <option value="{{ ReturnDisposition.RETURN_TO_STOCK }}"
+                    {% if line.disposition == ReturnDisposition.RETURN_TO_STOCK %}selected{% endif %}>Return to Stock</option>
+                  <option value="{{ ReturnDisposition.VENDOR_RETURN }}"
+                    {% if line.disposition == ReturnDisposition.VENDOR_RETURN %}selected{% endif %}>Vendor Return</option>
+                  <option value="{{ ReturnDisposition.DAMAGED }}"
+                    {% if line.disposition == ReturnDisposition.DAMAGED %}selected{% endif %}>Damaged</option>
+                  <option value="{{ ReturnDisposition.WARRANTY_REVIEW }}"
+                    {% if line.disposition == ReturnDisposition.WARRANTY_REVIEW %}selected{% endif %}>Warranty Review</option>
+                  <option value="{{ ReturnDisposition.SCRAP }}"
+                    {% if line.disposition == ReturnDisposition.SCRAP %}selected{% endif %}>Scrap</option>
+                </select>
+              </td>
+              <td class="tbl-td-r">
+                <input type="number" name="line_{{ line.id }}_qty_to_stock"
+                       min="0" max="{{ line.qty }}" value="0"
+                       class="w-20 border border-gray-200 rounded px-2 py-1 text-xs text-right
+                              focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              </td>
+              <td class="tbl-td">
+                <input type="text" name="line_{{ line.id }}_condition_notes"
+                       placeholder="Optional condition notes…"
+                       class="w-full border border-gray-200 rounded px-2 py-1 text-xs
+                              focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="px-5 py-3 bg-gray-50/40 border-t border-gray-100 flex gap-3">
+        <button type="submit" class="btn-primary">
+          Record Receipt &amp; Update Inventory
+        </button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

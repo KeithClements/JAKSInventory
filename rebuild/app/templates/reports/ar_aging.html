@@ -3,20 +3,15 @@
 {% block heading %}AR Aging{% endblock %}
 
 {% block header_actions %}
-  <a href="/reports/sales/" class="text-sm text-gray-500 hover:text-gray-700">Sales Report →</a>
-  <a href="/reports/inventory/" class="text-sm text-gray-500 hover:text-gray-700">Inventory →</a>
+  <a href="/reports/sales/" class="text-sm text-gray-500 hover:text-gray-700">Sales</a>
+  <a href="/reports/inventory/" class="text-sm text-gray-500 hover:text-gray-700">Inventory</a>
+  <a href="/reports/open-pos/" class="text-sm text-gray-500 hover:text-gray-700">Open POs</a>
 {% endblock %}
 
 {% block content %}
 <div class="max-w-5xl space-y-4">
 
-  <div class="flex items-center justify-between">
-    <p class="text-xs text-gray-400">As of {{ today.strftime('%B %d, %Y') }}</p>
-    <div class="flex gap-3">
-      <a href="/reports/sales/" class="text-sm link">Sales Report →</a>
-      <a href="/reports/inventory/" class="text-sm link">Inventory →</a>
-    </div>
-  </div>
+  <p class="text-xs text-gray-400">As of {{ today.strftime('%B %d, %Y') }}</p>
 
   {# Summary banner #}
   <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">

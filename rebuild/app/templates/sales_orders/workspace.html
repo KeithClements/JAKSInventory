@@ -1,0 +1,379 @@
+{% extends "base.html" %}
+{% block title %}{{ so.so_number }} — JAKS Inventory{% endblock %}
+{% block heading %}{{ so.so_number }}{% endblock %}
+
+{% set status_pill = {
+  'open':      ('badge-blue',  'OPEN'),
+  'partial':   ('badge-amber', 'PARTIAL'),
+  'hold':      ('badge-amber', 'ON HOLD'),
+  'invoiced':  ('badge-green', 'INVOICED'),
+  'fulfilled': ('badge-green', 'FULFILLED'),
+  'cancelled': ('badge-red',   'CANCELLED'),
+} %}
+
+{% block header_actions %}
+  {# Status chip #}
+  {% set pill = status_pill.get(so.status, ('badge-gray', so.status | upper)) %}
+  <span class="{{ pill[0] }}">{{ pill[1] }}</span>
+
+  {# OPEN / PARTIAL — Collect Deposit, Hold, Cancel #}
+  {% if so.status in (SOStatus.OPEN, SOStatus.PARTIAL) %}
+
+    {% if so.payment_mode != SOPaymentMode.NONE %}
+    <div x-data="{ open: false }" class="relative inline-block">
+      <button @click="open = !open"
+              class="btn-secondary btn-sm">
+        $ Deposit
+      </button>
+      <div x-show="open" x-cloak @click.away="open = false"
+           class="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 p-4 w-64">
+        <p class="text-sm font-semibold text-gray-700 mb-3">Record Deposit</p>
+        <form action="/sales-orders/{{ so.id }}/collect-deposit" method="post" class="space-y-3">
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Amount</label>
+            <div class="relative">
+              <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
+              <input type="number" name="amount" step="0.01" min="0.01" required
+                     class="w-full pl-6 pr-3 py-2 text-sm border border-gray-300 rounded-lg text-right
+                            focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Method</label>
+            <select name="payment_method" class="form-select">
+              <option value="{{ PaymentMethod.CHECK }}">Check</option>
+              <option value="{{ PaymentMethod.CASH }}">Cash</option>
+              <option value="{{ PaymentMethod.CREDIT_CARD }}">Credit Card</option>
+              <option value="{{ PaymentMethod.ACH }}">ACH / Wire</option>
+            </select>
+          </div>
+          <button type="submit" class="btn-primary w-full justify-center">Record Deposit</button>
+        </form>
+      </div>
+    </div>
+    {% endif %}
+
+    <div x-data="{ open: false, reason: '' }" class="relative inline-block">
+      <button @click="open = !open"
+              class="px-3 py-1.5 border border-amber-300 text-amber-600 text-sm font-medium rounded-lg hover:bg-amber-50 transition-colors">
+        Hold
+      </button>
+      <div x-show="open" x-cloak @click.away="open = false"
+           class="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 p-4 w-60">
+        <p class="text-sm font-semibold text-gray-700 mb-2">Hold reason</p>
+        <input x-model="reason" type="text" placeholder="Waiting on parts, payment, etc."
+               class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm mb-3
+                      focus:outline-none focus:ring-1 focus:ring-amber-400" />
+        <form action="/sales-orders/{{ so.id }}/hold" method="post">
+          <input type="hidden" name="hold_reason" :value="reason" />
+          <button type="submit"
+                  class="w-full px-3 py-2 bg-amber-600 text-white text-sm font-medium rounded-lg hover:bg-amber-700">
+            Place on Hold
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <div x-data="{ open: false, reason: '' }" class="relative inline-block">
+      <button @click="open = !open"
+              class="px-3 py-1.5 border border-red-300 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 transition-colors">
+        Cancel
+      </button>
+      <div x-show="open" x-cloak @click.away="open = false"
+           class="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 p-4 w-64">
+        <p class="text-sm font-semibold text-gray-700 mb-2">Cancel reason</p>
+        <input x-model="reason" type="text" placeholder="Customer request, duplicate, etc."
+               class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm mb-3
+                      focus:outline-none focus:ring-1 focus:ring-red-400" />
+        {% if so.deposit_amount > 0 %}
+        <div class="mb-3">
+          <label class="block text-xs text-gray-500 mb-1">Deposit resolution (${{ '%.2f' % so.deposit_amount }})</label>
+          <select name="deposit_resolution" id="dep-res-{{ so.id }}"
+                  class="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm">
+            <option value="leave_open">Leave unapplied (manual follow-up)</option>
+            <option value="credit">Convert to customer credit</option>
+            <option value="refund">Refund to customer</option>
+          </select>
+        </div>
+        {% endif %}
+        <form action="/sales-orders/{{ so.id }}/cancel" method="post">
+          <input type="hidden" name="cancel_reason" :value="reason" />
+          {% if so.deposit_amount > 0 %}
+          <input type="hidden" name="deposit_resolution" id="dep-res-val-{{ so.id }}" value="leave_open" />
+          {% endif %}
+          <button type="submit"
+                  class="w-full px-3 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700">
+            Cancel Order
+          </button>
+        </form>
+      </div>
+    </div>
+
+  {# HOLD — Release or Cancel #}
+  {% elif so.status == SOStatus.HOLD %}
+    <form action="/sales-orders/{{ so.id }}/release-hold" method="post" class="inline">
+      <button type="submit" class="btn-primary btn-sm">Release Hold</button>
+    </form>
+    <div x-data="{ open: false, reason: '' }" class="relative inline-block">
+      <button @click="open = !open"
+              class="px-3 py-1.5 border border-red-300 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50">
+        Cancel
+      </button>
+      <div x-show="open" x-cloak @click.away="open = false"
+           class="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 p-4 w-60">
+        <p class="text-sm font-semibold text-gray-700 mb-2">Cancel reason</p>
+        <input x-model="reason" type="text" placeholder="Reason…"
+               class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm mb-3" />
+        <form action="/sales-orders/{{ so.id }}/cancel" method="post">
+          <input type="hidden" name="cancel_reason" :value="reason" />
+          <button type="submit" class="w-full px-3 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700">
+            Cancel Order
+          </button>
+        </form>
+      </div>
+    </div>
+  {% endif %}
+
+  <a href="/sales-orders/" class="ml-1 text-sm text-gray-400 hover:text-gray-600">← All SOs</a>
+{% endblock %}
+
+
+{% block content %}
+<div class="max-w-6xl space-y-3"
+     x-data="{ showVehicle: {{ 'true' if (so.esn or so.engine_manufacturer or so.engine_model) else 'false' }} }">
+
+  {# ── Flash banners ─────────────────────────────────────────────────────── #}
+  {% if request.query_params.get('ok') %}
+  <div class="rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800 flex items-center gap-2">
+    <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+    </svg>
+    {{ request.query_params.get('ok') }}
+  </div>
+  {% endif %}
+  {% if request.query_params.get('error') %}
+  <div class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700 flex items-start gap-2">
+    <svg class="w-4 h-4 mt-0.5 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3L12.74 5a2 2 0 00-3.48 0L3.2 16a2 2 0 001.73 3z"/>
+    </svg>
+    <div>{{ request.query_params.get('error') }}</div>
+  </div>
+  {% endif %}
+
+  {# ── Hold banner ───────────────────────────────────────────────────────── #}
+  {% if so.status == SOStatus.HOLD %}
+  <div class="flex items-center gap-2 rounded-xl bg-orange-50 border border-orange-200 px-4 py-3">
+    <svg class="w-4 h-4 text-orange-400 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+      <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+    </svg>
+    <span class="text-sm text-orange-800 font-medium">Order is on hold — fulfillment blocked. Release hold before invoicing.</span>
+  </div>
+  {% endif %}
+
+
+  {# ══════════════════════════════════════════════════════════════════════════
+     HEADER STRIP — customer, dates, metadata
+  ════════════════════════════════════════════════════════════════════════════ #}
+  <div id="so-header-strip">
+  <form hx-post="/sales-orders/{{ so.id }}/header"
+        hx-swap="none"
+        hx-trigger="change from:input,select,textarea delay:400ms"
+        class="card">
+
+    <div class="card-body py-3">
+
+      {# Row 1 — primary metadata #}
+      <div class="flex items-center gap-x-5 gap-y-2 flex-wrap text-sm">
+
+        {# Customer — link (read-only in SO) #}
+        <div class="min-w-0">
+          <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide block mb-0.5">Customer</span>
+          <a href="/customers/{{ so.customer_id }}" class="font-semibold text-brand-700 hover:underline text-sm">{{ so.customer.company_name }}</a>
+        </div>
+
+        {# Created date #}
+        <div>
+          <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide block mb-0.5">Created</span>
+          <span class="text-gray-700">{{ so.created_at.strftime('%b %d, %Y') }}</span>
+        </div>
+
+        {# Customer PO # #}
+        <div>
+          <label class="text-xs font-semibold text-gray-400 uppercase tracking-wide block mb-0.5">Customer PO #</label>
+          {% if editable %}
+          <input type="text" name="customer_po_number"
+                 value="{{ so.customer_po_number or '' }}"
+                 placeholder="—"
+                 class="border-0 bg-transparent hover:bg-white hover:border hover:border-gray-200 focus:border-brand-400 focus:bg-white rounded px-2 py-0.5 w-32 text-sm focus:outline-none focus:ring-1 focus:ring-brand-400" />
+          {% else %}
+          <span class="text-gray-700">{{ so.customer_po_number or '—' }}</span>
+          {% endif %}
+        </div>
+
+        {# Payment Mode #}
+        <div>
+          <label class="text-xs font-semibold text-gray-400 uppercase tracking-wide block mb-0.5">Payment Mode</label>
+          {% if editable %}
+          <select name="payment_mode" class="border border-gray-200 rounded px-2 py-0.5 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-brand-400">
+            <option value="{{ SOPaymentMode.NONE }}" {% if so.payment_mode == SOPaymentMode.NONE %}selected{% endif %}>Net Terms</option>
+            <option value="{{ SOPaymentMode.DEPOSIT }}" {% if so.payment_mode == SOPaymentMode.DEPOSIT %}selected{% endif %}>Deposit Required</option>
+            <option value="{{ SOPaymentMode.FULL }}" {% if so.payment_mode == SOPaymentMode.FULL %}selected{% endif %}>Pay in Full</option>
+          </select>
+          {% else %}
+          <span class="text-gray-700">{{ so.payment_mode | replace('_', ' ') | title }}</span>
+          {% endif %}
+        </div>
+
+        {# Deposit collected #}
+        {% if so.deposit_amount > 0 %}
+        <div>
+          <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide block mb-0.5">Deposit Collected</span>
+          <span class="font-semibold text-brand-700 tabular-nums">${{ '%.2f' % so.deposit_amount }}</span>
+        </div>
+        {% endif %}
+
+        {# Source quote #}
+        {% if so.quote_id %}
+        <div>
+          <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide block mb-0.5">Source Quote</span>
+          <a href="/quotes/{{ so.quote_id }}" class="text-xs font-mono text-brand-700 hover:underline">View Quote →</a>
+        </div>
+        {% endif %}
+
+        {# Subtotal chip — right side #}
+        <div class="ml-auto text-right">
+          <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide block mb-0.5">Order Total</span>
+          <span class="text-lg font-bold text-gray-800 tabular-nums">${{ '%.2f' % so.subtotal }}</span>
+        </div>
+
+      </div>{# /row1 #}
+
+      {# Row 2 — vehicle/engine info (expandable) #}
+      <div class="mt-1">
+        <button type="button"
+                @click="showVehicle = !showVehicle"
+                class="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 transition-colors">
+          <svg class="w-3 h-3 transition-transform" :class="showVehicle ? 'rotate-90' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+          </svg>
+          Vehicle / Engine Info
+          {% if so.esn or so.engine_manufacturer or so.engine_model %}
+          <span class="ml-1 px-1.5 py-0.5 text-xs bg-brand-50 text-brand-700 rounded font-medium">filled</span>
+          {% endif %}
+        </button>
+
+        <div x-show="showVehicle" x-cloak
+             class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mt-2">
+          <div>
+            <label class="form-label text-xs">ESN</label>
+            {% if editable %}
+            <input type="text" name="esn" value="{{ so.esn or '' }}" placeholder="Engine serial #"
+                   class="form-input text-sm" />
+            {% else %}
+            <span class="text-sm text-gray-700">{{ so.esn or '—' }}</span>
+            {% endif %}
+          </div>
+          <div>
+            <label class="form-label text-xs">Engine Make</label>
+            {% if editable %}
+            <input type="text" name="engine_manufacturer" value="{{ so.engine_manufacturer or '' }}" placeholder="Cummins, DD, etc."
+                   class="form-input text-sm" />
+            {% else %}
+            <span class="text-sm text-gray-700">{{ so.engine_manufacturer or '—' }}</span>
+            {% endif %}
+          </div>
+          <div>
+            <label class="form-label text-xs">Engine Model</label>
+            {% if editable %}
+            <input type="text" name="engine_model" value="{{ so.engine_model or '' }}" placeholder="ISX15, S60, etc."
+                   class="form-input text-sm" />
+            {% else %}
+            <span class="text-sm text-gray-700">{{ so.engine_model or '—' }}</span>
+            {% endif %}
+          </div>
+          <div>
+            <label class="form-label text-xs">Job #</label>
+            {% if editable %}
+            <input type="text" name="customer_job_number" value="{{ so.customer_job_number or '' }}" placeholder="Work order #"
+                   class="form-input text-sm" />
+            {% else %}
+            <span class="text-sm text-gray-700">{{ so.customer_job_number or '—' }}</span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+    </div>{# /card-body #}
+
+    {# Row 3 — Notes #}
+    <div class="border-t border-gray-100 grid grid-cols-1 sm:grid-cols-2 divide-x divide-gray-100">
+      <div class="px-4 py-2">
+        <label class="text-xs font-semibold text-gray-400 uppercase tracking-wide block mb-1">Customer Notes</label>
+        {% if editable %}
+        <textarea name="notes" rows="2" placeholder="Notes visible to customer…"
+                  class="w-full text-sm border-0 bg-transparent resize-none focus:outline-none focus:ring-0 placeholder-gray-300">{{ so.notes }}</textarea>
+        {% else %}
+        <p class="text-sm text-gray-600 whitespace-pre-wrap">{{ so.notes or '—' }}</p>
+        {% endif %}
+      </div>
+      <div class="px-4 py-2">
+        <label class="text-xs font-semibold text-gray-400 uppercase tracking-wide block mb-1">Internal Notes</label>
+        {% if editable %}
+        <textarea name="internal_notes" rows="2" placeholder="Internal only…"
+                  class="w-full text-sm border-0 bg-transparent resize-none focus:outline-none focus:ring-0 placeholder-gray-300">{{ so.internal_notes }}</textarea>
+        {% else %}
+        <p class="text-sm text-gray-600 whitespace-pre-wrap">{{ so.internal_notes or '—' }}</p>
+        {% endif %}
+      </div>
+    </div>
+
+  </form>
+  </div>{# /so-header-strip #}
+
+
+  {# ══════════════════════════════════════════════════════════════════════════
+     LINE ITEMS + FULFILL — HTMX-swappable section
+  ════════════════════════════════════════════════════════════════════════════ #}
+  {% include "sales_orders/_lines_section.html" %}
+
+
+  {# ══════════════════════════════════════════════════════════════════════════
+     RELATED INVOICES
+  ════════════════════════════════════════════════════════════════════════════ #}
+  {% if so.invoices %}
+  <div class="card">
+    <div class="card-header">
+      <h3 class="card-title">Invoices Created from this SO</h3>
+      <span class="text-xs text-gray-400">{{ so.invoices | length }}</span>
+    </div>
+    {% set inv_badges = {
+      'draft':   'badge-gray',
+      'open':    'badge-blue',
+      'partial': 'badge-amber',
+      'paid':    'badge-green',
+      'void':    'badge-red',
+    } %}
+    <table class="tbl">
+      <tbody>
+        {% for inv in so.invoices | sort(attribute='created_at', reverse=True) %}
+        <tr class="tbl-row">
+          <td class="tbl-td">
+            <a href="/invoices/{{ inv.id }}" class="tbl-link font-mono text-xs font-semibold">{{ inv.invoice_number }}</a>
+          </td>
+          <td class="tbl-td text-gray-500 text-sm">{{ inv.created_at.strftime('%b %d, %Y') }}</td>
+          <td class="tbl-td-r font-semibold tabular-nums">${{ '%.2f' % inv.total }}</td>
+          <td class="tbl-td">
+            <span class="{{ inv_badges.get(inv.status, 'badge-gray') }}">{{ inv.status | title }}</span>
+          </td>
+          <td class="tbl-td text-right">
+            <a href="/invoices/{{ inv.id }}" class="text-xs text-brand-700 hover:underline">Open →</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

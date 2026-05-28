@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Statement — {{ stmt.customer.company_name }}</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                   Helvetica, Arial, sans-serif;
+      font-size: 10pt;
+      color: #111;
+      background: #e8eaf0;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+
+    .page-shell {
+      max-width: 8.5in;
+      margin: 0.4in auto 0.8in;
+      background: #fff;
+      box-shadow: 0 2px 32px rgba(0,0,0,.14);
+      padding: 0.6in 0.75in 0.75in;
+    }
+
+    /* ── Screen-only controls ── */
+    .controls {
+      position: fixed; top: 16px; right: 16px;
+      display: flex; gap: 8px; z-index: 9999;
+    }
+    .btn {
+      padding: 8px 18px; border: none; border-radius: 8px;
+      font-size: 13px; font-weight: 600; cursor: pointer; line-height: 1.4;
+    }
+    .btn-primary { background: #4b5320; color: #fff; }
+    .btn-primary:hover { background: #3b4119; }
+    .btn-secondary { background: #e5e7eb; color: #374151; }
+    .btn-secondary:hover { background: #d1d5db; }
+
+    /* ── Header ── */
+    .doc-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      padding-bottom: 16px;
+      border-bottom: 3px solid #4b5320;
+      margin-bottom: 20px;
+    }
+    .co-name {
+      font-size: 20pt; font-weight: 800;
+      color: #4b5320; letter-spacing: -0.5px; line-height: 1.05;
+    }
+    .co-info {
+      margin-top: 4px; font-size: 8pt; color: #6b7280; line-height: 1.85;
+    }
+    .doc-right { text-align: right; }
+    .doc-type {
+      font-size: 15pt; font-weight: 700; color: #4b5320;
+    }
+    .doc-meta {
+      margin-top: 4px; font-size: 8pt; color: #6b7280; line-height: 1.85;
+    }
+    .doc-meta strong { color: #374151; }
+
+    /* ── "Prepared For" ── */
+    .bill-section { margin-bottom: 18px; }
+    .bill-label {
+      font-size: 7pt; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.11em;
+      color: #9ca3af; margin-bottom: 3px;
+    }
+    .bill-company { font-size: 11pt; font-weight: 700; color: #111; }
+    .bill-detail { font-size: 8.5pt; color: #555; line-height: 1.75; margin-top: 2px; }
+
+    /* ── Summary chips ── */
+    .summary-row {
+      display: flex; gap: 0;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 20px;
+    }
+    .summary-cell {
+      flex: 1;
+      padding: 10px 14px;
+      border-right: 1px solid #e5e7eb;
+      text-align: center;
+    }
+    .summary-cell:last-child { border-right: none; }
+    .summary-cell .lbl {
+      font-size: 7pt; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.1em;
+      color: #9ca3af; display: block; margin-bottom: 3px;
+    }
+    .summary-cell .val {
+      font-size: 11pt; font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .val-green { color: #15803d; }
+    .val-red   { color: #dc2626; }
+    .val-brand { color: #4b5320; }
+
+    /* ── Transaction table ── */
+    table.txn {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 9pt;
+      margin-bottom: 18px;
+    }
+    table.txn thead tr { background: #4b5320; color: #fff; }
+    table.txn thead th {
+      padding: 7px 8px;
+      font-size: 7pt; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.08em;
+    }
+    table.txn thead th.lft { text-align: left; }
+    table.txn thead th.rgt { text-align: right; }
+
+    table.txn tbody tr { border-bottom: 1px solid #f0f0f0; }
+    table.txn tbody tr.even-row td { background: #fafafa; }
+    table.txn tbody td { padding: 7px 8px; vertical-align: top; }
+
+    .td-rgt { text-align: right; }
+    .td-charge { text-align: right; }
+    .td-credit { text-align: right; color: #15803d; }
+    .td-balance { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .td-balance.negative { color: #dc2626; }
+
+    .type-invoice { font-weight: 600; color: #111; }
+    .type-payment { color: #15803d; }
+
+    /* Opening/closing rows */
+    tr.opening-row td, tr.closing-row td {
+      background: #f9fafb;
+      font-weight: 600;
+      font-size: 8.5pt;
+    }
+    tr.closing-row td {
+      border-top: 2px solid #4b5320;
+      font-size: 9.5pt;
+    }
+
+    /* ── Aging summary ── */
+    .aging-section {
+      margin-top: 6px;
+      page-break-inside: avoid;
+    }
+    .aging-label {
+      font-size: 7pt; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.11em;
+      color: #9ca3af; margin-bottom: 6px;
+    }
+    .aging-grid {
+      display: flex; gap: 0;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px; overflow: hidden;
+    }
+    .aging-cell {
+      flex: 1;
+      padding: 8px 10px;
+      border-right: 1px solid #e5e7eb;
+      text-align: center;
+    }
+    .aging-cell:last-child { border-right: none; }
+    .aging-cell .a-lbl {
+      font-size: 6.5pt; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.09em;
+      color: #9ca3af; display: block; margin-bottom: 2px;
+    }
+    .aging-cell .a-val {
+      font-size: 9.5pt; font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+    .a-overdue { color: #dc2626; }
+    .a-warn    { color: #d97706; }
+
+    /* ── Remittance stub ── */
+    .remittance {
+      margin-top: 32px;
+      padding-top: 16px;
+      border-top: 1px dashed #d1d5db;
+      page-break-inside: avoid;
+    }
+    .remit-label {
+      font-size: 7pt; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.11em;
+      color: #9ca3af; margin-bottom: 8px;
+    }
+    .remit-body {
+      display: flex; justify-content: space-between; align-items: flex-start;
+    }
+    .remit-left { font-size: 8.5pt; color: #555; line-height: 1.8; }
+    .remit-right {
+      text-align: right;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      padding: 8px 14px;
+      min-width: 160px;
+    }
+    .remit-right .rl { font-size: 7pt; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.08em; }
+    .remit-right .rv { font-size: 12pt; font-weight: 700; color: #4b5320; }
+    .amount-line {
+      margin-top: 10px;
+      border-bottom: 1px solid #d1d5db;
+      display: flex; align-items: center; gap: 4px;
+    }
+    .amount-line .lbl { font-size: 8pt; color: #9ca3af; }
+    .amount-line .blank { flex: 1; height: 1px; }
+
+    /* ── Footer ── */
+    .doc-footer {
+      margin-top: 24px;
+      padding-top: 10px;
+      border-top: 1px solid #e5e7eb;
+      text-align: center;
+      font-size: 7.5pt;
+      color: #bbb;
+    }
+
+    /* ── Print overrides ── */
+    @media print {
+      @page { size: letter portrait; margin: 0.55in 0.65in 0.75in 0.65in; }
+      body  { background: none; }
+      .page-shell { max-width: none; margin: 0; padding: 0; box-shadow: none; }
+      .controls   { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="controls">
+  <button class="btn btn-primary" onclick="window.print()">&#128438; Print / Save PDF</button>
+  <button class="btn btn-secondary" onclick="window.close()">&#x2715; Close</button>
+</div>
+
+<div class="page-shell">
+
+  {# ── Header ── #}
+  <div class="doc-header">
+    <div>
+      <div class="co-name">{{ company.name or "JAKS Parts" }}</div>
+      <div class="co-info">
+        {% if company.address %}{{ company.address }}<br>{% endif %}
+        {% if company.phone %}Tel:&nbsp;{{ company.phone }}{% if company.email %}&nbsp;&nbsp;·&nbsp;&nbsp;{% endif %}{% endif %}
+        {% if company.email %}{{ company.email }}{% endif %}
+      </div>
+    </div>
+    <div class="doc-right">
+      <div class="doc-type">Account Statement</div>
+      <div class="doc-meta">
+        <strong>Period:</strong>
+        {{ stmt.period_start.strftime('%B %d, %Y') }} – {{ stmt.period_end.strftime('%B %d, %Y') }}<br>
+        <strong>Statement Date:</strong> {{ stmt.as_of.strftime('%B %d, %Y') }}
+      </div>
+    </div>
+  </div>
+
+  {# ── Bill To ── #}
+  <div class="bill-section">
+    <div class="bill-label">Account</div>
+    <div class="bill-company">{{ stmt.customer.company_name }}</div>
+    {% set c = stmt.customer %}
+    {% set addr_parts = [c.address_line1, c.address_line2] | select | list %}
+    {% set city_parts = [c.city, c.state] | select | list %}
+    {% set city_line = city_parts | join(', ') %}
+    {% if c.zip_code %}{% set city_line = city_line + ' ' + c.zip_code %}{% endif %}
+    {% if addr_parts or city_line or c.phone %}
+    <div class="bill-detail">
+      {% for line in addr_parts %}{{ line }}<br>{% endfor %}
+      {% if city_line %}{{ city_line }}<br>{% endif %}
+      {% if c.phone %}{{ c.phone }}{% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  {# ── Summary chips ── #}
+  <div class="summary-row">
+    <div class="summary-cell">
+      <span class="lbl">Opening Balance</span>
+      <span class="val {% if stmt.opening_balance > 0 %}val-brand{% endif %}">
+        ${{ '%.2f' % stmt.opening_balance }}
+      </span>
+    </div>
+    <div class="summary-cell">
+      <span class="lbl">Charges</span>
+      <span class="val">${{ '%.2f' % stmt.total_charges }}</span>
+    </div>
+    <div class="summary-cell">
+      <span class="lbl">Credits / Payments</span>
+      <span class="val val-green">${{ '%.2f' % stmt.total_credits }}</span>
+    </div>
+    <div class="summary-cell">
+      <span class="lbl">Balance Due</span>
+      <span class="val {% if stmt.closing_balance > 0 %}val-red{% elif stmt.closing_balance < 0 %}val-green{% endif %}">
+        ${{ '%.2f' % stmt.closing_balance }}
+      </span>
+    </div>
+  </div>
+
+  {# ── Transaction table ── #}
+  <table class="txn">
+    <thead>
+      <tr>
+        <th class="lft" style="width:80px">Date</th>
+        <th class="lft" style="width:70px">Type</th>
+        <th class="lft">Reference</th>
+        <th class="rgt" style="width:90px">Charges</th>
+        <th class="rgt" style="width:90px">Credits</th>
+        <th class="rgt" style="width:90px">Balance</th>
+      </tr>
+    </thead>
+    <tbody>
+
+      {# Opening balance row #}
+      <tr class="opening-row">
+        <td>{{ stmt.period_start.strftime('%m/%d/%y') }}</td>
+        <td colspan="2" style="color:#6b7280">Opening Balance</td>
+        <td class="td-rgt">—</td>
+        <td class="td-rgt">—</td>
+        <td class="td-balance {% if stmt.opening_balance < 0 %}negative{% endif %}">
+          ${{ '%.2f' % stmt.opening_balance }}
+        </td>
+      </tr>
+
+      {# Transaction rows #}
+      {% for line in stmt.lines %}
+      <tr {% if loop.index % 2 == 0 %}class="even-row"{% endif %}>
+        <td>{{ line.txn_date.strftime('%m/%d/%y') }}</td>
+        <td>
+          {% if line.txn_type == 'invoice' %}
+          <span class="type-invoice">Invoice</span>
+          {% elif line.txn_type == 'payment' %}
+          <span class="type-payment">Payment</span>
+          {% else %}
+          <span>{{ line.txn_type | title }}</span>
+          {% endif %}
+        </td>
+        <td style="font-size:8.5pt; color:#555">{{ line.reference }}</td>
+        <td class="td-charge">
+          {% if line.charges > 0 %}${{ '%.2f' % line.charges }}{% else %}—{% endif %}
+        </td>
+        <td class="td-credit">
+          {% if line.credits > 0 %}${{ '%.2f' % line.credits }}{% else %}—{% endif %}
+        </td>
+        <td class="td-balance {% if line.running_balance < 0 %}negative{% endif %}">
+          ${{ '%.2f' % line.running_balance }}
+        </td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="6" style="text-align:center;padding:16px;color:#aaa;font-style:italic">
+          No activity during this period.
+        </td>
+      </tr>
+      {% endfor %}
+
+      {# Closing balance row #}
+      <tr class="closing-row">
+        <td>{{ stmt.period_end.strftime('%m/%d/%y') }}</td>
+        <td colspan="2" style="color:#4b5320">Closing Balance</td>
+        <td class="td-rgt" style="font-size:8.5pt; color:#6b7280">
+          +${{ '%.2f' % stmt.total_charges }}
+        </td>
+        <td class="td-rgt" style="font-size:8.5pt; color:#15803d">
+          –${{ '%.2f' % stmt.total_credits }}
+        </td>
+        <td class="td-balance {% if stmt.closing_balance < 0 %}negative{% endif %}"
+            style="font-size:11pt; color:#4b5320">
+          ${{ '%.2f' % stmt.closing_balance }}
+        </td>
+      </tr>
+
+    </tbody>
+  </table>
+
+  {# ── Aging summary ── #}
+  <div class="aging-section">
+    <div class="aging-label">Aging Summary — as of {{ stmt.as_of.strftime('%B %d, %Y') }}</div>
+    <div class="aging-grid">
+      <div class="aging-cell">
+        <span class="a-lbl">Current</span>
+        <span class="a-val">${{ '%.2f' % stmt.aging.current }}</span>
+      </div>
+      <div class="aging-cell">
+        <span class="a-lbl">1–30 Days</span>
+        <span class="a-val {% if stmt.aging['1_30'] > 0 %}a-warn{% endif %}">${{ '%.2f' % stmt.aging['1_30'] }}</span>
+      </div>
+      <div class="aging-cell">
+        <span class="a-lbl">31–60 Days</span>
+        <span class="a-val {% if stmt.aging['31_60'] > 0 %}a-overdue{% endif %}">${{ '%.2f' % stmt.aging['31_60'] }}</span>
+      </div>
+      <div class="aging-cell">
+        <span class="a-lbl">61–90 Days</span>
+        <span class="a-val {% if stmt.aging['61_90'] > 0 %}a-overdue{% endif %}">${{ '%.2f' % stmt.aging['61_90'] }}</span>
+      </div>
+      <div class="aging-cell">
+        <span class="a-lbl">90+ Days</span>
+        <span class="a-val {% if stmt.aging.over_90 > 0 %}a-overdue{% endif %}">${{ '%.2f' % stmt.aging.over_90 }}</span>
+      </div>
+    </div>
+  </div>
+
+  {# ── Remittance stub ── #}
+  {% if stmt.closing_balance > 0 %}
+  <div class="remittance">
+    <div class="remit-label">— Detach and return with payment —</div>
+    <div class="remit-body">
+      <div class="remit-left">
+        <strong>{{ stmt.customer.company_name }}</strong><br>
+        Statement Date: {{ stmt.as_of.strftime('%B %d, %Y') }}<br>
+        <br>
+        Make check payable to:<br>
+        <strong>{{ company.name or 'JAKS Parts' }}</strong><br>
+        {% if company.address %}{{ company.address }}{% endif %}
+      </div>
+      <div class="remit-right">
+        <div class="rl">Amount Due</div>
+        <div class="rv">${{ '%.2f' % stmt.closing_balance }}</div>
+        <div class="amount-line" style="margin-top:14px">
+          <span class="lbl">Amount Enclosed $</span>
+          <span class="blank" style="border-bottom:1px solid #d1d5db; flex:1; margin-left:4px; display:inline-block; height:1px; min-width:60px"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Footer ── #}
+  <div class="doc-footer">
+    Thank you for your business
+    {% if company.name %} &nbsp;·&nbsp; {{ company.name }}{% endif %}
+    {% if company.phone %} &nbsp;·&nbsp; {{ company.phone }}{% endif %}
+    {% if company.email %} &nbsp;·&nbsp; {{ company.email }}{% endif %}
+  </div>
+
+</div>{# /page-shell #}
+
+<script>
+(function () {
+  var params = new URLSearchParams(window.location.search);
+  if (params.get('auto') === '1') {
+    window.addEventListener('load', function () {
+      setTimeout(function () { window.print(); }, 400);
+    });
+  }
+}());
+</script>
+</body>
+</html>

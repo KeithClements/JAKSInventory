@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Statement — {{ customer.company_name }}{% endblock %}
+{% block heading %}Account Statement{% endblock %}
+
+{% block header_actions %}
+  <a href="/customers/{{ customer.id }}" class="text-sm text-gray-500 hover:text-gray-700">← {{ customer.company_name }}</a>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-lg">
+  <div class="card">
+    <div class="card-body space-y-5">
+      <div>
+        <p class="text-sm font-semibold text-gray-700">{{ customer.company_name }}</p>
+        <p class="text-xs text-gray-400 mt-0.5">Select the statement period to generate</p>
+      </div>
+
+      <form method="get" action="/customers/{{ customer.id }}/statement/print"
+            target="_blank" class="space-y-4">
+
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="form-label">Statement Start</label>
+            <input type="date" name="start" value="{{ default_start }}" required
+                   class="form-input" />
+          </div>
+          <div>
+            <label class="form-label">Statement End</label>
+            <input type="date" name="end" value="{{ default_end }}" required
+                   class="form-input" />
+          </div>
+        </div>
+
+        <div class="flex gap-3">
+          <button type="submit" class="btn-primary">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/>
+            </svg>
+            Print / Save PDF
+          </button>
+          <a href="/customers/{{ customer.id }}/statement/pdf?start={{ default_start }}&end={{ default_end }}"
+             class="btn-secondary">
+            Download PDF
+          </a>
+        </div>
+
+      </form>
+
+      <div class="border-t border-gray-100 pt-4">
+        <p class="text-xs text-gray-400 font-semibold uppercase tracking-wide mb-2">Quick Periods</p>
+        <div class="flex flex-wrap gap-2">
+          {# These links just pre-fill the form via URL — JS-free #}
+          <a href="/customers/{{ customer.id }}/statement/print?start={{ default_start }}&end={{ default_end }}"
+             target="_blank"
+             class="px-2.5 py-1 rounded text-xs border border-gray-200 text-gray-600 hover:bg-gray-50">
+            This month
+          </a>
+          <a href="/customers/{{ customer.id }}/statement/print?start={{ (default_start[:7] | replace('-', '-') ) }}-01&end={{ default_end }}"
+             target="_blank"
+             class="px-2.5 py-1 rounded text-xs border border-gray-200 text-gray-600 hover:bg-gray-50">
+            30 days
+          </a>
+          <a href="/customers/{{ customer.id }}/statement/print?start={{ default_end[:4] }}-01-01&end={{ default_end }}"
+             target="_blank"
+             class="px-2.5 py-1 rounded text-xs border border-gray-200 text-gray-600 hover:bg-gray-50">
+            Year to date
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,40 +1,80 @@
 {% extends "base.html" %}
-{% block title %}Inventory Snapshot — JAKS Inventory{% endblock %}
-{% block heading %}Inventory Snapshot{% endblock %}
+{% block title %}Inventory Valuation — JAKS Inventory{% endblock %}
+{% block heading %}Inventory Valuation{% endblock %}
 
 {% block header_actions %}
   <a href="/reports/" class="text-sm text-gray-500 hover:text-gray-700">AR Aging</a>
-  <a href="/reports/sales/" class="text-sm text-gray-500 hover:text-gray-700">Sales Report</a>
+  <a href="/reports/sales/" class="text-sm text-gray-500 hover:text-gray-700">Sales</a>
+  <a href="/reports/open-pos/" class="text-sm text-gray-500 hover:text-gray-700">Open POs</a>
 {% endblock %}
 
 {% block content %}
 <div class="max-w-5xl space-y-4">
 
-  <p class="text-xs text-gray-400">As of {{ today.strftime('%B %d, %Y') }} — active products with qty on hand &gt; 0</p>
+  <p class="text-xs text-gray-400">As of {{ today.strftime('%B %d, %Y') }}</p>
 
-  {# Summary cards #}
-  <div class="grid grid-cols-3 gap-4">
-    <div class="stat-card">
+  {# ── Summary cards ── #}
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div class="stat-card bg-white">
       <p class="stat-label">SKUs in Stock</p>
-      <p class="stat-value">{{ products | length }}</p>
+      <p class="stat-value">{{ sku_count }}</p>
     </div>
-    <div class="stat-card">
+    <div class="stat-card bg-white">
       <p class="stat-label">Total Units</p>
       <p class="stat-value">{{ total_units }}</p>
     </div>
-    <div class="stat-card">
+    <div class="stat-card bg-white">
       <p class="stat-label">Cost Value</p>
       <p class="stat-value text-brand-700">${{ '%.2f' % total_value }}</p>
       <p class="text-xs text-gray-400 mt-0.5">Retail est. ${{ '%.2f' % total_retail }}</p>
     </div>
+    <div class="stat-card bg-white {% if low_stock_count > 0 %}border-amber-200{% endif %}">
+      <p class="stat-label {% if low_stock_count > 0 %}text-amber-600{% endif %}">Low Stock</p>
+      <p class="stat-value {% if low_stock_count > 0 %}text-amber-600{% else %}text-gray-400{% endif %}">
+        {{ low_stock_count }}
+      </p>
+      <p class="text-xs text-gray-400 mt-0.5">
+        {% if low_stock_count > 0 %}item{{ 's' if low_stock_count != 1 }} at/below reorder point{% else %}all stocked{% endif %}
+      </p>
+    </div>
   </div>
 
-  {# Product table #}
+  {# ── Filter tabs ── #}
+  <div class="flex items-center gap-1 bg-gray-100 rounded-lg p-1 w-fit">
+    <a href="/reports/inventory/?filter=in_stock"
+       class="px-3 py-1.5 rounded-md text-xs font-medium transition-colors
+              {% if active_filter == 'in_stock' %}bg-white text-gray-800 shadow-sm{% else %}text-gray-500 hover:text-gray-700{% endif %}">
+      In Stock
+    </a>
+    <a href="/reports/inventory/?filter=all"
+       class="px-3 py-1.5 rounded-md text-xs font-medium transition-colors
+              {% if active_filter == 'all' %}bg-white text-gray-800 shadow-sm{% else %}text-gray-500 hover:text-gray-700{% endif %}">
+      All Products
+    </a>
+    <a href="/reports/inventory/?filter=low_stock"
+       class="px-3 py-1.5 rounded-md text-xs font-medium transition-colors
+              {% if active_filter == 'low_stock' %}bg-white text-amber-700 shadow-sm{% else %}text-gray-500 hover:text-gray-700{% endif %}
+              {% if low_stock_count > 0 and active_filter != 'low_stock' %}text-amber-600{% endif %}">
+      Low Stock
+      {% if low_stock_count > 0 %}
+      <span class="ml-1 inline-flex items-center justify-center w-4 h-4 text-xs rounded-full
+                   {% if active_filter == 'low_stock' %}bg-amber-100 text-amber-700{% else %}bg-amber-200 text-amber-800{% endif %}">
+        {{ low_stock_count }}
+      </span>
+      {% endif %}
+    </a>
+  </div>
+
+  {# ── Product table ── #}
   {% if products %}
   <div class="card">
     <div class="card-header">
-      <h2 class="card-title">Stock by Product</h2>
-      <a href="/products/" class="text-xs link">All products →</a>
+      <h2 class="card-title">
+        {% if active_filter == 'low_stock' %}Low Stock Items
+        {% elif active_filter == 'all' %}All Products
+        {% else %}Stock on Hand{% endif %}
+      </h2>
+      <span class="text-xs text-gray-400">{{ products | length }} SKU{{ 's' if products | length != 1 }}</span>
     </div>
     <div class="overflow-x-auto">
       <table class="tbl">
@@ -43,6 +83,8 @@
             <th class="tbl-th">SKU</th>
             <th class="tbl-th">Description</th>
             <th class="tbl-th-r">On Hand</th>
+            <th class="tbl-th-r">Committed</th>
+            <th class="tbl-th-r">Available</th>
             <th class="tbl-th-r">On Order</th>
             <th class="tbl-th-r">Unit Cost</th>
             <th class="tbl-th-r">Total Value</th>
@@ -51,23 +93,41 @@
         </thead>
         <tbody>
           {% for p in products %}
-          <tr class="tbl-row">
+          {% set is_low = p.reorder_point > 0 and p.qty_on_hand <= p.reorder_point %}
+          <tr class="tbl-row {% if is_low %}bg-amber-50/30{% endif %}">
             <td class="tbl-td">
               <a href="/products/{{ p.id }}" class="tbl-link font-mono text-xs">{{ p.sku }}</a>
+              {% if is_low %}
+              <span class="ml-1.5 inline-block px-1.5 py-0.5 rounded text-xs font-semibold bg-amber-100 text-amber-700 leading-none">
+                reorder
+              </span>
+              {% endif %}
             </td>
             <td class="tbl-td text-gray-600 text-sm max-w-xs truncate">{{ p.title }}</td>
-            <td class="tbl-td-r font-medium
-              {% if p.qty_on_hand == 0 %}text-red-600
-              {% elif p.reorder_point and p.qty_on_hand <= p.reorder_point %}text-amber-600
-              {% else %}text-green-700{% endif %}">
+            <td class="tbl-td-r font-medium tabular-nums
+              {% if p.qty_on_hand == 0 %}text-red-500
+              {% elif is_low %}text-amber-600
+              {% else %}text-gray-800{% endif %}">
               {{ p.qty_on_hand }}
+              {% if p.reorder_point > 0 %}
+              <span class="text-xs text-gray-300 ml-1">/ {{ p.reorder_point }}</span>
+              {% endif %}
             </td>
-            <td class="tbl-td-r {% if p.qty_on_order > 0 %}text-blue-600{% else %}text-gray-400{% endif %}">
+            <td class="tbl-td-r tabular-nums {% if p.qty_committed > 0 %}text-orange-600{% else %}text-gray-300{% endif %}">
+              {% if p.qty_committed > 0 %}{{ p.qty_committed }}{% else %}—{% endif %}
+            </td>
+            <td class="tbl-td-r tabular-nums font-medium
+              {% if p.qty_available <= 0 %}text-red-500
+              {% elif p.qty_available < (p.reorder_point or 999999) %}text-amber-600
+              {% else %}text-green-700{% endif %}">
+              {{ p.qty_available }}
+            </td>
+            <td class="tbl-td-r tabular-nums {% if p.qty_on_order > 0 %}text-blue-600{% else %}text-gray-300{% endif %}">
               {% if p.qty_on_order > 0 %}{{ p.qty_on_order }}{% else %}—{% endif %}
             </td>
-            <td class="tbl-td-r tabular-nums">${{ '%.2f' % p.cost }}</td>
-            <td class="tbl-td-r tabular-nums font-semibold text-brand-700">
-              ${{ '%.2f' % (p.qty_on_hand * p.cost) }}
+            <td class="tbl-td-r tabular-nums text-gray-600">${{ '%.2f' % (p.cost or 0) }}</td>
+            <td class="tbl-td-r tabular-nums font-semibold {% if p.qty_on_hand > 0 %}text-brand-700{% else %}text-gray-300{% endif %}">
+              {% if p.qty_on_hand > 0 %}${{ '%.2f' % (p.qty_on_hand * (p.cost or 0)) }}{% else %}—{% endif %}
             </td>
             <td class="tbl-td-r tabular-nums text-gray-500">${{ '%.2f' % p.selling_price }}</td>
           </tr>
@@ -75,12 +135,13 @@
         </tbody>
         <tfoot class="border-t-2 border-gray-200 bg-gray-50">
           <tr>
-            <td colspan="2" class="px-4 py-3 text-sm font-bold text-gray-700">Totals</td>
-            <td class="px-4 py-3 text-right text-sm font-bold text-gray-700">{{ total_units }}</td>
+            <td colspan="2" class="px-4 py-3 text-sm font-bold text-gray-700">
+              {% if active_filter != 'in_stock' %}Filtered {% endif %}Totals
+            </td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-gray-700 tabular-nums">{{ filtered_units }}</td>
+            <td colspan="4"></td>
+            <td class="px-4 py-3 text-right text-lg font-bold text-brand-700 tabular-nums">${{ '%.2f' % filtered_value }}</td>
             <td></td>
-            <td></td>
-            <td class="px-4 py-3 text-right text-lg font-bold text-brand-700">${{ '%.2f' % total_value }}</td>
-            <td class="px-4 py-3 text-right text-sm font-bold text-gray-500">${{ '%.2f' % total_retail }}</td>
           </tr>
         </tfoot>
       </table>
@@ -88,14 +149,24 @@
   </div>
 
   {% else %}
+
   <div class="card flex flex-col items-center justify-center py-16">
+    {% if active_filter == 'low_stock' %}
+    <svg class="w-12 h-12 text-green-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    </svg>
+    <p class="text-gray-500 font-medium">No items below reorder point</p>
+    <p class="text-gray-400 text-sm mt-1">All products are stocked above their reorder points.</p>
+    {% else %}
     <svg class="w-12 h-12 text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
             d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
     </svg>
     <p class="text-gray-500 font-medium">No products with stock on hand</p>
     <p class="text-gray-400 text-sm mt-1">Receive a purchase order to add inventory.</p>
+    {% endif %}
   </div>
+
   {% endif %}
 
 </div>

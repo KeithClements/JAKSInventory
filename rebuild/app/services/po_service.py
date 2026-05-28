@@ -486,6 +486,45 @@ class POService(BaseService):
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
+    def save_header(self, po_id: int, data: dict) -> None:
+        """Autosave PO header fields. Blocked only on BILLED/CANCELLED."""
+        po = self._get_po_or_404(po_id)
+        if po.status in (POStatus.BILLED, POStatus.CANCELLED):
+            raise ValueError(f"Cannot edit a {po.status} PO")
+        for field in ("notes", "internal_notes", "vendor_confirmation_number"):
+            if field in data:
+                setattr(po, field, data[field])
+        if "freight_in_cost" in data:
+            po.freight_in_cost = float(data["freight_in_cost"] or 0.0)
+        if "expected_at" in data:
+            po.expected_at = data["expected_at"]
+        self.db.commit()
+
+    def update_line(self, line_id: int, data: dict) -> POLine:
+        """Update a line's description/qty/cost/core. Only on DRAFT or VERBAL_ORDER."""
+        line = self.db.query(POLine).filter(POLine.id == line_id).first()
+        if line is None:
+            raise ValueError(f"Line {line_id} not found")
+        po = self._get_po_or_404(line.po_id)
+        if po.status not in (POStatus.DRAFT, POStatus.VERBAL_ORDER):
+            raise ValueError(f"Cannot edit lines on a {po.status} PO")
+        for field in ("description", "qty_ordered", "unit_cost", "core_charge_per_unit", "notes"):
+            if field in data:
+                setattr(line, field, data[field])
+        self.db.commit()
+        return line
+
+    def delete_line(self, line_id: int) -> None:
+        """Delete a line. Only on DRAFT or VERBAL_ORDER."""
+        line = self.db.query(POLine).filter(POLine.id == line_id).first()
+        if line is None:
+            raise ValueError(f"Line {line_id} not found")
+        po = self._get_po_or_404(line.po_id)
+        if po.status not in (POStatus.DRAFT, POStatus.VERBAL_ORDER):
+            raise ValueError(f"Cannot delete lines on a {po.status} PO")
+        self.db.delete(line)
+        self.db.commit()
+
     def _get_po_or_404(self, po_id: int) -> PurchaseOrder:
         po = self.db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()
         if po is None:

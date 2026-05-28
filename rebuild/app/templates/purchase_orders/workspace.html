@@ -1,0 +1,337 @@
+{% extends "base.html" %}
+{% block title %}{{ po.po_number }} — JAKS Inventory{% endblock %}
+{% block heading %}{{ po.po_number }}{% endblock %}
+
+{% set status_pill = {
+  'draft':        ('badge-gray',  'Draft'),
+  'verbal_order': ('badge-blue',  'Verbal Order'),
+  'sent':         ('badge-blue',  'Sent'),
+  'partial':      ('badge-amber', 'Partial'),
+  'received':     ('badge-green', 'Received'),
+  'billed':       ('badge-green', 'Billed'),
+  'cancelled':    ('badge-red',   'Cancelled'),
+} %}
+
+{% block header_actions %}
+  <span class="{{ status_pill[po.status][0] }}">{{ status_pill[po.status][1] }}</span>
+
+  {% if editable %}
+    <form method="post" action="/purchase-orders/{{ po.id }}/send">
+      <button type="submit" class="btn-primary btn-sm">
+        {{ 'Convert to PO' if po.status == 'verbal_order' else 'Send to Vendor' }}
+      </button>
+    </form>
+    <form method="post" action="/purchase-orders/{{ po.id }}/cancel-status"
+          onsubmit="return confirm('Cancel this PO?')">
+      <button type="submit" class="btn-ghost btn-sm text-red-500">Cancel PO</button>
+    </form>
+
+  {% elif po.status == 'sent' %}
+    <form method="post" action="/purchase-orders/{{ po.id }}/cancel-status"
+          onsubmit="return confirm('Cancel this PO? Inventory on-order will be reversed.')">
+      <button type="submit" class="btn-ghost btn-sm text-red-500">Cancel PO</button>
+    </form>
+  {% endif %}
+
+  <a href="/purchase-orders/" class="text-sm text-gray-500 hover:text-gray-700">← Purchase Orders</a>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl space-y-4"
+     x-data="{ showNotes: {{ 'true' if (po.notes or po.internal_notes) else 'false' }} }">
+
+  {# ── Flash banners ── #}
+  {% set ok_msg = {
+    'sent':     'PO sent to vendor — inventory on-order updated.',
+    'received': 'Goods received and inventory updated.',
+    'billed':   'Vendor bill created successfully.',
+  } %}
+  {% if request.query_params.get('ok') %}
+  <div class="rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800 flex items-center gap-2">
+    <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+    {{ ok_msg.get(request.query_params.get('ok'), 'Saved.') }}
+  </div>
+  {% endif %}
+  {% if request.query_params.get('error') %}
+  <div class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700 flex items-center gap-2">
+    <svg class="w-4 h-4 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+    {{ request.query_params.get('error') }}
+  </div>
+  {% endif %}
+
+  {# ── Header strip ── #}
+  <div id="po-header-strip">
+    <form hx-post="/purchase-orders/{{ po.id }}/header"
+          hx-swap="none"
+          hx-trigger="change from:input,select,textarea delay:600ms"
+          class="card card-body space-y-3">
+
+      {# Row 1: Vendor + key fields + total #}
+      <div class="flex flex-wrap items-start gap-4">
+        <div class="flex-1 min-w-48">
+          <p class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">Vendor</p>
+          <p class="font-semibold text-gray-900">
+            <a href="/vendors/{{ po.vendor.id }}" class="link">{{ po.vendor.name }}</a>
+          </p>
+          {% if po.vendor.phone %}<p class="text-xs text-gray-400">{{ po.vendor.phone }}</p>{% endif %}
+          {% if po.vendor.account_number %}<p class="text-xs font-mono text-gray-400">Acct: {{ po.vendor.account_number }}</p>{% endif %}
+        </div>
+
+        <div class="flex flex-wrap gap-4 flex-1">
+          <div class="min-w-36">
+            <label class="form-label">Expected Delivery</label>
+            {% if editable or po.status == 'sent' %}
+            <input type="date" name="expected_at"
+                   value="{{ po.expected_at.strftime('%Y-%m-%d') if po.expected_at else '' }}"
+                   class="form-input" />
+            {% else %}
+            <p class="text-sm text-gray-700">{{ po.expected_at.strftime('%b %d, %Y') if po.expected_at else '—' }}</p>
+            {% endif %}
+          </div>
+
+          <div class="min-w-44">
+            <label class="form-label">Vendor Conf #</label>
+            {% if editable or po.status in ('sent', 'partial') %}
+            <input type="text" name="vendor_confirmation_number"
+                   value="{{ po.vendor_confirmation_number or '' }}"
+                   placeholder="e.g. CONF-1234"
+                   class="form-input font-mono" />
+            {% else %}
+            <p class="text-sm text-gray-700 font-mono">{{ po.vendor_confirmation_number or '—' }}</p>
+            {% endif %}
+          </div>
+
+          <div class="min-w-32">
+            <label class="form-label">Freight In</label>
+            {% if editable %}
+            <input type="number" name="freight_in_cost" step="0.01" min="0"
+                   value="{{ '%.2f' | format(po.freight_in_cost) }}"
+                   class="form-input text-right font-mono" />
+            {% else %}
+            <p class="text-sm text-gray-700 tabular-nums">${{ '%.2f' | format(po.freight_in_cost) }}</p>
+            {% endif %}
+          </div>
+        </div>
+
+        <div class="text-right shrink-0">
+          <p class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">Order Total</p>
+          <p class="text-xl font-bold text-brand-700 tabular-nums">${{ '%.2f' | format(po.total) }}</p>
+          {% if po.core_total > 0 %}
+          <p class="text-xs text-amber-600 tabular-nums">+${{ '%.2f' | format(po.core_total) }} core</p>
+          {% endif %}
+          {% if po.ordered_at %}
+          <p class="text-xs text-gray-400 mt-1">Ordered {{ po.ordered_at.strftime('%b %d') }}</p>
+          {% endif %}
+          <p class="text-xs text-gray-400">Created {{ po.created_at.strftime('%b %d, %Y') }}</p>
+        </div>
+      </div>
+
+      {# Notes row (expandable) #}
+      <div class="border-t border-gray-50 pt-2">
+        <button type="button" @click="showNotes = !showNotes"
+                class="text-xs text-gray-400 hover:text-gray-600 transition-colors flex items-center gap-1">
+          <svg class="w-3 h-3 transition-transform" :class="showNotes && 'rotate-90'"
+               fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/>
+          </svg>
+          Notes
+          {% if po.notes or po.internal_notes %}
+          <span class="inline-block w-1.5 h-1.5 bg-amber-400 rounded-full ml-1"></span>
+          {% endif %}
+        </button>
+        <div x-show="showNotes" x-cloak class="grid grid-cols-2 gap-4 mt-2">
+          <div>
+            <label class="form-label">Vendor Notes</label>
+            <textarea name="notes" rows="2" placeholder="Special instructions, shipping notes…"
+                      class="form-textarea"
+                      {% if not editable %}readonly{% endif %}>{{ po.notes }}</textarea>
+          </div>
+          <div>
+            <label class="form-label">Internal Notes</label>
+            <textarea name="internal_notes" rows="2" placeholder="Internal only…"
+                      class="form-textarea"
+                      {% if not editable %}readonly{% endif %}>{{ po.internal_notes }}</textarea>
+          </div>
+        </div>
+      </div>
+
+    </form>
+  </div>
+
+  {# ── Lines section ── #}
+  {% include "purchase_orders/_lines_section.html" %}
+
+  {# ── Receive Goods ── #}
+  {% if can_receive and unreceived_lines %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Receive Goods</h2>
+      <span class="text-xs text-gray-400">{{ unreceived_lines | length }} line{{ 's' if unreceived_lines | length != 1 }} outstanding</span>
+    </div>
+    <div class="card-body">
+      <form method="post" action="/purchase-orders/{{ po.id }}/receive" class="space-y-4">
+
+        <div class="space-y-3">
+          {% for line in unreceived_lines %}
+          <div class="flex items-center gap-4 py-1">
+            <span class="font-mono text-xs text-brand-700 w-28 shrink-0">
+              {{ line.product.sku if line.product else '—' }}
+            </span>
+            <span class="flex-1 text-sm text-gray-700">
+              {{ line.description or (line.product.title if line.product else '—') }}
+            </span>
+            <span class="text-xs text-gray-400 shrink-0">{{ line.qty_outstanding }} outstanding</span>
+            <input type="number" name="recv_{{ line.id }}"
+                   min="0" max="{{ line.qty_outstanding }}" value="{{ line.qty_outstanding }}"
+                   class="w-20 form-input text-right shrink-0" />
+          </div>
+          {% endfor %}
+        </div>
+
+        <div class="grid grid-cols-2 gap-4 pt-3 border-t border-gray-100">
+          <div>
+            <label class="form-label">Tracking Number</label>
+            <input name="tracking_number" placeholder="Optional" class="form-input" />
+          </div>
+          <div>
+            <label class="form-label">Carrier</label>
+            <select name="carrier" class="form-select">
+              <option value="">— Optional —</option>
+              <option value="ups">UPS</option>
+              <option value="fedex">FedEx</option>
+              <option value="ltl">LTL Freight</option>
+              <option value="local_delivery">Local Delivery</option>
+              <option value="vendor_drop_ship">Vendor Drop Ship</option>
+              <option value="customer_pickup">Customer Pickup</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label class="form-label">Receipt Notes</label>
+          <textarea name="notes" rows="2" class="form-textarea"
+                    placeholder="Condition notes, shortages, damages…"></textarea>
+        </div>
+        <button type="submit" class="btn-primary">Receive &amp; Update Inventory</button>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Create Vendor Bill ── #}
+  {% if can_bill and received_lines %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Create Vendor Bill</h2>
+      <span class="text-xs text-gray-400">Match vendor invoice to received goods</span>
+    </div>
+    <div class="card-body">
+      <form method="post" action="/purchase-orders/{{ po.id }}/create-bill" class="space-y-4">
+        <div class="grid grid-cols-3 gap-4">
+          <div>
+            <label class="form-label">Vendor Invoice # <span class="text-red-500">*</span></label>
+            <input name="bill_number" required placeholder="e.g. INV-12345" class="form-input" />
+          </div>
+          <div>
+            <label class="form-label">Bill Date</label>
+            <input type="date" name="bill_date" class="form-input" />
+          </div>
+          <div>
+            <label class="form-label">Due Date</label>
+            <input type="date" name="due_date" class="form-input" />
+          </div>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="tbl">
+            <thead class="tbl-head">
+              <tr>
+                <th class="tbl-th">SKU</th>
+                <th class="tbl-th">Description</th>
+                <th class="tbl-th-r">Received</th>
+                <th class="tbl-th-r">Qty to Bill</th>
+                <th class="tbl-th-r">Unit Cost</th>
+                <th class="tbl-th-r">Line Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for line in received_lines %}
+              {% set unbilled = line.qty_received - (line.qty_billed or 0) %}
+              <tr class="tbl-row">
+                <td class="tbl-td font-mono text-xs">{{ line.product.sku if line.product else '—' }}</td>
+                <td class="tbl-td text-gray-600 text-sm">
+                  {{ line.description or (line.product.title if line.product else '—') }}
+                </td>
+                <td class="tbl-td-r text-sm">{{ line.qty_received }}</td>
+                <td class="tbl-td-r">
+                  <input type="number" name="qty_billed_{{ line.id }}"
+                         min="0" max="{{ line.qty_received }}"
+                         value="{{ unbilled if unbilled > 0 else 0 }}"
+                         class="w-20 form-input text-right" />
+                </td>
+                <td class="tbl-td-r">
+                  <input type="number" name="unit_cost_{{ line.id }}" step="0.01" min="0"
+                         value="{{ '%.2f' | format(line.unit_cost) }}"
+                         class="w-24 form-input text-right" />
+                </td>
+                <td class="tbl-td-r text-sm font-medium tabular-nums text-gray-700">
+                  ${{ '%.2f' | format(line.qty_received * line.unit_cost) }}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        {% if po.status == 'partial' %}
+        <p class="text-xs text-amber-600">
+          This PO has only been partially received. Bill only lines you have received.
+        </p>
+        {% endif %}
+
+        <button type="submit" class="btn-primary">Create Vendor Bill</button>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Related Bills ── #}
+  {% if po.bills %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Vendor Bills</h2>
+      <span class="text-xs text-gray-400">{{ po.bills | length }} bill{{ 's' if po.bills | length != 1 }}</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">Bill #</th>
+            <th class="tbl-th">Date</th>
+            <th class="tbl-th">Due</th>
+            <th class="tbl-th-r">Amount</th>
+            <th class="tbl-th">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for bill in po.bills %}
+          <tr class="tbl-row">
+            <td class="tbl-td font-mono text-xs font-semibold">{{ bill.bill_number or '—' }}</td>
+            <td class="tbl-td text-gray-600">{{ bill.bill_date.strftime('%b %d, %Y') if bill.bill_date else '—' }}</td>
+            <td class="tbl-td text-gray-600">{{ bill.due_date.strftime('%b %d, %Y') if bill.due_date else '—' }}</td>
+            <td class="tbl-td-r font-medium tabular-nums">${{ '%.2f' | format(bill.total_amount) }}</td>
+            <td class="tbl-td">
+              {% if bill.status == 'paid' %}<span class="badge-green">Paid</span>
+              {% elif bill.status == 'discrepancy' %}<span class="badge-red">Discrepancy</span>
+              {% elif bill.status == 'approved' %}<span class="badge-blue">Approved</span>
+              {% else %}<span class="badge-gray">Pending</span>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

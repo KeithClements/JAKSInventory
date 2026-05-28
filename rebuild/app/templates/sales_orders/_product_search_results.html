@@ -1,0 +1,27 @@
+{# HTMX dropdown — rendered into #so-product-results
+   Each row dispatches product-selected with the product details. #}
+{% if results %}
+  {% for p in results %}
+  <button type="button"
+          @click="$dispatch('product-selected', {
+            id: '{{ p.id }}',
+            sku: '{{ p.sku | replace("'", "\\'") }}',
+            desc: '{{ (p.description or p.part_number or '') | replace("'", "\\'") | truncate(80, true, '') }}',
+            price: '{{ '%.2f' % (p.selling_price or 0) }}',
+            cost: '{{ '%.2f' % (p.cost or 0) }}'
+          })"
+          class="w-full text-left px-3 py-2 hover:bg-gray-50 border-b border-gray-100 last:border-0 flex items-start gap-2">
+    <span class="font-mono text-xs font-bold text-brand-700 shrink-0 mt-0.5 w-28 truncate">{{ p.sku }}</span>
+    <span class="flex-1 min-w-0">
+      <span class="block text-sm text-gray-800 truncate">{{ p.description or p.part_number or '—' }}</span>
+      <span class="block text-xs text-gray-400 tabular-nums">
+        ${{ '%.2f' % (p.selling_price or 0) }}
+        · {{ p.qty_on_hand }} on hand
+        {% if p.qty_available < p.qty_on_hand %}· <span class="text-amber-600">{{ p.qty_available }} avail</span>{% endif %}
+      </span>
+    </span>
+  </button>
+  {% endfor %}
+{% elif q | length >= 2 %}
+  <div class="px-3 py-3 text-sm text-gray-400 italic">No products found for "{{ q }}"</div>
+{% endif %}

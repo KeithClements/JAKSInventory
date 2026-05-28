@@ -54,7 +54,7 @@ files. Every section here is "safe to work on" — none of it modifies templates
 | `qty_backordered` | INT | 0 | Customer demand exceeding on-hand |
 | `qty_available` | computed | — | `qty_on_hand - qty_committed` (property, not column) |
 | `last_cost` | REAL | 0 | Most recent receipt unit cost (separate from avg) (R11) |
-| `successful_sale_count` | INT | 0 | For cross-ref auto-promote suggestion (R5) — NOTE: belongs on `cross_references` not products |
+~~`successful_sale_count`~~ | — | — | **Removed from products.** Belongs on `cross_references` (see below). |
 
 ### `cross_references`
 | Field | Type | Default | Notes |
@@ -68,7 +68,7 @@ files. Every section here is "safe to work on" — none of it modifies templates
 | `tax_rate_snapshot` | REAL | 0 | Snapshot from customer at creation (R1) |
 | `tax_exempt_snapshot` | BOOL | false | Snapshot from customer at creation |
 | `tax_amount` | REAL | 0 | Total tax for invoice |
-| `tax_jurisdiction` | TEXT | NULL | State/jurisdiction (Phase 1: copy from customer/company) (R10) |
+| `tax_jurisdiction` | TEXT | NULL | Snapshot-only — copied from customer/company at finalize, used for tax filing/reporting. No multi-jurisdiction logic in Phase 1 (TaxJar is Phase 2). (R10) |
 | `qbo_id` | TEXT | NULL | QBO record ID after push |
 | `qbo_sync_status` | TEXT | 'pending' | pending \| pushed \| failed |
 | `qbo_pushed_at` | DATETIME | NULL | |
@@ -293,7 +293,7 @@ status          TEXT  -- draft | shipped | accepted | rejected | partial | close
 expected_credit REAL
 actual_credit   REAL
 credit_difference  REAL
-restocking_fee  REAL
+restocking_fee  REAL    -- fee the vendor charges JAKS for accepting the return (common: 15-25% from parts distributors)
 tracking_number TEXT
 rma_number      TEXT
 shipped_at      DATETIME
@@ -669,8 +669,11 @@ class SMSConsentMethod(str, Enum):
 10. Auto-create `core_charges` rows for products with `has_core=true`
 11. Auto-assign serial numbers — block save until each serialized line has a serial selected
 
-**Remove from existing behavior:**
-- The current invoice-level CC surcharge toggle. Per R1, surcharge is computed at payment time on the card portion only.
+**CC surcharge — decision (R1):**
+The `apply_cc_surcharge` / `cc_surcharge_pct` fields on the invoice are kept as informational flags.
+`calculate_totals()` returns `cc_fee_amount` as an *estimate* ("if paid fully by card") but does NOT add it to `invoice.total` or `balance_due`.
+The actual surcharge is computed by `PaymentService.record_payment()` on the card portion of each payment, stored on the Payment record.
+Do NOT add the estimated fee to the invoice total — that would pre-bill the surcharge before knowing the payment method.
 
 **New method: `apply_customer_credit(invoice_id, amount)`**
 - Validates: amount ≤ customer.credit_balance, amount ≤ invoice.balance_due
@@ -1176,9 +1179,9 @@ These were inferred or set as defaults — flag if any are wrong:
 5. **Refund check from customer credit** = creates a Payment with `payment_direction=refund_to_customer`, decrements credit_balance, no QBO push in Phase 1.
 6. **Statement number format** = `ST-2026-XXXX`. No prior convention specified.
 7. **Vendor return number format** = `VR-2026-XXXX`.
-8. **Cross-ref "successful sale count" bump** = on every invoice finalization that used that cross-ref in search. Reset on void? Probably yes — decrement on void.
+8. **Cross-ref "successful sale count" bump** = on every invoice finalization that used that cross-ref in search. **Decrement on void** (yes, resolved) — a voided sale should not count toward the promote-to-proven threshold.
 9. **"Internal use / shop use" inventory adjustment** still decrements qty_on_hand; does it also need a separate cost account tracking? (Phase 2 if so.)
-10. **`payment_direction` defaults to `incoming_from_customer`** on all existing payment records. Migration sets it.
+10. **`direction` (formerly `payment_direction`) defaults to `incoming_from_customer`** on all existing payment records. The `NOT NULL DEFAULT 'incoming_from_customer'` clause in `_PENDING_COLUMN_ADDITIONS` handles existing rows automatically — SQLite sets the default on all pre-existing rows when the column is added via `ALTER TABLE`. No separate backfill query required.
 11. **Templates stored as text files** in `app/messaging_templates/` (Phase 1). Phase 2 may move to a DB table for in-app editing. The file format is plain text with `{variable_name}` placeholders.
 12. **`NullMessagingProvider` is the Phase 1 default** — every `send()` call logs to `communication_log` with `status=logged_only` and never actually transmits. Real send is gated on a settings switch (Phase 2).
 13. **Sanity rate limits** (`messaging_max_outbound_per_hour=100`, `per_customer_per_day=3`) are conservative defaults — adjust after observing real usage.

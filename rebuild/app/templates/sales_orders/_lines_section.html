@@ -1,0 +1,304 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   _lines_section.html
+   HTMX-swappable container: line grid + add-line row + fulfill form.
+   Re-rendered on every add / update / delete line action.
+═══════════════════════════════════════════════════════════════════════════ #}
+<div id="so-lines-section">
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Line Items</h2>
+      <span class="text-xs text-gray-400">
+        {{ so.lines | length }} line{{ 's' if so.lines | length != 1 }}
+        {% if so.has_backorder %} · <span class="text-amber-600 font-medium">backorders</span>{% endif %}
+      </span>
+    </div>
+
+    {% if so.lines %}
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th w-8">#</th>
+            <th class="tbl-th w-24">SKU</th>
+            <th class="tbl-th">Description</th>
+            <th class="tbl-th-r w-20">Ordered</th>
+            {% if not editable %}
+            <th class="tbl-th-r w-20">Invoiced</th>
+            <th class="tbl-th-r w-20">Remaining</th>
+            {% endif %}
+            <th class="tbl-th-r w-24">Unit Price</th>
+            <th class="tbl-th-r w-20">Disc %</th>
+            <th class="tbl-th-r w-24">Extended</th>
+            {% if can_fulfill %}<th class="tbl-th-r w-24">Ship Qty</th>{% endif %}
+            {% if editable %}<th class="tbl-th w-10"></th>{% endif %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for line in so.lines %}
+          {% set cancelled = line.qty_ordered == line.qty_invoiced and line.qty_invoiced == 0 and line.line_status == 'cancelled' %}
+          {% set done = line.qty_remaining == 0 and line.qty_invoiced > 0 %}
+          <tr class="tbl-row {% if done %}bg-gray-50/60{% elif cancelled %}bg-gray-50/40{% endif %}">
+
+            <td class="tbl-td text-xs text-gray-400 tabular-nums">{{ loop.index }}</td>
+
+            <td class="tbl-td">
+              {% if line.product %}
+              <a href="/products/{{ line.product_id }}"
+                 class="font-mono text-xs font-bold text-brand-700 hover:underline">{{ line.product.sku }}</a>
+              {% else %}
+              <span class="text-xs font-semibold text-gray-400 uppercase">{{ line.line_type | replace('_', ' ') }}</span>
+              {% endif %}
+              {# Fulfillment source badge #}
+              {% if line.fulfillment_source and line.fulfillment_source != 'stock' %}
+              <p class="text-xs text-amber-600 font-medium mt-0.5">
+                {{ line.fulfillment_source | replace('_', ' ') | title }}
+              </p>
+              {% endif %}
+            </td>
+
+            <td class="tbl-td {% if done or cancelled %}text-gray-400{% endif %}">
+              {% if editable and not done and not cancelled %}
+              <input type="text" value="{{ line.description }}"
+                     hx-post="/sales-orders/{{ so.id }}/lines/{{ line.id }}"
+                     hx-trigger="change delay:400ms"
+                     hx-target="#so-lines-section"
+                     hx-swap="outerHTML"
+                     name="description"
+                     class="w-full text-sm border-0 bg-transparent hover:bg-white focus:bg-white
+                            border border-transparent hover:border-gray-200 focus:border-brand-400
+                            rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              {% else %}
+              <span class="text-sm {% if cancelled %}line-through{% endif %}">{{ line.description }}</span>
+              {% endif %}
+              {% if line.is_backordered and not done and not cancelled %}
+              <span class="inline-flex mt-0.5 px-1.5 py-0.5 rounded text-xs bg-amber-50 text-amber-600 font-medium">Backorder</span>
+              {% endif %}
+              {% if cancelled %}
+              <span class="inline-flex mt-0.5 px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-400 font-medium">Cancelled</span>
+              {% endif %}
+            </td>
+
+            <td class="tbl-td-r {% if done or cancelled %}text-gray-400{% endif %}">
+              {% if editable and not done and not cancelled %}
+              <input type="number" value="{{ line.qty_ordered }}" min="1"
+                     hx-post="/sales-orders/{{ so.id }}/lines/{{ line.id }}"
+                     hx-trigger="change"
+                     hx-target="#so-lines-section"
+                     hx-swap="outerHTML"
+                     name="qty_ordered"
+                     class="w-16 text-right text-sm border border-gray-200 rounded px-1.5 py-1
+                            focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              {% else %}
+              <span class="tabular-nums">{{ line.qty_ordered }}</span>
+              {% endif %}
+            </td>
+
+            {% if not editable %}
+            <td class="tbl-td-r text-gray-500 tabular-nums">{{ line.qty_invoiced }}</td>
+            <td class="tbl-td-r font-medium tabular-nums
+                       {% if line.qty_remaining == 0 %}text-gray-300{% else %}text-brand-700{% endif %}">
+              {{ line.qty_remaining }}
+            </td>
+            {% endif %}
+
+            <td class="tbl-td-r {% if done or cancelled %}text-gray-400{% endif %}">
+              {% if editable and not done and not cancelled %}
+              <input type="number" value="{{ '%.2f' % line.unit_price }}" step="0.01" min="0"
+                     hx-post="/sales-orders/{{ so.id }}/lines/{{ line.id }}"
+                     hx-trigger="change"
+                     hx-target="#so-lines-section"
+                     hx-swap="outerHTML"
+                     name="unit_price"
+                     class="w-24 text-right text-sm border border-gray-200 rounded px-1.5 py-1
+                            focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              {% else %}
+              <span class="tabular-nums">${{ '%.2f' % line.unit_price }}</span>
+              {% endif %}
+            </td>
+
+            <td class="tbl-td-r {% if done or cancelled %}text-gray-400{% endif %}">
+              {% if editable and not done and not cancelled %}
+              <input type="number" value="{{ '%.1f' % line.discount_pct }}" step="0.5" min="0" max="100"
+                     hx-post="/sales-orders/{{ so.id }}/lines/{{ line.id }}"
+                     hx-trigger="change"
+                     hx-target="#so-lines-section"
+                     hx-swap="outerHTML"
+                     name="discount_pct"
+                     class="w-16 text-right text-sm border border-gray-200 rounded px-1.5 py-1
+                            focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              {% else %}
+              <span class="tabular-nums {% if line.discount_pct %}text-red-600{% endif %}">
+                {% if line.discount_pct %}{{ '%.1f' % line.discount_pct }}%{% else %}—{% endif %}
+              </span>
+              {% endif %}
+            </td>
+
+            <td class="tbl-td-r font-medium tabular-nums {% if done or cancelled %}text-gray-400{% endif %}">
+              ${{ '%.2f' % line.line_total }}
+            </td>
+
+            {# Ship Qty input — only on open/partial, only for lines with remaining qty #}
+            {% if can_fulfill %}
+            <td class="tbl-td-r">
+              {% if line.qty_remaining > 0 and not cancelled %}
+              <input type="number" name="line_qty_{{ line.id }}"
+                     form="fulfill-form"
+                     value="{{ line.qty_remaining }}"
+                     min="0" max="{{ line.qty_remaining }}"
+                     class="w-20 text-right border border-gray-300 rounded px-1.5 py-1 text-sm
+                            focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              {% else %}
+              <span class="text-xs text-gray-300">{{ 'Done' if done else '—' }}</span>
+              {% endif %}
+            </td>
+            {% endif %}
+
+            {# Delete button #}
+            {% if editable and not cancelled %}
+            <td class="tbl-td text-center">
+              <button type="button"
+                      hx-post="/sales-orders/{{ so.id }}/lines/{{ line.id }}/delete"
+                      hx-target="#so-lines-section"
+                      hx-swap="outerHTML"
+                      hx-confirm="Cancel this line? Committed inventory will be released."
+                      class="text-gray-300 hover:text-red-500 transition-colors p-1 rounded">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                </svg>
+              </button>
+            </td>
+            {% elif editable and cancelled %}
+            <td class="tbl-td"></td>
+            {% endif %}
+
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="border-t-2 border-gray-100 bg-gray-50">
+          <tr>
+            {# label spans: # + SKU + Desc + Ordered + (Invoiced + Remaining when not editable) + Price + Disc% #}
+            <td colspan="{{ 6 if editable else 8 }}"
+                class="px-4 py-3 text-right text-sm font-semibold text-gray-600">Subtotal</td>
+            <td class="px-4 py-3 text-right font-bold tabular-nums">${{ '%.2f' % so.subtotal }}</td>
+            {% if can_fulfill %}<td></td>{% endif %}
+            {% if editable %}<td></td>{% endif %}
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    {% else %}
+    <div class="px-5 py-10 text-center text-sm text-gray-400">
+      No line items yet. Add a product below.
+    </div>
+    {% endif %}
+
+    {# ── Add line row (editable SOs only) ──────────────────────────────────── #}
+    {% if editable %}
+    <div class="border-t border-gray-100 px-4 py-3 bg-gray-50/50"
+         x-data="{
+           productId: '',
+           sku: '',
+           desc: '',
+           price: '',
+           cost: '',
+           showResults: false,
+         }">
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Add Line</p>
+      <form hx-post="/sales-orders/{{ so.id }}/lines"
+            hx-target="#so-lines-section"
+            hx-swap="outerHTML"
+            hx-on::after-request="this.reset(); $dispatch('clear-line-add')"
+            class="flex items-end gap-2 flex-wrap"
+            @clear-line-add.window="productId=''; sku=''; desc=''; price=''; cost=''; showResults=false">
+
+        <input type="hidden" name="product_id" :value="productId" />
+
+        {# Product search #}
+        <div class="relative flex-1 min-w-48">
+          <label class="block text-xs text-gray-500 mb-1">Product / SKU</label>
+          <input type="text" autocomplete="off"
+                 placeholder="Type SKU or description…"
+                 :value="sku"
+                 @input="sku = $el.value; productId = ''; showResults = $el.value.length >= 2"
+                 hx-get="/sales-orders/_/product-search"
+                 hx-trigger="input changed delay:200ms"
+                 hx-target="#so-product-results"
+                 hx-vals='js:{"q": event.target.value}'
+                 class="form-input text-sm" />
+          <div id="so-product-results"
+               x-show="showResults && !productId"
+               x-cloak
+               @product-selected.window="productId = $event.detail.id; sku = $event.detail.sku;
+                                         desc = $event.detail.desc; price = $event.detail.price;
+                                         cost = $event.detail.cost; showResults = false"
+               class="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200
+                      rounded-lg shadow-lg z-20 max-h-56 overflow-y-auto text-sm"></div>
+        </div>
+
+        {# Description #}
+        <div class="flex-[2] min-w-48">
+          <label class="block text-xs text-gray-500 mb-1">Description</label>
+          <input type="text" name="description" :value="desc" @input="desc = $el.value"
+                 placeholder="Description…"
+                 class="form-input text-sm" />
+        </div>
+
+        {# Qty #}
+        <div class="w-20">
+          <label class="block text-xs text-gray-500 mb-1">Qty</label>
+          <input type="number" name="qty_ordered" value="1" min="1"
+                 class="form-input text-sm text-right" />
+        </div>
+
+        {# Unit Price #}
+        <div class="w-28">
+          <label class="block text-xs text-gray-500 mb-1">Unit Price</label>
+          <div class="relative">
+            <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
+            <input type="number" name="unit_price" step="0.01" min="0"
+                   :value="price" @input="price = $el.value"
+                   class="form-input text-sm pl-6 text-right" />
+          </div>
+        </div>
+
+        {# Disc % #}
+        <div class="w-20">
+          <label class="block text-xs text-gray-500 mb-1">Disc %</label>
+          <input type="number" name="discount_pct" value="0" step="0.5" min="0" max="100"
+                 class="form-input text-sm text-right" />
+        </div>
+
+        <input type="hidden" name="unit_cost" :value="cost" />
+
+        <div class="pb-0.5">
+          <button type="submit"
+                  class="btn-primary btn-sm whitespace-nowrap">
+            Add Line
+          </button>
+        </div>
+
+      </form>
+    </div>
+    {% endif %}
+
+    {# ── Fulfill & Invoice bar ─────────────────────────────────────────────── #}
+    {% if can_fulfill %}
+    <div class="border-t border-gray-200 px-5 py-3 bg-brand-50/40 flex items-center justify-between">
+      <p class="text-xs text-gray-500">
+        Set "Ship Qty" for each line. Set to 0 to hold a line. Remaining qty stays on the SO as backorder.
+      </p>
+      <form id="fulfill-form" action="/sales-orders/{{ so.id }}/fulfill" method="post" class="inline">
+        <button type="submit"
+                onclick="return confirm('Create invoice for selected quantities?')"
+                class="btn-primary">
+          Fulfill &amp; Invoice →
+        </button>
+      </form>
+    </div>
+    {% endif %}
+
+  </div>{# /card #}
+
+</div>{# /so-lines-section #}

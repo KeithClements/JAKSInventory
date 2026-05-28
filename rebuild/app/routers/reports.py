@@ -23,12 +23,13 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
-from app.constants import InvoiceStatus, POStatus
+from app.constants import FulfillmentSource, InvoiceStatus, POStatus, SOLineStatus, SOStatus
 from app.deps import get_db
 from app.models.customer import Customer
 from app.models.invoice import Invoice, Payment
 from app.models.product import Product
-from app.models.purchase_order import PurchaseOrder
+from app.models.purchase_order import PurchaseOrder, POLine
+from app.models.quote import SalesOrder, SOLine
 
 log = logging.getLogger(__name__)
 
@@ -258,35 +259,152 @@ def reports_sales(
     )
 
 
-# ── Inventory Snapshot ────────────────────────────────────────────────────────
+# ── Inventory Valuation ───────────────────────────────────────────────────────
 
 @router.get("/inventory/", response_class=HTMLResponse)
-def reports_inventory(request: Request, db: Session = Depends(get_db)):
+def reports_inventory(
+    request: Request,
+    filter: str = "in_stock",
+    db: Session = Depends(get_db),
+):
     """
-    Inventory Snapshot — stock on hand by product, sorted by value.
-    Shows qty on hand, cost, and estimated inventory value.
+    Inventory Valuation — cost value of stock on hand.
+    filter: in_stock (default) | all | low_stock
     """
-    products = (
-        db.query(Product)
-        .filter(Product.is_active == True, Product.qty_on_hand > 0)  # noqa: E712
-        .order_by((Product.qty_on_hand * Product.cost).desc())
-        .all()
-    )
+    today = date.today()
+    base_q = db.query(Product).filter(Product.is_active == True)  # noqa: E712
 
-    total_units = sum(p.qty_on_hand for p in products)
-    total_value = round(sum((p.qty_on_hand * (p.cost or 0.0)) for p in products), 2)
-    total_retail = round(
-        sum((p.qty_on_hand * p.selling_price) for p in products), 2
-    )
+    if filter == "low_stock":
+        # at or below reorder point (reorder_point > 0 to exclude no-reorder-point items)
+        all_active = base_q.all()
+        products = [p for p in all_active if p.reorder_point > 0 and p.qty_on_hand <= p.reorder_point]
+        products.sort(key=lambda p: (p.qty_on_hand - p.reorder_point))
+    elif filter == "all":
+        products = base_q.order_by((Product.qty_on_hand * Product.cost).desc()).all()
+    else:  # in_stock (default)
+        products = (
+            base_q
+            .filter(Product.qty_on_hand > 0)
+            .order_by((Product.qty_on_hand * Product.cost).desc())
+            .all()
+        )
+
+    # Counts for summary cards (always over all active)
+    all_products = base_q.all()
+    sku_count       = sum(1 for p in all_products if p.qty_on_hand > 0)
+    total_units     = sum(p.qty_on_hand for p in all_products if p.qty_on_hand > 0)
+    total_value     = round(sum(p.qty_on_hand * (p.cost or 0.0) for p in all_products if p.qty_on_hand > 0), 2)
+    total_retail    = round(sum(p.qty_on_hand * p.selling_price for p in all_products if p.qty_on_hand > 0), 2)
+    low_stock_count = sum(1 for p in all_products if p.reorder_point > 0 and p.qty_on_hand <= p.reorder_point)
+
+    # Filtered totals (shown in table footer)
+    filtered_units = sum(p.qty_on_hand for p in products)
+    filtered_value = round(sum(p.qty_on_hand * (p.cost or 0.0) for p in products), 2)
 
     return templates.TemplateResponse(
         "reports/inventory.html",
         {
             "request": request,
             "products": products,
+            "active_filter": filter,
+            "sku_count": sku_count,
             "total_units": total_units,
             "total_value": total_value,
             "total_retail": total_retail,
-            "today": date.today(),
+            "low_stock_count": low_stock_count,
+            "filtered_units": filtered_units,
+            "filtered_value": filtered_value,
+            "today": today,
+        },
+    )
+
+
+# ── Open POs + Backorders ─────────────────────────────────────────────────────
+
+@router.get("/open-pos/", response_class=HTMLResponse)
+def reports_open_pos(request: Request, db: Session = Depends(get_db)):
+    """
+    Open POs & Backorders report — two sections:
+      1. Purchase orders that are not yet fully received (VERBAL_ORDER / DRAFT / SENT / PARTIAL)
+      2. SO lines with fulfillment_source = backorder awaiting stock
+    """
+    today = date.today()
+
+    # Section 1 — Open Purchase Orders
+    open_pos = (
+        db.query(PurchaseOrder)
+        .options(
+            joinedload(PurchaseOrder.lines).joinedload(POLine.product),
+            joinedload(PurchaseOrder.vendor),
+        )
+        .filter(
+            PurchaseOrder.status.in_([
+                POStatus.VERBAL_ORDER,
+                POStatus.DRAFT,
+                POStatus.SENT,
+                POStatus.PARTIAL,
+            ])
+        )
+        .order_by(PurchaseOrder.expected_at.asc().nulls_last(), PurchaseOrder.created_at.asc())
+        .all()
+    )
+
+    # Compute outstanding $ per PO
+    po_rows = []
+    for po in open_pos:
+        outstanding_lines = [ln for ln in po.lines if ln.qty_outstanding > 0]
+        outstanding_value = round(
+            sum(ln.unit_cost * ln.qty_outstanding for ln in outstanding_lines), 2
+        )
+        days_since_order = None
+        if po.ordered_at:
+            ordered_date = po.ordered_at.date() if isinstance(po.ordered_at, datetime) else po.ordered_at
+            days_since_order = (today - ordered_date).days
+        overdue = (
+            po.expected_at is not None
+            and (po.expected_at.date() if isinstance(po.expected_at, datetime) else po.expected_at) < today
+        )
+        po_rows.append({
+            "po": po,
+            "outstanding_lines": outstanding_lines,
+            "outstanding_value": outstanding_value,
+            "days_since_order": days_since_order,
+            "overdue": overdue,
+        })
+
+    po_total_value = round(sum(r["outstanding_value"] for r in po_rows), 2)
+
+    # Section 2 — Backordered SO lines
+    backorder_lines = (
+        db.query(SOLine)
+        .options(
+            joinedload(SOLine.so).joinedload(SalesOrder.customer),
+            joinedload(SOLine.product),
+        )
+        .join(SalesOrder)
+        .filter(
+            SalesOrder.status.in_([SOStatus.OPEN, SOStatus.PARTIAL, SOStatus.HOLD]),
+            SOLine.fulfillment_source == FulfillmentSource.BACKORDER,
+            SOLine.line_status != SOLineStatus.INVOICED,
+            SOLine.line_status != SOLineStatus.CANCELLED,
+        )
+        .order_by(SalesOrder.created_at.asc())
+        .all()
+    )
+
+    backorder_value = round(
+        sum(ln.unit_price * ln.qty_remaining for ln in backorder_lines), 2
+    )
+
+    return templates.TemplateResponse(
+        "reports/open_pos.html",
+        {
+            "request": request,
+            "today": today,
+            "po_rows": po_rows,
+            "po_total_value": po_total_value,
+            "backorder_lines": backorder_lines,
+            "backorder_value": backorder_value,
+            "POStatus": POStatus,
         },
     )

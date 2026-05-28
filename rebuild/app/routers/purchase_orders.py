@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from urllib.parse import quote as url_quote
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.constants import POStatus
 from app.deps import get_db
-from app.models.purchase_order import PurchaseOrder
-from app.models.vendor import Vendor
 from app.models.product import Product
+from app.models.purchase_order import PurchaseOrder, POLine
+from app.models.vendor import Vendor
 from app.services.po_service import POService
 
 log = logging.getLogger(__name__)
@@ -34,6 +35,23 @@ STATUS_TABS = [
 ]
 
 
+def _workspace_ctx(po: PurchaseOrder) -> dict:
+    editable   = po.status in (POStatus.DRAFT, POStatus.VERBAL_ORDER)
+    can_receive = po.status in (POStatus.SENT, POStatus.PARTIAL)
+    can_bill    = po.status in (POStatus.RECEIVED, POStatus.PARTIAL)
+    return {
+        "po": po,
+        "editable": editable,
+        "can_receive": can_receive,
+        "can_bill": can_bill,
+        "POStatus": POStatus,
+        "unreceived_lines": [ln for ln in po.lines if ln.qty_outstanding > 0] if can_receive else [],
+        "received_lines":   [ln for ln in po.lines if ln.qty_received > 0 and (ln.qty_received - (ln.qty_billed or 0)) > 0] if can_bill else [],
+    }
+
+
+# ── List ──────────────────────────────────────────────────────────────────────
+
 @router.get("/", response_class=HTMLResponse)
 def po_list(request: Request, status: str = "", db: Session = Depends(get_db)):
     query = db.query(PurchaseOrder).order_by(PurchaseOrder.created_at.desc())
@@ -51,13 +69,16 @@ def po_list(request: Request, status: str = "", db: Session = Depends(get_db)):
     )
 
 
+# ── New PO picker (slide-over) ─────────────────────────────────────────────
+
 @router.get("/new", response_class=HTMLResponse)
 def po_new(request: Request, db: Session = Depends(get_db)):
+    if not request.headers.get("HX-Request"):
+        return RedirectResponse("/purchase-orders/", status_code=303)
     vendors = db.query(Vendor).filter(Vendor.is_active == True).order_by(Vendor.name).all()
-    products = db.query(Product).filter(Product.is_active == True).order_by(Product.sku).all()
     return templates.TemplateResponse(
-        "purchase_orders/new.html",
-        {"request": request, "vendors": vendors, "products": products},
+        "purchase_orders/_new_picker.html",
+        {"request": request, "vendors": vendors, "POStatus": POStatus},
     )
 
 
@@ -66,9 +87,9 @@ async def po_create(request: Request, db: Session = Depends(get_db)):
     form = await request.form()
     svc = POService(db, current_user_id=CURRENT_USER_ID)
 
-    po_data = {
+    po_data: dict = {
         "notes": str(form.get("notes", "")).strip(),
-        "internal_notes": str(form.get("internal_notes", "")).strip(),
+        "internal_notes": "",
         "freight_in_cost": float(form.get("freight_in_cost") or 0.0),
         "vendor_confirmation_number": str(form.get("vendor_confirmation_number", "")).strip() or None,
         "expected_at": None,
@@ -76,66 +97,182 @@ async def po_create(request: Request, db: Session = Depends(get_db)):
 
     expected_raw = str(form.get("expected_at", "")).strip()
     if expected_raw:
-        from datetime import datetime
         try:
             po_data["expected_at"] = datetime.strptime(expected_raw, "%Y-%m-%d")
         except ValueError:
             pass
 
+    status_override = str(form.get("status", "")).strip()
+    if status_override == POStatus.VERBAL_ORDER:
+        po_data["status"] = POStatus.VERBAL_ORDER
+
     po = svc.create_po(vendor_id=int(form["vendor_id"]), data=po_data)
 
-    # Add lines (submitted as parallel arrays)
-    product_ids = form.getlist("product_id[]")
-    qtys = form.getlist("qty[]")
-    costs = form.getlist("unit_cost[]")
-    cores = form.getlist("core_charge[]")
-    descs = form.getlist("description[]")
-
-    for i, pid in enumerate(product_ids):
-        desc = descs[i] if i < len(descs) else ""
-        qty_raw = qtys[i] if i < len(qtys) else ""
-        cost_raw = costs[i] if i < len(costs) else ""
-        core_raw = cores[i] if i < len(cores) else ""
-
-        # Skip totally blank rows
-        if not pid and not desc.strip():
-            continue
-
-        line_data = {
-            "description": desc.strip(),
-            "qty_ordered": int(qty_raw) if qty_raw else 1,
-            "unit_cost": float(cost_raw) if cost_raw else 0.0,
-            "core_charge_per_unit": float(core_raw) if core_raw else 0.0,
-            "notes": "",
-        }
-        svc.add_line(
-            po_id=po.id,
-            product_id=int(pid) if pid else None,
-            data=line_data,
-        )
+    if status_override == POStatus.VERBAL_ORDER:
+        po.status = POStatus.VERBAL_ORDER
+        db.commit()
 
     return RedirectResponse(f"/purchase-orders/{po.id}", status_code=303)
 
 
+# ── Workspace ─────────────────────────────────────────────────────────────────
+
 @router.get("/{po_id}", response_class=HTMLResponse)
-def po_detail(po_id: int, request: Request, db: Session = Depends(get_db)):
-    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()
+def po_workspace(po_id: int, request: Request, db: Session = Depends(get_db)):
+    po = (
+        db.query(PurchaseOrder)
+        .options(joinedload(PurchaseOrder.lines).joinedload(POLine.product))
+        .filter(PurchaseOrder.id == po_id)
+        .first()
+    )
     if not po:
         return RedirectResponse("/purchase-orders/", status_code=303)
-    products = db.query(Product).filter(Product.is_active == True).order_by(Product.sku).all()
-    unreceived = [ln for ln in po.lines if ln.qty_outstanding > 0]
-    received = [ln for ln in po.lines if ln.qty_received > 0]
+    ctx = _workspace_ctx(po)
+    ctx["request"] = request
+    return templates.TemplateResponse("purchase_orders/workspace.html", ctx)
+
+
+# ── Header autosave ───────────────────────────────────────────────────────────
+
+@router.post("/{po_id}/header", response_class=HTMLResponse)
+async def po_header_save(po_id: int, request: Request, db: Session = Depends(get_db)):
+    form = await request.form()
+    svc = POService(db, current_user_id=CURRENT_USER_ID)
+
+    expected_raw = str(form.get("expected_at", "")).strip()
+    expected_dt = None
+    if expected_raw:
+        try:
+            expected_dt = datetime.strptime(expected_raw, "%Y-%m-%d")
+        except ValueError:
+            pass
+
+    data = {
+        "notes": str(form.get("notes", "")).strip(),
+        "internal_notes": str(form.get("internal_notes", "")).strip(),
+        "vendor_confirmation_number": str(form.get("vendor_confirmation_number", "")).strip() or None,
+        "freight_in_cost": float(form.get("freight_in_cost") or 0.0),
+        "expected_at": expected_dt,
+    }
+    try:
+        svc.save_header(po_id, data)
+    except ValueError:
+        pass
+    return HTMLResponse("", status_code=204)
+
+
+# ── Line CRUD (HTMX) ──────────────────────────────────────────────────────────
+
+def _lines_response(po_id: int, request: Request, db: Session) -> HTMLResponse:
+    po = (
+        db.query(PurchaseOrder)
+        .options(joinedload(PurchaseOrder.lines).joinedload(POLine.product))
+        .filter(PurchaseOrder.id == po_id)
+        .first()
+    )
+    ctx = _workspace_ctx(po)
+    ctx["request"] = request
+    return templates.TemplateResponse("purchase_orders/_lines_section.html", ctx)
+
+
+@router.post("/{po_id}/lines", response_class=HTMLResponse)
+async def po_add_line(po_id: int, request: Request, db: Session = Depends(get_db)):
+    form = await request.form()
+    svc = POService(db, current_user_id=CURRENT_USER_ID)
+
+    pid_raw = str(form.get("product_id", "")).strip()
+    desc = str(form.get("description", "")).strip()
+    qty_raw = str(form.get("qty_ordered", "1")).strip()
+    cost_raw = str(form.get("unit_cost", "")).strip()
+    core_raw = str(form.get("core_charge_per_unit", "")).strip()
+
+    line_data = {
+        "description": desc,
+        "qty_ordered": max(1, int(qty_raw) if qty_raw.isdigit() else 1),
+        "unit_cost": float(cost_raw) if cost_raw else 0.0,
+        "core_charge_per_unit": float(core_raw) if core_raw else 0.0,
+        "notes": "",
+    }
+
+    # Auto-fill description from product if blank
+    pid = int(pid_raw) if pid_raw else None
+    if pid and not desc:
+        product = db.query(Product).filter(Product.id == pid).first()
+        if product:
+            line_data["description"] = product.title or ""
+
+    try:
+        svc.add_line(po_id=po_id, product_id=pid, data=line_data)
+    except ValueError as exc:
+        log.warning("add_line error on PO %s: %s", po_id, exc)
+
+    return _lines_response(po_id, request, db)
+
+
+@router.post("/{po_id}/lines/{line_id}", response_class=HTMLResponse)
+async def po_update_line(po_id: int, line_id: int, request: Request, db: Session = Depends(get_db)):
+    form = await request.form()
+    svc = POService(db, current_user_id=CURRENT_USER_ID)
+
+    data: dict = {}
+    if "description" in form:
+        data["description"] = str(form["description"]).strip()
+    if "qty_ordered" in form:
+        raw = str(form["qty_ordered"]).strip()
+        data["qty_ordered"] = max(1, int(raw)) if raw.isdigit() else 1
+    if "unit_cost" in form:
+        try:
+            data["unit_cost"] = float(form["unit_cost"])
+        except (ValueError, TypeError):
+            pass
+    if "core_charge_per_unit" in form:
+        try:
+            data["core_charge_per_unit"] = float(form["core_charge_per_unit"])
+        except (ValueError, TypeError):
+            pass
+
+    try:
+        svc.update_line(line_id, data)
+    except ValueError as exc:
+        log.warning("update_line error on line %s: %s", line_id, exc)
+
+    return _lines_response(po_id, request, db)
+
+
+@router.post("/{po_id}/lines/{line_id}/delete", response_class=HTMLResponse)
+async def po_delete_line(po_id: int, line_id: int, request: Request, db: Session = Depends(get_db)):
+    svc = POService(db, current_user_id=CURRENT_USER_ID)
+    try:
+        svc.delete_line(line_id)
+    except ValueError as exc:
+        log.warning("delete_line error on line %s: %s", line_id, exc)
+    return _lines_response(po_id, request, db)
+
+
+# ── Product search (HTMX typeahead) ──────────────────────────────────────────
+
+@router.get("/_/product-search", response_class=HTMLResponse)
+def po_product_search(q: str = "", db: Session = Depends(get_db), request: Request = None):
+    results = []
+    if q and len(q) >= 2:
+        pattern = f"%{q}%"
+        results = (
+            db.query(Product)
+            .filter(
+                Product.is_active == True,
+                (Product.sku.ilike(pattern) | Product.title.ilike(pattern)),
+            )
+            .order_by(Product.sku)
+            .limit(12)
+            .all()
+        )
     return templates.TemplateResponse(
-        "purchase_orders/detail.html",
-        {
-            "request": request,
-            "po": po,
-            "products": products,
-            "unreceived_lines": unreceived,
-            "received_lines": received,
-        },
+        "purchase_orders/_product_search_results.html",
+        {"request": request, "results": results},
     )
 
+
+# ── Status transitions ─────────────────────────────────────────────────────────
 
 @router.post("/{po_id}/send", response_class=RedirectResponse)
 def po_send(po_id: int, db: Session = Depends(get_db)):
@@ -155,7 +292,7 @@ def po_send(po_id: int, db: Session = Depends(get_db)):
             f"/purchase-orders/{po_id}?error={url_quote('Unexpected error — PO was not sent.')}",
             status_code=303,
         )
-    return RedirectResponse(f"/purchase-orders/{po_id}", status_code=303)
+    return RedirectResponse(f"/purchase-orders/{po_id}?ok=sent", status_code=303)
 
 
 @router.post("/{po_id}/receive", response_class=RedirectResponse)
@@ -165,7 +302,6 @@ async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)
         return RedirectResponse("/purchase-orders/", status_code=303)
 
     form = await request.form()
-
     po_line_quantities: dict[int, int] = {}
     for line in po.lines:
         raw = form.get(f"recv_{line.id}", "")
@@ -200,12 +336,11 @@ async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)
                 status_code=303,
             )
 
-    return RedirectResponse(f"/purchase-orders/{po_id}?received=1", status_code=303)
+    return RedirectResponse(f"/purchase-orders/{po_id}?ok=received", status_code=303)
 
 
 @router.post("/{po_id}/cancel-status", response_class=RedirectResponse)
 def po_cancel(po_id: int, db: Session = Depends(get_db)):
-    """Cancel PO via service — restores qty_on_order if PO was already sent."""
     svc = POService(db, current_user_id=CURRENT_USER_ID)
     try:
         svc.cancel(po_id)
@@ -227,9 +362,6 @@ def po_cancel(po_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{po_id}/create-bill", response_class=RedirectResponse)
 async def po_create_bill(po_id: int, request: Request, db: Session = Depends(get_db)):
-    """Create a vendor bill from received goods (3-way match)."""
-    from datetime import datetime as dt
-
     po = db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()
     if not po:
         return RedirectResponse("/purchase-orders/", status_code=303)
@@ -238,14 +370,13 @@ async def po_create_bill(po_id: int, request: Request, db: Session = Depends(get
     svc = POService(db, current_user_id=CURRENT_USER_ID)
 
     bill_number = str(form.get("bill_number", "")).strip()
-
-    bill_date: dt | None = None
-    due_date: dt | None = None
+    bill_date: datetime | None = None
+    due_date: datetime | None = None
     for field, raw in [("bill_date", str(form.get("bill_date", "")).strip()),
                        ("due_date", str(form.get("due_date", "")).strip())]:
         if raw:
             try:
-                parsed = dt.strptime(raw, "%Y-%m-%d")
+                parsed = datetime.strptime(raw, "%Y-%m-%d")
                 if field == "bill_date":
                     bill_date = parsed
                 else:
@@ -297,38 +428,4 @@ async def po_create_bill(po_id: int, request: Request, db: Session = Depends(get
             status_code=303,
         )
 
-    return RedirectResponse(f"/purchase-orders/{po_id}?billed=1", status_code=303)
-
-
-@router.post("/{po_id}/add-line", response_class=HTMLResponse)
-async def po_add_line(po_id: int, request: Request, db: Session = Depends(get_db)):
-    """HTMX endpoint — returns a single <tr> for the new line."""
-    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()
-    if not po:
-        return HTMLResponse("", status_code=404)
-
-    form = await request.form()
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
-
-    pid_raw = str(form.get("product_id", "")).strip()
-    line_data = {
-        "description": str(form.get("description", "")).strip(),
-        "qty_ordered": int(form.get("qty_ordered") or 1),
-        "unit_cost": float(form.get("unit_cost") or 0.0),
-        "core_charge_per_unit": float(form.get("core_charge_per_unit") or 0.0),
-        "notes": "",
-    }
-
-    try:
-        line = svc.add_line(
-            po_id=po_id,
-            product_id=int(pid_raw) if pid_raw else None,
-            data=line_data,
-        )
-    except ValueError as exc:
-        return HTMLResponse(f'<tr><td colspan="7" class="px-5 py-2 text-red-500 text-xs">{exc}</td></tr>')
-
-    return templates.TemplateResponse(
-        "purchase_orders/_line_row.html",
-        {"request": request, "line": line},
-    )
+    return RedirectResponse(f"/purchase-orders/{po_id}?ok=billed", status_code=303)
