@@ -259,36 +259,62 @@ def reports_sales(
     )
 
 
-# ── Inventory Snapshot ────────────────────────────────────────────────────────
+# ── Inventory Valuation ───────────────────────────────────────────────────────
 
 @router.get("/inventory/", response_class=HTMLResponse)
-def reports_inventory(request: Request, db: Session = Depends(get_db)):
+def reports_inventory(
+    request: Request,
+    filter: str = "in_stock",
+    db: Session = Depends(get_db),
+):
     """
-    Inventory Snapshot — stock on hand by product, sorted by value.
-    Shows qty on hand, cost, and estimated inventory value.
+    Inventory Valuation — cost value of stock on hand.
+    filter: in_stock (default) | all | low_stock
     """
-    products = (
-        db.query(Product)
-        .filter(Product.is_active == True, Product.qty_on_hand > 0)  # noqa: E712
-        .order_by((Product.qty_on_hand * Product.cost).desc())
-        .all()
-    )
+    today = date.today()
+    base_q = db.query(Product).filter(Product.is_active == True)  # noqa: E712
 
-    total_units = sum(p.qty_on_hand for p in products)
-    total_value = round(sum((p.qty_on_hand * (p.cost or 0.0)) for p in products), 2)
-    total_retail = round(
-        sum((p.qty_on_hand * p.selling_price) for p in products), 2
-    )
+    if filter == "low_stock":
+        # at or below reorder point (reorder_point > 0 to exclude no-reorder-point items)
+        all_active = base_q.all()
+        products = [p for p in all_active if p.reorder_point > 0 and p.qty_on_hand <= p.reorder_point]
+        products.sort(key=lambda p: (p.qty_on_hand - p.reorder_point))
+    elif filter == "all":
+        products = base_q.order_by((Product.qty_on_hand * Product.cost).desc()).all()
+    else:  # in_stock (default)
+        products = (
+            base_q
+            .filter(Product.qty_on_hand > 0)
+            .order_by((Product.qty_on_hand * Product.cost).desc())
+            .all()
+        )
+
+    # Counts for summary cards (always over all active)
+    all_products = base_q.all()
+    sku_count       = sum(1 for p in all_products if p.qty_on_hand > 0)
+    total_units     = sum(p.qty_on_hand for p in all_products if p.qty_on_hand > 0)
+    total_value     = round(sum(p.qty_on_hand * (p.cost or 0.0) for p in all_products if p.qty_on_hand > 0), 2)
+    total_retail    = round(sum(p.qty_on_hand * p.selling_price for p in all_products if p.qty_on_hand > 0), 2)
+    low_stock_count = sum(1 for p in all_products if p.reorder_point > 0 and p.qty_on_hand <= p.reorder_point)
+
+    # Filtered totals (shown in table footer)
+    filtered_units = sum(p.qty_on_hand for p in products)
+    filtered_value = round(sum(p.qty_on_hand * (p.cost or 0.0) for p in products), 2)
 
     return templates.TemplateResponse(
         "reports/inventory.html",
         {
             "request": request,
             "products": products,
+            "active_filter": filter,
+            "sku_count": sku_count,
             "total_units": total_units,
             "total_value": total_value,
             "total_retail": total_retail,
-            "today": date.today(),
+            "low_stock_count": low_stock_count,
+            "filtered_units": filtered_units,
+            "filtered_value": filtered_value,
+            "today": today,
         },
     )
 
