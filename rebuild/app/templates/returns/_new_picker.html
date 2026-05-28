@@ -1,0 +1,110 @@
+<div x-data="{
+  customerId: '{{ selected_customer.id if selected_customer else '' }}',
+  lines: [{ productId: '', qty: 1, price: '', fee: '', disp: 'quarantine' }],
+  addLine() { this.lines.push({ productId: '', qty: 1, price: '', fee: '', disp: 'quarantine' }); },
+}">
+  <form method="post" action="/returns/new" class="space-y-4">
+
+    <div>
+      <label class="form-label">Customer <span class="text-red-500">*</span></label>
+      <select name="customer_id" required x-model="customerId" class="form-select">
+        <option value="">— Select Customer —</option>
+        {% for c in customers %}
+        <option value="{{ c.id }}" {% if selected_customer and selected_customer.id == c.id %}selected{% endif %}>
+          {{ c.company_name }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div>
+      <label class="form-label">Original Invoice # (optional)</label>
+      <input type="text" name="invoice_number" placeholder="e.g. INV-2025-0042"
+             class="form-input font-mono" />
+    </div>
+
+    <div>
+      <label class="form-label">Return Reason <span class="text-red-500">*</span></label>
+      <textarea name="reason" required rows="2" class="form-textarea"
+                placeholder="Wrong part ordered, customer error, defective on arrival…"></textarea>
+    </div>
+
+    <div>
+      <div class="flex items-center justify-between mb-2">
+        <label class="form-label mb-0">Return Items <span class="text-red-500">*</span></label>
+        <button type="button" @click="addLine()"
+                class="text-xs font-medium text-green-600 hover:text-green-700">+ Add Item</button>
+      </div>
+      <div class="space-y-3">
+        <template x-for="(line, i) in lines" :key="i">
+          <div class="rounded border border-gray-100 p-2 space-y-2 bg-gray-50/50">
+            <div class="flex items-center gap-2">
+              <select :name="'product_id[]'" x-model="line.productId"
+                      class="flex-1 rounded border border-gray-200 px-2 py-1.5 text-xs
+                             focus:outline-none focus:ring-1 focus:ring-brand-400">
+                <option value="">— Product —</option>
+                {% for p in products %}
+                <option value="{{ p.id }}">{{ p.sku }} — {{ p.title | truncate(35) }}</option>
+                {% endfor %}
+              </select>
+              <button type="button" @click="lines.length > 1 && lines.splice(i, 1)"
+                      :class="lines.length <= 1 ? 'text-gray-200 cursor-not-allowed' : 'text-gray-300 hover:text-red-500'"
+                      class="transition-colors text-base leading-none shrink-0">✕</button>
+            </div>
+            <div class="flex items-center gap-2">
+              <div class="flex-1">
+                <p class="text-xs text-gray-400 mb-0.5">Qty</p>
+                <input :name="'qty[]'" type="number" min="1" x-model="line.qty"
+                       class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs text-right
+                              focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              </div>
+              <div class="flex-1">
+                <p class="text-xs text-gray-400 mb-0.5">Unit Price</p>
+                <input :name="'unit_price[]'" type="number" step="0.01" min="0" x-model="line.price"
+                       placeholder="0.00"
+                       class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs text-right font-mono
+                              focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              </div>
+              <div class="flex-1">
+                <p class="text-xs text-gray-400 mb-0.5">Restocking $</p>
+                <input :name="'restocking_fee[]'" type="number" step="0.01" min="0" x-model="line.fee"
+                       placeholder="0.00"
+                       class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs text-right font-mono
+                              focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              </div>
+            </div>
+            <div>
+              <p class="text-xs text-gray-400 mb-0.5">Disposition</p>
+              <select :name="'disposition[]'" x-model="line.disp"
+                      class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs
+                             focus:outline-none focus:ring-1 focus:ring-brand-400">
+                <option value="{{ ReturnDisposition.QUARANTINE }}">Quarantine</option>
+                <option value="{{ ReturnDisposition.RETURN_TO_STOCK }}">Return to Stock</option>
+                <option value="{{ ReturnDisposition.VENDOR_RETURN }}">Vendor Return</option>
+                <option value="{{ ReturnDisposition.DAMAGED }}">Damaged</option>
+                <option value="{{ ReturnDisposition.WARRANTY_REVIEW }}">Warranty Review</option>
+                <option value="{{ ReturnDisposition.SCRAP }}">Scrap</option>
+              </select>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <div>
+      <label class="form-label">Notes</label>
+      <textarea name="notes" rows="2" class="form-textarea"
+                placeholder="Customer-facing notes…"></textarea>
+    </div>
+
+    <div class="pt-2 flex gap-3">
+      <button type="submit"
+              :disabled="!customerId"
+              :class="customerId ? 'btn-primary' : 'btn-primary opacity-40 cursor-not-allowed'">
+        Create Return
+      </button>
+      <button type="button" @click="createSlideOpen = false" class="btn-secondary">Cancel</button>
+    </div>
+
+  </form>
+</div>

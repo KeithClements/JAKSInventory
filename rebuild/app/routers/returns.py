@@ -75,9 +75,10 @@ def ra_list(
 def ra_new(
     request: Request,
     customer_id: int = 0,
-    invoice_id: int = 0,
     db: Session = Depends(get_db),
 ):
+    if not request.headers.get("HX-Request"):
+        return RedirectResponse("/returns/", status_code=303)
     customers = (
         db.query(Customer)
         .filter(Customer.is_active == True)  # noqa: E712
@@ -94,18 +95,13 @@ def ra_new(
         db.query(Customer).filter(Customer.id == customer_id).first()
         if customer_id else None
     )
-    selected_invoice = (
-        db.query(Invoice).filter(Invoice.id == invoice_id).first()
-        if invoice_id else None
-    )
     return templates.TemplateResponse(
-        "returns/new.html",
+        "returns/_new_picker.html",
         {
             "request": request,
             "customers": customers,
             "products": products,
             "selected_customer": selected_customer,
-            "selected_invoice": selected_invoice,
             "ReturnDisposition": ReturnDisposition,
         },
     )
@@ -217,7 +213,7 @@ def ra_detail(ra_id: int, request: Request, db: Session = Depends(get_db)):
     if not ra:
         return RedirectResponse("/returns/", status_code=303)
     return templates.TemplateResponse(
-        "returns/detail.html",
+        "returns/workspace.html",
         {
             "request": request,
             "ra": ra,

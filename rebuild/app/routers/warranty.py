@@ -83,6 +83,8 @@ def warranty_new(
     invoice_id: int = 0,
     db: Session = Depends(get_db),
 ):
+    if not request.headers.get("HX-Request"):
+        return RedirectResponse("/warranty/", status_code=303)
     customers = (
         db.query(Customer)
         .filter(Customer.is_active == True)  # noqa: E712
@@ -105,20 +107,14 @@ def warranty_new(
         db.query(Customer).filter(Customer.id == customer_id).first()
         if customer_id else None
     )
-    selected_invoice = (
-        db.query(Invoice).filter(Invoice.id == invoice_id).first()
-        if invoice_id else None
-    )
-
     return templates.TemplateResponse(
-        "warranty/new.html",
+        "warranty/_new_picker.html",
         {
             "request": request,
             "customers": customers,
             "vendors": vendors,
             "products": products,
             "selected_customer": selected_customer,
-            "selected_invoice": selected_invoice,
         },
     )
 
@@ -204,7 +200,7 @@ def warranty_detail(claim_id: int, request: Request, db: Session = Depends(get_d
     if not claim:
         return RedirectResponse("/warranty/", status_code=303)
     return templates.TemplateResponse(
-        "warranty/detail.html",
+        "warranty/workspace.html",
         {
             "request": request,
             "claim": claim,
