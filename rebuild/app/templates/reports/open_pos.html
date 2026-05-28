@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+{% block title %}Open POs & Backorders — JAKS Inventory{% endblock %}
+{% block heading %}Open POs & Backorders{% endblock %}
+
+{% block header_actions %}
+  <a href="/reports/" class="text-sm text-gray-500 hover:text-gray-700">AR Aging</a>
+  <a href="/reports/sales/" class="text-sm text-gray-500 hover:text-gray-700">Sales</a>
+  <a href="/reports/inventory/" class="text-sm text-gray-500 hover:text-gray-700">Inventory</a>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl space-y-6">
+
+  <p class="text-xs text-gray-400">As of {{ today.strftime('%B %d, %Y') }}</p>
+
+  {# ── Summary cards ─────────────────────────────────────────────────────── #}
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div class="stat-card">
+      <p class="stat-label">Open POs</p>
+      <p class="stat-value">{{ po_rows | length }}</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Outstanding Value</p>
+      <p class="stat-value text-brand-700">${{ '%.2f' % po_total_value }}</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Backordered Lines</p>
+      <p class="stat-value {% if backorder_lines %}text-amber-600{% endif %}">{{ backorder_lines | length }}</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Backorder Value</p>
+      <p class="stat-value {% if backorder_value > 0 %}text-amber-600{% endif %}">${{ '%.2f' % backorder_value }}</p>
+    </div>
+  </div>
+
+
+  {# ══════════════════════════════════════════════════════════════════════════
+     SECTION 1 — Open Purchase Orders
+  ════════════════════════════════════════════════════════════════════════════ #}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Open Purchase Orders</h2>
+      <span class="text-xs text-gray-400">{{ po_rows | length }} PO{{ 's' if po_rows | length != 1 }}</span>
+    </div>
+
+    {% if po_rows %}
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">PO #</th>
+            <th class="tbl-th">Vendor</th>
+            <th class="tbl-th">Status</th>
+            <th class="tbl-th-r">Lines Out</th>
+            <th class="tbl-th-r">Outstanding $</th>
+            <th class="tbl-th">Expected</th>
+            <th class="tbl-th">Days Open</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in po_rows %}
+          {% set po = row.po %}
+          <tr class="tbl-row {% if row.overdue %}bg-red-50/40{% endif %}">
+            <td class="tbl-td">
+              <a href="/purchase-orders/{{ po.id }}" class="tbl-link font-mono text-xs font-semibold">{{ po.po_number }}</a>
+            </td>
+            <td class="tbl-td font-medium text-gray-900">{{ po.vendor.name }}</td>
+            <td class="tbl-td">
+              {% if po.status == POStatus.VERBAL_ORDER %}
+              <span class="badge-gray">Verbal</span>
+              {% elif po.status == POStatus.DRAFT %}
+              <span class="badge-gray">Draft</span>
+              {% elif po.status == POStatus.SENT %}
+              <span class="badge-blue">Sent</span>
+              {% elif po.status == POStatus.PARTIAL %}
+              <span class="badge-amber">Partial</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td-r tabular-nums">{{ row.outstanding_lines | length }}</td>
+            <td class="tbl-td-r font-semibold tabular-nums">${{ '%.2f' % row.outstanding_value }}</td>
+            <td class="tbl-td">
+              {% if po.expected_at %}
+              <span class="{% if row.overdue %}text-red-600 font-medium{% else %}text-gray-700{% endif %}">
+                {{ (po.expected_at.date() if po.expected_at is not string else po.expected_at) | string | truncate(10, true, '') }}
+              </span>
+              {% if row.overdue %}
+              <span class="ml-1 text-xs text-red-500 font-medium">OVERDUE</span>
+              {% endif %}
+              {% else %}
+              <span class="text-gray-300">—</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td text-gray-500 tabular-nums">
+              {% if row.days_since_order is not none %}
+              {{ row.days_since_order }}d
+              {% else %}—{% endif %}
+            </td>
+          </tr>
+
+          {# Outstanding lines detail (indented) #}
+          {% for line in row.outstanding_lines %}
+          <tr class="bg-gray-50/60 border-b border-gray-100">
+            <td class="tbl-td pl-8 py-1.5 text-xs text-gray-300">↳</td>
+            <td class="tbl-td py-1.5" colspan="2">
+              {% if line.product %}
+              <span class="font-mono text-xs text-brand-700">{{ line.product.sku }}</span>
+              <span class="text-xs text-gray-600 ml-2">{{ line.description | truncate(60) }}</span>
+              {% else %}
+              <span class="text-xs text-gray-600">{{ line.description | truncate(70) }}</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td-r py-1.5 text-xs text-gray-500">
+              {{ line.qty_outstanding }} / {{ line.qty_ordered }} remaining
+            </td>
+            <td class="tbl-td-r py-1.5 text-xs text-gray-500 tabular-nums">
+              ${{ '%.2f' % (line.unit_cost * line.qty_outstanding) }}
+            </td>
+            <td class="tbl-td py-1.5 text-xs text-gray-400" colspan="2">
+              @ ${{ '%.2f' % line.unit_cost }} / ea
+            </td>
+          </tr>
+          {% endfor %}
+
+          {% endfor %}
+        </tbody>
+        <tfoot class="border-t-2 border-gray-100 bg-gray-50">
+          <tr>
+            <td colspan="4" class="px-4 py-3 text-right text-sm font-semibold text-gray-600">Total Outstanding</td>
+            <td class="px-4 py-3 text-right font-bold tabular-nums">${{ '%.2f' % po_total_value }}</td>
+            <td colspan="2"></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    {% else %}
+    <div class="px-5 py-10 text-center text-sm text-gray-400">
+      No open purchase orders.
+    </div>
+    {% endif %}
+  </div>
+
+
+  {# ══════════════════════════════════════════════════════════════════════════
+     SECTION 2 — Backordered SO Lines
+  ════════════════════════════════════════════════════════════════════════════ #}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Backordered Sales Order Lines</h2>
+      <span class="text-xs text-gray-400">{{ backorder_lines | length }} line{{ 's' if backorder_lines | length != 1 }}</span>
+    </div>
+
+    {% if backorder_lines %}
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">SO #</th>
+            <th class="tbl-th">Customer</th>
+            <th class="tbl-th">SKU</th>
+            <th class="tbl-th">Description</th>
+            <th class="tbl-th-r">Qty BO</th>
+            <th class="tbl-th-r">Price</th>
+            <th class="tbl-th-r">Value</th>
+            <th class="tbl-th">SO Date</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for line in backorder_lines %}
+          <tr class="tbl-row">
+            <td class="tbl-td">
+              <a href="/sales-orders/{{ line.so_id }}" class="tbl-link font-mono text-xs">{{ line.so.so_number }}</a>
+            </td>
+            <td class="tbl-td font-medium text-gray-900">{{ line.so.customer.company_name }}</td>
+            <td class="tbl-td">
+              {% if line.product %}
+              <a href="/products/{{ line.product_id }}" class="font-mono text-xs text-brand-700 hover:underline">{{ line.product.sku }}</a>
+              {% else %}
+              <span class="text-xs text-gray-300">—</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td text-sm text-gray-700 max-w-xs">
+              <span class="truncate block">{{ line.description }}</span>
+            </td>
+            <td class="tbl-td-r font-medium text-amber-600 tabular-nums">{{ line.qty_remaining }}</td>
+            <td class="tbl-td-r tabular-nums">${{ '%.2f' % line.unit_price }}</td>
+            <td class="tbl-td-r font-medium tabular-nums">${{ '%.2f' % (line.unit_price * line.qty_remaining) }}</td>
+            <td class="tbl-td text-sm text-gray-400">{{ line.so.created_at.strftime('%m/%d/%Y') }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="border-t-2 border-gray-100 bg-gray-50">
+          <tr>
+            <td colspan="6" class="px-4 py-3 text-right text-sm font-semibold text-gray-600">Total Backorder Value</td>
+            <td class="px-4 py-3 text-right font-bold tabular-nums text-amber-600">${{ '%.2f' % backorder_value }}</td>
+            <td></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    {% else %}
+    <div class="px-5 py-10 text-center text-sm text-gray-400">
+      No backordered lines. All SO demand is covered by stock or linked POs.
+    </div>
+    {% endif %}
+  </div>
+
+</div>
+{% endblock %}

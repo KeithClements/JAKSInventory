@@ -23,12 +23,13 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
-from app.constants import InvoiceStatus, POStatus
+from app.constants import FulfillmentSource, InvoiceStatus, POStatus, SOLineStatus, SOStatus
 from app.deps import get_db
 from app.models.customer import Customer
 from app.models.invoice import Invoice, Payment
 from app.models.product import Product
-from app.models.purchase_order import PurchaseOrder
+from app.models.purchase_order import PurchaseOrder, POLine
+from app.models.quote import SalesOrder, SOLine
 
 log = logging.getLogger(__name__)
 
@@ -288,5 +289,96 @@ def reports_inventory(request: Request, db: Session = Depends(get_db)):
             "total_value": total_value,
             "total_retail": total_retail,
             "today": date.today(),
+        },
+    )
+
+
+# ── Open POs + Backorders ─────────────────────────────────────────────────────
+
+@router.get("/open-pos/", response_class=HTMLResponse)
+def reports_open_pos(request: Request, db: Session = Depends(get_db)):
+    """
+    Open POs & Backorders report — two sections:
+      1. Purchase orders that are not yet fully received (VERBAL_ORDER / DRAFT / SENT / PARTIAL)
+      2. SO lines with fulfillment_source = backorder awaiting stock
+    """
+    today = date.today()
+
+    # Section 1 — Open Purchase Orders
+    open_pos = (
+        db.query(PurchaseOrder)
+        .options(
+            joinedload(PurchaseOrder.lines).joinedload(POLine.product),
+            joinedload(PurchaseOrder.vendor),
+        )
+        .filter(
+            PurchaseOrder.status.in_([
+                POStatus.VERBAL_ORDER,
+                POStatus.DRAFT,
+                POStatus.SENT,
+                POStatus.PARTIAL,
+            ])
+        )
+        .order_by(PurchaseOrder.expected_at.asc().nulls_last(), PurchaseOrder.created_at.asc())
+        .all()
+    )
+
+    # Compute outstanding $ per PO
+    po_rows = []
+    for po in open_pos:
+        outstanding_lines = [ln for ln in po.lines if ln.qty_outstanding > 0]
+        outstanding_value = round(
+            sum(ln.unit_cost * ln.qty_outstanding for ln in outstanding_lines), 2
+        )
+        days_since_order = None
+        if po.ordered_at:
+            ordered_date = po.ordered_at.date() if isinstance(po.ordered_at, datetime) else po.ordered_at
+            days_since_order = (today - ordered_date).days
+        overdue = (
+            po.expected_at is not None
+            and (po.expected_at.date() if isinstance(po.expected_at, datetime) else po.expected_at) < today
+        )
+        po_rows.append({
+            "po": po,
+            "outstanding_lines": outstanding_lines,
+            "outstanding_value": outstanding_value,
+            "days_since_order": days_since_order,
+            "overdue": overdue,
+        })
+
+    po_total_value = round(sum(r["outstanding_value"] for r in po_rows), 2)
+
+    # Section 2 — Backordered SO lines
+    backorder_lines = (
+        db.query(SOLine)
+        .options(
+            joinedload(SOLine.so).joinedload(SalesOrder.customer),
+            joinedload(SOLine.product),
+        )
+        .join(SalesOrder)
+        .filter(
+            SalesOrder.status.in_([SOStatus.OPEN, SOStatus.PARTIAL, SOStatus.HOLD]),
+            SOLine.fulfillment_source == FulfillmentSource.BACKORDER,
+            SOLine.line_status != SOLineStatus.INVOICED,
+            SOLine.line_status != SOLineStatus.CANCELLED,
+        )
+        .order_by(SalesOrder.created_at.asc())
+        .all()
+    )
+
+    backorder_value = round(
+        sum(ln.unit_price * ln.qty_remaining for ln in backorder_lines), 2
+    )
+
+    return templates.TemplateResponse(
+        "reports/open_pos.html",
+        {
+            "request": request,
+            "today": today,
+            "po_rows": po_rows,
+            "po_total_value": po_total_value,
+            "backorder_lines": backorder_lines,
+            "backorder_value": backorder_value,
+            "POStatus": POStatus,
         },
     )
