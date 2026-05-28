@@ -1,0 +1,9 @@
+Hi {customer_name},
+
+I wanted to follow up on the quote we sent you ({quote_number}, dated {quote_date}).
+
+Do you have any questions or need anything adjusted? I'm happy to help.
+
+{salesperson_name}
+JAKS Diesel Parts
+{company_phone}

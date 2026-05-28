@@ -21,7 +21,8 @@ from typing import TypedDict
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
-from app.constants import InvoiceStatus
+from app.constants import CoreDirection, CoreStatus, InvoiceStatus
+from app.models.core import CoreCharge
 from app.models.customer import Customer
 from app.models.invoice import Invoice, Payment
 
@@ -202,3 +203,75 @@ class StatementService:
             total_charges=total_charges,
             total_credits=total_credits,
         )
+
+    # ── Customer balance summary (used by Quote + Invoice workspace headers) ──
+
+    def get_customer_balance_summary(self, customer_id: int) -> dict:
+        """
+        Returns a lightweight dict for the workspace balance chips.
+        No N+1 — four targeted queries, returns plain values (no ORM objects).
+        """
+        customer = self.db.query(Customer).filter(Customer.id == customer_id).first()
+        if customer is None:
+            return {
+                "open_balance": 0.0,
+                "overdue_balance": 0.0,
+                "credit_balance": 0.0,
+                "credit_limit": 0.0,
+                "payment_terms": "",
+                "cores_owed_qty": 0,
+                "last_payment_date": None,
+                "open_invoice_count": 0,
+            }
+
+        open_invoices = (
+            self.db.query(Invoice)
+            .options(joinedload(Invoice.allocations))
+            .filter(
+                Invoice.customer_id == customer_id,
+                Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL]),
+            )
+            .all()
+        )
+        open_balance = round(sum(inv.balance_due for inv in open_invoices), 2)
+        overdue_balance = round(
+            sum(inv.balance_due for inv in open_invoices if inv.is_overdue), 2
+        )
+
+        core_charges = (
+            self.db.query(CoreCharge)
+            .filter(
+                CoreCharge.customer_id == customer_id,
+                CoreCharge.direction == CoreDirection.CUSTOMER_OWES_RETURN,
+                CoreCharge.status.in_([CoreStatus.OPEN, CoreStatus.PARTIAL]),
+            )
+            .all()
+        )
+        cores_owed_qty = sum(
+            max(0, c.qty_charged - c.qty_returned) for c in core_charges
+        )
+
+        last_pmt = (
+            self.db.query(Payment.payment_date)
+            .filter(
+                Payment.customer_id == customer_id,
+                Payment.direction == "incoming_from_customer",
+            )
+            .order_by(Payment.payment_date.desc())
+            .first()
+        )
+        last_payment_date: date | None = None
+        if last_pmt:
+            raw = last_pmt[0]
+            last_payment_date = raw.date() if isinstance(raw, datetime) else raw
+
+        return {
+            "open_balance": open_balance,
+            "overdue_balance": overdue_balance,
+            "credit_balance": round(customer.credit_balance, 2),
+            "credit_limit": round(customer.credit_limit, 2),
+            "payment_terms": customer.payment_terms,
+            "cores_owed_qty": cores_owed_qty,
+            "last_payment_date": last_payment_date,
+            "open_invoice_count": len(open_invoices),
+        }

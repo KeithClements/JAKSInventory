@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}Inventory Valuation — JAKS Inventory{% endblock %}
+{% block heading %}Inventory Valuation{% endblock %}
+
+{% block content %}
+{% set active_report = 'inventory-valuation' %}
+<div class="max-w-6xl space-y-4">
+  {% include "reports/_nav.html" %}
+
+  <div class="flex items-center justify-between">
+    <p class="text-xs text-gray-400">As of {{ today.strftime('%B %d, %Y') }} · Active SKUs only</p>
+    <button type="button" class="btn-secondary btn-sm" disabled title="Coming soon">
+      Export CSV
+    </button>
+  </div>
+
+  {# ── Summary tiles ─────────────────────────────────────────────────────── #}
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div class="stat-card-brand">
+      <p class="stat-label">Total Value</p>
+      <p class="stat-value text-brand-700">${{ '%.2f' % totals.total_value }}</p>
+      <p class="stat-sub">qty × avg cost</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">In-Stock SKUs</p>
+      <p class="stat-value">{{ totals.in_stock_skus }}</p>
+      <p class="stat-sub">{{ totals.sku_count }} active total</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Total Units</p>
+      <p class="stat-value">{{ totals.total_units }}</p>
+    </div>
+    <div class="stat-card {% if totals.zero_cost_count > 0 %}stat-card-amber{% endif %}">
+      <p class="stat-label {% if totals.zero_cost_count > 0 %}text-amber-700{% endif %}">Zero-Cost Warnings</p>
+      <p class="stat-value {% if totals.zero_cost_count > 0 %}text-amber-700{% else %}text-gray-400{% endif %}">
+        {{ totals.zero_cost_count }}
+      </p>
+      <p class="stat-sub">in-stock SKUs with no cost</p>
+    </div>
+  </div>
+
+  {# ── Product table ────────────────────────────────────────────────────── #}
+  {% if rows %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Stock on Hand</h2>
+      <span class="text-xs text-gray-400">{{ rows | length }} SKU{{ 's' if rows | length != 1 }}</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">SKU</th>
+            <th class="tbl-th">Description</th>
+            <th class="tbl-th-r">On Hand</th>
+            <th class="tbl-th-r">Committed</th>
+            <th class="tbl-th-r">Available</th>
+            <th class="tbl-th-r">Avg Cost</th>
+            <th class="tbl-th-r">Last Cost</th>
+            <th class="tbl-th-r">Total Value</th>
+            <th class="tbl-th">Flag</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr class="tbl-row {% if row.warning == 'negative_qty' %}bg-red-50/40{% elif row.warning == 'zero_cost' %}bg-amber-50/30{% endif %}">
+            <td class="tbl-td">
+              <a href="/products/{{ row.product.id }}" class="tbl-link font-mono text-xs">{{ row.sku }}</a>
+            </td>
+            <td class="tbl-td text-sm text-gray-600 max-w-xs"><span class="truncate block">{{ row.title }}</span></td>
+            <td class="tbl-td-r font-medium tabular-nums
+              {% if row.qty_on_hand < 0 %}text-red-600
+              {% elif row.qty_on_hand == 0 %}text-gray-400
+              {% else %}text-gray-800{% endif %}">
+              {{ row.qty_on_hand }}
+            </td>
+            <td class="tbl-td-r tabular-nums {% if row.qty_committed > 0 %}text-orange-600{% else %}text-gray-300{% endif %}">
+              {% if row.qty_committed > 0 %}{{ row.qty_committed }}{% else %}—{% endif %}
+            </td>
+            <td class="tbl-td-r tabular-nums
+              {% if row.qty_available < 0 %}text-red-600 font-medium
+              {% elif row.qty_available == 0 %}text-gray-400
+              {% else %}text-green-700{% endif %}">
+              {{ row.qty_available }}
+            </td>
+            <td class="tbl-td-r tabular-nums {% if row.avg_cost <= 0 %}text-amber-600 font-medium{% else %}text-gray-600{% endif %}">
+              ${{ '%.2f' % row.avg_cost }}
+            </td>
+            <td class="tbl-td-r tabular-nums text-gray-500">
+              {% if row.last_cost > 0 %}${{ '%.2f' % row.last_cost }}{% else %}<span class="text-gray-300">—</span>{% endif %}
+            </td>
+            <td class="tbl-td-r font-semibold tabular-nums {% if row.total_value > 0 %}text-brand-700{% else %}text-gray-300{% endif %}">
+              {% if row.total_value != 0 %}${{ '%.2f' % row.total_value }}{% else %}—{% endif %}
+            </td>
+            <td class="tbl-td">
+              {% if row.warning == 'zero_cost' %}
+              <span class="badge-amber" title="Stock on hand but cost is zero">Zero Cost</span>
+              {% elif row.warning == 'negative_qty' %}
+              <span class="badge-red" title="Negative quantity on hand">Negative</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="border-t-2 border-gray-200 bg-gray-50">
+          <tr>
+            <td colspan="2" class="px-4 py-3 text-sm font-bold text-gray-700">Totals</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-gray-700 tabular-nums">{{ totals.total_units }}</td>
+            <td colspan="4"></td>
+            <td class="px-4 py-3 text-right text-lg font-bold text-brand-700 tabular-nums">${{ '%.2f' % totals.total_value }}</td>
+            <td></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="card flex flex-col items-center justify-center py-16">
+    <p class="text-gray-500 font-medium">No active products</p>
+    <p class="text-gray-400 text-sm mt-1">Create products to populate inventory.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

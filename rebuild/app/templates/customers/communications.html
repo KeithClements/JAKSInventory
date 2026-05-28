@@ -1,0 +1,207 @@
+{% extends "base.html" %}
+{% block title %}Communications — {{ customer.company_name }}{% endblock %}
+{% block heading %}{{ customer.company_name }} — Communications{% endblock %}
+
+{% block header_actions %}
+  <a href="/customers/{{ customer.id }}" class="text-sm text-gray-500 hover:text-gray-700">← {{ customer.company_name }}</a>
+{% endblock %}
+
+{% block content %}
+{% set channel_badges = {
+    'email':       'badge-blue',
+    'sms':         'badge-purple',
+    'phone_call':  'badge-gray',
+    'manual_note': 'badge-gray',
+} %}
+{% set status_badges = {
+    'queued':       'badge-amber',
+    'sent':         'badge-blue',
+    'delivered':    'badge-green',
+    'failed':       'badge-red',
+    'bounced':      'badge-red',
+    'logged_only':  'badge-gray',
+} %}
+
+{# ── Do Not Contact warning ── #}
+{% if customer.do_not_contact %}
+<div class="mb-4 flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+  <svg class="mt-0.5 w-5 h-5 shrink-0 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+  </svg>
+  <div>
+    <p class="text-sm font-semibold text-amber-800">Do Not Contact</p>
+    <p class="text-xs text-amber-700 mt-0.5">
+      This customer is marked <strong>Do Not Contact</strong>. No outbound messages will be sent.
+      You may still log manual notes for your records.
+    </p>
+  </div>
+</div>
+{% endif %}
+
+{# ── Log Communication form card ── #}
+<div class="card mb-4"
+     x-data="{
+       open: false,
+       commType: 'phone_outbound',
+       allowSms: {{ 'true' if customer.allow_sms else 'false' }},
+       get isEmail()    { return this.commType.startsWith('email'); },
+       get isSms()      { return this.commType.startsWith('sms'); },
+       get isInbound()  { return this.commType.endsWith('inbound'); },
+       get showAddr()   { return this.commType !== 'note'; }
+     }">
+
+  <div class="card-header flex items-center justify-between cursor-pointer select-none"
+       @click="open = !open">
+    <h2 class="card-title">Log Communication</h2>
+    <svg :class="open ? 'rotate-180' : ''"
+         class="w-4 h-4 text-gray-400 transition-transform duration-150"
+         fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+    </svg>
+  </div>
+
+  <div x-show="open" x-cloak class="card-body border-t border-gray-100">
+    <form method="post" action="/customers/{{ customer.id }}/communications/log" class="space-y-3">
+
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="form-label">Type</label>
+          <select name="comm_type" x-model="commType" class="form-select">
+            <option value="phone_outbound">Phone Call (Outbound)</option>
+            <option value="phone_inbound">Phone Call (Inbound)</option>
+            <option value="email_outbound">Email (Outbound)</option>
+            <option value="email_inbound">Email (Inbound)</option>
+            <option value="sms_outbound">SMS (Outbound)</option>
+            <option value="sms_inbound">SMS (Inbound)</option>
+            <option value="note">Internal Note</option>
+          </select>
+          <p x-show="isSms && !allowSms" x-cloak
+             class="mt-1 text-xs text-amber-600">
+            SMS consent not on file — logged as manual note only, no message sent.
+          </p>
+        </div>
+
+        <div x-show="showAddr" x-cloak>
+          <label class="form-label" x-text="isInbound ? 'From' : 'To'">To</label>
+          <input name="contact_address" type="text"
+                 :placeholder="isEmail ? 'email address' : (isSms ? 'phone number' : 'phone or name')"
+                 class="form-input" />
+        </div>
+      </div>
+
+      <div x-show="isEmail" x-cloak>
+        <label class="form-label">Subject <span class="normal-case font-normal text-gray-400">(optional)</span></label>
+        <input name="subject" type="text" class="form-input" />
+      </div>
+
+      <div>
+        <label class="form-label">Notes / Body <span class="text-red-500 normal-case font-normal">*</span></label>
+        <textarea name="body" rows="3" required
+                  placeholder="What was discussed, sent, or received?"
+                  class="form-textarea"></textarea>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="form-label">Related Document <span class="normal-case font-normal text-gray-400">(optional)</span></label>
+          <select name="related_entity_type" class="form-select">
+            <option value="">— none —</option>
+            <option value="quote">Quote</option>
+            <option value="invoice">Invoice</option>
+            <option value="so">Sales Order</option>
+            <option value="po">Purchase Order</option>
+            <option value="warranty">Warranty Claim</option>
+            <option value="core_slip">Core Return</option>
+            <option value="research">Research</option>
+          </select>
+        </div>
+        <div>
+          <label class="form-label">Document # <span class="normal-case font-normal text-gray-400">(optional)</span></label>
+          <input name="related_entity_id" type="number" min="1" class="form-input" />
+        </div>
+      </div>
+
+      <div class="flex items-center gap-3 pt-1">
+        <button type="submit" class="btn-primary">Log</button>
+        <button type="button" @click="open = false" class="btn-secondary">Cancel</button>
+      </div>
+
+    </form>
+  </div>
+</div>
+
+{# ── Timeline card ── #}
+<div class="card">
+  <div class="card-header flex items-center justify-between">
+    <h2 class="card-title">Communication Timeline</h2>
+    <span class="text-xs text-gray-400">{{ comms|length }} record{{ '' if comms|length == 1 else 's' }} (immutable log)</span>
+  </div>
+
+  {% if comms %}
+  <ul class="divide-y divide-gray-100">
+    {% for comm in comms %}
+    {% set link = related_links.get(comm.id) %}
+    <li class="px-5 py-4">
+      <div class="flex flex-wrap items-center gap-2 mb-1.5">
+        <span class="text-xs text-gray-500 font-mono">
+          {{ comm.sent_at.strftime('%b %d, %Y — %I:%M %p') if comm.sent_at else '—' }}
+        </span>
+
+        <span class="{{ channel_badges.get(comm.channel, 'badge-gray') }} capitalize">
+          {{ comm.channel.replace('_', ' ') }}
+        </span>
+
+        {% if comm.direction == 'inbound' %}
+          <span class="badge-teal">← Inbound</span>
+        {% else %}
+          <span class="badge-gray">→ Outbound</span>
+        {% endif %}
+
+        <span class="{{ status_badges.get(comm.status, 'badge-gray') }} capitalize">
+          {{ comm.status.replace('_', ' ') }}
+        </span>
+
+        {% if comm.template_used %}
+          <span class="text-xs text-gray-400">template: <span class="font-mono">{{ comm.template_used }}</span></span>
+        {% endif %}
+
+        {% if link %}
+          {% if link.href %}
+            <a href="{{ link.href }}" class="ml-auto text-xs text-brand-700 hover:underline">{{ link.label }} ↗</a>
+          {% else %}
+            <span class="ml-auto text-xs text-gray-500">{{ link.label }}</span>
+          {% endif %}
+        {% endif %}
+      </div>
+
+      {% if comm.to_address or comm.from_address %}
+      <div class="text-xs text-gray-500 mb-1">
+        {% if comm.direction == 'inbound' and comm.from_address %}
+          From: <span class="font-mono">{{ comm.from_address }}</span>
+        {% elif comm.to_address %}
+          To: <span class="font-mono">{{ comm.to_address }}</span>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      {% if comm.subject %}
+      <p class="text-sm font-semibold text-gray-800">{{ comm.subject }}</p>
+      {% endif %}
+
+      {% if comm.body %}
+      <p class="text-sm text-gray-700 whitespace-pre-wrap mt-1">{{ comm.body }}</p>
+      {% endif %}
+
+      {% if comm.failed_reason %}
+      <p class="text-xs text-red-600 mt-1">Failure: {{ comm.failed_reason }}</p>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <div class="tbl-empty">No communications logged yet.</div>
+  {% endif %}
+
+</div>
+{% endblock %}

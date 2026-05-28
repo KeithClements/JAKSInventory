@@ -208,9 +208,10 @@ class InvoiceService(BaseService):
 
     # ── Header editing ────────────────────────────────────────────────────────
 
-    def update_header(self, invoice_id: int, data: dict) -> Invoice:
+    def update_header(self, invoice_id: int, data: dict, submitted_updated_at: str | None = None) -> Invoice:
         """Update header fields on a draft invoice (customer, PO, ESN, tax, etc.)."""
         invoice = self._get_or_404(invoice_id)
+        self.check_version(invoice, submitted_updated_at)
         self._assert_editable(invoice)
 
         # Whitelist of fields the workspace can write
@@ -487,6 +488,7 @@ class InvoiceService(BaseService):
         if errors:
             raise ValueError("; ".join(errors))
 
+        _neg_inv_shortages: list[dict] = []
         shortages = self.check_inventory_for_finalise(invoice_id)
         if shortages:
             if not allow_negative_inventory:
@@ -509,6 +511,7 @@ class InvoiceService(BaseService):
                 new_value={"override": "allow_negative_inventory", "shortages": shortages},
                 notes="Negative inventory override at invoice finalize",
             )
+            _neg_inv_shortages = shortages
 
         invoice = self._get_or_404(invoice_id)
 
@@ -571,6 +574,21 @@ class InvoiceService(BaseService):
                 )
                 self.db.add(txn)
 
+                # Low-stock notification when post-decrement qty is at or below reorder point
+                if (
+                    product.reorder_point
+                    and product.reorder_point > 0
+                    and product.qty_on_hand <= product.reorder_point
+                ):
+                    from app.services.notification_service import NotificationService
+                    NotificationService.build_low_stock(
+                        self.db,
+                        product_id=product.id,
+                        sku=product.sku,
+                        qty_on_hand=product.qty_on_hand,
+                        reorder_point=product.reorder_point,
+                    )
+
         # Create CoreCharge records for core child lines
         for core_ln in invoice.lines:
             if core_ln.line_type == LineType.CORE_CHARGE and core_ln.parent_line_id and core_ln.product_id:
@@ -594,6 +612,47 @@ class InvoiceService(BaseService):
             old_value=InvoiceStatus.DRAFT,
             new_value=InvoiceStatus.OPEN,
         )
+
+        # Post-finalize notifications (staged before commit so they roll back on error)
+        from app.services.notification_service import NotificationService
+        _notif_svc = NotificationService(self.db, self.current_user_id)
+
+        # Negative inventory override notification
+        if allow_negative_inventory and _neg_inv_shortages:
+            _notif_svc.notify(
+                notification_type="negative_inventory_override",
+                severity="warning",
+                message=(
+                    f"Invoice {invoice.invoice_number} finalized with negative "
+                    f"inventory override on: "
+                    + ", ".join(s["sku"] for s in _neg_inv_shortages[:3])
+                    + (f" +{len(_neg_inv_shortages) - 3} more" if len(_neg_inv_shortages) > 3 else "")
+                ),
+                entity_type="invoice",
+                entity_id=invoice_id,
+                action_url=f"/invoices/{invoice_id}",
+            )
+
+        # Large invoice threshold notification
+        invoice_total = invoice.total
+        large_threshold_raw = get_setting_value_db(self.db, "notify_invoice_over_amount", "5000")
+        try:
+            large_threshold = float(large_threshold_raw)
+        except (TypeError, ValueError):
+            large_threshold = 5000.0
+        if invoice_total >= large_threshold:
+            _notif_svc.notify(
+                notification_type="invoice_over_threshold",
+                severity="info",
+                message=(
+                    f"Large invoice finalized: {invoice.invoice_number} = "
+                    f"${invoice_total:,.2f} (threshold ${large_threshold:,.2f})"
+                ),
+                entity_type="invoice",
+                entity_id=invoice_id,
+                action_url=f"/invoices/{invoice_id}",
+            )
+
         self.db.commit()
         return invoice
 

@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}Sales by Product — JAKS Inventory{% endblock %}
+{% block heading %}Sales by Product{% endblock %}
+
+{% block content %}
+{% set active_report = 'sales-by-product' %}
+<div class="max-w-6xl space-y-4">
+  {% include "reports/_nav.html" %}
+
+  {# ── Date range filter ─────────────────────────────────────────────────── #}
+  <form method="get" action="/reports/sales-by-product"
+        class="flex flex-wrap items-end gap-3 bg-white border border-gray-200 rounded-xl p-3">
+    <div>
+      <label class="form-label">From</label>
+      <input type="date" name="start" value="{{ start_date.isoformat() }}" class="form-input w-44"/>
+    </div>
+    <div>
+      <label class="form-label">To</label>
+      <input type="date" name="end" value="{{ end_date.isoformat() }}" class="form-input w-44"/>
+    </div>
+    <button type="submit" class="btn-primary btn-sm">Update</button>
+    <div class="flex-1"></div>
+    <button type="button" class="btn-secondary btn-sm" disabled title="Coming soon">
+      Export CSV
+    </button>
+  </form>
+
+  <p class="text-xs text-gray-400">
+    {{ start_date.strftime('%b %d, %Y') }} – {{ end_date.strftime('%b %d, %Y') }} · Invoice lines from finalized invoices (drafts and voids excluded)
+  </p>
+
+  {# ── Summary tiles ─────────────────────────────────────────────────────── #}
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div class="stat-card-brand">
+      <p class="stat-label">Revenue</p>
+      <p class="stat-value text-brand-700">${{ '%.2f' % totals.revenue }}</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Units Sold</p>
+      <p class="stat-value text-gray-800">{{ totals.qty_sold }}</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Cost</p>
+      <p class="stat-value text-gray-700">${{ '%.2f' % totals.cost }}</p>
+    </div>
+    <div class="stat-card-green">
+      <p class="stat-label">Gross Margin</p>
+      <p class="stat-value text-green-700">${{ '%.2f' % totals.margin }}</p>
+      <p class="stat-sub">
+        {% if totals.margin_pct is not none %}{{ '%.1f' % totals.margin_pct }}%{% else %}—{% endif %}
+      </p>
+    </div>
+  </div>
+
+  {# ── Product rows ──────────────────────────────────────────────────────── #}
+  {% if rows %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">By Product</h2>
+      <span class="text-xs text-gray-400">{{ rows | length }} item{{ 's' if rows | length != 1 }}</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">SKU</th>
+            <th class="tbl-th">Description</th>
+            <th class="tbl-th-r">Qty Sold</th>
+            <th class="tbl-th-r">Revenue</th>
+            <th class="tbl-th-r">Cost</th>
+            <th class="tbl-th-r">Margin</th>
+            <th class="tbl-th-r">Margin %</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr class="tbl-row">
+            <td class="tbl-td">
+              {% if row.product %}
+              <a href="/products/{{ row.product.id }}" class="font-mono text-xs text-brand-700 hover:underline">{{ row.sku }}</a>
+              {% else %}
+              <span class="font-mono text-xs text-gray-400">{{ row.sku }}</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td text-sm text-gray-700 max-w-md">
+              <span class="truncate block">{{ row.description }}</span>
+            </td>
+            <td class="tbl-td-r font-medium tabular-nums">{{ row.qty_sold }}</td>
+            <td class="tbl-td-r font-semibold text-brand-700 tabular-nums">${{ '%.2f' % row.revenue }}</td>
+            <td class="tbl-td-r text-gray-600 tabular-nums">${{ '%.2f' % row.cost }}</td>
+            <td class="tbl-td-r font-medium text-gray-800 tabular-nums">${{ '%.2f' % row.margin }}</td>
+            <td class="tbl-td-r tabular-nums {% if row.margin_pct is not none and row.margin_pct >= 25 %}text-green-700{% elif row.margin_pct is not none and row.margin_pct < 10 %}text-red-600{% else %}text-gray-600{% endif %}">
+              {% if row.margin_pct is not none %}{{ '%.1f' % row.margin_pct }}%{% else %}—{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="border-t-2 border-gray-200 bg-gray-50">
+          <tr>
+            <td colspan="2" class="px-4 py-3 text-sm font-bold text-gray-700">Totals</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-gray-700 tabular-nums">{{ totals.qty_sold }}</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-brand-700 tabular-nums">${{ '%.2f' % totals.revenue }}</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-gray-700 tabular-nums">${{ '%.2f' % totals.cost }}</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-gray-800 tabular-nums">${{ '%.2f' % totals.margin }}</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-gray-700 tabular-nums">
+              {% if totals.margin_pct is not none %}{{ '%.1f' % totals.margin_pct }}%{% else %}—{% endif %}
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="card flex flex-col items-center justify-center py-16">
+    <p class="text-gray-500 font-medium">No invoice lines in this range</p>
+    <p class="text-gray-400 text-sm mt-1">Try a wider date window.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

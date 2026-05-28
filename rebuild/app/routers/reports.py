@@ -1,35 +1,36 @@
 """
 app/routers/reports.py
 ======================
-Financial and operational reports.
+Reports & Analytics — Series 1.
 
-Reports available:
-  /reports/              — Reports landing / AR Aging
-  /reports/sales/        — Sales Summary (by period)
-  /reports/inventory/    — Inventory Snapshot
+Reports are READ-ONLY.  No route here may mutate the database.
+All numbers come from ReportService; routers are thin.
 
-All queries are read-only — no DB mutations here.
+Canonical routes (Series 1):
+  GET /reports                       — landing index
+  GET /reports/ar-aging              — AR aging buckets
+  GET /reports/sales-by-customer     — finalized invoice revenue per customer
+  GET /reports/sales-by-product      — finalized invoice revenue per SKU
+  GET /reports/inventory-valuation   — on-hand × cost
+  GET /reports/open-pos              — POs not fully received
+  GET /reports/outstanding-cores     — customer-owed cores still out
+
+Back-compat redirects from the previous URL shape are at the bottom of the file
+so existing sidebar/bookmark links keep working.
 """
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 
-from app.constants import FulfillmentSource, InvoiceStatus, POStatus, SOLineStatus, SOStatus
 from app.deps import get_db
-from app.models.customer import Customer
-from app.models.invoice import Invoice, Payment
-from app.models.product import Product
-from app.models.purchase_order import PurchaseOrder, POLine
-from app.models.quote import SalesOrder, SOLine
+from app.services.report_service import ReportService
 
 log = logging.getLogger(__name__)
 
@@ -39,372 +40,310 @@ templates = Jinja2Templates(
 )
 
 
-# ── AR Aging ──────────────────────────────────────────────────────────────────
+# ── Date helpers ──────────────────────────────────────────────────────────────
 
-@router.get("/", response_class=HTMLResponse)
-def reports_ar_aging(request: Request, db: Session = Depends(get_db)):
+def _parse_date(s: str | None) -> date | None:
+    """Parse YYYY-MM-DD; return None on missing or malformed input."""
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s.strip(), "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _resolve_range(start: str | None, end: str | None) -> tuple[date, date]:
     """
-    AR Aging report — groups outstanding invoice balances by age bucket
-    per customer: Current / 1-30 / 31-60 / 61-90 / 90+ days past due.
+    Default range is the current month-to-date when neither bound is given.
+    A missing single bound is filled in:
+      - start missing  → first of the end month
+      - end missing    → today
     """
     today = date.today()
+    s = _parse_date(start)
+    e = _parse_date(end)
+    if s is None and e is None:
+        return today.replace(day=1), today
+    if s is None:
+        return e.replace(day=1), e  # type: ignore[union-attr]
+    if e is None:
+        return s, today
+    return s, e
 
-    # Load open/partial invoices with lines and payment allocations (avoids N+1)
-    invoices = (
-        db.query(Invoice)
-        .options(
-            joinedload(Invoice.lines),
-            joinedload(Invoice.allocations),
-            joinedload(Invoice.customer),
-        )
-        .filter(Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL]))
-        .all()
+
+# ── Landing ───────────────────────────────────────────────────────────────────
+
+@router.get("", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse)
+def reports_index(request: Request, db: Session = Depends(get_db)):
+    """
+    Reports landing — directory of the six Series 1 reports with light context
+    (totals snapshot) so the user gets a one-glance read of where things stand
+    before drilling in.
+    """
+    svc = ReportService(db)
+    today = date.today()
+    month_start = today.replace(day=1)
+
+    error_message = None
+    ar_total = ar_over_90 = inv_value = inv_skus = 0.0
+    po_count = core_overdue = 0
+    po_value = core_amount = mtd_revenue = mtd_margin = 0.0
+    mtd_margin_pct = None
+
+    try:
+        ar = svc.get_ar_aging()
+        inv = svc.get_inventory_valuation()
+        pos = svc.get_open_pos()
+        cores = svc.get_core_charges_outstanding()
+        sales_mtd = svc.get_sales_by_customer(month_start, today)
+        ar_total     = ar["totals"]["total"]
+        ar_over_90   = ar["totals"]["over_90"]
+        inv_value    = inv["totals"]["total_value"]
+        inv_skus     = inv["totals"]["in_stock_skus"]
+        po_count     = pos["totals"]["po_count"]
+        po_value     = pos["totals"]["outstanding_value"]
+        core_amount  = cores["totals"]["amount"]
+        core_overdue = cores["totals"]["overdue_count"]
+        mtd_revenue  = sales_mtd["totals"]["gross_sales"]
+        mtd_margin   = sales_mtd["totals"]["margin"]
+        mtd_margin_pct = sales_mtd["totals"].get("margin_pct")
+    except Exception:
+        log.exception("reports_index: ReportService failed")
+        error_message = "Could not load report snapshot. Check server logs for details."
+
+    return templates.TemplateResponse(
+        "reports/index.html",
+        {
+            "request": request,
+            "today": today,
+            "error_message": error_message,
+            "ar_total":      ar_total,
+            "ar_over_90":    ar_over_90,
+            "inv_value":     inv_value,
+            "inv_skus":      inv_skus,
+            "po_count":      po_count,
+            "po_value":      po_value,
+            "core_amount":   core_amount,
+            "core_overdue":  core_overdue,
+            "mtd_revenue":   mtd_revenue,
+            "mtd_margin":    mtd_margin,
+            "mtd_margin_pct": mtd_margin_pct,
+            "month_label":   today.strftime("%B %Y"),
+        },
     )
 
-    # Build per-customer aging buckets
-    # buckets: current, 1_30, 31_60, 61_90, over_90, total
-    aging: dict[int, dict] = defaultdict(lambda: {
-        "customer": None,
-        "current": 0.0,
-        "1_30": 0.0,
-        "31_60": 0.0,
-        "61_90": 0.0,
-        "over_90": 0.0,
-        "total": 0.0,
-        "invoices": [],
-    })
 
-    for inv in invoices:
-        balance = inv.balance_due
-        if balance <= 0:
-            continue
+# ── AR Aging ──────────────────────────────────────────────────────────────────
 
-        row = aging[inv.customer_id]
-        row["customer"] = inv.customer
-        row["total"] = round(row["total"] + balance, 2)
-        row["invoices"].append(inv)
-
-        if inv.due_date is None:
-            # No due date → treat as current
-            row["current"] = round(row["current"] + balance, 2)
-            continue
-
-        # Compute days past due (negative = not yet due)
-        due = inv.due_date.date() if isinstance(inv.due_date, datetime) else inv.due_date
-        days_late = (today - due).days
-
-        if days_late <= 0:
-            row["current"] = round(row["current"] + balance, 2)
-        elif days_late <= 30:
-            row["1_30"] = round(row["1_30"] + balance, 2)
-        elif days_late <= 60:
-            row["31_60"] = round(row["31_60"] + balance, 2)
-        elif days_late <= 90:
-            row["61_90"] = round(row["61_90"] + balance, 2)
-        else:
-            row["over_90"] = round(row["over_90"] + balance, 2)
-
-    # Sort by total descending
-    aging_rows = sorted(aging.values(), key=lambda r: r["total"], reverse=True)
-
-    # Column totals
-    totals = {
-        "current":  round(sum(r["current"]  for r in aging_rows), 2),
-        "1_30":     round(sum(r["1_30"]     for r in aging_rows), 2),
-        "31_60":    round(sum(r["31_60"]    for r in aging_rows), 2),
-        "61_90":    round(sum(r["61_90"]    for r in aging_rows), 2),
-        "over_90":  round(sum(r["over_90"]  for r in aging_rows), 2),
-        "total":    round(sum(r["total"]    for r in aging_rows), 2),
-    }
+@router.get("/ar-aging", response_class=HTMLResponse)
+def reports_ar_aging(
+    request: Request,
+    as_of: str | None = None,
+    db: Session = Depends(get_db),
+):
+    as_of_date = _parse_date(as_of) or date.today()
+    error_message = None
+    rows: list = []
+    totals = {b: 0.0 for b in ("current", "1_30", "31_60", "61_90", "over_90", "total")}
+    try:
+        data = ReportService(db).get_ar_aging(as_of_date)
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_ar_aging failed (as_of=%s)", as_of_date)
+        error_message = "Could not load AR aging data. Check server logs for details."
 
     return templates.TemplateResponse(
         "reports/ar_aging.html",
         {
             "request": request,
-            "today": today,
-            "aging_rows": aging_rows,
+            "today": as_of_date,
+            "as_of": as_of_date,
+            "aging_rows": rows,   # legacy template variable
+            "rows": rows,
             "totals": totals,
+            "error_message": error_message,
         },
     )
 
 
-# ── Sales Summary ─────────────────────────────────────────────────────────────
+# ── Sales by Customer ─────────────────────────────────────────────────────────
 
-@router.get("/sales/", response_class=HTMLResponse)
-def reports_sales(
+@router.get("/sales-by-customer", response_class=HTMLResponse)
+def reports_sales_by_customer(
     request: Request,
-    year: int = 0,
-    month: int = 0,
+    start: str | None = None,
+    end: str | None = None,
     db: Session = Depends(get_db),
 ):
-    """
-    Sales Summary — revenue by customer for a selected month,
-    plus period-over-period summary cards.
-    """
-    today = date.today()
-    if not year:
-        year = today.year
-    if not month:
-        month = today.month
-
-    # Period bounds
-    period_start = date(year, month, 1)
-    if month == 12:
-        period_end = date(year + 1, 1, 1)
-    else:
-        period_end = date(year, month + 1, 1)
-
-    # Previous period
-    prev_start = (period_start - timedelta(days=1)).replace(day=1)
-    prev_end = period_start
-
-    def _period_revenue(start: date, end: date) -> float:
-        """Sum of invoice totals (paid + partial + open) for a date range."""
-        invs = (
-            db.query(Invoice)
-            .options(joinedload(Invoice.lines))
-            .filter(
-                Invoice.status.in_([
-                    InvoiceStatus.OPEN, InvoiceStatus.PARTIAL, InvoiceStatus.PAID
-                ]),
-                func.date(Invoice.created_at) >= start,
-                func.date(Invoice.created_at) < end,
-            )
-            .all()
-        )
-        return round(sum(inv.total for inv in invs), 2)
-
-    def _period_collected(start: date, end: date) -> float:
-        """Sum of payments actually received in a date range."""
-        result = (
-            db.query(func.sum(Payment.amount_received))
-            .filter(
-                func.date(Payment.payment_date) >= start,
-                func.date(Payment.payment_date) < end,
-            )
-            .scalar() or 0.0
-        )
-        return round(float(result), 2)
-
-    # Current period stats
-    period_revenue = _period_revenue(period_start, period_end)
-    period_collected = _period_collected(period_start, period_end)
-    prev_revenue = _period_revenue(prev_start, prev_end)
-
-    # YTD
-    ytd_start = date(year, 1, 1)
-    ytd_revenue = _period_revenue(ytd_start, today + timedelta(days=1))
-    ytd_collected = _period_collected(ytd_start, today + timedelta(days=1))
-
-    # Sales by customer for the selected period
-    period_invoices = (
-        db.query(Invoice)
-        .options(
-            joinedload(Invoice.lines),
-            joinedload(Invoice.customer),
-            joinedload(Invoice.allocations),
-        )
-        .filter(
-            Invoice.status.in_([
-                InvoiceStatus.OPEN, InvoiceStatus.PARTIAL, InvoiceStatus.PAID
-            ]),
-            func.date(Invoice.created_at) >= period_start,
-            func.date(Invoice.created_at) < period_end,
-        )
-        .all()
-    )
-
-    # Group by customer
-    by_customer: dict[int, dict] = defaultdict(lambda: {
-        "customer": None,
-        "invoice_count": 0,
-        "revenue": 0.0,
-        "collected": 0.0,
-    })
-    for inv in period_invoices:
-        row = by_customer[inv.customer_id]
-        row["customer"] = inv.customer
-        row["invoice_count"] += 1
-        row["revenue"] = round(row["revenue"] + inv.total, 2)
-        row["collected"] = round(row["collected"] + inv.amount_paid, 2)
-
-    customer_rows = sorted(by_customer.values(), key=lambda r: r["revenue"], reverse=True)
-
-    # Build month selector options (last 24 months)
-    month_options = []
-    cur = today.replace(day=1)
-    for _ in range(24):
-        month_options.append((cur.year, cur.month, cur.strftime("%B %Y")))
-        if cur.month == 1:
-            cur = cur.replace(year=cur.year - 1, month=12)
-        else:
-            cur = cur.replace(month=cur.month - 1)
+    start_date, end_date = _resolve_range(start, end)
+    error_message = None
+    rows: list = []
+    totals = {"invoice_count": 0, "gross_sales": 0.0, "payments_received": 0.0,
+              "balance_due": 0.0, "cost": 0.0, "margin": 0.0, "margin_pct": None}
+    try:
+        data = ReportService(db).get_sales_by_customer(start_date, end_date)
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_sales_by_customer failed (%s–%s)", start_date, end_date)
+        error_message = "Could not load sales data. Check server logs for details."
 
     return templates.TemplateResponse(
-        "reports/sales.html",
+        "reports/sales_by_customer.html",
         {
             "request": request,
-            "year": year,
-            "month": month,
-            "period_label": period_start.strftime("%B %Y"),
-            "period_revenue": period_revenue,
-            "period_collected": period_collected,
-            "prev_revenue": prev_revenue,
-            "ytd_revenue": ytd_revenue,
-            "ytd_collected": ytd_collected,
-            "customer_rows": customer_rows,
-            "month_options": month_options,
-            "today": today,
+            "start_date": start_date,
+            "end_date": end_date,
+            "rows": rows,
+            "totals": totals,
+            "error_message": error_message,
+        },
+    )
+
+
+# ── Sales by Product ──────────────────────────────────────────────────────────
+
+@router.get("/sales-by-product", response_class=HTMLResponse)
+def reports_sales_by_product(
+    request: Request,
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+):
+    start_date, end_date = _resolve_range(start, end)
+    error_message = None
+    rows: list = []
+    totals = {"qty_sold": 0, "revenue": 0.0, "cost": 0.0, "margin": 0.0, "margin_pct": None}
+    try:
+        data = ReportService(db).get_sales_by_product(start_date, end_date)
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_sales_by_product failed (%s–%s)", start_date, end_date)
+        error_message = "Could not load product sales data. Check server logs for details."
+
+    return templates.TemplateResponse(
+        "reports/sales_by_product.html",
+        {
+            "request": request,
+            "start_date": start_date,
+            "end_date": end_date,
+            "rows": rows,
+            "totals": totals,
+            "error_message": error_message,
         },
     )
 
 
 # ── Inventory Valuation ───────────────────────────────────────────────────────
 
-@router.get("/inventory/", response_class=HTMLResponse)
-def reports_inventory(
-    request: Request,
-    filter: str = "in_stock",
-    db: Session = Depends(get_db),
-):
-    """
-    Inventory Valuation — cost value of stock on hand.
-    filter: in_stock (default) | all | low_stock
-    """
-    today = date.today()
-    base_q = db.query(Product).filter(Product.is_active == True)  # noqa: E712
-
-    if filter == "low_stock":
-        # at or below reorder point (reorder_point > 0 to exclude no-reorder-point items)
-        all_active = base_q.all()
-        products = [p for p in all_active if p.reorder_point > 0 and p.qty_on_hand <= p.reorder_point]
-        products.sort(key=lambda p: (p.qty_on_hand - p.reorder_point))
-    elif filter == "all":
-        products = base_q.order_by((Product.qty_on_hand * Product.cost).desc()).all()
-    else:  # in_stock (default)
-        products = (
-            base_q
-            .filter(Product.qty_on_hand > 0)
-            .order_by((Product.qty_on_hand * Product.cost).desc())
-            .all()
-        )
-
-    # Counts for summary cards (always over all active)
-    all_products = base_q.all()
-    sku_count       = sum(1 for p in all_products if p.qty_on_hand > 0)
-    total_units     = sum(p.qty_on_hand for p in all_products if p.qty_on_hand > 0)
-    total_value     = round(sum(p.qty_on_hand * (p.cost or 0.0) for p in all_products if p.qty_on_hand > 0), 2)
-    total_retail    = round(sum(p.qty_on_hand * p.selling_price for p in all_products if p.qty_on_hand > 0), 2)
-    low_stock_count = sum(1 for p in all_products if p.reorder_point > 0 and p.qty_on_hand <= p.reorder_point)
-
-    # Filtered totals (shown in table footer)
-    filtered_units = sum(p.qty_on_hand for p in products)
-    filtered_value = round(sum(p.qty_on_hand * (p.cost or 0.0) for p in products), 2)
+@router.get("/inventory-valuation", response_class=HTMLResponse)
+def reports_inventory_valuation(request: Request, db: Session = Depends(get_db)):
+    error_message = None
+    rows: list = []
+    totals = {"sku_count": 0, "in_stock_skus": 0, "total_units": 0, "total_value": 0.0, "zero_cost_count": 0}
+    try:
+        data = ReportService(db).get_inventory_valuation()
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_inventory_valuation failed")
+        error_message = "Could not load inventory data. Check server logs for details."
 
     return templates.TemplateResponse(
-        "reports/inventory.html",
+        "reports/inventory_valuation.html",
         {
             "request": request,
-            "products": products,
-            "active_filter": filter,
-            "sku_count": sku_count,
-            "total_units": total_units,
-            "total_value": total_value,
-            "total_retail": total_retail,
-            "low_stock_count": low_stock_count,
-            "filtered_units": filtered_units,
-            "filtered_value": filtered_value,
-            "today": today,
+            "today": date.today(),
+            "rows": rows,
+            "totals": totals,
+            "error_message": error_message,
         },
     )
 
 
-# ── Open POs + Backorders ─────────────────────────────────────────────────────
+# ── Open POs ──────────────────────────────────────────────────────────────────
 
-@router.get("/open-pos/", response_class=HTMLResponse)
+@router.get("/open-pos", response_class=HTMLResponse)
 def reports_open_pos(request: Request, db: Session = Depends(get_db)):
-    """
-    Open POs & Backorders report — two sections:
-      1. Purchase orders that are not yet fully received (VERBAL_ORDER / DRAFT / SENT / PARTIAL)
-      2. SO lines with fulfillment_source = backorder awaiting stock
-    """
+    error_message = None
     today = date.today()
-
-    # Section 1 — Open Purchase Orders
-    open_pos = (
-        db.query(PurchaseOrder)
-        .options(
-            joinedload(PurchaseOrder.lines).joinedload(POLine.product),
-            joinedload(PurchaseOrder.vendor),
-        )
-        .filter(
-            PurchaseOrder.status.in_([
-                POStatus.VERBAL_ORDER,
-                POStatus.DRAFT,
-                POStatus.SENT,
-                POStatus.PARTIAL,
-            ])
-        )
-        .order_by(PurchaseOrder.expected_at.asc().nulls_last(), PurchaseOrder.created_at.asc())
-        .all()
-    )
-
-    # Compute outstanding $ per PO
-    po_rows = []
-    for po in open_pos:
-        outstanding_lines = [ln for ln in po.lines if ln.qty_outstanding > 0]
-        outstanding_value = round(
-            sum(ln.unit_cost * ln.qty_outstanding for ln in outstanding_lines), 2
-        )
-        days_since_order = None
-        if po.ordered_at:
-            ordered_date = po.ordered_at.date() if isinstance(po.ordered_at, datetime) else po.ordered_at
-            days_since_order = (today - ordered_date).days
-        overdue = (
-            po.expected_at is not None
-            and (po.expected_at.date() if isinstance(po.expected_at, datetime) else po.expected_at) < today
-        )
-        po_rows.append({
-            "po": po,
-            "outstanding_lines": outstanding_lines,
-            "outstanding_value": outstanding_value,
-            "days_since_order": days_since_order,
-            "overdue": overdue,
-        })
-
-    po_total_value = round(sum(r["outstanding_value"] for r in po_rows), 2)
-
-    # Section 2 — Backordered SO lines
-    backorder_lines = (
-        db.query(SOLine)
-        .options(
-            joinedload(SOLine.so).joinedload(SalesOrder.customer),
-            joinedload(SOLine.product),
-        )
-        .join(SalesOrder)
-        .filter(
-            SalesOrder.status.in_([SOStatus.OPEN, SOStatus.PARTIAL, SOStatus.HOLD]),
-            SOLine.fulfillment_source == FulfillmentSource.BACKORDER,
-            SOLine.line_status != SOLineStatus.INVOICED,
-            SOLine.line_status != SOLineStatus.CANCELLED,
-        )
-        .order_by(SalesOrder.created_at.asc())
-        .all()
-    )
-
-    backorder_value = round(
-        sum(ln.unit_price * ln.qty_remaining for ln in backorder_lines), 2
-    )
+    rows: list = []
+    totals = {"po_count": 0, "qty_remaining": 0, "outstanding_value": 0.0}
+    try:
+        data = ReportService(db).get_open_pos()
+        today = data["as_of"]
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_open_pos failed")
+        error_message = "Could not load open PO data. Check server logs for details."
 
     return templates.TemplateResponse(
         "reports/open_pos.html",
         {
             "request": request,
             "today": today,
-            "po_rows": po_rows,
-            "po_total_value": po_total_value,
-            "backorder_lines": backorder_lines,
-            "backorder_value": backorder_value,
-            "POStatus": POStatus,
+            "rows": rows,
+            "totals": totals,
+            "error_message": error_message,
         },
     )
+
+
+# ── Outstanding Cores ─────────────────────────────────────────────────────────
+
+@router.get("/outstanding-cores", response_class=HTMLResponse)
+def reports_outstanding_cores(request: Request, db: Session = Depends(get_db)):
+    error_message = None
+    today = date.today()
+    rows: list = []
+    totals = {"core_count": 0, "qty_outstanding": 0, "amount": 0.0, "overdue_count": 0}
+    try:
+        data = ReportService(db).get_core_charges_outstanding()
+        today = data["as_of"]
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_outstanding_cores failed")
+        error_message = "Could not load core charge data. Check server logs for details."
+
+    return templates.TemplateResponse(
+        "reports/outstanding_cores.html",
+        {
+            "request": request,
+            "today": today,
+            "rows": rows,
+            "totals": totals,
+            "error_message": error_message,
+        },
+    )
+
+
+# ── Back-compat redirects (legacy URLs from sidebar/bookmarks) ───────────────
+#
+# Keep these until the sidebar links migrate to canonical paths. Then they can
+# be removed. 308 keeps query strings intact (e.g. ?filter=low_stock); the body
+# remains read-only so the SAFE-REDIRECT vs side-effect concern doesn't apply.
+
+@router.get("/sales", include_in_schema=False)
+@router.get("/sales/", include_in_schema=False)
+def _legacy_sales(request: Request):
+    qs = request.url.query
+    target = "/reports/sales-by-customer" + (f"?{qs}" if qs else "")
+    return RedirectResponse(target, status_code=308)
+
+
+@router.get("/inventory", include_in_schema=False)
+@router.get("/inventory/", include_in_schema=False)
+def _legacy_inventory(request: Request):
+    qs = request.url.query
+    target = "/reports/inventory-valuation" + (f"?{qs}" if qs else "")
+    return RedirectResponse(target, status_code=308)
+
+
+@router.get("/open-pos/", include_in_schema=False)
+def _legacy_open_pos_slash():
+    return RedirectResponse("/reports/open-pos", status_code=308)

@@ -367,6 +367,32 @@ def po_cancel(po_id: int, db: Session = Depends(get_db)):
     return RedirectResponse(f"/purchase-orders/{po_id}", status_code=303)
 
 
+@router.post("/{po_id}/cancel-line", response_class=RedirectResponse)
+async def po_cancel_line(po_id: int, request: Request, db: Session = Depends(get_db)):
+    form = await request.form()
+    try:
+        line_id = int(str(form.get("line_id", "0")))
+        reason = str(form.get("reason", "")).strip() or "cancelled"
+        POService(db, current_user_id=CURRENT_USER_ID).cancel_line(line_id, reason)
+    except (ValueError, TypeError) as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote(str(exc))}",
+            status_code=303,
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error cancelling PO line %s", po_id)
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote('Unexpected error — line was not cancelled.')}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        f"/purchase-orders/{po_id}?ok={url_quote('Line cancelled — outstanding qty cleared.')}",
+        status_code=303,
+    )
+
+
 @router.post("/{po_id}/create-bill", response_class=RedirectResponse)
 async def po_create_bill(po_id: int, request: Request, db: Session = Depends(get_db)):
     po = db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()

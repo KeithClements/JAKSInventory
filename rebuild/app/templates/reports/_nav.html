@@ -1,0 +1,29 @@
+{# Shared report sub-nav — included at the top of every report page so users
+   can pivot between the six reports without going back to the landing. #}
+{% set _reports = [
+  ('/reports',                     'Overview',          'overview'),
+  ('/reports/ar-aging',            'AR Aging',          'ar-aging'),
+  ('/reports/sales-by-customer',   'Sales by Customer', 'sales-by-customer'),
+  ('/reports/sales-by-product',    'Sales by Product',  'sales-by-product'),
+  ('/reports/inventory-valuation', 'Inventory Value',   'inventory-valuation'),
+  ('/reports/open-pos',            'Open POs',          'open-pos'),
+  ('/reports/outstanding-cores',   'Outstanding Cores', 'outstanding-cores'),
+] %}
+<nav class="flex items-center gap-1 border-b border-gray-200 -mt-1 mb-4 overflow-x-auto">
+  {% for href, label, key in _reports %}
+    {% if key == active_report %}
+      <span class="tab-active whitespace-nowrap">{{ label }}</span>
+    {% else %}
+      <a href="{{ href }}" class="tab-inactive whitespace-nowrap">{{ label }}</a>
+    {% endif %}
+  {% endfor %}
+</nav>
+{% if error_message %}
+<div class="mb-4 flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+  <svg class="mt-0.5 w-5 h-5 shrink-0 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+  </svg>
+  <p class="text-sm text-red-700">{{ error_message }}</p>
+</div>
+{% endif %}

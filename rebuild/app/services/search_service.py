@@ -17,6 +17,7 @@ Caller (QuoteService) decides what to do with results.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from sqlalchemy import or_
@@ -26,6 +27,8 @@ from sqlalchemy import desc as sa_desc
 from app.models.customer import Customer
 from app.models.invoice import Invoice, InvoiceLine
 from app.models.product import CrossReference, Product, ProductVendorSource
+from app.models.purchase_order import PurchaseOrder
+from app.models.quote import Quote, SalesOrder
 from app.models.vendor import Vendor
 from app.services.base import BaseService
 from app.utils import calc_sell_price
@@ -222,11 +225,19 @@ class SearchService(BaseService):
     def search_customers(self, query: str, limit: int = 20) -> list[dict]:
         """
         Search customers by company_name, contact_name, or phone.
+        Phone queries are normalized to digits-only so "303-555-1234" and
+        "3035551234" both find the same record.
         Returns lightweight dicts suitable for autocomplete dropdowns.
         """
         q = query.strip()
         if not q:
             return []
+
+        digits = re.sub(r"\D", "", q)
+        phone_filters = [Customer.phone.ilike(f"%{q}%")]
+        if digits and digits != q:
+            phone_filters.append(Customer.phone.ilike(f"%{digits}%"))
+
         hits = (
             self.db.query(Customer)
             .filter(
@@ -234,7 +245,7 @@ class SearchService(BaseService):
                 or_(
                     Customer.company_name.ilike(f"%{q}%"),
                     Customer.contact_name.ilike(f"%{q}%"),
-                    Customer.phone.ilike(f"%{q}%"),
+                    *phone_filters,
                 ),
             )
             .order_by(Customer.company_name)
@@ -280,6 +291,78 @@ class SearchService(BaseService):
                 "payment_terms": v.payment_terms,
             }
             for v in hits
+        ]
+
+    def search_quotes(self, query: str, limit: int = 6) -> list[dict]:
+        """Search quotes by quote_number."""
+        q = query.strip()
+        if not q:
+            return []
+        hits = (
+            self.db.query(Quote)
+            .filter(Quote.quote_number.ilike(f"%{q}%"))
+            .order_by(Quote.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "id": qt.id,
+                "quote_number": qt.quote_number,
+                "status": qt.status,
+                "customer_name": qt.customer.company_name if qt.customer else "",
+            }
+            for qt in hits
+        ]
+
+    def search_sales_orders(self, query: str, limit: int = 6) -> list[dict]:
+        """Search sales orders by so_number, customer_po_number, or ESN."""
+        q = query.strip()
+        if not q:
+            return []
+        hits = (
+            self.db.query(SalesOrder)
+            .filter(
+                or_(
+                    SalesOrder.so_number.ilike(f"%{q}%"),
+                    SalesOrder.customer_po_number.ilike(f"%{q}%"),
+                    SalesOrder.esn.ilike(f"%{q}%"),
+                )
+            )
+            .order_by(SalesOrder.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "id": so.id,
+                "so_number": so.so_number,
+                "status": so.status,
+                "customer_name": so.customer.company_name if so.customer else "",
+            }
+            for so in hits
+        ]
+
+    def search_purchase_orders(self, query: str, limit: int = 6) -> list[dict]:
+        """Search purchase orders by po_number."""
+        q = query.strip()
+        if not q:
+            return []
+        hits = (
+            self.db.query(PurchaseOrder)
+            .filter(PurchaseOrder.po_number.ilike(f"%{q}%"))
+            .order_by(PurchaseOrder.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "id": po.id,
+                "po_number": po.po_number,
+                "status": po.status,
+                "vendor_name": po.vendor.name if po.vendor else "",
+            }
+            for po in hits
         ]
 
     def search_invoices(self, query: str, customer_id: int | None = None, limit: int = 20) -> list[dict]:

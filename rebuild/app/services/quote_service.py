@@ -484,6 +484,18 @@ class QuoteService(BaseService):
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
+    def update_header(self, quote_id: int, data: dict, submitted_updated_at: str | None = None) -> Quote:
+        """Update quote-level notes and settings. Active (non-converted) quotes only."""
+        quote = self._get_or_404(quote_id)
+        self.check_version(quote, submitted_updated_at)
+        if quote.status in (QuoteStatus.CONVERTED, QuoteStatus.DECLINED):
+            raise ValueError("Cannot edit a converted or declined quote")
+        for field in ("notes", "internal_notes", "discount_pct", "validity_days"):
+            if field in data:
+                setattr(quote, field, data[field])
+        self.db.commit()
+        return quote
+
     def _get_or_404(self, quote_id: int) -> Quote:
         q = self.db.query(Quote).filter(Quote.id == quote_id).first()
         if q is None:

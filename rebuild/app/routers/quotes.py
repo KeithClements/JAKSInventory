@@ -22,12 +22,10 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.constants import (
-    CoreDirection, CoreStatus, InvoiceStatus, QuoteOutcome, QuoteStatus, SOPaymentMode, LineRole,
+    QuoteOutcome, QuoteStatus, SOPaymentMode, LineRole,
 )
 from app.deps import get_current_user_id, get_db
-from app.models.core import CoreCharge
 from app.models.customer import Customer
-from app.models.invoice import Invoice
 from app.models.quote import Quote
 from app.services.quote_service import QuoteService
 from app.services.search_service import SearchService
@@ -207,33 +205,8 @@ async def workspace(
     quote = _get_quote_or_404(db, quote_id)
     today = date.today()
 
-    # ── Customer balance panel data ────────────────────────────────────────────
-    cust_id = quote.customer_id
-    open_invoices = (
-        db.query(Invoice)
-        .filter(
-            Invoice.customer_id == cust_id,
-            Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL]),
-        )
-        .all()
-    )
-    open_balance = round(sum(inv.balance_due for inv in open_invoices), 2)
-    overdue_balance = round(
-        sum(inv.balance_due for inv in open_invoices if inv.is_overdue), 2
-    )
-    # Cores the customer still owes back to JAKS
-    core_charges = (
-        db.query(CoreCharge)
-        .filter(
-            CoreCharge.customer_id == cust_id,
-            CoreCharge.direction == CoreDirection.CUSTOMER_OWES_RETURN,
-            CoreCharge.status.in_([CoreStatus.OPEN, CoreStatus.PARTIAL]),
-        )
-        .all()
-    )
-    cores_owed_qty = sum(
-        max(0, c.qty_charged - c.qty_returned) for c in core_charges
-    )
+    from app.services.statement_service import StatementService
+    bal = StatementService(db).get_customer_balance_summary(quote.customer_id)
 
     return templates.TemplateResponse(
         "quotes/workspace.html",
@@ -245,11 +218,15 @@ async def workspace(
             "SOPaymentMode": SOPaymentMode,
             "today": today,
             "tomorrow": today + timedelta(days=1),
-            # Customer balance panel
-            "cust_open_balance": open_balance,
-            "cust_overdue_balance": overdue_balance,
-            "cust_credit_balance": round(quote.customer.credit_balance, 2),
-            "cores_owed_qty": cores_owed_qty,
+            # Customer balance chips
+            "cust_open_balance": bal["open_balance"],
+            "cust_overdue_balance": bal["overdue_balance"],
+            "cust_credit_balance": bal["credit_balance"],
+            "cust_credit_limit": bal["credit_limit"],
+            "cust_payment_terms": bal["payment_terms"],
+            "cust_cores_owed_qty": bal["cores_owed_qty"],
+            "cust_last_payment_date": bal["last_payment_date"],
+            "cust_open_invoice_count": bal["open_invoice_count"],
             **_totals_ctx(quote),
         },
     )
@@ -407,15 +384,18 @@ async def update_quote_header(
     internal_notes: str = Form(""),
     discount_pct: float = Form(0.0),
     validity_days: int = Form(30),
+    updated_at: str | None = Form(default=None),
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
-    """Update quote-level notes and settings (safe field updates, no service delegation needed)."""
-    quote = _get_quote_or_404(db, quote_id)
-    quote.notes = notes
-    quote.internal_notes = internal_notes
-    quote.discount_pct = discount_pct
-    quote.validity_days = validity_days
-    db.commit()
+    """Update quote-level notes and settings."""
+    svc = QuoteService(db, user_id)
+    svc.update_header(
+        quote_id,
+        {"notes": notes, "internal_notes": internal_notes,
+         "discount_pct": discount_pct, "validity_days": validity_days},
+        updated_at,
+    )
     return RedirectResponse(f"/quotes/{quote_id}?saved=1", status_code=303)
 
 
@@ -729,19 +709,18 @@ async def autosave_quote(
     internal_notes: str = Form(""),
     discount_pct: float = Form(0.0),
     validity_days: int = Form(30),
+    updated_at: str | None = Form(default=None),
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
-    """
-    HTMX autosave endpoint — called every 2.5s after any header field changes.
-    Returns a small indicator HTML fragment (not a redirect).
-    """
+    """HTMX autosave — called every 2.5s on header field changes."""
     try:
-        quote = _get_quote_or_404(db, quote_id)
-        quote.notes = notes
-        quote.internal_notes = internal_notes
-        quote.discount_pct = discount_pct
-        quote.validity_days = validity_days
-        db.commit()
+        QuoteService(db, user_id).update_header(
+            quote_id,
+            {"notes": notes, "internal_notes": internal_notes,
+             "discount_pct": discount_pct, "validity_days": validity_days},
+            updated_at,
+        )
         return HTMLResponse('<span class="text-xs text-green-600 font-medium">&#10003; Saved</span>')
     except Exception:
         db.rollback()

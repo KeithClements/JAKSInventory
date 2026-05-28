@@ -1,0 +1,8 @@
+Hi {customer_name},
+
+We have received your payment of ${payment_amount} on {payment_date} for invoice {invoice_number}.
+
+Thank you for your prompt payment!
+
+JAKS Diesel Parts
+{company_phone}

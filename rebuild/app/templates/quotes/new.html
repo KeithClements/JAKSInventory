@@ -3,61 +3,119 @@
 {% block heading %}New Quote{% endblock %}
 
 {% block content %}
-<div class="max-w-md mx-auto">
-  <div class="card"
-       x-data
+<div class="max-w-lg mx-auto">
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden"
+       x-data="{
+         customerId: '',
+         displayName: '',
+         hasCustomers: {{ 'true' if customers else 'false' }}
+       }"
+       @customer-selected.window="customerId = String($event.detail.id); displayName = $event.detail.name"
        @record-created.window="
          if ($event.detail.type === 'customer') {
-           var sel = $el.querySelector('select[name=customer_id]');
-           var opt = document.createElement('option');
-           opt.value = $event.detail.id;
-           opt.textContent = $event.detail.label;
-           opt.selected = true;
-           sel.appendChild(opt);
-           sel.value = String($event.detail.id);
+           customerId = String($event.detail.id);
+           displayName = $event.detail.label;
+           hasCustomers = true;
          }
        ">
 
-    <div class="card-header">
-      <span class="card-title">New Quote</span>
+    {# Header #}
+    <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+      <div>
+        <h2 class="text-sm font-semibold text-gray-900">New Quote</h2>
+        <p class="text-xs text-gray-400 mt-0.5">Select a customer to open the quote workspace</p>
+      </div>
+      <a href="/quotes/" class="text-gray-400 hover:text-gray-600 transition-colors p-1.5 rounded-lg hover:bg-gray-100 -mr-1">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </a>
     </div>
 
     <form action="/quotes/new" method="post">
-      <div class="card-body space-y-4">
+      {# Body #}
+      <div class="px-6 py-6">
 
-        <div>
-          <label class="form-label">Customer <span class="text-red-500">*</span></label>
-          <div class="flex gap-2">
-            <select name="customer_id" required class="form-select flex-1">
-              <option value="">— Select customer —</option>
-              {% for c in customers %}
-              <option value="{{ c.id }}">{{ c.company_name }}{% if c.contact_name %} ({{ c.contact_name }}){% endif %}</option>
-              {% endfor %}
-            </select>
-            <button type="button"
-                    hx-get="/customers/quick-create-form"
-                    hx-target="#create-slide-content"
-                    hx-swap="innerHTML"
-                    @click="$dispatch('open-create-slide', { title: 'New Customer' })"
-                    class="btn-secondary btn-sm whitespace-nowrap">
-              + New
-            </button>
+        {# Empty state #}
+        <div x-show="!hasCustomers" class="flex flex-col items-center justify-center py-6 text-center">
+          <div class="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center mb-3">
+            <svg class="w-6 h-6 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                    d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 7a4 4 0 100 8 4 4 0 000-8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
+            </svg>
           </div>
+          <p class="text-sm font-medium text-gray-700">No customers yet</p>
+          <p class="text-xs text-gray-400 mt-1 mb-4">Create a customer before starting a quote.</p>
+          <button type="button"
+                  hx-get="/customers/quick-create-form"
+                  hx-target="#create-slide-content"
+                  hx-swap="innerHTML"
+                  @click="$dispatch('open-create-slide', { title: 'New Customer' })"
+                  class="btn-primary btn-sm">
+            Create customer first →
+          </button>
         </div>
 
-        <p class="text-xs text-gray-400">
-          Discount %, validity period, and notes are all editable inside the quote workspace after creation.
-        </p>
+        {# Customer search #}
+        <div x-show="hasCustomers" class="space-y-3">
+          <div>
+            <label class="form-label">Customer <span class="text-red-500">*</span></label>
+            <div class="relative">
+              <input type="text"
+                     autocomplete="off"
+                     placeholder="Type customer name or phone…"
+                     :value="displayName"
+                     @input="displayName = $el.value; customerId = ''"
+                     @keydown.enter.prevent
+                     class="form-input"
+                     hx-get="/customers/search-json"
+                     hx-trigger="input changed delay:200ms"
+                     hx-target="#nqp-results"
+                     hx-vals='js:{"q": event.target.value}' />
+              <div id="nqp-results"
+                   class="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-30 max-h-52 overflow-y-auto"
+                   x-show="displayName.length >= 2 && !customerId"
+                   x-cloak></div>
+            </div>
+            <input type="hidden" name="customer_id" :value="customerId" />
+            <p x-show="customerId" x-cloak
+               class="mt-1.5 flex items-center gap-1 text-xs font-medium text-green-700">
+              <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+              </svg>
+              <span x-text="displayName"></span>
+            </p>
+          </div>
+          <p class="text-xs text-gray-400">
+            Discount %, validity period, and notes are editable inside the workspace after creation.
+          </p>
+        </div>
 
         <input type="hidden" name="discount_pct" value="0" />
         <input type="hidden" name="validity_days" value="30" />
         <input type="hidden" name="notes" value="" />
-
       </div>
 
-      <div class="card-footer">
-        <a href="/quotes/" class="btn-secondary">Cancel</a>
-        <button type="submit" class="btn-primary">Create Quote →</button>
+      {# Footer #}
+      <div class="flex items-center justify-between px-6 py-4 border-t border-gray-100 bg-gray-50/60">
+        <button type="button"
+                x-show="hasCustomers"
+                hx-get="/customers/quick-create-form"
+                hx-target="#create-slide-content"
+                hx-swap="innerHTML"
+                @click="$dispatch('open-create-slide', { title: 'New Customer' })"
+                class="text-xs font-medium text-brand-700 hover:text-brand-800 hover:underline transition-colors">
+          + New Customer
+        </button>
+        <div x-show="!hasCustomers"></div>
+        <div class="flex gap-3">
+          <a href="/quotes/" class="btn-secondary">Cancel</a>
+          <button type="submit" class="btn-primary"
+                  :disabled="!customerId"
+                  x-show="hasCustomers">
+            Create Quote →
+          </button>
+        </div>
       </div>
     </form>
 

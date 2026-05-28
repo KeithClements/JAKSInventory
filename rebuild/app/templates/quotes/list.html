@@ -19,15 +19,33 @@
 <div
   x-data="{
     open: false,
-    query: '',
-    get filtered() {
-      if (!this.query.trim()) return window._NQC || [];
-      const q = this.query.toLowerCase();
-      return (window._NQC || []).filter(c => c.n.toLowerCase().includes(q));
-    }
+    customerId: '',
+    displayName: '',
+    hasCustomers: {{ 'true' if customers else 'false' }}
   }"
-  @open-new-quote.window="open = true; query = ''; $nextTick(() => $refs.qf && $refs.qf.focus())"
-  @keydown.escape.window="open = false"
+  @open-new-quote.window="
+    open = true;
+    customerId = '';
+    displayName = '';
+    var r = document.getElementById('nq-results');
+    if (r) r.innerHTML = '';
+    $nextTick(() => $refs.nqSearch && $refs.nqSearch.focus())
+  "
+  @keydown.escape.window="if (open) open = false"
+  @customer-selected.window="
+    if (open) {
+      customerId = String($event.detail.id);
+      displayName = $event.detail.name;
+    }
+  "
+  @record-created.window="
+    if ($event.detail.type === 'customer') {
+      customerId = String($event.detail.id);
+      displayName = $event.detail.label;
+      hasCustomers = true;
+      open = true;
+    }
+  "
 >
   {# Backdrop #}
   <div x-show="open" x-cloak @click="open = false"
@@ -40,85 +58,118 @@
 
   {# Panel #}
   <div x-show="open" x-cloak
-       class="fixed inset-0 z-[60] flex items-start justify-center pt-20 px-4 pointer-events-none"
+       class="fixed inset-0 z-[60] flex items-center justify-center px-4 pointer-events-none"
        x-transition:enter="transition ease-out duration-200"
        x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
        x-transition:leave="transition ease-in duration-150"
        x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95">
 
     <form action="/quotes/new" method="post"
-          class="card w-full max-w-sm pointer-events-auto" @click.stop
-          x-data
-          @record-created.window="
-            if ($event.detail.type === 'customer') {
-              window._NQC = window._NQC || [];
-              window._NQC.unshift({ i: $event.detail.id, n: $event.detail.label });
-              $dispatch('open-new-quote');
-              $nextTick(() => {
-                var sel = document.querySelector('#nq-customer-select');
-                if (sel) { sel.value = String($event.detail.id); sel.focus(); }
-              });
-            }
-          ">
+          class="bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-lg pointer-events-auto overflow-hidden"
+          @click.stop>
 
-      <div class="card-header">
-        <span class="card-title">New Quote</span>
-        <button type="button" @click="open = false" class="ml-auto text-gray-400 hover:text-gray-600 transition-colors">
+      {# Header #}
+      <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+        <div>
+          <h2 class="text-sm font-semibold text-gray-900">New Quote</h2>
+          <p class="text-xs text-gray-400 mt-0.5">Select a customer to open the quote workspace</p>
+        </div>
+        <button type="button" @click="open = false"
+                class="text-gray-400 hover:text-gray-600 transition-colors p-1.5 rounded-lg hover:bg-gray-100 -mr-1">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
           </svg>
         </button>
       </div>
 
-      <div class="card-body space-y-3">
-        <div>
-          <label class="form-label">Customer <span class="text-red-500">*</span></label>
-          <input type="text" x-ref="qf" x-model="query"
-                 placeholder="Type to filter customers…" autocomplete="off"
-                 class="form-input mb-2"
-                 @keydown.enter.prevent
-                 @keydown.arrow-down.prevent="document.getElementById('nq-customer-select').focus()" />
-          <select id="nq-customer-select" name="customer_id" required
-                  class="form-select" style="height: 11rem"
-                  @keydown.enter.prevent="$el.closest('form').requestSubmit()">
-            <option value="">— Select a customer —</option>
-            <template x-for="c in filtered" :key="c.i">
-              <option :value="c.i" x-text="c.n"></option>
-            </template>
-          </select>
-        </div>
-        <input type="hidden" name="discount_pct" value="0" />
-        <input type="hidden" name="validity_days" value="30" />
-        <input type="hidden" name="notes" value="" />
-        <div class="text-center border-t border-gray-100 pt-2">
+      {# Body #}
+      <div class="px-6 py-6">
+
+        {# Empty state — no customers yet #}
+        <div x-show="!hasCustomers" class="flex flex-col items-center justify-center py-6 text-center">
+          <div class="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center mb-3">
+            <svg class="w-6 h-6 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                    d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 7a4 4 0 100 8 4 4 0 000-8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
+            </svg>
+          </div>
+          <p class="text-sm font-medium text-gray-700">No customers yet</p>
+          <p class="text-xs text-gray-400 mt-1 mb-4">Create a customer before starting a quote.</p>
           <button type="button"
                   hx-get="/customers/quick-create-form"
                   hx-target="#create-slide-content"
                   hx-swap="innerHTML"
-                  @click="$dispatch('open-create-slide', { title: 'New Customer' }); open = false"
-                  class="text-xs link">
-            + Create a new customer first
+                  @click="open = false; $dispatch('open-create-slide', { title: 'New Customer' })"
+                  class="btn-primary btn-sm">
+            Create customer first →
           </button>
         </div>
+
+        {# Customer search — shown when customers exist #}
+        <div x-show="hasCustomers" class="space-y-3">
+          <div>
+            <label class="form-label">Customer <span class="text-red-500">*</span></label>
+            <div class="relative">
+              <input type="text" x-ref="nqSearch"
+                     autocomplete="off"
+                     placeholder="Type customer name or phone…"
+                     :value="displayName"
+                     @input="displayName = $el.value; customerId = ''"
+                     @keydown.enter.prevent
+                     class="form-input"
+                     hx-get="/customers/search-json"
+                     hx-trigger="input changed delay:200ms"
+                     hx-target="#nq-results"
+                     hx-vals='js:{"q": event.target.value}' />
+              <div id="nq-results"
+                   class="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-30 max-h-52 overflow-y-auto"
+                   x-show="displayName.length >= 2 && !customerId"
+                   x-cloak></div>
+            </div>
+            <input type="hidden" name="customer_id" :value="customerId" />
+            <p x-show="customerId" x-cloak
+               class="mt-1.5 flex items-center gap-1 text-xs font-medium text-green-700">
+              <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+              </svg>
+              <span x-text="displayName"></span>
+            </p>
+          </div>
+          <p class="text-xs text-gray-400">
+            Discount %, validity period, and notes are editable inside the workspace after creation.
+          </p>
+        </div>
+
+        <input type="hidden" name="discount_pct" value="0" />
+        <input type="hidden" name="validity_days" value="30" />
+        <input type="hidden" name="notes" value="" />
       </div>
 
-      <div class="card-footer">
-        <button type="button" @click="open = false" class="btn-secondary">Cancel</button>
-        <button type="submit" class="btn-primary">Create Quote →</button>
+      {# Footer #}
+      <div class="flex items-center justify-between px-6 py-4 border-t border-gray-100 bg-gray-50/60">
+        <button type="button"
+                x-show="hasCustomers"
+                hx-get="/customers/quick-create-form"
+                hx-target="#create-slide-content"
+                hx-swap="innerHTML"
+                @click="open = false; $dispatch('open-create-slide', { title: 'New Customer' })"
+                class="text-xs font-medium text-brand-700 hover:text-brand-800 hover:underline transition-colors">
+          + New Customer
+        </button>
+        <div x-show="!hasCustomers"></div>
+        <div class="flex gap-3">
+          <button type="button" @click="open = false" class="btn-secondary">Cancel</button>
+          <button type="submit" class="btn-primary"
+                  :disabled="!customerId"
+                  x-show="hasCustomers">
+            Create Quote →
+          </button>
+        </div>
       </div>
 
     </form>
   </div>
 </div>
-
-<script>
-window._NQC = [
-{% for c in customers %}
-  {"i": {{ c.id }}, "n": {{ (c.company_name ~ (" (" ~ c.contact_name ~ ")" if c.contact_name else "")) | tojson }}}{% if not loop.last %},{% endif %}
-
-{% endfor %}
-];
-</script>
 
 {# ── Follow-up due banner ─────────────────────────────────────────────────── #}
 {% if follow_up_filter == 'due' %}
@@ -129,8 +180,8 @@ window._NQC = [
 {% endif %}
 
 {# ── Status filter tabs + search ─────────────────────────────────────────── #}
-<div class="flex items-center justify-between mb-4 gap-4 flex-wrap">
-  <div class="flex items-center gap-1 bg-gray-100 rounded-lg p-1 flex-wrap">
+<div class="flex items-center justify-between mb-5 gap-4 flex-wrap">
+  <nav class="flex items-center gap-0.5 bg-gray-100 rounded-xl p-1">
     {% set tabs = [
       ('',                      'All'),
       (QuoteStatus.DRAFT,       'Draft'),
@@ -141,151 +192,160 @@ window._NQC = [
     ] %}
     {% for val, label in tabs %}
     <a href="/quotes/?status={{ val }}&q={{ q }}"
-       class="px-3 py-1.5 text-sm font-medium rounded-md transition-colors
-              {% if status_filter == val %}bg-white shadow text-brand-700{% else %}text-gray-600 hover:text-gray-900{% endif %}">
+       class="px-3.5 py-1.5 text-sm font-medium rounded-lg transition-all whitespace-nowrap
+              {% if status_filter == val %}bg-brand-700 text-white shadow-sm{% else %}text-gray-600 hover:text-gray-900 hover:bg-gray-200/70{% endif %}">
       {{ label }}
     </a>
     {% endfor %}
-  </div>
+  </nav>
 
   <form method="get" action="/quotes/" class="flex items-center gap-2">
     <input type="hidden" name="status" value="{{ status_filter }}" />
-    <input type="text" name="q" value="{{ q }}" placeholder="Quote# or customer…" class="form-input w-52" />
-    <button type="submit" class="btn-secondary btn-sm">Search</button>
+    <div class="relative">
+      <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+           fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
+      </svg>
+      <input type="text" name="q" value="{{ q }}" placeholder="Quote # or customer…"
+             class="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white w-52
+                    focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+    </div>
+    {% if q %}<a href="/quotes/?status={{ status_filter }}" class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</a>{% endif %}
   </form>
 </div>
 
-{# ── Quotes table ─────────────────────────────────────────────────────────── #}
-{# Status badge map — more distinct visual treatment #}
+{# ── Status badge + follow-up label maps ─────────────────────────────────── #}
 {% set q_styles = {
   'draft':     ('bg-gray-100 text-gray-600 border border-gray-200',           'Draft'),
   'sent':      ('bg-blue-100 text-blue-700 border border-blue-200',            'Sent'),
   'accepted':  ('bg-green-100 text-green-700 border border-green-200',         'Accepted'),
-  'converted': ('bg-green-100 text-green-800 border border-green-200',         'Converted'),
+  'converted': ('bg-emerald-100 text-emerald-800 border border-emerald-200',   'Converted'),
   'declined':  ('bg-red-100 text-red-700 border border-red-200',               'Declined'),
   'expired':   ('bg-amber-100 text-amber-700 border border-amber-200',         'Expired'),
 } %}
 
-{# Follow-up status label map #}
 {% set fu_labels = {
-  'called':     '📞 Called',
-  'emailed':    '✉️ Emailed',
-  'left_vm':    '📬 VM Left',
-  'interested': '🔴 Truck Down',
-  'pending':    '⏳ Pending',
+  'called':     'Called',
+  'emailed':    'Emailed',
+  'left_vm':    'VM Left',
+  'interested': 'Truck Down',
+  'pending':    'Pending',
 } %}
 
+{# ── Quotes table ─────────────────────────────────────────────────────────── #}
 {% if quotes %}
-<div class="card">
+<div class="card overflow-hidden">
   <div class="overflow-x-auto">
-    <table class="tbl">
-      <thead class="tbl-head">
-        <tr>
-          <th class="tbl-th">Quote #</th>
-          <th class="tbl-th">Customer</th>
-          <th class="tbl-th-r hidden sm:table-cell">Lines</th>
-          <th class="tbl-th-r">Total</th>
-          <th class="tbl-th">Status</th>
-          <th class="tbl-th hidden md:table-cell">Follow-up</th>
-          <th class="tbl-th hidden lg:table-cell">Valid Until</th>
-          <th class="tbl-th hidden sm:table-cell">Created</th>
-          <th class="tbl-th w-28"></th>{# hover actions #}
+    <table class="w-full">
+      <thead>
+        <tr class="bg-gray-50 border-b border-gray-200">
+          <th class="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Quote</th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Customer</th>
+          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Total</th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide hidden md:table-cell">Follow-up</th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide hidden lg:table-cell">Valid Until</th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide hidden sm:table-cell">Created</th>
+          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Actions</th>
         </tr>
       </thead>
-      <tbody>
+      <tbody class="divide-y divide-gray-100">
         {% for quote in quotes %}
 
-        {# Determine row urgency class #}
         {% set is_truck_down = quote.follow_up_status == 'interested' %}
         {% set is_followup_overdue = quote.follow_up_date and quote.follow_up_date < now and quote.outcome == 'pending' and quote.status not in ['converted','declined'] %}
         {% set is_expired = quote.is_expired and quote.status == 'sent' %}
 
-        {% if is_truck_down %}
-          {% set row_class = 'tbl-row-danger group' %}
-        {% elif is_followup_overdue or is_expired %}
-          {% set row_class = 'tbl-row-warn group' %}
-        {% else %}
-          {% set row_class = 'tbl-row' %}
-        {% endif %}
+        <tr class="hover:bg-gray-50/80 transition-colors cursor-pointer
+                   {% if is_truck_down %}bg-red-50/40{% elif is_followup_overdue or is_expired %}bg-amber-50/30{% endif %}"
+            onclick="location.href='/quotes/{{ quote.id }}'">
 
-        <tr class="{{ row_class }} cursor-pointer" onclick="location.href='/quotes/{{ quote.id }}'">
-
-          {# Quote # with truck-down indicator #}
-          <td class="tbl-td">
-            <div class="flex items-center gap-2">
+          {# ── Quote # + line count ─────────────────────────────────────── #}
+          <td class="px-5 py-3.5 align-middle" onclick="event.stopPropagation()">
+            <div class="flex items-center gap-2.5">
+              {# Urgency dot #}
               {% if is_truck_down %}
-              <span class="w-2 h-2 rounded-full bg-red-500 shrink-0 animate-pulse"></span>
+              <span class="w-2 h-2 rounded-full bg-red-500 shrink-0 animate-pulse" title="Truck down — urgent"></span>
               {% elif is_followup_overdue %}
-              <span class="w-2 h-2 rounded-full bg-amber-500 shrink-0"></span>
+              <span class="w-2 h-2 rounded-full bg-amber-500 shrink-0" title="Follow-up overdue"></span>
+              {% else %}
+              <span class="w-2 h-2 shrink-0"></span>
               {% endif %}
-              <a href="/quotes/{{ quote.id }}"
-                 class="font-mono text-xs font-bold link"
-                 onclick="event.stopPropagation()">{{ quote.quote_number }}</a>
+              <div>
+                <a href="/quotes/{{ quote.id }}"
+                   class="font-mono text-sm font-bold text-brand-700 hover:text-brand-600 hover:underline transition-colors">
+                  {{ quote.quote_number }}
+                </a>
+                <div class="text-xs text-gray-400 mt-0.5">
+                  {{ quote.lines | length }} line{{ 's' if quote.lines | length != 1 }}
+                </div>
+              </div>
             </div>
           </td>
 
-          {# Customer #}
-          <td class="tbl-td font-medium text-gray-900">{{ quote.customer.company_name }}</td>
+          {# ── Customer ─────────────────────────────────────────────────── #}
+          <td class="px-4 py-3.5 align-middle">
+            <span class="text-sm font-semibold text-gray-900">{{ quote.customer.company_name }}</span>
+          </td>
 
-          {# Lines count #}
-          <td class="tbl-td-r hidden sm:table-cell text-gray-500">{{ quote.lines | length }}</td>
+          {# ── Total ────────────────────────────────────────────────────── #}
+          <td class="px-4 py-3.5 align-middle text-right">
+            <span class="text-sm font-semibold text-gray-800 tabular-nums">${{ '%.2f' % quote.subtotal }}</span>
+          </td>
 
-          {# Total #}
-          <td class="tbl-td-r font-semibold text-gray-800">${{ '%.2f' % quote.subtotal }}</td>
-
-          {# Status pill — larger, more distinct #}
-          <td class="tbl-td">
+          {# ── Status badge ─────────────────────────────────────────────── #}
+          <td class="px-4 py-3.5 align-middle">
             {% set qs = q_styles.get(quote.status, ('bg-gray-100 text-gray-600 border border-gray-200', quote.status | title)) %}
             <span class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold whitespace-nowrap {{ qs[0] }}">
               {{ qs[1] }}
             </span>
             {% if is_expired %}
-            <span class="ml-1 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700">Expired</span>
+            <div class="mt-1">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700">Expired</span>
+            </div>
             {% endif %}
           </td>
 
-          {# Follow-up indicator #}
-          <td class="tbl-td hidden md:table-cell">
+          {# ── Follow-up ────────────────────────────────────────────────── #}
+          <td class="px-4 py-3.5 align-middle hidden md:table-cell">
             {% if quote.follow_up_date %}
               {% if is_followup_overdue %}
                 {% set days_late = (today - quote.follow_up_date.date()).days %}
-                <div class="flex items-center gap-1.5">
-                  <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-amber-100 text-amber-800 border border-amber-200">
-                    <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                      <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
-                    </svg>
-                    {% if days_late == 0 %}Today{% elif days_late == 1 %}1d late{% else %}{{ days_late }}d late{% endif %}
-                  </span>
-                  {% if quote.follow_up_status %}
-                  <span class="text-xs text-gray-500">{{ fu_labels.get(quote.follow_up_status, quote.follow_up_status) }}</span>
-                  {% endif %}
+                <div class="flex items-center gap-1 text-xs font-semibold text-amber-700">
+                  <svg class="w-3 h-3 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+                  </svg>
+                  {% if days_late == 0 %}Today{% elif days_late == 1 %}1 day late{% else %}{{ days_late }}d late{% endif %}
                 </div>
+                {% if quote.follow_up_status %}
+                <div class="text-xs text-gray-500 mt-0.5">{{ fu_labels.get(quote.follow_up_status, quote.follow_up_status) }}</div>
+                {% endif %}
               {% else %}
-                <div class="text-xs text-gray-500">
-                  {{ quote.follow_up_date.strftime('%b %d') }}
-                  {% if quote.follow_up_status %}
-                  <span class="text-gray-400 ml-1">· {{ fu_labels.get(quote.follow_up_status, quote.follow_up_status) }}</span>
-                  {% endif %}
-                </div>
+                <div class="text-xs text-gray-600">{{ quote.follow_up_date.strftime('%b %d') }}</div>
+                {% if quote.follow_up_status %}
+                <div class="text-xs text-gray-400 mt-0.5">{{ fu_labels.get(quote.follow_up_status, quote.follow_up_status) }}</div>
+                {% endif %}
               {% endif %}
             {% else %}
               <span class="text-gray-300 text-xs">—</span>
             {% endif %}
           </td>
 
-          {# Valid Until #}
-          <td class="tbl-td hidden lg:table-cell text-sm">
+          {# ── Valid Until ───────────────────────────────────────────────── #}
+          <td class="px-4 py-3.5 align-middle hidden lg:table-cell">
             {% if quote.valid_until %}
-            <span class="{% if quote.is_expired %}text-red-500 font-medium{% else %}text-gray-500{% endif %}">
+            <span class="text-xs {% if quote.is_expired %}text-red-600 font-semibold{% else %}text-gray-600{% endif %}">
               {{ quote.valid_until.strftime('%m/%d/%y') }}
             </span>
-            {% else %}<span class="text-gray-300">—</span>{% endif %}
+            {% else %}
+            <span class="text-gray-300 text-xs">—</span>
+            {% endif %}
           </td>
 
-          {# Created — relative if < 7 days, else short date #}
-          <td class="tbl-td hidden sm:table-cell text-gray-500">
+          {# ── Created ──────────────────────────────────────────────────── #}
+          <td class="px-4 py-3.5 align-middle hidden sm:table-cell">
             {% set days_ago = (today - quote.created_at.date()).days %}
-            <span class="text-xs">
+            <span class="text-xs text-gray-500">
               {% if days_ago == 0 %}Today
               {% elif days_ago == 1 %}Yesterday
               {% elif days_ago < 7 %}{{ days_ago }}d ago
@@ -293,26 +353,24 @@ window._NQC = [
             </span>
           </td>
 
-          {# Hover quick-actions #}
-          <td class="tbl-td" onclick="event.stopPropagation()">
-            <div class="row-actions">
-              {# Convert to Invoice — direct POST #}
+          {# ── Actions — always visible ──────────────────────────────────── #}
+          <td class="px-4 py-3.5 align-middle text-right" onclick="event.stopPropagation()">
+            <div class="flex items-center justify-end gap-1.5">
               {% if quote.status in ['draft', 'sent', 'accepted'] %}
               <form method="post" action="/quotes/{{ quote.id }}/convert" class="contents">
-                <button type="submit" title="Convert to Invoice"
-                        class="px-2 py-1 text-xs text-gray-500 hover:text-brand-700 hover:bg-brand-50 rounded transition-colors font-medium">
-                  → Inv
+                <button type="submit"
+                        class="px-2.5 py-1.5 text-xs font-medium text-brand-700 bg-brand-50 hover:bg-brand-100 border border-brand-200 rounded-lg transition-colors whitespace-nowrap">
+                  → Invoice
                 </button>
               </form>
               {% endif %}
               <a href="/quotes/{{ quote.id }}/print" target="_blank"
-                 class="px-2 py-1 text-xs text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors"
-                 title="Print quote">
+                 class="px-2.5 py-1.5 text-xs font-medium text-gray-500 bg-white hover:bg-gray-50 border border-gray-200 rounded-lg transition-colors whitespace-nowrap">
                 Print
               </a>
               <a href="/quotes/{{ quote.id }}"
-                 class="px-2 py-1 text-xs text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors">
-                View →
+                 class="px-2.5 py-1.5 text-xs font-medium text-gray-700 bg-white hover:bg-gray-50 border border-gray-200 rounded-lg transition-colors whitespace-nowrap">
+                View
               </a>
             </div>
           </td>
@@ -348,20 +406,26 @@ window._NQC = [
 {% endif %}
 
 {% else %}
-<div class="card flex flex-col items-center justify-center py-16">
+
+{# ── Empty state ──────────────────────────────────────────────────────────── #}
+<div class="card flex flex-col items-center justify-center py-16 text-center">
   <svg class="w-12 h-12 text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
           d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
   </svg>
-  <p class="text-gray-500 font-medium">No quotes found</p>
   {% if q or status_filter %}
-  <p class="text-gray-400 text-sm mt-1">Try adjusting your filter or search.</p>
+  <p class="text-gray-700 font-semibold">No quotes match this filter</p>
+  <p class="text-gray-400 text-sm mt-1">Try a different status tab or clear the search.</p>
+  <a href="/quotes/" class="mt-4 btn-secondary btn-sm">Clear filters</a>
   {% else %}
+  <p class="text-gray-700 font-semibold">No quotes yet</p>
+  <p class="text-gray-400 text-sm mt-1">Create your first quote to get started.</p>
   <button @click="$dispatch('open-new-quote')" class="mt-4 btn-primary">
     Create the first quote →
   </button>
   {% endif %}
 </div>
+
 {% endif %}
 
 {% endblock %}

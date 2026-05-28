@@ -177,22 +177,17 @@ async def so_update_header(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    so = _get_so_or_404(db, so_id)
-    if so.status == SOStatus.CANCELLED:
-        return HTMLResponse('<div class="text-xs text-red-600">Order is cancelled</div>', status_code=400)
-
     form = await request.form()
-    updatable = [
+    data = {k: form.get(k) for k in (
         "customer_po_number", "customer_job_number", "esn",
         "engine_manufacturer", "engine_model",
         "notes", "internal_notes", "payment_mode",
-    ]
-    for field in updatable:
-        if field in form:
-            val = str(form.get(field, "")).strip()
-            setattr(so, field, val or None if field in ("customer_po_number", "customer_job_number", "esn") else val)
-
-    db.commit()
+    ) if k in form}
+    submitted_updated_at = form.get("_updated_at")
+    try:
+        SalesOrderService(db, user_id).update_header(so_id, data, submitted_updated_at)
+    except ValueError as exc:
+        return HTMLResponse(f'<div class="text-xs text-red-600">{exc}</div>', status_code=400)
     return HTMLResponse("", status_code=204)
 
 

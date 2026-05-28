@@ -2,54 +2,68 @@
 {% block title %}AR Aging — JAKS Inventory{% endblock %}
 {% block heading %}AR Aging{% endblock %}
 
-{% block header_actions %}
-  <a href="/reports/sales/" class="text-sm text-gray-500 hover:text-gray-700">Sales</a>
-  <a href="/reports/inventory/" class="text-sm text-gray-500 hover:text-gray-700">Inventory</a>
-  <a href="/reports/open-pos/" class="text-sm text-gray-500 hover:text-gray-700">Open POs</a>
-{% endblock %}
-
 {% block content %}
-<div class="max-w-5xl space-y-4">
+{% set active_report = 'ar-aging' %}
+<div class="max-w-6xl space-y-4">
+  {% include "reports/_nav.html" %}
 
-  <p class="text-xs text-gray-400">As of {{ today.strftime('%B %d, %Y') }}</p>
+  {# ── Filter + actions row ─────────────────────────────────────────────── #}
+  <form method="get" action="/reports/ar-aging"
+        class="flex flex-wrap items-end gap-3 bg-white border border-gray-200 rounded-xl p-3">
+    <div>
+      <label class="form-label">As of</label>
+      <input type="date" name="as_of" value="{{ as_of.isoformat() }}" class="form-input w-44"/>
+    </div>
+    <button type="submit" class="btn-primary btn-sm">Update</button>
+    <div class="flex-1"></div>
+    <button type="button" class="btn-secondary btn-sm" disabled title="Coming soon">
+      Export CSV
+    </button>
+  </form>
 
-  {# Summary banner #}
-  <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
-    <div class="stat-card bg-white">
+  <p class="text-xs text-gray-400">As of {{ as_of.strftime('%B %d, %Y') }}</p>
+
+  {# ── Summary tiles ─────────────────────────────────────────────────────── #}
+  <div class="grid grid-cols-2 sm:grid-cols-6 gap-3">
+    <div class="stat-card-brand">
       <p class="stat-label">Total AR</p>
       <p class="stat-value text-brand-700">${{ '%.2f' % totals.total }}</p>
     </div>
-    <div class="stat-card bg-white">
+    <div class="stat-card">
       <p class="stat-label">Current</p>
       <p class="stat-value text-green-700">${{ '%.2f' % totals.current }}</p>
     </div>
-    <div class="stat-card bg-white">
+    <div class="stat-card">
       <p class="stat-label">1–30 Days</p>
       <p class="stat-value {% if totals['1_30'] > 0 %}text-amber-600{% endif %}">${{ '%.2f' % totals['1_30'] }}</p>
     </div>
-    <div class="stat-card bg-white">
+    <div class="stat-card">
       <p class="stat-label">31–60 Days</p>
       <p class="stat-value {% if totals['31_60'] > 0 %}text-orange-600{% endif %}">${{ '%.2f' % totals['31_60'] }}</p>
     </div>
-    <div class="stat-card bg-white">
-      <p class="stat-label">61+ Days</p>
-      {% set late = totals['61_90'] + totals['over_90'] %}
-      <p class="stat-value {% if late > 0 %}text-red-600{% endif %}">${{ '%.2f' % late }}</p>
+    <div class="stat-card">
+      <p class="stat-label">61–90 Days</p>
+      <p class="stat-value {% if totals['61_90'] > 0 %}text-red-600{% endif %}">${{ '%.2f' % totals['61_90'] }}</p>
+    </div>
+    <div class="stat-card {% if totals.over_90 > 0 %}stat-card-red{% endif %}">
+      <p class="stat-label">90+ Days</p>
+      <p class="stat-value {% if totals.over_90 > 0 %}text-red-700{% else %}text-gray-400{% endif %}">${{ '%.2f' % totals.over_90 }}</p>
     </div>
   </div>
 
-  {# Aging table #}
-  {% if aging_rows %}
+  {# ── Customer table ────────────────────────────────────────────────────── #}
+  {% if rows %}
   <div class="card">
     <div class="card-header">
       <h2 class="card-title">Outstanding by Customer</h2>
-      <span class="text-xs text-gray-400">{{ aging_rows | length }} customer{{ 's' if aging_rows | length != 1 }}</span>
+      <span class="text-xs text-gray-400">{{ rows | length }} customer{{ 's' if rows | length != 1 }}</span>
     </div>
     <div class="overflow-x-auto">
       <table class="tbl">
         <thead class="tbl-head">
           <tr>
             <th class="tbl-th">Customer</th>
+            <th class="tbl-th-r">Invoices</th>
             <th class="tbl-th-r">Current</th>
             <th class="tbl-th-r">1–30</th>
             <th class="tbl-th-r">31–60</th>
@@ -59,14 +73,14 @@
           </tr>
         </thead>
         <tbody>
-          {% for row in aging_rows %}
+          {% for row in rows %}
           <tr class="tbl-row">
             <td class="tbl-td font-medium text-gray-900">
               <a href="/customers/{{ row.customer.id }}" class="tbl-link text-sm">
-              {{ row.customer.company_name }}
+                {{ row.customer.company_name }}
               </a>
-              <span class="text-xs text-gray-400 ml-1">({{ row.invoices | length }} inv)</span>
             </td>
+            <td class="tbl-td-r text-gray-500">{{ row.invoice_count }}</td>
             <td class="tbl-td-r text-green-700">
               {% if row.current > 0 %}${{ '%.2f' % row.current }}{% else %}<span class="text-gray-300">—</span>{% endif %}
             </td>
@@ -89,18 +103,20 @@
         <tfoot class="border-t-2 border-gray-200 bg-gray-50">
           <tr>
             <td class="px-4 py-3 text-sm font-bold text-gray-700">Totals</td>
-            <td class="px-4 py-3 text-right text-sm font-bold text-green-700">${{ '%.2f' % totals.current }}</td>
-            <td class="px-4 py-3 text-right text-sm font-bold {% if totals['1_30'] > 0 %}text-amber-600{% else %}text-gray-400{% endif %}">${{ '%.2f' % totals['1_30'] }}</td>
-            <td class="px-4 py-3 text-right text-sm font-bold {% if totals['31_60'] > 0 %}text-orange-600{% else %}text-gray-400{% endif %}">${{ '%.2f' % totals['31_60'] }}</td>
-            <td class="px-4 py-3 text-right text-sm font-bold {% if totals['61_90'] > 0 %}text-red-600{% else %}text-gray-400{% endif %}">${{ '%.2f' % totals['61_90'] }}</td>
-            <td class="px-4 py-3 text-right text-sm font-bold {% if totals.over_90 > 0 %}text-red-700{% else %}text-gray-400{% endif %}">${{ '%.2f' % totals.over_90 }}</td>
-            <td class="px-4 py-3 text-right text-lg font-bold text-brand-700">${{ '%.2f' % totals.total }}</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-gray-500 tabular-nums">
+              {{ rows | sum(attribute='invoice_count') }}
+            </td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-green-700 tabular-nums">${{ '%.2f' % totals.current }}</td>
+            <td class="px-4 py-3 text-right text-sm font-bold {% if totals['1_30'] > 0 %}text-amber-600{% else %}text-gray-400{% endif %} tabular-nums">${{ '%.2f' % totals['1_30'] }}</td>
+            <td class="px-4 py-3 text-right text-sm font-bold {% if totals['31_60'] > 0 %}text-orange-600{% else %}text-gray-400{% endif %} tabular-nums">${{ '%.2f' % totals['31_60'] }}</td>
+            <td class="px-4 py-3 text-right text-sm font-bold {% if totals['61_90'] > 0 %}text-red-600{% else %}text-gray-400{% endif %} tabular-nums">${{ '%.2f' % totals['61_90'] }}</td>
+            <td class="px-4 py-3 text-right text-sm font-bold {% if totals.over_90 > 0 %}text-red-700{% else %}text-gray-400{% endif %} tabular-nums">${{ '%.2f' % totals.over_90 }}</td>
+            <td class="px-4 py-3 text-right text-lg font-bold text-brand-700 tabular-nums">${{ '%.2f' % totals.total }}</td>
           </tr>
         </tfoot>
       </table>
     </div>
   </div>
-
   {% else %}
   <div class="card flex flex-col items-center justify-center py-16">
     <svg class="w-12 h-12 text-green-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -110,6 +126,5 @@
     <p class="text-gray-400 text-sm mt-1">All invoices are paid up.</p>
   </div>
   {% endif %}
-
 </div>
 {% endblock %}

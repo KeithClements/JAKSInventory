@@ -1,0 +1,10 @@
+Hi {customer_name},
+
+We're working on your quote ({quote_number}) but need a bit more information to proceed.
+
+Missing: {missing_field}
+
+Please send that our way when you get a chance and we'll get you a quote right away.
+
+JAKS Diesel Parts
+{company_phone}

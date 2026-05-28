@@ -15,6 +15,9 @@
 {% block header_actions %}
   <span class="{{ status_pill[po.status][0] }}">{{ status_pill[po.status][1] }}</span>
 
+  <a href="/purchase-orders/{{ po.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
+  <a href="/purchase-orders/{{ po.id }}/pdf" class="btn-secondary btn-sm">PDF</a>
+
   {% if editable %}
     <form method="post" action="/purchase-orders/{{ po.id }}/send">
       <button type="submit" class="btn-primary btn-sm">
@@ -42,9 +45,10 @@
 
   {# ── Flash banners ── #}
   {% set ok_msg = {
-    'sent':     'PO sent to vendor — inventory on-order updated.',
-    'received': 'Goods received and inventory updated.',
-    'billed':   'Vendor bill created successfully.',
+    'sent':         'PO sent to vendor — inventory on-order updated.',
+    'received':     'Goods received and inventory updated.',
+    'billed':       'Vendor bill created successfully.',
+    'bill_approved':'Vendor bill approved.',
   } %}
   {% if request.query_params.get('ok') %}
   <div class="rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800 flex items-center gap-2">
@@ -56,6 +60,28 @@
   <div class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700 flex items-center gap-2">
     <svg class="w-4 h-4 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
     {{ request.query_params.get('error') }}
+  </div>
+  {% endif %}
+
+  {# ── Over-receipt warning banner ── #}
+  {% set over_received_lines = po.lines | selectattr('over_received', 'equalto', true) | list %}
+  {% if over_received_lines %}
+  <div class="rounded-lg bg-amber-50 border border-amber-300 px-4 py-3 flex items-start gap-3">
+    <svg class="w-5 h-5 text-amber-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3L13.74 5a2 2 0 00-3.48 0L3.19 16a2 2 0 001.74 3z"/>
+    </svg>
+    <div class="text-sm text-amber-800">
+      <p class="font-semibold">Over-receipt detected on {{ over_received_lines | length }} line{{ 's' if over_received_lines | length != 1 }}</p>
+      <ul class="mt-1 space-y-0.5 text-xs text-amber-700">
+        {% for ln in over_received_lines %}
+        <li>
+          <span class="font-mono">{{ ln.product.sku if ln.product else '—' }}</span>
+          — ordered {{ ln.qty_ordered }}, received {{ ln.qty_received }}
+          <span class="font-semibold">(+{{ ln.over_received_qty }} extra)</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
   </div>
   {% endif %}
 
@@ -184,6 +210,17 @@
             <input type="number" name="recv_{{ line.id }}"
                    min="0" max="{{ line.qty_outstanding }}" value="{{ line.qty_outstanding }}"
                    class="w-20 form-input text-right shrink-0" />
+            {# Cancel outstanding qty — posts separately from the receive form #}
+            <button type="button"
+                    class="text-xs text-gray-400 hover:text-red-600 underline shrink-0"
+                    onclick="if(confirm('Cancel the outstanding {{ line.qty_outstanding }} unit(s) for this line?')) { document.getElementById('cancel-line-{{ line.id }}').submit(); }">
+              Cancel
+            </button>
+            <form id="cancel-line-{{ line.id }}" method="post"
+                  action="/purchase-orders/{{ po.id }}/cancel-line" class="hidden">
+              <input type="hidden" name="line_id" value="{{ line.id }}"/>
+              <input type="hidden" name="reason" value="cancelled by user"/>
+            </form>
           </div>
           {% endfor %}
         </div>
@@ -219,7 +256,17 @@
 
   {# ── Create Vendor Bill ── #}
   {% if can_bill and received_lines %}
-  <div class="card">
+  <div class="card"
+       x-data="{
+         lines: {
+           {% for line in received_lines %}
+           '{{ line.id }}': { qty: {{ line.qty_received - (line.qty_billed or 0) }}, max: {{ line.qty_received }} },
+           {% endfor %}
+         },
+         get hasDiscrepancy() {
+           return Object.values(this.lines).some(l => parseInt(l.qty) > l.max);
+         }
+       }">
     <div class="card-header">
       <h2 class="card-title">Create Vendor Bill</h2>
       <span class="text-xs text-gray-400">Match vendor invoice to received goods</span>
@@ -256,17 +303,23 @@
             <tbody>
               {% for line in received_lines %}
               {% set unbilled = line.qty_received - (line.qty_billed or 0) %}
-              <tr class="tbl-row">
+              <tr class="tbl-row" :class="parseInt(lines['{{ line.id }}'].qty) > {{ line.qty_received }} ? 'bg-red-50' : ''">
                 <td class="tbl-td font-mono text-xs">{{ line.product.sku if line.product else '—' }}</td>
                 <td class="tbl-td text-gray-600 text-sm">
                   {{ line.description or (line.product.title if line.product else '—') }}
                 </td>
-                <td class="tbl-td-r text-sm">{{ line.qty_received }}</td>
+                <td class="tbl-td-r text-sm font-medium">{{ line.qty_received }}</td>
                 <td class="tbl-td-r">
-                  <input type="number" name="qty_billed_{{ line.id }}"
-                         min="0" max="{{ line.qty_received }}"
-                         value="{{ unbilled if unbilled > 0 else 0 }}"
-                         class="w-20 form-input text-right" />
+                  <div class="flex items-center gap-1 justify-end">
+                    <input type="number" name="qty_billed_{{ line.id }}"
+                           min="0"
+                           value="{{ unbilled if unbilled > 0 else 0 }}"
+                           x-model="lines['{{ line.id }}'].qty"
+                           class="w-20 form-input text-right"
+                           :class="parseInt(lines['{{ line.id }}'].qty) > {{ line.qty_received }} ? 'border-red-400 bg-red-50 focus:ring-red-300' : ''" />
+                    <span x-show="parseInt(lines['{{ line.id }}'].qty) > {{ line.qty_received }}"
+                          class="text-red-500 text-xs font-semibold shrink-0" title="Exceeds received qty">!</span>
+                  </div>
                 </td>
                 <td class="tbl-td-r">
                   <input type="number" name="unit_cost_{{ line.id }}" step="0.01" min="0"
@@ -282,6 +335,18 @@
           </table>
         </div>
 
+        {# Discrepancy warning — shown when any qty_billed > qty_received #}
+        <div x-show="hasDiscrepancy" x-cloak
+             class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 flex items-start gap-2 text-sm text-red-800">
+          <svg class="w-4 h-4 text-red-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3L13.74 5a2 2 0 00-3.48 0L3.19 16a2 2 0 001.74 3z"/>
+          </svg>
+          <div>
+            <span class="font-semibold">Discrepancy:</span>
+            one or more lines bill more units than were received. This bill will be flagged for review.
+          </div>
+        </div>
+
         {% if po.status == 'partial' %}
         <p class="text-xs text-amber-600">
           This PO has only been partially received. Bill only lines you have received.
@@ -295,6 +360,55 @@
   {% endif %}
 
   {# ── Related Bills ── #}
+  {# ── Receipt History ── #}
+  {% if po.receipts %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Receipts</h2>
+      <span class="text-xs text-gray-400">{{ po.receipts | length }} receipt{{ 's' if po.receipts | length != 1 }}</span>
+    </div>
+    <div class="divide-y divide-gray-100">
+      {% for receipt in po.receipts | sort(attribute='received_at', reverse=True) %}
+      {% set po_lines = receipt.lines | selectattr('po_line_id') | list %}
+      <div class="px-5 py-3">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <p class="text-sm font-medium text-gray-800">
+              {{ receipt.received_at.strftime('%b %d, %Y at %I:%M %p') if receipt.received_at else '—' }}
+            </p>
+            {% if receipt.tracking_number %}
+            <p class="text-xs text-gray-500 mt-0.5">
+              {{ receipt.carrier | replace('_', ' ') | title if receipt.carrier else '' }}
+              {% if receipt.carrier and receipt.tracking_number %} · {% endif %}
+              <span class="font-mono">{{ receipt.tracking_number }}</span>
+            </p>
+            {% endif %}
+            {% if receipt.notes %}
+            <p class="text-xs text-amber-700 mt-0.5 italic">{{ receipt.notes }}</p>
+            {% endif %}
+          </div>
+          <div class="text-right shrink-0">
+            {% set total_qty = namespace(n=0) %}
+            {% for rl in receipt.lines %}{% set total_qty.n = total_qty.n + rl.qty_received %}{% endfor %}
+            <span class="text-sm font-semibold text-gray-700">{{ total_qty.n }} unit{{ 's' if total_qty.n != 1 }} received</span>
+          </div>
+        </div>
+        {% if receipt.lines %}
+        <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+          {% for rl in receipt.lines %}
+          <span class="text-xs text-gray-500">
+            <span class="font-mono text-brand-700">{{ rl.po_line.product.sku if rl.po_line and rl.po_line.product else '—' }}</span>
+            × {{ rl.qty_received }}
+          </span>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
   {% if po.bills %}
   <div class="card">
     <div class="card-header">
@@ -314,7 +428,7 @@
         </thead>
         <tbody>
           {% for bill in po.bills %}
-          <tr class="tbl-row">
+          <tr class="tbl-row {% if bill.status == 'discrepancy' %}bg-red-50/50{% endif %}">
             <td class="tbl-td font-mono text-xs font-semibold">{{ bill.bill_number or '—' }}</td>
             <td class="tbl-td text-gray-600">{{ bill.bill_date.strftime('%b %d, %Y') if bill.bill_date else '—' }}</td>
             <td class="tbl-td text-gray-600">{{ bill.due_date.strftime('%b %d, %Y') if bill.due_date else '—' }}</td>
@@ -326,6 +440,42 @@
               {% else %}<span class="badge-gray">Pending</span>{% endif %}
             </td>
           </tr>
+          {# Discrepancy detail row — expands below the bill when status is discrepancy #}
+          {% if bill.status == 'discrepancy' %}
+          <tr class="bg-red-50/30">
+            <td colspan="5" class="px-4 py-3">
+              <div class="text-xs text-red-800">
+                <p class="font-semibold mb-1 flex items-center gap-1.5">
+                  <svg class="w-3.5 h-3.5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01"/>
+                  </svg>
+                  Discrepancy — billed qty exceeds received qty on:
+                </p>
+                <ul class="space-y-0.5 pl-5 list-disc mb-3">
+                  {% for bl in bill.lines if bl.has_discrepancy %}
+                  <li>
+                    <span class="font-mono">{{ bl.po_line.product.sku if bl.po_line and bl.po_line.product else '—' }}</span>
+                    — billed <span class="font-semibold">{{ bl.qty_billed }}</span>,
+                    received {{ bl.po_line.qty_received if bl.po_line else '?' }}
+                    <span class="text-red-600 font-semibold">
+                      (+{{ bl.qty_billed - bl.po_line.qty_received if bl.po_line else '?' }} over)
+                    </span>
+                  </li>
+                  {% endfor %}
+                </ul>
+                <form method="post"
+                      action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/approve"
+                      onsubmit="return confirm('Approve this bill despite the quantity discrepancy?')">
+                  <button type="submit"
+                          class="px-3 py-1.5 text-xs font-semibold text-white bg-red-600
+                                 hover:bg-red-700 rounded-lg transition-colors">
+                    Approve Anyway
+                  </button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endif %}
           {% endfor %}
         </tbody>
       </table>

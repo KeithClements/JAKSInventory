@@ -12,12 +12,18 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.constants import AddressType, CallOutcome, CallType, PaymentTerms, PricingTier, QuoteStatus
+from app.constants import (
+    AddressType, CallOutcome, CallType,
+    CommunicationChannel, CommunicationDirection,
+    PaymentTerms, PricingTier, QuoteStatus,
+)
 from app.deps import get_db
+from app.models.communication import Communication
 from app.models.customer import Customer, CustomerAddress, CustomerCallLog
 from app.models.invoice import Invoice
 from app.models.quote import Quote
 from app.services.crm_service import CRMService
+from app.services.messaging_service import MessagingService
 
 log = logging.getLogger(__name__)
 
@@ -644,6 +650,26 @@ async def customer_import_confirm(
     return RedirectResponse(f"/customers/?ok={msg}", status_code=303)
 
 
+# ── Balance mini-panel (HTMX partial for Quote / Invoice workspace headers) ───
+
+@router.get("/{customer_id}/balance-mini", response_class=HTMLResponse)
+def customer_balance_mini(
+    customer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Lightweight partial: balance chips used in Quote and Invoice workspace headers.
+    Called via hx-get with hx-trigger="load" so it loads after the page renders.
+    """
+    from app.services.statement_service import StatementService
+    summary = StatementService(db).get_customer_balance_summary(customer_id)
+    return templates.TemplateResponse(
+        "customers/_balance_mini.html",
+        {"request": request, **summary},
+    )
+
+
 # ── Detail ────────────────────────────────────────────────────────────────────
 
 @router.get("/{customer_id}", response_class=HTMLResponse)
@@ -751,6 +777,134 @@ async def log_call(
     return templates.TemplateResponse(
         "customers/_call_log_row.html",
         {"request": request, "log": entry},
+    )
+
+
+# ── Communications Timeline ───────────────────────────────────────────────────
+
+_RELATED_ENTITY_HREF = {
+    "quote":      "/quotes/{id}",
+    "invoice":    "/invoices/{id}",
+    "so":         "/sales-orders/{id}",
+    "po":         "/purchase-orders/{id}",
+    "ra":         "/returns/{id}",
+    "warranty":   "/warranty/{id}",
+    "research":   "/research/{id}",
+    "core_slip":  "/cores/{id}",
+    "statement":  "/customers/{id}/statement",
+}
+
+
+@router.get("/{customer_id}/communications", response_class=HTMLResponse)
+def customer_communications(
+    customer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Communication timeline for a customer.
+
+    Lists every email, SMS, phone-call note, and manual comm logged to this
+    customer — outbound and inbound — newest first. Read-only (immutable log).
+    """
+    c = db.query(Customer).filter(Customer.id == customer_id).first()
+    if c is None:
+        return RedirectResponse("/customers/", status_code=303)
+
+    comms = (
+        db.query(Communication)
+        .filter(Communication.customer_id == customer_id)
+        .order_by(Communication.sent_at.desc())
+        .limit(500)
+        .all()
+    )
+
+    # Build a related-doc href lookup per row so the template can stay dumb
+    related_links: dict[int, dict[str, str] | None] = {}
+    for comm in comms:
+        if comm.related_entity_type and comm.related_entity_id:
+            tmpl = _RELATED_ENTITY_HREF.get(comm.related_entity_type)
+            if tmpl:
+                related_links[comm.id] = {
+                    "label": f"{comm.related_entity_type.replace('_', ' ').title()} #{comm.related_entity_id}",
+                    "href":  tmpl.format(id=comm.related_entity_id),
+                }
+            else:
+                related_links[comm.id] = {
+                    "label": f"{comm.related_entity_type} #{comm.related_entity_id}",
+                    "href":  "",
+                }
+        else:
+            related_links[comm.id] = None
+
+    return templates.TemplateResponse(
+        "customers/communications.html",
+        {
+            "request":        request,
+            "customer":       c,
+            "comms":          comms,
+            "related_links":  related_links,
+        },
+    )
+
+
+# Maps the form's comm_type select value → (channel, direction)
+_COMM_TYPE_MAP: dict[str, tuple[str, str]] = {
+    "phone_outbound": (CommunicationChannel.PHONE_CALL, CommunicationDirection.OUTBOUND),
+    "phone_inbound":  (CommunicationChannel.PHONE_CALL, CommunicationDirection.INBOUND),
+    "email_outbound": (CommunicationChannel.EMAIL,       CommunicationDirection.OUTBOUND),
+    "email_inbound":  (CommunicationChannel.EMAIL,       CommunicationDirection.INBOUND),
+    "sms_outbound":   (CommunicationChannel.SMS,         CommunicationDirection.OUTBOUND),
+    "sms_inbound":    (CommunicationChannel.SMS,         CommunicationDirection.INBOUND),
+    "note":           (CommunicationChannel.MANUAL_NOTE, CommunicationDirection.OUTBOUND),
+}
+
+
+@router.post("/{customer_id}/communications/log", response_class=RedirectResponse)
+async def customer_communications_log(
+    customer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Log a manual communication entry (no real send — all go through NullProvider)."""
+    form = await request.form()
+    comm_type      = str(form.get("comm_type", "phone_outbound"))
+    body           = str(form.get("body", "")).strip()
+    subject        = str(form.get("subject", "")).strip() or None
+    contact_addr   = str(form.get("contact_address", "")).strip()
+    rel_type       = str(form.get("related_entity_type", "")).strip() or None
+    rel_id_raw     = str(form.get("related_entity_id", "")).strip()
+    rel_id         = int(rel_id_raw) if rel_id_raw.isdigit() else None
+
+    channel, direction = _COMM_TYPE_MAP.get(
+        comm_type,
+        (CommunicationChannel.MANUAL_NOTE, CommunicationDirection.OUTBOUND),
+    )
+
+    svc = MessagingService(db, current_user_id=CURRENT_USER_ID)
+    if direction == CommunicationDirection.INBOUND:
+        svc.record_inbound(
+            customer_id=customer_id,
+            channel=channel,
+            body=body,
+            subject=subject,
+            from_address=contact_addr,
+            related_entity_type=rel_type,
+            related_entity_id=rel_id,
+        )
+    else:
+        svc.log_manual_communication(
+            customer_id=customer_id,
+            channel=channel,
+            body=body,
+            subject=subject,
+            to_address=contact_addr,
+            related_entity_type=rel_type,
+            related_entity_id=rel_id,
+        )
+
+    return RedirectResponse(
+        f"/customers/{customer_id}/communications",
+        status_code=303,
     )
 
 

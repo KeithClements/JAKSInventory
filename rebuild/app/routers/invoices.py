@@ -50,6 +50,7 @@ def _get_invoice_or_redirect(db: Session, invoice_id: int) -> Invoice | Redirect
 def _workspace_context(db: Session, request: Request, invoice: Invoice) -> dict:
     """Build the full context dict the workspace template expects."""
     from app.services.invoice_service import InvoiceService
+    from app.services.statement_service import StatementService
     totals = InvoiceService(db, 1).calculate_totals(invoice.id)
 
     customers = (
@@ -64,6 +65,8 @@ def _workspace_context(db: Session, request: Request, invoice: Invoice) -> dict:
     except (TypeError, ValueError):
         cc_surcharge_pct = 3.0
 
+    bal = StatementService(db).get_customer_balance_summary(invoice.customer_id)
+
     return {
         "request": request,
         "invoice": invoice,
@@ -74,6 +77,15 @@ def _workspace_context(db: Session, request: Request, invoice: Invoice) -> dict:
         "InvoiceStatus": InvoiceStatus,
         "LineType": LineType,
         "PaymentMethod": PaymentMethod,
+        # Customer balance chips
+        "cust_open_balance": bal["open_balance"],
+        "cust_overdue_balance": bal["overdue_balance"],
+        "cust_credit_balance": bal["credit_balance"],
+        "cust_credit_limit": bal["credit_limit"],
+        "cust_payment_terms": bal["payment_terms"],
+        "cust_cores_owed_qty": bal["cores_owed_qty"],
+        "cust_last_payment_date": bal["last_payment_date"],
+        "cust_open_invoice_count": bal["open_invoice_count"],
     }
 
 
@@ -635,6 +647,47 @@ async def invoice_payment(
         log.exception("Unexpected error recording payment for invoice %s", invoice_id)
         return RedirectResponse(
             f"/invoices/{invoice_id}?error={url_quote('Unexpected error — payment was not recorded.')}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/invoices/{invoice_id}?saved=1", status_code=303)
+
+
+# ── Apply account credit ─────────────────────────────────────────────────────
+
+@router.post("/{invoice_id}/apply-credit", response_class=RedirectResponse)
+async def invoice_apply_credit(
+    invoice_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    from app.services.payment_service import PaymentService
+
+    inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    if not inv:
+        return RedirectResponse("/invoices/", status_code=303)
+
+    form = await request.form()
+    try:
+        amount = float(form.get("amount", 0))
+        if amount <= 0:
+            raise ValueError("Credit amount must be greater than zero.")
+        PaymentService(db, user_id).apply_account_credit(
+            customer_id=inv.customer_id,
+            invoice_id=invoice_id,
+            amount=amount,
+        )
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/invoices/{invoice_id}?error={url_quote(str(exc))}",
+            status_code=303,
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error applying credit to invoice %s", invoice_id)
+        return RedirectResponse(
+            f"/invoices/{invoice_id}?error={url_quote('Unexpected error — credit was not applied.')}",
             status_code=303,
         )
     return RedirectResponse(f"/invoices/{invoice_id}?saved=1", status_code=303)
