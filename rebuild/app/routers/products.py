@@ -59,8 +59,29 @@ def _categories(db: Session):
 # ── List ─────────────────────────────────────────────────────────────────────
 
 @router.get("/", response_class=HTMLResponse)
-def product_list(request: Request, q: str = "", db: Session = Depends(get_db)):
-    query = db.query(Product).filter(Product.is_active == True)  # noqa: E712
+def product_list(
+    request: Request,
+    q: str = "",
+    tab: str = "all",
+    db: Session = Depends(get_db),
+):
+    base = db.query(Product).filter(Product.is_active == True)  # noqa: E712
+
+    # Tab filter
+    if tab == "low_stock":
+        query = base.filter(
+            Product.reorder_point > 0,
+            Product.qty_on_hand > 0,
+            Product.qty_on_hand <= Product.reorder_point,
+        )
+    elif tab == "out_of_stock":
+        query = base.filter(Product.qty_on_hand == 0)
+    elif tab == "special_order":
+        query = base.filter(Product.special_order_only == True)  # noqa: E712
+    else:
+        query = base
+
+    # Search
     if q:
         like = f"%{q}%"
         query = query.filter(
@@ -69,11 +90,48 @@ def product_list(request: Request, q: str = "", db: Session = Depends(get_db)):
             | Product.manufacturer.ilike(like)
             | Product.brand.ilike(like)
         )
+
     products = query.order_by(Product.sku).all()
+
+    # Tab counts (always based on full active set, ignoring current tab/search)
+    counts = {
+        "all": base.count(),
+        "low_stock": base.filter(
+            Product.reorder_point > 0,
+            Product.qty_on_hand > 0,
+            Product.qty_on_hand <= Product.reorder_point,
+        ).count(),
+        "out_of_stock": db.query(Product).filter(
+            Product.is_active == True, Product.qty_on_hand == 0  # noqa: E712
+        ).count(),
+        "special_order": db.query(Product).filter(
+            Product.is_active == True, Product.special_order_only == True  # noqa: E712
+        ).count(),
+    }
+
     return templates.TemplateResponse("products/list.html", {
         "request": request,
         "products": products,
         "q": q,
+        "tab": tab,
+        "counts": counts,
+    })
+
+
+# ── List row preview panel (HTMX partial) ────────────────────────────────────
+
+@router.get("/preview/{product_id}", response_class=HTMLResponse)
+def product_preview_panel(
+    product_id: int, request: Request, db: Session = Depends(get_db)
+):
+    p = db.query(Product).filter(Product.id == product_id).first()
+    if not p:
+        return HTMLResponse(
+            '<p class="px-6 py-4 text-sm text-gray-400">Product not found.</p>'
+        )
+    return templates.TemplateResponse("products/_preview_panel.html", {
+        "request": request,
+        "p": p,
     })
 
 

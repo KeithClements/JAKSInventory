@@ -9,7 +9,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import extract, func
 from sqlalchemy.orm import Session, joinedload
 
-from app.constants import CoreStatus, InvoiceStatus, POStatus, QuoteOutcome, QuoteStatus, SOStatus
+from app.constants import CoreDirection, CoreStatus, InvoiceStatus, POStatus, QuoteOutcome, QuoteStatus, SOStatus
 from app.deps import get_db
 from app.models.invoice import Invoice, InvoiceLine, Payment
 from app.models.quote import Quote, QuoteLine, SalesOrder
@@ -17,6 +17,7 @@ from app.models.purchase_order import PurchaseOrder
 from app.models.core import CoreCharge
 from app.models.product import Product
 from app.models.customer import CustomerCallLog
+from app.services.report_service import ReportService
 
 router = APIRouter(tags=["dashboard"])
 templates = Jinja2Templates(directory="app/templates")
@@ -33,19 +34,22 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         .scalar() or 0.0
     )
 
-    # AR balance + overdue count — load open/partial invoices with their lines
-    # and payment allocations in 3 queries (joinedload avoids N+1 per invoice).
-    open_invoices = (
-        db.query(Invoice)
-        .options(
-            joinedload(Invoice.lines),
-            joinedload(Invoice.allocations),
+    # AR balance — ReportService is the source of truth (matches /reports/ar-aging)
+    try:
+        ar_balance = ReportService(db).get_ar_aging()["totals"]["total"]
+    except Exception:
+        ar_balance = 0.0
+
+    # Overdue invoices — simple count: open/partial invoices past their due date
+    overdue_count = (
+        db.query(func.count(Invoice.id))
+        .filter(
+            Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL]),
+            Invoice.due_date.isnot(None),
+            Invoice.due_date < datetime.utcnow(),
         )
-        .filter(Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL]))
-        .all()
+        .scalar() or 0
     )
-    ar_balance = round(sum(inv.balance_due for inv in open_invoices), 2)
-    overdue_count = sum(1 for inv in open_invoices if inv.is_overdue)
 
     # Open quotes (draft)
     open_quotes = (
@@ -70,10 +74,14 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         .scalar() or 0
     )
 
-    # Core charges awaiting customer return (OPEN or PARTIAL)
+    # Core charges awaiting customer return — same filter as ReportService
+    # (OPEN/PARTIAL status + customer direction only, not vendor cores)
     open_cores = (
         db.query(func.count(CoreCharge.id))
-        .filter(CoreCharge.status.in_([CoreStatus.OPEN, CoreStatus.PARTIAL]))
+        .filter(
+            CoreCharge.status.in_([CoreStatus.OPEN, CoreStatus.PARTIAL]),
+            CoreCharge.direction == CoreDirection.CUSTOMER_OWES_RETURN,
+        )
         .scalar() or 0
     )
 

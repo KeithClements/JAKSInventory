@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}3-Way Match Review — JAKS Inventory{% endblock %}
+{% block heading %}3-Way Match Review{% endblock %}
+
+{% block header_actions %}
+  <a href="/purchase-orders/" class="btn-secondary btn-sm">All Purchase Orders</a>
+{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+
+  <p class="text-sm text-gray-500 max-w-2xl">
+    Purchase orders where the vendor bill doesn't reconcile against goods received —
+    billed more units than received, or a unit cost that differs from the PO. Clear
+    each variance by approving the bill or correcting the receipt on the PO.
+  </p>
+
+  {% if flagged %}
+  <div class="card overflow-hidden">
+    <div class="overflow-x-auto">
+      <table class="w-full min-w-[860px]">
+        <thead>
+          <tr class="bg-gray-50 border-b border-gray-200">
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">PO #</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Vendor</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Variances</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Lines</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for item in flagged %}
+          {% set po = item.po %}
+          {% set m = item.match %}
+          {% set over_billed = m.rows | selectattr('state', 'equalto', 'over_billed') | list %}
+          {% set cost_var = m.rows | selectattr('state', 'equalto', 'cost_variance') | list %}
+
+          <tr class="hover:bg-gray-50/80 transition-colors group border-l-4
+            {% if over_billed %}border-l-red-400 bg-red-50/20{% else %}border-l-amber-400 bg-amber-50/20{% endif %}">
+
+            {# PO # #}
+            <td class="px-4 py-4 align-middle">
+              <a href="/purchase-orders/{{ po.id }}#match"
+                 class="font-mono text-sm font-bold text-brand-700 hover:text-brand-900 hover:underline">{{ po.po_number }}</a>
+              {% if po.vendor_confirmation_number %}
+              <div class="mt-0.5 text-[10px] text-gray-400 font-mono">Conf: {{ po.vendor_confirmation_number }}</div>
+              {% endif %}
+            </td>
+
+            {# Vendor #}
+            <td class="px-4 py-4 align-middle max-w-xs">
+              {% if po.vendor %}
+              <p class="text-sm font-medium text-gray-900 truncate">{{ po.vendor.name }}</p>
+              {% else %}
+              <p class="text-sm text-gray-400 italic">No vendor</p>
+              {% endif %}
+            </td>
+
+            {# Variance chips + the exact bill(s) involved #}
+            <td class="px-4 py-4 align-middle">
+              <div class="flex flex-wrap gap-1.5">
+                {% if over_billed %}
+                <span class="badge-red">{{ over_billed | length }} over-billed</span>
+                {% endif %}
+                {% if cost_var %}
+                <span class="badge-amber">{{ cost_var | length }} cost variance</span>
+                {% endif %}
+              </div>
+              {% if po.bills %}
+              <div class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                {% for bill in po.bills %}
+                <a href="/purchase-orders/{{ po.id }}#match"
+                   class="text-[11px] font-mono {% if bill.has_discrepancy %}text-red-600 font-semibold hover:underline{% else %}text-gray-400 hover:text-gray-600{% endif %}"
+                   title="{{ 'Discrepancy bill' if bill.has_discrepancy else 'Vendor bill' }}">
+                  {{ bill.bill_number or 'bill #' ~ bill.id }}{% if bill.has_discrepancy %} ⚠{% endif %}
+                </a>
+                {% endfor %}
+              </div>
+              {% endif %}
+            </td>
+
+            {# Match progress #}
+            <td class="px-4 py-4 align-middle text-right">
+              <span class="text-sm font-semibold text-gray-700 tabular-nums">{{ m.matched_count }}/{{ m.rows | length }}</span>
+              <div class="text-[10px] text-gray-400 mt-0.5">matched</div>
+            </td>
+
+            {# Status #}
+            <td class="px-4 py-4 align-middle">
+              {% if po.status == 'billed' %}<span class="badge-green">Billed</span>
+              {% elif po.status == 'received' %}<span class="badge-green">Received</span>
+              {% elif po.status == 'partial' %}<span class="badge-amber">Partial</span>
+              {% else %}<span class="badge-gray">{{ po.status.replace('_', ' ').title() }}</span>{% endif %}
+            </td>
+
+            {# Actions #}
+            <td class="px-4 py-4 align-middle text-right">
+              <a href="/purchase-orders/{{ po.id }}#match"
+                 class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-brand-700 text-white hover:bg-brand-600 transition-colors">
+                Review match
+              </a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/60">
+      <span class="text-xs text-gray-400">
+        {{ total }} purchase order{{ 's' if total != 1 }} with billing variances
+      </span>
+    </div>
+  </div>
+
+  {% else %}
+  {# ══════════════ EMPTY STATE ══════════════ #}
+  <div class="card flex flex-col items-center justify-center py-16 text-center">
+    <div class="w-14 h-14 rounded-2xl bg-green-50 flex items-center justify-center mb-4">
+      <svg class="w-7 h-7 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+    </div>
+    <p class="text-sm font-semibold text-gray-700">Everything reconciles</p>
+    <p class="text-xs text-gray-400 mt-1 mb-4">No purchase orders have billing variances needing review.</p>
+    <a href="/purchase-orders/?tab=received" class="btn-secondary btn-sm">View received POs</a>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

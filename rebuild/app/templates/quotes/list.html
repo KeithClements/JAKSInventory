@@ -357,7 +357,7 @@
           <td class="px-4 py-3.5 align-middle text-right" onclick="event.stopPropagation()">
             <div class="flex items-center justify-end gap-1.5">
               {% if quote.status in ['draft', 'sent', 'accepted'] %}
-              <form method="post" action="/quotes/{{ quote.id }}/convert" class="contents">
+              <form method="post" action="/quotes/{{ quote.id }}/convert-to-invoice" class="contents">
                 <button type="submit"
                         class="px-2.5 py-1.5 text-xs font-medium text-brand-700 bg-brand-50 hover:bg-brand-100 border border-brand-200 rounded-lg transition-colors whitespace-nowrap">
                   → Invoice

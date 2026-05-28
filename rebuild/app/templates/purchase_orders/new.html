@@ -7,7 +7,8 @@
 {% endblock %}
 
 {% block content %}
-<form method="post" action="/purchase-orders/new" class="max-w-5xl space-y-6" x-data="poForm()">
+<form method="post" action="/purchase-orders/new" class="max-w-5xl space-y-6" x-data="poForm()"
+      @record-created.window="if ($event.detail.type === 'product') createdProducts.push($event.detail)">
 
   <!-- Order header -->
   <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
@@ -86,10 +87,21 @@
   <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
     <div class="flex items-center justify-between border-b border-gray-100 pb-3">
       <h2 class="text-sm font-semibold text-gray-700">Line Items</h2>
-      <button type="button" @click="addLine()"
-              class="text-sm font-medium text-green-600 hover:underline">
-        + Add Line
-      </button>
+      <div class="flex items-center gap-3">
+        <button type="button"
+                hx-get="/products/quick-create-form"
+                hx-target="#create-slide-content"
+                hx-swap="innerHTML"
+                @click="$dispatch('open-create-slide', { title: 'New Product' })"
+                class="px-3 py-1.5 text-xs font-medium text-brand-700 border border-brand-200
+                       rounded-lg bg-brand-50 hover:bg-brand-100 transition-colors">
+          + New Product
+        </button>
+        <button type="button" @click="addLine()"
+                class="text-sm font-medium text-green-600 hover:underline">
+          + Add Line
+        </button>
+      </div>
     </div>
 
     <div class="overflow-x-auto">
@@ -119,6 +131,13 @@
                     {{ p.sku }} — {{ p.title | truncate(45) }}
                   </option>
                   {% endfor %}
+                  <template x-for="cp in createdProducts" :key="cp.id">
+                    <option :value="String(cp.id)"
+                            :data-cost="cp.current_cost"
+                            :data-core="0"
+                            :data-title="cp.description"
+                            x-text="cp.label"></option>
+                  </template>
                 </select>
               </td>
               <td class="py-2 pr-3">
@@ -172,6 +191,7 @@
 function poForm() {
   return {
     lines: [{ description: '', qty: 1, cost: '', core: '' }],
+    createdProducts: [],
     addLine() {
       this.lines.push({ description: '', qty: 1, cost: '', core: '' });
     },

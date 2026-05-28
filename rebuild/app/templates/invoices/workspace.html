@@ -86,9 +86,10 @@
   </div>
   {% endif %}
 
-  {# ── Lock banner (OPEN/PARTIAL invoices with locked_at set) ─────────────── #}
-  {% if invoice.is_locked and invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL] %}
+  {# ── Lock banner — shown for ALL OPEN/PARTIAL invoices (content is read-only) #}
+  {% if invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL] %}
   {% set lock_labels = {
+    'finalized':  'Finalized',
     'end_of_day': 'End of Day',
     'paid':       'Paid',
     'manual':     'Manual Lock',
@@ -100,9 +101,13 @@
       <path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m0 0v2m0-2h2m-2 0H10m2-5V7a4 4 0 00-8 0v4H3v10h18V11h-1V7a4 4 0 00-8 0v4zm0 0H7m5 0h5"/>
     </svg>
     <span>
-      <span class="font-semibold">Locked</span>
+      <span class="font-semibold">Read-only</span>
+      {% if invoice.is_locked %}
       — {{ lock_labels.get(invoice.lock_reason, invoice.lock_reason | replace('_', ' ') | title) }}
       on {{ invoice.locked_at.strftime('%b %d, %Y') }}.
+      {% else %}
+      — Invoice has been finalized.
+      {% endif %}
       Void and reissue to make corrections.
     </span>
   </div>

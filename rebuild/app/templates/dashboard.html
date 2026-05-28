@@ -52,7 +52,7 @@
       </div>
     </div>
     <p class="stat-value text-brand-700">${{ "%.0f"|format(ar_balance) }}</p>
-    <a href="/invoices/?status=open" class="text-xs link mt-auto">View open →</a>
+    <a href="/reports/ar-aging" class="text-xs link mt-auto">AR Aging report →</a>
   </div>
 
   {# Overdue #}
@@ -66,7 +66,7 @@
       </div>
     </div>
     <p class="stat-value {% if overdue_count > 0 %}text-red-600{% endif %}">{{ overdue_count }}</p>
-    <a href="/invoices/" class="text-xs link mt-auto">View invoices →</a>
+    <a href="/reports/ar-aging" class="text-xs link mt-auto">AR Aging report →</a>
   </div>
 
   {# Open Quotes #}
@@ -108,7 +108,7 @@
       </div>
     </div>
     <p class="stat-value {% if open_pos > 0 %}text-blue-600{% endif %}">{{ open_pos }}</p>
-    <a href="/purchase-orders/" class="text-xs link mt-auto">View POs →</a>
+    <a href="/reports/open-pos" class="text-xs link mt-auto">Open POs report →</a>
   </div>
 
   {# Open Cores #}
@@ -122,7 +122,7 @@
       </div>
     </div>
     <p class="stat-value {% if open_cores > 0 %}text-amber-600{% endif %}">{{ open_cores }}</p>
-    <a href="/cores/" class="text-xs link mt-auto">View charges →</a>
+    <a href="/reports/outstanding-cores" class="text-xs link mt-auto">Cores report →</a>
   </div>
 
 </div>
@@ -416,7 +416,7 @@
           <p class="text-xs font-semibold text-red-500 mt-0.5">{{ low_stock | length }} SKU{{ 's' if low_stock | length != 1 }} low</p>
           {% endif %}
         </div>
-        <a href="/reports/inventory/" class="text-xs link shrink-0">Report →</a>
+        <a href="/reports/inventory-valuation" class="text-xs link shrink-0">Report →</a>
       </div>
 
       {% if low_stock %}

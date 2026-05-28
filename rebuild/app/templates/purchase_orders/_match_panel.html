@@ -1,0 +1,129 @@
+{# ── 3-Way Match panel (PO · Receipt · Bill) ──────────────────────────────────
+   Expects `match` in context (see _match_summary in the router). Only render
+   when match.has_activity is true. #}
+{% set state_meta = {
+  'matched':          ('badge-green', 'Matched'),
+  'awaiting_receipt': ('badge-gray',  'Awaiting receipt'),
+  'awaiting_bill':    ('badge-blue',  'Awaiting bill'),
+  'over_billed':      ('badge-red',   'Over-billed'),
+  'cost_variance':    ('badge-amber', 'Cost variance'),
+} %}
+<div id="match" class="card scroll-mt-20">
+  <div class="card-header">
+    <div class="flex items-center gap-2">
+      <h2 class="card-title">3-Way Match</h2>
+      <span class="text-[11px] text-gray-400 uppercase tracking-wide">PO · Receipt · Bill</span>
+    </div>
+    <div class="flex items-center gap-2">
+      {% if match.flag_count %}
+      <span class="badge-red">{{ match.flag_count }} need{{ '' if match.flag_count == 1 else 's' }} review</span>
+      {% else %}
+      <span class="badge-green">No variances</span>
+      {% endif %}
+      <span class="text-xs text-gray-400">{{ match.matched_count }}/{{ match.rows | length }} matched</span>
+    </div>
+  </div>
+
+  <div class="overflow-x-auto">
+    <table class="w-full min-w-[760px]">
+      <thead>
+        <tr class="bg-gray-50 border-b border-gray-200">
+          <th class="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Item</th>
+          <th class="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Ordered</th>
+          <th class="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Received</th>
+          <th class="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Billed</th>
+          <th class="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Qty Δ</th>
+          <th class="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Cost Δ</th>
+          <th class="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Match</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for r in match.rows %}
+        {% set line = r.line %}
+        {% set sm = state_meta[r.state] %}
+        <tr class="border-l-4
+          {% if r.state == 'over_billed' %}border-l-red-400 bg-red-50/20
+          {% elif r.state == 'cost_variance' %}border-l-amber-400 bg-amber-50/20
+          {% elif r.state == 'matched' %}border-l-green-300
+          {% elif r.state == 'awaiting_bill' %}border-l-blue-200
+          {% else %}border-l-transparent{% endif %}">
+
+          {# Item #}
+          <td class="px-4 py-3 align-middle">
+            {% if line.product %}
+            <a href="/products/{{ line.product.id }}" class="font-mono text-xs font-semibold link">{{ line.product.sku }}</a>
+            {% else %}
+            <span class="font-mono text-xs text-gray-300">—</span>
+            {% endif %}
+            <p class="text-xs text-gray-500 truncate max-w-[220px]">{{ line.description or (line.product.title if line.product else '') }}</p>
+          </td>
+
+          {# Ordered: qty × cost #}
+          <td class="px-4 py-3 align-middle text-right">
+            <span class="text-sm font-medium text-gray-800 tabular-nums">{{ r.ordered_qty }}</span>
+            <div class="text-[10px] text-gray-400 tabular-nums">@ ${{ '%.2f' | format(r.ordered_cost) }}</div>
+          </td>
+
+          {# Received qty #}
+          <td class="px-4 py-3 align-middle text-right">
+            <span class="text-sm font-medium tabular-nums
+              {% if r.received_qty == 0 %}text-gray-400
+              {% elif r.received_qty < r.ordered_qty %}text-amber-600
+              {% else %}text-green-600{% endif %}">{{ r.received_qty }}</span>
+          </td>
+
+          {# Billed: qty × cost #}
+          <td class="px-4 py-3 align-middle text-right">
+            {% if r.billed_qty %}
+            <span class="text-sm font-medium text-gray-800 tabular-nums">{{ r.billed_qty }}</span>
+            <div class="text-[10px] tabular-nums {% if r.state == 'cost_variance' %}text-amber-600 font-semibold{% else %}text-gray-400{% endif %}">@ ${{ '%.2f' | format(r.billed_cost) }}</div>
+            {% else %}
+            <span class="text-sm text-gray-300">—</span>
+            {% endif %}
+          </td>
+
+          {# Qty Δ (billed vs received) #}
+          <td class="px-4 py-3 align-middle text-right">
+            {% if r.qty_var > 0 %}
+            <span class="text-sm font-semibold text-red-600 tabular-nums">+{{ r.qty_var }}</span>
+            {% elif r.qty_var < 0 %}
+            <span class="text-sm font-medium text-gray-500 tabular-nums">{{ r.qty_var }}</span>
+            {% else %}
+            <span class="text-sm text-gray-300">0</span>
+            {% endif %}
+          </td>
+
+          {# Cost Δ (billed vs ordered unit cost) #}
+          <td class="px-4 py-3 align-middle text-right">
+            {% if r.billed_cost is not none and r.cost_var != 0 %}
+            <span class="text-sm font-semibold tabular-nums {% if r.cost_var > 0 %}text-red-600{% else %}text-green-600{% endif %}">
+              {{ '+' if r.cost_var > 0 else '' }}${{ '%.2f' | format(r.cost_var) }}
+            </span>
+            {% else %}
+            <span class="text-sm text-gray-300">—</span>
+            {% endif %}
+          </td>
+
+          {# Match status #}
+          <td class="px-4 py-3 align-middle">
+            <span class="{{ sm[0] }}">{{ sm[1] }}</span>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if match.flag_count %}
+  <div class="px-5 py-3 border-t border-gray-100 bg-amber-50/40 flex items-start gap-2">
+    <svg class="w-4 h-4 text-amber-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3L13.74 5a2 2 0 00-3.48 0L3.19 16a2 2 0 001.74 3z"/>
+    </svg>
+    <p class="text-xs text-amber-800">
+      <span class="font-semibold">{{ match.flag_count }} line{{ '' if match.flag_count == 1 else 's' }} have a billing variance.</span>
+      Over-billed or cost-variance lines are flagged for AP review on the
+      <a href="/purchase-orders/match" class="underline font-medium">match queue</a>.
+    </p>
+  </div>
+  {% endif %}
+</div>

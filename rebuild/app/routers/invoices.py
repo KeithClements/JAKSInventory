@@ -47,6 +47,29 @@ def _get_invoice_or_redirect(db: Session, invoice_id: int) -> Invoice | Redirect
     return inv
 
 
+def _require_draft(db: Session, invoice_id: int) -> Invoice | HTMLResponse:
+    """
+    Pre-flight guard for HTMX mutation routes.
+    Returns the Invoice if it is DRAFT, or an HTMLResponse(400) if it is locked.
+    Caller should check `isinstance(result, HTMLResponse)` and return it immediately.
+    """
+    inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    if not inv:
+        return HTMLResponse(
+            f'<div class="text-xs text-red-600 p-2">Invoice not found.</div>',
+            status_code=404,
+        )
+    if inv.status != InvoiceStatus.DRAFT:
+        return HTMLResponse(
+            f'<div class="text-xs text-red-600 p-2">'
+            f'Invoice {inv.invoice_number} is locked (status: {inv.status.upper()}). '
+            f'Void and reissue to make corrections.'
+            f'</div>',
+            status_code=400,
+        )
+    return inv
+
+
 def _workspace_context(db: Session, request: Request, invoice: Invoice) -> dict:
     """Build the full context dict the workspace template expects."""
     from app.services.invoice_service import InvoiceService
@@ -89,30 +112,110 @@ def _workspace_context(db: Session, request: Request, invoice: Invoice) -> dict:
     }
 
 
+# ── L2 list tab definitions (JAKS_UI_Change_Plan.md §2) ──────────────────────
+# Maps user-facing tab slug → underlying invoice statuses it covers.
+# "all" → no filter (empty list signals "no filter", but excludes VOID).
+# "overdue" is virtual — computed from due_date, not a status (see _filtered_query).
+INV_TAB_GROUPS: dict[str, list[str]] = {
+    "all":     [InvoiceStatus.DRAFT, InvoiceStatus.OPEN, InvoiceStatus.PARTIAL, InvoiceStatus.PAID],
+    "open":    [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL],
+    "overdue": [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL],  # + due_date < now
+    "draft":   [InvoiceStatus.DRAFT],
+    "paid":    [InvoiceStatus.PAID],
+    "void":    [InvoiceStatus.VOID],
+}
+
+# Old individual status → grouped tab slug (backward-compat with ?status= links)
+_INV_STATUS_TO_TAB: dict[str, str] = {
+    InvoiceStatus.DRAFT:   "draft",
+    InvoiceStatus.OPEN:    "open",
+    InvoiceStatus.PARTIAL: "open",
+    InvoiceStatus.PAID:    "paid",
+    InvoiceStatus.VOID:    "void",
+}
+
+INV_LIST_TABS: list[tuple[str, str]] = [
+    ("all",     "All"),
+    ("open",    "Open"),
+    ("overdue", "Overdue"),
+    ("draft",   "Draft"),
+    ("paid",    "Paid"),
+    ("void",    "Void"),
+]
+
+
 # ── List ──────────────────────────────────────────────────────────────────────
+#
+# L2 — Operational List Screen Standard (JAKS_UI_Change_Plan.md §2).
+# Mirrors the Products / PO List pattern: grouped tab filter with counts from the
+# *unfiltered* dataset, search across invoice #, customer, PO#, and ESN, and a
+# per-row preview dock (loaded via /invoices/preview/{id}).
 
 @router.get("/", response_class=HTMLResponse)
 def invoice_list(
     request: Request,
-    status: str = "",
+    tab: str = "all",
     q: str = "",
+    # `status` kept for backward-compat with old links (?status=open).
+    status: str = "",
     db: Session = Depends(get_db),
 ):
-    from sqlalchemy import or_
+    from sqlalchemy import or_, func
+
+    # Backward-compat: ?status=open → ?tab=open, etc.
+    if status and tab == "all":
+        tab = _INV_STATUS_TO_TAB.get(status, "all")
+
+    now = datetime.utcnow()
+
+    # Counts — always from the *full* unfiltered dataset so tab counts are stable
+    # regardless of which tab is active (mirrors Products / PO List behavior).
+    raw_counts = dict(
+        db.query(Invoice.status, func.count(Invoice.id))
+          .group_by(Invoice.status)
+          .all()
+    )
+    overdue_count = (
+        db.query(func.count(Invoice.id))
+          .filter(
+              Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL]),
+              Invoice.due_date.isnot(None),
+              Invoice.due_date < now,
+          )
+          .scalar()
+    ) or 0
+
+    def _group_count(slug: str) -> int:
+        return sum(raw_counts.get(s, 0) for s in INV_TAB_GROUPS.get(slug, []))
+
+    counts = {
+        "all":     _group_count("all"),
+        "open":    _group_count("open"),
+        "overdue": overdue_count,
+        "draft":   _group_count("draft"),
+        "paid":    _group_count("paid"),
+        "void":    _group_count("void"),
+    }
+
+    # Filtered query
+    from sqlalchemy.orm import joinedload
     query = (
         db.query(Invoice)
         .join(Customer)
-        .filter(Invoice.status != InvoiceStatus.VOID)
+        .options(joinedload(Invoice.customer))
     )
-    if status:
-        query = query.filter(Invoice.status == status)
+    statuses = INV_TAB_GROUPS.get(tab, INV_TAB_GROUPS["all"])
+    query = query.filter(Invoice.status.in_(statuses))
+    if tab == "overdue":
+        query = query.filter(Invoice.due_date.isnot(None), Invoice.due_date < now)
     if q:
+        like = f"%{q.strip()}%"
         query = query.filter(
             or_(
-                Invoice.invoice_number.ilike(f"%{q}%"),
-                Customer.company_name.ilike(f"%{q}%"),
-                Invoice.customer_po_number.ilike(f"%{q}%"),
-                Invoice.esn.ilike(f"%{q}%"),
+                Invoice.invoice_number.ilike(like),
+                Customer.company_name.ilike(like),
+                Invoice.customer_po_number.ilike(like),
+                Invoice.esn.ilike(like),
             )
         )
     invoices = query.order_by(Invoice.created_at.desc()).limit(200).all()
@@ -121,9 +224,45 @@ def invoice_list(
         {
             "request": request,
             "invoices": invoices,
-            "status_filter": status,
+            "tabs": INV_LIST_TABS,
+            "tab": tab,
             "q": q,
+            "counts": counts,
             "InvoiceStatus": InvoiceStatus,
+            "now": now,
+        },
+    )
+
+
+# ── List row preview panel (HTMX partial) ────────────────────────────────────
+
+@router.get("/preview/{invoice_id}", response_class=HTMLResponse)
+def invoice_preview_panel(invoice_id: int, request: Request, db: Session = Depends(get_db)):
+    """Bottom preview dock body, loaded by htmx.ajax() on row click in the list."""
+    from sqlalchemy.orm import joinedload
+    inv = (
+        db.query(Invoice)
+        .options(
+            joinedload(Invoice.customer),
+            joinedload(Invoice.lines),
+            joinedload(Invoice.allocations),
+        )
+        .filter(Invoice.id == invoice_id)
+        .first()
+    )
+    if not inv:
+        return HTMLResponse(
+            '<div class="px-6 py-5 text-sm text-gray-400">Invoice not found.</div>',
+            status_code=404,
+        )
+    return templates.TemplateResponse(
+        "invoices/_preview_panel.html",
+        {
+            "request": request,
+            "inv": inv,
+            "InvoiceStatus": InvoiceStatus,
+            "LineType": LineType,
+            "now": datetime.utcnow(),
         },
     )
 
@@ -231,6 +370,10 @@ async def invoice_update_header(
     since most header fields (tax, discount, CC fee) affect totals."""
     from app.services.invoice_service import InvoiceService
 
+    guard = _require_draft(db, invoice_id)
+    if isinstance(guard, HTMLResponse):
+        return guard
+
     form = await request.form()
     data: dict = {}
 
@@ -319,6 +462,10 @@ async def invoice_add_line(
     """Add a line to a draft invoice. Auto-adds linked core child if product has core."""
     from app.services.invoice_service import InvoiceService
 
+    guard = _require_draft(db, invoice_id)
+    if isinstance(guard, HTMLResponse):
+        return guard
+
     form = await request.form()
     pid_raw = str(form.get("product_id", "")).strip()
     product_id = int(pid_raw) if pid_raw else None
@@ -359,6 +506,10 @@ async def invoice_update_line(
     """Update line (qty, description, price, discount). Qty change cascades to locked children."""
     from app.services.invoice_service import InvoiceService
 
+    guard = _require_draft(db, invoice_id)
+    if isinstance(guard, HTMLResponse):
+        return guard
+
     form = await request.form()
     data: dict = {}
     if "description" in form:
@@ -398,6 +549,11 @@ def invoice_delete_line(
 ):
     """Delete a line. Cascades to auto-generated children (core lines)."""
     from app.services.invoice_service import InvoiceService
+
+    guard = _require_draft(db, invoice_id)
+    if isinstance(guard, HTMLResponse):
+        return guard
+
     try:
         InvoiceService(db, user_id).remove_line(line_id)
     except ValueError as exc:
@@ -422,6 +578,11 @@ def invoice_unlink_line(
     """Unlink an auto-generated child (e.g. core) from its parent.
     Parent edits will no longer cascade after this."""
     from app.services.invoice_service import InvoiceService
+
+    guard = _require_draft(db, invoice_id)
+    if isinstance(guard, HTMLResponse):
+        return guard
+
     try:
         InvoiceService(db, user_id).unlink_line_from_parent(line_id)
     except ValueError as exc:

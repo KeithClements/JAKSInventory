@@ -27,11 +27,11 @@ Key rules:
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.constants import (
     AuditAction, EntityType, FulfillmentSource, InventoryTxnType,
-    LineType, Permission, SOLineSource, SOLineStatus, SOPaymentMode, SOStatus,
+    LineType, PaymentTerms, Permission, SOLineSource, SOLineStatus, SOPaymentMode, SOStatus,
 )
 from app.models.inventory import InventoryTransaction
 from app.models.product import Product
@@ -314,6 +314,16 @@ class SalesOrderService(BaseService):
         if not inv_lines:
             raise ValueError("No lines selected for invoicing")
 
+        # Compute due_date from customer payment terms (mirrors create_draft_invoice logic)
+        due_date = None
+        if so.customer:
+            now = datetime.utcnow()
+            if so.customer.payment_terms == PaymentTerms.NET_30:
+                due_date = now + timedelta(days=30)
+            elif so.customer.payment_terms == PaymentTerms.NET_60:
+                due_date = now + timedelta(days=60)
+            # COD / blank → due_date stays None (paid on delivery / upon receipt)
+
         # Delegate invoice creation — create_invoice() commits (includes SO_RELEASED
         # txns and SOLine qty updates that were flushed above).
         inv_svc = InvoiceService(self.db, self.current_user_id)
@@ -327,6 +337,7 @@ class SalesOrderService(BaseService):
                 "engine_model": so.engine_model or "",
                 "notes": so.notes,
                 "internal_notes": so.internal_notes,
+                "due_date": due_date,
             },
             so_id=so_id,
             lines=inv_lines,

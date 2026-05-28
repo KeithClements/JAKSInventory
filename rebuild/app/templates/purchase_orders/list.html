@@ -15,86 +15,399 @@
 {% endblock %}
 
 {% block content %}
-<div class="space-y-4">
+<div
+  class="space-y-4 pb-52"
+  x-data="{
+    selected: {},
+    previewId: null,
+    allIds: [{% for p in pos %}{{ p.id }}{% if not loop.last %},{% endif %}{% endfor %}],
+    get selectedCount() {
+      return Object.values(this.selected).filter(Boolean).length;
+    },
+    isSelected(id) {
+      return !!this.selected[id];
+    },
+    toggleSelect(id) {
+      this.selected = { ...this.selected, [id]: !this.selected[id] };
+    },
+    get allSelected() {
+      return this.allIds.length > 0 && this.allIds.every(id => this.selected[id]);
+    },
+    toggleAll() {
+      if (this.allSelected) {
+        this.selected = {};
+      } else {
+        let s = {};
+        this.allIds.forEach(id => { s[id] = true; });
+        this.selected = s;
+      }
+    },
+    clearSelected() {
+      this.selected = {};
+    },
+    togglePreview(id) {
+      if (this.previewId === id) {
+        this.previewId = null;
+      } else {
+        this.previewId = id;
+        document.getElementById('po-preview-body').innerHTML =
+          '<div class=\'flex items-center gap-2 px-6 py-5 text-sm text-gray-400\'>' +
+          '<svg class=\'w-4 h-4 animate-spin\' fill=\'none\' viewBox=\'0 0 24 24\'>' +
+          '<circle class=\'opacity-25\' cx=\'12\' cy=\'12\' r=\'10\' stroke=\'currentColor\' stroke-width=\'4\'></circle>' +
+          '<path class=\'opacity-75\' fill=\'currentColor\' d=\'M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z\'></path>' +
+          '</svg>Loading…</div>';
+        htmx.ajax('GET', '/purchase-orders/preview/' + id, { target: '#po-preview-body', swap: 'innerHTML' });
+      }
+    }
+  }"
+>
 
-  {# ── Status filter tabs ── #}
-  <div class="flex items-center gap-1 bg-gray-100 rounded-lg p-1 flex-wrap">
-    {% for tab_status, tab_label in status_tabs %}
-    <a href="/purchase-orders/{% if tab_status %}?status={{ tab_status }}{% endif %}"
-       class="px-3 py-1.5 text-sm font-medium rounded-md transition-colors
-              {% if active_status == tab_status %}bg-white shadow text-brand-700{% else %}text-gray-600 hover:text-gray-900{% endif %}">
-      {{ tab_label }}
+{# ══════════════════════════════════════════════════════════════════════════════
+   TOOLBAR
+══════════════════════════════════════════════════════════════════════════════ #}
+<div class="flex flex-wrap items-center gap-3">
+
+  {# Status tabs #}
+  <nav class="flex items-center gap-0.5 bg-gray-100 rounded-xl p-1 shrink-0">
+    {% for slug, label in tabs %}
+    <a href="?tab={{ slug }}{% if q %}&q={{ q }}{% endif %}"
+       class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
+              {% if tab == slug %}bg-brand-700 text-white shadow-sm{% else %}text-gray-600 hover:text-gray-900 hover:bg-gray-200/70{% endif %}">
+      {{ label }}
+      <span class="text-xs {% if tab == slug %}bg-white/20 text-white{% else %}bg-gray-200 text-gray-500{% endif %} rounded-full px-1.5 py-0.5 leading-none font-semibold tabular-nums">
+        {{ counts.get(slug, 0) }}
+      </span>
     </a>
     {% endfor %}
-  </div>
+  </nav>
 
-  {# ── Table ── #}
-  {% set po_badges = {
-    'draft':        'badge-gray',
-    'verbal_order': 'badge-blue',
-    'sent':         'badge-blue',
-    'partial':      'badge-amber',
-    'received':     'badge-green',
-    'billed':       'badge-green',
-    'cancelled':    'badge-red',
-  } %}
-
-  <div class="card">
-    {% if pos %}
-    <div class="overflow-x-auto">
-      <table class="tbl">
-        <thead class="tbl-head">
-          <tr>
-            <th class="tbl-th">PO #</th>
-            <th class="tbl-th">Vendor</th>
-            <th class="tbl-th-r">Lines</th>
-            <th class="tbl-th">Status</th>
-            <th class="tbl-th">Ordered</th>
-            <th class="tbl-th">Expected</th>
-            <th class="tbl-th">Received</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for po in pos %}
-          <tr class="tbl-row">
-            <td class="tbl-td">
-              <a href="/purchase-orders/{{ po.id }}" class="tbl-link font-mono text-xs">{{ po.po_number }}</a>
-            </td>
-            <td class="tbl-td font-medium text-gray-800">{{ po.vendor.name }}</td>
-            <td class="tbl-td-r">{{ po.lines | length }}</td>
-            <td class="tbl-td">
-              <span class="{{ po_badges.get(po.status, 'badge-gray') }}">
-                {{ po.status.replace('_', ' ').title() }}
-              </span>
-            </td>
-            <td class="tbl-td text-gray-400 text-xs">
-              {{ po.ordered_at.strftime('%b %d, %Y') if po.ordered_at else '—' }}
-            </td>
-            <td class="tbl-td text-gray-400 text-xs">
-              {{ po.expected_at.strftime('%b %d, %Y') if po.expected_at else '—' }}
-            </td>
-            <td class="tbl-td text-gray-400 text-xs">
-              {% set receipt = po.receipts | first if po.receipts else none %}
-              {{ receipt.received_at.strftime('%b %d, %Y') if receipt else '—' }}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+  {# Search #}
+  <form method="get" class="flex items-center gap-2 ml-auto">
+    <input type="hidden" name="tab" value="{{ tab }}" />
+    <div class="relative">
+      <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+           fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
+      </svg>
+      <input name="q" value="{{ q }}" placeholder="PO #, vendor, conf #…"
+             class="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white w-64
+                    focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400
+                    placeholder:text-gray-400" />
     </div>
-    {% else %}
-    <div class="tbl-empty">
-      {% if active_status %}No {{ active_status.replace('_', ' ') }} purchase orders.
-      {% else %}No purchase orders yet.{% endif %}
-      {% if not active_status %}
-      <button hx-get="/purchase-orders/new"
-              hx-target="#create-slide-content"
-              @click="createSlideOpen = true; createSlideTitle = 'New Purchase Order'"
-              class="block mt-2 link">Create your first PO →</button>
-      {% endif %}
-    </div>
+    <button type="submit"
+            class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200
+                   rounded-lg hover:bg-gray-50 transition-colors">
+      Search
+    </button>
+    {% if q %}
+    <a href="?tab={{ tab }}"
+       class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</a>
     {% endif %}
-  </div>
+  </form>
 
 </div>
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   BULK ACTION BAR
+══════════════════════════════════════════════════════════════════════════════ #}
+<div x-show="selectedCount > 0" x-cloak
+     class="flex items-center gap-3 px-4 py-2.5 bg-brand-50 border border-brand-100 rounded-xl">
+  <span class="text-sm font-semibold text-brand-800">
+    <span x-text="selectedCount"></span> selected
+  </span>
+  <div class="h-4 w-px bg-brand-200"></div>
+  <button class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">
+    Export CSV
+  </button>
+  <button @click="clearSelected()"
+          class="ml-auto text-xs font-medium text-gray-400 hover:text-gray-700 transition-colors">
+    Clear selection
+  </button>
+</div>
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   PO TABLE
+══════════════════════════════════════════════════════════════════════════════ #}
+{% if pos %}
+<div class="card overflow-hidden">
+  <div class="overflow-x-auto">
+    <table class="w-full min-w-[960px]">
+
+      {# ── Table head ── #}
+      <thead>
+        <tr class="bg-gray-50 border-b border-gray-200">
+          <th class="w-10 px-4 py-3 text-center">
+            <input type="checkbox"
+                   :checked="allSelected"
+                   @change="toggleAll()"
+                   class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            PO #
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Vendor
+          </th>
+          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Lines
+          </th>
+          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Total
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Ordered
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Expected
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Status
+          </th>
+          <th class="px-4 py-3 w-12"></th>
+        </tr>
+      </thead>
+
+      {# ── Table body ── #}
+      <tbody class="divide-y divide-gray-100">
+        {% for po in pos %}
+
+        {# ── Per-row computed values ── #}
+        {% set qty_ord = po.lines | sum(attribute='qty_ordered') %}
+        {% set qty_recv = po.lines | sum(attribute='qty_received') %}
+
+        {# Health stripe — overdue or partial receipt = amber, cancelled = red,
+           sent/ordered = blue, received/billed = transparent (clean), draft = transparent #}
+        {% if po.status == 'cancelled' %}
+          {% set health = 'cancelled' %}
+        {% elif po.expected_at and po.expected_at < now and po.status in ('sent', 'partial') %}
+          {% set health = 'overdue' %}
+        {% elif po.status == 'partial' %}
+          {% set health = 'partial' %}
+        {% elif po.status == 'sent' or po.status == 'verbal_order' %}
+          {% set health = 'sent' %}
+        {% else %}
+          {% set health = 'normal' %}
+        {% endif %}
+
+        {# Status chip styling (matches preview panel) #}
+        {% if po.status == 'draft' %}
+          {% set status_cls = 'bg-gray-100 text-gray-600' %}{% set status_dot = 'bg-gray-400' %}
+        {% elif po.status == 'verbal_order' %}
+          {% set status_cls = 'bg-blue-50 text-blue-700' %}{% set status_dot = 'bg-blue-500' %}
+        {% elif po.status == 'sent' %}
+          {% set status_cls = 'bg-blue-50 text-blue-700' %}{% set status_dot = 'bg-blue-500' %}
+        {% elif po.status == 'partial' %}
+          {% set status_cls = 'bg-amber-100 text-amber-700' %}{% set status_dot = 'bg-amber-500' %}
+        {% elif po.status == 'received' %}
+          {% set status_cls = 'bg-green-50 text-green-700' %}{% set status_dot = 'bg-green-500' %}
+        {% elif po.status == 'billed' %}
+          {% set status_cls = 'bg-green-50 text-green-700' %}{% set status_dot = 'bg-green-500' %}
+        {% elif po.status == 'cancelled' %}
+          {% set status_cls = 'bg-red-100 text-red-700' %}{% set status_dot = 'bg-red-500' %}
+        {% else %}
+          {% set status_cls = 'bg-gray-100 text-gray-600' %}{% set status_dot = 'bg-gray-400' %}
+        {% endif %}
+
+        {# ── Row ── #}
+        <tr
+          @click="togglePreview({{ po.id }})"
+          :class="{
+            'ring-inset ring-1 ring-brand-300 bg-brand-50/40': previewId === {{ po.id }},
+            'bg-rose-50/30': '{{ health }}' === 'cancelled' && previewId !== {{ po.id }},
+            'bg-amber-50/20': ('{{ health }}' === 'partial' || '{{ health }}' === 'overdue') && previewId !== {{ po.id }}
+          }"
+          class="cursor-pointer hover:bg-gray-50/80 transition-colors group">
+
+          {# Checkbox + left-edge health stripe #}
+          <td class="w-10 px-4 py-4 align-middle text-center
+                     border-l-4
+                     {% if health == 'cancelled' %}border-l-red-400
+                     {% elif health == 'overdue' %}border-l-amber-400
+                     {% elif health == 'partial' %}border-l-amber-300
+                     {% elif health == 'sent' %}border-l-blue-300
+                     {% else %}border-l-transparent{% endif %}"
+              @click.stop>
+            <input type="checkbox"
+                   :checked="isSelected({{ po.id }})"
+                   @change="toggleSelect({{ po.id }})"
+                   class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
+          </td>
+
+          {# PO # #}
+          <td class="px-4 py-4 align-middle">
+            <a href="/purchase-orders/{{ po.id }}"
+               class="font-mono text-sm font-bold text-brand-700 hover:text-brand-900 hover:underline leading-none"
+               @click.stop>{{ po.po_number }}</a>
+            {% if po.is_drop_ship %}
+            <div class="mt-1">
+              <span class="inline-block px-1 py-0 rounded text-[10px] font-semibold bg-sky-50 text-sky-600 border border-sky-100">Drop Ship</span>
+            </div>
+            {% endif %}
+            {% if po.vendor_confirmation_number %}
+            <div class="mt-0.5 text-[10px] text-gray-400 font-mono">
+              Conf: {{ po.vendor_confirmation_number }}
+            </div>
+            {% endif %}
+          </td>
+
+          {# Vendor #}
+          <td class="px-4 py-4 align-middle max-w-xs">
+            {% if po.vendor %}
+            <p class="text-sm font-medium text-gray-900 truncate leading-snug">{{ po.vendor.name }}</p>
+            {% if po.vendor.contact_name %}
+            <p class="text-xs text-gray-400 mt-0.5 truncate">{{ po.vendor.contact_name }}</p>
+            {% endif %}
+            {% else %}
+            <p class="text-sm text-gray-400 italic">No vendor</p>
+            {% endif %}
+          </td>
+
+          {# Lines / received counts #}
+          <td class="px-4 py-4 align-middle text-right">
+            <span class="text-sm font-bold text-gray-900 tabular-nums">{{ po.lines | length }}</span>
+            {% if qty_ord %}
+            <div class="text-[10px] text-gray-400 mt-0.5 tabular-nums">
+              {{ qty_recv }}/{{ qty_ord }} units
+            </div>
+            {% endif %}
+          </td>
+
+          {# Total #}
+          <td class="px-4 py-4 align-middle text-right">
+            <span class="text-sm font-bold text-gray-900 tabular-nums">${{ "%.2f"|format(po.total) }}</span>
+            {% if po.freight_in_cost and po.freight_in_cost > 0 %}
+            <div class="text-[10px] text-gray-400 mt-0.5 tabular-nums">+${{ "%.2f"|format(po.freight_in_cost) }} frt</div>
+            {% endif %}
+          </td>
+
+          {# Ordered date #}
+          <td class="px-4 py-4 align-middle">
+            <span class="text-xs text-gray-500 tabular-nums">
+              {{ po.ordered_at.strftime('%b %d, %Y') if po.ordered_at else po.created_at.strftime('%b %d, %Y') }}
+            </span>
+            {% if not po.ordered_at %}
+            <div class="text-[10px] text-gray-400 mt-0.5">created</div>
+            {% endif %}
+          </td>
+
+          {# Expected date #}
+          <td class="px-4 py-4 align-middle">
+            {% if po.expected_at %}
+            <span class="text-xs tabular-nums
+              {% if po.expected_at < now and po.status in ('sent','partial') %}text-amber-600 font-semibold{% else %}text-gray-500{% endif %}">
+              {{ po.expected_at.strftime('%b %d, %Y') }}
+            </span>
+            {% if po.expected_at < now and po.status in ('sent','partial') %}
+            <div class="text-[10px] text-amber-500 mt-0.5 font-medium">overdue</div>
+            {% endif %}
+            {% else %}
+            <span class="text-xs text-gray-400">—</span>
+            {% endif %}
+          </td>
+
+          {# Status chip #}
+          <td class="px-4 py-4 align-middle">
+            <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold {{ status_cls }}">
+              <span class="w-1.5 h-1.5 rounded-full {{ status_dot }} shrink-0"></span>
+              {{ po.status.replace('_', ' ').title() }}
+            </span>
+          </td>
+
+          {# Quick actions #}
+          <td class="px-4 py-4 align-middle" @click.stop>
+            <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+              <a href="/purchase-orders/{{ po.id }}"
+                 title="Open PO"
+                 class="p-1.5 rounded-lg text-gray-400 hover:text-brand-700 hover:bg-brand-50 transition-colors">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+                </svg>
+              </a>
+            </div>
+          </td>
+
+        </tr>
+        {% endfor %}
+      </tbody>
+
+    </table>
+  </div>
+
+  {# ── Table footer count ── #}
+  <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
+    <span class="text-xs text-gray-400">
+      {{ pos | length }} purchase order{{ 's' if pos | length != 1 else '' }}
+      {% if tab != 'all' or q %} · filtered{% endif %}
+    </span>
+    <span x-show="selectedCount > 0" x-cloak class="text-xs text-brand-700 font-medium">
+      <span x-text="selectedCount"></span> selected
+    </span>
+  </div>
+</div>
+
+{% else %}
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   EMPTY STATE
+══════════════════════════════════════════════════════════════════════════════ #}
+<div class="card flex flex-col items-center justify-center py-16 text-center">
+  <div class="w-14 h-14 rounded-2xl bg-gray-100 flex items-center justify-center mb-4">
+    <svg class="w-7 h-7 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+            d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+    </svg>
+  </div>
+  {% if q %}
+  <p class="text-sm font-semibold text-gray-700">No POs match "{{ q }}"</p>
+  <p class="text-xs text-gray-400 mt-1 mb-4">Try a different PO number, vendor, or confirmation #.</p>
+  <a href="?tab={{ tab }}" class="btn-secondary btn-sm">Clear search</a>
+  {% elif tab and tab != 'all' %}
+  <p class="text-sm font-semibold text-gray-700">No {{ tab.replace('_', ' ') }} purchase orders</p>
+  <p class="text-xs text-gray-400 mt-1 mb-4">Switch tabs to see POs in other statuses.</p>
+  <a href="?tab=all" class="btn-secondary btn-sm">Show all POs</a>
+  {% else %}
+  <p class="text-sm font-semibold text-gray-700">No purchase orders yet</p>
+  <p class="text-xs text-gray-400 mt-1 mb-4">Create your first PO to start ordering inventory.</p>
+  <button hx-get="/purchase-orders/new"
+          hx-target="#create-slide-content"
+          @click="createSlideOpen = true; createSlideTitle = 'New Purchase Order'"
+          class="btn-primary btn-sm">New PO →</button>
+  {% endif %}
+</div>
+{% endif %}
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   BOTTOM PREVIEW PANEL
+══════════════════════════════════════════════════════════════════════════════ #}
+<div
+  x-show="previewId !== null"
+  x-cloak
+  x-transition:enter="transition ease-out duration-200"
+  x-transition:enter-start="translate-y-full opacity-0"
+  x-transition:enter-end="translate-y-0 opacity-100"
+  x-transition:leave="transition ease-in duration-150"
+  x-transition:leave-start="translate-y-0 opacity-100"
+  x-transition:leave-end="translate-y-full opacity-0"
+  class="fixed bottom-0 left-64 right-0 bg-white border-t-2 border-gray-200 shadow-2xl z-30"
+  style="max-height: 260px; overflow-y: auto;">
+
+  {# Panel header #}
+  <div class="flex items-center justify-between px-6 py-3 border-b border-gray-100 bg-gray-50/80 sticky top-0">
+    <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Purchase Order Preview</p>
+    <button @click="previewId = null"
+            class="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+      </svg>
+    </button>
+  </div>
+
+  {# Loaded via htmx.ajax() #}
+  <div id="po-preview-body"></div>
+
+</div>
+
+</div>{# end x-data wrapper #}
 {% endblock %}

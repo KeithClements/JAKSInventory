@@ -1,0 +1,251 @@
+{% extends "base.html" %}
+{% block title %}Receiving Queue — JAKS Inventory{% endblock %}
+{% block heading %}Receiving Queue{% endblock %}
+
+{% block header_actions %}
+  <a href="/purchase-orders/" class="btn-secondary btn-sm">All Purchase Orders</a>
+{% endblock %}
+
+{% block content %}
+{# state → (left stripe, row tint, status badge, label, receivable?) #}
+{% set state_meta = {
+  'open':        ('border-l-blue-400',  '',                'badge-blue',  'Open',        true),
+  'partial':     ('border-l-amber-400', 'bg-amber-50/20',  'badge-amber', 'Partial',     true),
+  'overdue':     ('border-l-red-400',   'bg-red-50/20',    'badge-red',   'Overdue',     true),
+  'discrepancy': ('border-l-red-500',   'bg-red-50/30',    'badge-red',   'Discrepancy', true),
+  'received':    ('border-l-green-400', '',                'badge-green', 'Received',    false),
+  'billed':      ('border-l-gray-300',  '',                'badge-gray',  'Billed',      false),
+} %}
+
+<div class="space-y-4">
+
+  {# ══════════════════════════════ METRICS STRIP ══════════════════════════════ #}
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+    {# Open POs #}
+    <a href="/purchase-orders/?tab=open" class="card card-body flex items-center gap-3 hover:ring-1 hover:ring-blue-100 transition">
+      <div class="w-9 h-9 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
+        <svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+        </svg>
+      </div>
+      <div>
+        <p class="text-2xl font-bold leading-none tabular-nums {% if metrics.open %}text-blue-600{% else %}text-gray-400{% endif %}">{{ metrics.open }}</p>
+        <p class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mt-1">Open POs</p>
+      </div>
+    </a>
+    {# Due / Overdue #}
+    <div class="card card-body flex items-center gap-3 {% if metrics.due_overdue %}ring-1 ring-red-100{% endif %}">
+      <div class="w-9 h-9 rounded-lg bg-red-50 flex items-center justify-center shrink-0">
+        <svg class="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+      </div>
+      <div>
+        <p class="text-2xl font-bold leading-none tabular-nums {% if metrics.due_overdue %}text-red-600{% else %}text-gray-400{% endif %}">{{ metrics.due_overdue }}</p>
+        <p class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mt-1">Due / Overdue</p>
+      </div>
+    </div>
+    {# Partially Received #}
+    <div class="card card-body flex items-center gap-3">
+      <div class="w-9 h-9 rounded-lg bg-amber-50 flex items-center justify-center shrink-0">
+        <svg class="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+        </svg>
+      </div>
+      <div>
+        <p class="text-2xl font-bold leading-none tabular-nums {% if metrics.partial %}text-amber-600{% else %}text-gray-400{% endif %}">{{ metrics.partial }}</p>
+        <p class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mt-1">Partially Received</p>
+      </div>
+    </div>
+    {# Flagged Bills → links to the 3-way match queue #}
+    <a href="/purchase-orders/match" class="card card-body flex items-center gap-3 hover:ring-1 hover:ring-red-100 transition {% if metrics.flagged %}ring-1 ring-red-100{% endif %}">
+      <div class="w-9 h-9 rounded-lg bg-red-50 flex items-center justify-center shrink-0">
+        <svg class="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 2H21l-3 6 3 6h-8.5l-1-2H5a2 2 0 00-2 2z"/>
+        </svg>
+      </div>
+      <div>
+        <p class="text-2xl font-bold leading-none tabular-nums {% if metrics.flagged %}text-red-600{% else %}text-gray-400{% endif %}">{{ metrics.flagged }}</p>
+        <p class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mt-1">Flagged Bills</p>
+      </div>
+    </a>
+  </div>
+
+  {# ══════════════════════════════ SEARCH ══════════════════════════════ #}
+  <form method="get" class="flex items-center gap-2">
+    <div class="relative">
+      <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+           fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
+      </svg>
+      <input name="q" value="{{ q }}" placeholder="PO #, vendor, conf #…"
+             class="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white w-64
+                    focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400
+                    placeholder:text-gray-400" />
+    </div>
+    <button type="submit"
+            class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200
+                   rounded-lg hover:bg-gray-50 transition-colors">Search</button>
+    {% if q %}
+    <a href="/purchase-orders/receiving" class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</a>
+    {% endif %}
+  </form>
+
+  {# ══════════════════════════════ QUEUE (grouped by vendor) ══════════════════════════════ #}
+  {% if rows %}
+  <div class="card overflow-hidden">
+    <div class="overflow-x-auto">
+      <table class="w-full min-w-[920px]">
+        <thead>
+          <tr class="bg-gray-50 border-b border-gray-200">
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">PO #</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Expected</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide w-48">Fill</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% set ns = namespace(vendor=None) %}
+          {% for row in rows %}
+          {% set po = row.po %}
+          {% set meta = state_meta[row.state] %}
+          {% set qty_ord = po.lines | sum(attribute='qty_ordered') %}
+          {% set qty_recv = po.lines | sum(attribute='qty_received') %}
+          {% set pct = ((qty_recv / qty_ord) * 100) | int if qty_ord else 0 %}
+
+          {# ── Vendor group divider ── #}
+          {% if row.vendor_name != ns.vendor %}
+          {% set ns.vendor = row.vendor_name %}
+          <tr class="bg-gray-50/70">
+            <td colspan="5" class="px-4 py-2 text-xs font-bold text-gray-600 tracking-wide">
+              {{ row.vendor_name }}
+            </td>
+          </tr>
+          {% endif %}
+
+          <tr class="hover:bg-gray-50/80 transition-colors group {{ meta[1] }}">
+            {# PO # + stripe #}
+            <td class="px-4 py-4 align-middle border-l-4 {{ meta[0] }}">
+              <a href="/purchase-orders/{{ po.id }}"
+                 class="font-mono text-sm font-bold text-brand-700 hover:text-brand-900 hover:underline">{{ po.po_number }}</a>
+              <div class="flex flex-wrap gap-1 mt-1">
+                {% if po.is_drop_ship %}
+                <span class="inline-block px-1 py-0 rounded text-[10px] font-semibold bg-sky-50 text-sky-600 border border-sky-100">Drop Ship</span>
+                {% endif %}
+                {% if po.vendor_confirmation_number %}
+                <span class="text-[10px] text-gray-400 font-mono">Conf: {{ po.vendor_confirmation_number }}</span>
+                {% endif %}
+              </div>
+            </td>
+
+            {# Expected #}
+            <td class="px-4 py-4 align-middle">
+              {% if po.expected_at %}
+              <span class="text-sm tabular-nums {% if row.overdue %}text-red-600 font-semibold{% else %}text-gray-600{% endif %}">
+                {{ po.expected_at.strftime('%b %d, %Y') }}
+              </span>
+              {% if row.overdue %}
+              {% set days = (now.date() - po.expected_at.date()).days %}
+              <div class="text-[10px] text-red-500 mt-0.5 font-medium">{{ days }} day{{ 's' if days != 1 }} late</div>
+              {% endif %}
+              {% else %}
+              <span class="text-sm text-gray-300">—</span>
+              {% endif %}
+            </td>
+
+            {# Fill bar #}
+            <td class="px-4 py-4 align-middle">
+              <div class="flex items-center gap-2">
+                <div class="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden min-w-[80px]">
+                  <div class="h-full rounded-full transition-all
+                    {% if pct == 0 %}bg-gray-300{% elif pct < 100 %}bg-amber-400{% else %}bg-green-400{% endif %}"
+                       style="width: {{ pct }}%"></div>
+                </div>
+                <span class="text-[11px] text-gray-500 tabular-nums shrink-0">{{ qty_recv }}/{{ qty_ord }}</span>
+              </div>
+              <div class="text-[10px] text-gray-400 mt-1">{{ po.lines | length }} line{{ 's' if po.lines | length != 1 }}</div>
+            </td>
+
+            {# Status #}
+            <td class="px-4 py-4 align-middle">
+              <span class="{{ meta[2] }}">{{ meta[3] }}</span>
+            </td>
+
+            {# Actions — link into the PO workspace, do not duplicate editing here #}
+            <td class="px-4 py-4 align-middle">
+              <div class="flex items-center justify-end gap-1.5">
+                {% if meta[4] %}
+                <a href="/purchase-orders/{{ po.id }}#receive"
+                   class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-brand-700 text-white hover:bg-brand-600 transition-colors">
+                  Receive
+                </a>
+                {% endif %}
+                {% if row.state == 'discrepancy' %}
+                <a href="/purchase-orders/{{ po.id }}#match"
+                   class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-red-600 text-white hover:bg-red-500 transition-colors">
+                  Match
+                </a>
+                {% endif %}
+                <a href="/purchase-orders/{{ po.id }}"
+                   title="Open PO workspace"
+                   class="p-1.5 rounded-lg text-gray-400 hover:text-brand-700 hover:bg-brand-50 transition-colors">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+                  </svg>
+                </a>
+                <a href="/purchase-orders/{{ po.id }}/print" target="_blank"
+                   title="Print PO"
+                   class="p-1.5 rounded-lg text-gray-400 hover:text-brand-700 hover:bg-brand-50 transition-colors">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/>
+                  </svg>
+                </a>
+                {# TODO: receiving-slip print — wire to /purchase-orders/{id}/receiving-slip
+                   once that route exists. Shown disabled until then so it never 404s. #}
+                <span title="Receiving slip — coming soon"
+                      class="p-1.5 rounded-lg text-gray-200 cursor-not-allowed select-none" aria-disabled="true">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                  </svg>
+                </span>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/60">
+      <span class="text-xs text-gray-400">
+        {{ total }} purchase order{{ 's' if total != 1 }} in the receiving lifecycle{% if q %} · filtered{% endif %}
+      </span>
+    </div>
+  </div>
+
+  {% else %}
+  {# ══════════════════════════════ EMPTY STATE ══════════════════════════════ #}
+  <div class="card flex flex-col items-center justify-center py-16 text-center">
+    <div class="w-14 h-14 rounded-2xl bg-green-50 flex items-center justify-center mb-4">
+      <svg class="w-7 h-7 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+    </div>
+    {% if q %}
+    <p class="text-sm font-semibold text-gray-700">No matches for "{{ q }}"</p>
+    <p class="text-xs text-gray-400 mt-1 mb-4">No POs in the receiving lifecycle match that search.</p>
+    <a href="/purchase-orders/receiving" class="btn-secondary btn-sm">Clear search</a>
+    {% else %}
+    <p class="text-sm font-semibold text-gray-700">Receiving queue is clear</p>
+    <p class="text-xs text-gray-400 mt-1 mb-4">No purchase orders are currently in the receiving lifecycle.</p>
+    <a href="/purchase-orders/?tab=open" class="btn-secondary btn-sm">View open POs</a>
+    {% endif %}
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

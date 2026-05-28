@@ -7,13 +7,14 @@ from urllib.parse import quote as url_quote
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.constants import POStatus
 from app.deps import get_db
 from app.models.customer import Customer, CustomerAddress
 from app.models.product import Product
-from app.models.purchase_order import PurchaseOrder, POLine
+from app.models.purchase_order import PurchaseOrder, POLine, VendorBill
 from app.models.vendor import Vendor
 from app.services.document_render import (
     customer_address_lines,
@@ -30,22 +31,107 @@ templates = Jinja2Templates(directory="app/templates")
 
 CURRENT_USER_ID = 1
 
-STATUS_TABS = [
-    ("", "All"),
-    (POStatus.DRAFT, "Draft"),
-    (POStatus.VERBAL_ORDER, "Verbal"),
-    (POStatus.SENT, "Sent"),
-    (POStatus.PARTIAL, "Partial"),
-    (POStatus.RECEIVED, "Received"),
-    (POStatus.BILLED, "Billed"),
-    (POStatus.CANCELLED, "Cancelled"),
+# ── L2 list tab definitions (JAKS_UI_Change_Plan.md §2) ──────────────────────
+# Maps user-facing tab slug → underlying PO statuses it covers.
+# "all" → no filter (empty list signals "no filter").
+TAB_GROUPS: dict[str, list[str]] = {
+    "all":       [],
+    "open":      [POStatus.DRAFT, POStatus.VERBAL_ORDER, POStatus.SENT],
+    "receiving": [POStatus.PARTIAL],
+    "received":  [POStatus.RECEIVED],
+    "billed":    [POStatus.BILLED],
+    "cancelled": [POStatus.CANCELLED],
+}
+
+# Old individual status → grouped tab slug (for backward-compat with ?status= links)
+_STATUS_TO_TAB: dict[str, str] = {
+    POStatus.DRAFT:        "open",
+    POStatus.VERBAL_ORDER: "open",
+    POStatus.SENT:         "open",
+    POStatus.PARTIAL:      "receiving",
+    POStatus.RECEIVED:     "received",
+    POStatus.BILLED:       "billed",
+    POStatus.CANCELLED:    "cancelled",
+}
+
+PO_LIST_TABS: list[tuple[str, str]] = [
+    ("all",       "All"),
+    ("open",      "Open"),
+    ("receiving", "Receiving"),
+    ("received",  "Received"),
+    ("billed",    "Billed"),
+    ("cancelled", "Cancelled"),
 ]
+
+
+# ── 3-way match (PO · Receipt · Bill) ────────────────────────────────────────
+#
+# A single source of truth for matching a PO line's *ordered*, *received*, and
+# *billed* quantities/costs. Used by both the per-PO match panel in the workspace
+# and the cross-PO flagged match queue (/purchase-orders/match) so the two views
+# never drift apart.
+
+# Per-line match states, in escalating-attention order.
+_MATCH_FLAG_STATES = {"over_billed", "cost_variance"}  # need AP review
+
+
+def _billed_unit_cost(line: POLine) -> float | None:
+    """Average billed unit cost across this line's vendor-bill lines (None if unbilled)."""
+    qty = sum(bl.qty_billed for bl in line.bill_lines)
+    if qty <= 0:
+        return None
+    amount = sum(bl.qty_billed * bl.unit_cost for bl in line.bill_lines)
+    return round(amount / qty, 2)
+
+
+def _match_line(line: POLine) -> dict:
+    open_qty = max(0, line.qty_ordered - line.qty_cancelled)  # qty we still expect
+    billed_cost = _billed_unit_cost(line)
+    cost_var = round((billed_cost - line.unit_cost), 2) if billed_cost is not None else 0.0
+
+    if line.qty_billed > line.qty_received:
+        state = "over_billed"
+    elif billed_cost is not None and abs(cost_var) >= 0.01:
+        state = "cost_variance"
+    elif line.qty_received < open_qty:
+        state = "awaiting_receipt"
+    elif line.qty_billed < line.qty_received:
+        state = "awaiting_bill"
+    else:
+        state = "matched"
+
+    return {
+        "line": line,
+        "ordered_qty": line.qty_ordered,
+        "ordered_cost": line.unit_cost,
+        "received_qty": line.qty_received,
+        "billed_qty": line.qty_billed,
+        "billed_cost": billed_cost,
+        "qty_var": line.qty_billed - line.qty_received,   # billed vs received
+        "cost_var": cost_var,                             # billed vs ordered unit cost
+        "state": state,
+        "is_flag": state in _MATCH_FLAG_STATES,
+    }
+
+
+def _match_summary(po: PurchaseOrder) -> dict:
+    rows = [_match_line(ln) for ln in po.lines]
+    flagged = [r for r in rows if r["is_flag"]]
+    # "Has activity" → worth showing the match panel at all (something received or billed).
+    has_activity = any(r["received_qty"] or r["billed_qty"] for r in rows)
+    return {
+        "rows": rows,
+        "flag_count": len(flagged),
+        "has_activity": has_activity,
+        "matched_count": sum(1 for r in rows if r["state"] == "matched"),
+    }
 
 
 def _workspace_ctx(po: PurchaseOrder) -> dict:
     editable   = po.status in (POStatus.DRAFT, POStatus.VERBAL_ORDER)
     can_receive = po.status in (POStatus.SENT, POStatus.PARTIAL)
     can_bill    = po.status in (POStatus.RECEIVED, POStatus.PARTIAL)
+    match = _match_summary(po)
     return {
         "po": po,
         "editable": editable,
@@ -54,24 +140,252 @@ def _workspace_ctx(po: PurchaseOrder) -> dict:
         "POStatus": POStatus,
         "unreceived_lines": [ln for ln in po.lines if ln.qty_outstanding > 0] if can_receive else [],
         "received_lines":   [ln for ln in po.lines if ln.qty_received > 0 and (ln.qty_received - (ln.qty_billed or 0)) > 0] if can_bill else [],
+        "match": match,
     }
 
 
 # ── List ──────────────────────────────────────────────────────────────────────
+#
+# L2 — Operational List Screen Standard (JAKS_UI_Change_Plan.md §2).
+# Mirrors the Products List pattern: grouped tab filter with counts from the
+# *unfiltered* dataset, search across PO #, vendor name, and vendor confirmation
+# number, and a per-row preview dock (loaded via /purchase-orders/preview/{id}).
+
 
 @router.get("/", response_class=HTMLResponse)
-def po_list(request: Request, status: str = "", db: Session = Depends(get_db)):
-    query = db.query(PurchaseOrder).order_by(PurchaseOrder.created_at.desc())
-    if status:
-        query = query.filter(PurchaseOrder.status == status)
+def po_list(
+    request: Request,
+    tab: str = "all",
+    q: str = "",
+    # `status` kept for backward-compat with old links (?status=draft).
+    status: str = "",
+    db: Session = Depends(get_db),
+):
+    # Backward-compat: ?status=draft → ?tab=open, etc.
+    if status and tab == "all":
+        tab = _STATUS_TO_TAB.get(status, "all")
+
+    # Counts — always from the *full* unfiltered dataset so tab counts are stable
+    # regardless of which tab is active (mirrors Products List behavior).
+    raw_counts = dict(
+        db.query(PurchaseOrder.status, func.count(PurchaseOrder.id))
+          .group_by(PurchaseOrder.status)
+          .all()
+    )
+    total = sum(raw_counts.values())
+
+    def _group_count(slug: str) -> int:
+        return sum(raw_counts.get(s, 0) for s in TAB_GROUPS.get(slug, []))
+
+    counts = {
+        "all":       total,
+        "open":      _group_count("open"),
+        "receiving": _group_count("receiving"),
+        "received":  _group_count("received"),
+        "billed":    _group_count("billed"),
+        "cancelled": _group_count("cancelled"),
+    }
+
+    # Filtered query
+    query = (
+        db.query(PurchaseOrder)
+        .options(joinedload(PurchaseOrder.vendor))
+        .order_by(PurchaseOrder.created_at.desc())
+    )
+    statuses = TAB_GROUPS.get(tab, [])
+    if statuses:  # empty list = "all" → no filter
+        query = query.filter(PurchaseOrder.status.in_(statuses))
+    if q:
+        like = f"%{q.strip()}%"
+        query = query.outerjoin(Vendor, PurchaseOrder.vendor_id == Vendor.id).filter(
+            PurchaseOrder.po_number.ilike(like)
+            | PurchaseOrder.vendor_confirmation_number.ilike(like)
+            | Vendor.name.ilike(like)
+        )
+
     pos = query.all()
     return templates.TemplateResponse(
         "purchase_orders/list.html",
         {
             "request": request,
             "pos": pos,
-            "status_tabs": STATUS_TABS,
-            "active_status": status,
+            "tabs": PO_LIST_TABS,
+            "tab": tab,
+            "q": q,
+            "counts": counts,
+            "POStatus": POStatus,
+            "now": datetime.utcnow(),
+        },
+    )
+
+
+# ── List row preview panel (HTMX partial) ────────────────────────────────────
+
+@router.get("/preview/{po_id}", response_class=HTMLResponse)
+def po_preview_panel(po_id: int, request: Request, db: Session = Depends(get_db)):
+    """Bottom preview dock body, loaded by htmx.ajax() on row click in the list."""
+    po = (
+        db.query(PurchaseOrder)
+        .options(
+            joinedload(PurchaseOrder.vendor),
+            joinedload(PurchaseOrder.lines).joinedload(POLine.product),
+        )
+        .filter(PurchaseOrder.id == po_id)
+        .first()
+    )
+    if not po:
+        return HTMLResponse(
+            '<p class="px-6 py-4 text-sm text-gray-400">Purchase order not found.</p>'
+        )
+    return templates.TemplateResponse(
+        "purchase_orders/_preview_panel.html",
+        {"request": request, "po": po},
+    )
+
+
+# ── Receiving Queue ───────────────────────────────────────────────────────────
+#
+# Standalone operational board covering the full receiving lifecycle (ordered →
+# partial → received → billed), grouped by vendor with overdue/discrepancy
+# vendors floated to the top. Row actions link into the PO workspace — this
+# screen surfaces the workflow, it does not duplicate PO editing. Declared
+# before /{po_id} so the literal path wins routing.
+
+# Receiving lifecycle states, with sort rank (lower = more urgent) and stripe.
+_RECV_RANK = {
+    "discrepancy": 0,
+    "overdue":     0,
+    "partial":     1,
+    "open":        2,
+    "received":    3,
+    "billed":      4,
+}
+
+
+@router.get("/receiving", response_class=HTMLResponse)
+def po_receiving_queue(request: Request, q: str = "", db: Session = Depends(get_db)):
+    pos = (
+        db.query(PurchaseOrder)
+        .options(
+            joinedload(PurchaseOrder.vendor),
+            joinedload(PurchaseOrder.lines).joinedload(POLine.bill_lines),
+        )
+        .filter(PurchaseOrder.status.in_([
+            POStatus.SENT, POStatus.VERBAL_ORDER, POStatus.PARTIAL,
+            POStatus.RECEIVED, POStatus.BILLED,
+        ]))
+        .all()
+    )
+    if q:
+        ql = q.strip().lower()
+        pos = [
+            p for p in pos
+            if ql in (p.po_number or "").lower()
+            or (p.vendor and ql in (p.vendor.name or "").lower())
+            or ql in (p.vendor_confirmation_number or "").lower()
+        ]
+
+    now = datetime.utcnow()
+    today = now.date()
+    far = datetime.max
+    awaiting = (POStatus.SENT, POStatus.VERBAL_ORDER, POStatus.PARTIAL)
+
+    def _is_overdue(p: PurchaseOrder) -> bool:
+        return bool(p.expected_at and p.expected_at.date() < today and p.status in awaiting)
+
+    rows = []
+    for p in pos:
+        flagged = _match_summary(p)["flag_count"] > 0
+        if flagged:
+            state = "discrepancy"
+        elif _is_overdue(p):
+            state = "overdue"
+        elif p.status == POStatus.PARTIAL:
+            state = "partial"
+        elif p.status in (POStatus.SENT, POStatus.VERBAL_ORDER):
+            state = "open"
+        elif p.status == POStatus.RECEIVED:
+            state = "received"
+        else:  # BILLED
+            state = "billed"
+        rows.append({
+            "po": p,
+            "state": state,
+            "flagged": flagged,
+            "overdue": _is_overdue(p),
+            "vendor_name": p.vendor.name if p.vendor else "No vendor",
+        })
+
+    metrics = {
+        "open":        sum(1 for p in pos if p.status in (POStatus.SENT, POStatus.VERBAL_ORDER)),
+        "due_overdue": sum(1 for p in pos if p.expected_at and p.expected_at.date() <= today and p.status in awaiting),
+        "partial":     sum(1 for p in pos if p.status == POStatus.PARTIAL),
+        "flagged":     sum(1 for r in rows if r["flagged"]),
+    }
+
+    # Group by vendor; float the most urgent vendor (lowest row rank) to the top.
+    group_rank: dict[str, int] = {}
+    for r in rows:
+        rank = _RECV_RANK[r["state"]]
+        group_rank[r["vendor_name"]] = min(group_rank.get(r["vendor_name"], 99), rank)
+
+    rows.sort(key=lambda r: (
+        group_rank[r["vendor_name"]],
+        r["vendor_name"].lower(),
+        _RECV_RANK[r["state"]],
+        r["po"].expected_at or far,
+    ))
+
+    return templates.TemplateResponse(
+        "purchase_orders/receiving_queue.html",
+        {
+            "request": request,
+            "rows": rows,
+            "metrics": metrics,
+            "q": q,
+            "total": len(rows),
+            "now": now,
+        },
+    )
+
+
+# ── 3-Way Match Queue ───────────────────────────────────────────────────────
+#
+# Cross-PO queue of POs whose lines carry a match variance needing AP review
+# (billed > received, or billed unit cost ≠ ordered unit cost). Normal
+# "awaiting receipt / awaiting bill" states are *not* flagged — only true
+# variances surface here.
+
+@router.get("/match", response_class=HTMLResponse)
+def po_match_queue(request: Request, db: Session = Depends(get_db)):
+    pos = (
+        db.query(PurchaseOrder)
+        .options(
+            joinedload(PurchaseOrder.vendor),
+            joinedload(PurchaseOrder.lines).joinedload(POLine.product),
+            joinedload(PurchaseOrder.lines).joinedload(POLine.bill_lines),
+            joinedload(PurchaseOrder.bills).joinedload(VendorBill.lines),
+        )
+        .filter(PurchaseOrder.status.in_(
+            [POStatus.PARTIAL, POStatus.RECEIVED, POStatus.BILLED]
+        ))
+        .order_by(PurchaseOrder.created_at.desc())
+        .all()
+    )
+
+    flagged = []
+    for p in pos:
+        summary = _match_summary(p)
+        if summary["flag_count"] > 0:
+            flagged.append({"po": p, "match": summary})
+
+    return templates.TemplateResponse(
+        "purchase_orders/match_queue.html",
+        {
+            "request": request,
+            "flagged": flagged,
+            "total": len(flagged),
+            "now": datetime.utcnow(),
         },
     )
 
@@ -308,13 +622,25 @@ async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)
     if not po:
         return RedirectResponse("/purchase-orders/", status_code=303)
 
+    # Status guard — only SENT or PARTIAL POs can be received
+    if po.status not in (POStatus.SENT, POStatus.PARTIAL):
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote('Cannot receive: PO must be in SENT or PARTIAL status.')}",
+            status_code=303,
+        )
+
     form = await request.form()
     po_line_quantities: dict[int, int] = {}
+    condition_notes_map: dict[int, str] = {}
     for line in po.lines:
         raw = form.get(f"recv_{line.id}", "")
         qty = int(raw) if raw and str(raw).strip().isdigit() else 0
         if qty > 0:
             po_line_quantities[line.id] = qty
+        # Per-line condition notes (e.g. "damaged", "wrong part")
+        cond = str(form.get(f"condition_{line.id}", "")).strip()
+        if cond:
+            condition_notes_map[line.id] = cond
 
     if po_line_quantities:
         try:
@@ -323,6 +649,7 @@ async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)
                 "tracking_number": str(form.get("tracking_number", "")).strip() or None,
                 "carrier": str(form.get("carrier", "")).strip() or None,
                 "notes": str(form.get("notes", "")).strip(),
+                "condition_notes_map": condition_notes_map,
             }
             svc.create_receipt(
                 vendor_id=po.vendor_id,
