@@ -461,7 +461,14 @@ async def invoice_finalise(
     user_id: int = Depends(get_current_user_id),
 ):
     """Finalize a DRAFT invoice. Returns to workspace on success (now locked).
-    Form may include allow_negative_inventory=1 for explicit admin override."""
+    Form may include allow_negative_inventory=1 for explicit admin override.
+
+    TODO (Phase 1 follow-up): When the invoice contains core-eligible lines,
+    surface the "Print Core Return Slip" popup described in MASTER_PLAN.md §15.
+    Document Engine Series intentionally does not change finalize behavior;
+    the slip print route (/cores/slips/{id}/print) is already live and the
+    popup can call it once CoreSlip creation hooks into invoice finalize.
+    """
     from app.services.invoice_service import InvoiceService
 
     form = await request.form()

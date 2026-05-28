@@ -21,9 +21,18 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
+from datetime import timedelta
+
 from app.constants import CoreDirection, CoreDenialResolution, CoreInspectionOutcome, CoreStatus, CoreVendorStatus
 from app.deps import get_current_user_id, get_db
-from app.models.core import CoreCharge, CoreSlip
+from app.models.core import CoreCharge, CoreSlip, VendorCoreReturn
+from app.models.invoice import Invoice
+from app.services.document_render import (
+    customer_address_lines,
+    get_company_dict,
+    render_pdf_or_fallback,
+    vendor_address_lines,
+)
 from app.settings_utils import get_setting_value_db
 
 log = logging.getLogger(__name__)
@@ -405,3 +414,121 @@ def core_vendor_slip_print(
         "core": core,
         "company": company,
     })
+
+
+# ── Customer Core Return Slip (CORE-XXXX) — group document ─────────────────────
+
+def _slip_print_context(slip: CoreSlip, db: Session) -> dict:
+    company = get_company_dict(db)
+    customer_addr_lines_ = customer_address_lines(slip.customer)
+
+    # Outstanding cores attached to this slip
+    cores = [c for c in (slip.core_charges or []) if c.qty_outstanding > 0] or list(slip.core_charges or [])
+
+    total_qty = sum(c.qty_outstanding for c in cores)
+    total_credit = round(
+        sum(c.customer_unit_charge * c.qty_outstanding for c in cores), 2
+    )
+
+    grace = int(get_setting_value_db(db, "core_return_grace_days", "45") or 45)
+    soonest_deadline = None
+    for c in cores:
+        if c.return_deadline and (soonest_deadline is None or c.return_deadline < soonest_deadline):
+            soonest_deadline = c.return_deadline
+    if soonest_deadline is None:
+        soonest_deadline = slip.created_at + timedelta(days=grace)
+
+    invoice = None
+    if slip.invoice_id:
+        invoice = db.query(Invoice).filter(Invoice.id == slip.invoice_id).first()
+
+    return {
+        "slip": slip,
+        "cores": cores,
+        "invoice": invoice,
+        "company": company,
+        "customer_addr_lines": customer_addr_lines_,
+        "total_qty": total_qty,
+        "total_credit": total_credit,
+        "default_grace_days": grace,
+        "soonest_deadline": soonest_deadline,
+    }
+
+
+@router.get("/slips/{slip_id}/print", response_class=HTMLResponse)
+def core_slip_doc_print(slip_id: int, request: Request, db: Session = Depends(get_db)):
+    slip = db.query(CoreSlip).filter(CoreSlip.id == slip_id).first()
+    if slip is None:
+        return RedirectResponse("/cores/", status_code=303)
+    ctx = _slip_print_context(slip, db)
+    ctx["request"] = request
+    return templates.TemplateResponse("cores/print_slip.html", ctx)
+
+
+@router.get("/slips/{slip_id}/pdf")
+def core_slip_doc_pdf(slip_id: int, request: Request, db: Session = Depends(get_db)):
+    slip = db.query(CoreSlip).filter(CoreSlip.id == slip_id).first()
+    if slip is None:
+        return RedirectResponse("/cores/", status_code=303)
+    ctx = _slip_print_context(slip, db)
+    return render_pdf_or_fallback(
+        request=request,
+        templates=templates,
+        template_name="cores/print_slip.html",
+        context=ctx,
+        fallback_print_url=f"/cores/slips/{slip_id}/print",
+        download_filename=slip.slip_number,
+    )
+
+
+# ── Vendor Core Return Sheet (VCR-XXXX) — group document ──────────────────────
+
+def _vcr_print_context(vcr: VendorCoreReturn, db: Session) -> dict:
+    company = get_company_dict(db)
+
+    company_addr_lines = [
+        ln.strip() for ln in (company.get("address") or "").splitlines() if ln.strip()
+    ]
+    if company.get("phone"):
+        company_addr_lines.append(company["phone"])
+
+    from app.models.vendor import Vendor as _V
+    vendor = db.query(_V).filter(_V.id == vcr.vendor_id).first()
+    vendor_addr_lines_ = vendor_address_lines(vendor)
+
+    total_qty = sum(ln.qty for ln in (vcr.lines or []))
+
+    return {
+        "vcr": vcr,
+        "vendor": vendor,
+        "company": company,
+        "company_addr_lines": company_addr_lines,
+        "vendor_addr_lines": vendor_addr_lines_,
+        "total_qty": total_qty,
+    }
+
+
+@router.get("/vcr/{vcr_id}/print", response_class=HTMLResponse)
+def vcr_doc_print(vcr_id: int, request: Request, db: Session = Depends(get_db)):
+    vcr = db.query(VendorCoreReturn).filter(VendorCoreReturn.id == vcr_id).first()
+    if vcr is None:
+        return RedirectResponse("/cores/", status_code=303)
+    ctx = _vcr_print_context(vcr, db)
+    ctx["request"] = request
+    return templates.TemplateResponse("cores/print_vcr.html", ctx)
+
+
+@router.get("/vcr/{vcr_id}/pdf")
+def vcr_doc_pdf(vcr_id: int, request: Request, db: Session = Depends(get_db)):
+    vcr = db.query(VendorCoreReturn).filter(VendorCoreReturn.id == vcr_id).first()
+    if vcr is None:
+        return RedirectResponse("/cores/", status_code=303)
+    ctx = _vcr_print_context(vcr, db)
+    return render_pdf_or_fallback(
+        request=request,
+        templates=templates,
+        template_name="cores/print_vcr.html",
+        context=ctx,
+        fallback_print_url=f"/cores/vcr/{vcr_id}/print",
+        download_filename=vcr.vcr_number,
+    )

@@ -16,6 +16,9 @@
   {% set pill = status_pill.get(so.status, ('badge-gray', so.status | upper)) %}
   <span class="{{ pill[0] }}">{{ pill[1] }}</span>
 
+  <a href="/sales-orders/{{ so.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
+  <a href="/sales-orders/{{ so.id }}/pdf" class="btn-secondary btn-sm">PDF</a>
+
   {# OPEN / PARTIAL — Collect Deposit, Hold, Cancel #}
   {% if so.status in (SOStatus.OPEN, SOStatus.PARTIAL) %}
 

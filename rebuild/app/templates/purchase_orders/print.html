@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ po.po_number }} — {{ po.vendor.name if po.vendor else "Purchase Order" }}</title>
+  {% include "documents/_styles.html" %}
+</head>
+<body>
+
+{% include "documents/_controls.html" %}
+
+<div class="page-shell">
+
+  {# ── Watermark: DRAFT or CANCELLED ────────────────────────────────────── #}
+  {% if po.status == 'draft' %}
+  <div class="doc-watermark"><span class="watermark-badge wm-draft">Draft</span></div>
+  {% elif po.status == 'cancelled' %}
+  <div class="doc-watermark"><span class="watermark-badge wm-void">Cancelled</span></div>
+  {% endif %}
+
+  {# ── Header ──────────────────────────────────────────────────────────── #}
+  <div class="doc-header">
+    {% include "documents/_company_header.html" %}
+    <div class="doc-right">
+      <div class="doc-label">Purchase Order</div>
+      <div class="doc-number">{{ po.po_number }}</div>
+      <div class="doc-dates">
+        {% if po.ordered_at %}
+          <strong>Ordered:</strong> {{ po.ordered_at.strftime('%B %d, %Y') }}<br>
+        {% else %}
+          <strong>Date:</strong> {{ po.created_at.strftime('%B %d, %Y') }}<br>
+        {% endif %}
+        {% if po.expected_at %}
+          <strong>Expected:</strong> {{ po.expected_at.strftime('%B %d, %Y') }}<br>
+        {% endif %}
+        {% if po.vendor and po.vendor.payment_terms %}
+          <strong>Terms:</strong> {{ po.vendor.payment_terms | upper }}<br>
+        {% endif %}
+        {% with status_class=po.status, status_label=(po.status|upper|replace('_', ' ')) %}
+          {% include "documents/_status_pill.html" %}
+        {% endwith %}
+      </div>
+    </div>
+  </div>
+
+  {# ── Vendor + Ship-To (or drop-ship) + Reference fields ───────────────── #}
+  <div class="party-row">
+
+    {# Vendor #}
+    {% with party_label="Vendor",
+            party_name=(po.vendor.name if po.vendor else "—"),
+            party_lines=vendor_addr_lines,
+            party_contact=None,
+            party_anonymous=False %}
+      {% include "documents/_party_block.html" %}
+    {% endwith %}
+
+    {# Ship To (drop-ship target or JAKS warehouse) #}
+    {% if po.is_drop_ship and dropship_addr_lines %}
+      {% with party_label="Ship To (Drop Ship)",
+              party_name=(dropship_customer.company_name if dropship_customer else "Drop Ship"),
+              party_lines=dropship_addr_lines,
+              party_contact=None,
+              party_anonymous=False %}
+        {% include "documents/_party_block.html" %}
+      {% endwith %}
+    {% else %}
+      {% with party_label="Ship To",
+              party_name=(company.name or "JAKS Parts"),
+              party_lines=company_addr_lines,
+              party_contact=None,
+              party_anonymous=False %}
+        {% include "documents/_party_block.html" %}
+      {% endwith %}
+    {% endif %}
+
+  </div>
+
+  {# ── Reference Block ─────────────────────────────────────────────────── #}
+  {% if po.vendor_confirmation_number or po.is_drop_ship %}
+  <div style="margin-bottom:18px;">
+    <div class="party-label">Reference</div>
+    <div class="ref-block">
+      {% if po.vendor_confirmation_number %}
+      <div class="ref-row">
+        <span class="ref-label">Vendor Confirm #</span>
+        <span class="ref-val">{{ po.vendor_confirmation_number }}</span>
+      </div>
+      {% endif %}
+      {% if po.is_drop_ship %}
+      <div class="ref-row">
+        <span class="ref-label">Order Type</span>
+        <span class="ref-val">Drop Ship</span>
+      </div>
+      {% endif %}
+      {% if po.vendor and po.vendor.account_number %}
+      <div class="ref-row">
+        <span class="ref-label">Account #</span>
+        <span class="ref-val">{{ po.vendor.account_number }}</span>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Line items ──────────────────────────────────────────────────────── #}
+  <table class="lines">
+    <thead>
+      <tr>
+        <th class="ctr" style="width:28px">#</th>
+        <th class="lft" style="width:120px">Part #</th>
+        <th class="lft">Description</th>
+        <th class="rgt" style="width:48px">Qty</th>
+        <th class="rgt" style="width:90px">Unit Cost</th>
+        <th class="rgt" style="width:90px">Extended</th>
+      </tr>
+    </thead>
+    <tbody>
+      {%- set ns = namespace(row=0) -%}
+      {% for line in po.lines %}
+        {%- if line.qty_cancelled and line.qty_cancelled >= line.qty_ordered -%}
+          {# skip fully cancelled lines on the customer-facing print #}
+        {%- else -%}
+          {%- set ns.row = ns.row + 1 -%}
+          <tr{% if ns.row % 2 == 0 %} class="even-row"{% endif %}>
+            <td class="td-num">{{ ns.row }}</td>
+            <td>
+              <span style="font-family:monospace;font-size:9pt;color:#374151;">
+                {{ (line.product.sku if line.product and line.product.sku else "—") }}
+              </span>
+            </td>
+            <td>
+              {{ line.description or (line.product.title if line.product else "—") }}
+              {% if line.notes %}
+              <span style="display:block;font-size:8pt;color:#666;margin-top:2px;">
+                {{ line.notes }}
+              </span>
+              {% endif %}
+              {% if line.qty_cancelled %}
+              <span class="badge badge-bo" style="margin-top:2px;">
+                {{ line.qty_cancelled }} cancelled
+              </span>
+              {% endif %}
+            </td>
+            <td class="td-rgt">{{ line.qty_ordered }}</td>
+            <td class="td-rgt">${{ "%.2f"|format(line.unit_cost) }}</td>
+            <td class="td-total">${{ "%.2f"|format(line.line_total) }}</td>
+          </tr>
+        {%- endif -%}
+      {% else %}
+        <tr><td colspan="6" class="td-empty">No line items.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {# ── Totals ─────────────────────────────────────────────────────────── #}
+  <div class="totals-wrap">
+    <div class="totals-inner">
+      <div class="t-row">
+        <span class="lbl">Subtotal</span>
+        <span class="val">${{ "%.2f"|format(po.subtotal) }}</span>
+      </div>
+      {% if po.core_total and po.core_total > 0 %}
+      <div class="t-row">
+        <span class="lbl">Core Charges</span>
+        <span class="val">${{ "%.2f"|format(po.core_total) }}</span>
+      </div>
+      {% endif %}
+      {% if po.freight_in_cost and po.freight_in_cost > 0 %}
+      <div class="t-row">
+        <span class="lbl">Freight</span>
+        <span class="val">${{ "%.2f"|format(po.freight_in_cost) }}</span>
+      </div>
+      {% endif %}
+      <div class="t-row grand">
+        <span class="lbl">Total</span>
+        <span class="val">${{ "%.2f"|format(po.total) }}</span>
+      </div>
+    </div>
+  </div>
+
+  {# ── Notes ─────────────────────────────────────────────────────────── #}
+  {% if po.notes and po.notes.strip() %}
+  <div class="notes-section">
+    <div class="sec-label">Notes</div>
+    <div class="notes-body">{{ po.notes.strip() }}</div>
+  </div>
+  {% endif %}
+
+  {# ── Drop ship instruction callout ────────────────────────────────── #}
+  {% if po.is_drop_ship %}
+  <div class="callout callout-blue">
+    <strong>Drop Ship:</strong> Please ship the items above directly to the
+    Ship-To address. Do not include any JAKS pricing or markup on the packing
+    slip. Include only this PO number on your paperwork.
+  </div>
+  {% endif %}
+
+  {% set footer_message = "Thank you for filling this order" %}
+  {% include "documents/_footer.html" %}
+
+</div>{# /page-shell #}
+
+{% include "documents/_auto_print.html" %}
+</body>
+</html>

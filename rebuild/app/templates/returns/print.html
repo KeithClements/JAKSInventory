@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ ra.ra_number }} — Return Authorization</title>
+  {% include "documents/_styles.html" %}
+</head>
+<body>
+
+{% include "documents/_controls.html" %}
+
+<div class="page-shell">
+
+  {% if ra.status == 'cancelled' %}
+  <div class="doc-watermark"><span class="watermark-badge wm-void">Cancelled</span></div>
+  {% elif ra.status == 'draft' %}
+  <div class="doc-watermark"><span class="watermark-badge wm-draft">Draft</span></div>
+  {% elif ra.status == 'closed' %}
+  <div class="doc-watermark"><span class="watermark-badge wm-closed">Closed</span></div>
+  {% endif %}
+
+  {# ── Header ────────────────────────────────────────────────────────── #}
+  <div class="doc-header">
+    {% include "documents/_company_header.html" %}
+    <div class="doc-right">
+      <div class="doc-label">Return Authorization</div>
+      <div class="doc-number">{{ ra.ra_number }}</div>
+      <div class="doc-dates">
+        <strong>Requested:</strong> {{ ra.requested_at.strftime('%B %d, %Y') }}<br>
+        {% if invoice %}
+          <strong>RE:</strong> {{ invoice.invoice_number }}<br>
+        {% endif %}
+        {% with status_class=ra.status, status_label=(ra.status|upper|replace('_', ' ')) %}
+          {% include "documents/_status_pill.html" %}
+        {% endwith %}
+      </div>
+    </div>
+  </div>
+
+  {# ── Customer + Reference ────────────────────────────────────────── #}
+  <div class="party-row">
+
+    {% with party_label="Customer",
+            party_name=(ra.customer.company_name if ra.customer else "—"),
+            party_lines=customer_addr_lines,
+            party_contact=((ra.customer.contact_name if ra.customer else None) or None),
+            party_anonymous=False %}
+      {% include "documents/_party_block.html" %}
+    {% endwith %}
+
+    <div class="party-block">
+      <div class="party-label">Reference</div>
+      <div class="ref-block">
+        <div class="ref-row">
+          <span class="ref-label">RA #</span>
+          <span class="ref-val">{{ ra.ra_number }}</span>
+        </div>
+        {% if invoice %}
+        <div class="ref-row">
+          <span class="ref-label">Original Invoice</span>
+          <span class="ref-val">{{ invoice.invoice_number }}</span>
+        </div>
+        {% endif %}
+        <div class="ref-row">
+          <span class="ref-label">Line Count</span>
+          <span class="ref-val">{{ ra.lines | length }}</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  {# ── Reason ────────────────────────────────────────────────────── #}
+  {% if ra.reason and ra.reason.strip() %}
+  <div class="notes-section" style="margin-top:0;border-top:none;padding-top:0;">
+    <div class="sec-label">Reason for Return</div>
+    <div class="notes-body">{{ ra.reason.strip() }}</div>
+  </div>
+  {% endif %}
+
+  {# ── Lines ────────────────────────────────────────────────────── #}
+  <table class="lines" style="margin-top:18px;">
+    <thead>
+      <tr>
+        <th class="ctr" style="width:28px">#</th>
+        <th class="lft" style="width:140px">Part #</th>
+        <th class="lft">Description</th>
+        <th class="rgt" style="width:60px">Qty</th>
+        <th class="rgt" style="width:90px">Unit Price</th>
+        <th class="rgt" style="width:90px">Restock Fee</th>
+        <th class="rgt" style="width:100px">Line Credit</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for line in ra.lines %}
+        <tr{% if loop.index % 2 == 0 %} class="even-row"{% endif %}>
+          <td class="td-num">{{ loop.index }}</td>
+          <td>
+            <span style="font-family:monospace;font-size:9pt;color:#374151;">
+              {{ line.product.sku if line.product and line.product.sku else "—" }}
+            </span>
+          </td>
+          <td>
+            {{ line.description or (line.product.title if line.product else "Item") }}
+            {% if line.disposition %}
+            <span style="display:block;font-size:8pt;color:#666;margin-top:2px;">
+              Disposition: {{ line.disposition | replace('_', ' ') | title }}
+            </span>
+            {% endif %}
+            {% if line.condition_notes %}
+            <span style="display:block;font-size:8pt;color:#666;margin-top:2px;">
+              Condition: {{ line.condition_notes }}
+            </span>
+            {% endif %}
+          </td>
+          <td class="td-rgt">{{ line.qty }}</td>
+          <td class="td-rgt">${{ "%.2f"|format(line.unit_price) }}</td>
+          <td class="td-rgt">
+            {% if line.restocking_fee and line.restocking_fee > 0 %}
+              &#x2212;${{ "%.2f"|format(line.restocking_fee) }}
+            {% else %}—{% endif %}
+          </td>
+          <td class="td-total">${{ "%.2f"|format(line.line_credit) }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7" class="td-empty">No items on this return.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {# ── Totals ───────────────────────────────────────────────────── #}
+  <div class="totals-wrap">
+    <div class="totals-inner">
+      <div class="t-row">
+        <span class="lbl">Line Subtotal</span>
+        <span class="val">${{ "%.2f"|format(line_subtotal) }}</span>
+      </div>
+      {% if total_restock > 0 %}
+      <div class="t-row disc-row">
+        <span class="lbl">Restocking Fees</span>
+        <span class="val">&#x2212;${{ "%.2f"|format(total_restock) }}</span>
+      </div>
+      {% endif %}
+      <div class="t-row grand">
+        <span class="lbl">Total Credit</span>
+        <span class="val">${{ "%.2f"|format(ra.total_credit) }}</span>
+      </div>
+    </div>
+  </div>
+
+  {# ── Customer notes ──────────────────────────────────────────── #}
+  {% if ra.notes and ra.notes.strip() %}
+  <div class="notes-section">
+    <div class="sec-label">Notes</div>
+    <div class="notes-body">{{ ra.notes.strip() }}</div>
+  </div>
+  {% endif %}
+
+  {# ── Return instructions ─────────────────────────────────────── #}
+  <div class="callout callout-amber">
+    <strong>Return instructions.</strong>
+    Please include this RA with the returned goods. Items must be received
+    within 30 days of issue and arrive in resalable condition. Credit is
+    finalized after inspection. Restocking fees may apply where shown above.
+  </div>
+
+  {# ── Signature ──────────────────────────────────────────────── #}
+  <div class="sig-row">
+    <div class="sig-cell">
+      <div class="party-label">Customer Signature</div>
+      <div class="sig-line">By signing, I confirm I am returning the items above.</div>
+    </div>
+    <div class="sig-cell">
+      <div class="party-label">JAKS Authorization</div>
+      <div class="sig-line">Authorized by &amp; date</div>
+    </div>
+  </div>
+
+  {% set disclaimer = "Final credit is determined upon inspection. Special-order items may not be returnable." %}
+  {% set footer_message = "Return Authorization — bring this with your return" %}
+  {% include "documents/_footer.html" %}
+
+</div>{# /page-shell #}
+
+{% include "documents/_auto_print.html" %}
+</body>
+</html>

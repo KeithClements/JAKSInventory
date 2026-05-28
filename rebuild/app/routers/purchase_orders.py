@@ -11,9 +11,16 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.constants import POStatus
 from app.deps import get_db
+from app.models.customer import Customer, CustomerAddress
 from app.models.product import Product
 from app.models.purchase_order import PurchaseOrder, POLine
 from app.models.vendor import Vendor
+from app.services.document_render import (
+    customer_address_lines,
+    get_company_dict,
+    render_pdf_or_fallback,
+    vendor_address_lines,
+)
 from app.services.po_service import POService
 
 log = logging.getLogger(__name__)
@@ -429,3 +436,103 @@ async def po_create_bill(po_id: int, request: Request, db: Session = Depends(get
         )
 
     return RedirectResponse(f"/purchase-orders/{po_id}?ok=billed", status_code=303)
+
+
+@router.post("/{po_id}/bills/{bill_id}/approve", response_class=RedirectResponse)
+async def po_approve_bill(po_id: int, bill_id: int, db: Session = Depends(get_db)):
+    svc = POService(db, current_user_id=CURRENT_USER_ID)
+    try:
+        svc.approve_bill(bill_id)
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote(str(exc))}",
+            status_code=303,
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error approving bill %s for PO %s", bill_id, po_id)
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote('Unexpected error — bill was not approved.')}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/purchase-orders/{po_id}?ok=bill_approved", status_code=303)
+
+
+# ── Print / PDF ───────────────────────────────────────────────────────────────
+
+def _po_print_context(po: PurchaseOrder, db: Session) -> dict:
+    company = get_company_dict(db)
+
+    # The company address comes from settings as a multi-line blob — split it
+    # into lines for the Ship-To block.
+    company_addr_lines = [
+        ln.strip() for ln in (company.get("address") or "").splitlines() if ln.strip()
+    ]
+    if company.get("phone"):
+        company_addr_lines.append(company["phone"])
+
+    vendor_addr_lines_ = vendor_address_lines(po.vendor)
+
+    # Drop-ship destination (customer address)
+    dropship_customer = None
+    dropship_addr_lines: list[str] = []
+    if po.is_drop_ship and po.drop_ship_customer_id:
+        dropship_customer = (
+            db.query(Customer).filter(Customer.id == po.drop_ship_customer_id).first()
+        )
+        if po.drop_ship_address_id:
+            addr = (
+                db.query(CustomerAddress)
+                .filter(CustomerAddress.id == po.drop_ship_address_id)
+                .first()
+            )
+            if addr is not None:
+                # CustomerAddress uses `street` / `street_line2`; build a shim
+                # so customer_address_lines() can handle it.
+                class _AddrShim:
+                    address_line1 = addr.street
+                    address_line2 = addr.street_line2
+                    city = addr.city
+                    state = addr.state
+                    zip_code = addr.zip_code
+                    phone = addr.phone
+                dropship_addr_lines = customer_address_lines(_AddrShim())
+        if not dropship_addr_lines and dropship_customer is not None:
+            dropship_addr_lines = customer_address_lines(dropship_customer)
+
+    return {
+        "po": po,
+        "company": company,
+        "company_addr_lines": company_addr_lines,
+        "vendor_addr_lines": vendor_addr_lines_,
+        "dropship_customer": dropship_customer,
+        "dropship_addr_lines": dropship_addr_lines,
+    }
+
+
+@router.get("/{po_id}/print", response_class=HTMLResponse)
+def po_print(po_id: int, request: Request, db: Session = Depends(get_db)):
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()
+    if po is None:
+        return RedirectResponse("/purchase-orders/", status_code=303)
+    ctx = _po_print_context(po, db)
+    ctx["request"] = request
+    return templates.TemplateResponse("purchase_orders/print.html", ctx)
+
+
+@router.get("/{po_id}/pdf")
+def po_pdf(po_id: int, request: Request, db: Session = Depends(get_db)):
+    """WeasyPrint PDF; redirects to /print on missing GTK libs."""
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()
+    if po is None:
+        return RedirectResponse("/purchase-orders/", status_code=303)
+    ctx = _po_print_context(po, db)
+    return render_pdf_or_fallback(
+        request=request,
+        templates=templates,
+        template_name="purchase_orders/print.html",
+        context=ctx,
+        fallback_print_url=f"/purchase-orders/{po_id}/print",
+        download_filename=po.po_number,
+    )

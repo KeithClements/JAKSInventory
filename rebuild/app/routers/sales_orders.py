@@ -30,9 +30,14 @@ from sqlalchemy.orm import Session
 
 from app.constants import LineType, PaymentMethod, SOPaymentMode, SOStatus
 from app.deps import get_current_user_id, get_db
-from app.models.customer import Customer
+from app.models.customer import Customer, CustomerAddress
 from app.models.product import Product
 from app.models.quote import SalesOrder, SOLine
+from app.services.document_render import (
+    customer_address_lines,
+    get_company_dict,
+    render_pdf_or_fallback,
+)
 from app.services.sales_order_service import SalesOrderService
 
 log = logging.getLogger(__name__)
@@ -437,3 +442,63 @@ async def collect_deposit(
     except ValueError as exc:
         return RedirectResponse(f"/sales-orders/{so_id}?error={str(exc)}", status_code=303)
     return RedirectResponse(f"/sales-orders/{so_id}?ok=Deposit+recorded", status_code=303)
+
+
+# ── Print / PDF ───────────────────────────────────────────────────────────────
+
+def _so_print_context(so: SalesOrder, db: Session) -> dict:
+    company = get_company_dict(db)
+    customer_addr_lines_ = customer_address_lines(so.customer)
+
+    ship_to_name = None
+    ship_to_lines: list[str] = []
+    if so.ship_to_address_id:
+        addr = (
+            db.query(CustomerAddress)
+            .filter(CustomerAddress.id == so.ship_to_address_id)
+            .first()
+        )
+        if addr is not None:
+            class _AddrShim:
+                address_line1 = addr.street
+                address_line2 = addr.street_line2
+                city = addr.city
+                state = addr.state
+                zip_code = addr.zip_code
+                phone = addr.phone
+            ship_to_lines = customer_address_lines(_AddrShim())
+            ship_to_name = (addr.label or so.customer.company_name).strip() or so.customer.company_name
+
+    return {
+        "so": so,
+        "company": company,
+        "customer_addr_lines": customer_addr_lines_,
+        "ship_to_name": ship_to_name,
+        "ship_to_lines": ship_to_lines,
+    }
+
+
+@router.get("/{so_id}/print", response_class=HTMLResponse)
+def so_print(so_id: int, request: Request, db: Session = Depends(get_db)):
+    so = db.query(SalesOrder).filter(SalesOrder.id == so_id).first()
+    if so is None:
+        return RedirectResponse("/sales-orders/", status_code=303)
+    ctx = _so_print_context(so, db)
+    ctx["request"] = request
+    return templates.TemplateResponse("sales_orders/print.html", ctx)
+
+
+@router.get("/{so_id}/pdf")
+def so_pdf(so_id: int, request: Request, db: Session = Depends(get_db)):
+    so = db.query(SalesOrder).filter(SalesOrder.id == so_id).first()
+    if so is None:
+        return RedirectResponse("/sales-orders/", status_code=303)
+    ctx = _so_print_context(so, db)
+    return render_pdf_or_fallback(
+        request=request,
+        templates=templates,
+        template_name="sales_orders/print.html",
+        context=ctx,
+        fallback_print_url=f"/sales-orders/{so_id}/print",
+        download_filename=so.so_number,
+    )

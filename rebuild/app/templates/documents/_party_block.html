@@ -1,0 +1,27 @@
+{# Generic party block — Bill To / Ship To / Vendor / From / Returned By, etc.
+   Required vars:
+     party_label (str)     — e.g. "Bill To", "Vendor", "Ship To", "Returned By"
+     party_name  (str)     — primary line (company name or person)
+   Optional vars:
+     party_lines  (list[str])   — additional address/contact lines
+     party_contact (str)        — secondary contact label (e.g. "Attn: John")
+     party_anonymous (bool)     — if true, render an anonymous placeholder
+                                  (used on vendor docs that must NOT show customer)
+#}
+<div class="party-block">
+  <div class="party-label">{{ party_label }}</div>
+  {% if party_anonymous %}
+    <div class="party-name">— Not Disclosed —</div>
+    <div class="party-anon">Customer identity withheld on this document.</div>
+  {% else %}
+    <div class="party-name">{{ party_name or "—" }}</div>
+    {% if party_contact %}
+      <div class="party-detail">{{ party_contact }}</div>
+    {% endif %}
+    {% if party_lines %}
+      <div class="party-detail">
+        {% for ln in party_lines %}{{ ln }}<br>{% endfor %}
+      </div>
+    {% endif %}
+  {% endif %}
+</div>

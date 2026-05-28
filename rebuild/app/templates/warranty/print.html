@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ claim.claim_number }} — Warranty Claim</title>
+  {% include "documents/_styles.html" %}
+</head>
+<body>
+
+{% include "documents/_controls.html" %}
+
+<div class="page-shell">
+
+  {% if claim.status == 'closed' %}
+  <div class="doc-watermark"><span class="watermark-badge wm-closed">Closed</span></div>
+  {% elif claim.status == 'draft' %}
+  <div class="doc-watermark"><span class="watermark-badge wm-draft">Draft</span></div>
+  {% endif %}
+
+  {# ── Header ────────────────────────────────────────────────────────── #}
+  <div class="doc-header">
+    {% include "documents/_company_header.html" %}
+    <div class="doc-right">
+      <div class="doc-label">Warranty Claim</div>
+      <div class="doc-number">{{ claim.claim_number }}</div>
+      <div class="doc-dates">
+        <strong>Claim Date:</strong> {{ claim.claim_date.strftime('%B %d, %Y') }}<br>
+        {% if claim.submitted_to_vendor_at %}
+          <strong>Submitted:</strong> {{ claim.submitted_to_vendor_at.strftime('%B %d, %Y') }}<br>
+        {% endif %}
+        {% if invoice %}
+          <strong>RE:</strong> {{ invoice.invoice_number }}<br>
+        {% endif %}
+        {% with status_class=claim.status, status_label=(claim.status|upper|replace('_', ' ')) %}
+          {% include "documents/_status_pill.html" %}
+        {% endwith %}
+      </div>
+    </div>
+  </div>
+
+  {# ── Customer + Vendor + Reference ────────────────────────────────── #}
+  <div class="party-row">
+
+    {% with party_label="Customer",
+            party_name=(claim.customer.company_name if claim.customer else "—"),
+            party_lines=customer_addr_lines,
+            party_contact=((claim.customer.contact_name if claim.customer else None) or None),
+            party_anonymous=False %}
+      {% include "documents/_party_block.html" %}
+    {% endwith %}
+
+    {% if claim.vendor %}
+      {% with party_label="Vendor",
+              party_name=claim.vendor.name,
+              party_lines=vendor_addr_lines,
+              party_contact=None,
+              party_anonymous=False %}
+        {% include "documents/_party_block.html" %}
+      {% endwith %}
+    {% endif %}
+
+    <div class="party-block">
+      <div class="party-label">Reference</div>
+      <div class="ref-block">
+        <div class="ref-row">
+          <span class="ref-label">Type</span>
+          <span class="ref-val">{{ claim.warranty_type | replace('_', ' ') | title }}</span>
+        </div>
+        {% if invoice %}
+        <div class="ref-row">
+          <span class="ref-label">Invoice</span>
+          <span class="ref-val">{{ invoice.invoice_number }}</span>
+        </div>
+        {% endif %}
+        {% if claim.ra_id %}
+        <div class="ref-row">
+          <span class="ref-label">RA #</span>
+          <span class="ref-val">RA-{{ "%04d"|format(claim.ra_id) }}</span>
+        </div>
+        {% endif %}
+        <div class="ref-row">
+          <span class="ref-label">Vendor Decision</span>
+          <span class="ref-val">{{ claim.vendor_decision | upper | replace('_', ' ') }}</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  {# ── Failure description ───────────────────────────────────────── #}
+  {% if claim.failure_description and claim.failure_description.strip() %}
+  <div class="notes-section" style="margin-top:0;border-top:none;padding-top:0;">
+    <div class="sec-label">Failure Description</div>
+    <div class="notes-body">{{ claim.failure_description.strip() }}</div>
+  </div>
+  {% endif %}
+
+  {# ── Claim lines ──────────────────────────────────────────────── #}
+  <table class="lines" style="margin-top:18px;">
+    <thead>
+      <tr>
+        <th class="ctr" style="width:28px">#</th>
+        <th class="lft" style="width:140px">Part #</th>
+        <th class="lft">Description</th>
+        <th class="rgt" style="width:60px">Claimed</th>
+        <th class="rgt" style="width:60px">Approved</th>
+        <th class="rgt" style="width:100px">Credit</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for line in claim.claim_lines %}
+        <tr{% if loop.index % 2 == 0 %} class="even-row"{% endif %}>
+          <td class="td-num">{{ loop.index }}</td>
+          <td>
+            <span style="font-family:monospace;font-size:9pt;color:#374151;">
+              {{ line.product.sku if line.product and line.product.sku else "—" }}
+            </span>
+          </td>
+          <td>
+            <span class="badge badge-warranty">Warranty</span>
+            {{ line.product.title if line.product else "Part" }}
+            {% if line.resolution %}
+            <span style="display:block;font-size:8pt;color:#666;margin-top:2px;">
+              Resolution: {{ line.resolution | replace('_', ' ') | title }}
+            </span>
+            {% endif %}
+          </td>
+          <td class="td-rgt">{{ line.qty_claimed }}</td>
+          <td class="td-rgt">{{ line.approved_qty }}</td>
+          <td class="td-total">${{ "%.2f"|format(line.credit_amount) }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="6" class="td-empty">No claim lines.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {# ── Totals ────────────────────────────────────────────────── #}
+  <div class="totals-wrap">
+    <div class="totals-inner">
+      <div class="t-row grand">
+        <span class="lbl">Total Credit</span>
+        <span class="val">${{ "%.2f"|format(claim.total_credit_amount) }}</span>
+      </div>
+    </div>
+  </div>
+
+  {# ── Vendor decision notes ──────────────────────────────────── #}
+  {% if claim.vendor_decision_notes and claim.vendor_decision_notes.strip() %}
+  <div class="notes-section">
+    <div class="sec-label">Vendor Decision Notes</div>
+    <div class="notes-body">{{ claim.vendor_decision_notes.strip() }}</div>
+  </div>
+  {% endif %}
+
+  {# ── Internal notes ─────────────────────────────────────────── #}
+  {% if claim.notes and claim.notes.strip() %}
+  <div class="notes-section">
+    <div class="sec-label">Notes</div>
+    <div class="notes-body">{{ claim.notes.strip() }}</div>
+  </div>
+  {% endif %}
+
+  {# ── Status callout ────────────────────────────────────────── #}
+  {% if claim.status == 'vendor_approved' %}
+  <div class="callout callout-green">
+    <strong>Approved by vendor.</strong> Credit of
+    ${{ "%.2f"|format(claim.total_credit_amount) }} pending application to
+    customer account.
+  </div>
+  {% elif claim.status == 'vendor_denied' %}
+  <div class="callout callout-red">
+    <strong>Denied by vendor.</strong> See vendor decision notes for the
+    reason and any next steps.
+  </div>
+  {% elif claim.status == 'submitted_to_vendor' %}
+  <div class="callout callout-blue">
+    <strong>Awaiting vendor decision.</strong>
+  </div>
+  {% endif %}
+
+  {# ── Signature ───────────────────────────────────────────── #}
+  <div class="sig-row">
+    <div class="sig-cell">
+      <div class="party-label">Customer Acknowledgment</div>
+      <div class="sig-line">Signature &amp; Date</div>
+    </div>
+    <div class="sig-cell">
+      <div class="party-label">JAKS Representative</div>
+      <div class="sig-line">Signature &amp; Date</div>
+    </div>
+  </div>
+
+  {% set disclaimer = "Warranty coverage is governed by the manufacturer's warranty terms. Approval is at the vendor's sole discretion unless this is a JAKS extended warranty." %}
+  {% set footer_message = "Warranty claim — internal/customer reference" %}
+  {% include "documents/_footer.html" %}
+
+</div>{# /page-shell #}
+
+{% include "documents/_auto_print.html" %}
+</body>
+</html>

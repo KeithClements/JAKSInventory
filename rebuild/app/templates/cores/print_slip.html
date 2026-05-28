@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ slip.slip_number }} — Core Return Slip</title>
+  {% include "documents/_styles.html" %}
+</head>
+<body>
+
+{% include "documents/_controls.html" %}
+
+<div class="page-shell">
+
+  {# ── Status watermark ─────────────────────────────────────────────────── #}
+  {% if slip.status == 'closed' %}
+  <div class="doc-watermark"><span class="watermark-badge wm-closed">Closed</span></div>
+  {% endif %}
+
+  {# ── Header ──────────────────────────────────────────────────────────── #}
+  <div class="doc-header">
+    {% include "documents/_company_header.html" %}
+    <div class="doc-right">
+      <div class="doc-label">Core Return Slip</div>
+      <div class="doc-number">{{ slip.slip_number }}</div>
+      <div class="doc-dates">
+        <strong>Issued:</strong> {{ slip.created_at.strftime('%B %d, %Y') }}<br>
+        {% if soonest_deadline %}
+          <strong>Return By:</strong> {{ soonest_deadline.strftime('%B %d, %Y') }}<br>
+        {% endif %}
+        {% if invoice %}
+          <strong>RE:</strong> {{ invoice.invoice_number }}<br>
+        {% endif %}
+        {% with status_class=slip.status, status_label=(slip.status|upper|replace('_', ' ')) %}
+          {% include "documents/_status_pill.html" %}
+        {% endwith %}
+      </div>
+    </div>
+  </div>
+
+  {# ── Customer + Invoice reference ────────────────────────────────────── #}
+  <div class="party-row">
+
+    {% with party_label="Returned By",
+            party_name=(slip.customer.company_name if slip.customer else "—"),
+            party_lines=customer_addr_lines,
+            party_contact=((slip.customer.contact_name if slip.customer else None) or None),
+            party_anonymous=False %}
+      {% include "documents/_party_block.html" %}
+    {% endwith %}
+
+    <div class="party-block">
+      <div class="party-label">Reference</div>
+      <div class="ref-block">
+        {% if invoice %}
+        <div class="ref-row">
+          <span class="ref-label">Invoice</span>
+          <span class="ref-val">{{ invoice.invoice_number }}</span>
+        </div>
+        {% endif %}
+        <div class="ref-row">
+          <span class="ref-label">Slip Status</span>
+          <span class="ref-val">{{ slip.status | upper }}</span>
+        </div>
+        <div class="ref-row">
+          <span class="ref-label">Cores Listed</span>
+          <span class="ref-val">{{ cores | length }}</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  {# ── Instructions ───────────────────────────────────────────────────── #}
+  <div class="callout callout-amber">
+    <strong>Please return the cores listed below.</strong>
+    Bring this slip with your cores so we can credit your account quickly.
+    Cores are credited only after inspection. The return window is
+    {{ default_grace_days }} days from the date issued.
+  </div>
+
+  {# ── Core list ─────────────────────────────────────────────────────── #}
+  <table class="lines" style="margin-top:18px;">
+    <thead>
+      <tr>
+        <th class="ctr" style="width:28px">#</th>
+        <th class="lft" style="width:120px">Part #</th>
+        <th class="lft">Description</th>
+        <th class="rgt" style="width:60px">Qty</th>
+        <th class="rgt" style="width:100px">Credit / ea</th>
+        <th class="rgt" style="width:100px">Credit Due</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for core in cores %}
+        <tr{% if loop.index % 2 == 0 %} class="even-row"{% endif %}>
+          <td class="td-num">{{ loop.index }}</td>
+          <td>
+            <span style="font-family:monospace;font-size:9pt;color:#374151;">
+              {{ core.product.sku if core.product and core.product.sku else "—" }}
+            </span>
+          </td>
+          <td>
+            <span class="badge badge-core">Core</span>
+            {{ core.product.title if core.product else "Core part" }}
+          </td>
+          <td class="td-rgt">{{ core.qty_outstanding }}</td>
+          <td class="td-rgt">${{ "%.2f"|format(core.customer_unit_charge) }}</td>
+          <td class="td-total">${{ "%.2f"|format(core.customer_unit_charge * core.qty_outstanding) }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="6" class="td-empty">No outstanding cores on this slip.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {# ── Totals ───────────────────────────────────────────────────────── #}
+  <div class="totals-wrap">
+    <div class="totals-inner">
+      <div class="t-row">
+        <span class="lbl">Cores Outstanding</span>
+        <span class="val">{{ total_qty }}</span>
+      </div>
+      <div class="t-row grand">
+        <span class="lbl">Potential Credit</span>
+        <span class="val">${{ "%.2f"|format(total_credit) }}</span>
+      </div>
+    </div>
+  </div>
+
+  {# ── Notes ───────────────────────────────────────────────────────── #}
+  <div class="notes-section">
+    <div class="sec-label">Return Instructions</div>
+    <div class="notes-body">
+1. Drain fluids and seal openings before returning.
+2. Pack cores in original packaging when possible.
+3. Bring this slip — it is your proof of return.
+4. Cores must be the same part number listed above.
+5. Credit issues only after inspection (typical: 3–5 business days).
+    </div>
+  </div>
+
+  {# ── Signature ──────────────────────────────────────────────────── #}
+  <div class="sig-row">
+    <div class="sig-cell">
+      <div class="party-label">Customer Signature</div>
+      <div class="sig-line">Signature &amp; Date</div>
+    </div>
+    <div class="sig-cell">
+      <div class="party-label">Received By (JAKS)</div>
+      <div class="sig-line">Signature &amp; Date</div>
+    </div>
+  </div>
+
+  {% set disclaimer = "Account credit is final once issued. Cash refunds for cores are at JAKS' discretion." %}
+  {% set footer_message = "Keep this slip for your records" %}
+  {% include "documents/_footer.html" %}
+
+</div>{# /page-shell #}
+
+{% include "documents/_auto_print.html" %}
+</body>
+</html>

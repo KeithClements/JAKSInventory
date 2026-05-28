@@ -1,0 +1,13 @@
+{# Auto-print script — triggers window.print() when ?auto=1 is in the URL.
+   Include just before </body>: {% include "documents/_auto_print.html" %}
+#}
+<script>
+(function () {
+  var params = new URLSearchParams(window.location.search);
+  if (params.get('auto') === '1') {
+    window.addEventListener('load', function () {
+      setTimeout(function () { window.print(); }, 400);
+    });
+  }
+}());
+</script>
