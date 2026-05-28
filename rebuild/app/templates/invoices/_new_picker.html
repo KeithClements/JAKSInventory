@@ -6,7 +6,7 @@
       x-data="{ customerId: '', displayName: '' }"
       @customer-selected.window="customerId = $event.detail.id; displayName = $event.detail.name">
 
-  <div class="slide-over-body space-y-4">
+  <div class="flex-1 overflow-y-auto px-5 py-4 space-y-4">
     <div class="rounded-lg bg-stone-50 border border-stone-200 px-3 py-2 text-xs text-gray-500">
       Select a customer to create a draft. The full invoice workspace will open next — add lines, set tax, finalize.
     </div>
@@ -45,7 +45,7 @@
     </div>
   </div>
 
-  <div class="slide-over-footer">
+  <div class="flex justify-end gap-3 px-5 py-4 border-t border-gray-200 shrink-0">
     <button type="button" class="btn-secondary"
             @click="createSlideOpen = false">Cancel</button>
     <button type="submit" class="btn-primary"

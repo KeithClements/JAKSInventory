@@ -9,7 +9,7 @@
   hx-target="#create-slide-content"
   hx-swap="innerHTML"
 >
-  <div class="slide-over-body space-y-4">
+  <div class="flex-1 overflow-y-auto px-5 py-4 space-y-4">
 
     <div>
       <label class="block text-sm font-medium text-gray-700 mb-1">
@@ -58,7 +58,7 @@
 
   </div>
 
-  <div class="slide-over-footer">
+  <div class="flex justify-end gap-3 px-5 py-4 border-t border-gray-200 shrink-0">
     <button type="button"
             @click="createSlideOpen = false"
             class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
