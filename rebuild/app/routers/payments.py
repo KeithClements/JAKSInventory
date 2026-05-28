@@ -1,25 +1,26 @@
 """
 app/routers/payments.py
 ========================
-Payment list and detail views.
-Payments are created via POST /invoices/{id}/payment (InvoiceService routes).
-This router only provides read views for payment history.
+Payment list, detail, new-payment form, and reverse.
+New payments can be created from /payments/new (multi-invoice) or
+from the invoice detail page (single invoice).
 """
 from __future__ import annotations
 
 import logging
+from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import quote as url_quote
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
-from app.constants import PaymentMethod, PaymentStatus
+from app.constants import InvoiceStatus, PaymentMethod, PaymentStatus
 from app.deps import get_current_user_id, get_db
 from app.models.customer import Customer
-from app.models.invoice import Payment
+from app.models.invoice import Invoice, Payment
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +28,127 @@ router = APIRouter(prefix="/payments", tags=["payments"])
 templates = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent.parent / "templates")
 )
+
+
+# ── New Payment (multi-invoice) ───────────────────────────────────────────────
+
+@router.get("/new", response_class=HTMLResponse)
+def new_payment_form(
+    request: Request,
+    customer_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Step 1 — no customer_id: show customer search box + list.
+    Step 1b — customer_id provided: show their open invoices for selection.
+    """
+    customers = (
+        db.query(Customer)
+        .filter(Customer.is_active == True)  # noqa: E712
+        .order_by(Customer.company_name)
+        .all()
+    )
+    selected_customer = None
+    open_invoices: list[Invoice] = []
+    if customer_id:
+        selected_customer = db.query(Customer).filter(Customer.id == customer_id).first()
+        if selected_customer:
+            open_invoices = (
+                db.query(Invoice)
+                .filter(
+                    Invoice.customer_id == customer_id,
+                    Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL]),
+                )
+                .order_by(Invoice.due_date.asc().nullslast(), Invoice.created_at.asc())
+                .all()
+            )
+    return templates.TemplateResponse(
+        "payments/new.html",
+        {
+            "request": request,
+            "customers": customers,
+            "selected_customer": selected_customer,
+            "open_invoices": open_invoices,
+            "today": date.today(),
+            "PaymentMethod": PaymentMethod,
+        },
+    )
+
+
+@router.post("/new", response_class=RedirectResponse)
+async def create_payment(
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """
+    Create a payment and allocate to one or more invoices.
+    If no invoices are checked, the payment sits as unapplied customer credit.
+    """
+    from app.services.payment_service import PaymentService
+
+    form = await request.form()
+
+    # ── Step 1 redirect: user just selected a customer ──────────────────────
+    if "select_customer" in form:
+        customer_id = str(form.get("customer_id", "")).strip()
+        return RedirectResponse(
+            f"/payments/new?customer_id={customer_id}" if customer_id else "/payments/new",
+            status_code=303,
+        )
+
+    # ── Step 2: record the payment ──────────────────────────────────────────
+    try:
+        customer_id = int(str(form.get("customer_id", "0")))
+        amount = float(str(form.get("amount", "0")))
+        if amount <= 0:
+            raise ValueError("Payment amount must be greater than zero.")
+
+        payment_method = str(form.get("method", PaymentMethod.CASH))
+        raw_date = str(form.get("payment_date", "")).strip()
+        try:
+            pmt_date = datetime.strptime(raw_date, "%Y-%m-%d") if raw_date else datetime.utcnow()
+        except ValueError:
+            pmt_date = datetime.utcnow()
+
+        data = {
+            "check_number": str(form.get("check_number", "")).strip() or None,
+            "notes": str(form.get("notes", "")).strip(),
+            "payment_date": pmt_date,
+        }
+
+        # Collect checked invoice IDs (multi-value form field)
+        invoice_ids: list[int] = []
+        raw_ids = form.getlist("invoice_ids")
+        for raw in raw_ids:
+            try:
+                invoice_ids.append(int(raw))
+            except (ValueError, TypeError):
+                pass
+
+        pmt = PaymentService(db, user_id).record_payment(
+            customer_id=customer_id,
+            amount_received=amount,
+            payment_method=payment_method,
+            data=data,
+            invoice_ids=invoice_ids or None,
+        )
+    except ValueError as exc:
+        db.rollback()
+        cid = str(form.get("customer_id", ""))
+        return RedirectResponse(
+            f"/payments/new?customer_id={cid}&error={url_quote(str(exc))}",
+            status_code=303,
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error creating payment")
+        return RedirectResponse(
+            f"/payments/new?error={url_quote('Unexpected error — payment was not recorded.')}",
+            status_code=303,
+        )
+
+    return RedirectResponse(f"/payments/{pmt.id}?saved=1", status_code=303)
 
 
 # ── List ──────────────────────────────────────────────────────────────────────

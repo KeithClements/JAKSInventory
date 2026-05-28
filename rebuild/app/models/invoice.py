@@ -158,6 +158,15 @@ class InvoiceLine(Base):
     parent_line_id: Mapped[int | None] = mapped_column(
         ForeignKey("invoice_lines.id"), nullable=True
     )
+    # ── Auto-generation flags (drives parent↔core cascade behavior) ──────────
+    # is_auto_generated: True when the system created this line (e.g. auto-added
+    #   core charge when its parent product was added). Drives the cascade-delete
+    #   when the parent line is removed.
+    # is_locked_to_parent: When True, this line's qty syncs from its parent.
+    #   User can manually unlink (set False) with explicit warning, after which
+    #   parent edits no longer cascade to this line.
+    is_auto_generated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_locked_to_parent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     invoice: Mapped[Invoice] = relationship("Invoice", back_populates="lines")

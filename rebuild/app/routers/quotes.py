@@ -77,12 +77,14 @@ async def list_quotes(
     follow_up: str = "",
     db: Session = Depends(get_db),
 ):
-    from datetime import datetime
+    from datetime import datetime, date as date_type
     from sqlalchemy import or_
+
+    now = datetime.utcnow()
+    today = date_type.today()
 
     query = db.query(Quote).join(Customer)
     if follow_up == "due":
-        now = datetime.utcnow()
         query = query.filter(
             Quote.follow_up_date <= now,
             Quote.outcome == QuoteOutcome.PENDING,
@@ -117,6 +119,8 @@ async def list_quotes(
             "q": q,
             "QuoteStatus": QuoteStatus,
             "customers": customers,
+            "now": now,
+            "today": today,
         },
     )
 
@@ -450,7 +454,7 @@ async def add_line(
     user_id: int = Depends(get_current_user_id),
 ):
     svc = QuoteService(db, user_id)
-    line = svc.add_line(
+    lines = svc.add_line(
         quote_id=quote_id,
         product_id=product_id,
         data={
@@ -464,10 +468,25 @@ async def add_line(
             "parent_line_id": parent_line_id,
         },
     )
-    db.refresh(line)
+    for ln in lines:
+        db.refresh(ln)
+
+    if len(lines) > 1:
+        # Core charge was auto-added — return full tbody so both rows land in the
+        # right tree-sorted positions.  HX-Retarget/HX-Reswap override the original
+        # JS call (which used beforeend) to an innerHTML swap on the tbody instead.
+        quote = _get_quote_or_404(db, quote_id)
+        resp = templates.TemplateResponse(
+            "quotes/_lines_tbody.html",
+            {"request": request, "lines": _tree_sort_lines(quote.lines)},
+        )
+        resp.headers["HX-Retarget"] = "#quote-lines-tbody"
+        resp.headers["HX-Reswap"] = "innerHTML"
+        return resp
+
     return templates.TemplateResponse(
         "quotes/_line_row.html",
-        {"request": request, "line": line},
+        {"request": request, "line": lines[0]},
     )
 
 
@@ -507,14 +526,27 @@ async def update_line(
 async def remove_line(
     quote_id: int,
     line_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
     """
-    Delete a line. Returns empty — the row is removed by hx-swap="delete" on
-    the button. The htmx:afterRequest listener in workspace.html refreshes totals.
+    Delete a line and its children (core, warranty, upgrade options).
+
+    If the deleted line had children, return a full tbody refresh so all orphaned
+    child rows are removed from the DOM in one shot.  Otherwise return empty so
+    hx-swap="delete" removes just the single row.
     """
-    QuoteService(db, user_id).remove_line(line_id)
+    had_children = QuoteService(db, user_id).remove_line(line_id)
+    if had_children:
+        quote = _get_quote_or_404(db, quote_id)
+        resp = templates.TemplateResponse(
+            "quotes/_lines_tbody.html",
+            {"request": request, "lines": _tree_sort_lines(quote.lines)},
+        )
+        resp.headers["HX-Retarget"] = "#quote-lines-tbody"
+        resp.headers["HX-Reswap"] = "innerHTML"
+        return resp
     return HTMLResponse("")
 
 

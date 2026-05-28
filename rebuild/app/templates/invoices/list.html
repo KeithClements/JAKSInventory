@@ -3,12 +3,15 @@
 {% block heading %}Invoices{% endblock %}
 
 {% block header_actions %}
-  <a href="/invoices/new" class="btn-primary btn-sm">
+  <button type="button" class="btn-primary btn-sm"
+          hx-get="/invoices/new"
+          hx-target="#create-slide-content"
+          @click="createSlideOpen = true; createSlideTitle = 'New Invoice'">
     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
     </svg>
     New Invoice
-  </a>
+  </button>
 {% endblock %}
 
 {% block content %}
@@ -113,7 +116,10 @@
   <p class="text-gray-400 text-sm mt-1">Try adjusting your filter.</p>
   {% else %}
   <p class="text-gray-400 text-sm mt-1">Invoices are created from Sales Orders or directly here.</p>
-  <a href="/invoices/new" class="mt-3 text-sm link">New Invoice →</a>
+  <button type="button" class="mt-3 text-sm link"
+          hx-get="/invoices/new"
+          hx-target="#create-slide-content"
+          @click="createSlideOpen = true; createSlideTitle = 'New Invoice'">New Invoice →</button>
   {% endif %}
 </div>
 {% endif %}

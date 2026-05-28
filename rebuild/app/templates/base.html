@@ -158,15 +158,57 @@
     .tbl         { @apply w-full divide-y divide-gray-100 text-sm; }
     .tbl-head    { @apply bg-gray-50; }
     .tbl-th      {
-      @apply px-4 py-2.5 text-left text-xs font-semibold
+      @apply px-4 py-3 text-left text-xs font-semibold
              text-gray-500 uppercase tracking-wide whitespace-nowrap;
     }
     .tbl-th-r    { @apply tbl-th text-right; }
-    .tbl-td      { @apply px-4 py-2.5 text-sm text-gray-700; }
-    .tbl-td-r    { @apply px-4 py-2.5 text-sm text-gray-700 text-right tabular-nums; }
-    .tbl-row     { @apply border-t border-gray-100 hover:bg-stone-50 transition-colors; }
+    .tbl-td      { @apply px-4 py-3.5 text-sm text-gray-700; }
+    .tbl-td-r    { @apply px-4 py-3.5 text-sm text-gray-700 text-right tabular-nums; }
+    .tbl-row     { @apply group border-t border-gray-100 hover:bg-stone-100/70 transition-colors duration-100; }
     .tbl-link    { @apply font-semibold text-brand-700 hover:text-brand-600 hover:underline; }
-    .tbl-empty   { @apply px-4 py-8 text-center text-sm text-gray-400 italic; }
+    .tbl-empty   { @apply px-4 py-12 text-center text-sm text-gray-400 italic; }
+
+    /* Tinted row variants — swap for .tbl-row where urgency tint is needed */
+    .tbl-row-warn {
+      border-top: 1px solid rgba(251,191,36,0.22);
+      background-color: rgba(251,191,36,0.05);
+      transition: background-color 0.1s ease;
+      cursor: pointer;
+    }
+    .tbl-row-warn:hover  { background-color: rgba(251,191,36,0.11); }
+    .tbl-row-danger {
+      border-top: 1px solid rgba(239,68,68,0.18);
+      background-color: rgba(239,68,68,0.04);
+      transition: background-color 0.1s ease;
+      cursor: pointer;
+    }
+    .tbl-row-danger:hover { background-color: rgba(239,68,68,0.09); }
+    /* group class must also be on .tbl-row-warn/.tbl-row-danger elements for row-actions */
+
+    /* Hover-revealed action buttons — parent <tr> must carry the "group" class */
+    .row-actions {
+      @apply flex items-center justify-end gap-0.5 opacity-0 group-hover:opacity-100
+             transition-opacity duration-150;
+    }
+
+    /* Context menu — positioned by JS (left/top style) */
+    .ctx-menu {
+      position: fixed; z-index: 200;
+      background: #fff; border-radius: 0.75rem;
+      border: 1px solid rgba(229,231,235,0.85);
+      padding: 0.375rem 0; min-width: 13rem;
+      font-size: 0.875rem; overflow: hidden;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.13), 0 2px 8px rgba(0,0,0,0.07);
+    }
+    .ctx-item {
+      @apply flex items-center gap-2.5 w-full px-4 py-2 text-left text-gray-700
+             hover:bg-stone-50 cursor-pointer transition-colors;
+    }
+    .ctx-item-danger {
+      @apply flex items-center gap-2.5 w-full px-4 py-2 text-left text-red-600
+             hover:bg-red-50 hover:text-red-700 cursor-pointer transition-colors;
+    }
+    .ctx-sep { @apply my-1.5 border-t border-gray-100; }
 
     /* ── Tabs ────────────────────────────────────────────────────────── */
     .tab-bar     { @apply flex border-b border-gray-200 gap-1; }
@@ -199,9 +241,9 @@
 
     /* ── Stat / KPI tiles (dashboard) ────────────────────────────────── */
     .stat-card   { @apply card flex flex-col gap-2 p-5; }
-    .stat-label  { @apply text-xs font-semibold text-gray-400 uppercase tracking-widest; }
+    .stat-label  { @apply text-xs font-semibold text-gray-500 uppercase tracking-widest; }
     .stat-value  { @apply text-3xl font-extrabold text-gray-900 tabular-nums leading-none; }
-    .stat-sub    { @apply text-xs text-gray-400 mt-0.5; }
+    .stat-sub    { @apply text-xs text-gray-500 mt-0.5; }
 
     /* ── Stat card accent variants (inset left border — radius-safe) ─── */
     .stat-card-green { @apply stat-card; box-shadow: 0 1px 3px rgba(0,0,0,0.07), inset 4px 0 0 #22c55e; }
@@ -211,11 +253,11 @@
     .stat-card-brand { @apply stat-card; box-shadow: 0 1px 3px rgba(0,0,0,0.07), inset 4px 0 0 #4b5320; }
 
     /* ── Page-level section heading ──────────────────────────────────── */
-    .section-title { @apply text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3; }
+    .section-title { @apply text-xs font-semibold text-gray-600 uppercase tracking-widest mb-3; }
 
     /* ── Table zebra striping ────────────────────────────────────────── */
-    .tbl tbody .tbl-row:nth-child(even) { background-color: rgba(244,246,238,0.5); }
-    .tbl tbody .tbl-row:nth-child(even):hover { background-color: rgba(236,240,224,0.7); }
+    .tbl tbody .tbl-row:nth-child(even) { background-color: rgba(244,246,238,0.35); }
+    .tbl tbody .tbl-row:nth-child(even):hover { background-color: rgba(229,233,218,0.65); }
 
     /* ── Smooth nav slide on hover ───────────────────────────────────── */
     .nav-link { transition: background-color 0.15s ease, color 0.15s ease, padding-left 0.12s ease; }

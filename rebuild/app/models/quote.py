@@ -134,6 +134,9 @@ class QuoteLine(Base):
     parent_line_id: Mapped[int | None] = mapped_column(
         ForeignKey("quote_lines.id"), nullable=True
     )
+    # See InvoiceLine for documentation on these flags.
+    is_auto_generated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_locked_to_parent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     research_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
     research_item_id: Mapped[int | None] = mapped_column(
@@ -254,10 +257,30 @@ class SOLine(Base):
     source: Mapped[str] = mapped_column(
         String(20), nullable=False, default=SOLineSource.STOCK
     )
+    # ── Parent/child linkage (consistent with InvoiceLine / QuoteLine) ───────
+    # The existing `core_charge` float field is the legacy per-line core amount;
+    # parent_line_id + is_core_line enable the future pattern where cores are
+    # discrete child lines (matching how invoice cores work).
+    parent_line_id: Mapped[int | None] = mapped_column(
+        ForeignKey("so_lines.id"), nullable=True
+    )
+    is_core_line: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_auto_generated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_locked_to_parent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     so: Mapped[SalesOrder] = relationship("SalesOrder", back_populates="lines")
     product: Mapped[Product | None] = relationship("Product", back_populates="so_lines")
+
+    # Self-referential parent/children for core-line linkage.
+    parent: Mapped[SOLine | None] = relationship(
+        "SOLine", back_populates="children", remote_side="SOLine.id",
+        foreign_keys="SOLine.parent_line_id",
+    )
+    children: Mapped[list[SOLine]] = relationship(
+        "SOLine", back_populates="parent",
+        foreign_keys="SOLine.parent_line_id",
+    )
 
     @property
     def line_total(self) -> float:

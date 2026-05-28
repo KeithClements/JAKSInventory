@@ -41,9 +41,29 @@ def on_startup() -> None:
     try:
         seed_settings(db)
         seed_scraper_sources(db)
+        _seed_default_user(db)
         _lock_overdue_invoices(db)
     finally:
         db.close()
+
+
+def _seed_default_user(db: Session) -> None:
+    """
+    Ensure the single admin user (id=1) exists so audit log foreign keys
+    and any future auth queries always have a valid row to join against.
+    Password hash is a non-functional placeholder until auth is implemented.
+    """
+    from app.models.user import User
+    from app.constants import UserRole
+    if not db.query(User).filter(User.id == 1).first():
+        db.add(User(
+            id=1,
+            name="JAKS Admin",
+            username="admin",
+            password_hash="[single-user-mode-no-auth]",
+            role=UserRole.ADMIN,
+        ))
+        db.commit()
 
 
 def _lock_overdue_invoices(db: Session) -> None:

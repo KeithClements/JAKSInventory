@@ -1,0 +1,525 @@
+{% extends "base.html" %}
+{% block title %}{{ invoice.invoice_number }} — JAKS Inventory{% endblock %}
+{% block heading %}{{ invoice.invoice_number }}{% endblock %}
+
+{% set status_pill_map = {
+  'draft':   ('badge-gray',  'DRAFT'),
+  'open':    ('badge-blue',  'OPEN'),
+  'partial': ('badge-amber', 'PARTIAL'),
+  'paid':    ('badge-green', 'PAID'),
+  'void':    ('badge-red',   'VOID'),
+} %}
+
+{% block header_actions %}
+  {# DRAFT — Save Draft (autosaved already, but explicit indicator) + Finalize #}
+  {% if editable %}
+    <button type="button"
+            class="btn-secondary btn-sm"
+            onclick="document.getElementById('inv-header-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}))"
+            title="Save header changes">
+      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/>
+      </svg>
+      Save Draft
+    </button>
+    <form method="post" action="/invoices/{{ invoice.id }}/finalise" class="inline">
+      <button type="submit"
+              class="btn-primary btn-sm"
+              onclick="return confirm('Finalize this invoice? Once finalized it becomes read-only and changes will require void-and-reissue.')">
+        Finalize
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+        </svg>
+      </button>
+    </form>
+
+  {# OPEN / PARTIAL — Print, Email, Take Payment, Void #}
+  {% elif invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL] %}
+    <a href="/invoices/{{ invoice.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
+    <a href="/invoices/{{ invoice.id }}/pdf" class="btn-secondary btn-sm">PDF</a>
+    <button type="button" class="btn-primary btn-sm"
+            onclick="document.getElementById('payment-drawer').classList.toggle('hidden')">
+      Take Payment
+    </button>
+    <button type="button" class="btn-danger btn-sm"
+            onclick="document.getElementById('void-drawer').classList.toggle('hidden')">
+      Void
+    </button>
+
+  {# PAID — Print only (and Void as escape hatch) #}
+  {% elif invoice.status == InvoiceStatus.PAID %}
+    <a href="/invoices/{{ invoice.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
+    <a href="/invoices/{{ invoice.id }}/pdf" class="btn-secondary btn-sm">PDF</a>
+    <button type="button" class="btn-danger btn-sm"
+            onclick="document.getElementById('void-drawer').classList.toggle('hidden')">
+      Void
+    </button>
+
+  {# VOID — Print only #}
+  {% elif invoice.status == InvoiceStatus.VOID %}
+    <a href="/invoices/{{ invoice.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
+  {% endif %}
+
+  <a href="/invoices/" class="text-sm text-gray-500 hover:text-gray-700">← Invoices</a>
+{% endblock %}
+
+
+{% block content %}
+<div class="max-w-6xl space-y-3" x-data="{ showVehicleInfo: {{ 'true' if (invoice.esn or invoice.engine_manufacturer or invoice.engine_model) else 'false' }} }">
+
+  {# ── Flash / Success banner after finalize ──────────────────────────────── #}
+  {% if request.query_params.get('ok') %}
+  <div class="rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800 flex items-center gap-2">
+    <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+    </svg>
+    {{ request.query_params.get('ok') }}
+  </div>
+  {% endif %}
+  {% if request.query_params.get('error') %}
+  <div class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700 flex items-start gap-2">
+    <svg class="w-4 h-4 mt-0.5 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3L12.74 5a2 2 0 00-3.48 0L3.2 16a2 2 0 001.73 3z"/>
+    </svg>
+    <div class="flex-1">{{ request.query_params.get('error') }}</div>
+  </div>
+  {% endif %}
+
+  {# ── Paid banner (when fully paid) ──────────────────────────────────────── #}
+  {% if invoice.status == InvoiceStatus.PAID %}
+  <div class="rounded-lg bg-green-600 text-white px-4 py-3 flex items-center justify-between shadow-sm">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+        </svg>
+      </div>
+      <div>
+        <p class="font-bold tracking-wide">PAID IN FULL</p>
+        <p class="text-xs text-green-50 opacity-80">${{ "%.2f"|format(totals.amount_paid) }} received</p>
+      </div>
+    </div>
+    <span class="text-xs uppercase tracking-widest font-semibold">{{ invoice.locked_at.strftime('%b %d, %Y') if invoice.locked_at else '' }}</span>
+  </div>
+  {% endif %}
+
+
+  {# ════════════════════════════════════════════════════════════════════════
+     HEADER STRIP — party, dates, metadata, status, balance
+  ═══════════════════════════════════════════════════════════════════════════ #}
+  <form id="inv-header-form"
+        hx-post="/invoices/{{ invoice.id }}/header"
+        hx-target="#totals-panel"
+        hx-swap="outerHTML"
+        hx-trigger="change from:input,select,textarea,checkbox delay:300ms, submit"
+        class="card">
+    <div class="card-body py-3">
+
+      {# Row 1 — primary info #}
+      <div class="flex items-center gap-x-5 gap-y-2 flex-wrap text-sm">
+
+        {# Status pill #}
+        {% set pill = status_pill_map.get(invoice.status, ('badge-gray', invoice.status|upper)) %}
+        <span class="{{ pill[0] }} text-xs font-bold tracking-wider">{{ pill[1] }}</span>
+
+        {# Customer — link + change customer button when DRAFT #}
+        <div class="flex items-center gap-2 shrink-0">
+          <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Customer</span>
+          <a href="/customers/{{ invoice.customer_id }}" class="font-semibold text-gray-800 link">
+            {{ invoice.customer.company_name }}
+          </a>
+          {% if editable %}
+          <button type="button"
+                  onclick="document.getElementById('change-customer-drawer').classList.toggle('hidden')"
+                  class="text-xs text-gray-400 hover:text-brand-700 underline-offset-2 hover:underline"
+                  title="Change customer (DRAFT only)">change</button>
+          {% endif %}
+        </div>
+
+        {# Created #}
+        <div class="flex items-center gap-1.5 shrink-0 text-gray-500">
+          <span class="text-xs text-gray-400">Created</span>
+          <span class="text-gray-700 text-xs">{{ invoice.created_at.strftime('%b %d, %Y') }}</span>
+        </div>
+
+        {# Due date #}
+        <div class="flex items-center gap-1.5 shrink-0">
+          <label class="text-xs text-gray-400">Due</label>
+          {% if editable %}
+          <input type="date" name="due_date"
+                 value="{{ invoice.due_date.strftime('%Y-%m-%d') if invoice.due_date else '' }}"
+                 class="text-xs border border-gray-200 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand-400"/>
+          {% else %}
+          <span class="text-xs {% if invoice.is_overdue %}text-red-600 font-semibold{% else %}text-gray-700{% endif %}">
+            {{ invoice.due_date.strftime('%b %d, %Y') if invoice.due_date else 'COD' }}
+          </span>
+          {% endif %}
+        </div>
+
+        {# Customer PO# #}
+        <div class="flex items-center gap-1.5 shrink-0">
+          <label class="text-xs text-gray-400">PO #</label>
+          {% if editable %}
+          <input type="text" name="customer_po_number" value="{{ invoice.customer_po_number or '' }}"
+                 placeholder="—"
+                 class="w-28 text-xs border border-gray-200 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand-400"/>
+          {% else %}
+          <span class="text-xs text-gray-700">{{ invoice.customer_po_number or '—' }}</span>
+          {% endif %}
+        </div>
+
+        {# Discount % #}
+        <div class="flex items-center gap-1.5 shrink-0">
+          <label class="text-xs text-gray-400">Disc %</label>
+          {% if editable %}
+          <input type="number" name="discount_pct" value="{{ invoice.discount_pct }}"
+                 min="0" max="100" step="0.5"
+                 class="w-14 text-xs text-right border border-gray-200 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand-400"/>
+          {% else %}
+          <span class="text-xs text-gray-700 tabular-nums">{{ invoice.discount_pct }}%</span>
+          {% endif %}
+        </div>
+
+        {# Vehicle/Engine toggle #}
+        <button type="button" @click="showVehicleInfo = !showVehicleInfo"
+                class="text-xs text-brand-700 hover:text-brand-600 font-medium ml-auto shrink-0 flex items-center gap-1">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"
+               :class="showVehicleInfo ? 'rotate-90' : ''" style="transition: transform 0.15s">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+          </svg>
+          Vehicle / Engine Info
+          {% if invoice.esn or invoice.engine_manufacturer or invoice.engine_model %}
+          <span class="badge-brand">filled</span>
+          {% endif %}
+        </button>
+      </div>
+
+      {# Row 2 — Vehicle/Engine Info (expandable) #}
+      <div x-show="showVehicleInfo" x-cloak class="mt-3 pt-3 border-t border-gray-100">
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+          <div>
+            <label class="form-label">ESN</label>
+            {% if editable %}
+            <input type="text" name="esn" value="{{ invoice.esn or '' }}" class="form-input text-sm"/>
+            {% else %}
+            <p class="text-sm text-gray-700">{{ invoice.esn or '—' }}</p>
+            {% endif %}
+          </div>
+          <div>
+            <label class="form-label">Engine Make</label>
+            {% if editable %}
+            <input type="text" name="engine_manufacturer" value="{{ invoice.engine_manufacturer or '' }}" class="form-input text-sm"/>
+            {% else %}
+            <p class="text-sm text-gray-700">{{ invoice.engine_manufacturer or '—' }}</p>
+            {% endif %}
+          </div>
+          <div>
+            <label class="form-label">Engine Model</label>
+            {% if editable %}
+            <input type="text" name="engine_model" value="{{ invoice.engine_model or '' }}" class="form-input text-sm"/>
+            {% else %}
+            <p class="text-sm text-gray-700">{{ invoice.engine_model or '—' }}</p>
+            {% endif %}
+          </div>
+          <div>
+            <label class="form-label">Truck / Job</label>
+            {% if editable %}
+            <input type="text" name="customer_job_number" value="{{ invoice.customer_job_number or '' }}" class="form-input text-sm"/>
+            {% else %}
+            <p class="text-sm text-gray-700">{{ invoice.customer_job_number or '—' }}</p>
+            {% endif %}
+          </div>
+          <div class="text-xs text-gray-400 italic flex items-end pb-2">
+            Optional — recommended for warranty traceability.
+          </div>
+        </div>
+      </div>
+
+      {# Row 3 — Notes #}
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3 pt-3 border-t border-gray-100">
+        <div>
+          <label class="form-label">Customer-Facing Notes</label>
+          {% if editable %}
+          <textarea name="notes" rows="2" class="form-textarea text-sm"
+                    placeholder="Printed on invoice…">{{ invoice.notes }}</textarea>
+          {% else %}
+          <p class="text-sm text-gray-700 whitespace-pre-wrap">{{ invoice.notes or '—' }}</p>
+          {% endif %}
+        </div>
+        <div>
+          <label class="form-label">Internal Notes</label>
+          {% if editable %}
+          <textarea name="internal_notes" rows="2" class="form-textarea text-sm"
+                    placeholder="Not printed…">{{ invoice.internal_notes }}</textarea>
+          {% else %}
+          <p class="text-sm text-gray-500 whitespace-pre-wrap italic">{{ invoice.internal_notes or '—' }}</p>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </form>
+
+  {# ── Change-Customer Drawer (DRAFT only, hidden until toggled) ──────────── #}
+  {% if editable %}
+  <div id="change-customer-drawer" class="hidden card border-l-4 border-l-amber-400">
+    <div class="card-body">
+      <form method="post" action="/invoices/{{ invoice.id }}/change-customer">
+        <p class="text-sm font-semibold text-gray-800 mb-2">Change customer</p>
+        <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2 mb-3">
+          Changing customer may affect pricing, discounts, tax settings, terms, and delivery settings.
+        </p>
+        <div class="flex items-end gap-3 flex-wrap">
+          <div class="flex-1 min-w-[200px]">
+            <label class="form-label">New Customer</label>
+            <select name="customer_id" class="form-select" required>
+              <option value="">— Select customer —</option>
+              {% for c in customers %}
+              <option value="{{ c.id }}" {% if c.id == invoice.customer_id %}disabled{% endif %}>{{ c.company_name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label class="form-label">Pricing</label>
+            <select name="recalc_pricing" class="form-select">
+              <option value="0">Keep Existing Prices (recommended)</option>
+              <option value="1">Recalculate Using New Customer Defaults</option>
+            </select>
+          </div>
+          <button type="submit" class="btn-primary btn-sm">Apply Change</button>
+          <button type="button" class="btn-secondary btn-sm"
+                  onclick="document.getElementById('change-customer-drawer').classList.add('hidden')">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+
+  {# ════════════════════════════════════════════════════════════════════════
+     LINE SEARCH (DRAFT only)
+  ═══════════════════════════════════════════════════════════════════════════ #}
+  {% if editable %}
+  <div x-data="invoiceLineAdder({{ invoice.id }})" @click.away="results = []" class="card">
+    <div class="card-body py-3">
+      <div class="relative">
+        <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+             fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
+        </svg>
+        <input type="text"
+               x-ref="searchInput"
+               x-model="q"
+               @input.debounce.250ms="doSearch()"
+               @keydown.escape="results = []; q = ''"
+               placeholder="Search parts — Part #, OEM #, description (or type free text for a misc line)"
+               autocomplete="off"
+               class="w-full pl-10 pr-32 py-2.5 text-sm border-2 border-gray-300 rounded-lg focus:border-brand-400 focus:outline-none bg-white"/>
+        <button type="button" @click="addMiscLine()"
+                x-show="q.length > 0 && results.length === 0"
+                class="absolute right-2 top-1/2 -translate-y-1/2 btn-primary btn-xs">
+          + Add as misc line
+        </button>
+      </div>
+
+      {# Search results dropdown #}
+      <div x-show="results.length > 0" x-cloak
+           class="mt-1 border border-gray-200 rounded-lg bg-white shadow-lg max-h-80 overflow-y-auto">
+        <template x-for="p in results" :key="p.id">
+          <button type="button" @click="addProduct(p)"
+                  class="w-full text-left px-3 py-2 hover:bg-stone-100 border-b border-gray-100 last:border-b-0 flex items-center gap-3">
+            <div class="flex-1 min-w-0">
+              <p class="font-mono text-xs font-bold text-brand-700" x-text="p.sku"></p>
+              <p class="text-xs text-gray-500 truncate" x-text="p.title"></p>
+            </div>
+            <div class="text-right shrink-0 text-xs">
+              <p class="tabular-nums font-semibold text-gray-700">$<span x-text="p.price.toFixed(2)"></span></p>
+              <p class="text-gray-400">QOH: <span x-text="p.qoh" class="tabular-nums"></span></p>
+              <p x-show="p.has_core" class="text-amber-600 font-medium">+core $<span x-text="p.core.toFixed(2)" class="tabular-nums"></span></p>
+            </div>
+          </button>
+        </template>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function invoiceLineAdder(invoiceId) {
+      return {
+        q: '',
+        results: [],
+        async doSearch() {
+          if (this.q.length < 2) { this.results = []; return; }
+          const r = await fetch('/invoices/_/product-search?q=' + encodeURIComponent(this.q));
+          const html = await r.text();
+          // Parse the returned HTML to extract product data attributes
+          const tmp = document.createElement('div');
+          tmp.innerHTML = html;
+          this.results = Array.from(tmp.querySelectorAll('[data-product]')).map(el => ({
+            id: parseInt(el.dataset.id),
+            sku: el.dataset.sku,
+            title: el.dataset.title,
+            price: parseFloat(el.dataset.price),
+            qoh: parseInt(el.dataset.qoh),
+            cost: parseFloat(el.dataset.cost),
+            has_core: el.dataset.hasCore === '1',
+            core: parseFloat(el.dataset.core || '0'),
+          }));
+        },
+        async addProduct(p) {
+          const fd = new FormData();
+          fd.set('product_id', p.id);
+          fd.set('description', p.title || p.sku);
+          fd.set('qty', '1');
+          fd.set('unit_price', p.price.toFixed(2));
+          fd.set('unit_cost', p.cost.toFixed(2));
+          fd.set('line_type', 'product');
+          const r = await fetch(`/invoices/${invoiceId}/lines`, {method: 'POST', body: fd});
+          const html = await r.text();
+          document.getElementById('lines-and-totals').outerHTML = html;
+          this.q = ''; this.results = [];
+          this.$nextTick(() => this.$refs.searchInput.focus());
+        },
+        async addMiscLine() {
+          const fd = new FormData();
+          fd.set('description', this.q);
+          fd.set('qty', '1');
+          fd.set('unit_price', '0');
+          fd.set('line_type', 'misc');
+          const r = await fetch(`/invoices/${invoiceId}/lines`, {method: 'POST', body: fd});
+          const html = await r.text();
+          document.getElementById('lines-and-totals').outerHTML = html;
+          this.q = ''; this.results = [];
+        }
+      }
+    }
+  </script>
+  {% endif %}
+
+  {# ════════════════════════════════════════════════════════════════════════
+     LINES + TOTALS (HTMX-swappable container)
+  ═══════════════════════════════════════════════════════════════════════════ #}
+  {% include "invoices/_lines_and_totals.html" %}
+
+
+  {# ════════════════════════════════════════════════════════════════════════
+     PAYMENTS PANEL (when payments exist)
+  ═══════════════════════════════════════════════════════════════════════════ #}
+  {% set active_allocations = invoice.allocations | selectattr('is_reversed', 'equalto', false) | list %}
+  {% if active_allocations %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Payments</h2>
+      <span class="text-xs text-gray-400">{{ active_allocations | length }} payment{{ 's' if active_allocations | length != 1 }}</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">Date</th>
+            <th class="tbl-th">Method</th>
+            <th class="tbl-th">Reference</th>
+            <th class="tbl-th-r">Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in active_allocations %}
+          <tr class="tbl-row">
+            <td class="tbl-td text-xs text-gray-600">{{ a.payment.payment_date.strftime('%b %d, %Y') }}</td>
+            <td class="tbl-td">
+              <span class="badge-gray">{{ a.payment.payment_method | title }}</span>
+            </td>
+            <td class="tbl-td text-xs text-gray-500">
+              {% if a.payment.check_number %}#{{ a.payment.check_number }}{% else %}—{% endif %}
+            </td>
+            <td class="tbl-td-r font-semibold text-green-700">${{ "%.2f"|format(a.amount_applied) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="border-t-2 border-gray-200">
+          <tr class="bg-gray-50">
+            <td colspan="3" class="px-4 py-2 text-right text-xs font-semibold text-gray-500">Total received</td>
+            <td class="px-4 py-2 text-right text-sm font-bold text-green-700 tabular-nums">${{ "%.2f"|format(totals.amount_paid) }}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+
+  {# ════════════════════════════════════════════════════════════════════════
+     TAKE PAYMENT DRAWER (toggle from header_actions on OPEN/PARTIAL)
+  ═══════════════════════════════════════════════════════════════════════════ #}
+  {% if invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL] %}
+  <div id="payment-drawer" class="hidden card border-l-4 border-l-brand-700"
+       x-data="{ method: '{{ PaymentMethod.CASH }}' }">
+    <div class="card-body">
+      <form method="post" action="/invoices/{{ invoice.id }}/payment" class="space-y-3">
+        <p class="text-sm font-semibold text-gray-800">Record Payment</p>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div>
+            <label class="form-label">Amount</label>
+            <input type="number" name="amount" step="0.01" min="0.01" required
+                   value="{{ "%.2f"|format(totals.balance_due) }}"
+                   class="form-input"/>
+          </div>
+          <div>
+            <label class="form-label">Method</label>
+            <select name="method" x-model="method" class="form-select">
+              <option value="{{ PaymentMethod.CASH }}">Cash</option>
+              <option value="{{ PaymentMethod.CHECK }}">Check</option>
+              <option value="{{ PaymentMethod.CARD }}">Card</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label">Check #</label>
+            <input type="text" name="check_number" placeholder="—"
+                   x-bind:disabled="method !== '{{ PaymentMethod.CHECK }}'"
+                   class="form-input disabled:bg-gray-50 disabled:text-gray-400"/>
+          </div>
+          <div>
+            <label class="form-label">Notes</label>
+            <input type="text" name="notes" placeholder="—" class="form-input"/>
+          </div>
+        </div>
+        <div class="flex justify-end gap-2">
+          <button type="button" class="btn-secondary btn-sm"
+                  onclick="document.getElementById('payment-drawer').classList.add('hidden')">Cancel</button>
+          <button type="submit" class="btn-primary btn-sm">Record Payment</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+
+  {# ════════════════════════════════════════════════════════════════════════
+     VOID DRAWER
+  ═══════════════════════════════════════════════════════════════════════════ #}
+  {% if invoice.status not in [InvoiceStatus.DRAFT, InvoiceStatus.VOID] %}
+  <div id="void-drawer" class="hidden card border-l-4 border-l-red-400"
+       x-data="{ reason: '' }">
+    <div class="card-body">
+      <form method="post" action="/invoices/{{ invoice.id }}/void" class="space-y-3">
+        <p class="text-sm font-semibold text-red-700">Void this invoice</p>
+        <p class="text-xs text-red-600">Inventory will be reversed; payment allocations marked reversed. This cannot be undone.</p>
+        <div class="flex items-end gap-3">
+          <div class="flex-1">
+            <label class="form-label">Reason (required)</label>
+            <input type="text" name="reason" x-model="reason" required placeholder="e.g. wrong customer, duplicate, customer cancel"
+                   @keydown.enter.prevent
+                   class="form-input"/>
+          </div>
+          <button type="submit" class="btn-danger btn-sm" :disabled="!reason.trim()">Confirm Void</button>
+          <button type="button" class="btn-secondary btn-sm"
+                  onclick="document.getElementById('void-drawer').classList.add('hidden')">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

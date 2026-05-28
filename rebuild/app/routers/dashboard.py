@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.constants import CoreStatus, InvoiceStatus, QuoteOutcome, QuoteStatus, SOStatus
 from app.deps import get_db
-from app.models.invoice import Invoice, Payment
+from app.models.invoice import Invoice, InvoiceLine, Payment
 from app.models.quote import Quote, QuoteLine, SalesOrder
 from app.models.purchase_order import PurchaseOrder
 from app.models.core import CoreCharge
@@ -136,7 +136,8 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         .all()
     )
 
-    # Monthly revenue (last 6 months) — finalized invoices only
+    # Monthly revenue (last 6 months) — sum invoice_lines since Invoice.total is a @property
+    # Formula: unit_price * qty * (1 - discount_pct / 100), grouped by invoice month.
     monthly_labels: list[str] = []
     monthly_totals: list[float] = []
     for i in range(5, -1, -1):
@@ -146,7 +147,13 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
             m += 12
             y -= 1
         total = (
-            db.query(func.sum(Invoice.total))
+            db.query(
+                func.sum(
+                    InvoiceLine.unit_price * InvoiceLine.qty
+                    * (1 - InvoiceLine.discount_pct / 100)
+                )
+            )
+            .join(InvoiceLine.invoice)
             .filter(
                 Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL, InvoiceStatus.PAID]),
                 extract("year", Invoice.created_at) == y,

@@ -40,7 +40,7 @@
   </div>
   {% endif %}
 
-  <a href="/invoices/{{ invoice.id }}/print" target="_blank" rel="noopener"
+  <a href="/invoices/{{ invoice.id }}/print?auto=1" target="_blank" rel="noopener"
      class="btn-secondary btn-sm inline-flex items-center gap-1.5">
     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -305,16 +305,22 @@
               <option value="{{ PaymentMethod.OTHER }}">Other</option>
             </select>
           </div>
+          <div>
+            <label class="form-label">Date</label>
+            <input name="payment_date" type="date"
+                   value="{{ today.strftime('%Y-%m-%d') }}"
+                   class="form-input" />
+          </div>
           <div x-show="method === '{{ PaymentMethod.CHECK }}'">
             <label class="form-label">Check #</label>
             <input name="check_number" type="text" placeholder="Check number"
                    x-bind:disabled="method !== '{{ PaymentMethod.CHECK }}'"
                    class="form-input" />
           </div>
-          <div>
-            <label class="form-label">Notes</label>
-            <input name="notes" type="text" placeholder="Optional" class="form-input" />
-          </div>
+        </div>
+        <div>
+          <label class="form-label">Notes (optional)</label>
+          <input name="notes" type="text" placeholder="Reference, memo, etc." class="form-input w-full md:w-2/3" />
         </div>
         <div class="flex justify-end">
           <button type="submit" class="btn-primary">Record Payment</button>

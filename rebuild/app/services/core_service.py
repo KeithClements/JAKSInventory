@@ -52,7 +52,11 @@ class CoreService(BaseService):
         if invoice is None:
             raise ValueError(f"Invoice {invoice_id} not found")
 
-        return_days = int(_get_setting(self.db, "default_core_return_days", "30"))
+        _days_raw = _get_setting(self.db, "default_core_return_days", "30").strip()
+        try:
+            return_days = int(_days_raw) if _days_raw else 30
+        except ValueError:
+            return_days = 30
         deadline = datetime.utcnow() + timedelta(days=return_days)
 
         core = CoreCharge(
