@@ -219,9 +219,17 @@ class RAService(BaseService):
 
     def close_ra(self, ra_id: int) -> ReturnAuthorization:
         """
-        Close the RA and apply account credit — RECEIVED (or OPEN) → CLOSED.
-        Credit is applied via CRMService.add_credit (sole owner of credit_balance).
+        Close the RA — RECEIVED (or OPEN) → CLOSED.
+
+        R8 — When there's credit due, create a CreditMemo with trigger=ACCEPTED_RA
+        and auto-close it so the residual goes to customer.credit_balance. The CM
+        becomes the audit document for the credit (replaces direct CRMService
+        write). User can later choose to apply it to a specific invoice if needed
+        (Phase 2 — for now it goes straight to credit balance).
         """
+        from app.constants import CreditMemoTrigger
+        from app.services.credit_memo_service import CreditMemoService
+
         ra = self._get_or_404(ra_id)
         if ra.status not in (RAStatus.RECEIVED, RAStatus.OPEN):
             raise ValueError(
@@ -231,18 +239,47 @@ class RAService(BaseService):
 
         credit = ra.total_credit
         old_status = ra.status
+        cm_id: int | None = None
 
-        # Apply credit FIRST (CRMService is sole owner of credit_balance and commits internally).
-        # Status update happens after that commit — same two-phase pattern as WarrantyService.
+        # R8 — issue credit memo for the accepted return value.
+        # auto_close_to_credit=True moves the unapplied balance to credit_balance
+        # via CreditMemoService.close_credit_memo → CRMService.add_credit.
         if credit > 0:
-            from app.services.crm_service import CRMService
-            CRMService(self.db, self.current_user_id).add_credit(
-                customer_id=ra.customer_id,
-                amount=credit,
-                reason=f"Return authorization {ra.ra_number}",
-            )
+            cm_lines = [
+                {
+                    "description": ln.description or "Returned item",
+                    "qty": ln.qty_returned_to_stock or ln.qty,
+                    "unit_price": ln.unit_price,
+                    "product_id": ln.product_id,
+                }
+                for ln in ra.lines
+                if ((ln.qty_returned_to_stock or ln.qty) > 0 and ln.unit_price > 0)
+            ]
+            # Restocking fee reduces the credit total. Apply as a negative-priced
+            # line OR just subtract from the customer line. Cleanest: subtract
+            # restocking fee inline by reducing the line subtotal.
+            for i, ln_data in enumerate(cm_lines):
+                ra_line = ra.lines[i]
+                if ra_line.restocking_fee:
+                    # bake fee in by reducing unit_price proportionally
+                    qty = ln_data["qty"]
+                    if qty > 0:
+                        fee_per_unit = ra_line.restocking_fee / qty
+                        ln_data["unit_price"] = max(0.0, ln_data["unit_price"] - fee_per_unit)
 
-        # CRMService committed (or no credit to apply) — now close the RA.
+            if cm_lines:
+                cm = CreditMemoService(self.db, self.current_user_id).create_credit_memo(
+                    customer_id=ra.customer_id,
+                    trigger_type=CreditMemoTrigger.ACCEPTED_RA,
+                    lines=cm_lines,
+                    original_invoice_id=ra.invoice_id,
+                    ra_id=ra.id,
+                    reason=f"Return authorization {ra.ra_number}",
+                    auto_close_to_credit=True,
+                )
+                cm_id = cm.id
+
+        # CM service committed — now close the RA
         ra.status = RAStatus.CLOSED
         self.audit(
             entity_type=EntityType.RETURN_AUTHORIZATION,
@@ -251,10 +288,11 @@ class RAService(BaseService):
             old_value={"status": old_status},
             new_value={
                 "status": RAStatus.CLOSED,
-                **({"credit_applied": credit} if credit > 0 else {}),
+                **({"credit_applied": credit, "credit_memo_id": cm_id}
+                   if credit > 0 else {}),
             },
             notes=(
-                f"Return closed — ${credit:.2f} credit applied to customer account"
+                f"Return closed — ${credit:.2f} credit memo issued"
                 if credit > 0
                 else "Return closed — no credit applicable"
             ),

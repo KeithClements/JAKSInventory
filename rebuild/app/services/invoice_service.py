@@ -629,6 +629,74 @@ class InvoiceService(BaseService):
             invoice.lock_reason = None
         self.db.flush()
 
+    # ── Credit Memo Issuance (R8 — locked-invoice correction) ────────────────
+
+    def issue_credit_memo(
+        self,
+        invoice_id: int,
+        lines: list[dict] | None = None,
+        reason: str = "",
+        auto_apply: bool = False,
+        auto_close_to_credit: bool = False,
+    ) -> object:
+        """
+        R8 — Manual credit memo issuance against a locked invoice.
+
+        This is the "correct a locked invoice" path. Once an invoice is OPEN
+        (locked) or QBO-pushed, edits aren't allowed — instead, issue a CM that
+        zeros out the bad amount, then create a fresh invoice if needed.
+
+        Args:
+            invoice_id:           the invoice being corrected
+            lines:                CM line dicts. If None, defaults to a single
+                                  line for the full invoice subtotal
+            reason:               short reason text (required for audit)
+            auto_apply:           if True, immediately apply the CM to the same
+                                  invoice (reduces its balance_due)
+            auto_close_to_credit: if True AND not auto_apply, push the CM
+                                  amount to customer.credit_balance immediately
+
+        Permission: ISSUE_CREDIT_MEMO. Audit row is always written.
+        """
+        from app.constants import CreditMemoTrigger
+        from app.services.credit_memo_service import CreditMemoService
+
+        invoice = self._get_or_404(invoice_id)
+        if invoice.status == InvoiceStatus.VOID:
+            raise ValueError(
+                f"Invoice {invoice.invoice_number} is void — no credit memo needed"
+            )
+        if not reason.strip():
+            raise ValueError("A reason is required when issuing a credit memo")
+
+        # Default lines: one line crediting the full subtotal
+        if not lines:
+            lines = [{
+                "description": f"Credit for invoice {invoice.invoice_number}: {reason}",
+                "qty": 1,
+                "unit_price": invoice.subtotal + (invoice.tax_amount or 0.0),
+                "original_invoice_line_id": None,
+            }]
+
+        cm_svc = CreditMemoService(self.db, self.current_user_id)
+        cm = cm_svc.create_credit_memo(
+            customer_id=invoice.customer_id,
+            trigger_type=CreditMemoTrigger.LOCKED_INVOICE_CORRECTION,
+            lines=lines,
+            original_invoice_id=invoice.id,
+            reason=reason,
+            auto_close_to_credit=auto_close_to_credit and not auto_apply,
+        )
+
+        # Optionally apply to the same invoice
+        if auto_apply:
+            self.db.expire(invoice)
+            target = min(cm.unapplied_amount, invoice.balance_due)
+            if target > 0:
+                cm_svc.apply_credit_memo(cm.id, invoice.id, target)
+
+        return cm
+
     # ── Customer Credit Application (R2 — "Apply Available Credit") ──────────
 
     def apply_customer_credit(

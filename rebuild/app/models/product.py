@@ -162,6 +162,7 @@ class Product(Base):
     cross_references: Mapped[list[CrossReference]] = relationship(
         "CrossReference",
         foreign_keys="CrossReference.product_id",
+        primaryjoin="Product.id == CrossReference.product_id",
         back_populates="product",
         cascade="all, delete-orphan",
     )
