@@ -1,0 +1,152 @@
+{# ── Invoice bottom preview panel ── loaded via htmx.ajax() on row click ── #}
+{# Context: inv, InvoiceStatus, LineType, now #}
+
+{# Status chip color map (JAKS_UI_Change_Plan.md Invoice List brief) #}
+{% set chip_map = {
+  'draft':   ('bg-gray-100 text-gray-600',  'bg-gray-400'),
+  'open':    ('bg-blue-50 text-blue-700',   'bg-blue-500'),
+  'partial': ('bg-amber-100 text-amber-700','bg-amber-500'),
+  'paid':    ('bg-green-50 text-green-700', 'bg-green-500'),
+  'void':    ('bg-red-100 text-red-700',    'bg-red-400'),
+} %}
+{% set chip_cls, chip_dot = chip_map.get(inv.status, ('bg-gray-100 text-gray-600', 'bg-gray-400')) %}
+
+<div class="px-6 py-4">
+  <div class="grid grid-cols-4 gap-6">
+
+    {# ── Identity ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Identity</p>
+      <div class="space-y-1.5">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="font-mono text-base font-bold text-brand-700 leading-none">{{ inv.invoice_number }}</span>
+          <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold {{ chip_cls }}">
+            <span class="w-1.5 h-1.5 rounded-full {{ chip_dot }} shrink-0"></span>
+            {{ inv.status | title }}
+          </span>
+          {% if inv.is_locked and inv.status not in [InvoiceStatus.PAID, InvoiceStatus.VOID] %}
+          <span class="px-1 py-0 rounded text-[10px] font-semibold bg-amber-50 text-amber-600 border border-amber-100"
+                title="Locked{% if inv.lock_reason %} — {{ inv.lock_reason | replace('_', ' ') | title }}{% endif %}">Locked</span>
+          {% endif %}
+        </div>
+        <p class="text-sm font-medium text-gray-800 leading-snug">{{ inv.customer.company_name }}</p>
+        {# Source document #}
+        {% if inv.sales_order_id %}
+        <a href="/sales-orders/{{ inv.sales_order_id }}"
+           class="inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline">
+          From SO {{ inv.sales_order.so_number }}
+        </a>
+        {% elif inv.quote_id %}
+        <a href="/quotes/{{ inv.quote_id }}"
+           class="inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline">
+          From Quote #{{ inv.quote_id }}
+        </a>
+        {% else %}
+        <p class="text-[11px] text-gray-400">Direct invoice</p>
+        {% endif %}
+        <p class="text-[11px] text-gray-400 mt-0.5">Created {{ inv.created_at.strftime('%b %d, %Y') if inv.created_at else '—' }}</p>
+      </div>
+    </div>
+
+    {# ── Financials ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Financials</p>
+      <div class="space-y-1.5">
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Subtotal</span>
+          <span class="text-sm text-gray-700 tabular-nums">${{ "%.2f"|format(inv.subtotal) }}</span>
+        </div>
+        {% if inv.is_taxable %}
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Tax ({{ "%.2f"|format(inv.tax_rate) }}%)</span>
+          <span class="text-sm text-gray-700 tabular-nums">${{ "%.2f"|format(inv.tax_amount) }}</span>
+        </div>
+        {% endif %}
+        <div class="flex items-center justify-between pt-1 border-t border-gray-100">
+          <span class="text-xs text-gray-500">Total</span>
+          <span class="text-sm font-bold text-gray-900 tabular-nums">${{ "%.2f"|format(inv.total) }}</span>
+        </div>
+        {% if inv.amount_paid > 0 %}
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Paid</span>
+          <span class="text-sm text-green-600 tabular-nums">−${{ "%.2f"|format(inv.amount_paid) }}</span>
+        </div>
+        {% endif %}
+        <div class="flex items-center justify-between pt-1 border-t border-gray-100">
+          <span class="text-xs text-gray-500">Balance Due</span>
+          {% if inv.balance_due > 0 %}
+          <span class="text-sm font-bold text-red-600 tabular-nums">${{ "%.2f"|format(inv.balance_due) }}</span>
+          {% else %}
+          <span class="text-sm font-semibold text-gray-400 tabular-nums">$0.00</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    {# ── Dates & Refs ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Dates &amp; Refs</p>
+      <div class="space-y-1.5">
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Due Date</span>
+          {% if inv.due_date %}
+          <span class="text-sm tabular-nums {% if inv.is_overdue %}font-bold text-amber-600{% else %}text-gray-700{% endif %}">
+            {{ inv.due_date.strftime('%b %d, %Y') }}{% if inv.is_overdue %} <span class="text-[10px]">overdue</span>{% endif %}
+          </span>
+          {% else %}
+          <span class="text-sm text-gray-400">—</span>
+          {% endif %}
+        </div>
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">PO #</span>
+          {% if inv.customer_po_number %}
+          <span class="text-sm font-mono text-gray-700">{{ inv.customer_po_number }}</span>
+          {% else %}<span class="text-sm text-gray-400">—</span>{% endif %}
+        </div>
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Job #</span>
+          {% if inv.customer_job_number %}
+          <span class="text-sm font-mono text-gray-700">{{ inv.customer_job_number }}</span>
+          {% else %}<span class="text-sm text-gray-400">—</span>{% endif %}
+        </div>
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">ESN</span>
+          {% if inv.esn %}
+          <span class="text-sm font-mono text-gray-700">{{ inv.esn }}</span>
+          {% else %}<span class="text-sm text-gray-400">—</span>{% endif %}
+        </div>
+        {% if inv.engine_manufacturer or inv.engine_model %}
+        <p class="text-[11px] text-gray-400 pt-0.5">
+          {{ inv.engine_manufacturer }}{% if inv.engine_model %} · {{ inv.engine_model }}{% endif %}
+        </p>
+        {% endif %}
+      </div>
+    </div>
+
+    {# ── Actions ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Actions</p>
+      <div class="flex flex-col gap-1.5">
+        <a href="/invoices/{{ inv.id }}"
+           class="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold
+                  bg-brand-700 text-white hover:bg-brand-600 transition-colors">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+          </svg>
+          Open Invoice
+        </a>
+        <a href="/invoices/{{ inv.id }}/print" target="_blank"
+           class="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold
+                  bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 transition-colors">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/>
+          </svg>
+          Print
+        </a>
+      </div>
+    </div>
+
+  </div>{# end grid #}
+</div>

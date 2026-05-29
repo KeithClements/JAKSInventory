@@ -656,6 +656,105 @@ class CoreService(BaseService):
         self.db.commit()
         return core
 
+    # ── Core Credit Issuance (R3) ────────────────────────────────────────────
+
+    def issue_core_credit(
+        self,
+        core_charge_id: int,
+        credit_method: str,
+        check_number: str | None = None,
+        notes: str = "",
+    ) -> None:
+        """
+        R3 — Issue credit to the customer for a returned core.
+
+        credit_method values (CoreCreditMethod enum):
+          ACCOUNT_CREDIT — increment customer.credit_balance via CRMService.
+          CHECK          — create a Payment row with direction=REFUND_TO_CUSTOMER.
+                           Does NOT touch credit_balance; wife cuts the check manually.
+          HOLD           — record the intent but make no financial change yet.
+
+        Call this when you want to issue credit independently of the inspection
+        flow (e.g., for HOLD inspections resolved later, or when the credit
+        method should differ from the default ACCOUNT_CREDIT issued by
+        record_customer_return/complete_inspection).
+
+        Raises ValueError if:
+          - core is not found
+          - credit_method is invalid
+          - core has no associated customer
+          - core.qty_returned is 0 (nothing to credit)
+        """
+        valid_methods = {
+            CoreCreditMethod.ACCOUNT_CREDIT,
+            CoreCreditMethod.CHECK,
+            CoreCreditMethod.HOLD,
+        }
+        if credit_method not in valid_methods:
+            raise ValueError(
+                f"Invalid credit_method '{credit_method}'. "
+                f"Must be one of {sorted(valid_methods)}"
+            )
+
+        core = self._get_or_404(core_charge_id)
+        if core.customer_id is None:
+            raise ValueError(
+                f"CoreCharge {core_charge_id} has no customer — cannot issue credit"
+            )
+        if core.qty_returned <= 0:
+            raise ValueError(
+                f"CoreCharge {core_charge_id} has no returned qty — nothing to credit"
+            )
+
+        credit_amount = round(core.qty_returned * core.customer_unit_charge, 2)
+
+        if credit_method == CoreCreditMethod.ACCOUNT_CREDIT:
+            from app.services.crm_service import CRMService
+            CRMService(self.db, self.current_user_id).add_credit(
+                customer_id=core.customer_id,
+                amount=credit_amount,
+                reason=(
+                    f"Core return credit (ACCOUNT_CREDIT) for charge #{core_charge_id}"
+                    + (f" — {notes}" if notes else "")
+                ),
+            )
+
+        elif credit_method == CoreCreditMethod.CHECK:
+            # Record an outbound payment (wife cuts the actual check)
+            from app.constants import PaymentDirection, PaymentMethod, PaymentStatus, QBOSyncStatus
+            from app.models.invoice import Payment
+            refund = Payment(
+                customer_id=core.customer_id,
+                payment_date=datetime.utcnow(),
+                payment_method=PaymentMethod.CHECK,
+                direction=PaymentDirection.REFUND_TO_CUSTOMER,
+                check_number=check_number,
+                amount_received=-round(credit_amount, 2),  # negative = outflow
+                status=PaymentStatus.APPLIED,
+                notes=(
+                    f"Core return refund check for charge #{core_charge_id}"
+                    + (f" — {notes}" if notes else "")
+                ),
+                qbo_sync_status=QBOSyncStatus.PENDING,
+            )
+            self.db.add(refund)
+
+        # HOLD: no financial action — just record the intent in the audit log
+
+        self.audit(
+            entity_type=EntityType.CORE_CHARGE,
+            entity_id=core_charge_id,
+            action=AuditAction.STATUS_CHANGED,
+            new_value={
+                "action": "issue_core_credit",
+                "credit_method": credit_method,
+                "credit_amount": credit_amount,
+                "check_number": check_number,
+                "notes": notes,
+            },
+        )
+        self.db.commit()
+
     # ── Private ───────────────────────────────────────────────────────────────
 
     def _get_or_404(self, core_charge_id: int) -> CoreCharge:

@@ -8,8 +8,9 @@ from app.constants import (
     QuoteStatus, QuoteOutcome, QuoteFollowupStatus,
     SOStatus, SOPaymentMode, SOLineSource,
     FulfillmentSource, SOLineStatus,
-    LineType, LineRole,
+    LineType, LineRole, QBOSyncStatus,
 )
+from app.models.mixins import QBOSyncMixin
 from app.utils import calc_line_total, calc_margin_pct
 
 
@@ -141,6 +142,8 @@ class QuoteLine(Base):
 
     is_optional: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     option_group: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Set true when user manually overrides customer.discount_pct (QuoteService.update_line_discount)
+    discount_overridden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     parent_line_id: Mapped[int | None] = mapped_column(
         ForeignKey("quote_lines.id"), nullable=True
@@ -182,7 +185,7 @@ class QuoteLine(Base):
 # SALES ORDER  (confirmed missing workflow step between Quote and Invoice)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class SalesOrder(Base):
+class SalesOrder(QBOSyncMixin, Base):
     __tablename__ = "sales_orders"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -194,6 +197,11 @@ class SalesOrder(Base):
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=SOStatus.OPEN
     )
+
+    # ── QBO Sync ─────────────────────────────────────────────────────────────
+    # qbo_sync_status, qbo_last_synced_at, qbo_sync_error, qbo_sync_retry_count
+    # are inherited from QBOSyncMixin.
+    qbo_so_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # ── Payment at SO stage (D4 — 3 modes confirmed) ──────────────────────────
     payment_mode: Mapped[str] = mapped_column(

@@ -106,6 +106,26 @@ class ResearchService(BaseService):
         )
         return item
 
+    def suggest_promote_to_proven(self, cross_ref_id: int) -> bool:
+        """
+        R5 — Return True if the cross-reference has been used in ≥3 successful sales.
+
+        The UI surfaces this as a "Promote to Proven" suggestion. The user must
+        explicitly confirm; this method only answers the eligibility question.
+
+        Returns False (not True) if the cross-reference is not found — caller treats
+        a missing cross-ref as ineligible rather than crashing.
+        """
+        from app.models.product import CrossReference
+        xref = (
+            self.db.query(CrossReference)
+            .filter(CrossReference.id == cross_ref_id)
+            .first()
+        )
+        if xref is None:
+            return False
+        return (xref.successful_sale_count or 0) >= 3
+
     def generate_dealer_request_template(self, item: ResearchItem) -> str:
         """Returns plain-text template for copy/paste into a dealer email or message."""
         from app.services.messaging_service import MessagingService

@@ -433,7 +433,7 @@ class POService(BaseService):
         self.audit(
             entity_type=EntityType.PURCHASE_ORDER,
             entity_id=po.id,
-            action=AuditAction.UPDATED,
+            action=AuditAction.EDITED,
             new_value={
                 "action": "cancel_line",
                 "po_line_id": po_line_id,

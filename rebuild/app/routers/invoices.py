@@ -112,15 +112,18 @@ def _workspace_context(db: Session, request: Request, invoice: Invoice) -> dict:
     }
 
 
-# ── L2 list tab definitions (JAKS_UI_Change_Plan.md §2) ──────────────────────
+# ── L2 list tab definitions (JAKS_UI_Change_Plan.md §6 — Invoice List brief) ──
 # Maps user-facing tab slug → underlying invoice statuses it covers.
-# "all" → no filter (empty list signals "no filter", but excludes VOID).
-# "overdue" is virtual — computed from due_date, not a status (see _filtered_query).
+# "all" → every non-VOID status (VOID kept out so it doesn't pollute "all").
+# "draft" → not yet finalized.  "open" → finalized, nothing paid yet.
+# "partial" → some payment received.  "overdue" is virtual — open/partial whose
+# due_date has passed (see list query).
 INV_TAB_GROUPS: dict[str, list[str]] = {
     "all":     [InvoiceStatus.DRAFT, InvoiceStatus.OPEN, InvoiceStatus.PARTIAL, InvoiceStatus.PAID],
-    "open":    [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL],
-    "overdue": [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL],  # + due_date < now
     "draft":   [InvoiceStatus.DRAFT],
+    "open":    [InvoiceStatus.OPEN],
+    "partial": [InvoiceStatus.PARTIAL],
+    "overdue": [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL],  # + due_date < now
     "paid":    [InvoiceStatus.PAID],
     "void":    [InvoiceStatus.VOID],
 }
@@ -129,16 +132,17 @@ INV_TAB_GROUPS: dict[str, list[str]] = {
 _INV_STATUS_TO_TAB: dict[str, str] = {
     InvoiceStatus.DRAFT:   "draft",
     InvoiceStatus.OPEN:    "open",
-    InvoiceStatus.PARTIAL: "open",
+    InvoiceStatus.PARTIAL: "partial",
     InvoiceStatus.PAID:    "paid",
     InvoiceStatus.VOID:    "void",
 }
 
 INV_LIST_TABS: list[tuple[str, str]] = [
     ("all",     "All"),
-    ("open",    "Open"),
-    ("overdue", "Overdue"),
     ("draft",   "Draft"),
+    ("open",    "Open"),
+    ("partial", "Partial"),
+    ("overdue", "Overdue"),
     ("paid",    "Paid"),
     ("void",    "Void"),
 ]
@@ -190,9 +194,10 @@ def invoice_list(
 
     counts = {
         "all":     _group_count("all"),
-        "open":    _group_count("open"),
-        "overdue": overdue_count,
         "draft":   _group_count("draft"),
+        "open":    _group_count("open"),
+        "partial": _group_count("partial"),
+        "overdue": overdue_count,
         "paid":    _group_count("paid"),
         "void":    _group_count("void"),
     }

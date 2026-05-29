@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 
 from app.constants import (
     AuditAction, EntityType, LineRole, LineType,
+    NON_DISCOUNTABLE_LINE_TYPES,
     QuoteOutcome, QuoteStatus, SOPaymentMode,
 )
 from app.models.quote import LostSaleLog, Quote, QuoteLine
@@ -77,12 +78,18 @@ class QuoteService(BaseService):
         Add a line to a quote. Auto-populates cost from preferred vendor source.
         line_type: 'product' | 'note' | 'core_charge' | 'misc_charge'
 
+        Per plan: auto-applies customer.discount_pct when the caller does not
+        explicitly supply discount_pct AND the line type is discountable.
+        Non-discountable line types (core charges, freight, surcharges, etc.) are
+        forced to discount_pct=0 regardless of the caller's value.
+
         Returns a list of all newly-created lines: [primary_line] normally, or
         [primary_line, core_line] when the product carries a core charge and this
         is a top-level PRODUCT line.  Callers that only need the primary line can
         still do `lines[0]`.
         """
         from app.models.product import Product
+        from app.models.customer import Customer
 
         quote = self._get_or_404(quote_id)
         sort_order = max((ln.sort_order for ln in quote.lines), default=-1) + 1
@@ -95,6 +102,16 @@ class QuoteService(BaseService):
         merged = {**data, "product_id": product_id, "unit_cost": unit_cost}
         if merged.get("line_role") == LineRole.UPGRADE_OPTION and "is_included" not in data:
             merged["is_included"] = False
+
+        # Auto-apply customer discount / enforce non-discountable rules
+        line_type = merged.get("line_type", LineType.PRODUCT)
+        if line_type in NON_DISCOUNTABLE_LINE_TYPES:
+            # Force zero regardless of what the caller passed
+            merged["discount_pct"] = 0.0
+        elif "discount_pct" not in data:
+            # Auto-apply customer default when caller didn't specify
+            customer = self.db.query(Customer).filter(Customer.id == quote.customer_id).first()
+            merged["discount_pct"] = float(customer.discount_pct) if customer else 0.0
 
         line = self._add_line_internal(quote_id, merged, sort_order)
         added: list[QuoteLine] = [line]
@@ -481,6 +498,138 @@ class QuoteService(BaseService):
                     child.is_included = False
 
         self.db.commit()
+
+    # ── Duplicate ─────────────────────────────────────────────────────────────
+
+    def duplicate_quote(self, quote_id: int) -> Quote:
+        """
+        R5 — Copy all lines from quote_id into a new quote with a fresh Q-YYYY-NNNN
+        number. Sets is_duplicate_of_quote_id on the new quote. The original quote
+        is unchanged. The new quote starts as DRAFT so it can be reassigned to a
+        different customer before sending.
+
+        Does NOT copy: outcome, lost_reason, converted_to_*, follow_up data.
+        DOES copy: all lines (including upgrade options / optional lines), discount_pct,
+                   notes, internal_notes, validity_days.
+        """
+        original = self._get_or_404(quote_id)
+        year = datetime.utcnow().year
+        new_number = bump_counter(self.db, "next_quote_number", "Q", year)
+        validity_days = original.validity_days
+
+        dup = Quote(
+            quote_number=new_number,
+            customer_id=original.customer_id,
+            status=QuoteStatus.DRAFT,
+            outcome=QuoteOutcome.PENDING,
+            discount_pct=original.discount_pct,
+            validity_days=validity_days,
+            valid_until=datetime.utcnow() + timedelta(days=validity_days),
+            notes=original.notes,
+            internal_notes=original.internal_notes,
+            is_duplicate_of_quote_id=quote_id,
+        )
+        self.db.add(dup)
+        self.db.flush()
+
+        # Clone lines — two-pass to guarantee parents exist before children regardless
+        # of sort_order (a child could theoretically have a lower sort_order).
+        old_id_to_new: dict[int, int] = {}
+
+        def _clone_line(ln: QuoteLine, new_parent_id: int | None) -> None:
+            new_line = QuoteLine(
+                quote_id=dup.id,
+                product_id=ln.product_id,
+                line_type=ln.line_type,
+                line_role=ln.line_role,
+                is_included=ln.is_included,
+                option_label=ln.option_label,
+                is_optional=ln.is_optional,
+                option_group=ln.option_group,
+                parent_line_id=new_parent_id,
+                description=ln.description,
+                qty=ln.qty,
+                unit_price=ln.unit_price,
+                unit_cost=ln.unit_cost,
+                discount_pct=ln.discount_pct,
+                discount_overridden=ln.discount_overridden,
+                is_core_line=ln.is_core_line,
+                is_auto_generated=ln.is_auto_generated,
+                is_locked_to_parent=ln.is_locked_to_parent,
+                sort_order=ln.sort_order,
+            )
+            self.db.add(new_line)
+            self.db.flush()
+            old_id_to_new[ln.id] = new_line.id
+
+        # Pass 1: top-level lines (no parent)
+        for ln in sorted(original.lines, key=lambda l: l.sort_order):
+            if ln.parent_line_id is None:
+                _clone_line(ln, None)
+
+        # Pass 2: child lines (re-map to new parent id)
+        for ln in sorted(original.lines, key=lambda l: l.sort_order):
+            if ln.parent_line_id is not None:
+                _clone_line(ln, old_id_to_new.get(ln.parent_line_id))
+
+        self.audit(
+            entity_type=EntityType.QUOTE,
+            entity_id=dup.id,
+            action=AuditAction.CREATED,
+            new_value={
+                "quote_number": new_number,
+                "duplicated_from_quote_id": quote_id,
+                "original_quote_number": original.quote_number,
+            },
+        )
+        self.db.commit()
+        return dup
+
+    # ── Line Discount Override ────────────────────────────────────────────────
+
+    def update_line_discount(self, line_id: int, new_pct: float) -> QuoteLine:
+        """
+        R5 — Change the discount % on a single quote line.
+
+        If new_pct differs from customer.discount_pct, sets discount_overridden=True
+        so the UI can flag it and so that duplicate_quote preserves the override.
+        Non-discountable line types (CORE_CHARGE, FREIGHT, etc.) are rejected.
+
+        Audit logged when discount_overridden becomes True.
+        """
+        line = self._get_line_or_404(line_id)
+
+        if line.line_type in NON_DISCOUNTABLE_LINE_TYPES:
+            raise ValueError(
+                f"Line type '{line.line_type}' is non-discountable — discount cannot be set"
+            )
+
+        # Load customer discount for override detection
+        quote = self._get_or_404(line.quote_id)
+        from app.models.customer import Customer
+        customer = self.db.query(Customer).filter(Customer.id == quote.customer_id).first()
+        customer_default = float(customer.discount_pct) if customer else 0.0
+
+        old_pct = line.discount_pct
+        line.discount_pct = round(float(new_pct), 4)
+        line.discount_overridden = abs(new_pct - customer_default) > 0.0001
+
+        if line.discount_overridden:
+            self.audit(
+                entity_type=EntityType.QUOTE,
+                entity_id=line.quote_id,
+                action=AuditAction.EDITED,
+                old_value={"line_id": line_id, "discount_pct": old_pct},
+                new_value={
+                    "line_id": line_id,
+                    "discount_pct": line.discount_pct,
+                    "discount_overridden": True,
+                    "customer_default_pct": customer_default,
+                },
+            )
+
+        self.db.commit()
+        return line
 
     # ── Private helpers ───────────────────────────────────────────────────────
 

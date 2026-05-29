@@ -1,7 +1,7 @@
 # JAKS UI Change Plan
 *Living document — updated as screens are built.*
 
-**Status:** Governance pass completed. Products List = official L2 reference. PO List = L2 complete.
+**Status:** Governance pass completed. Products List = official L2 reference. PO List = L2 complete. Invoice List submitted by UI Builder B — awaiting governance review. Customer List enriched to L1.5 — full L2 upgrade pending primitives decision.
 
 **Scope:** All list and workspace screens in the JAKS Inventory ERP system.
 
@@ -137,9 +137,9 @@ Current target mapping (as of this sprint):
 | Products List | L2.5 | L3 | Reference pattern after final polish |
 | Quotes List | L2 | L2 | Complete |
 | Quote Workspace | L3 candidate | L3 | Autosave, inline editing done |
-| Customers List | L2 candidate | L2 | Needs action buttons review |
-| PO List | L1 | L2 | Needs full upgrade |
-| Invoice List | L1 | L2 | Needs full upgrade |
+| Customers List | L1.5 | L2 | Quick-create slide-over (full fields, 4 footer buttons), detail card redesign, list enriched (phone/email/tier pills/last-sale). Full L2 upgrade (tabs, preview dock, stripe, bulk toolbar) blocked on Invoice List governance + primitives extraction decision. |
+| PO List | L2 | L2 | ✅ Governance pass done |
+| Invoice List | Submitted — pending governance | L2 | Full L2 rewrite done by UI Builder B; awaiting UI Architect governance pass |
 | Product Detail | L1 | L2 | Needs upgrade |
 | Warranty/Core/Returns queues | L1 | L2 | Scheduled for later |
 
@@ -308,8 +308,8 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 |---|---|---|---|---|
 | 1 | Products List | ✅ L2 complete — official reference | L2.5 → L2 ref | Governance pass done |
 | 2 | PO List | ✅ L2 complete | L1 → L2 | Governance pass done; overdue logic bug fixed |
-| 3 | Invoice List | 🔜 In progress — UI Builder B | L1 → L2 | See builder brief below |
-| 4 | Customer List | ⏳ Pending | L2 → L2 | Audit and align to standard |
+| 3 | Invoice List | 🟡 Submitted — governance pending | L1 → L2 | Full L2 rewrite complete; UI Architect governance review next |
+| 4 | Customer List | ⏳ L1.5 enriched — L2 pending | L1.5 → L2 | Quick-create/detail/list enriched this sprint. Full L2 upgrade (tabs, dock, stripe, bulk toolbar) blocked on Invoice List governance pass + primitives extraction decision |
 | 5 | Quotes List | ⏳ Pending | L2 → L2 | Final alignment pass |
 | 6 | Product Detail | ⏳ Pending | L1 → L2 | Section-based card layout |
 | 7 | PO Workspace | ⏳ Pending | L1 → L3 | Autosave, line editor, receive flow |

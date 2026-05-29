@@ -15,115 +15,394 @@
 {% endblock %}
 
 {% block content %}
-{# ── Filters ── #}
-<div class="flex items-center justify-between mb-4 gap-4 flex-wrap">
-  <div class="flex items-center gap-1 bg-gray-100 rounded-lg p-1 flex-wrap">
-    {% set tabs = [
-      ('',                    'All'),
-      (InvoiceStatus.DRAFT,   'Draft'),
-      (InvoiceStatus.OPEN,    'Open'),
-      (InvoiceStatus.PARTIAL, 'Partial'),
-      (InvoiceStatus.PAID,    'Paid'),
-    ] %}
-    {% for val, label in tabs %}
-    <a href="/invoices/?status={{ val }}&q={{ q }}"
-       class="px-3 py-1.5 text-sm font-medium rounded-md transition-colors
-              {% if status_filter == val %}bg-white shadow text-brand-700{% else %}text-gray-600 hover:text-gray-900{% endif %}">
+{# Status chip color map (JAKS_UI_Change_Plan.md Invoice List brief) #}
+{% set chip_map = {
+  'draft':   ('bg-gray-100 text-gray-600',  'bg-gray-400'),
+  'open':    ('bg-blue-50 text-blue-700',   'bg-blue-500'),
+  'partial': ('bg-amber-100 text-amber-700','bg-amber-500'),
+  'paid':    ('bg-green-50 text-green-700', 'bg-green-500'),
+  'void':    ('bg-red-100 text-red-700',    'bg-red-400'),
+} %}
+
+<div
+  class="space-y-4 pb-52"
+  x-data="{
+    selected: {},
+    previewId: null,
+    allIds: [{% for inv in invoices %}{{ inv.id }}{% if not loop.last %},{% endif %}{% endfor %}],
+    get selectedCount() {
+      return Object.values(this.selected).filter(Boolean).length;
+    },
+    isSelected(id) {
+      return !!this.selected[id];
+    },
+    toggleSelect(id) {
+      this.selected = { ...this.selected, [id]: !this.selected[id] };
+    },
+    get allSelected() {
+      return this.allIds.length > 0 && this.allIds.every(id => this.selected[id]);
+    },
+    toggleAll() {
+      if (this.allSelected) {
+        this.selected = {};
+      } else {
+        let s = {};
+        this.allIds.forEach(id => { s[id] = true; });
+        this.selected = s;
+      }
+    },
+    clearSelected() {
+      this.selected = {};
+    },
+    togglePreview(id) {
+      if (this.previewId === id) {
+        this.previewId = null;
+      } else {
+        this.previewId = id;
+        document.getElementById('invoice-preview-body').innerHTML =
+          '<div class=\'flex items-center gap-2 px-6 py-5 text-sm text-gray-400\'>' +
+          '<svg class=\'w-4 h-4 animate-spin\' fill=\'none\' viewBox=\'0 0 24 24\'>' +
+          '<circle class=\'opacity-25\' cx=\'12\' cy=\'12\' r=\'10\' stroke=\'currentColor\' stroke-width=\'4\'></circle>' +
+          '<path class=\'opacity-75\' fill=\'currentColor\' d=\'M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z\'></path>' +
+          '</svg>Loading…</div>';
+        htmx.ajax('GET', '/invoices/preview/' + id, { target: '#invoice-preview-body', swap: 'innerHTML' });
+      }
+    }
+  }"
+>
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   TOOLBAR
+══════════════════════════════════════════════════════════════════════════════ #}
+<div class="flex flex-wrap items-center gap-3">
+
+  {# Status tabs #}
+  <nav class="flex items-center gap-0.5 bg-gray-100 rounded-xl p-1 shrink-0">
+    {% for slug, label in tabs %}
+    <a href="?tab={{ slug }}{% if q %}&q={{ q }}{% endif %}"
+       class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
+              {% if tab == slug %}bg-brand-700 text-white shadow-sm{% else %}text-gray-600 hover:text-gray-900 hover:bg-gray-200/70{% endif %}">
       {{ label }}
+      <span class="text-xs {% if tab == slug %}bg-white/20 text-white{% else %}bg-gray-200 text-gray-500{% endif %} rounded-full px-1.5 py-0.5 leading-none font-semibold tabular-nums">
+        {{ counts[slug] }}
+      </span>
     </a>
     {% endfor %}
-  </div>
+  </nav>
 
-  <form method="get" action="/invoices/" class="flex items-center gap-2">
-    <input type="hidden" name="status" value="{{ status_filter }}" />
-    <input type="text" name="q" value="{{ q }}"
-           placeholder="Invoice #, customer, PO#, ESN…"
-           class="w-56 px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white
-                  focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+  {# Search #}
+  <form method="get" class="flex items-center gap-2 ml-auto">
+    <input type="hidden" name="tab" value="{{ tab }}" />
+    <div class="relative">
+      <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+           fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
+      </svg>
+      <input name="q" value="{{ q }}" placeholder="Invoice #, customer, PO#, ESN…"
+             class="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white w-64
+                    focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400
+                    placeholder:text-gray-400" />
+    </div>
     <button type="submit"
-            class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors">
+            class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200
+                   rounded-lg hover:bg-gray-50 transition-colors">
       Search
     </button>
+    {% if q %}
+    <a href="?tab={{ tab }}"
+       class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</a>
+    {% endif %}
   </form>
+
 </div>
 
-{# ── Table ── #}
-{% set inv_badges = {
-  'draft':   'badge-gray',
-  'open':    'badge-blue',
-  'partial': 'badge-amber',
-  'paid':    'badge-green',
-  'void':    'badge-red',
-} %}
+{# ══════════════════════════════════════════════════════════════════════════════
+   BULK ACTION BAR
+══════════════════════════════════════════════════════════════════════════════ #}
+<div x-show="selectedCount > 0" x-cloak
+     class="flex items-center gap-3 px-4 py-2.5 bg-brand-50 border border-brand-100 rounded-xl">
+  <span class="text-sm font-semibold text-brand-800">
+    <span x-text="selectedCount"></span> selected
+  </span>
+  <div class="h-4 w-px bg-brand-200"></div>
+  <button class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">
+    Export CSV
+  </button>
+  <button @click="clearSelected()"
+          class="ml-auto text-xs font-medium text-gray-400 hover:text-gray-700 transition-colors">
+    Clear selection
+  </button>
+</div>
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   INVOICE TABLE
+══════════════════════════════════════════════════════════════════════════════ #}
 {% if invoices %}
-<div class="card">
+<div class="card overflow-hidden">
   <div class="overflow-x-auto">
-    <table class="tbl">
-      <thead class="tbl-head">
-        <tr>
-          <th class="tbl-th">Invoice #</th>
-          <th class="tbl-th">Customer</th>
-          <th class="tbl-th">PO # / ESN</th>
-          <th class="tbl-th-r">Total</th>
-          <th class="tbl-th-r">Balance</th>
-          <th class="tbl-th">Status</th>
-          <th class="tbl-th">Date</th>
+    <table class="w-full min-w-[980px]">
+
+      {# ── Table head ── #}
+      <thead>
+        <tr class="bg-gray-50 border-b border-gray-200">
+          {# Select all #}
+          <th class="w-10 px-4 py-3 text-center">
+            <input type="checkbox"
+                   :checked="allSelected"
+                   @change="toggleAll()"
+                   class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Invoice #
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Customer
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            PO # / ESN
+          </th>
+          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Total
+          </th>
+          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Balance Due
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Status
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Due Date
+          </th>
+          <th class="px-4 py-3 w-12"></th>
         </tr>
       </thead>
-      <tbody>
+
+      {# ── Table body ── #}
+      <tbody class="divide-y divide-gray-100">
         {% for inv in invoices %}
-        <tr class="tbl-row {% if inv.is_overdue %}bg-red-50/40{% endif %}">
-          <td class="tbl-td">
-            <a href="/invoices/{{ inv.id }}" class="tbl-link font-mono text-xs">{{ inv.invoice_number }}</a>
+
+        {# ── Per-row computed values ── #}
+        {% set chip_cls, chip_dot = chip_map.get(inv.status, ('bg-gray-100 text-gray-600', 'bg-gray-400')) %}
+
+        {# Left-edge stripe + row tint (overdue highest priority) #}
+        {% if inv.is_overdue %}
+          {% set stripe = 'border-l-red-400' %}
+          {% set tint = 'overdue' %}
+        {% elif inv.status == InvoiceStatus.PARTIAL %}
+          {% set stripe = 'border-l-amber-400' %}
+          {% set tint = 'partial' %}
+        {% elif inv.status == InvoiceStatus.OPEN %}
+          {% set stripe = 'border-l-blue-300' %}
+          {% set tint = 'none' %}
+        {% else %}
+          {% set stripe = 'border-l-transparent' %}
+          {% set tint = 'none' %}
+        {% endif %}
+
+        {# ── Row ── #}
+        <tr
+          @click="togglePreview({{ inv.id }})"
+          :class="{
+            'ring-inset ring-1 ring-brand-300 bg-brand-50/40': previewId === {{ inv.id }},
+            'bg-rose-50/30': '{{ tint }}' === 'overdue' && previewId !== {{ inv.id }},
+            'bg-amber-50/20': '{{ tint }}' === 'partial' && previewId !== {{ inv.id }}
+          }"
+          class="cursor-pointer hover:bg-gray-50/80 transition-colors group">
+
+          {# Checkbox — left accent border doubles as status stripe #}
+          <td class="w-10 px-4 py-4 align-middle text-center border-l-4 {{ stripe }}"
+              @click.stop>
+            <input type="checkbox"
+                   :checked="isSelected({{ inv.id }})"
+                   @change="toggleSelect({{ inv.id }})"
+                   class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
           </td>
-          <td class="tbl-td font-medium text-gray-900">{{ inv.customer.company_name }}</td>
-          <td class="tbl-td text-gray-500">
+
+          {# Invoice # + lock micro-badge #}
+          <td class="px-4 py-4 align-middle">
+            <div class="flex items-center gap-2 flex-wrap">
+              <a href="/invoices/{{ inv.id }}"
+                 class="font-mono text-sm font-bold text-brand-700 hover:text-brand-900 hover:underline leading-none"
+                 @click.stop>{{ inv.invoice_number }}</a>
+              {% if inv.is_locked and inv.status not in [InvoiceStatus.PAID, InvoiceStatus.VOID] %}
+              <span class="px-1 py-0 rounded text-[10px] font-semibold bg-amber-50 text-amber-600 border border-amber-100"
+                    title="Locked{% if inv.lock_reason %} — {{ inv.lock_reason | replace('_', ' ') | title }}{% endif %}">Locked</span>
+              {% endif %}
+            </div>
+            {# Source document sub-line #}
+            {% if inv.sales_order_id %}
+            <p class="text-[11px] text-gray-400 mt-0.5">From SO {{ inv.sales_order.so_number }}</p>
+            {% elif inv.quote_id %}
+            <p class="text-[11px] text-gray-400 mt-0.5">From Quote #{{ inv.quote_id }}</p>
+            {% endif %}
+          </td>
+
+          {# Customer #}
+          <td class="px-4 py-4 align-middle max-w-xs">
+            <p class="text-sm font-medium text-gray-900 truncate leading-snug">{{ inv.customer.company_name }}</p>
+            {% if inv.customer_job_number %}
+            <p class="text-xs text-gray-400 mt-0.5 truncate">Job {{ inv.customer_job_number }}</p>
+            {% endif %}
+          </td>
+
+          {# PO # / ESN #}
+          <td class="px-4 py-4 align-middle">
             {% if inv.customer_po_number %}
-            <span class="font-mono text-xs">{{ inv.customer_po_number }}</span>
+            <span class="font-mono text-xs text-gray-700">{{ inv.customer_po_number }}</span>
             {% endif %}
             {% if inv.esn %}
-            <span class="ml-1 text-xs text-gray-400">ESN: {{ inv.esn }}</span>
+            <div class="text-[11px] text-gray-400 mt-0.5">ESN {{ inv.esn }}</div>
             {% endif %}
-            {% if not inv.customer_po_number and not inv.esn %}—{% endif %}
+            {% if not inv.customer_po_number and not inv.esn %}
+            <span class="text-sm text-gray-300">—</span>
+            {% endif %}
           </td>
-          <td class="tbl-td-r font-medium">${{ '%.2f' % inv.total }}</td>
-          <td class="tbl-td-r {% if inv.balance_due > 0 %}font-semibold text-amber-600{% else %}text-gray-400{% endif %}">
-            {% if inv.balance_due > 0 %}${{ '%.2f' % inv.balance_due }}{% else %}—{% endif %}
+
+          {# Total #}
+          <td class="px-4 py-4 align-middle text-right">
+            <span class="text-sm font-bold text-gray-900 tabular-nums">${{ "%.2f"|format(inv.total) }}</span>
           </td>
-          <td class="tbl-td">
-            <span class="{{ inv_badges.get(inv.status, 'badge-gray') }}">
+
+          {# Balance Due #}
+          <td class="px-4 py-4 align-middle text-right">
+            {% if inv.balance_due > 0 %}
+            <span class="text-sm font-bold text-red-600 tabular-nums">${{ "%.2f"|format(inv.balance_due) }}</span>
+            {% else %}
+            <span class="text-xs text-gray-400 tabular-nums">—</span>
+            {% endif %}
+          </td>
+
+          {# Status chip #}
+          <td class="px-4 py-4 align-middle">
+            <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold {{ chip_cls }}">
+              <span class="w-1.5 h-1.5 rounded-full {{ chip_dot }} shrink-0"></span>
               {{ inv.status | title }}
             </span>
-            {% if inv.is_locked and inv.status not in ['paid', 'void'] %}
-            <span class="ml-1 badge-amber" title="Locked — {{ inv.lock_reason | replace('_', ' ') | title if inv.lock_reason else '' }}">🔒</span>
-            {% endif %}
+          </td>
+
+          {# Due Date #}
+          <td class="px-4 py-4 align-middle">
+            {% if inv.due_date %}
+            <span class="text-sm tabular-nums {% if inv.is_overdue %}font-bold text-amber-600{% else %}text-gray-700{% endif %}">
+              {{ inv.due_date.strftime('%b %d, %Y') }}
+            </span>
             {% if inv.is_overdue %}
-            <span class="ml-1 text-xs text-red-500 font-medium">Overdue</span>
+            <div class="text-[10px] text-amber-600 font-medium mt-0.5">overdue</div>
+            {% endif %}
+            {% else %}
+            <span class="text-sm text-gray-300">—</span>
             {% endif %}
           </td>
-          <td class="tbl-td text-gray-400">{{ inv.created_at.strftime('%m/%d/%Y') }}</td>
+
+          {# Quick actions #}
+          <td class="px-4 py-4 align-middle" @click.stop>
+            <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+              <a href="/invoices/{{ inv.id }}"
+                 title="Open invoice"
+                 class="p-1.5 rounded-lg text-gray-400 hover:text-brand-700 hover:bg-brand-50 transition-colors">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+                </svg>
+              </a>
+            </div>
+          </td>
+
         </tr>
         {% endfor %}
       </tbody>
+
     </table>
   </div>
+
+  {# ── Table footer count ── #}
+  <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
+    <span class="text-xs text-gray-400">
+      {{ invoices | length }} invoice{{ 's' if invoices | length != 1 else '' }}
+      {% if tab != 'all' or q %} · filtered{% endif %}
+    </span>
+    <span x-show="selectedCount > 0" x-cloak class="text-xs text-brand-700 font-medium">
+      <span x-text="selectedCount"></span> selected
+    </span>
+  </div>
 </div>
+
 {% else %}
-<div class="card flex flex-col items-center justify-center py-16">
-  <svg class="w-12 h-12 text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-  </svg>
-  <p class="text-gray-500 font-medium">No invoices found</p>
-  {% if q or status_filter %}
-  <p class="text-gray-400 text-sm mt-1">Try adjusting your filter.</p>
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   EMPTY STATE
+══════════════════════════════════════════════════════════════════════════════ #}
+<div class="card flex flex-col items-center justify-center py-16 text-center">
+  <div class="w-14 h-14 rounded-2xl bg-gray-100 flex items-center justify-center mb-4">
+    <svg class="w-7 h-7 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+    </svg>
+  </div>
+  {% if q %}
+  <p class="text-sm font-semibold text-gray-700">No invoices match "{{ q }}"</p>
+  <p class="text-xs text-gray-400 mt-1 mb-4">Try a different invoice #, customer, PO #, or ESN.</p>
+  <a href="?tab={{ tab }}" class="btn-secondary btn-sm">Clear search</a>
+  {% elif tab == 'overdue' %}
+  <p class="text-sm font-semibold text-gray-700">No overdue invoices</p>
+  <p class="text-xs text-gray-400 mt-1">Every open invoice is within its due date.</p>
+  {% elif tab == 'draft' %}
+  <p class="text-sm font-semibold text-gray-700">No draft invoices</p>
+  <p class="text-xs text-gray-400 mt-1">Drafts you start will appear here until finalized.</p>
+  {% elif tab == 'open' %}
+  <p class="text-sm font-semibold text-gray-700">No open invoices</p>
+  <p class="text-xs text-gray-400 mt-1">Nothing is currently awaiting payment.</p>
+  {% elif tab == 'partial' %}
+  <p class="text-sm font-semibold text-gray-700">No partially-paid invoices</p>
+  <p class="text-xs text-gray-400 mt-1">Invoices with a partial payment applied will appear here.</p>
+  {% elif tab == 'paid' %}
+  <p class="text-sm font-semibold text-gray-700">No paid invoices yet</p>
+  <p class="text-xs text-gray-400 mt-1">Fully paid invoices will appear here.</p>
+  {% elif tab == 'void' %}
+  <p class="text-sm font-semibold text-gray-700">No voided invoices</p>
+  <p class="text-xs text-gray-400 mt-1">Voided invoices are kept here for the record.</p>
   {% else %}
-  <p class="text-gray-400 text-sm mt-1">Invoices are created from Sales Orders or directly here.</p>
-  <button type="button" class="mt-3 text-sm link"
+  <p class="text-sm font-semibold text-gray-700">No invoices yet</p>
+  <p class="text-xs text-gray-400 mt-1 mb-4">Invoices are created from Sales Orders or directly here.</p>
+  <button type="button" class="btn-primary btn-sm"
           hx-get="/invoices/new"
           hx-target="#create-slide-content"
           @click="createSlideOpen = true; createSlideTitle = 'New Invoice'">New Invoice →</button>
   {% endif %}
 </div>
 {% endif %}
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   BOTTOM PREVIEW PANEL
+══════════════════════════════════════════════════════════════════════════════ #}
+<div
+  x-show="previewId !== null"
+  x-cloak
+  x-transition:enter="transition ease-out duration-200"
+  x-transition:enter-start="translate-y-full opacity-0"
+  x-transition:enter-end="translate-y-0 opacity-100"
+  x-transition:leave="transition ease-in duration-150"
+  x-transition:leave-start="translate-y-0 opacity-100"
+  x-transition:leave-end="translate-y-full opacity-0"
+  class="fixed bottom-0 left-64 right-0 bg-white border-t-2 border-gray-200 shadow-2xl z-30"
+  style="max-height: 260px; overflow-y: auto;">
+
+  {# Panel header #}
+  <div class="flex items-center justify-between px-6 py-3 border-b border-gray-100 bg-gray-50/80 sticky top-0">
+    <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Invoice Preview</p>
+    <button @click="previewId = null"
+            class="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+      </svg>
+    </button>
+  </div>
+
+  {# Loaded via htmx.ajax() #}
+  <div id="invoice-preview-body"></div>
+
+</div>
+
+</div>{# end x-data wrapper #}
 {% endblock %}

@@ -261,13 +261,13 @@ class InvoiceService(BaseService):
                 ln.discount_pct = invoice.discount_pct
                 if ln.product_id and ln.line_type == LineType.PRODUCT:
                     product = self.db.query(Product).filter(Product.id == ln.product_id).first()
-                    if product and product.suggested_sell_price > 0:
-                        ln.unit_price = product.suggested_sell_price
+                    if product and product.selling_price > 0:
+                        ln.unit_price = product.selling_price
 
         self.audit(
             entity_type=EntityType.INVOICE,
             entity_id=invoice_id,
-            action=AuditAction.UPDATED,
+            action=AuditAction.EDITED,
             old_value={"customer_id": old_customer_id},
             new_value={"customer_id": new_customer_id, "recalc_pricing": recalc_pricing},
         )

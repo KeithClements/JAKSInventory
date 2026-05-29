@@ -460,6 +460,7 @@ class CoreDenialResolution(StrEnum):
 class CoreCreditMethod(StrEnum):
     ACCOUNT_CREDIT = "account_credit"
     CHECK          = "check"
+    HOLD           = "hold"     # record intent; no financial action yet
 
 
 class CoreInspectionOutcome(StrEnum):
