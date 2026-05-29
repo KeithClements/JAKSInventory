@@ -66,65 +66,16 @@ PO_LIST_TABS: list[tuple[str, str]] = [
 
 # ── 3-way match (PO · Receipt · Bill) ────────────────────────────────────────
 #
-# A single source of truth for matching a PO line's *ordered*, *received*, and
-# *billed* quantities/costs. Used by both the per-PO match panel in the workspace
-# and the cross-PO flagged match queue (/purchase-orders/match) so the two views
-# never drift apart.
-
-# Per-line match states, in escalating-attention order.
-_MATCH_FLAG_STATES = {"over_billed", "cost_variance"}  # need AP review
-
-
-def _billed_unit_cost(line: POLine) -> float | None:
-    """Average billed unit cost across this line's vendor-bill lines (None if unbilled)."""
-    qty = sum(bl.qty_billed for bl in line.bill_lines)
-    if qty <= 0:
-        return None
-    amount = sum(bl.qty_billed * bl.unit_cost for bl in line.bill_lines)
-    return round(amount / qty, 2)
-
+# Computation lives in POService.compute_match_line / compute_match_summary so
+# the resolution service methods can call it without a circular import.
+# These thin wrappers keep the call sites in this router unchanged.
 
 def _match_line(line: POLine) -> dict:
-    open_qty = max(0, line.qty_ordered - line.qty_cancelled)  # qty we still expect
-    billed_cost = _billed_unit_cost(line)
-    cost_var = round((billed_cost - line.unit_cost), 2) if billed_cost is not None else 0.0
-
-    if line.qty_billed > line.qty_received:
-        state = "over_billed"
-    elif billed_cost is not None and abs(cost_var) >= 0.01:
-        state = "cost_variance"
-    elif line.qty_received < open_qty:
-        state = "awaiting_receipt"
-    elif line.qty_billed < line.qty_received:
-        state = "awaiting_bill"
-    else:
-        state = "matched"
-
-    return {
-        "line": line,
-        "ordered_qty": line.qty_ordered,
-        "ordered_cost": line.unit_cost,
-        "received_qty": line.qty_received,
-        "billed_qty": line.qty_billed,
-        "billed_cost": billed_cost,
-        "qty_var": line.qty_billed - line.qty_received,   # billed vs received
-        "cost_var": cost_var,                             # billed vs ordered unit cost
-        "state": state,
-        "is_flag": state in _MATCH_FLAG_STATES,
-    }
+    return POService.compute_match_line(line)
 
 
 def _match_summary(po: PurchaseOrder) -> dict:
-    rows = [_match_line(ln) for ln in po.lines]
-    flagged = [r for r in rows if r["is_flag"]]
-    # "Has activity" → worth showing the match panel at all (something received or billed).
-    has_activity = any(r["received_qty"] or r["billed_qty"] for r in rows)
-    return {
-        "rows": rows,
-        "flag_count": len(flagged),
-        "has_activity": has_activity,
-        "matched_count": sum(1 for r in rows if r["state"] == "matched"),
-    }
+    return POService.compute_match_summary(po)
 
 
 def _workspace_ctx(po: PurchaseOrder) -> dict:
@@ -810,6 +761,104 @@ async def po_approve_bill(po_id: int, bill_id: int, db: Session = Depends(get_db
             status_code=303,
         )
     return RedirectResponse(f"/purchase-orders/{po_id}?ok=bill_approved", status_code=303)
+
+
+@router.post("/{po_id}/bills/{bill_id}/lines/{line_id}/resolve", response_class=RedirectResponse)
+async def po_resolve_match_line(
+    po_id: int, bill_id: int, line_id: int,
+    request: Request, db: Session = Depends(get_db),
+):
+    """
+    Record an AP resolution decision on a flagged PO match line.
+
+    Requires APPROVE_VENDOR_BILL. Transitions the bill from DISCREPANCY → PENDING
+    when all flagged lines are resolved, opening the gate for explicit approval.
+    Does NOT approve the bill.
+    """
+    form = await request.form()
+    decision = str(form.get("decision", "")).strip()
+    reason = str(form.get("reason", "")).strip()
+
+    svc = POService(db, current_user_id=CURRENT_USER_ID)
+    try:
+        svc.resolve_match_line(line_id, decision, reason)
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote(str(exc))}",
+            status_code=303,
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error resolving match line %s", line_id)
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote('Unexpected error — line was not resolved.')}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/purchase-orders/{po_id}?ok=match_resolved", status_code=303)
+
+
+@router.post("/{po_id}/bills/{bill_id}/create-credit", response_class=RedirectResponse)
+async def po_create_match_credit(
+    po_id: int, bill_id: int,
+    request: Request, db: Session = Depends(get_db),
+):
+    """
+    Create a vendor credit memo for a match discrepancy on a specific PO line.
+
+    Requires APPROVE_VENDOR_BILL + ISSUE_CREDIT_MEMO (both).
+    Sets the line's match_resolution to CREDITED and links the VCM.
+    apply_now=1 immediately allocates the VCM against the discrepancy bill.
+    """
+    form = await request.form()
+    po_line_id_raw = str(form.get("po_line_id", "")).strip()
+    amount_raw = str(form.get("amount", "")).strip()
+    reason = str(form.get("reason", "")).strip()
+    apply_now = str(form.get("apply_now", "0")).strip() == "1"
+
+    try:
+        po_line_id = int(po_line_id_raw)
+    except (ValueError, TypeError):
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote('po_line_id is required')}",
+            status_code=303,
+        )
+
+    amount: float | None = None
+    if amount_raw:
+        try:
+            amount = float(amount_raw)
+        except ValueError:
+            return RedirectResponse(
+                f"/purchase-orders/{po_id}?error={url_quote('Invalid credit amount')}",
+                status_code=303,
+            )
+
+    svc = POService(db, current_user_id=CURRENT_USER_ID)
+    try:
+        vcm = svc.create_match_vendor_credit(
+            po_line_id=po_line_id,
+            amount=amount,
+            reason=reason,
+            apply_now=apply_now,
+        )
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote(str(exc))}",
+            status_code=303,
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error creating match credit for PO %s bill %s", po_id, bill_id)
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote('Unexpected error — credit was not created.')}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        f"/purchase-orders/{po_id}?ok={url_quote(f'Vendor credit {vcm.vcm_number} created')}",
+        status_code=303,
+    )
 
 
 # ── Print / PDF ───────────────────────────────────────────────────────────────

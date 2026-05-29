@@ -15,11 +15,11 @@ Purchase Order lifecycle — create, receive, bill (3-way match).
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.constants import (
-    AuditAction, EntityType, FulfillmentSource, InventoryTxnType, SOLineStatus,
-    POStatus, QBOSyncStatus, VendorBillStatus,
+    AuditAction, EntityType, FulfillmentSource, InventoryTxnType, MatchResolution,
+    Permission, POStatus, QBOSyncStatus, VendorBillStatus, VendorCreditMemoTrigger,
 )
 from app.models.inventory import InventoryTransaction
 from app.models.product import Product
@@ -34,6 +34,121 @@ from app.services.product_service import ProductService
 
 
 class POService(BaseService):
+
+    # ── 3-Way Match: pure computation (no DB writes) ──────────────────────────
+    # Kept here (not the router) so the resolution methods below can call them
+    # without creating a circular import.  The router delegates to these.
+
+    # Line states that require AP review.
+    _MATCH_FLAG_STATES = frozenset({"over_billed", "cost_variance"})
+
+    # Terminal resolutions that clear the is_flag display on a line.
+    _TERMINAL_RESOLUTIONS = frozenset({
+        MatchResolution.ACCEPTED,
+        MatchResolution.CREDITED,
+        MatchResolution.CLEARED,
+    })
+
+    # Decisions that require a non-empty reason.
+    _REASON_REQUIRED = frozenset({MatchResolution.REJECTED, MatchResolution.CLEARED})
+
+    @staticmethod
+    def _billed_unit_cost(line: POLine) -> float | None:
+        """Average billed unit cost across all bill_lines (None if unbilled)."""
+        qty = sum(bl.qty_billed for bl in line.bill_lines)
+        if qty <= 0:
+            return None
+        amount = sum(bl.qty_billed * bl.unit_cost for bl in line.bill_lines)
+        return round(amount / qty, 2)
+
+    @classmethod
+    def compute_match_line(cls, line: POLine) -> dict:
+        """
+        Compute the match state for a single PO line.
+
+        Stable row-dict keys (UI contract — lane/ui-builder depends on these):
+          line, ordered_qty, ordered_cost, received_qty, billed_qty, billed_cost,
+          qty_var, cost_var, state, is_flag,
+          resolution, resolution_reason, resolved_by_id, resolved_at,
+          resolution_vcm_id, suggested_credit, can_resolve
+        """
+        open_qty = max(0, line.qty_ordered - line.qty_cancelled)
+        billed_cost = cls._billed_unit_cost(line)
+        cost_var = round((billed_cost - line.unit_cost), 2) if billed_cost is not None else 0.0
+
+        if line.qty_billed > line.qty_received:
+            raw_state = "over_billed"
+        elif billed_cost is not None and abs(cost_var) >= 0.01:
+            raw_state = "cost_variance"
+        elif line.qty_received < open_qty:
+            raw_state = "awaiting_receipt"
+        elif line.qty_billed < line.qty_received:
+            raw_state = "awaiting_bill"
+        else:
+            raw_state = "matched"
+
+        resolution = line.match_resolution
+
+        # A flag is live only when raw state is a variance AND AP hasn't resolved
+        # it terminally.  on_hold de-prioritises (is_flag=False).
+        if raw_state in cls._MATCH_FLAG_STATES:
+            if resolution in cls._TERMINAL_RESOLUTIONS:
+                state = f"resolved_{resolution}"   # e.g. "resolved_accepted"
+                is_flag = False
+            elif resolution == MatchResolution.ON_HOLD:
+                state = "on_hold"
+                is_flag = False
+            elif resolution == MatchResolution.REJECTED:
+                state = "rejected"
+                is_flag = True   # still needs AP action (waiting corrected bill)
+            else:
+                state = raw_state
+                is_flag = True
+        else:
+            state = raw_state
+            is_flag = False
+
+        # Suggested credit amount for the Create-Credit shortcut in the UI
+        suggested_credit: float | None = None
+        if raw_state == "over_billed" and billed_cost is not None:
+            qty_var = line.qty_billed - line.qty_received
+            suggested_credit = round(qty_var * billed_cost, 2)
+        elif raw_state == "cost_variance" and cost_var > 0 and billed_cost is not None:
+            suggested_credit = round(cost_var * line.qty_billed, 2)
+
+        return {
+            "line":              line,
+            "ordered_qty":       line.qty_ordered,
+            "ordered_cost":      line.unit_cost,
+            "received_qty":      line.qty_received,
+            "billed_qty":        line.qty_billed,
+            "billed_cost":       billed_cost,
+            "qty_var":           line.qty_billed - line.qty_received,
+            "cost_var":          cost_var,
+            "state":             state,
+            "is_flag":           is_flag,
+            # resolution metadata
+            "resolution":        resolution,
+            "resolution_reason": line.match_resolution_reason,
+            "resolved_by_id":    line.match_resolved_by_id,
+            "resolved_at":       line.match_resolved_at,
+            "resolution_vcm_id": line.match_resolution_vcm_id,
+            "suggested_credit":  suggested_credit,
+            "can_resolve":       raw_state in cls._MATCH_FLAG_STATES,
+        }
+
+    @classmethod
+    def compute_match_summary(cls, po: PurchaseOrder) -> dict:
+        """Compute match summary for all lines on a PO."""
+        rows = [cls.compute_match_line(ln) for ln in po.lines]
+        flagged = [r for r in rows if r["is_flag"]]
+        has_activity = any(r["received_qty"] or r["billed_qty"] for r in rows)
+        return {
+            "rows":          rows,
+            "flag_count":    len(flagged),
+            "has_activity":  has_activity,
+            "matched_count": sum(1 for r in rows if r["state"] == "matched"),
+        }
 
     # ── PO Creation ───────────────────────────────────────────────────────────
 
@@ -547,22 +662,289 @@ class POService(BaseService):
             po.status = POStatus.BILLED
 
     def approve_bill(self, bill_id: int) -> None:
-        """Approve vendor bill after discrepancy review. Marks for QBO sync."""
+        """
+        Approve vendor bill after discrepancy review. Marks for QBO sync.
+
+        Gate rules:
+        - Requires APPROVE_VENDOR_BILL permission.
+        - Bills in DISCREPANCY status cannot be approved: all flagged match lines
+          must first be resolved via resolve_match_line() or create_match_vendor_credit(),
+          which transitions the bill DISCREPANCY → PENDING when the gate opens.
+        - Resolving lines opens the gate; it does NOT approve the bill.
+        """
+        self.assert_can(Permission.APPROVE_VENDOR_BILL)
+
         bill = self.db.query(VendorBill).filter(VendorBill.id == bill_id).first()
         if bill is None:
             raise ValueError(f"VendorBill {bill_id} not found")
+        if bill.status == VendorBillStatus.DISCREPANCY:
+            raise ValueError(
+                "This bill has unresolved match discrepancies. "
+                "Resolve each flagged line (accept, reject, credit, or clear) "
+                "before approving."
+            )
+        if bill.status in (VendorBillStatus.APPROVED, VendorBillStatus.PAID):
+            raise ValueError(f"Bill is already {bill.status}.")
+
         bill.status = VendorBillStatus.APPROVED
         bill.qbo_sync_status = QBOSyncStatus.PENDING
         if bill.po_id:
             po = self.db.query(PurchaseOrder).filter(PurchaseOrder.id == bill.po_id).first()
             if po:
                 self._advance_po_billed_if_done(po)
+
+        self.audit(
+            entity_type=EntityType.PURCHASE_ORDER,
+            entity_id=bill.po_id or 0,
+            action=AuditAction.STATUS_CHANGED,
+            new_value={"bill_id": bill_id, "status": VendorBillStatus.APPROVED},
+        )
         self.db.commit()
+
+    # ── 3-Way Match: AP resolution ────────────────────────────────────────────
+
+    def resolve_match_line(
+        self,
+        po_line_id: int,
+        decision: str,           # MatchResolution value
+        reason: str = "",
+    ) -> POLine:
+        """
+        Record an AP resolution decision on a flagged PO line.
+
+        Valid decisions: accepted, rejected, on_hold, cleared.
+        (Use create_match_vendor_credit for the 'credited' path — it sets
+        match_resolution=CREDITED after creating the VCM.)
+
+        Rules:
+        - Requires Permission.APPROVE_VENDOR_BILL.
+        - 'rejected' and 'cleared' require a non-empty reason.
+        - Cannot set to 'credited' directly; use create_match_vendor_credit.
+        - Re-deciding an already-resolved line is allowed (AP may change mind
+          as long as the bill hasn't been approved yet).
+        - If resolving leaves no unresolved flags on the associated bill and
+          that bill is DISCREPANCY, opens the bill for explicit AP approval
+          (does NOT auto-approve — _advance_bill_after_match only drops the
+          block; AP still clicks Approve).
+        """
+        self.assert_can(Permission.APPROVE_VENDOR_BILL)
+
+        valid_direct = {
+            MatchResolution.ACCEPTED,
+            MatchResolution.REJECTED,
+            MatchResolution.ON_HOLD,
+            MatchResolution.CLEARED,
+        }
+        if decision not in valid_direct:
+            raise ValueError(
+                f"Invalid resolution '{decision}'. "
+                f"Use one of {sorted(valid_direct)}. "
+                f"For vendor credit, call create_match_vendor_credit()."
+            )
+        if decision in self._REASON_REQUIRED and not reason.strip():
+            raise ValueError(f"A reason is required when resolution is '{decision}'.")
+
+        line = self.db.query(POLine).filter(POLine.id == po_line_id).first()
+        if line is None:
+            raise ValueError(f"POLine {po_line_id} not found")
+
+        po = line.po
+        old_resolution = line.match_resolution
+
+        # Capture the raw match state before we write (for audit old_value)
+        raw = self.compute_match_line(line)
+
+        line.match_resolution = decision
+        line.match_resolution_reason = reason.strip() or None
+        line.match_resolved_by_id = self.current_user_id
+        line.match_resolved_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
+        self.audit(
+            entity_type=EntityType.PURCHASE_ORDER,
+            entity_id=po.id,
+            action=AuditAction.MATCH_RESOLVED,
+            old_value={
+                "resolution": old_resolution,
+                "raw_state": raw["state"],
+                "qty_var": raw["qty_var"],
+                "cost_var": raw["cost_var"],
+            },
+            new_value={
+                "po_line_id": po_line_id,
+                "resolution": decision,
+                "reason": reason.strip() or None,
+            },
+            notes=reason.strip() or None,
+        )
+
+        self.db.flush()
+
+        # Check whether all flagged lines on associated DISCREPANCY bills are
+        # now resolved so the explicit-approve gate can open.
+        for bill in po.bills:
+            if bill.status == VendorBillStatus.DISCREPANCY:
+                self._advance_bill_after_match(bill)
+
+        self.db.commit()
+        return line
+
+    def create_match_vendor_credit(
+        self,
+        po_line_id: int,
+        amount: float | None = None,
+        trigger: str = VendorCreditMemoTrigger.OVERCHARGE,
+        reason: str = "",
+        apply_now: bool = False,
+    ) -> object:
+        """
+        Create a VendorCreditMemo for a flagged PO line and mark the line
+        as match_resolution=CREDITED.
+
+        Requires Permission.APPROVE_VENDOR_BILL + Permission.ISSUE_CREDIT_MEMO.
+
+        If amount is None, computes the suggested overage:
+          - over_billed: (qty_billed - qty_received) × billed_unit_cost
+          - cost_variance (vendor overcharged): (billed_cost - ordered_cost) × qty_billed
+        Caller may pass an explicit amount to override.
+
+        If apply_now=True, immediately allocates the VCM against the first
+        DISCREPANCY bill on the PO (requires a bill to exist).
+
+        Returns the created VendorCreditMemo.
+        """
+        self.assert_can(Permission.APPROVE_VENDOR_BILL)
+        self.assert_can(Permission.ISSUE_CREDIT_MEMO)
+
+        line = self.db.query(POLine).filter(POLine.id == po_line_id).first()
+        if line is None:
+            raise ValueError(f"POLine {po_line_id} not found")
+
+        po = line.po
+
+        # Compute suggested amount if not supplied
+        raw = self.compute_match_line(line)
+
+        if amount is None:
+            if raw["state"] == "over_billed":
+                billed_cost = raw["billed_cost"] or 0.0
+                amount = round((raw["qty_var"]) * billed_cost, 2)
+            elif raw["state"] == "cost_variance" and raw["cost_var"] > 0:
+                amount = round(raw["cost_var"] * raw["billed_qty"], 2)
+            else:
+                raise ValueError(
+                    "Cannot auto-compute credit amount: line is not over_billed or "
+                    "cost_variance (vendor-overcharged). Pass an explicit amount."
+                )
+
+        if amount <= 0:
+            raise ValueError("Vendor credit amount must be positive.")
+
+        # Find the related bill for back-reference + optional apply_now
+        related_bill = next(
+            (b for b in po.bills if b.status == VendorBillStatus.DISCREPANCY),
+            None,
+        )
+        original_bill_id = related_bill.id if related_bill else None
+
+        from app.services.vendor_credit_service import VendorCreditService
+        vcm_svc = VendorCreditService(self.db, self.current_user_id)
+        vcm = vcm_svc.create_vendor_credit_memo(
+            vendor_id=po.vendor_id,
+            trigger_type=trigger,
+            amount=amount,
+            original_vendor_bill_id=original_bill_id,
+            reason=reason or f"Match variance on PO {po.po_number}, line {po_line_id}",
+        )
+
+        if apply_now and related_bill is not None:
+            vcm_svc.apply_vendor_credit_memo(
+                vcm_id=vcm.id,
+                vendor_bill_id=related_bill.id,
+                amount=amount,
+            )
+
+        # Mark the line as credited and link the VCM
+        old_resolution = line.match_resolution
+        line.match_resolution = MatchResolution.CREDITED
+        line.match_resolution_vcm_id = vcm.id
+        line.match_resolution_reason = reason.strip() or None
+        line.match_resolved_by_id = self.current_user_id
+        line.match_resolved_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
+        self.audit(
+            entity_type=EntityType.PURCHASE_ORDER,
+            entity_id=po.id,
+            action=AuditAction.MATCH_RESOLVED,
+            old_value={
+                "resolution": old_resolution,
+                "raw_state": raw["state"],
+                "qty_var": raw["qty_var"],
+                "cost_var": raw["cost_var"],
+            },
+            new_value={
+                "po_line_id": po_line_id,
+                "resolution": MatchResolution.CREDITED,
+                "vcm_id": vcm.id,
+                "vcm_number": vcm.vcm_number,
+                "amount": amount,
+                "apply_now": apply_now,
+            },
+            notes=reason.strip() or f"VCM {vcm.vcm_number} created for match variance",
+        )
+
+        self.db.flush()
+
+        for bill in po.bills:
+            if bill.status == VendorBillStatus.DISCREPANCY:
+                self._advance_bill_after_match(bill)
+
+        self.db.commit()
+        return vcm
+
+    def _advance_bill_after_match(self, bill: VendorBill) -> None:
+        """
+        Open the explicit-approve gate when every flagged line on a DISCREPANCY
+        bill has been resolved to a terminal or on_hold state.
+
+        Does NOT auto-approve. AP still calls approve_bill() as the final step.
+        Transitions bill DISCREPANCY → PENDING (ready-to-approve) only.
+
+        Terminal: accepted, credited, cleared.
+        on_hold counts as resolved for gating purposes (AP has parked it).
+        rejected: AP is still disputing — bill stays DISCREPANCY.
+        unresolved: flag still live — bill stays DISCREPANCY.
+        """
+        if bill.status != VendorBillStatus.DISCREPANCY:
+            return
+
+        # Collect all PO lines whose bill_lines are on this bill
+        flagged_line_ids = {
+            bl.po_line_id for bl in bill.lines if bl.po_line_id is not None
+        }
+        if not flagged_line_ids:
+            return
+
+        po_lines = (
+            self.db.query(POLine)
+            .filter(POLine.id.in_(flagged_line_ids))
+            .all()
+        )
+
+        gate_resolutions = self._TERMINAL_RESOLUTIONS | {MatchResolution.ON_HOLD}
+        all_gated = all(ln.match_resolution in gate_resolutions for ln in po_lines)
+
+        if all_gated:
+            # Transition to PENDING so approve_bill() becomes available
+            bill.status = VendorBillStatus.PENDING
+            self.db.flush()
 
     def get_bills_pending_approval(self) -> list[VendorBill]:
         return (
             self.db.query(VendorBill)
-            .filter(VendorBill.status == VendorBillStatus.DISCREPANCY)
+            .filter(VendorBill.status.in_([
+                VendorBillStatus.DISCREPANCY,
+                VendorBillStatus.PENDING,
+            ]))
             .order_by(VendorBill.created_at)
             .all()
         )
