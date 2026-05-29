@@ -1,3 +1,4 @@
+{% from "macros/motion.html" import slide_right, backdrop_fade, dropdown_scale, modal_scale %}
 <!DOCTYPE html>
 <html lang="en" class="h-full bg-stone-50">
 <head>
@@ -7,27 +8,32 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  {# ── COMPILED CSS (Phase 1 — staged migration) ──────────────────────────
+     Canonical source: app/static/css/input.css  (design system components)
+     Config:           tailwind.config.js          (brand tokens, content paths)
+     Build command:    npm install && npm run build:css
+     Watch command:    npm run watch:css
+
+     Once app.css is built, the CDN below and the window.tailwind block can be
+     removed (Phase 2). Until then the CDN serves as dev fallback.
+     See JAKS_UI_Change_Plan.md §Build for step-by-step instructions. ─────── #}
+  <link rel="stylesheet" href="/static/css/app.css">
+
+  {# ── DEV FALLBACK — Tailwind play-CDN (Phase 2: remove this block) ──────
+     Provides @apply processing and utilities while app.css is a placeholder.
+     window.tailwind config keeps the brand-* color family active under the CDN. #}
   <script>
-    /* ── Brand palette — #4b5320 (dark olive/army green) is brand-700 ── */
+    /* Brand palette for CDN — superseded by tailwind.config.js on compiled build */
     window.tailwind = {
       config: {
         theme: {
           extend: {
-            fontFamily: {
-              sans: ['Inter', 'system-ui', 'sans-serif'],
-            },
+            fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
             colors: {
               brand: {
-                '50':  '#f4f5e9',
-                '100': '#e6e9cc',
-                '200': '#cdd399',
-                '300': '#b0be71',
-                '400': '#94a84e',
-                '500': '#788436',
-                '600': '#5e6928',
-                '700': '#4b5320',
-                '800': '#363c18',
-                '900': '#232710',
+                '50':  '#f4f5e9', '100': '#e6e9cc', '200': '#cdd399',
+                '300': '#b0be71', '400': '#94a84e', '500': '#788436',
+                '600': '#5e6928', '700': '#4b5320', '800': '#363c18', '900': '#232710',
               }
             }
           }
@@ -306,20 +312,27 @@
     logCallOpen: false,
     createSlideOpen: false,
     createSlideTitle: '',
+    createSlideDirty: false,
     cmdKOpen: false,
     notifOpen: false,
+    closeCreateSlide() {
+      if (this.createSlideDirty && !window.confirm('Discard this customer? Anything you have entered will be lost.')) return;
+      this.createSlideDirty = false;
+      this.createSlideOpen = false;
+    },
     toggleSidebar() {
       this.sidebarCollapsed = !this.sidebarCollapsed;
       localStorage.setItem('sidebarCollapsed', this.sidebarCollapsed ? '1' : '0');
     }
   }"
   @keydown.window="if ((event.ctrlKey || event.metaKey) && event.key === 'k') { event.preventDefault(); cmdKOpen = true; }"
-  @keydown.escape.window="logCallOpen = false; createSlideOpen = false; sidebarOpen = false; cmdKOpen = false; notifOpen = false"
+  @keydown.escape.window="logCallOpen = false; if (createSlideOpen) closeCreateSlide(); sidebarOpen = false; cmdKOpen = false; notifOpen = false"
   @open-create-slide.window="
     createSlideOpen = true;
+    createSlideDirty = false;
     if ($event.detail && $event.detail.title) createSlideTitle = $event.detail.title;
   "
-  @record-created.window="createSlideOpen = false"
+  @record-created.window="createSlideDirty = false; createSlideOpen = false"
   {# Reset content to loading skeleton 300ms after close — prevents stale form flash on re-open #}
   @slide-over-closed="setTimeout(() => {
     const el = document.getElementById('create-slide-content');
@@ -649,12 +662,7 @@
         <div x-show="notifOpen" x-cloak
              class="absolute top-full right-0 mt-2 w-80 bg-white rounded-xl shadow-xl
                     border border-gray-200 z-50 overflow-hidden"
-             x-transition:enter="transition ease-out duration-100"
-             x-transition:enter-start="opacity-0 -translate-y-1 scale-95"
-             x-transition:enter-end="opacity-100 translate-y-0 scale-100"
-             x-transition:leave="transition ease-in duration-75"
-             x-transition:leave-start="opacity-100 translate-y-0 scale-100"
-             x-transition:leave-end="opacity-0 -translate-y-1 scale-95">
+             {{ dropdown_scale() }}>
           <div class="flex items-center justify-between px-4 py-3 border-b border-gray-100">
             <h3 class="text-sm font-semibold text-gray-800">Notifications</h3>
             <button @click="notifOpen = false"
@@ -765,12 +773,7 @@
   @click="logCallOpen = false"
   class="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm"
   x-cloak
-  x-transition:enter="transition ease-out duration-150"
-  x-transition:enter-start="opacity-0"
-  x-transition:enter-end="opacity-100"
-  x-transition:leave="transition ease-in duration-100"
-  x-transition:leave-start="opacity-100"
-  x-transition:leave-end="opacity-0"
+  {{ backdrop_fade() }}
 ></div>
 
 {# Panel #}
@@ -778,12 +781,7 @@
   x-show="logCallOpen"
   x-cloak
   class="fixed inset-y-0 right-0 z-50 flex flex-col bg-white shadow-2xl w-96"
-  x-transition:enter="transition ease-out duration-200"
-  x-transition:enter-start="translate-x-full"
-  x-transition:enter-end="translate-x-0"
-  x-transition:leave="transition ease-in duration-150"
-  x-transition:leave-start="translate-x-0"
-  x-transition:leave-end="translate-x-full"
+  {{ slide_right() }}
 >
   <div class="flex items-center justify-between px-5 py-4 border-b border-gray-200 shrink-0">
     <h2 class="text-base font-semibold text-gray-900">Log a Call</h2>
@@ -904,15 +902,10 @@
 {# Backdrop #}
 <div
   x-show="createSlideOpen"
-  @click="createSlideOpen = false"
+  @click="closeCreateSlide()"
   class="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm"
   x-cloak
-  x-transition:enter="transition ease-out duration-150"
-  x-transition:enter-start="opacity-0"
-  x-transition:enter-end="opacity-100"
-  x-transition:leave="transition ease-in duration-100"
-  x-transition:leave-start="opacity-100"
-  x-transition:leave-end="opacity-0"
+  {{ backdrop_fade() }}
 ></div>
 
 {# Panel #}
@@ -920,16 +913,11 @@
   x-show="createSlideOpen"
   x-cloak
   class="fixed inset-y-0 right-0 z-50 flex flex-col bg-white shadow-2xl w-96"
-  x-transition:enter="transition ease-out duration-200"
-  x-transition:enter-start="translate-x-full"
-  x-transition:enter-end="translate-x-0"
-  x-transition:leave="transition ease-in duration-150"
-  x-transition:leave-start="translate-x-0"
-  x-transition:leave-end="translate-x-full"
+  {{ slide_right() }}
 >
   <div class="flex items-center justify-between px-5 py-4 border-b border-gray-200 shrink-0">
     <h2 class="text-base font-semibold text-gray-900" x-text="createSlideTitle"></h2>
-    <button @click="createSlideOpen = false" class="text-gray-400 hover:text-gray-600">
+    <button @click="closeCreateSlide()" class="text-gray-400 hover:text-gray-600">
       <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
       </svg>
@@ -1001,12 +989,7 @@
   @click="cmdKOpen = false"
   class="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm"
   x-cloak
-  x-transition:enter="transition ease-out duration-100"
-  x-transition:enter-start="opacity-0"
-  x-transition:enter-end="opacity-100"
-  x-transition:leave="transition ease-in duration-75"
-  x-transition:leave-start="opacity-100"
-  x-transition:leave-end="opacity-0"
+  {{ backdrop_fade() }}
 ></div>
 
 {# Search panel #}
@@ -1064,12 +1047,7 @@
   @keydown.down.window.prevent="if (cmdKOpen) nav(1)"
   @keydown.enter.window="if (cmdKOpen) { $event.preventDefault(); go(); }"
   class="fixed left-1/2 -translate-x-1/2 top-[10vh] z-[61] w-full max-w-2xl px-4"
-  x-transition:enter="transition ease-out duration-150"
-  x-transition:enter-start="opacity-0 -translate-y-3 scale-[0.98]"
-  x-transition:enter-end="opacity-100 translate-y-0 scale-100"
-  x-transition:leave="transition ease-in duration-100"
-  x-transition:leave-start="opacity-100 translate-y-0 scale-100"
-  x-transition:leave-end="opacity-0 -translate-y-2 scale-[0.98]"
+  {{ modal_scale() }}
 >
   <div class="bg-white rounded-2xl shadow-2xl border border-gray-200 flex flex-col overflow-hidden" style="max-height: 72vh;">
 

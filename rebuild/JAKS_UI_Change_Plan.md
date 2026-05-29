@@ -1,7 +1,7 @@
 # JAKS UI Change Plan
 *Living document — updated as screens are built.*
 
-**Status:** Products List ✅ L2 ref · PO List ✅ L2 · Invoice List ✅ L2 (governance 2026-05-28) · Customer List L1.5 pending full L2 · Primitives extraction approved — begin before Customer List · 6 additional screens discovered at L1 and added to rollout order.
+**Status:** Products List ✅ L2 ref · PO List ✅ L2 · Invoice List ✅ L2 · Customer List ✅ L2 (governance 2026-05-29, §2B complete) · Primitives extraction ✅ complete · **Build quality pass ✅ 2026-05-29** (Tailwind build infra, class-token spec, motion primitives — see §Build) · Quotes List ⏳ next — alignment pass (stripe + dock + pb-52).
 
 **Scope:** All list and workspace screens in the JAKS Inventory ERP system.
 
@@ -131,7 +131,7 @@ Define four levels:
 - **L3 — Workspace-grade workflow screen** — autosave, inline editing, live totals, slide-over integration, keyboard support, real-time state feedback
 - **L4 — Power-user optimized screen** — all of L3 plus bulk operations, keyboard-driven navigation, Ctrl+K integration, side-by-side or docked panels
 
-Current target mapping (last audited 2026-05-28):
+Current target mapping (last audited 2026-05-29):
 
 | Screen | Current | Target | Notes |
 |---|---|---|---|
@@ -140,7 +140,7 @@ Current target mapping (last audited 2026-05-28):
 | Invoice List | ✅ L2 | L2 | Governance pass done 2026-05-28. Red stripe for financial overdue (intentional domain distinction). |
 | Quotes List | L2 | L2 | Has tabs+divide-y but no preview dock, no border-l-4 stripe. Pending final alignment pass. |
 | Quote Workspace | L3 | L3 | Autosave, inline editing done. |
-| Customers List | L1.5 | L2 | Enriched (avatar, pills, contact, tags, preview). Custom Alpine pattern — not L2 standard. Full L2 upgrade (tabs, dock, stripe, bulk toolbar) begins after primitives extraction. |
+| Customers List | ✅ L2 | L2 | Governance pass done 2026-05-29. §2B operational intelligence complete (Balance Due, Open Invoices/Quotes/SOs, Cores, Last Sale, Terms). M1/M2 cosmetic deferred. |
 | Product Detail | L1 | L2 | Raw form, no card sections. |
 | Sales Orders List | L1 | L2 | Old tbl-* table, no L2 elements. |
 | Vendors List | L1 | L2 | Old tbl-* table, no L2 elements. |
@@ -445,7 +445,7 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 | 2 | PO List | ✅ L2 complete | L1 → L2 | Governance pass done; overdue bug fixed |
 | 3 | Invoice List | ✅ L2 complete | L1 → L2 | Governance pass 2026-05-28. Red stripe for financial overdue — accepted + codified in §4. |
 | — | **Primitives extraction** | ✅ Complete (2026-05-29) | — | All 6 macros extracted + governance-approved. Products/PO/Invoice ported. See §7 as-built. |
-| 4 | Customer List | ⏳ In review — REQUIRED FIXES | L1.5 → L2 | Governance pass issued 2026-05-29: 3 required fixes (preview route missing, `status_chip` import in partial, router ignores tab param). Must also satisfy §2B Operational Intelligence fields before approval. |
+| 4 | Customer List | ✅ L2 complete | L1.5 → L2 | Governance pass approved 2026-05-29. All §2 + §2B fields satisfied (Balance Due, Open Invoices/Quotes/SOs, Cores, Last Sale, Terms). M1/M2 cosmetic deferred. |
 | 5 | Quotes List | ⏳ Pending | L2 → L2 | Has tabs + divide-y. Needs: border-l-4 stripe, preview dock, pb-52. Alignment pass after Customer List. |
 | 6 | Sales Orders List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
 | 7 | Vendors List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
@@ -453,7 +453,7 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 | 9 | Payments List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
 | 10 | Product Detail | ⏳ Pending | L1 → L2 | Section-based card layout. |
 | 11 | PO Workspace | ⏳ Pending | L1 → L3 | Autosave, line editor, receive flow. |
-| 12 | Invoice Workspace | 🟡 Governance review needed | L3 candidate → L3 | Architect audit found Alpine §3-compliant modals + autosave already present. Builder B's "L1" self-assessment was wrong. Needs formal L3 governance pass. |
+| 12 | Invoice Workspace | 🟡 REQUIRED FIXES | L3 candidate → L3 | Governance pass 2026-05-29. Blocker: Finalize uses native `window.confirm()` — convert to Alpine modal per §3. Minor: void title color, hx-confirm on line delete/unlink, tbl-* in payments sub-table. |
 | 13 | PO Receiving Queue | ✅ QB2 complete | QB1 → QB2 | Queue Board archetype — §2A. Governance pass 2026-05-28. Official QB2 reference. |
 | 14 | PO Match Queue | ✅ QB2 complete | QB1 → QB2 | Queue Board archetype — §2A. Governance pass 2026-05-28. |
 | 15 | Warranty Queue | ⏳ Pending | QB1 → QB2 | Queue Board archetype. Copy `receiving_queue.html`. UI Builder A owns. |
@@ -784,3 +784,180 @@ architect pass on the macro library + the 3 ported screens.*
 body-id + factory call present, Invoice status-chip present. No `tbl-*`, no leftover inline x-data,
 no orphaned dock markup. Browser smoke test (`GET /products/`, `/purchase-orders/`, `/invoices/`)
 pending a running server.
+
+---
+
+### Build — Tailwind Compiled CSS
+
+**Status: ✅ Infra complete (2026-05-29) — Phase 2 (CDN removal) pending one `npm install` + build run.**
+
+The Tailwind play-CDN has been replaced by a proper compiled build pipeline. Source files are
+in place; the CDN remains active as a dev fallback until the first build runs.
+
+#### Files created
+
+| File | Purpose |
+|---|---|
+| `tailwind.config.js` | Single source of design tokens: brand color palette, font family, content scan paths, §4 color semantics documented |
+| `app/static/css/input.css` | CSS entry point: `@tailwind` directives + `@layer components` block defining every design-system class (`.card`, `.btn-*`, `.form-*`, `.badge-*`, `.toast-*`, etc.) |
+| `app/static/css/app.css` | Compiled output (placeholder — overwritten by build). **Gitignore this file in production.** |
+| `package.json` | `build:css` and `watch:css` scripts |
+
+#### Build commands
+
+```bash
+# One-time install (first time only)
+npm install
+
+# Production build (minified output → app/static/css/app.css)
+npm run build:css
+
+# Development watch mode (rebuilds on every template/JS change)
+npm run watch:css
+```
+
+**Alternative — Tailwind standalone CLI (no Node.js needed):**
+Download the self-contained binary from https://github.com/tailwindlabs/tailwindcss/releases
+and run:
+```
+tailwindcss.exe -i app/static/css/input.css -o app/static/css/app.css --minify
+```
+
+#### Phase 2 — CDN removal (do after first build)
+
+Once `app/static/css/app.css` is compiled (not a placeholder):
+1. Remove the `window.tailwind = {...}` config block from `base.html` (marked with `{# DEV FALLBACK #}` comment)
+2. Remove the `<script src="https://cdn.tailwindcss.com">` line immediately below it
+3. Verify every L2/QB2 screen renders identically — the compiled CSS covers all component classes
+
+**What the compiled build fixes:**
+- No more FOUC (CDN processes @apply at runtime, causing a flash on slow connections)
+- Tree-shaking: only used classes are included (CDN bundles ~3MB; compiled output is ~10–30KB)
+- Lint-able: class-tokens.md §§1–17 can now be enforced in CI against the source CSS
+- Stable artifact: deployed app.css doesn't depend on CDN availability
+
+#### Motion primitives — `macros/motion.html`
+
+All Alpine `x-transition:*` attributes in `base.html` and `macros/preview_dock.html` have been
+extracted into five named macros (2026-05-29):
+
+| Macro | Primitive | Used by |
+|---|---|---|
+| `slide_right()` | Slide-over panels | Log Call, Create Customer |
+| `backdrop_fade()` | Backdrop overlays | All slide-overs, Ctrl+K, future modals |
+| `slide_up()` | Preview dock | `preview_dock_shell` macro (all L2 lists) |
+| `dropdown_scale()` | Notification dropdown | Header notification bell |
+| `modal_scale()` | Ctrl+K / centered modals | Ctrl+K overlay, future confirm dialogs |
+
+**Rule:** All new x-transition usage must use one of these macros. Hard-coding `x-transition:*`
+inline is blocked. If a new motion pattern is needed, add it to `motion.html` + `class-tokens.md §10`.
+
+#### Class-token allowlist — `class-tokens.md`
+
+`.claude/skills/jaks-ui-governance/references/class-tokens.md` is now the authoritative lint spec.
+QA lane: enforce §§1–17 in CI as the token allowlist gate. Key sections for the lint gate:
+
+- **§1** — Forbidden classes (`tbl-td`, `tbl-th`, `tbl-row`, `tbl-head`)
+- **§2** — Required markers (`pb-52`, `divide-y divide-gray-100`, `overflow-x-auto`, dock markers)
+- **§3** — Stripe placement (`border-l-4` on first `<td>` only, never `<tr>`)
+- **§4** — Permitted color families (only red/amber/green/blue/purple/orange/gray/brand)
+- **§10** — Motion macro requirement (no inline `x-transition:*`)
+
+---
+
+### 8. Deferred Backlog
+
+Items confirmed as real, scoped, and worth doing — but explicitly deferred. Do not schedule without
+an Architect instruction. Each item includes the file targets and enough context to act without
+this conversation.
+
+#### 8A. Post-Extraction Cosmetic Cleanup (low priority)
+
+1. **Macro adoption — fold Products/PO inline chips onto `status_chip`.**
+   Products and PO lists still inline their health/status chips; Invoice uses `status_chip`.
+   A single PR should replace the inline `<span>` blocks with `{{ status_chip(...) }}` calls,
+   retroactively satisfying the §7 "3 screens" gate.
+   Targets: `app/templates/products/list.html`, `app/templates/purchase_orders/list.html`.
+
+2. **`Invoice.is_overdue` scope mismatch for DRAFT invoices.**
+   `Invoice.is_overdue` (`app/models/invoice.py:144`) returns `True` for any non-PAID status,
+   so a DRAFT with a past `due_date` shows the overdue stripe in the **all** tab but is excluded
+   from the Overdue count (count = OPEN/PARTIAL only). Fix: gate template overdue styling to
+   `status in (OPEN, PARTIAL)`, or narrow the model property. Coordinate with Backend lane.
+
+3. **Customer List M1 — blue-stripe row tint missing.**
+   Amber-stripe rows get `bg-amber-50/20`; blue-stripe (open-invoice) rows have no tint. Add
+   `'bg-blue-50/10': '{{ stripe }}' === 'blue' && previewId !== {{ c.id }}` to the row `:class`
+   binding. `app/templates/customers/list.html`.
+
+4. **Customer List M2 — activity badge rounding.**
+   Activity pills use `rounded-full`; system standard is `rounded-lg`. Cosmetic only.
+   `app/templates/customers/list.html:286,294,303,312`.
+
+#### 8B. Global Workspace Action Header Review (medium priority — do not start without Architect sign-off)
+
+**Scope:** The action button strip and back-link area that appears in the `header_actions` block
+across Customer, Quote, Invoice, Sales Order, and PO workspaces.
+
+**Problem observed:** Owner testing surfaced inconsistency in visibility, ordering, and behavior
+of New Quote / New Invoice / Statement / Back link across workspace screens. The area needs a
+cross-workspace audit and a consistent standard before further workspace screens are built.
+
+**Do not redesign the dashboard or any list screen as part of this work.**
+**Do not start until explicitly instructed by the Architect.**
+
+Screens in scope:
+- `app/templates/customers/*.html` (customer workspace header)
+- `app/templates/quotes/workspace.html`
+- `app/templates/invoices/workspace.html`
+- `app/templates/sales_orders/workspace.html`
+- `app/templates/purchase_orders/workspace.html`
+
+Deliverable: a punched list of specific inconsistencies + a proposed standard for the header strip,
+submitted to the Architect for approval before any template changes.
+
+**Quote Workspace partial pass — Architect-approved & implemented 2026-05-29.** Owner testing of
+`quotes/workspace.html` surfaced three issues; fixes 2 & 3 approved and applied (verified live):
+1. *"Can't add a part"* — **NOT a bug** (add-line works end-to-end; verified by running the app).
+   Root cause is a hidden two-step "staging" flow: clicking a search result only stages the part
+   (`selectProduct()`), and **+ Add Line** sits greyed-out/`disabled` until then, so it reads as
+   broken. **Left as-is pending Architect decision** between one-click-add vs. a prominent-staged-
+   button + "↵ Enter to add" hint. Still an open discoverability gap.
+2. *Account link lost work* — the Account / customer-name / "← All quotes" links navigated away
+   in-tab, discarding staged (uncommitted) search input. Now `target="_blank" rel="noopener"`.
+3. *No visible Save* — the grey **Save** button was **redundant** (its `POST /quotes/{id}` updates
+   the same 4 fields as the 2.5s autosave). Removed it, added `onsubmit="return false"` to block
+   accidental Enter-submit, and made the autosave indicator always-visible ("✓ Saved automatically").
+This is a targeted fix, **not** the full cross-workspace header standard — §8B proper is still open.
+
+#### 8C. Customer Profile UX Fixes — IMPLEMENTED (UI Builder, 2026-05-29)
+
+Owner testing identified the following UX issues. Status below reflects the 2026-05-29 UI Builder
+pass — **pending Architect governance sign-off** (Builder does not self-mark complete).
+
+1. **Phone/email search behavior** — ✅ Done. `customer_list` search now normalizes phone to
+   digits-only on both sides and matches company / contact / email / phone partials.
+   `app/routers/customers.py` (`_digits`, search predicate). *Note:* the global typeahead
+   `/customers/search-json` was intentionally left as-is (flagged as a separate follow-up).
+2. **Duplicate customer warning** — ✅ Done. `_find_duplicate_customers` (normalized name match)
+   gates both `POST /customers/quick-create` and `POST /customers/new`; on a hit the form
+   re-renders with a "Possible duplicate customer found." banner offering **View Existing** and
+   **Create Anyway** (`confirm_duplicate=1`), preserving entered values. Never silently creates.
+   `app/routers/customers.py`, `app/templates/customers/_quick_create.html`, `.../new.html`.
+3. **Drawer dirty-state protection** — ✅ Done (prior pass). `createSlideDirty` + `closeCreateSlide()`
+   guard backdrop / Escape / X / Cancel with a native confirm. `app/templates/base.html`,
+   `.../customers/_quick_create.html`.
+4. **Edit / Save button visibility** — ✅ Done. Header toggle relabeled **Edit Customer** (primary
+   button + pencil icon in view mode); Save Changes / Cancel moved into a right-aligned, full-width
+   footer bar at the bottom of the edit card. `app/templates/customers/detail.html`.
+5. **Quote workspace customer context** — ✅ Done. Header already showed terms + open/overdue AR;
+   added a **Tax Exempt** chip and a read-only **Customer note** strip (compact, no broad redesign).
+   `app/templates/quotes/workspace.html`.
+6. **New Invoice visibility** — ✅ Verified present. Customer detail `header_actions` and the
+   customer preview-dock Actions column both expose New Invoice. No change required.
+7. **Open quote count behavior** — ✅ Done (prior pass). Detail "Open quotes" figure links to
+   `/quotes/?customer_id={id}`; `list_quotes` honors the `customer_id` filter.
+8. **Statement screen — FLAGGED FOR LATER POLISH (not started).** Loads and functions correctly;
+   owner asked to defer cosmetic/UX polish. Do not redesign without an Architect instruction.
+   Targets: `app/templates/customers/statement_form.html`, `.../statement_print.html`,
+   and `customer_statement_*` routes in `app/routers/customers.py`.
