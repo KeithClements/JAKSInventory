@@ -1,0 +1,208 @@
+{# ── Quote bottom preview panel ── loaded via htmx.ajax() on row click ──────
+   §2B context (GET /quotes/preview/{id}):
+     quote            : Quote (with .customer, .lines)
+     margin_pct       : float | None  (None when subtotal = 0)
+     cost_total       : float
+     ar_overdue_count : int
+     now              : datetime
+     QuoteStatus      : enum
+     QuoteOutcome     : enum
+─────────────────────────────────────────────────────────────────────────── #}
+
+{# Status chip color map #}
+{% set q_chip = {
+  'draft':     ('bg-gray-100 text-gray-600',   'bg-gray-400',   'Draft'),
+  'sent':      ('bg-blue-50 text-blue-700',    'bg-blue-500',   'Sent'),
+  'accepted':  ('bg-green-50 text-green-700',  'bg-green-500',  'Accepted'),
+  'converted': ('bg-emerald-50 text-emerald-700','bg-emerald-500','Converted'),
+  'declined':  ('bg-red-100 text-red-700',     'bg-red-400',    'Declined'),
+  'expired':   ('bg-amber-100 text-amber-700', 'bg-amber-500',  'Expired'),
+} %}
+{% set chip_cls, chip_dot, chip_label = q_chip.get(quote.status, ('bg-gray-100 text-gray-600', 'bg-gray-400', quote.status | title)) %}
+
+{# Margin badge thresholds #}
+{% if margin_pct is none %}
+  {% set margin_badge = 'bg-gray-50 text-gray-400 border-gray-100' %}
+{% elif margin_pct >= 25 %}
+  {% set margin_badge = 'bg-green-50 text-green-700 border-green-100' %}
+{% elif margin_pct >= 15 %}
+  {% set margin_badge = 'bg-amber-50 text-amber-700 border-amber-100' %}
+{% else %}
+  {% set margin_badge = 'bg-red-50 text-red-700 border-red-100' %}
+{% endif %}
+
+{% set included_lines = quote.lines | selectattr('is_included') | list %}
+{% set is_followup_overdue = quote.follow_up_date and quote.follow_up_date < now and quote.status not in ['converted','declined'] %}
+
+<div class="px-6 py-4">
+  <div class="grid grid-cols-4 gap-6">
+
+    {# ── Identity ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Identity</p>
+      <div class="space-y-1.5">
+        <div class="flex items-center gap-2 flex-wrap">
+          <a href="/quotes/{{ quote.id }}"
+             class="font-mono text-base font-bold text-brand-700 hover:text-brand-900 hover:underline leading-none">
+            {{ quote.quote_number }}
+          </a>
+          {# Status chip #}
+          <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold {{ chip_cls }}">
+            <span class="w-1.5 h-1.5 rounded-full {{ chip_dot }} shrink-0"></span>
+            {{ chip_label }}
+          </span>
+        </div>
+        <p class="text-sm font-medium text-gray-800 leading-snug">{{ quote.customer.company_name }}</p>
+        {# Conversion status #}
+        {% if quote.status == QuoteStatus.CONVERTED %}
+          {% if quote.invoice_id %}
+          <a href="/invoices/{{ quote.invoice_id }}"
+             class="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 hover:underline">
+            → Invoice #{{ quote.invoice_id }}
+          </a>
+          {% elif quote.sales_order_id %}
+          <a href="/sales-orders/{{ quote.sales_order_id }}"
+             class="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 hover:underline">
+            → SO #{{ quote.sales_order_id }}
+          </a>
+          {% else %}
+          <p class="text-[11px] text-emerald-700">Converted</p>
+          {% endif %}
+        {% else %}
+        <p class="text-[11px] text-gray-400 mt-0.5">
+          Created {{ quote.created_at.strftime('%b %d, %Y') if quote.created_at else '—' }}
+        </p>
+        {% endif %}
+        {# Line count #}
+        <p class="text-[11px] text-gray-400">
+          {{ quote.lines | length }} line{{ 's' if quote.lines | length != 1 }}
+          {% if (quote.lines | length) != (included_lines | length) %}
+          ({{ included_lines | length }} included)
+          {% endif %}
+        </p>
+      </div>
+    </div>
+
+    {# ── Financials ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Financials</p>
+      <div class="space-y-1.5">
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Quote Total</span>
+          <span class="text-sm font-bold text-gray-900 tabular-nums">${{ "%.2f"|format(quote.subtotal) }}</span>
+        </div>
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Cost</span>
+          <span class="text-sm text-gray-600 tabular-nums">${{ "%.2f"|format(cost_total) }}</span>
+        </div>
+        <div class="flex items-center justify-between pt-1 border-t border-gray-100">
+          <span class="text-xs text-gray-500">Margin</span>
+          {% if margin_pct is not none %}
+          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold border {{ margin_badge }} tabular-nums">
+            {{ "%.1f"|format(margin_pct) }}%
+          </span>
+          {% else %}
+          <span class="text-sm text-gray-400">—</span>
+          {% endif %}
+        </div>
+        {% if quote.discount_pct and quote.discount_pct > 0 %}
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Discount</span>
+          <span class="text-xs font-semibold text-green-700 tabular-nums">{{ "%.0f"|format(quote.discount_pct) }}%</span>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    {# ── Dates & Follow-up ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Dates &amp; Follow-up</p>
+      <div class="space-y-1.5">
+        {# Valid Until #}
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Valid Until</span>
+          {% if quote.valid_until %}
+          <span class="text-sm tabular-nums {% if quote.is_expired %}font-bold text-red-600{% else %}text-gray-700{% endif %}">
+            {{ quote.valid_until.strftime('%b %d, %Y') }}
+            {% if quote.is_expired %}<span class="text-[10px] ml-0.5">expired</span>{% endif %}
+          </span>
+          {% else %}
+          <span class="text-sm text-gray-400">—</span>
+          {% endif %}
+        </div>
+        {# Follow-up Due #}
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Follow-up</span>
+          {% if quote.follow_up_date %}
+          <span class="text-sm tabular-nums {% if is_followup_overdue %}font-bold text-amber-600{% else %}text-gray-700{% endif %}">
+            {{ quote.follow_up_date.strftime('%b %d') }}
+            {% if is_followup_overdue %}<span class="text-[10px] ml-0.5">overdue</span>{% endif %}
+          </span>
+          {% else %}
+          <span class="text-sm text-gray-400">—</span>
+          {% endif %}
+        </div>
+        {% if quote.follow_up_status and quote.follow_up_status != 'pending' %}
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">F/U Status</span>
+          <span class="text-xs text-gray-600 capitalize">{{ quote.follow_up_status | replace('_', ' ') }}</span>
+        </div>
+        {% endif %}
+        {# Customer Terms / AR Warning #}
+        <div class="flex items-center justify-between pt-1 border-t border-gray-100">
+          <span class="text-xs text-gray-500">Terms</span>
+          <span class="text-xs font-semibold text-gray-700 uppercase">{{ (quote.customer.payment_terms or 'COD') | replace('_', ' ') }}</span>
+        </div>
+        {% if ar_overdue_count > 0 %}
+        <div class="flex items-center gap-1.5 mt-0.5">
+          <svg class="w-3 h-3 text-red-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+          </svg>
+          <span class="text-[11px] font-semibold text-red-600">
+            {{ ar_overdue_count }} overdue invoice{{ 's' if ar_overdue_count != 1 }} — collect before shipping
+          </span>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    {# ── Actions ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Actions</p>
+      <div class="flex flex-col gap-1.5">
+        <a href="/quotes/{{ quote.id }}"
+           class="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold
+                  bg-brand-700 text-white hover:bg-brand-600 transition-colors">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+          </svg>
+          Open Quote
+        </a>
+        {% if quote.status in [QuoteStatus.DRAFT, QuoteStatus.SENT, QuoteStatus.ACCEPTED] %}
+        <form method="post" action="/quotes/{{ quote.id }}/convert-to-invoice" class="contents">
+          <button type="submit"
+                  class="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold
+                         bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 transition-colors">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+            </svg>
+            → Invoice
+          </button>
+        </form>
+        {% endif %}
+        <a href="/quotes/{{ quote.id }}/print" target="_blank"
+           class="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold
+                  bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 transition-colors">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/>
+          </svg>
+          Print
+        </a>
+      </div>
+    </div>
+
+  </div>{# end grid #}
+</div>

@@ -12,6 +12,10 @@
 {% endblock %}
 
 {% block content %}
+{# Shared operational-list primitives — §7 macro library #}
+{% from "macros/list_behavior.html" import operational_list_script %}
+{% from "macros/preview_dock.html" import preview_dock_shell %}
+{{ operational_list_script() }}
 
 {# ══════════════════════════════════════════════════════════════════════════════
    NEW QUOTE MODAL
@@ -171,6 +175,16 @@
   </div>
 </div>
 
+{# ── Operational list wrapper — pb-52 clears the fixed preview dock ─────────
+   operationalListData provides: previewId, togglePreview, selected, selectedCount,
+   toggleAll, clearSelected (§7 Primitive 2 factory).
+   allIds feeds the select-all checkbox (added when bulk toolbar is promoted to L2).
+══════════════════════════════════════════════════════════════════════════════ #}
+<div
+  class="space-y-4 pb-52"
+  x-data="operationalListData('quote-preview-body', '/quotes/preview/', [{% for q in quotes %}{{ q.id }}{% if not loop.last %},{% endif %}{% endfor %}])"
+>
+
 {# ── Follow-up due banner ─────────────────────────────────────────────────── #}
 {% if follow_up_filter == 'due' %}
 <div class="mb-4 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-900 flex items-center justify-between gap-3">
@@ -256,12 +270,19 @@
         {% set is_followup_overdue = quote.follow_up_date and quote.follow_up_date < now and quote.outcome == 'pending' and quote.status not in ['converted','declined'] %}
         {% set is_expired = quote.is_expired and quote.status == 'sent' %}
 
-        <tr class="hover:bg-gray-50/80 transition-colors cursor-pointer
-                   {% if is_truck_down %}bg-red-50/40{% elif is_followup_overdue or is_expired %}bg-amber-50/30{% endif %}"
-            onclick="location.href='/quotes/{{ quote.id }}'">
+        <tr
+          @click="togglePreview({{ quote.id }})"
+          :class="{
+            'ring-inset ring-1 ring-brand-300 bg-brand-50/40': previewId === {{ quote.id }},
+            'bg-red-50/40':    {{ 'true' if is_truck_down else 'false' }} && previewId !== {{ quote.id }},
+            'bg-amber-50/30':  {{ 'true' if (is_followup_overdue or is_expired) else 'false' }} && previewId !== {{ quote.id }},
+          }"
+          class="hover:bg-gray-50/80 transition-colors cursor-pointer group">
 
           {# ── Quote # + line count ─────────────────────────────────────── #}
-          <td class="px-5 py-3.5 align-middle" onclick="event.stopPropagation()">
+          {# border-l-4 stripe on first <td> — §2.5 Stripe standard #}
+          <td class="px-5 py-3.5 align-middle
+                     border-l-4 {% if is_truck_down %}border-l-red-400{% elif is_followup_overdue or is_expired %}border-l-amber-400{% elif quote.status == 'sent' %}border-l-blue-300{% else %}border-l-transparent{% endif %}">
             <div class="flex items-center gap-2.5">
               {# Urgency dot #}
               {% if is_truck_down %}
@@ -272,8 +293,8 @@
               <span class="w-2 h-2 shrink-0"></span>
               {% endif %}
               <div>
-                <a href="/quotes/{{ quote.id }}"
-                   class="font-mono text-sm font-bold text-brand-700 hover:text-brand-600 hover:underline transition-colors">
+                <a href="/quotes/{{ quote.id }}" @click.stop
+                   class="font-mono text-sm font-bold text-brand-700 hover:text-brand-900 hover:underline transition-colors">
                   {{ quote.quote_number }}
                 </a>
                 <div class="text-xs text-gray-400 mt-0.5">
@@ -354,7 +375,7 @@
           </td>
 
           {# ── Actions — always visible ──────────────────────────────────── #}
-          <td class="px-4 py-3.5 align-middle text-right" onclick="event.stopPropagation()">
+          <td class="px-4 py-3.5 align-middle text-right" @click.stop>
             <div class="flex items-center justify-end gap-1.5">
               {% if quote.status in ['draft', 'sent', 'accepted'] %}
               <form method="post" action="/quotes/{{ quote.id }}/convert-to-invoice" class="contents">
@@ -428,4 +449,8 @@
 
 {% endif %}
 
+{# ── Preview dock — §7 Primitive 5 ───────────────────────────────────────── #}
+{{ preview_dock_shell('Quote Preview', 'quote-preview-body') }}
+
+</div>{# end operationalListData wrapper #}
 {% endblock %}
