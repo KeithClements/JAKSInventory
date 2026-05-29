@@ -14,30 +14,30 @@
 
     {% if invoice.lines %}
     <div class="overflow-x-auto">
-      <table class="tbl">
-        <thead class="tbl-head">
+      <table class="w-full text-sm min-w-[640px]">
+        <thead class="bg-gray-50 border-b border-gray-200">
           <tr>
-            <th class="tbl-th w-12">#</th>
-            <th class="tbl-th">SKU / Type</th>
-            <th class="tbl-th">Description</th>
-            <th class="tbl-th-r w-20">Qty</th>
-            <th class="tbl-th-r w-28">Unit Price</th>
-            <th class="tbl-th-r w-20">Disc %</th>
-            <th class="tbl-th-r w-28">Extended</th>
-            {% if editable %}<th class="tbl-th w-10"></th>{% endif %}
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide w-12">#</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">SKU / Type</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Description</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide w-20">Qty</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide w-28">Unit Price</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide w-20">Disc %</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide w-28">Extended</th>
+            {% if editable %}<th class="px-4 py-3 w-10"></th>{% endif %}
           </tr>
         </thead>
-        <tbody>
+        <tbody class="divide-y divide-gray-100">
           {% for line in invoice.lines %}
           {% set is_core = line.line_type == LineType.CORE_CHARGE %}
           {% set is_child = line.parent_line_id is not none %}
-          <tr class="tbl-row {% if is_core %}bg-amber-50/50{% endif %}">
+          <tr class="hover:bg-gray-50/80 transition-colors {% if is_core %}bg-amber-50/50{% endif %}">
 
-            <td class="tbl-td text-xs text-gray-400 tabular-nums">
+            <td class="px-4 py-3.5 align-middle text-xs text-gray-400 tabular-nums">
               {% if is_child %}↳{% else %}{{ loop.index }}{% endif %}
             </td>
 
-            <td class="tbl-td">
+            <td class="px-4 py-3.5 align-middle">
               {% if line.product %}
               <a href="/products/{{ line.product_id }}" class="font-mono text-xs font-bold text-brand-700 hover:underline">{{ line.product.sku }}</a>
               {% else %}
@@ -48,7 +48,7 @@
               {% endif %}
             </td>
 
-            <td class="tbl-td">
+            <td class="px-4 py-3.5 align-middle">
               {% if editable %}
               <input type="text" value="{{ line.description }}"
                      hx-post="/invoices/{{ invoice.id }}/lines/{{ line.id }}"
@@ -63,7 +63,7 @@
               {% endif %}
             </td>
 
-            <td class="tbl-td-r">
+            <td class="px-4 py-3.5 align-middle text-right tabular-nums">
               {% if editable and not (is_core and line.is_locked_to_parent) %}
               <input type="number" value="{{ line.qty }}" min="1"
                      hx-post="/invoices/{{ invoice.id }}/lines/{{ line.id }}"
@@ -78,7 +78,7 @@
               {% endif %}
             </td>
 
-            <td class="tbl-td-r">
+            <td class="px-4 py-3.5 align-middle text-right tabular-nums">
               {% if editable %}
               <input type="number" value="{{ '%.2f' % line.unit_price }}" min="0" step="0.01"
                      hx-post="/invoices/{{ invoice.id }}/lines/{{ line.id }}"
@@ -93,7 +93,7 @@
               {% endif %}
             </td>
 
-            <td class="tbl-td-r">
+            <td class="px-4 py-3.5 align-middle text-right tabular-nums">
               {% if editable and not is_core %}
               <input type="number" value="{{ line.discount_pct }}" min="0" max="100" step="0.5"
                      hx-post="/invoices/{{ invoice.id }}/lines/{{ line.id }}"
@@ -108,25 +108,27 @@
               {% endif %}
             </td>
 
-            <td class="tbl-td-r font-semibold text-gray-800 tabular-nums">
+            <td class="px-4 py-3.5 align-middle text-right tabular-nums font-semibold text-gray-800">
               ${{ "%.2f"|format(line.line_total) }}
             </td>
 
             {% if editable %}
-            <td class="tbl-td text-right">
+            <td class="px-4 py-3.5 align-middle text-right">
               {% if is_core and line.is_locked_to_parent %}
+              {# Unlink — dispatches to the outer-scope line-confirm modal (no native hx-confirm) #}
               <button type="button"
-                      hx-post="/invoices/{{ invoice.id }}/lines/{{ line.id }}/unlink"
-                      hx-target="#lines-and-totals"
-                      hx-swap="outerHTML"
-                      hx-confirm="Unlink this core line from its parent? It will no longer auto-sync with parent qty changes."
+                      @click="$dispatch('inv-line-confirm', {
+                        url: '/invoices/{{ invoice.id }}/lines/{{ line.id }}/unlink',
+                        msg: 'Unlink this core line from its parent? It will no longer auto-sync with parent qty changes.'
+                      })"
                       class="text-xs text-amber-600 hover:text-amber-800" title="Unlink from parent">⛓</button>
               {% else %}
+              {# Delete — dispatches to the outer-scope line-confirm modal (no native hx-confirm) #}
               <button type="button"
-                      hx-post="/invoices/{{ invoice.id }}/lines/{{ line.id }}/delete"
-                      hx-target="#lines-and-totals"
-                      hx-swap="outerHTML"
-                      hx-confirm="Remove this line?{% if line.children %} Linked auto-generated children (e.g. core) will also be removed.{% endif %}"
+                      @click="$dispatch('inv-line-confirm', {
+                        url: '/invoices/{{ invoice.id }}/lines/{{ line.id }}/delete',
+                        msg: 'Remove this line?{% if line.children %} Linked auto-generated children (e.g. core) will also be removed.{% endif %}'
+                      })"
                       class="text-xs text-red-400 hover:text-red-600 font-bold" title="Delete line">×</button>
               {% endif %}
             </td>
@@ -137,7 +139,7 @@
       </table>
     </div>
     {% else %}
-    <div class="tbl-empty">
+    <div class="px-4 py-12 text-center text-sm text-gray-400 italic">
       {% if editable %}
       No lines yet — search above to add a product or type free text to add a misc line.
       {% else %}
