@@ -192,72 +192,65 @@ All 13 services in `/app/services/`:
 
 ## 9. Build Status — What Is NOT YET BUILT ❌
 
-### Immediate (must do before daily use)
+> **⚠️ RECONCILED 2026-05-29 against the actual codebase (service + router + template audit).**
+> The previous version of this section was badly stale: it listed PO receive, 3-way match,
+> SO→Invoice, invoice finalize/lock/void, core lifecycle, warranty/RA state machines, payment
+> reversal/NSF, credit memos, quote duplicate/reactivate, the report suite, dashboard widgets,
+> and most document PDFs as "stub" / "not built." **All of those are now implemented and routed.**
+> Backend Workflow Series 1–5 landed them (125 tests passing); backend is in **support mode**.
+> **Do not use the old text as a to-do list — trust the code.** The genuine remaining gap is the
+> **UI maturity rollout**, not backend logic.
 
-| # | Feature | Why Blocking |
-|---|---|---|
-| 1 | **DB recreate** | `line_role`, `is_included`, `option_label` columns not in existing DB. Drop + recreate. |
-| 2 | **Inline creation slide-overs** | #1 UX problem. Quote/Invoice/PO screens break when customer, product, or vendor doesn't exist yet. |
-| 3 | **Global search Ctrl+K overlay** | Quote screen's product search needs this. Without it, part search is not keyboard-first. |
-| 4 | **Customer balance mini-panel on quote screen** | Terms / Open Balance / Overdue / Credit / Cores Owed |
-| 5 | **PO receipt workflow (3-way match)** | Inventory cannot be trusted until receiving is solid |
+### 9.0 — What was on this list and is now DONE ✅ (do not rebuild)
 
-### Core Workflows Not Yet Wired
+DB recreate · inline quick-create slide-overs (customer/product/vendor) · global Ctrl+K search ·
+customer balance mini-panel on quote · PO receive → inventory + moving-avg cost · 3-way match
+(receipt → vendor bill → discrepancy resolution) · SO deposit collection (Full/Deposit/None) ·
+SO→Invoice (`fulfill_and_invoice`) · invoice finalize / lock / void / apply-credit · payment
+record / reverse / NSF · full core lifecycle · Return Authorization workflow · warranty claim
+state machine · credit memos + vendor credits · statements · in-app notifications · quote
+duplicate + reactivate · customer import · report suite (9 reports) · dashboard metrics
+(data-connected) · PO / SO / Core-slip / VCR / RA / Warranty print templates + `/pdf` routes.
+
+### 9.1 — Genuinely not built / deferred (BACKEND)
 
 | Feature | Status | Notes |
 |---|---|---|
-| Sales Order payment collection (Full/Deposit/None) | Schema + model built, UI not wired | SalesOrderService.record_payment() is stub |
-| SO → Invoice conversion | Schema built, route is stub | |
-| PO Receive → inventory update | Schema built, route is stub | POService.receive() is stub |
-| Vendor bill creation (3-way match) | Schema built, service is stub | |
-| Core lifecycle (full: invoice → slip → customer return → vendor return → credit) | Schema built, CoreService methods are stubs | |
-| Return Authorization workflow | Schema built, service is stub | |
-| Warranty claim state machine | Schema built, service is stub | |
-| Research status on quote lines | Schema + models built, UI not built | ResearchService is stub |
-| Invoice lock logic (end-of-day / QBO / paid) | Schema built, InvoiceService.lock() is stub | |
-| Invoice edit while unlocked | Basic edit works; lock enforcement missing | |
+| QBO OAuth + push (invoices, payments, vendor bills, credit memos) | **Deliberately gated** | Standing decision 2026-05-29: do not start until UI rollout + core ops stable. `qbo_*` fields dormant. Backend Phase M. |
+| Vendor availability scrapers (PAI/HHP/ATL) | Stub by design | `vendor_availability_service.py` — all 3 methods `raise NotImplementedError`. Phase 2. |
+| ESN lookup scraper | Stub by design | `esn_lookup_service.py` — `raise NotImplementedError`. Phase 3. |
+| Real email/SMS send | NullProvider only | `MessagingService` logs to `communication_log` (`logged_only`); SMTP/M365/Twilio providers are Phase 2. |
+| Server-side PDF rendering | Falls back to browser print | WeasyPrint v68.1 installed but GTK/Pango missing on Windows → `?auto=1` browser print. Install GTK to enable true PDF (no code change). |
 
-### Phase 1 — Later (not immediately blocking)
+### 9.2 — The real Phase-1 gap: UI maturity rollout 🟡
+
+Backend can do these workflows; the **screens are still raw L1 `tbl-*` tables** (see
+`JAKS_UI_Change_Plan.md` §6 Rollout Order — the authoritative UI status). Remaining L1→L2/L3 work:
+
+- **Lists L1→L2:** Sales Orders, Vendors, Cores, Warranty, Returns, Vendor Returns, Payments.
+- **Detail/workspace:** Product Detail (L1→L2); SO / Warranty / Returns / Vendor-Return workspaces.
+- **Reports:** all 9 reports render in raw `tbl-*` — functional, unpolished (AR Aging + Statements are owner/wife-facing).
+- **Ceiling work (quality→10):** Tailwind CDN → compiled build + tokens; CI lint gate on the design system; a11y/focus pass; state matrix (skeletons / empty / error); customer-facing PDF polish.
+- **Known UX gaps:** core-slip popup not auto-triggered at invoice finalize (TODO in `invoices.py`); quote add-line two-step staging reads as broken (§8C.1); cross-workspace action-header standard open (§8B).
+
+### 9.3 — Schema built, UI not built (Phase-1 late)
 
 | Feature | Notes |
 |---|---|
-| QBO OAuth + push (invoices, payments, vendor bills) | Wife's bookkeeping gate. OAuth not started. |
-| Report suite (AR aging, sales by customer, inventory val.) | Basic structure exists; queries not wired |
-| Dashboard operational widgets (Research Queue, Follow-up Today, Open SOs, Overdue) | Widgets visible but not data-connected |
-| Customer Excel import | CSV upload → review → import |
-| Serial number tracking (cylinder heads) | Schema built, UI not built |
-| Kit BOM management (vendor + JAKS-built) | Schema built, UI not built |
-| Quote pop-out window (second browser window) | Spec locked — window.open('/quotes/{id}/popup') |
-| PO PDF (print/email to vendor) | Print template not built |
-| Core Return Slip PDF (CORE-XXXX) | Template not built |
-| Vendor Core Return Sheet PDF | Template not built |
-| Return Authorization document PDF | Template not built |
-| Warranty Claim form PDF | Template not built |
-| Lost sales log on declined quotes | Field exists, UI not built |
-| Quote reactivation (6-month-old quote) | QuoteService.reactivate() is stub |
-| Quote duplication | QuoteService.duplicate() is stub |
-| Customer balance visible on invoice screen | Not built |
-| NSF check reversal workflow | Schema built, PaymentService.reverse_nsf() is stub |
+| Serial number tracking UI (cylinder heads) | Models + `product_serial_numbers` exist; no UI. |
+| Kit BOM management UI (vendor + JAKS-built) | `product_kits` / `product_kit_lines` exist; no UI. |
+| Quote pop-out window (second browser window) | Spec locked — `window.open('/quotes/{id}/popup')`. Not built. |
+| Research status on quote lines | `ResearchService` implemented; quote-line research UI is partial — **verify before scheduling**. |
 
 ### Phase 2 (after Phase 1 stable in daily use)
 
-| Feature |
-|---|
-| VendorAvailabilityService — PAI/HHP/ATL scraper wiring (all 3 methods currently raise NotImplementedError) |
-| Vendor availability pills on quote workspace (PAI/HHP/ATL live data) |
-| Shopify product push + order sync |
-| TaxJar (automated sales tax) |
-| QBO customer pull / import |
-| System email/text delivery (research templates, invoices) |
-| Credit memo / refund check workflow (requires LineType.CREDIT_MEMO + InvoiceService guard update) |
-| Option Groups visual rendering (color-coded sections in quote line table) |
-| "View Related" slide-over per quote line |
-| Auto-open slide-over for high-value bundles |
-| WarrantyService full implementation |
-| Full P&L and financial reports |
+Vendor-availability pills on quote workspace (live PAI/HHP/ATL) · Shopify product push + order
+sync · TaxJar (automated sales tax) · QBO customer pull / import · real email/text delivery ·
+Option-Groups visual rendering (color-coded quote sections) · "View Related" slide-over per quote
+line · auto-open slide-over for high-value bundles · full P&L / advanced financial reports.
 
 ### Phase 3
-eBay listings, full TaxJar (multi-state), ESN lookup scraper live, serial number UI.
+eBay listings · full TaxJar (multi-state) · ESN lookup scraper live · serial-number + kit-BOM UI.
 
 ---
 
@@ -366,12 +359,12 @@ Keith signs off when ALL of these work in real daily use (not test data):
 | Invoice PDF | ✅ Built (WeasyPrint + fallback) | GET /invoices/{id}/pdf |
 | Quote Print (browser) | ✅ Built (auto-print on ?auto=1) | GET /quotes/{id}/print |
 | Invoice Print (browser) | ✅ Built (auto-print on ?auto=1) | GET /invoices/{id}/print |
-| Purchase Order PDF | ❌ Not built | |
-| Core Return Slip (CORE-XXXX) | ❌ Not built | |
-| Vendor Core Return Sheet | ❌ Not built | |
-| Return Authorization document | ❌ Not built | |
-| Warranty Claim form | ❌ Not built | |
-| Sales Order PDF | ❌ Not built | |
+| Purchase Order PDF | ✅ Built (template + fallback) | GET /purchase-orders/{id}/print · /pdf |
+| Core Return Slip (CORE-XXXX) | ✅ Built (template + fallback) | GET /cores/slips/{id}/print · /pdf |
+| Vendor Core Return Sheet (VCR) | ✅ Built (template + fallback) | GET /cores/vcr/{id}/print · /pdf |
+| Return Authorization document | ✅ Built (template + fallback) | GET /returns/{id}/print · /pdf |
+| Warranty Claim form | ✅ Built (template + fallback) | GET /warranty/{id}/print · /pdf |
+| Sales Order PDF | ✅ Built (template + fallback) | GET /sales-orders/{id}/print · /pdf |
 
 **WeasyPrint note:** Installed (v68.1) but requires GTK/Pango system libraries on Windows. Currently falls back to browser print-to-PDF via `?auto=1` redirect. Install GTK runtime from https://doc.courtbouillon.org/weasyprint/stable/first_steps.html to enable true server-side PDF — no code changes needed.
 
@@ -440,4 +433,4 @@ Sequences reset annually (Jan 1). `current_sequence_year` in settings detected o
 
 *This document is the single source of truth for all JAKS Inventory build decisions.*
 *Update it as decisions change. All other planning documents are superseded.*
-*Last updated: 2026-05-25*
+*Last updated: 2026-05-29 — §9 reconciled against the codebase; §12 PDF status corrected.*
