@@ -183,6 +183,9 @@
         {% set inv_count = open_invoice_counts.get(c.id, 0) %}
         {% set q_count = open_quote_counts.get(c.id, 0) %}
         {% set last_sale = last_sale_dates.get(c.id) %}
+        {% set bal_due = balance_due_map.get(c.id, 0) %}
+        {% set so_count = open_so_counts.get(c.id, 0) %}
+        {% set core_count = outstanding_cores_map.get(c.id, 0) %}
 
         {# Left-edge stripe: quotes need follow-up (amber) > open AR activity (blue) > none #}
         {% if q_count > 0 %}{% set stripe = 'amber' %}
@@ -272,9 +275,13 @@
             {{ status_chip(tchip[0], tchip[1], tchip[2]) }}
           </td>
 
-          {# Activity #}
+          {# Activity / Financial #}
           <td class="px-4 py-4 align-middle">
-            <div class="flex items-center justify-center gap-2">
+            {# Balance due — red when > 0, suppressed when zero #}
+            {% if bal_due > 0 %}
+            <div class="text-xs font-bold text-red-600 tabular-nums mb-1.5">${{ "%.2f"|format(bal_due) }} due</div>
+            {% endif %}
+            <div class="flex items-center flex-wrap gap-1">
               {% if inv_count > 0 %}
               <span class="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700"
                     title="{{ inv_count }} open invoice{{ 's' if inv_count != 1 }}">
@@ -293,7 +300,25 @@
                 {{ q_count }} qt
               </span>
               {% endif %}
-              {% if inv_count == 0 and q_count == 0 %}
+              {% if so_count > 0 %}
+              <span class="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-semibold bg-brand-50 text-brand-700"
+                    title="{{ so_count }} open sales order{{ 's' if so_count != 1 }}">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"/>
+                </svg>
+                {{ so_count }} so
+              </span>
+              {% endif %}
+              {% if core_count > 0 %}
+              <span class="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-semibold bg-orange-50 text-orange-700"
+                    title="{{ core_count }} outstanding core{{ 's' if core_count != 1 }}">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                {{ core_count }} core{{ 's' if core_count != 1 }}
+              </span>
+              {% endif %}
+              {% if inv_count == 0 and q_count == 0 and so_count == 0 and core_count == 0 and bal_due == 0 %}
               <span class="text-sm text-gray-300">—</span>
               {% endif %}
             </div>

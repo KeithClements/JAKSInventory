@@ -104,6 +104,14 @@
     <div class="col-span-1">
       <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Activity</p>
       <div class="space-y-1.5">
+        {# Balance Due — prominent when non-zero #}
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Balance Due</span>
+          {% set _bd = balance_due | default(0) %}
+          {% if _bd > 0 %}
+          <span class="text-sm font-bold text-red-600 tabular-nums">${{ "%.2f"|format(_bd) }}</span>
+          {% else %}<span class="text-sm text-gray-400">—</span>{% endif %}
+        </div>
         <div class="flex items-center justify-between">
           <span class="text-xs text-gray-500">Open Invoices</span>
           {% if inv_count > 0 %}
@@ -114,6 +122,20 @@
           <span class="text-xs text-gray-500">Open Quotes</span>
           {% if q_count > 0 %}
           <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 tabular-nums">{{ q_count }}</span>
+          {% else %}<span class="text-sm text-gray-400">—</span>{% endif %}
+        </div>
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Open Sales Orders</span>
+          {% set _so = open_so_count | default(0) %}
+          {% if _so > 0 %}
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-brand-50 text-brand-700 tabular-nums">{{ _so }}</span>
+          {% else %}<span class="text-sm text-gray-400">—</span>{% endif %}
+        </div>
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Outstanding Cores</span>
+          {% set _cores = outstanding_core_count | default(0) %}
+          {% if _cores > 0 %}
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-orange-50 text-orange-700 tabular-nums">{{ _cores }}</span>
           {% else %}<span class="text-sm text-gray-400">—</span>{% endif %}
         </div>
         <div class="flex items-center justify-between pt-1 border-t border-gray-100">
