@@ -73,6 +73,7 @@ async def list_quotes(
     status: str = "",
     q: str = "",
     follow_up: str = "",
+    customer_id: int = 0,
     db: Session = Depends(get_db),
 ):
     from datetime import datetime, date as date_type
@@ -82,6 +83,8 @@ async def list_quotes(
     today = date_type.today()
 
     query = db.query(Quote).join(Customer)
+    if customer_id:
+        query = query.filter(Quote.customer_id == customer_id)
     if follow_up == "due":
         query = query.filter(
             Quote.follow_up_date <= now,
@@ -114,6 +117,7 @@ async def list_quotes(
             "quotes": quotes,
             "status_filter": status,
             "follow_up_filter": follow_up,
+            "customer_id": customer_id,
             "q": q,
             "QuoteStatus": QuoteStatus,
             "customers": customers,
@@ -192,6 +196,77 @@ async def product_search_json(
         }
         for r in results
     ])
+
+
+# ── Preview panel (HTMX dock) ─────────────────────────────────────────────────
+# MUST be registered before /{quote_id} — otherwise "preview" is captured as
+# an int param and raises a 422.
+
+@router.get("/preview/{quote_id}", response_class=HTMLResponse)
+async def quote_preview_panel(
+    quote_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Bottom-dock preview panel for the Quote List (§7 Primitive 5).
+    Loaded via htmx.ajax() on row click; renders quotes/_preview_panel.html.
+
+    §2B context published to UI lane:
+      quote            — Quote ORM object (with .customer, .lines)
+      margin_pct       — float | None  (None when subtotal = 0)
+      cost_total       — float
+      ar_overdue_count — int  (open/partial invoices past due_date)
+      now              — datetime (for overdue detection in template)
+      QuoteStatus      — enum class
+      QuoteOutcome     — enum class
+    """
+    from datetime import datetime
+    from sqlalchemy import func as _func
+    from app.models.invoice import Invoice
+    from app.constants import QuoteOutcome as _QO
+
+    quote = db.query(Quote).filter(Quote.id == quote_id).first()
+    if quote is None:
+        return HTMLResponse(
+            '<p class="px-6 py-4 text-sm text-red-500">Quote not found.</p>',
+            status_code=404,
+        )
+
+    # Margin — sum included lines' (unit_cost × qty), compare to subtotal
+    included = [ln for ln in quote.lines if ln.is_included]
+    cost_total = round(sum(ln.unit_cost * ln.qty for ln in included), 2)
+    subtotal = quote.subtotal
+    margin_pct: float | None = (
+        round((subtotal - cost_total) / subtotal * 100, 1) if subtotal > 0 else None
+    )
+
+    # AR overdue — quick scalar: how many invoices past due for this customer?
+    now = datetime.utcnow()
+    ar_overdue_count = (
+        db.query(_func.count(Invoice.id))
+        .filter(
+            Invoice.customer_id == quote.customer_id,
+            Invoice.status.in_(["open", "partial"]),
+            Invoice.due_date < now,
+        )
+        .scalar()
+        or 0
+    )
+
+    return templates.TemplateResponse(
+        "quotes/_preview_panel.html",
+        {
+            "request": request,
+            "quote": quote,
+            "margin_pct": margin_pct,
+            "cost_total": cost_total,
+            "ar_overdue_count": ar_overdue_count,
+            "now": now,
+            "QuoteStatus": QuoteStatus,
+            "QuoteOutcome": _QO,
+        },
+    )
 
 
 # ── Workspace ─────────────────────────────────────────────────────────────────

@@ -62,8 +62,17 @@
 
         <div class="card-header">
           <h2 class="card-title">Account</h2>
-          <button type="button" @click="editMode = !editMode" class="btn-secondary btn-sm"
-                  x-text="editMode ? 'Cancel' : 'Edit'"></button>
+          <div class="flex items-center gap-2">
+            <button type="button" x-show="!editMode" @click="editMode = true" class="btn-primary btn-sm">
+              <svg class="w-3.5 h-3.5 -ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+              </svg>
+              Edit Customer
+            </button>
+            <button type="button" x-show="editMode" x-cloak @click="editMode = false" class="btn-secondary btn-sm">
+              Cancel
+            </button>
+          </div>
         </div>
 
         {# ── View mode ── #}
@@ -311,15 +320,17 @@
               </div>
             </div>
 
-            {# Actions #}
-            <div class="flex items-center gap-3 pt-1">
-              <button type="submit" class="btn-primary">Save Changes</button>
-              <button type="button" @click="editMode = false" class="btn-secondary">Cancel</button>
-              <div class="flex-1"></div>
+            {# Actions — right-aligned footer bar, full-width within the card,
+               stays visible at the bottom of the edit form. #}
+            <div class="sticky bottom-0 z-10 -mx-5 -mb-5 mt-6 flex items-center gap-3
+                        border-t border-gray-200 bg-white px-5 py-3">
               <button type="submit" form="deactivate-form"
                       class="px-4 py-2 border border-red-200 text-sm font-medium text-red-600 rounded-lg hover:bg-red-50 transition-colors">
                 Deactivate
               </button>
+              <div class="flex-1"></div>
+              <button type="button" @click="editMode = false" class="btn-secondary">Cancel</button>
+              <button type="submit" class="btn-primary">Save Changes</button>
             </div>
 
           </form>
@@ -399,7 +410,7 @@
             </div>
             <div class="flex justify-between text-sm">
               <span class="text-gray-500">Open quotes</span>
-              <span class="text-gray-700">{{ open_quotes|length }}</span>
+              <a href="/quotes/?customer_id={{ customer.id }}" class="link">{{ open_quotes|length }}</a>
             </div>
           </div>
         </div>

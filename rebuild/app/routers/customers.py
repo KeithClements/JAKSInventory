@@ -5,23 +5,25 @@ import io
 import csv
 import json
 import logging
+import re
 
 from fastapi import APIRouter, Depends, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.constants import (
     AddressType, CallOutcome, CallType,
     CommunicationChannel, CommunicationDirection,
-    PaymentTerms, PricingTier, QuoteStatus,
+    CoreStatus, PaymentTerms, PricingTier, QuoteStatus, SOStatus,
 )
 from app.deps import get_db
 from app.models.communication import Communication
 from app.models.customer import Customer, CustomerAddress, CustomerCallLog
-from app.models.invoice import Invoice
-from app.models.quote import Quote
+from app.models.core import CoreCharge
+from app.models.invoice import Invoice, PaymentAllocation
+from app.models.quote import Quote, SalesOrder
 from app.services.crm_service import CRMService
 from app.services.messaging_service import MessagingService
 from app.services.quote_service import QuoteService
@@ -34,36 +36,85 @@ templates = Jinja2Templates(directory="app/templates")
 CURRENT_USER_ID = 1
 
 
+def _digits(s: str | None) -> str:
+    """Strip everything except digits — used to normalize phone numbers for search."""
+    return "".join(ch for ch in (s or "") if ch.isdigit())
+
+
+def _normalize_name(s: str | None) -> str:
+    """Lowercase + strip non-alphanumerics — for fuzzy duplicate-name detection."""
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def _find_duplicate_customers(
+    db: Session, company_name: str, exclude_id: int | None = None
+) -> list[Customer]:
+    """Return active customers whose company name looks like a duplicate of
+    `company_name`. Matches on normalized exact equality, or substring either
+    direction once the normalized name is long enough to be meaningful (>= 4
+    chars) — this catches "Mike's Diesel" vs "Mikes Diesel Repair" without
+    firing on trivially short fragments. It is a soft warning, never a block."""
+    norm = _normalize_name(company_name)
+    if not norm:
+        return []
+    matches: list[Customer] = []
+    for c in db.query(Customer).filter(Customer.is_active == True).all():  # noqa: E712
+        if exclude_id and c.id == exclude_id:
+            continue
+        cn = _normalize_name(c.company_name)
+        if not cn:
+            continue
+        if cn == norm or (len(norm) >= 4 and len(cn) >= 4 and (cn in norm or norm in cn)):
+            matches.append(c)
+    return matches
+
+
+# ── List tab definitions (JAKS_UI_Change_Plan.md §2) ─────────────────────────
+
+# Tab slug → filter behavior.  "all" = no extra filter beyond is_active=True.
+_CUST_TABS: list[tuple[str, str]] = [
+    ("all",           "All"),
+    ("open_invoices", "Open Invoices"),
+    ("open_quotes",   "Open Quotes"),
+    ("terms",         "On Terms"),
+]
+
+# Payment-terms values that fall under the "On Terms" tab.
+_TERMS_VALUES = {"net_15", "net_30", "net_60"}
+
+
 # ── List ──────────────────────────────────────────────────────────────────────
 
 @router.get("/", response_class=HTMLResponse)
-def customer_list(request: Request, q: str = "", db: Session = Depends(get_db)):
-    query = db.query(Customer).filter(Customer.is_active == True)
-    if q:
-        like = f"%{q}%"
-        query = query.filter(
-            Customer.company_name.ilike(like)
-            | Customer.contact_name.ilike(like)
-            | Customer.phone.ilike(like)
-        )
-    customers = query.order_by(Customer.company_name).all()
+def customer_list(
+    request: Request,
+    q: str = "",
+    tab: str = "all",
+    db: Session = Depends(get_db),
+):
+    # Normalise unknown tab slugs
+    valid_tabs = {t[0] for t in _CUST_TABS}
+    if tab not in valid_tabs:
+        tab = "all"
 
-    # Bulk activity counts — two queries, no N+1
-    customer_ids = [c.id for c in customers]
-    if customer_ids:
-        open_invoice_counts = dict(
+    # ── Unfiltered counts (must come from the full active dataset) ────────────
+    all_active = db.query(Customer).filter(Customer.is_active == True).all()
+    all_ids = [c.id for c in all_active]
+
+    if all_ids:
+        _inv_active = dict(
             db.query(Invoice.customer_id, func.count(Invoice.id))
             .filter(
-                Invoice.customer_id.in_(customer_ids),
+                Invoice.customer_id.in_(all_ids),
                 Invoice.status.in_(["draft", "open", "partial"]),
             )
             .group_by(Invoice.customer_id)
             .all()
         )
-        open_quote_counts = dict(
+        _quote_active = dict(
             db.query(Quote.customer_id, func.count(Quote.id))
             .filter(
-                Quote.customer_id.in_(customer_ids),
+                Quote.customer_id.in_(all_ids),
                 Quote.status.notin_([
                     QuoteStatus.CONVERTED,
                     QuoteStatus.DECLINED,
@@ -74,10 +125,56 @@ def customer_list(request: Request, q: str = "", db: Session = Depends(get_db)):
             .all()
         )
     else:
-        open_invoice_counts = {}
-        open_quote_counts = {}
+        _inv_active = {}
+        _quote_active = {}
 
-    # Bulk last-sale date — one query, no N+1. Returns formatted "Mon DD" strings.
+    counts: dict[str, int] = {
+        "all":           len(all_active),
+        "open_invoices": sum(1 for c in all_active if _inv_active.get(c.id, 0) > 0),
+        "open_quotes":   sum(1 for c in all_active if _quote_active.get(c.id, 0) > 0),
+        "terms":         sum(1 for c in all_active if (c.payment_terms or "") in _TERMS_VALUES),
+    }
+
+    # ── Apply tab filter ──────────────────────────────────────────────────────
+    if tab == "open_invoices":
+        with_inv = {cid for cid, cnt in _inv_active.items() if cnt > 0}
+        tab_ids = [c.id for c in all_active if c.id in with_inv]
+        base_pool = [c for c in all_active if c.id in with_inv]
+    elif tab == "open_quotes":
+        with_q = {cid for cid, cnt in _quote_active.items() if cnt > 0}
+        tab_ids = [c.id for c in all_active if c.id in with_q]
+        base_pool = [c for c in all_active if c.id in with_q]
+    elif tab == "terms":
+        base_pool = [c for c in all_active if (c.payment_terms or "") in _TERMS_VALUES]
+        tab_ids = [c.id for c in base_pool]
+    else:
+        base_pool = all_active
+        tab_ids = all_ids
+
+    # ── Apply search ──────────────────────────────────────────────────────────
+    if q:
+        q_lower = q.lower()
+        q_digits = _digits(q)
+        customers = [
+            c for c in base_pool
+            if (
+                (c.company_name and q_lower in c.company_name.lower())
+                or (c.contact_name and q_lower in c.contact_name.lower())
+                or (c.email and q_lower in c.email.lower())
+                or (q_digits and c.phone and q_digits in _digits(c.phone))
+            )
+        ]
+    else:
+        customers = base_pool
+
+    customers = sorted(customers, key=lambda c: c.company_name or "")
+
+    # ── Per-customer activity counts (for the rows we're actually showing) ────
+    customer_ids = [c.id for c in customers]
+    open_invoice_counts = {cid: _inv_active.get(cid, 0) for cid in customer_ids}
+    open_quote_counts = {cid: _quote_active.get(cid, 0) for cid in customer_ids}
+
+    # ── Last-sale dates ───────────────────────────────────────────────────────
     if customer_ids:
         _raw_dates = dict(
             db.query(Invoice.customer_id, func.max(Invoice.created_at))
@@ -99,15 +196,204 @@ def customer_list(request: Request, q: str = "", db: Session = Depends(get_db)):
     else:
         last_sale_dates = {}
 
+    # ── §2B data: balance_due_map, open_so_counts, outstanding_cores_map ─────
+    #
+    # Scoped to `customer_ids` (the rendered subset) — never the full all_ids
+    # set — so this scales with what's visible, not with the total customer count.
+
+    if customer_ids:
+        # balance_due_map — sum of Invoice.balance_due across open/partial invoices.
+        # Invoice.balance_due is a Python property (total - amount_paid), so we load
+        # the invoices with their lines and allocations in two eager-load queries
+        # (joinedload issues one IN-query per relationship, not N+1).
+        _open_invoices = (
+            db.query(Invoice)
+            .options(
+                joinedload(Invoice.lines),
+                joinedload(Invoice.allocations),
+            )
+            .filter(
+                Invoice.customer_id.in_(customer_ids),
+                Invoice.status.in_(["open", "partial"]),
+            )
+            .all()
+        )
+        balance_due_map: dict[int, float] = {}
+        for _inv in _open_invoices:
+            _bd = _inv.balance_due
+            if _bd > 0:
+                balance_due_map[_inv.customer_id] = round(
+                    balance_due_map.get(_inv.customer_id, 0.0) + _bd, 2
+                )
+
+        # open_so_counts — Sales Orders in any active (not closed) status.
+        # OPEN + PARTIAL + HOLD; FULFILLED/INVOICED/CANCELLED are excluded.
+        _so_raw = dict(
+            db.query(SalesOrder.customer_id, func.count(SalesOrder.id))
+            .filter(
+                SalesOrder.customer_id.in_(customer_ids),
+                SalesOrder.status.in_([
+                    SOStatus.OPEN,
+                    SOStatus.PARTIAL,
+                    SOStatus.HOLD,
+                ]),
+            )
+            .group_by(SalesOrder.customer_id)
+            .all()
+        )
+        open_so_counts: dict[int, int] = {
+            cid: _so_raw.get(cid, 0) for cid in customer_ids
+        }
+
+        # outstanding_cores_map — CoreCharge records still open/partially returned.
+        # customer_id is nullable on CoreCharge (drop-ship / no-customer cores);
+        # the IS NOT NULL filter excludes those rows from the aggregate.
+        _cores_raw = dict(
+            db.query(CoreCharge.customer_id, func.count(CoreCharge.id))
+            .filter(
+                CoreCharge.customer_id.in_(customer_ids),
+                CoreCharge.customer_id.isnot(None),
+                CoreCharge.status.in_([CoreStatus.OPEN, CoreStatus.PARTIAL]),
+            )
+            .group_by(CoreCharge.customer_id)
+            .all()
+        )
+        outstanding_cores_map: dict[int, int] = {
+            cid: _cores_raw.get(cid, 0) for cid in customer_ids
+        }
+
+    else:
+        balance_due_map = {}
+        open_so_counts = {}
+        outstanding_cores_map = {}
+
     return templates.TemplateResponse(
         "customers/list.html",
         {
             "request": request,
             "customers": customers,
             "q": q,
+            "tab": tab,
+            "counts": counts,
+            "tabs": _CUST_TABS,
             "open_invoice_counts": open_invoice_counts,
             "open_quote_counts": open_quote_counts,
             "last_sale_dates": last_sale_dates,
+            # §2B data
+            "balance_due_map": balance_due_map,
+            "open_so_counts": open_so_counts,
+            "outstanding_cores_map": outstanding_cores_map,
+        },
+    )
+
+
+# ── Customer preview panel (HTMX dock) ───────────────────────────────────────
+# IMPORTANT: must be registered BEFORE /{customer_id} to avoid the int route
+# capturing "preview" as a customer_id parameter.
+
+@router.get("/preview/{customer_id}", response_class=HTMLResponse)
+def customer_preview_panel(
+    customer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Bottom-dock preview panel for the Customer List (§7 Primitive 5).
+    Loaded via htmx.ajax() on row click; renders _preview_panel.html.
+
+    Context published to UI lane:
+      c                  — Customer ORM object
+      open_invoice_count — int: open/draft/partial invoices for this customer
+      open_quote_count   — int: active quotes
+      last_sale          — str | None: formatted "Mon DD" or None
+    """
+    c = db.query(Customer).filter(Customer.id == customer_id).first()
+    if c is None:
+        return HTMLResponse(
+            '<p class="px-6 py-4 text-sm text-red-500">Customer not found.</p>',
+            status_code=404,
+        )
+
+    open_invoice_count = (
+        db.query(func.count(Invoice.id))
+        .filter(
+            Invoice.customer_id == customer_id,
+            Invoice.status.in_(["draft", "open", "partial"]),
+        )
+        .scalar()
+        or 0
+    )
+    open_quote_count = (
+        db.query(func.count(Quote.id))
+        .filter(
+            Quote.customer_id == customer_id,
+            Quote.status.notin_([
+                QuoteStatus.CONVERTED,
+                QuoteStatus.DECLINED,
+                QuoteStatus.EXPIRED,
+            ]),
+        )
+        .scalar()
+        or 0
+    )
+
+    _raw_last = (
+        db.query(func.max(Invoice.created_at))
+        .filter(Invoice.customer_id == customer_id, Invoice.status != "void")
+        .scalar()
+    )
+    last_sale: str | None = None
+    if _raw_last is not None:
+        if hasattr(_raw_last, "strftime"):
+            last_sale = _raw_last.strftime("%b %d")
+        else:
+            last_sale = str(_raw_last)[:10]
+
+    # Balance due — load open/partial invoices with lines + allocations (3 queries, no N+1)
+    _open_invs = (
+        db.query(Invoice)
+        .options(joinedload(Invoice.lines), joinedload(Invoice.allocations))
+        .filter(
+            Invoice.customer_id == customer_id,
+            Invoice.status.in_(["open", "partial"]),
+        )
+        .all()
+    )
+    balance_due = round(sum(inv.balance_due for inv in _open_invs if inv.balance_due > 0), 2)
+
+    # Open Sales Orders
+    open_so_count = (
+        db.query(func.count(SalesOrder.id))
+        .filter(
+            SalesOrder.customer_id == customer_id,
+            SalesOrder.status.in_([SOStatus.OPEN, SOStatus.PARTIAL, SOStatus.HOLD]),
+        )
+        .scalar()
+        or 0
+    )
+
+    # Outstanding core charges
+    outstanding_core_count = (
+        db.query(func.count(CoreCharge.id))
+        .filter(
+            CoreCharge.customer_id == customer_id,
+            CoreCharge.status.in_([CoreStatus.OPEN, CoreStatus.PARTIAL]),
+        )
+        .scalar()
+        or 0
+    )
+
+    return templates.TemplateResponse(
+        "customers/_preview_panel.html",
+        {
+            "request": request,
+            "c": c,
+            "open_invoice_count": open_invoice_count,
+            "open_quote_count": open_quote_count,
+            "last_sale": last_sale,
+            "balance_due": balance_due,
+            "open_so_count": open_so_count,
+            "outstanding_core_count": outstanding_core_count,
         },
     )
 
@@ -125,6 +411,23 @@ def customer_new(request: Request):
 @router.post("/new", response_class=RedirectResponse)
 async def customer_create(request: Request, db: Session = Depends(get_db)):
     form = await request.form()
+    company_name = str(form.get("company_name", "")).strip()
+
+    # Duplicate protection — warn instead of silently creating a near-duplicate,
+    # unless the user explicitly chose "Create Anyway" (confirm_duplicate=1).
+    if company_name and str(form.get("confirm_duplicate", "")) != "1":
+        dup_matches = _find_duplicate_customers(db, company_name)
+        if dup_matches:
+            return templates.TemplateResponse(
+                "customers/new.html",
+                {
+                    "request": request,
+                    "payment_terms": list(PaymentTerms),
+                    "dup_matches": dup_matches,
+                    "prefill": {k: str(v) for k, v in form.items()},
+                },
+            )
+
     c = Customer(
         company_name=str(form.get("company_name", "")).strip(),
         contact_name=str(form.get("contact_name", "")).strip(),
@@ -168,6 +471,23 @@ async def customer_quick_create(request: Request, db: Session = Depends(get_db))
         )
 
     _action = str(form.get("_action", "save"))
+
+    # ── Duplicate protection ──────────────────────────────────────────────────
+    # Unless the user explicitly chose "Create Anyway" (confirm_duplicate=1), warn
+    # about existing/similar company names instead of silently creating a dupe.
+    # Re-render the form with the entered values preserved + a warning banner.
+    confirm_duplicate = str(form.get("confirm_duplicate", "")) == "1"
+    if not confirm_duplicate:
+        dup_matches = _find_duplicate_customers(db, company_name)
+        if dup_matches:
+            return templates.TemplateResponse(
+                "customers/_quick_create.html",
+                {
+                    "request": request,
+                    "dup_matches": dup_matches,
+                    "prefill": {k: str(v) for k, v in form.items()},
+                },
+            )
 
     # Checkboxes: absent = unchecked, "on" = checked
     is_tax_exempt = form.get("is_tax_exempt") is not None
@@ -263,7 +583,13 @@ async def customer_quick_create(request: Request, db: Session = Depends(get_db))
 
 @router.get("/search-json", response_class=HTMLResponse)
 def customer_search_partial(request: Request, q: str = "", db: Session = Depends(get_db)):
-    """Returns an HTML partial — list of customers matching q for typeahead dropdowns."""
+    """Returns an HTML partial — list of customers matching q for typeahead dropdowns.
+
+    Searches: company_name, contact_name, phone, email (all case-insensitive ilike).
+    Requires q >= 2 chars. Returns up to 8 active customers ordered by company name.
+    Bug fix 2026-05-29: added contact_name and email to the OR filter (previously
+    only company_name | phone, causing contact-name-only searches to return nothing).
+    """
     customers: list[Customer] = []
     if q and len(q) >= 2:
         like = f"%{q}%"
@@ -271,7 +597,12 @@ def customer_search_partial(request: Request, q: str = "", db: Session = Depends
             db.query(Customer)
             .filter(
                 Customer.is_active == True,
-                (Customer.company_name.ilike(like) | Customer.phone.ilike(like)),
+                (
+                    Customer.company_name.ilike(like)
+                    | Customer.contact_name.ilike(like)
+                    | Customer.phone.ilike(like)
+                    | Customer.email.ilike(like)
+                ),
             )
             .order_by(Customer.company_name)
             .limit(8)

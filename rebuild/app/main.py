@@ -7,7 +7,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
-from app.database import init_db, SessionLocal
+import app.database as _appdb
+from app.database import init_db
 from app.routers.settings import seed_settings
 from app.seeds import seed_scraper_sources
 from app.routers import (
@@ -39,7 +40,9 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
-    db = SessionLocal()
+    # Late-bound so tests that re-point app.database.SessionLocal at an isolated
+    # engine (see tests/conftest.py) have startup seed THAT engine, not the file DB.
+    db = _appdb.SessionLocal()
     try:
         seed_settings(db)
         seed_scraper_sources(db)

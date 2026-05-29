@@ -5,7 +5,7 @@ from sqlalchemy import String, Text, Float, Integer, Boolean, ForeignKey, DateTi
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 from app.models.mixins import QBOSyncMixin
-from app.constants import POStatus, VendorBillStatus, QBOSyncStatus, Carrier
+from app.constants import POStatus, VendorBillStatus, QBOSyncStatus, Carrier, MatchResolution
 
 
 class PurchaseOrder(QBOSyncMixin, Base):
@@ -119,6 +119,22 @@ class POLine(Base):
     )
 
     notes: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+
+    # ── 3-way match resolution ─────────────────────────────────────────────────
+    # AP records a decision when a flagged line (over_billed / cost_variance) is
+    # reviewed.  Terminal values (accepted/credited/cleared) clear is_flag in
+    # _match_line(); on_hold de-prioritises; rejected stays visible as disputed.
+    match_resolution: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=MatchResolution.UNRESOLVED
+    )
+    match_resolution_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    match_resolved_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+    match_resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    match_resolution_vcm_id: Mapped[int | None] = mapped_column(
+        ForeignKey("vendor_credit_memos.id"), nullable=True
+    )
 
     po: Mapped[PurchaseOrder] = relationship("PurchaseOrder", back_populates="lines")
     product: Mapped[Product | None] = relationship("Product", back_populates="po_lines")

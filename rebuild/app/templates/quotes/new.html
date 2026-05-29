@@ -62,6 +62,7 @@
             <label class="form-label">Customer <span class="text-red-500">*</span></label>
             <div class="relative">
               <input type="text"
+                     name="q"
                      autocomplete="off"
                      placeholder="Type customer name or phone…"
                      :value="displayName"
@@ -70,8 +71,7 @@
                      class="form-input"
                      hx-get="/customers/search-json"
                      hx-trigger="input changed delay:200ms"
-                     hx-target="#nqp-results"
-                     hx-vals='js:{"q": event.target.value}' />
+                     hx-target="#nqp-results" />
               <div id="nqp-results"
                    class="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-30 max-h-52 overflow-y-auto"
                    x-show="displayName.length >= 2 && !customerId"
