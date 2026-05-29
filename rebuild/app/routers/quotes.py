@@ -19,6 +19,7 @@ from urllib.parse import quote as url_quote
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.constants import (
@@ -70,6 +71,7 @@ def _totals_ctx(quote: Quote) -> dict:
 @router.get("/", response_class=HTMLResponse)
 async def list_quotes(
     request: Request,
+    tab: str = "",
     status: str = "",
     q: str = "",
     follow_up: str = "",
@@ -77,22 +79,51 @@ async def list_quotes(
     db: Session = Depends(get_db),
 ):
     from datetime import datetime, date as date_type
-    from sqlalchemy import or_
 
     now = datetime.utcnow()
     today = date_type.today()
 
+    # ── Unfiltered tab counts (always over full dataset) ──────────────────
+    _status_counts: dict = dict(
+        db.query(Quote.status, func.count(Quote.id))
+        .group_by(Quote.status)
+        .all()
+    )
+    _follow_up_due_count: int = (
+        db.query(func.count(Quote.id))
+        .filter(
+            Quote.follow_up_date <= now,
+            Quote.outcome == QuoteOutcome.PENDING,
+            Quote.status.notin_([QuoteStatus.CONVERTED, QuoteStatus.DECLINED]),
+        )
+        .scalar()
+        or 0
+    )
+    counts: dict = {
+        "": sum(_status_counts.values()),
+        QuoteStatus.DRAFT:     _status_counts.get(QuoteStatus.DRAFT, 0),
+        QuoteStatus.SENT:      _status_counts.get(QuoteStatus.SENT, 0),
+        QuoteStatus.CONVERTED: _status_counts.get(QuoteStatus.CONVERTED, 0),
+        QuoteStatus.DECLINED:  _status_counts.get(QuoteStatus.DECLINED, 0),
+        QuoteStatus.EXPIRED:   _status_counts.get(QuoteStatus.EXPIRED, 0),
+        "follow_up_due":       _follow_up_due_count,
+    }
+
+    # `tab` is the canonical param emitted by the filter_tabs macro (?tab=<slug>).
+    # Legacy `status` and `follow_up` params are still accepted for back-compat.
+    active_tab = tab or (follow_up and "follow_up_due") or status
+
     query = db.query(Quote).join(Customer)
     if customer_id:
         query = query.filter(Quote.customer_id == customer_id)
-    if follow_up == "due":
+    if active_tab == "follow_up_due" or follow_up == "due":
         query = query.filter(
             Quote.follow_up_date <= now,
             Quote.outcome == QuoteOutcome.PENDING,
             Quote.status.notin_([QuoteStatus.CONVERTED, QuoteStatus.DECLINED]),
         )
-    elif status:
-        query = query.filter(Quote.status == status)
+    elif active_tab:
+        query = query.filter(Quote.status == active_tab)
     if q:
         query = query.filter(
             or_(
@@ -115,6 +146,7 @@ async def list_quotes(
         {
             "request": request,
             "quotes": quotes,
+            "active_tab": active_tab,
             "status_filter": status,
             "follow_up_filter": follow_up,
             "customer_id": customer_id,
@@ -123,6 +155,7 @@ async def list_quotes(
             "customers": customers,
             "now": now,
             "today": today,
+            "counts": counts,
         },
     )
 
