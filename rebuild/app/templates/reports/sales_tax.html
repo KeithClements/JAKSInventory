@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}Sales Tax Collected — JAKS Inventory{% endblock %}
+{% block heading %}Sales Tax Collected{% endblock %}
+
+{% block content %}
+{% set active_report = 'sales-tax' %}
+<div class="max-w-6xl space-y-4">
+  {% include "reports/_nav.html" %}
+
+  {# ── Date range filter ─────────────────────────────────────────────────── #}
+  <form method="get" action="/reports/sales-tax"
+        class="flex flex-wrap items-end gap-3 bg-white border border-gray-200 rounded-xl p-3">
+    <div>
+      <label class="form-label">From</label>
+      <input type="date" name="start" value="{{ start_date.isoformat() }}" class="form-input w-44"/>
+    </div>
+    <div>
+      <label class="form-label">To</label>
+      <input type="date" name="end" value="{{ end_date.isoformat() }}" class="form-input w-44"/>
+    </div>
+    <button type="submit" class="btn-primary btn-sm">Update</button>
+    <div class="flex-1"></div>
+    <button type="button" class="btn-secondary btn-sm" disabled title="Coming soon">
+      Export CSV
+    </button>
+  </form>
+
+  <p class="text-xs text-gray-400">
+    {{ start_date.strftime('%b %d, %Y') }} – {{ end_date.strftime('%b %d, %Y') }} · Finalized invoices with tax only (drafts and voids excluded)
+  </p>
+
+  {# ── Summary tiles ─────────────────────────────────────────────────────── #}
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div class="stat-card-brand">
+      <p class="stat-label">Total Tax Collected</p>
+      <p class="stat-value text-brand-700">${{ '%.2f' % totals.tax_collected }}</p>
+      <p class="stat-sub">{{ totals.invoice_count }} invoice{{ 's' if totals.invoice_count != 1 }}</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Taxable Revenue</p>
+      <p class="stat-value text-gray-700">${{ '%.2f' % totals.taxable_revenue }}</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Effective Rate</p>
+      <p class="stat-value text-gray-700">
+        {% if totals.effective_rate_pct is not none %}{{ '%.2f' % totals.effective_rate_pct }}%{% else %}<span class="text-gray-400">—</span>{% endif %}
+      </p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Invoice Count</p>
+      <p class="stat-value text-gray-700">{{ totals.invoice_count }}</p>
+    </div>
+  </div>
+
+  {# ── Data table ────────────────────────────────────────────────────────── #}
+  {% if rows %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Tax by Invoice</h2>
+      <span class="text-xs text-gray-400">{{ rows | length }} invoice{{ 's' if rows | length != 1 }}</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">Invoice #</th>
+            <th class="tbl-th">Customer</th>
+            <th class="tbl-th-r">Date</th>
+            <th class="tbl-th-r">Taxable Revenue</th>
+            <th class="tbl-th-r">Tax Collected</th>
+            <th class="tbl-th-r">Invoice Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr class="tbl-row">
+            <td class="tbl-td font-medium">
+              <a href="/invoices/{{ row.invoice.id }}" class="tbl-link text-sm">
+                {{ row.invoice_number }}
+              </a>
+            </td>
+            <td class="tbl-td text-gray-700">
+              {% if row.customer %}
+              <a href="/customers/{{ row.customer.id }}" class="tbl-link text-sm">
+                {{ row.customer.company_name }}
+              </a>
+              {% else %}
+              <span class="text-gray-400 italic">(unassigned)</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td-r text-gray-500 tabular-nums">{{ row.invoice_date.strftime('%m/%d/%Y') }}</td>
+            <td class="tbl-td-r text-gray-700 tabular-nums">${{ '%.2f' % row.taxable_revenue }}</td>
+            <td class="tbl-td-r font-semibold text-brand-700 tabular-nums">${{ '%.2f' % row.tax_collected }}</td>
+            <td class="tbl-td-r text-gray-600 tabular-nums">${{ '%.2f' % row.invoice_total }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="border-t-2 border-gray-200 bg-gray-50">
+          <tr>
+            <td class="px-4 py-3 text-sm font-bold text-gray-700" colspan="2">Totals</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-gray-500 tabular-nums">{{ totals.invoice_count }} invoice{{ 's' if totals.invoice_count != 1 }}</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-gray-700 tabular-nums">${{ '%.2f' % totals.taxable_revenue }}</td>
+            <td class="px-4 py-3 text-right text-lg font-bold text-brand-700 tabular-nums">${{ '%.2f' % totals.tax_collected }}</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-gray-600 tabular-nums">
+              {% if totals.effective_rate_pct is not none %}
+              <span class="text-xs text-gray-400 mr-1">eff. rate {{ '%.2f' % totals.effective_rate_pct }}%</span>
+              {% endif %}
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="card flex flex-col items-center justify-center py-16">
+    <svg class="w-12 h-12 text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>
+    </svg>
+    <p class="text-gray-500 font-medium">No taxable invoices in this range</p>
+    <p class="text-gray-400 text-sm mt-1">Try a wider date window, or check that tax has been applied to finalized invoices.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

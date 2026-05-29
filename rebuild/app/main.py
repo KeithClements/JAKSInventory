@@ -28,6 +28,7 @@ from app.routers import warranty as warranty_router
 from app.routers import returns as returns_router
 from app.routers import reports as reports_router
 from app.routers import notifications as notifications_router
+from app.routers import vendor_returns as vendor_returns_router
 
 app = FastAPI(title="JAKS Inventory", docs_url=None, redoc_url=None)
 
@@ -170,3 +171,4 @@ app.include_router(warranty_router.router)
 app.include_router(returns_router.router)
 app.include_router(reports_router.router)
 app.include_router(notifications_router.router)
+app.include_router(vendor_returns_router.router)

@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Vendor Returns — JAKS Inventory{% endblock %}
+{% block heading %}Vendor Returns{% endblock %}
+
+{% block header_actions %}
+  <a href="/vendor-returns/new" class="btn-primary btn-sm">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+    </svg>
+    New Return
+  </a>
+{% endblock %}
+
+{% block content %}
+
+{# ── Flash messages ── #}
+{% if request.query_params.get('ok') %}
+<div class="rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800 flex items-center gap-2 mb-4">
+  <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+  {{ request.query_params.get('ok') }}
+</div>
+{% endif %}
+{% if request.query_params.get('error') %}
+<div class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700 flex items-center gap-2 mb-4">
+  <svg class="w-4 h-4 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+  {{ request.query_params.get('error') }}
+</div>
+{% endif %}
+
+{# ── Status badge map ── #}
+{% set vr_badges = {
+  'draft':    'badge-gray',
+  'shipped':  'badge-blue',
+  'accepted': 'badge-green',
+  'partial':  'badge-amber',
+  'rejected': 'badge-red',
+  'closed':   'badge-gray',
+} %}
+
+{% if vendor_returns %}
+<div class="card">
+  <div class="overflow-x-auto">
+    <table class="tbl">
+      <thead class="tbl-head">
+        <tr>
+          <th class="tbl-th">VR #</th>
+          <th class="tbl-th">Vendor</th>
+          <th class="tbl-th">Status</th>
+          <th class="tbl-th-r">Expected Credit</th>
+          <th class="tbl-th-r">Actual Credit</th>
+          <th class="tbl-th-r">Difference</th>
+          <th class="tbl-th">Shipped At</th>
+          <th class="tbl-th">Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for vr in vendor_returns %}
+        {% set vnd = vendors_map.get(vr.vendor_id) %}
+        <tr class="tbl-row">
+          <td class="tbl-td">
+            <a href="/vendor-returns/{{ vr.id }}" class="tbl-link font-mono text-xs">{{ vr.vr_number }}</a>
+          </td>
+          <td class="tbl-td font-medium text-gray-900">
+            {% if vnd %}{{ vnd.name }}{% else %}<span class="text-gray-400">—</span>{% endif %}
+          </td>
+          <td class="tbl-td">
+            <span class="{{ vr_badges.get(vr.status, 'badge-gray') }}">
+              {{ vr.status | title }}
+            </span>
+          </td>
+          <td class="tbl-td-r text-gray-700">
+            {% if vr.expected_credit > 0 %}${{ '%.2f' % vr.expected_credit }}{% else %}<span class="text-gray-400">—</span>{% endif %}
+          </td>
+          <td class="tbl-td-r text-gray-700">
+            {% if vr.actual_credit > 0 %}${{ '%.2f' % vr.actual_credit }}{% else %}<span class="text-gray-400">—</span>{% endif %}
+          </td>
+          <td class="tbl-td-r">
+            {% if vr.credit_difference != 0 %}
+              {# Positive difference means we got less than expected (bad) #}
+              <span class="{% if vr.credit_difference > 0 %}text-red-600 font-semibold{% else %}text-green-700 font-semibold{% endif %}">
+                {% if vr.credit_difference > 0 %}−{% endif %}${{ '%.2f' % vr.credit_difference | abs }}
+              </span>
+            {% else %}
+              <span class="text-gray-400">—</span>
+            {% endif %}
+          </td>
+          <td class="tbl-td text-gray-400 text-xs">
+            {% if vr.shipped_at %}{{ vr.shipped_at.strftime('%m/%d/%Y') }}{% else %}—{% endif %}
+          </td>
+          <td class="tbl-td text-gray-400 text-xs">
+            {{ vr.created_at.strftime('%m/%d/%Y') }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% else %}
+<div class="card flex flex-col items-center justify-center py-16">
+  <svg class="w-12 h-12 text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+          d="M20 7H4a2 2 0 00-2 2v6a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2zM4 7V5a2 2 0 012-2h12a2 2 0 012 2v2"/>
+  </svg>
+  <p class="text-gray-500 font-medium">No vendor returns yet</p>
+  <p class="text-gray-400 text-sm mt-1">Create a return when merchandise needs to go back to a vendor.</p>
+  <a href="/vendor-returns/new" class="mt-3 text-sm link">New Vendor Return →</a>
+</div>
+{% endif %}
+
+{% endblock %}

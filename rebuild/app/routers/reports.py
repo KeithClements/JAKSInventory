@@ -90,6 +90,9 @@ def reports_index(request: Request, db: Session = Depends(get_db)):
     po_count = core_overdue = 0
     po_value = core_amount = mtd_revenue = mtd_margin = 0.0
     mtd_margin_pct = None
+    overdue_total = 0.0
+    overdue_count = 0
+    mtd_tax_collected = 0.0
 
     try:
         ar = svc.get_ar_aging()
@@ -108,6 +111,11 @@ def reports_index(request: Request, db: Session = Depends(get_db)):
         mtd_revenue  = sales_mtd["totals"]["gross_sales"]
         mtd_margin   = sales_mtd["totals"]["margin"]
         mtd_margin_pct = sales_mtd["totals"].get("margin_pct")
+        overdue_data = svc.get_overdue_invoices()
+        overdue_total = overdue_data["totals"]["total_owed"]
+        overdue_count = overdue_data["totals"]["invoice_count"]
+        tax_data = svc.get_sales_tax_collected(month_start, today)
+        mtd_tax_collected = tax_data["totals"]["tax_collected"]
     except Exception:
         log.exception("reports_index: ReportService failed")
         error_message = "Could not load report snapshot. Check server logs for details."
@@ -130,6 +138,9 @@ def reports_index(request: Request, db: Session = Depends(get_db)):
             "mtd_margin":    mtd_margin,
             "mtd_margin_pct": mtd_margin_pct,
             "month_label":   today.strftime("%B %Y"),
+            "overdue_total":      overdue_total,
+            "overdue_count":      overdue_count,
+            "mtd_tax_collected":  mtd_tax_collected,
         },
     )
 
@@ -315,6 +326,72 @@ def reports_outstanding_cores(request: Request, db: Session = Depends(get_db)):
         {
             "request": request,
             "today": today,
+            "rows": rows,
+            "totals": totals,
+            "error_message": error_message,
+        },
+    )
+
+
+# ── Overdue Invoices + Accrued Interest ──────────────────────────────────────
+
+@router.get("/overdue-invoices", response_class=HTMLResponse)
+def reports_overdue_invoices(
+    request: Request,
+    as_of: str | None = None,
+    db: Session = Depends(get_db),
+):
+    as_of_date = _parse_date(as_of) or date.today()
+    error_message = None
+    rows: list = []
+    totals = {"invoice_count": 0, "balance_due": 0.0, "interest_accrued": 0.0, "total_owed": 0.0}
+    try:
+        data = ReportService(db).get_overdue_invoices(as_of_date)
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_overdue_invoices failed (as_of=%s)", as_of_date)
+        error_message = "Could not load overdue invoices data. Check server logs for details."
+
+    return templates.TemplateResponse(
+        "reports/overdue_invoices.html",
+        {
+            "request": request,
+            "as_of": as_of_date,
+            "rows": rows,
+            "totals": totals,
+            "error_message": error_message,
+        },
+    )
+
+
+# ── Sales Tax Collected ───────────────────────────────────────────────────────
+
+@router.get("/sales-tax", response_class=HTMLResponse)
+def reports_sales_tax(
+    request: Request,
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+):
+    start_date, end_date = _resolve_range(start, end)
+    error_message = None
+    rows: list = []
+    totals = {"invoice_count": 0, "taxable_revenue": 0.0, "tax_collected": 0.0, "effective_rate_pct": None}
+    try:
+        data = ReportService(db).get_sales_tax_collected(start_date, end_date)
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_sales_tax failed (%s–%s)", start_date, end_date)
+        error_message = "Could not load sales tax data. Check server logs for details."
+
+    return templates.TemplateResponse(
+        "reports/sales_tax.html",
+        {
+            "request": request,
+            "start_date": start_date,
+            "end_date": end_date,
             "rows": rows,
             "totals": totals,
             "error_message": error_message,

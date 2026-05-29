@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}Overdue Invoices — JAKS Inventory{% endblock %}
+{% block heading %}Overdue Invoices{% endblock %}
+
+{% block content %}
+{% set active_report = 'overdue-invoices' %}
+<div class="max-w-6xl space-y-4">
+  {% include "reports/_nav.html" %}
+
+  {# ── Filter form ───────────────────────────────────────────────────────── #}
+  <form method="get" action="/reports/overdue-invoices"
+        class="flex flex-wrap items-end gap-3 bg-white border border-gray-200 rounded-xl p-3">
+    <div>
+      <label class="form-label">As of</label>
+      <input type="date" name="as_of" value="{{ as_of.isoformat() }}" class="form-input w-44"/>
+    </div>
+    <button type="submit" class="btn-primary btn-sm">Update</button>
+    <div class="flex-1"></div>
+    <button type="button" class="btn-secondary btn-sm" disabled title="Coming soon">
+      Export CSV
+    </button>
+  </form>
+
+  <p class="text-xs text-gray-400">As of {{ as_of.strftime('%B %d, %Y') }} · Open and partial invoices past due date only</p>
+
+  {# ── Summary tiles ─────────────────────────────────────────────────────── #}
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div class="stat-card {% if totals.balance_due > 0 %}stat-card-red{% endif %}">
+      <p class="stat-label">Total Overdue Balance</p>
+      <p class="stat-value {% if totals.balance_due > 0 %}text-red-700{% else %}text-gray-400{% endif %}">${{ '%.2f' % totals.balance_due }}</p>
+    </div>
+    <div class="stat-card {% if totals.interest_accrued > 0 %}stat-card-amber{% endif %}">
+      <p class="stat-label">Total Interest Accrued</p>
+      <p class="stat-value {% if totals.interest_accrued > 0 %}text-amber-700{% else %}text-gray-400{% endif %}">${{ '%.2f' % totals.interest_accrued }}</p>
+    </div>
+    <div class="stat-card-brand">
+      <p class="stat-label">Total Owed</p>
+      <p class="stat-value text-brand-700">${{ '%.2f' % totals.total_owed }}</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Invoice Count</p>
+      <p class="stat-value text-gray-700">{{ totals.invoice_count }}</p>
+    </div>
+  </div>
+
+  {# ── Data table ────────────────────────────────────────────────────────── #}
+  {% if rows %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Overdue Invoices</h2>
+      <span class="text-xs text-gray-400">{{ rows | length }} invoice{{ 's' if rows | length != 1 }}</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">Invoice #</th>
+            <th class="tbl-th">Customer</th>
+            <th class="tbl-th-r">Due Date</th>
+            <th class="tbl-th-r">Days Overdue</th>
+            <th class="tbl-th-r">Balance Due</th>
+            <th class="tbl-th-r">Interest Accrued</th>
+            <th class="tbl-th-r font-bold">Total Owed</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr class="tbl-row {% if row.days_overdue > 90 %}bg-red-50{% endif %}">
+            <td class="tbl-td font-medium">
+              <a href="/invoices/{{ row.invoice.id }}" class="tbl-link text-sm">
+                {{ row.invoice_number }}
+              </a>
+            </td>
+            <td class="tbl-td text-gray-700">
+              {% if row.customer %}
+              <a href="/customers/{{ row.customer.id }}" class="tbl-link text-sm">
+                {{ row.customer.company_name }}
+              </a>
+              {% else %}
+              <span class="text-gray-400 italic">(unassigned)</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td-r text-gray-600 tabular-nums">{{ row.due_date.strftime('%m/%d/%Y') }}</td>
+            <td class="tbl-td-r tabular-nums font-semibold {% if row.days_overdue > 90 %}text-red-700{% elif row.days_overdue > 60 %}text-orange-600{% elif row.days_overdue > 30 %}text-amber-600{% else %}text-gray-700{% endif %}">
+              {{ row.days_overdue }}
+            </td>
+            <td class="tbl-td-r text-red-700 font-medium tabular-nums">${{ '%.2f' % row.balance_due }}</td>
+            <td class="tbl-td-r tabular-nums {% if row.interest_accrued > 0 %}text-amber-700{% else %}text-gray-300{% endif %}">
+              {% if row.interest_accrued > 0 %}${{ '%.2f' % row.interest_accrued }}{% else %}—{% endif %}
+            </td>
+            <td class="tbl-td-r font-bold text-brand-700 tabular-nums">${{ '%.2f' % row.total_owed }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="border-t-2 border-gray-200 bg-gray-50">
+          <tr>
+            <td class="px-4 py-3 text-sm font-bold text-gray-700" colspan="2">Totals</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-gray-500 tabular-nums">{{ totals.invoice_count }} invoice{{ 's' if totals.invoice_count != 1 }}</td>
+            <td class="px-4 py-3"></td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-red-700 tabular-nums">${{ '%.2f' % totals.balance_due }}</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-amber-700 tabular-nums">${{ '%.2f' % totals.interest_accrued }}</td>
+            <td class="px-4 py-3 text-right text-lg font-bold text-brand-700 tabular-nums">${{ '%.2f' % totals.total_owed }}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="card flex flex-col items-center justify-center py-16">
+    <svg class="w-12 h-12 text-green-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    </svg>
+    <p class="text-gray-500 font-medium">No overdue invoices</p>
+    <p class="text-gray-400 text-sm mt-1">All open invoices are within their payment terms.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

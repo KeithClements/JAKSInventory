@@ -730,3 +730,218 @@ class ReportService(BaseService):
                 log.warning("Outstanding core %d direction=%s — expected CUSTOMER_OWES_RETURN", c.id, c.direction)
 
         return {"as_of": as_of, "rows": rows, "totals": totals}
+
+    # ── 7. Overdue Invoices + Accrued Interest ────────────────────────────────
+
+    def get_overdue_invoices(self, as_of_date: date | None = None) -> dict[str, Any]:
+        """
+        Invoices past due with outstanding balance. Includes estimated accrued interest.
+
+        Per spec:
+          - OPEN + PARTIAL statuses only (not PAID, VOID, DRAFT).
+          - due_date < as_of AND balance_due > 0.
+          - Invoices with no due_date are excluded (COD — no terms to be late on).
+          - Interest calculation (simple monthly, prorated by day):
+              days_overdue = (as_of - due_date).days
+              grace = customer.interest_grace_days (default 10)
+              if days_overdue > grace AND customer.interest_rate > 0:
+                  daily_rate = customer.interest_rate / 100 / 30
+                  interest = round(balance_due × daily_rate × (days_overdue - grace), 2)
+              else:
+                  interest = 0.0
+
+        Returns:
+          {
+            "as_of": date,
+            "rows": [
+              {
+                "invoice": Invoice,
+                "customer": Customer,
+                "invoice_number": str,
+                "due_date": date,
+                "days_overdue": int,
+                "balance_due": float,
+                "interest_accrued": float,
+                "total_owed": float,
+              }, ...
+            ],
+            "totals": {
+              "invoice_count": int,
+              "balance_due": float,
+              "interest_accrued": float,
+              "total_owed": float,
+            }
+          }
+          Sorted by days_overdue descending (worst first).
+        """
+        as_of = as_of_date or date.today()
+
+        invoices = (
+            self.db.query(Invoice)
+            .options(
+                joinedload(Invoice.lines),
+                joinedload(Invoice.allocations),
+                joinedload(Invoice.customer),
+            )
+            .filter(
+                Invoice.status.in_((InvoiceStatus.OPEN, InvoiceStatus.PARTIAL)),
+                Invoice.due_date.isnot(None),
+                Invoice.due_date < as_of,
+            )
+            .all()
+        )
+
+        rows: list[dict[str, Any]] = []
+        for inv in invoices:
+            balance = inv.balance_due
+            if balance <= 0:
+                continue
+
+            due = _as_date(inv.due_date)
+            if due is None:
+                continue  # safety — filter above should already exclude these
+
+            days_overdue = (as_of - due).days
+            customer = inv.customer
+
+            # Accrued interest calculation
+            grace = getattr(customer, "interest_grace_days", None) or 10
+            rate = getattr(customer, "interest_rate", None) or 0.0
+            if days_overdue > grace and rate > 0:
+                daily_rate = rate / 100 / 30
+                interest = round(balance * daily_rate * (days_overdue - grace), 2)
+            else:
+                interest = 0.0
+
+            rows.append({
+                "invoice": inv,
+                "customer": customer,
+                "invoice_number": inv.invoice_number,
+                "due_date": due,
+                "days_overdue": days_overdue,
+                "balance_due": balance,
+                "interest_accrued": interest,
+                "total_owed": round(balance + interest, 2),
+            })
+
+        # Worst first — most overdue at the top
+        rows.sort(key=lambda r: r["days_overdue"], reverse=True)
+
+        totals = {
+            "invoice_count":    len(rows),
+            "balance_due":      round(sum(r["balance_due"]       for r in rows), 2),
+            "interest_accrued": round(sum(r["interest_accrued"]  for r in rows), 2),
+            "total_owed":       round(sum(r["total_owed"]         for r in rows), 2),
+        }
+
+        return {"as_of": as_of, "rows": rows, "totals": totals}
+
+    # ── 8. Sales Tax Collected ────────────────────────────────────────────────
+
+    def get_sales_tax_collected(
+        self, start_date: date, end_date: date
+    ) -> dict[str, Any]:
+        """
+        Sales tax collected from finalized invoices in [start_date, end_date].
+
+        Per spec:
+          - OPEN + PARTIAL + PAID statuses (finalized; no DRAFT, no VOID).
+          - Sum of invoice_lines.tax_amount per invoice (frozen per-line snapshot).
+          - Also compute effective tax rate (total_tax / taxable_revenue × 100).
+          - Only rows where tax_collected > 0 are included.
+
+        Returns:
+          {
+            "start_date": date,
+            "end_date": date,
+            "rows": [
+              {
+                "invoice": Invoice,
+                "customer": Customer,
+                "invoice_number": str,
+                "invoice_date": date,
+                "taxable_revenue": float,
+                "tax_collected": float,
+                "invoice_total": float,
+              }, ...
+            ],
+            "totals": {
+              "invoice_count": int,
+              "taxable_revenue": float,
+              "tax_collected": float,
+              "effective_rate_pct": float | None,
+            }
+          }
+          Sorted by invoice_date ascending.
+        """
+        end_exclusive = datetime.combine(end_date, datetime.min.time()) + timedelta(days=1)
+        start_dt = datetime.combine(start_date, datetime.min.time())
+
+        invoices = (
+            self.db.query(Invoice)
+            .options(
+                joinedload(Invoice.lines),
+                joinedload(Invoice.allocations),
+                joinedload(Invoice.customer),
+            )
+            .filter(
+                Invoice.status.in_(_FINALIZED_INVOICE_STATUSES),
+                Invoice.created_at >= start_dt,
+                Invoice.created_at < end_exclusive,
+            )
+            .all()
+        )
+
+        rows: list[dict[str, Any]] = []
+        for inv in invoices:
+            # Tax collected = sum of the frozen per-line tax_amount snapshots
+            tax_collected = round(
+                sum((ln.tax_amount or 0.0) for ln in inv.lines), 2
+            )
+            if tax_collected <= 0:
+                continue  # skip non-taxable invoices
+
+            # Taxable revenue = sum of line totals for taxable lines
+            taxable_revenue = round(
+                sum(
+                    ln.qty * ln.unit_price
+                    for ln in inv.lines
+                    if getattr(ln, "is_taxable", False)
+                ),
+                2,
+            )
+
+            invoice_date = _as_date(inv.created_at) or date.today()
+
+            rows.append({
+                "invoice": inv,
+                "customer": inv.customer,
+                "invoice_number": inv.invoice_number,
+                "invoice_date": invoice_date,
+                "taxable_revenue": taxable_revenue,
+                "tax_collected": tax_collected,
+                "invoice_total": inv.total,
+            })
+
+        # Oldest invoices first
+        rows.sort(key=lambda r: r["invoice_date"])
+
+        total_tax = round(sum(r["tax_collected"]   for r in rows), 2)
+        total_rev = round(sum(r["taxable_revenue"] for r in rows), 2)
+        effective_rate_pct = (
+            round((total_tax / total_rev) * 100, 4) if total_rev > 0 else None
+        )
+
+        totals = {
+            "invoice_count":      len(rows),
+            "taxable_revenue":    total_rev,
+            "tax_collected":      total_tax,
+            "effective_rate_pct": effective_rate_pct,
+        }
+
+        return {
+            "start_date": start_date,
+            "end_date":   end_date,
+            "rows":       rows,
+            "totals":     totals,
+        }
