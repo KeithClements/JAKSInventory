@@ -10,18 +10,19 @@ from fastapi import APIRouter, Depends, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.constants import (
     AddressType, CallOutcome, CallType,
     CommunicationChannel, CommunicationDirection,
-    PaymentTerms, PricingTier, QuoteStatus,
+    CoreStatus, PaymentTerms, PricingTier, QuoteStatus, SOStatus,
 )
 from app.deps import get_db
 from app.models.communication import Communication
 from app.models.customer import Customer, CustomerAddress, CustomerCallLog
-from app.models.invoice import Invoice
-from app.models.quote import Quote
+from app.models.core import CoreCharge
+from app.models.invoice import Invoice, PaymentAllocation
+from app.models.quote import Quote, SalesOrder
 from app.services.crm_service import CRMService
 from app.services.messaging_service import MessagingService
 from app.services.quote_service import QuoteService
@@ -159,6 +160,77 @@ def customer_list(
     else:
         last_sale_dates = {}
 
+    # ── §2B data: balance_due_map, open_so_counts, outstanding_cores_map ─────
+    #
+    # Scoped to `customer_ids` (the rendered subset) — never the full all_ids
+    # set — so this scales with what's visible, not with the total customer count.
+
+    if customer_ids:
+        # balance_due_map — sum of Invoice.balance_due across open/partial invoices.
+        # Invoice.balance_due is a Python property (total - amount_paid), so we load
+        # the invoices with their lines and allocations in two eager-load queries
+        # (joinedload issues one IN-query per relationship, not N+1).
+        _open_invoices = (
+            db.query(Invoice)
+            .options(
+                joinedload(Invoice.lines),
+                joinedload(Invoice.allocations),
+            )
+            .filter(
+                Invoice.customer_id.in_(customer_ids),
+                Invoice.status.in_(["open", "partial"]),
+            )
+            .all()
+        )
+        balance_due_map: dict[int, float] = {}
+        for _inv in _open_invoices:
+            _bd = _inv.balance_due
+            if _bd > 0:
+                balance_due_map[_inv.customer_id] = round(
+                    balance_due_map.get(_inv.customer_id, 0.0) + _bd, 2
+                )
+
+        # open_so_counts — Sales Orders in any active (not closed) status.
+        # OPEN + PARTIAL + HOLD; FULFILLED/INVOICED/CANCELLED are excluded.
+        _so_raw = dict(
+            db.query(SalesOrder.customer_id, func.count(SalesOrder.id))
+            .filter(
+                SalesOrder.customer_id.in_(customer_ids),
+                SalesOrder.status.in_([
+                    SOStatus.OPEN,
+                    SOStatus.PARTIAL,
+                    SOStatus.HOLD,
+                ]),
+            )
+            .group_by(SalesOrder.customer_id)
+            .all()
+        )
+        open_so_counts: dict[int, int] = {
+            cid: _so_raw.get(cid, 0) for cid in customer_ids
+        }
+
+        # outstanding_cores_map — CoreCharge records still open/partially returned.
+        # customer_id is nullable on CoreCharge (drop-ship / no-customer cores);
+        # the IS NOT NULL filter excludes those rows from the aggregate.
+        _cores_raw = dict(
+            db.query(CoreCharge.customer_id, func.count(CoreCharge.id))
+            .filter(
+                CoreCharge.customer_id.in_(customer_ids),
+                CoreCharge.customer_id.isnot(None),
+                CoreCharge.status.in_([CoreStatus.OPEN, CoreStatus.PARTIAL]),
+            )
+            .group_by(CoreCharge.customer_id)
+            .all()
+        )
+        outstanding_cores_map: dict[int, int] = {
+            cid: _cores_raw.get(cid, 0) for cid in customer_ids
+        }
+
+    else:
+        balance_due_map = {}
+        open_so_counts = {}
+        outstanding_cores_map = {}
+
     return templates.TemplateResponse(
         "customers/list.html",
         {
@@ -171,6 +243,10 @@ def customer_list(
             "open_invoice_counts": open_invoice_counts,
             "open_quote_counts": open_quote_counts,
             "last_sale_dates": last_sale_dates,
+            # §2B data
+            "balance_due_map": balance_due_map,
+            "open_so_counts": open_so_counts,
+            "outstanding_cores_map": outstanding_cores_map,
         },
     )
 
@@ -237,6 +313,40 @@ def customer_preview_panel(
         else:
             last_sale = str(_raw_last)[:10]
 
+    # Balance due — load open/partial invoices with lines + allocations (3 queries, no N+1)
+    _open_invs = (
+        db.query(Invoice)
+        .options(joinedload(Invoice.lines), joinedload(Invoice.allocations))
+        .filter(
+            Invoice.customer_id == customer_id,
+            Invoice.status.in_(["open", "partial"]),
+        )
+        .all()
+    )
+    balance_due = round(sum(inv.balance_due for inv in _open_invs if inv.balance_due > 0), 2)
+
+    # Open Sales Orders
+    open_so_count = (
+        db.query(func.count(SalesOrder.id))
+        .filter(
+            SalesOrder.customer_id == customer_id,
+            SalesOrder.status.in_([SOStatus.OPEN, SOStatus.PARTIAL, SOStatus.HOLD]),
+        )
+        .scalar()
+        or 0
+    )
+
+    # Outstanding core charges
+    outstanding_core_count = (
+        db.query(func.count(CoreCharge.id))
+        .filter(
+            CoreCharge.customer_id == customer_id,
+            CoreCharge.status.in_([CoreStatus.OPEN, CoreStatus.PARTIAL]),
+        )
+        .scalar()
+        or 0
+    )
+
     return templates.TemplateResponse(
         "customers/_preview_panel.html",
         {
@@ -245,6 +355,9 @@ def customer_preview_panel(
             "open_invoice_count": open_invoice_count,
             "open_quote_count": open_quote_count,
             "last_sale": last_sale,
+            "balance_due": balance_due,
+            "open_so_count": open_so_count,
+            "outstanding_core_count": outstanding_core_count,
         },
     )
 
