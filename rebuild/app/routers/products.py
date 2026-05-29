@@ -664,21 +664,50 @@ async def adjust_inventory_handler(
 
 def _parse_product_form(form) -> dict:
     """Convert raw multidict form data into a typed dict for the service layer."""
+
+    # Strip commas and percent signs so "1,250.00" and "35%" parse cleanly.
+    def _clean_num(raw: str) -> str:
+        return raw.strip().replace(",", "").replace("%", "")
+
     def _float(key: str, default: float = 0.0) -> float:
-        raw = str(form.get(key, "")).strip()
-        return float(raw) if raw else default
+        raw = _clean_num(str(form.get(key, "")))
+        if not raw:
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            label = key.replace("_", " ").title()
+            raise ValueError(f"{label}: '{raw}' is not a valid number.")
 
     def _int(key: str, default: int = 0) -> int:
-        raw = str(form.get(key, "")).strip()
-        return int(raw) if raw else default
+        raw = _clean_num(str(form.get(key, "")))
+        if not raw:
+            return default
+        try:
+            return int(float(raw))  # int(float()) handles "2.0" from browser autofill
+        except ValueError:
+            label = key.replace("_", " ").title()
+            raise ValueError(f"{label}: '{raw}' is not a valid whole number.")
 
     def _opt_float(key: str):
-        raw = str(form.get(key, "")).strip()
-        return float(raw) if raw else None
+        raw = _clean_num(str(form.get(key, "")))
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            label = key.replace("_", " ").title()
+            raise ValueError(f"{label}: '{raw}' is not a valid number.")
 
     def _opt_int(key: str):
-        raw = str(form.get(key, "")).strip()
-        return int(raw) if raw else None
+        raw = _clean_num(str(form.get(key, "")))
+        if not raw:
+            return None
+        try:
+            return int(float(raw))
+        except ValueError:
+            label = key.replace("_", " ").title()
+            raise ValueError(f"{label}: '{raw}' is not a valid whole number.")
 
     category_id = _opt_int("category_id")
 

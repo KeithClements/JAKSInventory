@@ -16,11 +16,12 @@
 
 <form method="post" action="/products/new" class="max-w-3xl space-y-6"
       x-data="{
-        sku: '{{ (form_data.sku if form_data else '') | e }}',
+        sku: {{ (form_data.sku if form_data else '') | tojson }},
         skuTouched: false,
         get skuValid() { return this.sku.trim().length > 0; },
         categoryAddOpen: false,
-      }">
+      }"
+      @submit="if (!skuValid) { $event.preventDefault(); skuTouched = true; }">
 
   <!-- Identity -->
   <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
@@ -210,11 +211,9 @@
   <div class="flex items-center gap-4 flex-wrap">
     <div class="flex gap-3">
       <button type="submit"
-              :disabled="!skuValid"
-              @click="if (!skuValid) { skuTouched = true; }"
               :class="skuValid
                 ? 'bg-brand-700 text-white hover:bg-brand-600 cursor-pointer'
-                : 'bg-gray-100 text-gray-400 cursor-not-allowed'"
+                : 'bg-gray-200 text-gray-500 cursor-default'"
               class="rounded-lg px-5 py-2.5 text-sm font-medium transition-colors">
         Save Product
       </button>
