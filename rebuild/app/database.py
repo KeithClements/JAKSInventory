@@ -136,6 +136,14 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
 
     # ── Workflow Series 3 — auto-discount override on quote lines ─────────────
     ("quote_lines", "discount_overridden", "BOOLEAN NOT NULL DEFAULT 0"),
+
+    # ── sales_orders QBO sync block (QBOSyncMixin + qbo_so_id) ────────────────
+    # Missing on pre-existing DBs; their absence 500s GET /sales-orders/.
+    ("sales_orders", "qbo_sync_status",      "TEXT NOT NULL DEFAULT 'pending'"),
+    ("sales_orders", "qbo_last_synced_at",   "DATETIME NULL"),
+    ("sales_orders", "qbo_sync_error",       "TEXT NULL"),
+    ("sales_orders", "qbo_sync_retry_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("sales_orders", "qbo_so_id",            "TEXT NULL"),
 ]
 
 

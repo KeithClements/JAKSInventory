@@ -93,8 +93,17 @@ _UID = 1  # stub current_user_id (admin user id=1)
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
+@pytest.fixture(autouse=True, scope="module")
+def _activate_db():
+    """Re-point app DB globals + get_db at THIS module's engine at run time,
+    so the suite is immune to import order. See tests/conftest.py."""
+    from tests.conftest import activate
+    activate(_TEST_ENGINE)
+    yield
+
+
 @pytest.fixture()
-def db():
+def db(_activate_db):
     """Session backed by the module-level in-memory engine."""
     session = _appdb.SessionLocal()
     yield session
@@ -102,7 +111,7 @@ def db():
 
 
 @pytest.fixture(autouse=True, scope="module")
-def _seed_admin_user():
+def _seed_admin_user(_activate_db):
     """Seed the admin user (id=1) once per module — required for permission checks."""
     session = _appdb.SessionLocal()
     try:

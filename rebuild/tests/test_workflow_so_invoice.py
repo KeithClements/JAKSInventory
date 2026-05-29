@@ -133,8 +133,17 @@ def _make_so_line(
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
+@pytest.fixture(autouse=True, scope="module")
+def _activate_db():
+    """Re-point app DB globals + get_db at THIS module's engine at run time,
+    so the suite is immune to import order. See tests/conftest.py."""
+    from tests.conftest import activate
+    activate(_TEST_ENGINE)
+    yield
+
+
 @pytest.fixture()
-def db():
+def db(_activate_db):
     """Session backed by the module-level in-memory engine.
     Tests create their own data with unique IDs; no rollback needed.
     """

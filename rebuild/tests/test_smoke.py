@@ -12,25 +12,27 @@ unhandled server exception is surfaced as a test failure, not a 500 response.
 A fresh DB is created from init_db() at the start of each session; the smoke DB
 file is listed in .gitignore and separate from the live data/jaks.db.
 """
-import os
 import pathlib
 import sys
 
 # Ensure the project root is on sys.path so `import app` works
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-# Use a dedicated smoke-test DB so the live DB is never touched
-os.environ.setdefault("DATABASE_URL", "sqlite:///./data/jaks_test_smoke.db")
-
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import activate, fresh_engine
 from app.main import app
+
+# Dedicated isolated in-memory engine — never touches the live data/jaks.db.
+_TEST_ENGINE = fresh_engine()
 
 
 @pytest.fixture(scope="session")
 def client():
-    """Single TestClient for the whole session — DB is created by startup hook."""
+    """Single TestClient for the whole session, bound to the isolated engine.
+    activate() re-points the app's DB globals before startup runs init_db()."""
+    activate(_TEST_ENGINE)
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
 

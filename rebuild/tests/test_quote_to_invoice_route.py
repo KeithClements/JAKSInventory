@@ -16,41 +16,63 @@ Run with:
     DATABASE_URL=sqlite:///./data/jaks_test_smoke.db .venv/Scripts/python.exe -m pytest tests/test_quote_to_invoice_route.py -v
 """
 import itertools
-import os
 import pathlib
 import re
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-# Dedicated smoke DB — never touches the live data/jaks.db
-os.environ.setdefault("DATABASE_URL", "sqlite:///./data/jaks_test_smoke.db")
-
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import activate, fresh_engine
+import app.database as _appdb
 from app.main import app
-from app.database import SessionLocal
-from app.constants import LineType, QuoteStatus
+from app.constants import LineType, QuoteStatus, UserRole
 from app.models.customer import Customer
 from app.models.product import Product
+from app.models.user import User
 from app.services.quote_service import QuoteService
 
 _UID = 1  # single-user app — get_current_user_id() always returns 1
 _counter = itertools.count(1)  # unique SKUs / company names across fixture calls
 
+# Dedicated isolated in-memory engine — never touches the live data/jaks.db.
+_TEST_ENGINE = fresh_engine()
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _activate_db():
+    """Bind app DB globals + get_db to this module's engine and seed the admin
+    user (id=1) the single-user services assume exists. See tests/conftest.py."""
+    activate(_TEST_ENGINE)
+    session = _appdb.SessionLocal()
+    try:
+        if not session.query(User).filter(User.id == 1).first():
+            session.add(User(
+                id=1,
+                name="Test Admin",
+                username="admin_q2i",
+                password_hash="[test-no-auth]",
+                role=UserRole.ADMIN,
+            ))
+            session.commit()
+    finally:
+        session.close()
+    yield
+
 
 @pytest.fixture(scope="module")
-def client():
+def client(_activate_db):
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
 
 
 @pytest.fixture()
-def quote_with_line():
+def quote_with_line(_activate_db):
     """Create a SENT quote with one product line; yield its id."""
     n = next(_counter)
-    db = SessionLocal()
+    db = _appdb.SessionLocal()
     try:
         cust = Customer(company_name=f"RouteTest Co {n}", is_active=True)
         db.add(cust)
