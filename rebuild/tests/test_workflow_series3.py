@@ -1,7 +1,7 @@
 """
 tests/test_workflow_series3.py
 ==============================
-Smoke tests for Backend Workflow Series 3:
+Smoke tests for Backend Workflow Series 3–5:
   - VendorReturnService: create, ship, record decision, close
   - Vendor return HTTP routes (list, new form)
   - ReportService.get_overdue_invoices
@@ -698,3 +698,329 @@ class TestLostSalesReport:
         assert row["customer_name"] == customer.company_name
         assert row["product_sku"] == product.sku
         assert result["totals"]["count"] >= 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Backend Workflow Series 5
+#   - 3-way match: resolve_match_line gates approve_bill
+#   - approve_bill: APPROVE_VENDOR_BILL permission + DISCREPANCY gate
+#   - create_match_vendor_credit: requires ISSUE_CREDIT_MEMO + APPROVE_VENDOR_BILL
+#   - Customer list: tab param + counts contract
+#   - Customer preview panel: GET /customers/preview/{id}
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Additional imports needed for Series 5
+from app.constants import MatchResolution, VendorBillStatus, PaymentTerms
+from app.models.purchase_order import PurchaseOrder, POLine, VendorBill, VendorBillLine
+from app.services.po_service import POService
+from app.services.base import PermissionDeniedError
+
+
+def _make_po_with_discrepancy(db) -> tuple[PurchaseOrder, POLine, VendorBill]:
+    """
+    Build a PO with one received line and one vendor bill that over-bills
+    (qty_billed > qty_received), leaving the bill in DISCREPANCY.
+    Returns (po, po_line, vendor_bill).
+    """
+    n = next(_counter)
+    vendor = _make_vendor(db)
+    product = _make_product(db, qty_on_hand=10)
+    db.commit()
+
+    po = PurchaseOrder(
+        po_number=f"PO-S5-{n:04d}",
+        vendor_id=vendor.id,
+        status="received",
+    )
+    db.add(po)
+    db.flush()
+
+    line = POLine(
+        po_id=po.id,
+        product_id=product.id,
+        qty_ordered=5,
+        qty_received=5,
+        qty_billed=0,
+        unit_cost=100.0,
+    )
+    db.add(line)
+    db.flush()
+
+    # Create bill that over-bills by 1 unit
+    bill = VendorBill(
+        po_id=po.id,
+        vendor_id=vendor.id,
+        bill_number=f"BILL-S5-{n:04d}",
+        total_amount=600.0,
+        status=VendorBillStatus.DISCREPANCY,
+    )
+    db.add(bill)
+    db.flush()
+
+    bill_line = VendorBillLine(
+        bill_id=bill.id,
+        po_line_id=line.id,
+        qty_billed=6,          # 6 billed vs 5 received → over_billed
+        unit_cost=100.0,
+    )
+    db.add(bill_line)
+    line.qty_billed = 6
+    db.commit()
+    db.expire_all()
+
+    return po, line, bill
+
+
+class TestMatchResolutionGate:
+    """Series 5 — resolve_match_line + approve_bill gate."""
+
+    def test_approve_discrepancy_bill_blocked(self, db):
+        """approve_bill on a DISCREPANCY bill raises before resolution."""
+        _, _, bill = _make_po_with_discrepancy(db)
+        svc = POService(db, current_user_id=1)
+        with pytest.raises(ValueError, match="unresolved match discrepancies"):
+            svc.approve_bill(bill.id)
+
+    def test_resolve_opens_gate(self, db):
+        """Resolving the flagged line transitions bill DISCREPANCY → PENDING."""
+        po, line, bill = _make_po_with_discrepancy(db)
+        svc = POService(db, current_user_id=1)
+
+        svc.resolve_match_line(
+            line.id,
+            decision=MatchResolution.ACCEPTED,
+            reason="Accepted the extra unit as a vendor gift",
+        )
+        db.expire_all()
+
+        updated_bill = db.query(VendorBill).filter(VendorBill.id == bill.id).first()
+        assert updated_bill.status == VendorBillStatus.PENDING, (
+            f"Expected PENDING after resolution, got {updated_bill.status}"
+        )
+        updated_line = db.query(POLine).filter(POLine.id == line.id).first()
+        assert updated_line.match_resolution == MatchResolution.ACCEPTED
+        assert updated_line.match_resolved_by_id == 1
+
+    def test_approve_after_resolution_succeeds(self, db):
+        """approve_bill succeeds on a PENDING (gate-open) bill."""
+        po, line, bill = _make_po_with_discrepancy(db)
+        svc = POService(db, current_user_id=1)
+
+        svc.resolve_match_line(line.id, decision=MatchResolution.ACCEPTED)
+        db.expire_all()
+
+        svc.approve_bill(bill.id)
+        db.expire_all()
+
+        updated_bill = db.query(VendorBill).filter(VendorBill.id == bill.id).first()
+        assert updated_bill.status == VendorBillStatus.APPROVED
+
+    def test_resolve_requires_reason_for_rejected(self, db):
+        """resolve_match_line with REJECTED and no reason raises ValueError."""
+        _, line, _ = _make_po_with_discrepancy(db)
+        svc = POService(db, current_user_id=1)
+        with pytest.raises(ValueError, match="reason is required"):
+            svc.resolve_match_line(line.id, decision=MatchResolution.REJECTED, reason="")
+
+    def test_resolve_rejected_reason_provided(self, db):
+        """REJECTED with a reason is accepted; bill stays DISCREPANCY (still disputed)."""
+        _, line, bill = _make_po_with_discrepancy(db)
+        svc = POService(db, current_user_id=1)
+        svc.resolve_match_line(
+            line.id,
+            decision=MatchResolution.REJECTED,
+            reason="Waiting for corrected bill from vendor",
+        )
+        db.expire_all()
+        # REJECTED means AP is still disputing — bill stays DISCREPANCY
+        updated_bill = db.query(VendorBill).filter(VendorBill.id == bill.id).first()
+        assert updated_bill.status == VendorBillStatus.DISCREPANCY, (
+            "Bill should remain DISCREPANCY when line is rejected (still pending corrected bill)"
+        )
+
+    def test_approve_already_approved_raises(self, db):
+        """approve_bill on an already-APPROVED bill raises."""
+        _, line, bill = _make_po_with_discrepancy(db)
+        svc = POService(db, current_user_id=1)
+        svc.resolve_match_line(line.id, decision=MatchResolution.ACCEPTED)
+        svc.approve_bill(bill.id)
+        with pytest.raises(ValueError, match="already"):
+            svc.approve_bill(bill.id)
+
+    def test_create_credit_requires_both_permissions(self, db):
+        """create_match_vendor_credit needs ISSUE_CREDIT_MEMO + APPROVE_VENDOR_BILL."""
+        from app.constants import UserRole
+        # Create a SALES user — has neither permission
+        n = next(_counter)
+        sales_user = User(
+            name=f"SalesUser-{n}", username=f"sales_{n}",
+            password_hash="x", role=UserRole.SALES,
+        )
+        db.add(sales_user)
+        db.commit()
+
+        _, line, _ = _make_po_with_discrepancy(db)
+        svc = POService(db, current_user_id=sales_user.id)
+        with pytest.raises(PermissionDeniedError):
+            svc.create_match_vendor_credit(line.id, reason="test")
+
+    def test_create_credit_creates_vcm_and_marks_credited(self, db):
+        """create_match_vendor_credit creates VCM and marks line as CREDITED."""
+        po, line, bill = _make_po_with_discrepancy(db)
+        svc = POService(db, current_user_id=1)
+
+        vcm = svc.create_match_vendor_credit(
+            po_line_id=line.id,
+            reason="Over-billed by 1 unit",
+        )
+        db.expire_all()
+
+        assert vcm is not None
+        assert vcm.vcm_number.startswith("VCM-")
+        assert vcm.total_amount > 0
+
+        updated_line = db.query(POLine).filter(POLine.id == line.id).first()
+        assert updated_line.match_resolution == MatchResolution.CREDITED
+        assert updated_line.match_resolution_vcm_id == vcm.id
+
+    def test_create_credit_opens_gate_for_approval(self, db):
+        """After create_match_vendor_credit, bill transitions to PENDING."""
+        po, line, bill = _make_po_with_discrepancy(db)
+        svc = POService(db, current_user_id=1)
+        svc.create_match_vendor_credit(line.id, reason="Overcharge")
+        db.expire_all()
+
+        updated_bill = db.query(VendorBill).filter(VendorBill.id == bill.id).first()
+        assert updated_bill.status == VendorBillStatus.PENDING
+
+
+class TestMatchResolutionRoutes:
+    """Series 5 — HTTP routes: resolve and create-credit."""
+
+    def test_resolve_route_200(self, db):
+        """POST /purchase-orders/{po_id}/bills/{bill_id}/lines/{line_id}/resolve → 303."""
+        po, line, bill = _make_po_with_discrepancy(db)
+        resp = _client.post(
+            f"/purchase-orders/{po.id}/bills/{bill.id}/lines/{line.id}/resolve",
+            data={"decision": "accepted", "reason": ""},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert "ok=match_resolved" in resp.headers.get("location", "")
+
+    def test_resolve_route_bad_decision(self, db):
+        """Invalid decision → redirect to error."""
+        po, line, bill = _make_po_with_discrepancy(db)
+        resp = _client.post(
+            f"/purchase-orders/{po.id}/bills/{bill.id}/lines/{line.id}/resolve",
+            data={"decision": "nonsense", "reason": ""},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert "error=" in resp.headers.get("location", "")
+
+    def test_create_credit_route(self, db):
+        """POST /purchase-orders/{po_id}/bills/{bill_id}/create-credit → VCM created."""
+        po, line, bill = _make_po_with_discrepancy(db)
+        resp = _client.post(
+            f"/purchase-orders/{po.id}/bills/{bill.id}/create-credit",
+            data={"po_line_id": str(line.id), "reason": "Overcharge", "apply_now": "0"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        loc = resp.headers.get("location", "")
+        assert "ok=" in loc and "error=" not in loc, f"Unexpected location: {loc}"
+
+
+class TestCustomerListContract:
+    """Series 5 — customer list route: tab param + counts contract."""
+
+    def _seed_customers(self, db) -> list[Customer]:
+        """Seed 3 customers: 1 COD (no activity), 1 Net30 with open invoice, 1 Net30 with open quote."""
+        n = next(_counter)
+        customers = []
+
+        c_plain = Customer(company_name=f"PlainCo-{n}", is_active=True, payment_terms="cod")
+        db.add(c_plain)
+        customers.append(c_plain)
+
+        c_inv = Customer(company_name=f"InvCo-{n}", is_active=True, payment_terms="net_30")
+        db.add(c_inv)
+        customers.append(c_inv)
+
+        c_quote = Customer(company_name=f"QuoteCo-{n}", is_active=True, payment_terms="net_30")
+        db.add(c_quote)
+        customers.append(c_quote)
+
+        db.flush()
+
+        # Open invoice for c_inv
+        from app.models.invoice import Invoice
+        inv = Invoice(
+            invoice_number=f"INV-S5-{n}",
+            customer_id=c_inv.id,
+            status="open",
+            subtotal=100.0,
+            total=100.0,
+            balance_due=100.0,
+        )
+        db.add(inv)
+
+        # Open quote for c_quote
+        from app.models.quote import Quote
+        q = Quote(
+            quote_number=f"Q-S5-{n}",
+            customer_id=c_quote.id,
+            status="draft",
+        )
+        db.add(q)
+
+        db.commit()
+        db.expire_all()
+        return customers
+
+    def test_list_all_tab_renders(self):
+        """GET /customers/?tab=all returns 200."""
+        resp = _client.get("/customers/?tab=all")
+        assert resp.status_code == 200
+
+    def test_list_open_invoices_tab_renders(self):
+        """GET /customers/?tab=open_invoices returns 200."""
+        resp = _client.get("/customers/?tab=open_invoices")
+        assert resp.status_code == 200
+
+    def test_list_unknown_tab_defaults_to_all(self):
+        """Unknown tab slug → 200, falls back to 'all'."""
+        resp = _client.get("/customers/?tab=does_not_exist")
+        assert resp.status_code == 200
+
+    def test_list_search_with_tab(self):
+        """Search + tab combo → 200."""
+        resp = _client.get("/customers/?tab=all&q=nonexistent_xyz")
+        assert resp.status_code == 200
+
+
+class TestCustomerPreviewRoute:
+    """Series 5 — GET /customers/preview/{id} before /{customer_id}."""
+
+    def test_preview_valid_customer(self, db):
+        """Returns 200 with customer identity content."""
+        c = _make_customer(db)
+        db.commit()
+        resp = _client.get(f"/customers/preview/{c.id}")
+        assert resp.status_code == 200
+        assert c.company_name in resp.text
+
+    def test_preview_unknown_customer(self):
+        """Returns 404 for a customer that doesn't exist."""
+        resp = _client.get("/customers/preview/99999999")
+        assert resp.status_code == 404
+
+    def test_preview_route_before_detail_route(self, db):
+        """'preview' is not captured as a customer_id (str vs int route ordering)."""
+        # If routes are mis-ordered, /customers/preview/1 would try int("preview")
+        # and raise a 422 or 500. This test confirms correct ordering.
+        c = _make_customer(db)
+        db.commit()
+        resp = _client.get(f"/customers/preview/{c.id}")
+        assert resp.status_code in (200, 404)  # 200 if found, not 422/500

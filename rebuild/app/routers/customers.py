@@ -34,36 +34,52 @@ templates = Jinja2Templates(directory="app/templates")
 CURRENT_USER_ID = 1
 
 
+# ── List tab definitions (JAKS_UI_Change_Plan.md §2) ─────────────────────────
+
+# Tab slug → filter behavior.  "all" = no extra filter beyond is_active=True.
+_CUST_TABS: list[tuple[str, str]] = [
+    ("all",           "All"),
+    ("open_invoices", "Open Invoices"),
+    ("open_quotes",   "Open Quotes"),
+    ("terms",         "On Terms"),
+]
+
+# Payment-terms values that fall under the "On Terms" tab.
+_TERMS_VALUES = {"net_15", "net_30", "net_60"}
+
+
 # ── List ──────────────────────────────────────────────────────────────────────
 
 @router.get("/", response_class=HTMLResponse)
-def customer_list(request: Request, q: str = "", db: Session = Depends(get_db)):
-    query = db.query(Customer).filter(Customer.is_active == True)
-    if q:
-        like = f"%{q}%"
-        query = query.filter(
-            Customer.company_name.ilike(like)
-            | Customer.contact_name.ilike(like)
-            | Customer.phone.ilike(like)
-        )
-    customers = query.order_by(Customer.company_name).all()
+def customer_list(
+    request: Request,
+    q: str = "",
+    tab: str = "all",
+    db: Session = Depends(get_db),
+):
+    # Normalise unknown tab slugs
+    valid_tabs = {t[0] for t in _CUST_TABS}
+    if tab not in valid_tabs:
+        tab = "all"
 
-    # Bulk activity counts — two queries, no N+1
-    customer_ids = [c.id for c in customers]
-    if customer_ids:
-        open_invoice_counts = dict(
+    # ── Unfiltered counts (must come from the full active dataset) ────────────
+    all_active = db.query(Customer).filter(Customer.is_active == True).all()
+    all_ids = [c.id for c in all_active]
+
+    if all_ids:
+        _inv_active = dict(
             db.query(Invoice.customer_id, func.count(Invoice.id))
             .filter(
-                Invoice.customer_id.in_(customer_ids),
+                Invoice.customer_id.in_(all_ids),
                 Invoice.status.in_(["draft", "open", "partial"]),
             )
             .group_by(Invoice.customer_id)
             .all()
         )
-        open_quote_counts = dict(
+        _quote_active = dict(
             db.query(Quote.customer_id, func.count(Quote.id))
             .filter(
-                Quote.customer_id.in_(customer_ids),
+                Quote.customer_id.in_(all_ids),
                 Quote.status.notin_([
                     QuoteStatus.CONVERTED,
                     QuoteStatus.DECLINED,
@@ -74,10 +90,54 @@ def customer_list(request: Request, q: str = "", db: Session = Depends(get_db)):
             .all()
         )
     else:
-        open_invoice_counts = {}
-        open_quote_counts = {}
+        _inv_active = {}
+        _quote_active = {}
 
-    # Bulk last-sale date — one query, no N+1. Returns formatted "Mon DD" strings.
+    counts: dict[str, int] = {
+        "all":           len(all_active),
+        "open_invoices": sum(1 for c in all_active if _inv_active.get(c.id, 0) > 0),
+        "open_quotes":   sum(1 for c in all_active if _quote_active.get(c.id, 0) > 0),
+        "terms":         sum(1 for c in all_active if (c.payment_terms or "") in _TERMS_VALUES),
+    }
+
+    # ── Apply tab filter ──────────────────────────────────────────────────────
+    if tab == "open_invoices":
+        with_inv = {cid for cid, cnt in _inv_active.items() if cnt > 0}
+        tab_ids = [c.id for c in all_active if c.id in with_inv]
+        base_pool = [c for c in all_active if c.id in with_inv]
+    elif tab == "open_quotes":
+        with_q = {cid for cid, cnt in _quote_active.items() if cnt > 0}
+        tab_ids = [c.id for c in all_active if c.id in with_q]
+        base_pool = [c for c in all_active if c.id in with_q]
+    elif tab == "terms":
+        base_pool = [c for c in all_active if (c.payment_terms or "") in _TERMS_VALUES]
+        tab_ids = [c.id for c in base_pool]
+    else:
+        base_pool = all_active
+        tab_ids = all_ids
+
+    # ── Apply search ──────────────────────────────────────────────────────────
+    if q:
+        like = f"%{q}%"
+        customers = [
+            c for c in base_pool
+            if (
+                (c.company_name and q.lower() in c.company_name.lower())
+                or (c.contact_name and q.lower() in c.contact_name.lower())
+                or (c.phone and q in c.phone)
+            )
+        ]
+    else:
+        customers = base_pool
+
+    customers = sorted(customers, key=lambda c: c.company_name or "")
+
+    # ── Per-customer activity counts (for the rows we're actually showing) ────
+    customer_ids = [c.id for c in customers]
+    open_invoice_counts = {cid: _inv_active.get(cid, 0) for cid in customer_ids}
+    open_quote_counts = {cid: _quote_active.get(cid, 0) for cid in customer_ids}
+
+    # ── Last-sale dates ───────────────────────────────────────────────────────
     if customer_ids:
         _raw_dates = dict(
             db.query(Invoice.customer_id, func.max(Invoice.created_at))
@@ -105,9 +165,86 @@ def customer_list(request: Request, q: str = "", db: Session = Depends(get_db)):
             "request": request,
             "customers": customers,
             "q": q,
+            "tab": tab,
+            "counts": counts,
+            "tabs": _CUST_TABS,
             "open_invoice_counts": open_invoice_counts,
             "open_quote_counts": open_quote_counts,
             "last_sale_dates": last_sale_dates,
+        },
+    )
+
+
+# ── Customer preview panel (HTMX dock) ───────────────────────────────────────
+# IMPORTANT: must be registered BEFORE /{customer_id} to avoid the int route
+# capturing "preview" as a customer_id parameter.
+
+@router.get("/preview/{customer_id}", response_class=HTMLResponse)
+def customer_preview_panel(
+    customer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Bottom-dock preview panel for the Customer List (§7 Primitive 5).
+    Loaded via htmx.ajax() on row click; renders _preview_panel.html.
+
+    Context published to UI lane:
+      c                  — Customer ORM object
+      open_invoice_count — int: open/draft/partial invoices for this customer
+      open_quote_count   — int: active quotes
+      last_sale          — str | None: formatted "Mon DD" or None
+    """
+    c = db.query(Customer).filter(Customer.id == customer_id).first()
+    if c is None:
+        return HTMLResponse(
+            '<p class="px-6 py-4 text-sm text-red-500">Customer not found.</p>',
+            status_code=404,
+        )
+
+    open_invoice_count = (
+        db.query(func.count(Invoice.id))
+        .filter(
+            Invoice.customer_id == customer_id,
+            Invoice.status.in_(["draft", "open", "partial"]),
+        )
+        .scalar()
+        or 0
+    )
+    open_quote_count = (
+        db.query(func.count(Quote.id))
+        .filter(
+            Quote.customer_id == customer_id,
+            Quote.status.notin_([
+                QuoteStatus.CONVERTED,
+                QuoteStatus.DECLINED,
+                QuoteStatus.EXPIRED,
+            ]),
+        )
+        .scalar()
+        or 0
+    )
+
+    _raw_last = (
+        db.query(func.max(Invoice.created_at))
+        .filter(Invoice.customer_id == customer_id, Invoice.status != "void")
+        .scalar()
+    )
+    last_sale: str | None = None
+    if _raw_last is not None:
+        if hasattr(_raw_last, "strftime"):
+            last_sale = _raw_last.strftime("%b %d")
+        else:
+            last_sale = str(_raw_last)[:10]
+
+    return templates.TemplateResponse(
+        "customers/_preview_panel.html",
+        {
+            "request": request,
+            "c": c,
+            "open_invoice_count": open_invoice_count,
+            "open_quote_count": open_quote_count,
+            "last_sale": last_sale,
         },
     )
 

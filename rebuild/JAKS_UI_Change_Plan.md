@@ -43,7 +43,8 @@ These actions are **blocked** until the UI Architect approves:
 - Extracting a shared primitive (Section 7)
 
 ### Governance Pass Checklist
-When reviewing a submitted screen, the UI Architect checks all 11 elements from Section 2 plus:
+When reviewing a submitted screen, the UI Architect checks all 11 elements from Section 2, the
+Operational Intelligence fields from Section 2B, plus:
 
 **Structure**
 - [ ] All 11 Operational List Screen Standard elements present
@@ -258,6 +259,45 @@ These elements apply to both archetypes:
 
 ---
 
+### 2B. Operational Intelligence Requirement
+
+Every L2 Operational List must answer this question:
+
+> **"Can the user make the next decision from this screen without opening the record?"**
+
+If the answer is no, the screen is not L2 complete yet.
+
+**Rule:** Do not add new schema just for this pass. Use existing relationships, cheap aggregate
+queries, or deferred placeholders. If an expensive calculation is needed, add a TODO comment and
+do not block the screen. No new schema may be introduced without UI Architect approval.
+
+**Implementation priority:**
+1. This addendum applies starting with Customer List L2 (current in-flight screen).
+2. Continue existing rollout order — do not reorder or freeze.
+3. Do not redesign the dashboard, create new modules, or add analytics.
+4. Do not interrupt backend workflow work.
+
+#### Required decision fields per screen
+
+| Screen | Must expose |
+|---|---|
+| **Customers List** | Balance Due · Open Quotes count · Open Sales Orders count · Open Invoices count · Outstanding Cores count · Last Sale date · Terms / credit status · *(Optional: Lifetime Sales if already available cheaply)* |
+| **Quotes List** | Quote total · Margin % · Follow-up due date/status · Customer terms / AR warning chip · Line count · Valid-until date · Conversion status |
+| **Sales Orders List** | SO # · Customer · Fulfillment status · Payment/deposit status · PO/backorder status · Invoice status · Ship/tracking status · Total |
+| **Invoices List** | Invoice # · Customer · Balance due · Due date · Days late · Payment status · Lock badge · Source quote/SO reference |
+| **Payments List** | Payment # · Customer · Amount · Method · Applied / unapplied amount · Related invoices · Reversed / NSF status |
+| **Vendors List** | Open POs · Open Bills · Credits pending · Last PO date · Lead time (if stored) · Primary contact |
+
+#### Governance Checklist additions (append to §0 pass checklist)
+
+- [ ] Screen exposes next-decision fields, not just record identity fields
+- [ ] User can identify urgent/actionable rows without opening the detail page
+- [ ] Financial risk is visible where relevant (balance due, overdue, AR exposure)
+- [ ] Core/warranty/receiving obligations are visible where relevant
+- [ ] No new schema introduced without UI Architect approval
+
+---
+
 ### 3. Shared Interaction Rules
 
 These rules apply to every screen in the app. Do not deviate without updating this document.
@@ -404,8 +444,8 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 | 1 | Products List | ✅ L2 complete — official reference | L2.5 → L2 ref | Governance pass done |
 | 2 | PO List | ✅ L2 complete | L1 → L2 | Governance pass done; overdue bug fixed |
 | 3 | Invoice List | ✅ L2 complete | L1 → L2 | Governance pass 2026-05-28. Red stripe for financial overdue — accepted + codified in §4. |
-| — | **Primitives extraction** | 🔜 **Next action** | — | Gate open: 3 screens complete. Extract all 6 before Customer List begins. See §7 for sequence. |
-| 4 | Customer List | ⏳ L1.5 — blocked on extraction | L1.5 → L2 | Start after primitives are extracted. Use macros from the start. |
+| — | **Primitives extraction** | ✅ Complete (2026-05-29) | — | All 6 macros extracted + governance-approved. Products/PO/Invoice ported. See §7 as-built. |
+| 4 | Customer List | ⏳ In review — REQUIRED FIXES | L1.5 → L2 | Governance pass issued 2026-05-29: 3 required fixes (preview route missing, `status_chip` import in partial, router ignores tab param). Must also satisfy §2B Operational Intelligence fields before approval. |
 | 5 | Quotes List | ⏳ Pending | L2 → L2 | Has tabs + divide-y. Needs: border-l-4 stripe, preview dock, pb-52. Alignment pass after Customer List. |
 | 6 | Sales Orders List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
 | 7 | Vendors List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
