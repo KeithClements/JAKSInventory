@@ -14,15 +14,14 @@
     <div>
       <label class="form-label">Customer <span class="text-red-500 normal-case">*</span></label>
       <div class="relative">
-        <input type="text" autocomplete="off"
+        <input type="text" autocomplete="off" name="q"
                placeholder="Type customer name or phone…"
                :value="displayName"
                @input="displayName = $el.value; customerId = ''"
                class="form-input"
                hx-get="/customers/search-json"
                hx-trigger="input changed delay:200ms"
-               hx-target="#new-inv-customer-results"
-               hx-vals='js:{"q": event.target.value}'/>
+               hx-target="#new-inv-customer-results"/>
         <div id="new-inv-customer-results"
              class="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-10 max-h-56 overflow-y-auto text-sm"
              x-show="displayName.length >= 2 && !customerId"

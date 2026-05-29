@@ -99,6 +99,7 @@
             <input type="checkbox"
                    :checked="allSelected"
                    @change="toggleAll()"
+                   aria-label="Select all invoices"
                    class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
           </th>
           <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
@@ -164,6 +165,7 @@
             <input type="checkbox"
                    :checked="isSelected({{ inv.id }})"
                    @change="toggleSelect({{ inv.id }})"
+                   aria-label="Select invoice {{ inv.invoice_number }}"
                    class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
           </td>
 
@@ -245,7 +247,8 @@
             <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
               <a href="/invoices/{{ inv.id }}"
                  title="Open invoice"
-                 class="p-1.5 rounded-lg text-gray-400 hover:text-brand-700 hover:bg-brand-50 transition-colors">
+                 aria-label="Open invoice {{ inv.invoice_number }}"
+                 class="p-1.5 rounded-lg text-gray-400 hover:text-brand-700 hover:bg-brand-50 transition-colors focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-1">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                         d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>

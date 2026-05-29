@@ -73,6 +73,7 @@ async def list_quotes(
     status: str = "",
     q: str = "",
     follow_up: str = "",
+    customer_id: int = 0,
     db: Session = Depends(get_db),
 ):
     from datetime import datetime, date as date_type
@@ -82,6 +83,8 @@ async def list_quotes(
     today = date_type.today()
 
     query = db.query(Quote).join(Customer)
+    if customer_id:
+        query = query.filter(Quote.customer_id == customer_id)
     if follow_up == "due":
         query = query.filter(
             Quote.follow_up_date <= now,
@@ -114,6 +117,7 @@ async def list_quotes(
             "quotes": quotes,
             "status_filter": status,
             "follow_up_filter": follow_up,
+            "customer_id": customer_id,
             "q": q,
             "QuoteStatus": QuoteStatus,
             "customers": customers,

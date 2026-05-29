@@ -5,6 +5,7 @@ import io
 import csv
 import json
 import logging
+import re
 
 from fastapi import APIRouter, Depends, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -33,6 +34,39 @@ router = APIRouter(prefix="/customers", tags=["customers"])
 templates = Jinja2Templates(directory="app/templates")
 
 CURRENT_USER_ID = 1
+
+
+def _digits(s: str | None) -> str:
+    """Strip everything except digits — used to normalize phone numbers for search."""
+    return "".join(ch for ch in (s or "") if ch.isdigit())
+
+
+def _normalize_name(s: str | None) -> str:
+    """Lowercase + strip non-alphanumerics — for fuzzy duplicate-name detection."""
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def _find_duplicate_customers(
+    db: Session, company_name: str, exclude_id: int | None = None
+) -> list[Customer]:
+    """Return active customers whose company name looks like a duplicate of
+    `company_name`. Matches on normalized exact equality, or substring either
+    direction once the normalized name is long enough to be meaningful (>= 4
+    chars) — this catches "Mike's Diesel" vs "Mikes Diesel Repair" without
+    firing on trivially short fragments. It is a soft warning, never a block."""
+    norm = _normalize_name(company_name)
+    if not norm:
+        return []
+    matches: list[Customer] = []
+    for c in db.query(Customer).filter(Customer.is_active == True).all():  # noqa: E712
+        if exclude_id and c.id == exclude_id:
+            continue
+        cn = _normalize_name(c.company_name)
+        if not cn:
+            continue
+        if cn == norm or (len(norm) >= 4 and len(cn) >= 4 and (cn in norm or norm in cn)):
+            matches.append(c)
+    return matches
 
 
 # ── List tab definitions (JAKS_UI_Change_Plan.md §2) ─────────────────────────
@@ -119,13 +153,15 @@ def customer_list(
 
     # ── Apply search ──────────────────────────────────────────────────────────
     if q:
-        like = f"%{q}%"
+        q_lower = q.lower()
+        q_digits = _digits(q)
         customers = [
             c for c in base_pool
             if (
-                (c.company_name and q.lower() in c.company_name.lower())
-                or (c.contact_name and q.lower() in c.contact_name.lower())
-                or (c.phone and q in c.phone)
+                (c.company_name and q_lower in c.company_name.lower())
+                or (c.contact_name and q_lower in c.contact_name.lower())
+                or (c.email and q_lower in c.email.lower())
+                or (q_digits and c.phone and q_digits in _digits(c.phone))
             )
         ]
     else:
@@ -375,6 +411,23 @@ def customer_new(request: Request):
 @router.post("/new", response_class=RedirectResponse)
 async def customer_create(request: Request, db: Session = Depends(get_db)):
     form = await request.form()
+    company_name = str(form.get("company_name", "")).strip()
+
+    # Duplicate protection — warn instead of silently creating a near-duplicate,
+    # unless the user explicitly chose "Create Anyway" (confirm_duplicate=1).
+    if company_name and str(form.get("confirm_duplicate", "")) != "1":
+        dup_matches = _find_duplicate_customers(db, company_name)
+        if dup_matches:
+            return templates.TemplateResponse(
+                "customers/new.html",
+                {
+                    "request": request,
+                    "payment_terms": list(PaymentTerms),
+                    "dup_matches": dup_matches,
+                    "prefill": {k: str(v) for k, v in form.items()},
+                },
+            )
+
     c = Customer(
         company_name=str(form.get("company_name", "")).strip(),
         contact_name=str(form.get("contact_name", "")).strip(),
@@ -418,6 +471,23 @@ async def customer_quick_create(request: Request, db: Session = Depends(get_db))
         )
 
     _action = str(form.get("_action", "save"))
+
+    # ── Duplicate protection ──────────────────────────────────────────────────
+    # Unless the user explicitly chose "Create Anyway" (confirm_duplicate=1), warn
+    # about existing/similar company names instead of silently creating a dupe.
+    # Re-render the form with the entered values preserved + a warning banner.
+    confirm_duplicate = str(form.get("confirm_duplicate", "")) == "1"
+    if not confirm_duplicate:
+        dup_matches = _find_duplicate_customers(db, company_name)
+        if dup_matches:
+            return templates.TemplateResponse(
+                "customers/_quick_create.html",
+                {
+                    "request": request,
+                    "dup_matches": dup_matches,
+                    "prefill": {k: str(v) for k, v in form.items()},
+                },
+            )
 
     # Checkboxes: absent = unchecked, "on" = checked
     is_tax_exempt = form.get("is_tax_exempt") is not None
@@ -513,7 +583,13 @@ async def customer_quick_create(request: Request, db: Session = Depends(get_db))
 
 @router.get("/search-json", response_class=HTMLResponse)
 def customer_search_partial(request: Request, q: str = "", db: Session = Depends(get_db)):
-    """Returns an HTML partial — list of customers matching q for typeahead dropdowns."""
+    """Returns an HTML partial — list of customers matching q for typeahead dropdowns.
+
+    Searches: company_name, contact_name, phone, email (all case-insensitive ilike).
+    Requires q >= 2 chars. Returns up to 8 active customers ordered by company name.
+    Bug fix 2026-05-29: added contact_name and email to the OR filter (previously
+    only company_name | phone, causing contact-name-only searches to return nothing).
+    """
     customers: list[Customer] = []
     if q and len(q) >= 2:
         like = f"%{q}%"
@@ -521,7 +597,12 @@ def customer_search_partial(request: Request, q: str = "", db: Session = Depends
             db.query(Customer)
             .filter(
                 Customer.is_active == True,
-                (Customer.company_name.ilike(like) | Customer.phone.ilike(like)),
+                (
+                    Customer.company_name.ilike(like)
+                    | Customer.contact_name.ilike(like)
+                    | Customer.phone.ilike(like)
+                    | Customer.email.ilike(like)
+                ),
             )
             .order_by(Customer.company_name)
             .limit(8)

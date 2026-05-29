@@ -15,7 +15,26 @@
 {# Shared operational-list primitives — §7 macro library #}
 {% from "macros/list_behavior.html" import operational_list_script %}
 {% from "macros/preview_dock.html" import preview_dock_shell %}
+{% from "macros/empty_state.html" import empty_state %}
 {{ operational_list_script() }}
+
+{# Focus-trap helper — keeps keyboard focus inside the active modal dialog.
+   Call from @keydown.tab.window when a modal is open. #}
+<script>
+function trapFocus(e, container) {
+  var sel = 'a[href]:not([disabled]),button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+  var focusable = Array.from(container.querySelectorAll(sel)).filter(function(el) {
+    return el.offsetParent !== null;
+  });
+  if (!focusable.length) return;
+  var first = focusable[0], last = focusable[focusable.length - 1];
+  if (e.shiftKey) {
+    if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+  } else {
+    if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+}
+</script>
 
 {# ══════════════════════════════════════════════════════════════════════════════
    NEW QUOTE MODAL
@@ -25,9 +44,14 @@
     open: false,
     customerId: '',
     displayName: '',
-    hasCustomers: {{ 'true' if customers else 'false' }}
+    hasCustomers: {{ 'true' if customers else 'false' }},
+    _trigger: null
   }"
+  x-init="$watch('open', function(v) {
+    if (!v && _trigger) { $nextTick(function() { _trigger.focus(); _trigger = null; }); }
+  })"
   @open-new-quote.window="
+    _trigger = document.activeElement;
     open = true;
     customerId = '';
     displayName = '';
@@ -36,6 +60,7 @@
     $nextTick(() => $refs.nqSearch && $refs.nqSearch.focus())
   "
   @keydown.escape.window="if (open) open = false"
+  @keydown.tab.window="if (open) { var f = $el.querySelector('[role=dialog]'); if (f) trapFocus($event, f); }"
   @customer-selected.window="
     if (open) {
       customerId = String($event.detail.id);
@@ -51,8 +76,9 @@
     }
   "
 >
-  {# Backdrop #}
+  {# Backdrop — decorative, not interactive for AT #}
   <div x-show="open" x-cloak @click="open = false"
+       aria-hidden="true"
        class="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm"
        x-transition:enter="transition ease-out duration-150"
        x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
@@ -62,6 +88,9 @@
 
   {# Panel #}
   <div x-show="open" x-cloak
+       role="dialog"
+       aria-modal="true"
+       aria-labelledby="nq-modal-title"
        class="fixed inset-0 z-[60] flex items-center justify-center px-4 pointer-events-none"
        x-transition:enter="transition ease-out duration-200"
        x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
@@ -75,11 +104,12 @@
       {# Header #}
       <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
         <div>
-          <h2 class="text-sm font-semibold text-gray-900">New Quote</h2>
+          <h2 id="nq-modal-title" class="text-sm font-semibold text-gray-900">New Quote</h2>
           <p class="text-xs text-gray-400 mt-0.5">Select a customer to open the quote workspace</p>
         </div>
         <button type="button" @click="open = false"
-                class="text-gray-400 hover:text-gray-600 transition-colors p-1.5 rounded-lg hover:bg-gray-100 -mr-1">
+                aria-label="Close dialog"
+                class="text-gray-400 hover:text-gray-600 transition-colors p-1.5 rounded-lg hover:bg-gray-100 -mr-1 focus:outline-none focus:ring-2 focus:ring-brand-400">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
           </svg>
@@ -115,6 +145,7 @@
             <label class="form-label">Customer <span class="text-red-500">*</span></label>
             <div class="relative">
               <input type="text" x-ref="nqSearch"
+                     name="q"
                      autocomplete="off"
                      placeholder="Type customer name or phone…"
                      :value="displayName"
@@ -123,8 +154,7 @@
                      class="form-input"
                      hx-get="/customers/search-json"
                      hx-trigger="input changed delay:200ms"
-                     hx-target="#nq-results"
-                     hx-vals='js:{"q": event.target.value}' />
+                     hx-target="#nq-results" />
               <div id="nq-results"
                    class="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-30 max-h-52 overflow-y-auto"
                    x-show="displayName.length >= 2 && !customerId"
@@ -195,7 +225,8 @@
 
 {# ── Status filter tabs + search ─────────────────────────────────────────── #}
 <div class="flex items-center justify-between mb-5 gap-4 flex-wrap">
-  <nav class="flex items-center gap-0.5 bg-gray-100 rounded-xl p-1">
+  <nav class="flex items-center gap-0.5 bg-gray-100 rounded-xl p-1"
+       aria-label="Quote status filter">
     {% set tabs = [
       ('',                      'All'),
       (QuoteStatus.DRAFT,       'Draft'),
@@ -206,7 +237,9 @@
     ] %}
     {% for val, label in tabs %}
     <a href="/quotes/?status={{ val }}&q={{ q }}"
+       {% if status_filter == val %}aria-current="page"{% endif %}
        class="px-3.5 py-1.5 text-sm font-medium rounded-lg transition-all whitespace-nowrap
+              focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-1
               {% if status_filter == val %}bg-brand-700 text-white shadow-sm{% else %}text-gray-600 hover:text-gray-900 hover:bg-gray-200/70{% endif %}">
       {{ label }}
     </a>
@@ -378,9 +411,11 @@
           <td class="px-4 py-3.5 align-middle text-right" @click.stop>
             <div class="flex items-center justify-end gap-1.5">
               {% if quote.status in ['draft', 'sent', 'accepted'] %}
-              <form method="post" action="/quotes/{{ quote.id }}/convert-to-invoice" class="contents">
+              <form method="post" action="/quotes/{{ quote.id }}/convert-to-invoice" class="contents"
+                    x-data="{ _inf: false }" @submit="_inf = true">
                 <button type="submit"
-                        class="px-2.5 py-1.5 text-xs font-medium text-brand-700 bg-brand-50 hover:bg-brand-100 border border-brand-200 rounded-lg transition-colors whitespace-nowrap">
+                        :disabled="_inf"
+                        class="px-2.5 py-1.5 text-xs font-medium text-brand-700 bg-brand-50 hover:bg-brand-100 border border-brand-200 rounded-lg transition-colors whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed">
                   → Invoice
                 </button>
               </form>
@@ -428,24 +463,25 @@
 
 {% else %}
 
-{# ── Empty state ──────────────────────────────────────────────────────────── #}
-<div class="card flex flex-col items-center justify-center py-16 text-center">
-  <svg class="w-12 h-12 text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-  </svg>
-  {% if q or status_filter %}
-  <p class="text-gray-700 font-semibold">No quotes match this filter</p>
-  <p class="text-gray-400 text-sm mt-1">Try a different status tab or clear the search.</p>
-  <a href="/quotes/" class="mt-4 btn-secondary btn-sm">Clear filters</a>
-  {% else %}
-  <p class="text-gray-700 font-semibold">No quotes yet</p>
-  <p class="text-gray-400 text-sm mt-1">Create your first quote to get started.</p>
-  <button @click="$dispatch('open-new-quote')" class="mt-4 btn-primary">
-    Create the first quote →
-  </button>
-  {% endif %}
-</div>
+{# ── Empty state — §7 Primitive 6 macro ──────────────────────────────────── #}
+{# active_tab='' disables the tab-filter branch; quotes list still uses ?status= param #}
+{% if status_filter and not q %}
+  {% set _q_heading = 'No quotes match this filter' %}
+  {% set _q_body    = 'Try a different status tab or clear the search.' %}
+  {% set _q_cta %}
+    <a href="/quotes/" class="btn-secondary btn-sm">Clear filters</a>
+  {% endset %}
+{% else %}
+  {% set _q_heading = 'No quotes yet' %}
+  {% set _q_body    = 'Create your first quote to get started.' %}
+  {% set _q_cta %}
+    <button class="btn-primary" @click="$dispatch('open-new-quote')">Create the first quote →</button>
+  {% endset %}
+{% endif %}
+{{ empty_state(
+  'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z',
+  q, '', _q_heading, _q_body, _q_cta
+) }}
 
 {% endif %}
 
