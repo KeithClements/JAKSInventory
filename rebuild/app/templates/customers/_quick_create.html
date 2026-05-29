@@ -5,7 +5,7 @@
   _action variants (set by footer buttons before submit):
     "save"       → fires record-created event + closes slide (default)
     "save_new"   → returns fresh form with in-panel success flash
-    "save_quote" → HX-Redirect to /customers/{id} (New Quote is there)
+    "save_quote" → creates a draft quote, HX-Redirect to /quotes/{id} (the workspace)
 #}
 
 {% if success_flash %}
@@ -196,7 +196,7 @@
       <button type="submit" @click="_action = 'save'"
               class="btn-primary btn-sm">Save Customer</button>
       <button type="submit" @click="_action = 'save_quote'"
-              class="btn-primary btn-sm">Save &amp; Quote →</button>
+              class="btn-secondary btn-sm">Save &amp; Quote →</button>
     </div>
   </div>
 

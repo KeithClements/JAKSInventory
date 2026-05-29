@@ -36,11 +36,10 @@
           {% set over_billed = m.rows | selectattr('state', 'equalto', 'over_billed') | list %}
           {% set cost_var = m.rows | selectattr('state', 'equalto', 'cost_variance') | list %}
 
-          <tr class="hover:bg-gray-50/80 transition-colors group border-l-4
-            {% if over_billed %}border-l-red-400 bg-red-50/20{% else %}border-l-amber-400 bg-amber-50/20{% endif %}">
+          <tr class="hover:bg-gray-50/80 transition-colors group {% if over_billed %}bg-red-50/20{% else %}bg-amber-50/20{% endif %}">
 
-            {# PO # #}
-            <td class="px-4 py-4 align-middle">
+            {# PO # — left-edge stripe lives on the first td (plan §Stripe) #}
+            <td class="px-4 py-4 align-middle border-l-4 {% if over_billed %}border-l-red-400{% else %}border-l-amber-400{% endif %}">
               <a href="/purchase-orders/{{ po.id }}#match"
                  class="font-mono text-sm font-bold text-brand-700 hover:text-brand-900 hover:underline">{{ po.po_number }}</a>
               {% if po.vendor_confirmation_number %}
@@ -86,12 +85,15 @@
               <div class="text-[10px] text-gray-400 mt-0.5">matched</div>
             </td>
 
-            {# Status #}
+            {# Status — dot+label list-row chip (plan §Chips) #}
             <td class="px-4 py-4 align-middle">
-              {% if po.status == 'billed' %}<span class="badge-green">Billed</span>
-              {% elif po.status == 'received' %}<span class="badge-green">Received</span>
-              {% elif po.status == 'partial' %}<span class="badge-amber">Partial</span>
-              {% else %}<span class="badge-gray">{{ po.status.replace('_', ' ').title() }}</span>{% endif %}
+              {% if po.status == 'billed' %}{% set chip = ('bg-green-50 text-green-700', 'bg-green-500', 'Billed') %}
+              {% elif po.status == 'received' %}{% set chip = ('bg-green-50 text-green-700', 'bg-green-500', 'Received') %}
+              {% elif po.status == 'partial' %}{% set chip = ('bg-amber-100 text-amber-700', 'bg-amber-500', 'Partial') %}
+              {% else %}{% set chip = ('bg-gray-100 text-gray-600', 'bg-gray-400', po.status.replace('_', ' ').title()) %}{% endif %}
+              <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold {{ chip[0] }}">
+                <span class="w-1.5 h-1.5 rounded-full {{ chip[1] }} shrink-0"></span>{{ chip[2] }}
+              </span>
             </td>
 
             {# Actions #}

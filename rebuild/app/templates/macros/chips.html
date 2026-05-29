@@ -1,0 +1,7 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   status_chip(bg_cls, dot_cls, label)  — §7 Primitive 3
+   Always-visible status chip: dot + label (JAKS_UI_Change_Plan.md §3 Chips, §4).
+   The macro only renders; callers compute the color classes in a template-level
+   {% set %} color map (one map per screen, per the plan).
+═════════════════════════════════════════════════════════════════════════════ #}
+{% macro status_chip(bg_cls, dot_cls, label) %}<span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold {{ bg_cls }}"><span class="w-1.5 h-1.5 rounded-full {{ dot_cls }} shrink-0"></span>{{ label }}</span>{% endmacro %}

@@ -1,0 +1,65 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   operational_list_script()  — §7 Primitive 2
+   Emits the shared Alpine factory for operational list screens. Delivered as an
+   inline <script> macro (not a static JS file) per the extraction decision —
+   keeps the primitive in the template layer with no backend/static change.
+
+   Usage in a list template:
+     {% from "macros/list_behavior.html" import operational_list_script %}
+     {{ operational_list_script() }}
+     <div class="space-y-4 pb-52"
+          x-data="operationalListData('invoice-preview-body', '/invoices/preview/',
+                  [{% for inv in invoices %}{{ inv.id }}{% if not loop.last %},{% endif %}{% endfor %}])">
+
+   Replaces the ~40-line inline x-data duplicated across Products / PO / Invoice
+   lists. Only the preview body-id, preview URL prefix, and id list differed.
+═════════════════════════════════════════════════════════════════════════════ #}
+{% macro operational_list_script() %}
+<script>
+  function operationalListData(previewBodyId, previewUrlPrefix, allIds) {
+    return {
+      selected: {},
+      previewId: null,
+      allIds: allIds || [],
+      get selectedCount() {
+        return Object.values(this.selected).filter(Boolean).length;
+      },
+      isSelected(id) {
+        return !!this.selected[id];
+      },
+      toggleSelect(id) {
+        this.selected = { ...this.selected, [id]: !this.selected[id] };
+      },
+      get allSelected() {
+        return this.allIds.length > 0 && this.allIds.every(id => this.selected[id]);
+      },
+      toggleAll() {
+        if (this.allSelected) {
+          this.selected = {};
+        } else {
+          let s = {};
+          this.allIds.forEach(id => { s[id] = true; });
+          this.selected = s;
+        }
+      },
+      clearSelected() {
+        this.selected = {};
+      },
+      togglePreview(id) {
+        if (this.previewId === id) {
+          this.previewId = null;
+        } else {
+          this.previewId = id;
+          document.getElementById(previewBodyId).innerHTML =
+            '<div class="flex items-center gap-2 px-6 py-5 text-sm text-gray-400">' +
+            '<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">' +
+            '<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>' +
+            '<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>' +
+            '</svg>Loading…</div>';
+          htmx.ajax('GET', previewUrlPrefix + id, { target: '#' + previewBodyId, swap: 'innerHTML' });
+        }
+      }
+    };
+  }
+</script>
+{% endmacro %}

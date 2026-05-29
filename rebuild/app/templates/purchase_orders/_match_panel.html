@@ -41,15 +41,15 @@
         {% for r in match.rows %}
         {% set line = r.line %}
         {% set sm = state_meta[r.state] %}
-        <tr class="border-l-4
-          {% if r.state == 'over_billed' %}border-l-red-400 bg-red-50/20
-          {% elif r.state == 'cost_variance' %}border-l-amber-400 bg-amber-50/20
-          {% elif r.state == 'matched' %}border-l-green-300
-          {% elif r.state == 'awaiting_bill' %}border-l-blue-200
-          {% else %}border-l-transparent{% endif %}">
+        <tr class="{% if r.state == 'over_billed' %}bg-red-50/20{% elif r.state == 'cost_variance' %}bg-amber-50/20{% endif %}">
 
-          {# Item #}
-          <td class="px-4 py-3 align-middle">
+          {# Item — left-edge stripe lives on the first td (plan §Stripe) #}
+          <td class="px-4 py-3 align-middle border-l-4
+            {% if r.state == 'over_billed' %}border-l-red-400
+            {% elif r.state == 'cost_variance' %}border-l-amber-400
+            {% elif r.state == 'matched' %}border-l-green-300
+            {% elif r.state == 'awaiting_bill' %}border-l-blue-200
+            {% else %}border-l-transparent{% endif %}">
             {% if line.product %}
             <a href="/products/{{ line.product.id }}" class="font-mono text-xs font-semibold link">{{ line.product.sku }}</a>
             {% else %}

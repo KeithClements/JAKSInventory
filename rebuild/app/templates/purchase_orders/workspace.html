@@ -24,16 +24,19 @@
         {{ 'Convert to PO' if po.status == 'verbal_order' else 'Send to Vendor' }}
       </button>
     </form>
-    <form method="post" action="/purchase-orders/{{ po.id }}/cancel-status"
-          onsubmit="return confirm('Cancel this PO?')">
-      <button type="submit" class="btn-ghost btn-sm text-red-500">Cancel PO</button>
-    </form>
+    {# Empty form holds the POST action; the modal submits it on confirm (§3 Modal standard) #}
+    <form id="cancel-po-form" method="post" action="/purchase-orders/{{ po.id }}/cancel-status" class="hidden"></form>
+    <button type="button" class="btn-ghost btn-sm text-red-500"
+            @click="$dispatch('po-confirm', {formId:'cancel-po-form', title:'Cancel purchase order?', body:'This draft PO will be cancelled.', cta:'Cancel PO', danger:true})">
+      Cancel PO
+    </button>
 
   {% elif po.status == 'sent' %}
-    <form method="post" action="/purchase-orders/{{ po.id }}/cancel-status"
-          onsubmit="return confirm('Cancel this PO? Inventory on-order will be reversed.')">
-      <button type="submit" class="btn-ghost btn-sm text-red-500">Cancel PO</button>
-    </form>
+    <form id="cancel-po-form" method="post" action="/purchase-orders/{{ po.id }}/cancel-status" class="hidden"></form>
+    <button type="button" class="btn-ghost btn-sm text-red-500"
+            @click="$dispatch('po-confirm', {formId:'cancel-po-form', title:'Cancel purchase order?', body:'Inventory on-order will be reversed.', cta:'Cancel PO', danger:true})">
+      Cancel PO
+    </button>
   {% endif %}
 
   <a href="/purchase-orders/" class="text-sm text-gray-500 hover:text-gray-700">← Purchase Orders</a>
@@ -41,7 +44,18 @@
 
 {% block content %}
 <div class="max-w-5xl space-y-4"
-     x-data="{ showNotes: {{ 'true' if (po.notes or po.internal_notes) else 'false' }} }">
+     x-data="{
+       showNotes: {{ 'true' if (po.notes or po.internal_notes) else 'false' }},
+       confirm: { open: false, title: '', body: '', formId: '', hxPost: '', hxTarget: '', hxSwap: 'outerHTML', cta: 'Confirm', danger: true },
+       askConfirm(formId, title, body, cta, danger) {
+         this.confirm = { open: true, formId, hxPost: '', hxTarget: '', hxSwap: 'outerHTML', title, body, cta: cta || 'Confirm', danger: danger !== false };
+       },
+       askConfirmHx(hxPost, hxTarget, title, body, cta, danger) {
+         this.confirm = { open: true, formId: '', hxPost, hxTarget, hxSwap: 'outerHTML', title, body, cta: cta || 'Confirm', danger: danger !== false };
+       }
+     }"
+     @po-confirm.window="askConfirm($event.detail.formId, $event.detail.title, $event.detail.body, $event.detail.cta, $event.detail.danger)"
+     @keydown.escape.window="confirm.open = false">
 
   {# ── Flash banners ── #}
   {% set ok_msg = {
@@ -224,7 +238,7 @@
             {# Cancel outstanding qty — posts separately from the receive form #}
             <button type="button"
                     class="text-xs text-gray-400 hover:text-red-600 underline shrink-0"
-                    onclick="if(confirm('Cancel the outstanding {{ line.qty_outstanding }} unit(s) for this line?')) { document.getElementById('cancel-line-{{ line.id }}').submit(); }">
+                    @click="askConfirm('cancel-line-{{ line.id }}', 'Cancel outstanding line?', 'Cancel the outstanding {{ line.qty_outstanding }} unit(s) for this line? The remaining quantity will be cleared.', 'Cancel line', true)">
               Cancel
             </button>
             <form id="cancel-line-{{ line.id }}" method="post"
@@ -300,27 +314,27 @@
         </div>
 
         <div class="overflow-x-auto">
-          <table class="tbl">
-            <thead class="tbl-head">
+          <table class="w-full min-w-[640px] text-sm">
+            <thead class="bg-gray-50">
               <tr>
-                <th class="tbl-th">SKU</th>
-                <th class="tbl-th">Description</th>
-                <th class="tbl-th-r">Received</th>
-                <th class="tbl-th-r">Qty to Bill</th>
-                <th class="tbl-th-r">Unit Cost</th>
-                <th class="tbl-th-r">Line Total</th>
+                <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">SKU</th>
+                <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Description</th>
+                <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Received</th>
+                <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Qty to Bill</th>
+                <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Unit Cost</th>
+                <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Line Total</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody class="divide-y divide-gray-100">
               {% for line in received_lines %}
               {% set unbilled = line.qty_received - (line.qty_billed or 0) %}
-              <tr class="tbl-row" :class="parseInt(lines['{{ line.id }}'].qty) > {{ line.qty_received }} ? 'bg-red-50' : ''">
-                <td class="tbl-td font-mono text-xs">{{ line.product.sku if line.product else '—' }}</td>
-                <td class="tbl-td text-gray-600 text-sm">
+              <tr class="hover:bg-gray-50/80 transition-colors group" :class="parseInt(lines['{{ line.id }}'].qty) > {{ line.qty_received }} ? 'bg-red-50' : ''">
+                <td class="px-4 py-4 align-middle text-sm text-gray-700 font-mono text-xs">{{ line.product.sku if line.product else '—' }}</td>
+                <td class="px-4 py-4 align-middle text-sm text-gray-600">
                   {{ line.description or (line.product.title if line.product else '—') }}
                 </td>
-                <td class="tbl-td-r text-sm font-medium">{{ line.qty_received }}</td>
-                <td class="tbl-td-r">
+                <td class="px-4 py-4 align-middle text-right text-sm font-medium tabular-nums">{{ line.qty_received }}</td>
+                <td class="px-4 py-4 align-middle text-right tabular-nums">
                   <div class="flex items-center gap-1 justify-end">
                     <input type="number" name="qty_billed_{{ line.id }}"
                            min="0"
@@ -332,12 +346,12 @@
                           class="text-red-500 text-xs font-semibold shrink-0" title="Exceeds received qty">!</span>
                   </div>
                 </td>
-                <td class="tbl-td-r">
+                <td class="px-4 py-4 align-middle text-right tabular-nums">
                   <input type="number" name="unit_cost_{{ line.id }}" step="0.01" min="0"
                          value="{{ '%.2f' | format(line.unit_cost) }}"
                          class="w-24 form-input text-right" />
                 </td>
-                <td class="tbl-td-r text-sm font-medium tabular-nums text-gray-700">
+                <td class="px-4 py-4 align-middle text-right text-sm font-medium tabular-nums text-gray-700">
                   ${{ '%.2f' | format(line.qty_received * line.unit_cost) }}
                 </td>
               </tr>
@@ -427,24 +441,24 @@
       <span class="text-xs text-gray-400">{{ po.bills | length }} bill{{ 's' if po.bills | length != 1 }}</span>
     </div>
     <div class="overflow-x-auto">
-      <table class="tbl">
-        <thead class="tbl-head">
+      <table class="w-full min-w-[560px] text-sm">
+        <thead class="bg-gray-50">
           <tr>
-            <th class="tbl-th">Bill #</th>
-            <th class="tbl-th">Date</th>
-            <th class="tbl-th">Due</th>
-            <th class="tbl-th-r">Amount</th>
-            <th class="tbl-th">Status</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Bill #</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Date</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Due</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Amount</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Status</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody class="divide-y divide-gray-100">
           {% for bill in po.bills %}
-          <tr class="tbl-row {% if bill.status == 'discrepancy' %}bg-red-50/50{% endif %}">
-            <td class="tbl-td font-mono text-xs font-semibold">{{ bill.bill_number or '—' }}</td>
-            <td class="tbl-td text-gray-600">{{ bill.bill_date.strftime('%b %d, %Y') if bill.bill_date else '—' }}</td>
-            <td class="tbl-td text-gray-600">{{ bill.due_date.strftime('%b %d, %Y') if bill.due_date else '—' }}</td>
-            <td class="tbl-td-r font-medium tabular-nums">${{ '%.2f' | format(bill.total_amount) }}</td>
-            <td class="tbl-td">
+          <tr class="hover:bg-gray-50/80 transition-colors group {% if bill.status == 'discrepancy' %}bg-red-50/50{% endif %}">
+            <td class="px-4 py-4 align-middle text-sm text-gray-700 font-mono text-xs font-semibold">{{ bill.bill_number or '—' }}</td>
+            <td class="px-4 py-4 align-middle text-sm text-gray-600">{{ bill.bill_date.strftime('%b %d, %Y') if bill.bill_date else '—' }}</td>
+            <td class="px-4 py-4 align-middle text-sm text-gray-600">{{ bill.due_date.strftime('%b %d, %Y') if bill.due_date else '—' }}</td>
+            <td class="px-4 py-4 align-middle text-right text-sm font-medium tabular-nums">${{ '%.2f' | format(bill.total_amount) }}</td>
+            <td class="px-4 py-4 align-middle text-sm text-gray-700">
               {% if bill.status == 'paid' %}<span class="badge-green">Paid</span>
               {% elif bill.status == 'discrepancy' %}<span class="badge-red">Discrepancy</span>
               {% elif bill.status == 'approved' %}<span class="badge-blue">Approved</span>
@@ -474,15 +488,14 @@
                   </li>
                   {% endfor %}
                 </ul>
-                <form method="post"
-                      action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/approve"
-                      onsubmit="return confirm('Approve this bill despite the quantity discrepancy?')">
-                  <button type="submit"
-                          class="px-3 py-1.5 text-xs font-semibold text-white bg-red-600
-                                 hover:bg-red-700 rounded-lg transition-colors">
-                    Approve Anyway
-                  </button>
-                </form>
+                <form id="approve-bill-{{ bill.id }}" method="post"
+                      action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/approve" class="hidden"></form>
+                <button type="button"
+                        @click="askConfirm('approve-bill-{{ bill.id }}', 'Approve bill with discrepancy?', 'Billed quantity exceeds received quantity on this bill. Approving accepts the variance.', 'Approve anyway', true)"
+                        class="px-3 py-1.5 text-xs font-semibold text-white bg-red-600
+                               hover:bg-red-700 rounded-lg transition-colors">
+                  Approve Anyway
+                </button>
               </div>
             </td>
           </tr>
@@ -493,6 +506,39 @@
     </div>
   </div>
   {% endif %}
+
+  {# ── Confirm modal (§3 Modal standard) — replaces native confirm() dialogs ── #}
+  <div x-show="confirm.open" x-cloak class="fixed inset-0 z-[60] flex items-center justify-center">
+    <div class="fixed inset-0 bg-black/40" @click="confirm.open = false"></div>
+    <div class="relative z-[60] w-full max-w-lg mx-4 bg-white rounded-2xl shadow-2xl"
+         x-transition:enter="transition ease-out duration-150"
+         x-transition:enter-start="opacity-0 scale-95"
+         x-transition:enter-end="opacity-100 scale-100">
+      <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+        <h3 class="font-semibold text-sm text-gray-900" x-text="confirm.title"></h3>
+        <button type="button" @click="confirm.open = false"
+                class="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+      <div class="px-6 py-6">
+        <p class="text-sm text-gray-600" x-text="confirm.body"></p>
+      </div>
+      <div class="px-6 py-4 border-t border-gray-100 bg-gray-50/60 flex items-center justify-end gap-3">
+        <button type="button" @click="confirm.open = false" class="btn-secondary btn-sm">Keep</button>
+        <button type="button"
+                @click="confirm.hxPost
+                          ? htmx.ajax('POST', confirm.hxPost, { target: confirm.hxTarget, swap: confirm.hxSwap })
+                          : document.getElementById(confirm.formId).submit();
+                        confirm.open = false"
+                :class="confirm.danger ? 'bg-red-600 hover:bg-red-700' : 'bg-brand-700 hover:bg-brand-600'"
+                class="px-3 py-1.5 rounded-lg text-xs font-semibold text-white transition-colors"
+                x-text="confirm.cta"></button>
+      </div>
+    </div>
+  </div>
 
 </div>
 {% endblock %}

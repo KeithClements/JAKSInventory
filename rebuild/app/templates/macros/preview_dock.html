@@ -1,0 +1,34 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   preview_dock_shell(title, body_id)  — §7 Primitive 5
+   The fixed bottom preview dock (JAKS_UI_Change_Plan.md §3 Preview dock standard).
+   Body is populated by htmx.ajax() from the list x-data's togglePreview().
+   Relies on the operational-list x-data (previewId).
+═════════════════════════════════════════════════════════════════════════════ #}
+{% macro preview_dock_shell(title, body_id) %}
+<div
+  x-show="previewId !== null"
+  x-cloak
+  x-transition:enter="transition ease-out duration-200"
+  x-transition:enter-start="translate-y-full opacity-0"
+  x-transition:enter-end="translate-y-0 opacity-100"
+  x-transition:leave="transition ease-in duration-150"
+  x-transition:leave-start="translate-y-0 opacity-100"
+  x-transition:leave-end="translate-y-full opacity-0"
+  class="fixed bottom-0 left-64 right-0 bg-white border-t-2 border-gray-200 shadow-2xl z-30"
+  style="max-height: 260px; overflow-y: auto;">
+
+  {# Panel header #}
+  <div class="flex items-center justify-between px-6 py-3 border-b border-gray-100 bg-gray-50/80 sticky top-0">
+    <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">{{ title }}</p>
+    <button @click="previewId = null"
+            class="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+      </svg>
+    </button>
+  </div>
+
+  {# Loaded via htmx.ajax() #}
+  <div id="{{ body_id }}"></div>
+</div>
+{% endmacro %}

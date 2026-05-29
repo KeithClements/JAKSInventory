@@ -1,0 +1,33 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   empty_state(icon_path, q, active_tab, no_records_heading, no_records_body, cta_html='')
+   §7 Primitive 6 — the 3-case empty state (JAKS_UI_Change_Plan.md §2.10).
+
+   Cases: search miss (q) → Clear search · tab filter → Show all · no records → CTA.
+
+   NOTE: screens that need richer per-tab copy (e.g. Invoice List's 7 tab-specific
+   messages) may keep an inline empty state instead — this generic 3-case macro is
+   for screens whose filtered case is uniform (Products, PO, Customer List).
+   cta_html is rendered with |safe — pass trusted template markup only.
+═════════════════════════════════════════════════════════════════════════════ #}
+{% macro empty_state(icon_path, q, active_tab, no_records_heading, no_records_body, cta_html='') %}
+<div class="card flex flex-col items-center justify-center py-16 text-center">
+  <div class="w-14 h-14 rounded-2xl bg-gray-100 flex items-center justify-center mb-4">
+    <svg class="w-7 h-7 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="{{ icon_path }}"/>
+    </svg>
+  </div>
+  {% if q %}
+  <p class="text-sm font-semibold text-gray-700">No matches for "{{ q }}"</p>
+  <p class="text-xs text-gray-400 mt-1 mb-4">Try a different search term.</p>
+  <a href="?tab={{ active_tab }}" class="btn-secondary btn-sm">Clear search</a>
+  {% elif active_tab and active_tab != 'all' %}
+  <p class="text-sm font-semibold text-gray-700">Nothing in this view</p>
+  <p class="text-xs text-gray-400 mt-1 mb-4">Switch tabs to see records in other states.</p>
+  <a href="?tab=all" class="btn-secondary btn-sm">Show all</a>
+  {% else %}
+  <p class="text-sm font-semibold text-gray-700">{{ no_records_heading }}</p>
+  <p class="text-xs text-gray-400 mt-1 mb-4">{{ no_records_body }}</p>
+  {{ cta_html | safe }}
+  {% endif %}
+</div>
+{% endmacro %}

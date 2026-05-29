@@ -7,14 +7,14 @@
 {% endblock %}
 
 {% block content %}
-{# state → (left stripe, row tint, status badge, label, receivable?) #}
+{# state → (left stripe, row tint, chip bg+text, chip dot, label, receivable?) #}
 {% set state_meta = {
-  'open':        ('border-l-blue-400',  '',                'badge-blue',  'Open',        true),
-  'partial':     ('border-l-amber-400', 'bg-amber-50/20',  'badge-amber', 'Partial',     true),
-  'overdue':     ('border-l-red-400',   'bg-red-50/20',    'badge-red',   'Overdue',     true),
-  'discrepancy': ('border-l-red-500',   'bg-red-50/30',    'badge-red',   'Discrepancy', true),
-  'received':    ('border-l-green-400', '',                'badge-green', 'Received',    false),
-  'billed':      ('border-l-gray-300',  '',                'badge-gray',  'Billed',      false),
+  'open':        ('border-l-blue-400',  '',               'bg-blue-50 text-blue-700',    'bg-blue-500',  'Open',        true),
+  'partial':     ('border-l-amber-400', 'bg-amber-50/20', 'bg-amber-100 text-amber-700', 'bg-amber-500', 'Partial',     true),
+  'overdue':     ('border-l-red-400',   'bg-red-50/20',   'bg-red-100 text-red-700',     'bg-red-500',   'Overdue',     true),
+  'discrepancy': ('border-l-red-500',   'bg-red-50/30',   'bg-red-100 text-red-700',     'bg-red-500',   'Discrepancy', true),
+  'received':    ('border-l-green-400', '',               'bg-green-50 text-green-700',  'bg-green-500', 'Received',    false),
+  'billed':      ('border-l-gray-300',  '',               'bg-gray-100 text-gray-600',   'bg-gray-400',  'Billed',      false),
 } %}
 
 <div class="space-y-4">
@@ -170,13 +170,15 @@
 
             {# Status #}
             <td class="px-4 py-4 align-middle">
-              <span class="{{ meta[2] }}">{{ meta[3] }}</span>
+              <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold {{ meta[2] }}">
+                <span class="w-1.5 h-1.5 rounded-full {{ meta[3] }} shrink-0"></span>{{ meta[4] }}
+              </span>
             </td>
 
             {# Actions — link into the PO workspace, do not duplicate editing here #}
             <td class="px-4 py-4 align-middle">
               <div class="flex items-center justify-end gap-1.5">
-                {% if meta[4] %}
+                {% if meta[5] %}
                 <a href="/purchase-orders/{{ po.id }}#receive"
                    class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-brand-700 text-white hover:bg-brand-600 transition-colors">
                   Receive

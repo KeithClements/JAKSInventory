@@ -1,7 +1,7 @@
 # JAKS UI Change Plan
 *Living document — updated as screens are built.*
 
-**Status:** Governance pass completed. Products List = official L2 reference. PO List = L2 complete. Invoice List submitted by UI Builder B — awaiting governance review. Customer List enriched to L1.5 — full L2 upgrade pending primitives decision.
+**Status:** Products List ✅ L2 ref · PO List ✅ L2 · Invoice List ✅ L2 (governance 2026-05-28) · Customer List L1.5 pending full L2 · Primitives extraction approved — begin before Customer List · 6 additional screens discovered at L1 and added to rollout order.
 
 **Scope:** All list and workspace screens in the JAKS Inventory ERP system.
 
@@ -130,18 +130,25 @@ Define four levels:
 - **L3 — Workspace-grade workflow screen** — autosave, inline editing, live totals, slide-over integration, keyboard support, real-time state feedback
 - **L4 — Power-user optimized screen** — all of L3 plus bulk operations, keyboard-driven navigation, Ctrl+K integration, side-by-side or docked panels
 
-Current target mapping (as of this sprint):
+Current target mapping (last audited 2026-05-28):
 
-| Screen | Current Level | Target | Notes |
+| Screen | Current | Target | Notes |
 |---|---|---|---|
-| Products List | L2.5 | L3 | Reference pattern after final polish |
-| Quotes List | L2 | L2 | Complete |
-| Quote Workspace | L3 candidate | L3 | Autosave, inline editing done |
-| Customers List | L1.5 | L2 | Quick-create slide-over (full fields, 4 footer buttons), detail card redesign, list enriched (phone/email/tier pills/last-sale). Full L2 upgrade (tabs, preview dock, stripe, bulk toolbar) blocked on Invoice List governance + primitives extraction decision. |
-| PO List | L2 | L2 | ✅ Governance pass done |
-| Invoice List | Submitted — pending governance | L2 | Full L2 rewrite done by UI Builder B; awaiting UI Architect governance pass |
-| Product Detail | L1 | L2 | Needs upgrade |
-| Warranty/Core/Returns queues | L1 | L2 | Scheduled for later |
+| Products List | ✅ L2 ref | L2 ref | Official reference. Governance pass done. |
+| PO List | ✅ L2 | L2 | Governance pass done. Overdue bug fixed. |
+| Invoice List | ✅ L2 | L2 | Governance pass done 2026-05-28. Red stripe for financial overdue (intentional domain distinction). |
+| Quotes List | L2 | L2 | Has tabs+divide-y but no preview dock, no border-l-4 stripe. Pending final alignment pass. |
+| Quote Workspace | L3 | L3 | Autosave, inline editing done. |
+| Customers List | L1.5 | L2 | Enriched (avatar, pills, contact, tags, preview). Custom Alpine pattern — not L2 standard. Full L2 upgrade (tabs, dock, stripe, bulk toolbar) begins after primitives extraction. |
+| Product Detail | L1 | L2 | Raw form, no card sections. |
+| Sales Orders List | L1 | L2 | Old tbl-* table, no L2 elements. |
+| Vendors List | L1 | L2 | Old tbl-* table, no L2 elements. |
+| Returns List | L1 | L2 | Old tbl-* table, no L2 elements. |
+| Payments List | L1 | L2 | Old tbl-* table, no L2 elements. |
+| Warranty List | L1 | L2 | Old tbl-* table, no L2 elements. |
+| Cores List | L1 | L2 | Old tbl-* table, no L2 elements. |
+| PO Receiving Queue | ✅ QB2 | QB2 | Queue Board archetype ratified 2026-05-28. Official QB2 reference implementation. |
+| PO Match Queue | ✅ QB2 | QB2 | Queue Board archetype ratified 2026-05-28. No metrics strip — non-blocking, entry via Receiving Queue provides context. |
 
 ---
 
@@ -163,13 +170,101 @@ Every major list screen must include these elements:
 
 ---
 
+### 2A. Queue Board Standard
+
+**Ratified 2026-05-28.** Queue Boards are a distinct UI archetype. They are **not** Operational Lists and must not be required to implement filter tabs, bulk toolbars, or preview docks. Those are list-specific patterns that do not map onto queue workflows.
+
+**What a Queue Board is:** A surface that groups work items by operational context (vendor, PO, date, document) so a user can process them in sequence. Examples: PO Receiving Queue (items to receive, grouped by PO), 3-Way Match Queue (invoices to match, grouped by vendor or PO). The user acts on items one at a time or group by group — not across an arbitrary multi-select selection.
+
+**What a Queue Board is not:** A filterable, sortable, bulk-actionable list of records. If a screen primarily browses and filters records, it is an Operational List (§2). If it presents work to be done in operational context groups, it is a Queue Board (§2A).
+
+#### Queue Board — Required Elements
+
+1. **Metrics strip** — area at the top showing aggregate counts and urgency numbers. Not tabs, not filters. At-a-glance snapshot only. Two acceptable formats:
+   - **Horizontal strip (3 metrics or fewer):** `px-5 py-4 border-b border-gray-100 bg-white flex items-center gap-4 flex-wrap` with `h-4 w-px bg-gray-200` separators between items.
+   - **Card grid (4+ metrics):** `grid grid-cols-2 md:grid-cols-4 gap-3` with each metric as a `.card` containing an icon + `text-2xl font-bold tabular-nums` count + `text-[11px] font-medium text-gray-500 uppercase tracking-wide` label. Metric cards that link somewhere should use `hover:ring-1 hover:ring-*-100 transition`. Cards with non-zero urgent counts should use `ring-1 ring-*-100` always-on.
+   - Color: zero counts → `text-gray-400`; non-zero → appropriate semantic color (`text-red-600`, `text-amber-600`, etc.)
+
+2. **Queue grouping headers** — each logical group has a header row that separates it from the next group. The header shows the group title (vendor name, PO number, date, etc.) and an item count.
+   - Format: `px-4 py-2.5 bg-gray-50 border-y border-gray-100 flex items-center justify-between`
+   - Title: `text-sm font-semibold text-gray-800`
+   - Count badge: `text-xs text-gray-400 font-medium tabular-nums ml-2`
+   - Optional: a group-level action button (e.g., "Receive All") right-aligned
+
+3. **Grouped item rows** — within each group, items are listed. Tighter row padding than Operational List is permitted: `px-4 py-2.5 align-middle`. Must still use `divide-y divide-gray-100` within a group.
+
+4. **Left-edge status stripe** — `border-l-4` on the first `<td>` of each item row. Same color semantics as §2:
+   - `border-l-red-400` — blocked, error, critical mismatch
+   - `border-l-amber-400` — needs attention, partial, overdue
+   - `border-l-blue-300` — in-progress, pending review
+   - `border-l-transparent` — ready, clean
+
+5. **Status chips** — same dot + label format as §2. Always visible on each item row. Never hover-to-reveal.
+   - `inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold`
+   - Dot: `w-1.5 h-1.5 rounded-full shrink-0`
+
+6. **Always-visible inline quick actions** — action buttons on each item row, **always visible** (not hover-only). This differs from the Operational List, where the action icon column uses `group-hover:opacity-100`. Queue actions are the primary workflow mechanism and must be immediately accessible.
+   - Primary action: `px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-brand-700 text-white hover:bg-brand-600`
+   - Secondary action: `px-2.5 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50`
+   - Max 2–3 actions per item row. If more are needed, use a `···` overflow button.
+
+7. **Empty states** — two levels:
+   - **Group-level empty state:** when a group has no items to display (e.g., all items in a PO already received). Shown inline within the group using a compact message: `px-4 py-3 text-xs text-gray-400 italic`.
+   - **Page-level empty state:** when the entire queue has no items. Use the standard centered `.card` empty state block from §2 with icon, heading, body. No CTA needed — an empty queue is a good state.
+
+8. **Search** *(optional)* — if the queue has enough volume to need filtering, use the standard icon-prefixed search input. Not required. If omitted, do not add a placeholder or stub.
+
+#### Queue Board — NOT Required
+
+These §2 Operational List elements are **explicitly exempt** for Queue Boards:
+
+| Element | Why exempt |
+|---|---|
+| Filter tabs with counts | Queue items are grouped by context, not filtered by status. Tab navigation is wrong for queues. |
+| Bulk action toolbar | Queue processing is sequential per item or per group, not arbitrary multi-select. |
+| Preview dock | Inline quick actions handle the workflow. A dock would duplicate the inline context. |
+| Row selection checkboxes | No bulk actions means no selection. |
+| `pb-52` on wrapper | No preview dock means no dock clearance needed. |
+| `previewId` Alpine state | No dock means no dock state. |
+
+#### Queue Board — Shared with Operational List
+
+These elements apply to both archetypes:
+
+- Color semantics (§4) — red/amber/green/blue meaning is identical
+- Status chip format — identical dot + label classes
+- Left-edge stripe (`border-l-4`) — identical color logic, on first `<td>`
+- Hover state — `hover:bg-gray-50/80 transition-colors` on item rows
+- `divide-y divide-gray-100` — within item rows inside a group
+- Card container — `.card` or equivalent
+- Monospace identifiers — PO #, invoice #, SKU use `font-mono text-sm font-bold text-brand-700`
+- No `tbl-*` classes — explicit Tailwind padding only
+
+#### Queue Board — Reference Implementations
+
+**Status: ✅ BOTH QB2 COMPLETE — governance pass 2026-05-28**
+
+- `app/templates/purchase_orders/receiving_queue.html` — **Official QB2 reference.** Demonstrates metrics card-grid, vendor group-divider rows, always-visible Receive/Match/Open/Print actions, fill progress bar, disabled placeholder for future route. UI Builder A owned.
+- `app/templates/purchase_orders/match_queue.html` — QB2 complete. Variance count chips use `badge-*` (correct for count badges vs status chips). No metrics strip — entry via Receiving Queue "Flagged Bills" card provides equivalent context. Non-blocking.
+
+**When building Warranty, Cores, or Returns queues:** copy `receiving_queue.html` structure. Adapt the state_meta mapping, group-by key, and metrics cards. Keep everything else identical.
+
+#### Queue Board Maturity Levels
+
+| Level | Name | What it means |
+|---|---|---|
+| **QB1** | Basic queue view | Items listed without grouping or metrics. Functional only. May use `tbl-*` classes. |
+| **QB2** | Full Queue Board Standard | All 8 required elements present. No `tbl-*`. Follows §2A exactly. |
+
+---
+
 ### 3. Shared Interaction Rules
 
 These rules apply to every screen in the app. Do not deviate without updating this document.
 
 **Row behavior:**
 - `cursor-pointer` on clickable rows
-- Entire row click = open preview dock (not navigate)
+- Entire row click = open preview dock (not navigate — **Operational List only**; Queue Boards use inline actions instead)
 - Ctrl+click or action button = navigate to detail page
 - Checkbox click must `@click.stop` to prevent row click
 
@@ -231,8 +326,8 @@ These rules apply to every screen in the app. Do not deviate without updating th
 | Color | Meaning | Tailwind family |
 |---|---|---|
 | Army olive/green (`brand-*`) | Primary actions, active states, brand identity | `bg-brand-700`, `text-brand-700` |
-| Red | Overdue, problem, out-of-stock, error, discontinued | `red-*` |
-| Amber | Warning, low stock, follow-up needed, superseded | `amber-*` |
+| Red | Financial overdue (invoices), problem, out-of-stock, error, discontinued | `red-*` |
+| Amber | Operational overdue (POs, follow-up), low stock, warning, superseded | `amber-*` |
 | Green | Healthy, active, in-stock, success, paid | `green-*` |
 | Blue | Informational, on-order, activity, links | `blue-*` / `sky-*` |
 | Purple | Vendor, waiting, special workflow, serialized | `purple-*` |
@@ -246,7 +341,7 @@ These rules apply to every screen in the app. Do not deviate without updating th
 | Status badge (list rows) | `inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold` |
 | Manufacturer badge | `px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border` |
 | Micro flag (Core, S/N, SO) | `px-1 py-0 rounded text-[10px] font-semibold border` |
-| Header status badge | `badge-green` / `badge-amber` / `badge-red` / `badge-gray` (design system classes) |
+| Header status badge | `badge-green` / `badge-amber` / `badge-red` / `badge-gray` / `badge-blue` (design system classes) |
 | Margin/score badge | `px-2 py-0.5 rounded-full text-xs font-semibold border` |
 
 **Row padding:** `px-4 py-4` on all cells, `align-middle`
@@ -307,14 +402,23 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 | # | Screen | Status | Current → Target | Notes |
 |---|---|---|---|---|
 | 1 | Products List | ✅ L2 complete — official reference | L2.5 → L2 ref | Governance pass done |
-| 2 | PO List | ✅ L2 complete | L1 → L2 | Governance pass done; overdue logic bug fixed |
-| 3 | Invoice List | 🟡 Submitted — governance pending | L1 → L2 | Full L2 rewrite complete; UI Architect governance review next |
-| 4 | Customer List | ⏳ L1.5 enriched — L2 pending | L1.5 → L2 | Quick-create/detail/list enriched this sprint. Full L2 upgrade (tabs, dock, stripe, bulk toolbar) blocked on Invoice List governance pass + primitives extraction decision |
-| 5 | Quotes List | ⏳ Pending | L2 → L2 | Final alignment pass |
-| 6 | Product Detail | ⏳ Pending | L1 → L2 | Section-based card layout |
-| 7 | PO Workspace | ⏳ Pending | L1 → L3 | Autosave, line editor, receive flow |
-| 8 | Invoice Workspace | ⏳ Pending | L1 → L3 | Autosave, payment flow, PDF |
-| 9 | Warranty/Core/Returns queues | ⏳ Pending | L1 → L2 | Queue-style layout — UI Builder A owns |
+| 2 | PO List | ✅ L2 complete | L1 → L2 | Governance pass done; overdue bug fixed |
+| 3 | Invoice List | ✅ L2 complete | L1 → L2 | Governance pass 2026-05-28. Red stripe for financial overdue — accepted + codified in §4. |
+| — | **Primitives extraction** | 🔜 **Next action** | — | Gate open: 3 screens complete. Extract all 6 before Customer List begins. See §7 for sequence. |
+| 4 | Customer List | ⏳ L1.5 — blocked on extraction | L1.5 → L2 | Start after primitives are extracted. Use macros from the start. |
+| 5 | Quotes List | ⏳ Pending | L2 → L2 | Has tabs + divide-y. Needs: border-l-4 stripe, preview dock, pb-52. Alignment pass after Customer List. |
+| 6 | Sales Orders List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
+| 7 | Vendors List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
+| 8 | Returns List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
+| 9 | Payments List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
+| 10 | Product Detail | ⏳ Pending | L1 → L2 | Section-based card layout. |
+| 11 | PO Workspace | ⏳ Pending | L1 → L3 | Autosave, line editor, receive flow. |
+| 12 | Invoice Workspace | 🟡 Governance review needed | L3 candidate → L3 | Architect audit found Alpine §3-compliant modals + autosave already present. Builder B's "L1" self-assessment was wrong. Needs formal L3 governance pass. |
+| 13 | PO Receiving Queue | ✅ QB2 complete | QB1 → QB2 | Queue Board archetype — §2A. Governance pass 2026-05-28. Official QB2 reference. |
+| 14 | PO Match Queue | ✅ QB2 complete | QB1 → QB2 | Queue Board archetype — §2A. Governance pass 2026-05-28. |
+| 15 | Warranty Queue | ⏳ Pending | QB1 → QB2 | Queue Board archetype. Copy `receiving_queue.html`. UI Builder A owns. |
+| 16 | Cores Queue | ⏳ Pending | QB1 → QB2 | Queue Board archetype. Copy `receiving_queue.html`. UI Builder A owns. |
+| 17 | Returns Queue | ⏳ Pending | QB1 → QB2 | Queue Board archetype (or L2 list if returns are browsed not worked). Confirm with builder. |
 
 **Constraint:** Do not redesign every screen differently. Do not create new modal, table, or badge patterns without updating this plan. Use shared UI primitives wherever possible:
 
@@ -331,7 +435,10 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 
 ---
 
-#### Invoice List — Builder Brief (UI Builder B)
+#### Invoice List — Builder Brief (UI Builder B) — ✅ COMPLETE
+
+**Status:** Governance pass approved 2026-05-28. L2 complete. See rollout order item #3.
+**Governance note:** Builder used `border-l-red-400` for overdue invoices (per brief). Accepted — codified in §4 color semantics as "financial overdue = red". Empty state has 7 tab-specific messages, exceeding the 3-case minimum. No blocking defects found.
 
 **Owner:** UI Builder B
 **Scope:** `app/templates/invoices/list.html` and `app/routers/invoices.py` list route only.
@@ -407,6 +514,130 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 
 ---
 
+#### Invoice List — As-Built Record (UI Builder B) — ✅ L2 (governance 2026-05-28)
+
+*Templates owned by UI Builder B; list route + preview endpoint owned by the backend agent
+(parallel). Governance pass **passed** 2026-05-28 — 7-tab set and red-overdue stripe both accepted
+(see §1 maturity table + Rollout #3). Detail below is kept as the as-built record.*
+
+**Backend — landed** (`app/routers/invoices.py` — backend agent's lane):
+- `GET /invoices/` (`invoice_list`) rewritten to the L2 pattern (mirrors `purchase_orders.py`):
+  - `tab` param with back-compat `?status=` alias via `_INV_STATUS_TO_TAB`.
+  - Tab groupings in `INV_TAB_GROUPS` / labels in `INV_LIST_TABS`. **As-built tab set:**
+    `All · Draft · Open · Partial · Overdue · Paid · Void` (7 tabs).
+    Note: as-built uses 7 tabs vs brief's 6 (brief folded Draft into "open"). **Governance
+    decision: 7 tabs accepted.** Draft (not yet sent to customer) is operationally distinct from
+    Open (sent, awaiting payment). Collapsing them would mislead A/R staff. No change needed.
+  - `open` = OPEN only; `partial` = PARTIAL only; `overdue` is **virtual** (OPEN/PARTIAL with
+    `due_date < now`). `void` is its own tab; `all` excludes VOID.
+  - `counts` computed from the **full unfiltered dataset** (`group_by` + dedicated overdue query).
+  - Search spans invoice #, customer company, customer PO #, ESN.
+- `GET /invoices/preview/{invoice_id}` (`invoice_preview_panel`) added, **registered before**
+  `GET /invoices/{invoice_id}` (verified by route-order check) so "preview" isn't captured by the
+  dynamic workspace route. AST/syntax verified.
+
+**Templates — landed (L2-approved):**
+- `app/templates/invoices/list.html` — full L2 rewrite (no `tbl-*` classes, `pb-52` wrapper,
+  `divide-y divide-gray-100`, `border-l-4` stripe on first `<td>`, always-visible status chips,
+  bulk toolbar, 3-case empty state, bottom preview dock → `#invoice-preview-body` via
+  `htmx.ajax('/invoices/preview/'+id)`).
+- `app/templates/invoices/_preview_panel.html` — 4-column dock body (Identity / Financials /
+  Dates & Refs / Actions); core subtotal computed in-template by summing `CORE_CHARGE` lines.
+
+**Stripe semantics (accepted + codified in §4):** `border-l-red-400` overdue ·
+`border-l-amber-400` partial · `border-l-blue-300` open · transparent draft/paid/void. Red for
+*financial* overdue is the intentional domain distinction the architect accepted. ✔
+
+---
+
+#### Invoice Workspace (#8) — Current State (verified 2026-05-28)
+
+*Builder B's original note claimed "raw onclick+hidden modals, L1." Architect governance review found this to be **inaccurate**. Actual state documented below.*
+
+- `app/templates/invoices/workspace.html` — **substantially L3** based on code audit:
+  - ✅ Autosave: `hx-trigger="change from:input,select,textarea,checkbox delay:300ms"` on header form
+  - ✅ Inline line editing, live totals panel (HTMX)
+  - ✅ **Payment modal** — Alpine `x-show`, `z-[60]`, `max-w-2xl rounded-2xl bg-white shadow-2xl`, Esc closes, `@click.stop`, `x-transition` — **fully §3 compliant**
+  - ✅ **Void modal** — Alpine `x-show`, `z-[60]`, `max-w-lg rounded-2xl bg-white shadow-2xl`, Esc closes — **fully §3 compliant**
+  - ✅ **Change-Customer overlay** — Alpine-driven (`changeCustomerOpen`), Esc closes
+  - ✅ All three closed by `@keydown.escape.window` on root wrapper
+- **Status:** Needs formal workspace governance pass (L3 review) to confirm complete. The workspace *looks* L3 but has not been formally reviewed against the §3 Workspace-grade checklist.
+
+---
+
+#### Receiving Queue & 3-Way Match — As-Built Record (UI Builder A)
+
+*Submitted for governance — not self-marked complete. These two screens did not exist when the
+plan was first written; they were built to a product brief from the owner this sprint.*
+
+**Scope (UI Builder A):** `app/templates/purchase_orders/receiving_queue.html`,
+`match_queue.html`, `_match_panel.html`, and the `/receiving` + `/match` routes in
+`app/routers/purchase_orders.py` (both registered **before** `/{po_id}`). The per-PO match panel
+is included in `workspace.html` behind `match.has_activity`. **No** service-layer, QBO, or PDF
+changes — the existing `POService` / `_match_summary` helper is the source of truth.
+
+**Receiving Queue** — standalone operational board (not a tab-filtered list):
+- Metrics strip: **Open POs · Due/Overdue · Partially Received · Flagged Bills** (last two cards
+  link to the relevant tab / the match queue).
+- Covers the full receiving lifecycle (sent, verbal, partial, received, billed).
+- **Grouped by vendor**, most-urgent vendor first; row order by urgency then ETA.
+- Status `border-l-4` stripe **on the first `<td>`**: blue=open, amber=partial,
+  red=overdue/discrepancy, green=received, gray=billed.
+- Row actions link **into** the PO workspace (`Receive` → `#receive`, `Match` → `#match`, Open,
+  Print). Receiving-slip print is a **disabled placeholder + TODO** — no `/receiving-slip` route
+  exists yet, so it never 404s.
+
+**3-Way Match** — per-PO panel (`_match_panel.html`) showing Ordered/Received/Billed + Qty Δ /
+Cost Δ + match-state chip (matched / awaiting receipt / awaiting bill / over-billed / cost
+variance), plus the cross-PO flagged-bill queue (`match_queue.html`). Each flagged row references
+the exact vendor bill (number + ⚠) and links back to that PO's `#match` panel.
+
+**Builder self-check done (before submission):**
+- ✅ Fixed `border-l-4` that was on `<tr>` → moved to first `<td>` in `match_queue.html` and
+  `_match_panel.html` (was a §Stripe red-flag).
+- ✅ Converted status chips from `badge-*` to the §Chips dot+label format
+  (`inline-flex … rounded-lg … ` + `w-1.5 h-1.5 rounded-full` dot) in both queues.
+- ✅ `divide-y divide-gray-100`, explicit `px-4 py-4` padding (no `tbl-*`), `overflow-x-auto` +
+  `min-w-[…]`, 3-case empty states, color use within §4 semantics.
+
+**Architect rulings (2026-05-28):**
+1. ✅ **Queue Board archetype ratified.** §2A added to the plan. Filter tabs, bulk toolbar, and preview dock are explicitly exempt for queue boards. Both screens are QB2 complete.
+2. ✅ **Metrics card-grid and vendor group-divider rows approved** as QB2 primitives. `receiving_queue.html` is the official QB2 reference. Warranty, Cores, and Returns queues must copy this pattern.
+3. ✅ **`badge-blue` added to §4** header status badge list. Approved.
+
+---
+
+#### PO Workspace (#7) — As-Built Progress (UI Builder A)
+
+*Partial L3 pass — submitted for governance, not self-marked L3 complete.*
+
+**Scope:** `app/templates/purchase_orders/workspace.html`, `_lines_section.html`. No service-layer,
+QBO, or PDF changes — all POST actions and field names preserved; the Receive and Create-Bill
+**primary submits were not touched**.
+
+**Landed this pass:**
+- **De-`tbl-*`:** the line-items table (`_lines_section.html`), the Create-Vendor-Bill table, and
+  the Vendor-Bills table (`workspace.html`) now use `divide-y divide-gray-100` + explicit
+  `px-4 py-4 align-middle` (0 `tbl-*` remain in either file; verified in rendered markup). All
+  inline-edit `hx-*`/`name`/Alpine bindings preserved.
+- **Modal standard:** all 5 confirmations (Cancel PO ×2 in header, cancel-line, approve-bill, and
+  the line-items **delete**) replaced with one Alpine-driven confirm modal per §3 (centered,
+  `z-[60]`, Esc-close, `rounded-2xl shadow-2xl`). Header triggers (outside the content x-data scope)
+  `$dispatch('po-confirm', …)`; the content-scope modal listens via `@po-confirm.window`. Empty
+  `<form>`s hold POST actions submitted on confirm; the delete (an HTMX action, not a form) uses
+  `askConfirmHx()` which the modal runs via `htmx.ajax('POST', …)`.
+  - *Governance 2026-05-28:* the line-delete originally kept native `hx-confirm` — caught as the
+    sole confirmed blocker in the architect pass and now converted. **0 native confirm dialogs
+    remain** in the workspace (verified in rendered markup).
+
+**Still open for full L3 (flagging, not done):**
+- Whether the inline Receive / Create-Bill **cards** should become slide-overs (§3) — held for
+  Architect direction; same open question as the Invoice Workspace drawers (Builder B).
+- `app/templates/purchase_orders/detail.html` still uses `tbl-*` but the `/{po_id}` route renders
+  `workspace.html` — `detail.html` appears to be a **dead template**; recommend confirming + deleting.
+
+---
+
 ### 7. Reusable Primitives Backlog
 
 These patterns exist as near-identical copy-paste HTML across Products List and PO List. They should be extracted into Jinja2 macros when building the third list screen (Invoice List). Do not extract prematurely — the pattern needs two real implementations before the right abstraction is obvious.
@@ -452,21 +683,26 @@ These patterns exist as near-identical copy-paste HTML across Products List and 
 
 #### When to extract
 
-**Gate:** UI Architect governs this decision. Do not extract without approval.
+**✅ EXTRACTION APPROVED — 2026-05-28**
 
-The extraction window opens **after Invoice List passes its governance review** and before Customer List begins. At that point there are 3 complete implementations — enough to validate the abstraction without guessing.
+All three gate criteria passed:
+1. Products List, PO List, and Invoice List all use every primitive identically — no special-casing required. Invoice List governance confirmed full pattern match.
+2. Customer List (next in rollout) will need all 6 primitives. Building it from macros is cleaner than copy-paste + later extraction.
+3. 3–4+ screens: extraction cost is justified. 16 screens total in rollout order — macros will pay off across every future screen.
 
-Decision criteria the UI Architect will apply:
-1. Do all 3 screens use the primitive identically enough that one interface covers them? (If Invoice List required special-casing, that's a signal the abstraction is wrong.)
-2. Is the fourth screen (Customer List) confirmed to need the same primitive? If not, wait.
-3. Is the extraction cost (porting 2 existing screens + writing macro) worth the maintenance benefit? For 3–4 screens, yes. For 2, no.
+**Extraction sequence (do in this order):**
+1. **Primitive 5 — `preview_dock_shell`** first. Highest-value. 30 lines of identical HTML across 3 screens. Easiest to validate.
+2. **Primitive 4 — `bulk_toolbar`** second. Pixel-identical across all 3 screens.
+3. **Primitive 1 — `filter_tabs`** third. Normalise the triple-tuple format while porting.
+4. **Primitive 6 — `empty_state`** fourth. 3-case structure is identical; only text/icon differs.
+5. **Primitive 3 — `status_chip`** fifth. Small but used many times per screen.
+6. **Primitive 2 — `operational_list_xdata`** last. Most complex — affects Alpine wiring. Validate thoroughly.
 
-If extraction is approved, sequence:
-1. Write the macro (Primitive 5 — `preview_dock_shell` first, it's the highest-value / most identical)
-2. Port Products List to use it — smoke test
-3. Port PO List to use it — smoke test
-4. Port Invoice List to use it — smoke test
-5. Repeat for each additional primitive
-6. Then begin Customer List using the macros from the start
+For each primitive:
+- Write macro
+- Port Products List → smoke test (`GET /products/`)
+- Port PO List → smoke test (`GET /purchase-orders/`)
+- Port Invoice List → smoke test (`GET /invoices/`)
+- Then proceed to next primitive
 
-**Do not extract early.** Two implementations of a pattern is not enough to know the right abstraction. Premature extraction creates wrong interfaces that then need rework. The cost of wrong abstraction is higher than the cost of one more copy-paste screen.
+After all 6 extracted: begin Customer List using macros from the start.

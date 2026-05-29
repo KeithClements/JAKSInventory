@@ -1,0 +1,25 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   filter_tabs(tabs, active_tab, q)  — §7 Primitive 1
+   Pill-style filter-tab nav with count badges (JAKS_UI_Change_Plan.md §3 Tabs).
+
+   tabs: list of TRIPLES [(slug, label, count), ...]  (plan-mandated format).
+         Screens whose route gives pairs + a counts dict should build triples:
+           {% set triples = [] %}
+           {% for slug, label in tabs %}{% set _ = triples.append((slug, label, counts[slug])) %}{% endfor %}
+   active_tab: the currently-selected slug.
+   q: current search string (preserved on tab links when non-empty).
+═════════════════════════════════════════════════════════════════════════════ #}
+{% macro filter_tabs(tabs, active_tab, q) %}
+<nav class="flex items-center gap-0.5 bg-gray-100 rounded-xl p-1 shrink-0">
+  {% for slug, label, count in tabs %}
+  <a href="?tab={{ slug }}{% if q %}&q={{ q }}{% endif %}"
+     class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
+            {% if active_tab == slug %}bg-brand-700 text-white shadow-sm{% else %}text-gray-600 hover:text-gray-900 hover:bg-gray-200/70{% endif %}">
+    {{ label }}
+    <span class="text-xs {% if active_tab == slug %}bg-white/20 text-white{% else %}bg-gray-200 text-gray-500{% endif %} rounded-full px-1.5 py-0.5 leading-none font-semibold tabular-nums">
+      {{ count }}
+    </span>
+  </a>
+  {% endfor %}
+</nav>
+{% endmacro %}

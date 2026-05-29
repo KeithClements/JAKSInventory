@@ -1,0 +1,24 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   bulk_toolbar()  — §7 Primitive 4   (call block: action buttons via {{ caller() }})
+   The "N selected" bar shown when selectedCount > 0 (JAKS_UI_Change_Plan.md §2.9).
+   Relies on the operational-list x-data (selectedCount, clearSelected()).
+
+   Usage:
+     {% call bulk_toolbar() %}
+       <button class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">Export CSV</button>
+     {% endcall %}
+═════════════════════════════════════════════════════════════════════════════ #}
+{% macro bulk_toolbar() %}
+<div x-show="selectedCount > 0" x-cloak
+     class="flex items-center gap-3 px-4 py-2.5 bg-brand-50 border border-brand-100 rounded-xl">
+  <span class="text-sm font-semibold text-brand-800">
+    <span x-text="selectedCount"></span> selected
+  </span>
+  <div class="h-4 w-px bg-brand-200"></div>
+  {{ caller() }}
+  <button @click="clearSelected()"
+          class="ml-auto text-xs font-medium text-gray-400 hover:text-gray-700 transition-colors">
+    Clear selection
+  </button>
+</div>
+{% endmacro %}

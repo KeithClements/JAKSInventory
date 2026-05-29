@@ -24,6 +24,7 @@ from app.models.invoice import Invoice
 from app.models.quote import Quote
 from app.services.crm_service import CRMService
 from app.services.messaging_service import MessagingService
+from app.services.quote_service import QuoteService
 
 log = logging.getLogger(__name__)
 
@@ -218,11 +219,22 @@ async def customer_quick_create(request: Request, db: Session = Depends(get_db))
             {"request": request, "success_flash": f"✓ {company_name} saved."},
         )
 
-    # ── Save & Quote: navigate to customer detail (New Quote button is there) ──
+    # ── Save & Quote: create a draft quote and drop into the quote workspace ──
+    # Mirrors POST /quotes/new (row "+ Quote" + preview-panel Quote both do this),
+    # so the "Save & Quote →" label actually delivers the quote screen.
     if _action == "save_quote":
+        quote = QuoteService(db, CURRENT_USER_ID).create_quote(
+            customer_id=c.id,
+            data={
+                "discount_pct": c.discount_pct,
+                "validity_days": 30,
+                "notes": "",
+            },
+        )
+        db.commit()
         return HTMLResponse(
             "<span></span>",
-            headers={"HX-Redirect": f"/customers/{c.id}"},
+            headers={"HX-Redirect": f"/quotes/{quote.id}"},
         )
 
     # ── Default (Save Customer): fire record-created + show toast ──────────

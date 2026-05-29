@@ -39,11 +39,11 @@
     <a href="/invoices/{{ invoice.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
     <a href="/invoices/{{ invoice.id }}/pdf" class="btn-secondary btn-sm">PDF</a>
     <button type="button" class="btn-primary btn-sm"
-            onclick="document.getElementById('payment-drawer').classList.toggle('hidden')">
+            @click="$dispatch('open-payment')">
       Take Payment
     </button>
     <button type="button" class="btn-danger btn-sm"
-            onclick="document.getElementById('void-drawer').classList.toggle('hidden')">
+            @click="$dispatch('open-void')">
       Void
     </button>
 
@@ -52,7 +52,7 @@
     <a href="/invoices/{{ invoice.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
     <a href="/invoices/{{ invoice.id }}/pdf" class="btn-secondary btn-sm">PDF</a>
     <button type="button" class="btn-danger btn-sm"
-            onclick="document.getElementById('void-drawer').classList.toggle('hidden')">
+            @click="$dispatch('open-void')">
       Void
     </button>
 
@@ -66,7 +66,17 @@
 
 
 {% block content %}
-<div class="max-w-6xl space-y-3" x-data="{ showVehicleInfo: {{ 'true' if (invoice.esn or invoice.engine_manufacturer or invoice.engine_model) else 'false' }} }">
+<div class="max-w-6xl space-y-3"
+     x-data="{
+       showVehicleInfo: {{ 'true' if (invoice.esn or invoice.engine_manufacturer or invoice.engine_model) else 'false' }},
+       paymentOpen: false,
+       voidOpen: false,
+       changeCustomerOpen: false
+     }"
+     @open-payment.window="paymentOpen = true"
+     @open-void.window="voidOpen = true"
+     @open-change-customer.window="changeCustomerOpen = true"
+     @keydown.escape.window="paymentOpen = false; voidOpen = false; changeCustomerOpen = false">
 
   {# ── Flash / Success banner after finalize ──────────────────────────────── #}
   {% if request.query_params.get('ok') %}
@@ -158,7 +168,7 @@
           </a>
           {% if editable %}
           <button type="button"
-                  onclick="document.getElementById('change-customer-drawer').classList.toggle('hidden')"
+                  @click="changeCustomerOpen = true"
                   class="text-xs text-gray-400 hover:text-brand-700 underline-offset-2 hover:underline"
                   title="Change customer (DRAFT only)">change</button>
           {% endif %}
@@ -325,17 +335,41 @@
     </div>
   </form>
 
-  {# ── Change-Customer Drawer (DRAFT only, hidden until toggled) ──────────── #}
+  {# ── Change-Customer Modal (DRAFT only) — §3 Modal standard ──────────────── #}
   {% if editable %}
-  <div id="change-customer-drawer" class="hidden card border-l-4 border-l-amber-400">
-    <div class="card-body">
+  {# Backdrop #}
+  <div x-show="changeCustomerOpen" x-cloak
+       @click="changeCustomerOpen = false"
+       class="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm"
+       x-transition:enter="transition ease-out duration-150"
+       x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+       x-transition:leave="transition ease-in duration-100"
+       x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"></div>
+  {# Panel #}
+  <div x-show="changeCustomerOpen" x-cloak
+       class="fixed inset-0 z-[60] flex items-center justify-center p-4"
+       x-transition:enter="transition ease-out duration-200"
+       x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
+       x-transition:leave="transition ease-in duration-100"
+       x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95">
+    <div @click.stop class="w-full max-w-lg rounded-2xl bg-white shadow-2xl overflow-hidden">
       <form method="post" action="/invoices/{{ invoice.id }}/change-customer">
-        <p class="text-sm font-semibold text-gray-800 mb-2">Change customer</p>
-        <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2 mb-3">
-          Changing customer may affect pricing, discounts, tax settings, terms, and delivery settings.
-        </p>
-        <div class="flex items-end gap-3 flex-wrap">
-          <div class="flex-1 min-w-[200px]">
+        {# Header #}
+        <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+          <h2 class="font-semibold text-sm text-gray-900">Change Customer</h2>
+          <button type="button" @click="changeCustomerOpen = false"
+                  class="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+        {# Body #}
+        <div class="px-6 py-6 space-y-4">
+          <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+            Changing customer may affect pricing, discounts, tax settings, terms, and delivery settings.
+          </p>
+          <div>
             <label class="form-label">New Customer</label>
             <select name="customer_id" class="form-select" required>
               <option value="">— Select customer —</option>
@@ -351,9 +385,12 @@
               <option value="1">Recalculate Using New Customer Defaults</option>
             </select>
           </div>
-          <button type="submit" class="btn-primary btn-sm">Apply Change</button>
+        </div>
+        {# Footer #}
+        <div class="px-6 py-4 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
           <button type="button" class="btn-secondary btn-sm"
-                  onclick="document.getElementById('change-customer-drawer').classList.add('hidden')">Cancel</button>
+                  @click="changeCustomerOpen = false">Cancel</button>
+          <button type="submit" class="btn-primary btn-sm">Apply Change</button>
         </div>
       </form>
     </div>
@@ -544,91 +581,178 @@
 
 
   {# ════════════════════════════════════════════════════════════════════════
-     TAKE PAYMENT DRAWER (toggle from header_actions on OPEN/PARTIAL)
+     TAKE PAYMENT MODAL (opened from header on OPEN/PARTIAL) — §3 Modal standard
+     Data-heavy → max-w-2xl. x-data carries the payment-method binding only;
+     open/close state lives on the root wrapper (paymentOpen).
   ═══════════════════════════════════════════════════════════════════════════ #}
   {% if invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL] %}
-  <div id="payment-drawer" class="hidden card border-l-4 border-l-brand-700"
-       x-data="{ method: '{{ PaymentMethod.CASH }}' }">
-    <div class="card-body">
-      <form method="post" action="/invoices/{{ invoice.id }}/payment" class="space-y-3">
-        <p class="text-sm font-semibold text-gray-800">Record Payment</p>
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
-          <div>
-            <label class="form-label">Amount</label>
-            <input type="number" name="amount" step="0.01" min="0.01" required
-                   value="{{ "%.2f"|format(totals.balance_due) }}"
-                   class="form-input"/>
-          </div>
-          <div>
-            <label class="form-label">Method</label>
-            <select name="method" x-model="method" class="form-select">
-              <option value="{{ PaymentMethod.CASH }}">Cash</option>
-              <option value="{{ PaymentMethod.CHECK }}">Check</option>
-              <option value="{{ PaymentMethod.CREDIT_CARD }}">Credit Card</option>
-              <option value="{{ PaymentMethod.ACH }}">ACH / EFT</option>
-              <option value="{{ PaymentMethod.WIRE }}">Wire</option>
-              <option value="{{ PaymentMethod.OTHER }}">Other</option>
-            </select>
-          </div>
-          <div>
-            <label class="form-label">Check #</label>
-            <input type="text" name="check_number" placeholder="—"
-                   x-bind:disabled="method !== '{{ PaymentMethod.CHECK }}'"
-                   class="form-input disabled:bg-gray-50 disabled:text-gray-400"/>
-          </div>
-          <div>
-            <label class="form-label">Notes</label>
-            <input type="text" name="notes" placeholder="—" class="form-input"/>
-          </div>
+  <div x-data="{ method: '{{ PaymentMethod.CASH }}' }">
+    {# Backdrop #}
+    <div x-show="paymentOpen" x-cloak
+         @click="paymentOpen = false"
+         class="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm"
+         x-transition:enter="transition ease-out duration-150"
+         x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+         x-transition:leave="transition ease-in duration-100"
+         x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"></div>
+    {# Panel #}
+    <div x-show="paymentOpen" x-cloak
+         class="fixed inset-0 z-[60] flex items-center justify-center p-4"
+         x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
+         x-transition:leave="transition ease-in duration-100"
+         x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95">
+      <div @click.stop class="w-full max-w-2xl rounded-2xl bg-white shadow-2xl overflow-hidden">
+        {# Header #}
+        <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+          <h2 class="font-semibold text-sm text-gray-900">Record Payment</h2>
+          <button type="button" @click="paymentOpen = false"
+                  class="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
         </div>
-        <div class="flex justify-end gap-2">
-          <button type="button" class="btn-secondary btn-sm"
-                  onclick="document.getElementById('payment-drawer').classList.add('hidden')">Cancel</button>
-          <button type="submit" class="btn-primary btn-sm">Record Payment</button>
-        </div>
-      </form>
 
-      {% if cust_credit_balance > 0 %}
-      <hr class="my-3 border-gray-200"/>
-      <form method="post" action="/invoices/{{ invoice.id }}/apply-credit" class="flex items-center gap-3">
-        <div class="flex-1 text-sm text-gray-700">
-          Apply account credit —
-          <span class="font-semibold text-green-700">${{ "%.2f"|format(cust_credit_balance) }} available</span>
+        <form method="post" action="/invoices/{{ invoice.id }}/payment">
+          {# Body #}
+          <div class="px-6 py-6 space-y-4">
+            {# Balance due banner #}
+            <div class="flex items-center justify-between rounded-lg bg-gray-50 border border-gray-100 px-4 py-3">
+              <span class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Balance Due</span>
+              <span class="text-lg font-extrabold tabular-nums {% if totals.balance_due > 0 %}text-amber-600{% else %}text-green-600{% endif %}">
+                ${{ "%.2f"|format(totals.balance_due) }}
+              </span>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label class="form-label">Amount</label>
+                <input type="number" name="amount" step="0.01" min="0.01" required
+                       value="{{ "%.2f"|format(totals.balance_due) }}"
+                       class="form-input"/>
+              </div>
+              <div>
+                <label class="form-label">Method</label>
+                <select name="method" x-model="method" class="form-select">
+                  <option value="{{ PaymentMethod.CASH }}">Cash</option>
+                  <option value="{{ PaymentMethod.CHECK }}">Check</option>
+                  <option value="{{ PaymentMethod.CREDIT_CARD }}">Credit Card</option>
+                  <option value="{{ PaymentMethod.ACH }}">ACH / EFT</option>
+                  <option value="{{ PaymentMethod.WIRE }}">Wire</option>
+                  <option value="{{ PaymentMethod.OTHER }}">Other</option>
+                </select>
+              </div>
+              <div>
+                <label class="form-label">Check #</label>
+                <input type="text" name="check_number" placeholder="—"
+                       x-bind:disabled="method !== '{{ PaymentMethod.CHECK }}'"
+                       class="form-input disabled:bg-gray-50 disabled:text-gray-400"/>
+              </div>
+              <div>
+                <label class="form-label">Notes</label>
+                <input type="text" name="notes" placeholder="—" class="form-input"/>
+              </div>
+            </div>
+
+            {# Card convenience-fee info note (informational only) #}
+            <div x-show="method === '{{ PaymentMethod.CREDIT_CARD }}'" x-cloak
+                 class="flex items-start gap-2 rounded-lg bg-blue-50 border border-blue-100 px-3 py-2 text-xs text-blue-700">
+              <svg class="w-4 h-4 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              <span>
+                Card payments may add a {{ "%g"|format(invoice.cc_surcharge_pct) }}% convenience fee
+                (~${{ "%.2f"|format(totals.cc_surcharge_estimate) }} on the full balance). The fee is
+                applied to the card portion at processing time.
+              </span>
+            </div>
+          </div>
+
+          {# Footer #}
+          <div class="px-6 py-4 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
+            <button type="button" class="btn-secondary btn-sm"
+                    @click="paymentOpen = false">Cancel</button>
+            <button type="submit" class="btn-primary btn-sm">Record Payment</button>
+          </div>
+        </form>
+
+        {# Apply account credit — separate POST, only when credit available #}
+        {% if cust_credit_balance > 0 %}
+        <div class="px-6 py-4 border-t border-gray-100">
+          <form method="post" action="/invoices/{{ invoice.id }}/apply-credit"
+                class="flex items-center gap-3 flex-wrap">
+            <div class="flex-1 min-w-[180px] text-sm text-gray-700">
+              Apply account credit —
+              <span class="font-semibold text-green-700">${{ "%.2f"|format(cust_credit_balance) }} available</span>
+            </div>
+            <input type="number" name="amount" step="0.01" min="0.01"
+                   max="{{ "%.2f"|format([cust_credit_balance, totals.balance_due]|min) }}"
+                   value="{{ "%.2f"|format([cust_credit_balance, totals.balance_due]|min) }}"
+                   class="form-input w-28 text-right"/>
+            <button type="submit" class="btn-secondary btn-sm whitespace-nowrap">Apply Credit</button>
+          </form>
         </div>
-        <input type="number" name="amount" step="0.01" min="0.01"
-               max="{{ "%.2f"|format([cust_credit_balance, totals.balance_due]|min) }}"
-               value="{{ "%.2f"|format([cust_credit_balance, totals.balance_due]|min) }}"
-               class="form-input w-28 text-right"/>
-        <button type="submit" class="btn-secondary btn-sm whitespace-nowrap">Apply Credit</button>
-      </form>
-      {% endif %}
+        {% endif %}
+      </div>
     </div>
   </div>
   {% endif %}
 
 
   {# ════════════════════════════════════════════════════════════════════════
-     VOID DRAWER
+     VOID MODAL (opened from header on OPEN/PARTIAL/PAID) — §3 Modal standard
   ═══════════════════════════════════════════════════════════════════════════ #}
   {% if invoice.status not in [InvoiceStatus.DRAFT, InvoiceStatus.VOID] %}
-  <div id="void-drawer" class="hidden card border-l-4 border-l-red-400"
-       x-data="{ reason: '' }">
-    <div class="card-body">
-      <form method="post" action="/invoices/{{ invoice.id }}/void" class="space-y-3">
-        <p class="text-sm font-semibold text-red-700">Void this invoice</p>
-        <p class="text-xs text-red-600">Inventory will be reversed; payment allocations marked reversed. This cannot be undone.</p>
-        <div class="flex items-end gap-3">
-          <div class="flex-1">
-            <label class="form-label">Reason (required)</label>
-            <input type="text" name="reason" x-model="reason" required placeholder="e.g. wrong customer, duplicate, customer cancel"
-                   @keydown.enter.prevent
-                   class="form-input"/>
+  <div x-data="{ reason: '' }">
+    {# Backdrop #}
+    <div x-show="voidOpen" x-cloak
+         @click="voidOpen = false"
+         class="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm"
+         x-transition:enter="transition ease-out duration-150"
+         x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+         x-transition:leave="transition ease-in duration-100"
+         x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"></div>
+    {# Panel #}
+    <div x-show="voidOpen" x-cloak
+         class="fixed inset-0 z-[60] flex items-center justify-center p-4"
+         x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
+         x-transition:leave="transition ease-in duration-100"
+         x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95">
+      <div @click.stop class="w-full max-w-lg rounded-2xl bg-white shadow-2xl overflow-hidden">
+        <form method="post" action="/invoices/{{ invoice.id }}/void">
+          {# Header #}
+          <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+            <h2 class="font-semibold text-sm text-red-700">Void this invoice</h2>
+            <button type="button" @click="voidOpen = false"
+                    class="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+              </svg>
+            </button>
           </div>
-          <button type="submit" class="btn-danger btn-sm" :disabled="!reason.trim()">Confirm Void</button>
-          <button type="button" class="btn-secondary btn-sm"
-                  onclick="document.getElementById('void-drawer').classList.add('hidden')">Cancel</button>
-        </div>
-      </form>
+          {# Body #}
+          <div class="px-6 py-6 space-y-3">
+            <p class="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg p-3">
+              Inventory will be reversed; payment allocations marked reversed. This cannot be undone.
+            </p>
+            <div>
+              <label class="form-label">Reason (required)</label>
+              <input type="text" name="reason" x-model="reason" required
+                     placeholder="e.g. wrong customer, duplicate, customer cancel"
+                     @keydown.enter.prevent
+                     class="form-input"/>
+            </div>
+          </div>
+          {# Footer #}
+          <div class="px-6 py-4 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
+            <button type="button" class="btn-secondary btn-sm"
+                    @click="voidOpen = false">Cancel</button>
+            <button type="submit" class="btn-danger btn-sm" :disabled="!reason.trim()">Confirm Void</button>
+          </div>
+        </form>
+      </div>
     </div>
   </div>
   {% endif %}

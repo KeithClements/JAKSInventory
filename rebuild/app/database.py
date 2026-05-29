@@ -133,6 +133,9 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     # ── Pricing tier & credit limit ───────────────────────────────────────────
     ("customers", "credit_limit",  "REAL NOT NULL DEFAULT 0.0"),
     ("customers", "pricing_tier",  "TEXT NOT NULL DEFAULT 'standard'"),
+
+    # ── Workflow Series 3 — auto-discount override on quote lines ─────────────
+    ("quote_lines", "discount_overridden", "BOOLEAN NOT NULL DEFAULT 0"),
 ]
 
 

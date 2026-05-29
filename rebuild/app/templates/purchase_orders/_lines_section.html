@@ -5,25 +5,25 @@
       <span class="text-xs text-gray-400">{{ po.lines | length }} line{{ 's' if po.lines | length != 1 }}</span>
     </div>
     <div class="overflow-x-auto">
-      <table class="tbl">
-        <thead class="tbl-head">
+      <table class="w-full min-w-[640px] text-sm">
+        <thead class="bg-gray-50">
           <tr>
-            <th class="tbl-th">SKU</th>
-            <th class="tbl-th">Description</th>
-            <th class="tbl-th-r">Ordered</th>
-            {% if not editable %}<th class="tbl-th-r">Received</th>{% endif %}
-            <th class="tbl-th-r">Unit Cost</th>
-            {% if editable %}<th class="tbl-th-r">Core</th>{% endif %}
-            <th class="tbl-th-r">Total</th>
-            {% if not editable and po.core_total > 0 %}<th class="tbl-th-r">Core</th>{% endif %}
-            <th class="tbl-th">Status</th>
-            {% if editable %}<th class="tbl-th w-8"></th>{% endif %}
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">SKU</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Description</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Ordered</th>
+            {% if not editable %}<th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Received</th>{% endif %}
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Unit Cost</th>
+            {% if editable %}<th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Core</th>{% endif %}
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Total</th>
+            {% if not editable and po.core_total > 0 %}<th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Core</th>{% endif %}
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Status</th>
+            {% if editable %}<th class="px-4 py-3 w-8"></th>{% endif %}
           </tr>
         </thead>
-        <tbody>
+        <tbody class="divide-y divide-gray-100">
           {% for line in po.lines %}
-          <tr class="tbl-row">
-            <td class="tbl-td font-mono text-xs">
+          <tr class="hover:bg-gray-50/80 transition-colors group">
+            <td class="px-4 py-4 align-middle text-sm text-gray-700 font-mono text-xs">
               {% if line.product %}
               <a href="/products/{{ line.product.id }}" class="font-semibold link">{{ line.product.sku }}</a>
               {% else %}
@@ -31,7 +31,7 @@
               {% endif %}
             </td>
 
-            <td class="tbl-td">
+            <td class="px-4 py-4 align-middle text-sm text-gray-700">
               {% if editable %}
               <input type="text" value="{{ line.description or (line.product.title if line.product else '') }}"
                      name="description"
@@ -47,7 +47,7 @@
               {% endif %}
             </td>
 
-            <td class="tbl-td-r">
+            <td class="px-4 py-4 align-middle text-sm text-gray-700 text-right tabular-nums">
               {% if editable %}
               <input type="number" value="{{ line.qty_ordered }}" name="qty_ordered" min="1"
                      hx-post="/purchase-orders/{{ po.id }}/lines/{{ line.id }}"
@@ -63,7 +63,7 @@
             </td>
 
             {% if not editable %}
-            <td class="tbl-td-r text-sm font-medium tabular-nums
+            <td class="px-4 py-4 align-middle text-right text-sm font-medium tabular-nums
               {% if line.qty_received == 0 %}text-gray-400
               {% elif line.qty_received < line.qty_ordered %}text-amber-600
               {% else %}text-green-600{% endif %}">
@@ -71,7 +71,7 @@
             </td>
             {% endif %}
 
-            <td class="tbl-td-r">
+            <td class="px-4 py-4 align-middle text-sm text-gray-700 text-right tabular-nums">
               {% if editable %}
               <input type="number" value="{{ '%.2f' | format(line.unit_cost) }}" name="unit_cost"
                      step="0.01" min="0"
@@ -88,7 +88,7 @@
             </td>
 
             {% if editable %}
-            <td class="tbl-td-r">
+            <td class="px-4 py-4 align-middle text-sm text-gray-700 text-right tabular-nums">
               <input type="number" value="{{ '%.2f' | format(line.core_charge_per_unit) }}"
                      name="core_charge_per_unit" step="0.01" min="0"
                      hx-post="/purchase-orders/{{ po.id }}/lines/{{ line.id }}"
@@ -102,19 +102,19 @@
             </td>
             {% endif %}
 
-            <td class="tbl-td-r font-medium tabular-nums text-gray-800">
+            <td class="px-4 py-4 align-middle text-right tabular-nums font-medium text-gray-800">
               ${{ '%.2f' | format(line.line_total) }}
             </td>
 
             {% if not editable and po.core_total > 0 %}
-            <td class="tbl-td-r text-xs tabular-nums {% if line.core_charge_per_unit > 0 %}text-amber-600{% else %}text-gray-300{% endif %}">
+            <td class="px-4 py-4 align-middle text-right text-xs tabular-nums {% if line.core_charge_per_unit > 0 %}text-amber-600{% else %}text-gray-300{% endif %}">
               {% if line.core_charge_per_unit > 0 %}
               ${{ '%.2f' | format(line.core_charge_per_unit * line.qty_ordered) }}
               {% else %}—{% endif %}
             </td>
             {% endif %}
 
-            <td class="tbl-td">
+            <td class="px-4 py-4 align-middle text-sm text-gray-700">
               {% if line.qty_outstanding == 0 %}
               <span class="badge-green">Done</span>
               {% elif line.qty_received > 0 %}
@@ -125,12 +125,10 @@
             </td>
 
             {% if editable %}
-            <td class="tbl-td text-center">
+            <td class="px-4 py-4 align-middle text-center">
+              {# §3 Modal standard — uses the workspace confirm modal (askConfirmHx), not native hx-confirm #}
               <button type="button"
-                      hx-post="/purchase-orders/{{ po.id }}/lines/{{ line.id }}/delete"
-                      hx-target="#po-lines-section"
-                      hx-swap="outerHTML"
-                      hx-confirm="Remove this line?"
+                      @click="askConfirmHx('/purchase-orders/{{ po.id }}/lines/{{ line.id }}/delete', '#po-lines-section', 'Remove line item?', 'Remove this line from the purchase order?', 'Remove line', true)"
                       class="text-gray-300 hover:text-red-500 transition-colors text-base leading-none px-1">✕</button>
             </td>
             {% endif %}
@@ -166,7 +164,7 @@
                 }
               "
               class="border-t-2 border-dashed border-gray-100">
-            <td class="tbl-td">
+            <td class="px-4 py-4 align-middle text-sm text-gray-700">
               <div class="relative flex gap-1 items-start">
                 <div class="flex-1 min-w-0">
                   <input type="text" placeholder="Search SKU…"
@@ -194,29 +192,29 @@
                 </button>
               </div>
             </td>
-            <td class="tbl-td">
+            <td class="px-4 py-4 align-middle text-sm text-gray-700">
               <input type="text" name="description" x-model="desc" placeholder="Description"
                      class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs
                             focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
             </td>
-            <td class="tbl-td-r">
+            <td class="px-4 py-4 align-middle text-sm text-gray-700 text-right tabular-nums">
               <input type="number" name="qty_ordered" x-model="qty" min="1" value="1"
                      class="w-16 rounded border border-gray-200 px-2 py-1.5 text-xs text-right
                             focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
             </td>
-            <td class="tbl-td-r">
+            <td class="px-4 py-4 align-middle text-sm text-gray-700 text-right tabular-nums">
               <input type="number" name="unit_cost" x-model="cost" step="0.01" min="0" placeholder="0.00"
                      class="w-24 rounded border border-gray-200 px-2 py-1.5 text-xs text-right font-mono
                             focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
             </td>
-            <td class="tbl-td-r">
+            <td class="px-4 py-4 align-middle text-sm text-gray-700 text-right tabular-nums">
               <input type="number" name="core_charge_per_unit" x-model="core" step="0.01" min="0" placeholder="0.00"
                      class="w-20 rounded border border-gray-200 px-2 py-1.5 text-xs text-right font-mono
                             focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
             </td>
-            <td class="tbl-td-r text-gray-300 text-sm">—</td>
-            <td class="tbl-td"></td>
-            <td class="tbl-td">
+            <td class="px-4 py-4 align-middle text-right tabular-nums text-gray-300 text-sm">—</td>
+            <td class="px-4 py-4 align-middle text-sm text-gray-700"></td>
+            <td class="px-4 py-4 align-middle text-sm text-gray-700">
               <button type="button"
                       @click="
                         htmx.ajax('POST', '/purchase-orders/{{ po.id }}/lines', {
