@@ -706,3 +706,41 @@ For each primitive:
 - Then proceed to next primitive
 
 After all 6 extracted: begin Customer List using macros from the start.
+
+---
+
+#### Primitives Extraction — As-Built Record (UI Builder B) — 🟡 submitted, pending governance
+
+*Extraction executed per the approved §7 sequence. **Not self-marked complete** — awaiting an
+architect pass on the macro library + the 3 ported screens.*
+
+**Macro library created** (`app/templates/macros/`):
+| File | Macro | Primitive |
+|---|---|---|
+| `preview_dock.html` | `preview_dock_shell(title, body_id)` | P5 |
+| `bulk_toolbar.html` | `bulk_toolbar()` (call-block for action buttons) | P4 |
+| `filter_tabs.html` | `filter_tabs(tabs, active_tab, q)` — triple-tuple `(slug,label,count)` | P1 |
+| `empty_state.html` | `empty_state(icon_path, q, active_tab, …, cta_html='')` | P6 |
+| `chips.html` | `status_chip(bg_cls, dot_cls, label)` | P3 |
+| `list_behavior.html` | `operational_list_script()` → emits `operationalListData(bodyId, urlPrefix, allIds)` | P2 |
+
+**Ports landed** (each imports macros + uses the factory `x-data`):
+- `products/list.html` — 449→368 lines. dock/bulk/tabs/xdata. Empty state kept **inline** (tab-specific copy).
+- `purchase_orders/list.html` — 413→335 lines. Same set; builds triples from route pairs+counts.
+- `invoices/list.html` — 408→327 lines. Same set **+ `status_chip`** in the row; 7-tab empty state kept inline.
+
+**Decisions / deviations (flag for governance):**
+1. **P2 delivered as an inline-`<script>` macro**, not a `static/js/list.js` file — keeps the
+   primitive in the template layer (owner-approved). `{{ operational_list_script() }}` emits the
+   factory once per page.
+2. **`empty_state` macro built but not adopted** by the 3 ported screens — each has richer
+   tab-specific copy than the generic 3-case macro. Macro is ready for Customer List. Confirm whether
+   to force the 3 onto it or keep their richer copy.
+3. **`filter_tabs` signature** is `(tabs, active_tab, q)` — dropped the backlog's `preserve_q=true`
+   param (q always preserved when truthy). Confirm.
+
+**Verification:** all 6 macros + 3 ported lists **compile** under Jinja 3.1 (`.venv`); all 3 lists
+**render** with mock context — Products (4 tabs), PO (6 tabs), Invoice (7 tabs), each with dock
+body-id + factory call present, Invoice status-chip present. No `tbl-*`, no leftover inline x-data,
+no orphaned dock markup. Browser smoke test (`GET /products/`, `/purchase-orders/`, `/invoices/`)
+pending a running server.
