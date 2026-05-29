@@ -64,6 +64,7 @@ _ROLE_PERMISSIONS: dict[str, set[str]] = {
     UserRole.BOOKKEEPING: {
         Permission.REVERSE_PAYMENT,
         Permission.ISSUE_CREDIT_MEMO,
+        Permission.APPROVE_VENDOR_BILL,
         Permission.REPUSH_QBO,
         Permission.VIEW_AUDIT_LOG,
         Permission.SEND_EMAIL,

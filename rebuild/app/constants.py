@@ -357,6 +357,19 @@ class VendorBillStatus(StrEnum):
     PAID        = "paid"
 
 
+class MatchResolution(StrEnum):
+    """
+    AP decision recorded on a POLine after 3-way match surfaces a variance.
+    UNRESOLVED is the default; terminal values clear the is_flag on the line.
+    """
+    UNRESOLVED = "unresolved"  # default; variance still live
+    ACCEPTED   = "accepted"   # variance acknowledged; will pay as billed
+    REJECTED   = "rejected"   # disputed; waiting for corrected bill / credit
+    ON_HOLD    = "on_hold"    # parked pending more info
+    CREDITED   = "credited"   # offset by a linked vendor credit memo
+    CLEARED    = "cleared"    # manually dismissed (corrected outside system)
+
+
 # ─── Payments ─────────────────────────────────────────────────────────────────
 
 class PaymentMethod(StrEnum):
@@ -631,6 +644,7 @@ class AuditAction(StrEnum):
     SO_CONVERTED       = "so_converted"
     INVOICE_CONVERTED  = "invoice_converted"
     STATUS_CHANGED     = "status_changed"
+    MATCH_RESOLVED     = "match_resolved"
 
 
 # ─── Scraper / Enrichment ─────────────────────────────────────────────────────
@@ -849,3 +863,4 @@ class Permission(StrEnum):
     SEND_EMAIL                  = "send_email"
     RECEIVE_WITHOUT_PO          = "receive_without_po"
     INVENTORY_TRANSFER          = "inventory_transfer"
+    APPROVE_VENDOR_BILL         = "approve_vendor_bill"
