@@ -7,6 +7,7 @@
 {% endblock %}
 
 {% block content %}
+{% from "macros/empty_state.html" import empty_state %}
 {# state → (left stripe, row tint, chip bg+text, chip dot, label, receivable?) #}
 {% set state_meta = {
   'open':        ('border-l-blue-400',  '',               'bg-blue-50 text-blue-700',    'bg-blue-500',  'Open',        true),
@@ -230,23 +231,16 @@
   </div>
 
   {% else %}
-  {# ══════════════════════════════ EMPTY STATE ══════════════════════════════ #}
-  <div class="card flex flex-col items-center justify-center py-16 text-center">
-    <div class="w-14 h-14 rounded-2xl bg-green-50 flex items-center justify-center mb-4">
-      <svg class="w-7 h-7 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-      </svg>
-    </div>
-    {% if q %}
-    <p class="text-sm font-semibold text-gray-700">No matches for "{{ q }}"</p>
-    <p class="text-xs text-gray-400 mt-1 mb-4">No POs in the receiving lifecycle match that search.</p>
-    <a href="/purchase-orders/receiving" class="btn-secondary btn-sm">Clear search</a>
-    {% else %}
-    <p class="text-sm font-semibold text-gray-700">Receiving queue is clear</p>
-    <p class="text-xs text-gray-400 mt-1 mb-4">No purchase orders are currently in the receiving lifecycle.</p>
-    <a href="/purchase-orders/?tab=open" class="btn-secondary btn-sm">View open POs</a>
-    {% endif %}
-  </div>
+  {# ══════════════════════════════ EMPTY STATE — §7 Primitive 6 ══════════════ #}
+  {# active_tab='' — queue boards have no tabs, only search miss or all-clear #}
+  {{ empty_state(
+    'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z',
+    q,
+    '',
+    'Receiving queue is clear',
+    'No purchase orders are currently in the receiving lifecycle.',
+    '<a href="/purchase-orders/?tab=open" class="btn-secondary btn-sm">View open POs</a>'
+  ) }}
   {% endif %}
 
 </div>

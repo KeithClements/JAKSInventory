@@ -33,8 +33,13 @@
     _action: 'save',
     confirmDup: false,
     taxExempt: {{ 'true' if prefill.get('is_tax_exempt') else 'false' }},
-    shipSame: {{ 'false' if (prefill and not prefill.get('ship_same')) else 'true' }}
+    shipSame: {{ 'false' if (prefill and not prefill.get('ship_same')) else 'true' }},
+    _submitting: false
   }"
+  x-init="
+    $el.addEventListener('htmx:beforeRequest', function() { _submitting = true; });
+    $el.addEventListener('htmx:afterRequest',  function() { _submitting = false; });
+  "
   @input="createSlideDirty = true"
   @change="createSlideDirty = true"
 >
@@ -251,11 +256,27 @@
               class="btn-secondary btn-sm">Cancel</button>
       <div class="flex-1"></div>
       <button type="submit" @click="_action = 'save_new'"
-              class="btn-secondary btn-sm">Save &amp; New</button>
+              :disabled="_submitting"
+              class="btn-secondary btn-sm disabled:opacity-50 disabled:cursor-not-allowed">
+        Save &amp; New
+      </button>
       <button type="submit" @click="_action = 'save'"
-              class="btn-primary btn-sm">Save Customer</button>
+              :disabled="_submitting"
+              class="btn-primary btn-sm disabled:opacity-50 disabled:cursor-not-allowed">
+        <span x-show="!_submitting">Save Customer</span>
+        <span x-show="_submitting" x-cloak class="flex items-center gap-1.5">
+          <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          Saving…
+        </span>
+      </button>
       <button type="submit" @click="_action = 'save_quote'"
-              class="btn-secondary btn-sm">Save &amp; Quote →</button>
+              :disabled="_submitting"
+              class="btn-secondary btn-sm disabled:opacity-50 disabled:cursor-not-allowed">
+        Save &amp; Quote →
+      </button>
     </div>
   </div>
 
