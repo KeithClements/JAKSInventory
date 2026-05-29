@@ -136,7 +136,7 @@ meta = Table([
     ["Prepared", "2026-05-29"],
     ["Repo", "C:\\Users\\keith\\JAKSInventory\\rebuild"],
     ["Branch baseline", "backend/workflow-series-3 (4 commits ahead of main)"],
-    ["Model config", "3 lanes · fix blockers first · own-branch-per-lane"],
+    ["Model config", "4 lanes · own-worktree-per-lane · Backend leads"],
 ], colWidths=[1.5 * inch, 4.6 * inch])
 meta.setStyle(TableStyle([
     ("FONTSIZE", (0, 0), (-1, -1), 9),
@@ -185,6 +185,10 @@ callout("Decisions locked — 2026-05-29 (Keith)", [
     "7. <b>Run concurrently, Backend leads slightly</b> &mdash; Backend lands "
     "blockers + route contracts first; UI must never build against guessed "
     "endpoints.",
+    "8. <b>4th lane added: QA</b> (<font face='Courier'>lane/qa</font>). "
+    "<font face='Courier'>tests/*</font> is shared by responsibility &mdash; "
+    "Backend edits its own unit/service/migration tests; QA owns "
+    "smoke/regression/acceptance/cross-screen + CI; coordinate on a shared file.",
 ], BRAND, BRAND_LT)
 
 story.append(Paragraph("Lane 1 — Backend (Phases A–O)", h3))
@@ -297,16 +301,21 @@ story.append(PageBreak())
 # ════════════════════════════════════════════════════════════════════════════
 story.append(Paragraph("3 &nbsp; Branching &amp; Coordination", h1))
 hr(BRAND, 1.2)
-story.append(Paragraph("Setup (do once, before launching the lanes):", h3))
+story.append(Paragraph("Setup (already executed — recorded here as the baseline):", h3))
 story.append(bullets([
-    "Commit current work on <font face='Courier'>backend/workflow-series-3</font>, "
-    "then merge it into <font face='Courier'>main</font> so every lane forks "
-    "from one clean baseline.",
-    "Land the two blockers (Section 2) on main.",
-    "Create one branch per lane off main: "
-    "<font face='Courier'>lane/ui-builder</font>, "
-    "<font face='Courier'>lane/backend</font>, "
-    "<font face='Courier'>lane/ui-architect</font>.",
+    "Blockers (Section 2) landed; <font face='Courier'>backend/workflow-series-3</font> "
+    "fast-forwarded into <font face='Courier'>main</font> and pushed. Every lane "
+    "forks from this clean baseline.",
+    "Four worktrees created as <b>siblings outside the repo root</b> (the repo "
+    "root also holds the legacy app; the FastAPI app is the "
+    "<font face='Courier'>rebuild/</font> subdir, so each lane works in "
+    "<font face='Courier'>&lt;worktree&gt;\\rebuild</font>):",
+    "&nbsp;&nbsp;<font face='Courier'>C:\\Users\\keith\\jaks-backend</font> → lane/backend · "
+    "<font face='Courier'>jaks-ui</font> → lane/ui-builder · "
+    "<font face='Courier'>jaks-architect</font> → lane/ui-architect · "
+    "<font face='Courier'>jaks-qa</font> → lane/qa (all pushed with upstream tracking).",
+    "Each worktree has its own gitignored <font face='Courier'>.venv</font> + "
+    "seeded DB.",
 ]))
 story.append(Paragraph("The golden rule of parallel work:", h3))
 callout("No two lanes may edit the same file in the same session.", [
@@ -323,17 +332,19 @@ callout("No two lanes may edit the same file in the same session.", [
 # ════════════════════════════════════════════════════════════════════════════
 # 4. LANES
 # ════════════════════════════════════════════════════════════════════════════
-story.append(Paragraph("4 &nbsp; The Three Parallel Lanes", h1))
+story.append(Paragraph("4 &nbsp; The Four Parallel Lanes", h1))
 hr(BRAND, 1.2)
 table([
-    ["Lane", "Role", "Branch", "Owns"],
-    ["A", "UI Builder", "lane/ui-builder",
+    ["Lane", "Role", "Worktree / Branch", "Owns"],
+    ["A", "UI Builder", "jaks-ui / lane/ui-builder",
      "Screen templates (lists, queues, workspaces)"],
-    ["B", "Backend", "lane/backend",
-     "Services, models, list routes, DB, tests"],
-    ["C", "UI Architect", "lane/ui-architect",
+    ["B", "Backend", "jaks-backend / lane/backend",
+     "Services, models, list routes, DB; targeted unit/service/migration tests"],
+    ["C", "UI Architect", "jaks-architect / lane/ui-architect",
      "Macros, design system, governance, plan doc"],
-], [0.5 * inch, 1.2 * inch, 1.5 * inch, 3.35 * inch])
+    ["D", "QA", "jaks-qa / lane/qa",
+     "Smoke/regression/acceptance + cross-screen tests, CI/release verification"],
+], [0.45 * inch, 0.95 * inch, 1.85 * inch, 3.3 * inch])
 
 # ---- LANE A ----
 story.append(Paragraph("Lane A — UI Builder", h2))
@@ -467,15 +478,56 @@ callout("Lane C — done criteria", [
 
 story.append(PageBreak())
 
+# ---- LANE D ----
+story.append(Paragraph("Lane D — QA (Verification / Release)", h2))
+story.append(Paragraph("Branch: <font face='Courier'>lane/qa</font>", small))
+story.append(Paragraph("Read first:", h3))
+story.append(bullets([
+    "<font face='Courier'>tests/conftest.py</font> (the isolation harness — every "
+    "test module re-points the DB globals at its own in-memory engine at run "
+    "time; keep new tests order-independent the same way).",
+    "<font face='Courier'>tests/test_smoke.py</font> (the 27-route smoke list) and "
+    "<font face='Courier'>JAKS_UI_Change_Plan.md</font> Rollout Order (to know "
+    "which screens need cross-screen coverage).",
+]))
+story.append(Paragraph("Tasks:", h3))
+story.append(bullets([
+    "Own <b>smoke, regression, acceptance, and cross-screen workflow tests</b> + "
+    "CI / release verification. Grow the smoke list as Lane A ships screens.",
+    "Add regression guards for fixed bugs (e.g. the SO-list missing-column 500) "
+    "so they cannot silently return.",
+    "Keep <font face='Courier'>pytest -q</font> green and "
+    "<b>order-independent</b>; gate merges to <font face='Courier'>main</font> on "
+    "a green suite.",
+]))
+callout("Lane D — test ownership is SHARED by responsibility (decided 2026-05-29)", [
+    "<b>Backend (Lane B)</b> may edit targeted <b>unit / service / migration</b> "
+    "tests for the code it changes.",
+    "<b>QA (Lane D)</b> owns <b>smoke / regression / acceptance / cross-screen</b> "
+    "tests + CI / release verification.",
+    "<font face='Courier'>tests/*</font> is therefore shared, not exclusively "
+    "owned. <b>If both lanes need the same test file, coordinate first.</b>",
+], BLUE, colors.HexColor("#eaf0fd"))
+callout("Lane D — done criteria", [
+    "Full suite green and order-independent; every shipped screen has smoke "
+    "coverage; every fixed bug has a regression guard; release checks documented.",
+], GREEN, colors.HexColor("#e9f6ee"))
+
+story.append(PageBreak())
+
 # ════════════════════════════════════════════════════════════════════════════
 # 5. COLLISION MATRIX
 # ════════════════════════════════════════════════════════════════════════════
 story.append(Paragraph("5 &nbsp; Collision Matrix (Who Owns What)", h1))
 hr(BRAND, 1.2)
 story.append(Paragraph(
-    "If a path is not listed for a lane, that lane must not edit it. The only "
-    "shared seam is router files, split by language: Python view logic (B) vs "
-    "the template it renders (A).", body))
+    "If a path is not listed for a lane, that lane must not edit it. Two seams "
+    "are <b>shared</b>: (1) router files, split by language — Python view logic "
+    "(B) vs the template it renders (A); and (2) "
+    "<font face='Courier'>tests/*</font>, split by responsibility — Backend's "
+    "targeted unit/service/migration tests (B) vs smoke/regression/acceptance/"
+    "cross-screen tests (D). On a shared seam, coordinate before editing the "
+    "same file.", body))
 table([
     ["Path", "Owner"],
     ["app/templates/{screens}/*.html (lists, queues, workspaces)", "Lane A"],
@@ -485,8 +537,9 @@ table([
     ["app/routers/*.py — Python view functions / route logic", "Lane B"],
     ["app/services/*.py", "Lane B"],
     ["app/models/*.py · app/database.py · app/constants.py", "Lane B"],
-    ["tests/*", "Lane B"],
     ["BACKEND_IMPLEMENTATION_PLAN.md", "Lane B"],
+    ["tests/ — unit / service / migration (for B's own changes)", "Lane B"],
+    ["tests/ — smoke / regression / acceptance / cross-screen · CI", "Lane D"],
 ], [5.0 * inch, 1.55 * inch])
 callout("Dependency handshakes (sequence these)", [
     "<b>New L2 list:</b> Lane B lands route (tab+counts+preview) &rarr; Lane A "
@@ -503,12 +556,16 @@ callout("Dependency handshakes (sequence these)", [
 story.append(Paragraph("6 &nbsp; How to Launch Each Lane", h1))
 hr(BRAND, 1.2)
 story.append(Paragraph(
-    "Open three Claude Code sessions in the repo, each checked out to its lane "
-    "branch. Paste the matching kickoff prompt. Each prompt is self-contained. "
-    "<b>Run concurrently, but stagger the start: launch Lane B first</b> and let "
-    "it land the two blockers + the route contracts each UI screen needs; then "
-    "bring up Lanes A and C, which follow the dependency handshakes in &sect;5. "
-    "UI must never build against guessed endpoints.", body))
+    "Open one Claude Code session per lane, each in its own worktree directory "
+    "(<font face='Courier'>jaks-backend</font>, <font face='Courier'>jaks-ui</font>, "
+    "<font face='Courier'>jaks-architect</font>, <font face='Courier'>jaks-qa</font>) "
+    "and <font face='Courier'>cd rebuild</font>. Paste the matching kickoff "
+    "prompt — each is self-contained. <b>Run concurrently, but let Lane B lead</b>: "
+    "the pre-flight blockers are already done, so Backend's first job is landing "
+    "the route contracts (tab param + counts + preview endpoint) each UI screen "
+    "needs; Lanes A and C then follow the dependency handshakes in &sect;5, and "
+    "Lane D grows coverage continuously. UI must never build against guessed "
+    "endpoints.", body))
 
 story.append(Paragraph("Lane A kickoff prompt", h3))
 story.append(Paragraph(
@@ -523,25 +580,41 @@ story.append(Paragraph(
 story.append(Spacer(1, 6))
 story.append(Paragraph("Lane B kickoff prompt", h3))
 story.append(Paragraph(
-    "You are the Backend coder for JAKS Inventory. Read "
-    "BACKEND_IMPLEMENTATION_PLAN.md. FIRST fix two blockers: (1) add the missing "
-    "sales_orders columns (qbo_so_id, QBOSyncMixin fields, payment_mode, "
-    "deposit_amount, engine/job/ship fields, updated_at) to "
-    "_PENDING_COLUMN_ADDITIONS in app/database.py so GET /sales-orders/ stops "
-    "500ing; (2) add tests/conftest.py giving each test an isolated SQLite DB so "
-    "the full suite is green. Then continue Phases C and J and provide L2 list "
-    "routes on request. You own services, models, db, tests, and router view "
-    "logic only — not templates. Branch: lane/backend.", mono))
+    "You are the Backend coder for JAKS Inventory in the jaks-backend worktree "
+    "(cd rebuild). Read BACKEND_IMPLEMENTATION_PLAN.md. The pre-flight blockers "
+    "are already fixed (SO-list columns + test isolation). Continue Phase C (SO "
+    "fulfillment state machine + linked-PO FIFO) and Phase J (optimistic-lock "
+    "version checks, SearchService ranking), and provide L2 list route contracts "
+    "on request (tab param + unfiltered counts + /{resource}/preview/{id} "
+    "registered before /{id}). DO NOT start QBO (Phase M). You own services, "
+    "models, db, router view logic, and targeted unit/service/migration tests — "
+    "not templates; coordinate with QA before editing shared test files. Branch: "
+    "lane/backend.", mono))
 story.append(Spacer(1, 6))
 story.append(Paragraph("Lane C kickoff prompt", h3))
 story.append(Paragraph(
-    "You are the UI Architect for JAKS Inventory. Invoke the jaks-ui-governance "
-    "skill; you own JAKS_UI_Change_Plan.md and app/templates/macros/. Clear the "
-    "pending governance backlog: (1) macro-library pass incl. the 3 flagged "
-    "deviations; (2) Invoice Workspace L3 pass; (3) PO Workspace L3 pass. Then "
-    "review each Lane A screen before it is marked complete and keep the plan's "
-    "maturity table current. Punch specific issues; do not redesign. Branch: "
+    "You are the UI Architect for JAKS Inventory in the jaks-architect worktree "
+    "(cd rebuild). Invoke the jaks-ui-governance skill; you own "
+    "JAKS_UI_Change_Plan.md and app/templates/macros/. Clear the pending "
+    "governance backlog: (1) macro-library pass incl. the 3 flagged deviations "
+    "(no new inline-script approval unless you explicitly accept; restore "
+    "preserve_q if it affects filter behavior); (2) Invoice Workspace L3 pass; "
+    "(3) PO Workspace L3 pass (decide drawers&rarr;slide-over here). Then review "
+    "each Lane A screen before it is marked complete and keep the plan's maturity "
+    "table current. Punch specific issues; do not redesign. Branch: "
     "lane/ui-architect.", mono))
+story.append(Spacer(1, 6))
+story.append(Paragraph("Lane D kickoff prompt", h3))
+story.append(Paragraph(
+    "You are the QA / verification lane for JAKS Inventory in the jaks-qa "
+    "worktree (cd rebuild). Read tests/conftest.py and tests/test_smoke.py. You "
+    "own smoke, regression, acceptance, and cross-screen workflow tests plus CI / "
+    "release verification. Keep pytest -q green and order-independent (new test "
+    "modules must re-point the DB at their own engine at run time, per conftest). "
+    "Add a regression guard for every fixed bug, grow the smoke list as screens "
+    "ship, and gate merges to main on a green suite. Backend owns its own "
+    "unit/service/migration tests — coordinate before editing a shared test "
+    "file. Branch: lane/qa.", mono))
 
 story.append(Spacer(1, 14))
 hr(BRAND, 1.0)
