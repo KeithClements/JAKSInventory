@@ -1,7 +1,7 @@
 # JAKS UI Change Plan
 *Living document — updated as screens are built.*
 
-**Status:** Products List ✅ L2 ref · PO List ✅ L2 · Invoice List ✅ L2 · Customer List ✅ L2 (governance 2026-05-29, §2B complete) · Primitives extraction ✅ complete · **Build quality pass ✅ 2026-05-29** (Tailwind build infra, class-token spec, motion primitives — see §Build) · Quotes List ⏳ next — alignment pass (stripe + dock + pb-52).
+**Status:** Products List ✅ L2 ref · PO List ✅ L2 · Invoice List ✅ L2 · Customer List ✅ L2 (governance 2026-05-29) · Invoice Workspace ✅ L3 (governance PASS 2026-05-29) · Primitives extraction ✅ · **Build quality pass ✅ 2026-05-29** (Tailwind infra, class-token spec §17, motion macros) · **Phase 2 pending:** npm install → build:css → remove CDN block (high priority — gates QA visual snapshots) · Quotes List ⏳ awaiting Builder submission for governance pass · §8B workspace action-header standard ⏳ drafting next.
 
 **Scope:** All list and workspace screens in the JAKS Inventory ERP system.
 
@@ -453,7 +453,7 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 | 9 | Payments List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
 | 10 | Product Detail | ⏳ Pending | L1 → L2 | Section-based card layout. |
 | 11 | PO Workspace | ⏳ Pending | L1 → L3 | Autosave, line editor, receive flow. |
-| 12 | Invoice Workspace | 🟡 REQUIRED FIXES | L3 candidate → L3 | Governance pass 2026-05-29. Blocker: Finalize uses native `window.confirm()` — convert to Alpine modal per §3. Minor: void title color, hx-confirm on line delete/unlink, tbl-* in payments sub-table. |
+| 12 | Invoice Workspace | ✅ L3 complete | L3 candidate → L3 | Governance pass 2026-05-29. **PASS confirmed 2026-05-29** — window.confirm already cleared prior to pass. No blocking defects remain. A11y follow-up (role=dialog/aria-modal/focus-trap on payment/void/change-customer modals) tracked under §8 #4 a11y sweep — non-blocking for L3. |
 | 13 | PO Receiving Queue | ✅ QB2 complete | QB1 → QB2 | Queue Board archetype — §2A. Governance pass 2026-05-28. Official QB2 reference. |
 | 14 | PO Match Queue | ✅ QB2 complete | QB1 → QB2 | Queue Board archetype — §2A. Governance pass 2026-05-28. |
 | 15 | Warranty Queue | ⏳ Pending | QB1 → QB2 | Queue Board archetype. Copy `receiving_queue.html`. UI Builder A owns. |
@@ -894,7 +894,64 @@ this conversation.
    Activity pills use `rounded-full`; system standard is `rounded-lg`. Cosmetic only.
    `app/templates/customers/list.html:286,294,303,312`.
 
-#### 8B. Global Workspace Action Header Review (medium priority — do not start without Architect sign-off)
+#### 8D. Compiled CSS Cut-over — HIGH PRIORITY (gates QA visual snapshots)
+
+**Owner:** UI Architect lane. **Blocked on:** Node.js installation.
+
+Once Node.js is available on this machine:
+1. `npm install` (one-time, ~30s)
+2. `npm run build:css` (produces `app/static/css/app.css`, ~5s)
+3. Delete the `{# DEV FALLBACK #}` block in `app/templates/base.html` — the `window.tailwind`
+   config script and the `<script src="https://cdn.tailwindcss.com">` line immediately below it.
+4. Smoke-test: `GET /products/`, `/purchase-orders/`, `/invoices/`, `/customers/` — confirm
+   styling identical, no FOUC, screenshot tool no longer times out.
+5. Commit as "Phase 2: activate compiled Tailwind CSS, remove CDN dev fallback".
+
+**Why high priority:** The CDN adds ~8s page-weight before Alpine can initialise and before
+screenshot tools can capture a stable frame. QA's visual regression snapshots block on this.
+The compiled file also enables the §1–17 class-token lint gate in CI.
+
+**Standalone CLI alternative (no Node.js):** Download `tailwindcss-windows-x64.exe` from
+https://github.com/tailwindlabs/tailwindcss/releases and run:
+```
+tailwindcss-windows-x64.exe -i app/static/css/input.css -o app/static/css/app.css --minify
+```
+
+---
+
+#### 8E. A11y Sweep — Invoice Workspace Modals (low priority, track separately)
+
+**Not blocking L3.** The three Alpine modals in `app/templates/invoices/workspace.html`
+(payment, void, change-customer) are §3-compliant for visual behavior but are missing
+ARIA accessibility attributes. Track as part of a future cross-workspace a11y pass (#4).
+
+**Files:** `app/templates/invoices/workspace.html`
+
+**Required on each modal panel element:**
+- `role="dialog"`
+- `aria-modal="true"`
+- `aria-labelledby="<heading-id>"` pointing to the modal's `<h2>` or `<h3>`
+
+**Focus trap:** Alpine does not provide a built-in focus trap. Options when this sweep
+is scheduled: (a) add a small focus-trap directive (30 lines of JS), or (b) adopt the
+`@alpinejs/focus` plugin (`$focus.trap()` magic). Confirm approach with Architect before
+implementing — it affects all modals app-wide.
+
+**Do not start this sweep without an explicit Architect instruction.** It is non-blocking
+and should not interrupt the list-port rollout.
+
+---
+
+#### 8B. Global Workspace Action Header Review — NEXT ARCHITECT DELIVERABLE
+
+**Priority elevated 2026-05-29.** This standard must be drafted before Sales Orders,
+Warranty, and Returns workspaces are built — those screens will copy whatever pattern is
+established here. Getting it wrong now means rework across 3+ screens.
+
+**Architect action:** Draft the standard (button order, labels, back-link behavior, New X
+visibility rules) as a new subsection of §3. Submit for owner review before any builder
+implements it. The draft does not require running the app — it's a written spec based on
+auditing the existing workspace templates.
 
 **Scope:** The action button strip and back-link area that appears in the `header_actions` block
 across Customer, Quote, Invoice, Sales Order, and PO workspaces.
@@ -904,7 +961,7 @@ of New Quote / New Invoice / Statement / Back link across workspace screens. The
 cross-workspace audit and a consistent standard before further workspace screens are built.
 
 **Do not redesign the dashboard or any list screen as part of this work.**
-**Do not start until explicitly instructed by the Architect.**
+**Draft spec first — no template changes until the standard is approved by the owner.**
 
 Screens in scope:
 - `app/templates/customers/*.html` (customer workspace header)
