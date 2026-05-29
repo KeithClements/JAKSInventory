@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}Lost Sales Log — JAKS Inventory{% endblock %}
+{% block heading %}Lost Sales Log{% endblock %}
+
+{% block content %}
+{% set active_report = 'lost-sales' %}
+<div class="max-w-6xl space-y-4">
+  {% include "reports/_nav.html" %}
+
+  {# ── Date range filter ─────────────────────────────────────────────────── #}
+  <form method="get" action="/reports/lost-sales"
+        class="flex flex-wrap items-end gap-3 bg-white border border-gray-200 rounded-xl p-3">
+    <div>
+      <label class="form-label">From</label>
+      <input type="date" name="start" value="{{ start_date.isoformat() }}" class="form-input w-44"/>
+    </div>
+    <div>
+      <label class="form-label">To</label>
+      <input type="date" name="end" value="{{ end_date.isoformat() }}" class="form-input w-44"/>
+    </div>
+    <button type="submit" class="btn-primary btn-sm">Update</button>
+    <div class="flex-1"></div>
+    <button type="button" class="btn-secondary btn-sm" disabled title="Coming soon">
+      Export CSV
+    </button>
+  </form>
+
+  <p class="text-xs text-gray-400">
+    {{ start_date.strftime('%b %d, %Y') }} – {{ end_date.strftime('%b %d, %Y') }} · All lost-sale log entries in range
+  </p>
+
+  {# ── Summary tiles ─────────────────────────────────────────────────────── #}
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div class="stat-card-brand">
+      <p class="stat-label">Total Lost</p>
+      <p class="stat-value text-brand-700">{{ totals.count }}</p>
+      <p class="stat-sub">log entr{{ 'y' if totals.count == 1 else 'ies' }}</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">With Competitor</p>
+      <p class="stat-value text-gray-700">{{ totals.with_competitor }}</p>
+      <p class="stat-sub">competitor tracked</p>
+    </div>
+    <div class="stat-card sm:col-span-2">
+      <p class="stat-label">Top Reason</p>
+      {% if totals.top_reasons %}
+        {% set top = totals.top_reasons | dictsort(by='value') | reverse | list %}
+        <p class="stat-value text-gray-700">{{ top[0][0] }}</p>
+        <p class="stat-sub">{{ top[0][1] }} occurrence{{ 's' if top[0][1] != 1 }}</p>
+      {% else %}
+        <p class="stat-value text-gray-400">—</p>
+        <p class="stat-sub">no reasons logged</p>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Data table ────────────────────────────────────────────────────────── #}
+  {% if rows %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Lost Sale Entries</h2>
+      <span class="text-xs text-gray-400">{{ rows | length }} entr{{ 'y' if rows | length == 1 else 'ies' }}</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">Date</th>
+            <th class="tbl-th">Quote #</th>
+            <th class="tbl-th">Customer</th>
+            <th class="tbl-th">SKU</th>
+            <th class="tbl-th">Reason</th>
+            <th class="tbl-th">Competitor</th>
+            <th class="tbl-th-r">Competitor Price</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr class="tbl-row">
+            <td class="tbl-td text-gray-500 tabular-nums whitespace-nowrap">
+              {{ row.logged_at.strftime('%m/%d/%Y') }}
+            </td>
+            <td class="tbl-td font-medium">
+              {% if row.quote_id %}
+              <a href="/quotes/{{ row.quote_id }}" class="tbl-link text-sm">
+                {{ row.quote_number }}
+              </a>
+              {% else %}
+              <span class="text-gray-400">—</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td text-gray-700">{{ row.customer_name }}</td>
+            <td class="tbl-td">
+              <span class="font-mono text-xs text-gray-700">{{ row.product_sku }}</span>
+              {% if row.product_title and row.product_title != '—' and row.product_title != row.product_sku %}
+              <span class="block text-xs text-gray-400 truncate max-w-[180px]">{{ row.product_title }}</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td text-gray-700">{{ row.reason }}</td>
+            <td class="tbl-td text-gray-700">{{ row.competitor_name }}</td>
+            <td class="tbl-td-r tabular-nums text-gray-700">
+              {% if row.competitor_price is not none %}
+              ${{ '%.2f' % row.competitor_price }}
+              {% else %}
+              <span class="text-gray-400">—</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="border-t-2 border-gray-200 bg-gray-50">
+          <tr>
+            <td class="px-4 py-3 text-sm font-bold text-gray-700" colspan="6">Totals</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-gray-500 tabular-nums">
+              {{ totals.count }} entr{{ 'y' if totals.count == 1 else 'ies' }}
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="card flex flex-col items-center justify-center py-16">
+    <svg class="w-12 h-12 text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>
+    </svg>
+    <p class="text-gray-500 font-medium">No lost-sale entries in this range</p>
+    <p class="text-gray-400 text-sm mt-1">Try a wider date window, or check that quotes are being marked as lost.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

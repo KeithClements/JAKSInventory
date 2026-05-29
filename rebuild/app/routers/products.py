@@ -242,7 +242,14 @@ async def product_quick_create(request: Request, db: Session = Depends(get_db)):
 
 
 @router.get("/{product_id}", response_class=HTMLResponse)
-def product_detail(product_id: int, request: Request, saved: str = "", db: Session = Depends(get_db)):
+def product_detail(
+    product_id: int,
+    request: Request,
+    saved: str = "",
+    ok: str = "",
+    error: str = "",
+    db: Session = Depends(get_db),
+):
     p = db.query(Product).filter(Product.id == product_id).first()
     if not p:
         return RedirectResponse("/products/", status_code=303)
@@ -254,6 +261,8 @@ def product_detail(product_id: int, request: Request, saved: str = "", db: Sessi
         "manufacturers": MANUFACTURERS,
         "cross_ref_types": list(CrossRefType),
         "suggested_sell_types": list(SuggestedSellType),
+        "ok": ok or (saved and "Saved.") or "",
+        "error": error,
     })
 
 
@@ -588,6 +597,67 @@ def suggested_sell_remove(
     except ValueError:
         pass
     return HTMLResponse("", status_code=200)
+
+
+# ── Inventory Adjustment ─────────────────────────────────────────────────────
+
+@router.post("/{product_id}/adjust-inventory", response_class=HTMLResponse)
+async def adjust_inventory_handler(
+    product_id: int, request: Request, db: Session = Depends(get_db)
+):
+    from urllib.parse import quote as url_quote
+    import logging
+    from app.services.inventory_service import InventoryService
+
+    form = await request.form()
+    qty_delta_raw = str(form.get("qty_delta", "0")).strip()
+    try:
+        qty_delta = int(qty_delta_raw)
+    except (ValueError, TypeError):
+        qty_delta = 0
+
+    if qty_delta == 0:
+        return RedirectResponse(
+            f"/products/{product_id}?error={url_quote('Qty change must be non-zero.')}",
+            status_code=303,
+        )
+
+    reason = str(form.get("reason", "")).strip()
+    note = str(form.get("note", "")).strip()
+    unit_cost_raw = str(form.get("unit_cost", "")).strip()
+    unit_cost: float | None = None
+    if unit_cost_raw:
+        try:
+            parsed = float(unit_cost_raw)
+            if parsed > 0:
+                unit_cost = parsed
+        except (ValueError, TypeError):
+            pass
+
+    try:
+        svc = InventoryService(db, current_user_id=CURRENT_USER_ID)
+        svc.adjust_inventory(
+            product_id=product_id,
+            qty_delta=qty_delta,
+            reason=reason,
+            note=note,
+            unit_cost=unit_cost,
+        )
+        return RedirectResponse(
+            f"/products/{product_id}?ok={url_quote('Inventory adjusted.')}",
+            status_code=303,
+        )
+    except (ValueError, PermissionError) as exc:
+        return RedirectResponse(
+            f"/products/{product_id}?error={url_quote(str(exc))}",
+            status_code=303,
+        )
+    except Exception as exc:
+        logging.getLogger(__name__).exception("Unexpected error in adjust_inventory_handler")
+        return RedirectResponse(
+            f"/products/{product_id}?error={url_quote('An unexpected error occurred. Please try again.')}",
+            status_code=303,
+        )
 
 
 # ── Form parsing helper ───────────────────────────────────────────────────────

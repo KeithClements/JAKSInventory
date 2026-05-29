@@ -19,6 +19,14 @@
 
 {% block content %}
 
+{% if ok %}
+<div class="mb-4 rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-700 flex items-center gap-2">
+  <svg class="w-4 h-4 shrink-0 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+  </svg>
+  {{ ok }}
+</div>
+{% endif %}
 {% if error %}
 <div class="mb-4 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
   {{ error }}
@@ -699,4 +707,66 @@
   </div>
 
 </div>
+
+{# ── Inventory Adjustment ──────────────────────────────────────────────── #}
+{% if product.is_active %}
+<div class="card border-amber-100 mt-6" x-data="{ open: false }">
+  <div class="card-header">
+    <div>
+      <h3 class="card-title">Adjust Inventory</h3>
+      <p class="text-xs text-gray-400 mt-0.5">
+        Cycle count correction, damaged goods, found stock, internal use, etc.
+      </p>
+    </div>
+    <button type="button" @click="open = !open"
+            class="rounded-lg border border-amber-200 px-3 py-1.5 text-sm font-medium
+                   text-amber-700 hover:bg-amber-50 transition-colors">
+      Adjust…
+    </button>
+  </div>
+  <div x-show="open" x-cloak class="card-body border-t border-gray-100">
+    <form method="post" action="/products/{{ product.id }}/adjust-inventory"
+          class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div>
+        <label class="form-label">Qty Change</label>
+        <p class="text-xs text-gray-400 mb-1">Positive = add stock. Negative = remove stock.</p>
+        <input type="number" name="qty_delta" value="0" required
+               class="form-input w-32 text-right" />
+      </div>
+      <div>
+        <label class="form-label">Reason</label>
+        <select name="reason" class="form-select" required>
+          <option value="">— Select —</option>
+          <option value="cycle_count_over">Cycle Count — Over</option>
+          <option value="cycle_count_short">Cycle Count — Short</option>
+          <option value="found">Found</option>
+          <option value="damaged">Damaged / Write-off</option>
+          <option value="lost">Lost</option>
+          <option value="internal_use">Internal Use</option>
+          <option value="initial_inventory_load">Initial Inventory Load</option>
+          <option value="correction">Correction</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <div class="sm:col-span-2">
+        <label class="form-label">Note <span class="text-gray-400 font-normal">(required for Correction / Other)</span></label>
+        <input type="text" name="note" placeholder="Brief explanation…"
+               class="form-input" />
+      </div>
+      <div>
+        <label class="form-label">Unit Cost <span class="text-gray-400 font-normal">(optional — updates avg cost if adding stock)</span></label>
+        <div class="relative">
+          <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
+          <input type="number" name="unit_cost" step="0.01" min="0" placeholder="—"
+                 class="form-input w-32 pl-6 text-right" />
+        </div>
+      </div>
+      <div class="sm:col-span-2 flex gap-2 pt-1">
+        <button type="submit" class="btn-primary">Apply Adjustment</button>
+        <button type="button" @click="open = false" class="btn-secondary btn-sm">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
 {% endblock %}

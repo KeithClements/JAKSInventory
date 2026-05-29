@@ -534,3 +534,158 @@ class TestReportRoutes:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}"
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Inventory Adjustment — Service + HTTP
+# ══════════════════════════════════════════════════════════════════════════════
+
+from app.models.inventory import InventoryTransaction  # noqa: E402
+from app.services.inventory_service import InventoryService  # noqa: E402
+from app.models.quote import LostSaleLog  # noqa: E402
+
+
+class TestInventoryAdjustment:
+
+    def test_adjust_inventory_add(self, db):
+        """adjust_inventory(+3) increments qty_on_hand and creates an InventoryTransaction."""
+        product = _make_product(db, qty_on_hand=5)
+        db.commit()
+
+        txn = InventoryService(db, current_user_id=_UID).adjust_inventory(
+            product_id=product.id,
+            qty_delta=3,
+            reason="found",
+            note="test note",
+        )
+
+        db.expire_all()
+        product_r = db.query(Product).filter(Product.id == product.id).first()
+        assert product_r.qty_on_hand == 8, (
+            f"Expected qty_on_hand=8, got {product_r.qty_on_hand}"
+        )
+        assert txn is not None
+        assert txn.qty_change == 3
+        assert txn.qty_after == 8
+
+        txn_r = db.query(InventoryTransaction).filter(
+            InventoryTransaction.id == txn.id
+        ).first()
+        assert txn_r is not None, "InventoryTransaction row not found in DB"
+
+    def test_adjust_inventory_remove(self, db):
+        """adjust_inventory(-4) decrements qty_on_hand correctly."""
+        product = _make_product(db, qty_on_hand=10)
+        db.commit()
+
+        txn = InventoryService(db, current_user_id=_UID).adjust_inventory(
+            product_id=product.id,
+            qty_delta=-4,
+            reason="lost",
+            note="",
+        )
+
+        db.expire_all()
+        product_r = db.query(Product).filter(Product.id == product.id).first()
+        assert product_r.qty_on_hand == 6, (
+            f"Expected qty_on_hand=6, got {product_r.qty_on_hand}"
+        )
+        assert txn.qty_change == -4
+        assert txn.qty_after == 6
+
+    def test_adjust_zero_rejected(self, db):
+        """POST /products/{id}/adjust-inventory with qty_delta=0 redirects with ?error=."""
+        product = _make_product(db, qty_on_hand=5)
+        db.commit()
+
+        resp = _client.post(
+            f"/products/{product.id}/adjust-inventory",
+            data={"qty_delta": "0", "reason": "found", "note": ""},
+            follow_redirects=False,
+        )
+        # Should be a redirect (303) to /products/{id}?error=...
+        assert resp.status_code == 303, (
+            f"Expected 303 redirect, got {resp.status_code}"
+        )
+        location = resp.headers.get("location", "")
+        assert "error=" in location, (
+            f"Expected ?error= in redirect location, got {location!r}"
+        )
+
+    def test_adjust_route_200(self, db):
+        """POST /products/{id}/adjust-inventory with valid data redirects to /products/{id}?ok=."""
+        product = _make_product(db, qty_on_hand=5)
+        db.commit()
+
+        resp = _client.post(
+            f"/products/{product.id}/adjust-inventory",
+            data={"qty_delta": "1", "reason": "found", "note": "test"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303, (
+            f"Expected 303 redirect, got {resp.status_code}"
+        )
+        location = resp.headers.get("location", "")
+        assert f"/products/{product.id}" in location, (
+            f"Expected redirect to /products/{product.id}, got {location!r}"
+        )
+        assert "ok=" in location, (
+            f"Expected ?ok= in redirect location, got {location!r}"
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Lost Sales Report — Service Layer Only
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestLostSalesReport:
+
+    def test_lost_sales_empty(self, db):
+        """Empty date range → rows=[], totals.count=0."""
+        result = ReportService(db).get_lost_sales(
+            start_date=date(1990, 1, 1),
+            end_date=date(1990, 12, 31),
+        )
+
+        assert result["rows"] == [], f"Expected empty rows, got {result['rows']}"
+        assert result["totals"]["count"] == 0
+
+    def test_lost_sales_row(self, db):
+        """A LostSaleLog created directly appears in get_lost_sales with correct fields."""
+        customer = _make_customer(db)
+        product = _make_product(db)
+        db.commit()
+
+        logged_dt = datetime(2025, 6, 15, 12, 0, 0)
+        log_entry = LostSaleLog(
+            customer_id=customer.id,
+            product_id=product.id,
+            reason="price",
+            competitor_name="AcmeParts",
+            competitor_price=49.99,
+            notes="Lost on price",
+            logged_at=logged_dt,
+        )
+        db.add(log_entry)
+        db.commit()
+        db.expire_all()
+
+        result = ReportService(db).get_lost_sales(
+            start_date=date(2025, 6, 1),
+            end_date=date(2025, 6, 30),
+        )
+
+        log_ids = [r["log"].id for r in result["rows"]]
+        assert log_entry.id in log_ids, (
+            f"LostSaleLog {log_entry.id} not found in rows. IDs: {log_ids}"
+        )
+
+        row = next(r for r in result["rows"] if r["log"].id == log_entry.id)
+        assert row["reason"] == "price", f"Expected reason='price', got {row['reason']!r}"
+        assert row["competitor_name"] == "AcmeParts", (
+            f"Expected competitor_name='AcmeParts', got {row['competitor_name']!r}"
+        )
+        assert row["competitor_price"] == pytest.approx(49.99)
+        assert row["customer_name"] == customer.company_name
+        assert row["product_sku"] == product.sku
+        assert result["totals"]["count"] >= 1

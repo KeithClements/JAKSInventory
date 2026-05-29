@@ -137,6 +137,16 @@
       </div>
     </a>
 
+    <a href="/reports/lost-sales" class="card hover:shadow-md transition-shadow">
+      <div class="card-body">
+        <p class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Pipeline</p>
+        <p class="mt-1 text-base font-semibold text-gray-900">Lost Sales</p>
+        <p class="mt-1 text-sm text-gray-500">
+          Lost-quote log — {{ lost_count }} entr{{ 'y' if lost_count == 1 else 'ies' }} MTD. Track competitor pricing and loss reasons.
+        </p>
+      </div>
+    </a>
+
   </div>
 
   <p class="text-xs text-gray-400 italic pt-2">

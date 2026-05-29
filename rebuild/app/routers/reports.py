@@ -14,6 +14,7 @@ Canonical routes (Series 1):
   GET /reports/inventory-valuation   — on-hand × cost
   GET /reports/open-pos              — POs not fully received
   GET /reports/outstanding-cores     — customer-owed cores still out
+  GET /reports/lost-sales            — lost-sale log entries with competitor data
 
 Back-compat redirects from the previous URL shape are at the bottom of the file
 so existing sidebar/bookmark links keep working.
@@ -93,6 +94,7 @@ def reports_index(request: Request, db: Session = Depends(get_db)):
     overdue_total = 0.0
     overdue_count = 0
     mtd_tax_collected = 0.0
+    lost_count = 0
 
     try:
         ar = svc.get_ar_aging()
@@ -116,6 +118,8 @@ def reports_index(request: Request, db: Session = Depends(get_db)):
         overdue_count = overdue_data["totals"]["invoice_count"]
         tax_data = svc.get_sales_tax_collected(month_start, today)
         mtd_tax_collected = tax_data["totals"]["tax_collected"]
+        lost_mtd = svc.get_lost_sales(month_start, today)
+        lost_count = lost_mtd["totals"]["count"]
     except Exception:
         log.exception("reports_index: ReportService failed")
         error_message = "Could not load report snapshot. Check server logs for details."
@@ -141,6 +145,7 @@ def reports_index(request: Request, db: Session = Depends(get_db)):
             "overdue_total":      overdue_total,
             "overdue_count":      overdue_count,
             "mtd_tax_collected":  mtd_tax_collected,
+            "lost_count":         lost_count,
         },
     )
 
@@ -388,6 +393,40 @@ def reports_sales_tax(
 
     return templates.TemplateResponse(
         "reports/sales_tax.html",
+        {
+            "request": request,
+            "start_date": start_date,
+            "end_date": end_date,
+            "rows": rows,
+            "totals": totals,
+            "error_message": error_message,
+        },
+    )
+
+
+# ── Lost Sales Log ───────────────────────────────────────────────────────────
+
+@router.get("/lost-sales", response_class=HTMLResponse)
+def reports_lost_sales(
+    request: Request,
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+):
+    start_date, end_date = _resolve_range(start, end)
+    error_message = None
+    rows: list = []
+    totals = {"count": 0, "with_competitor": 0, "top_reasons": {}}
+    try:
+        data = ReportService(db).get_lost_sales(start_date, end_date)
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_lost_sales failed (%s–%s)", start_date, end_date)
+        error_message = "Could not load lost sales data. Check server logs for details."
+
+    return templates.TemplateResponse(
+        "reports/lost_sales.html",
         {
             "request": request,
             "start_date": start_date,

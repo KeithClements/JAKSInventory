@@ -37,7 +37,7 @@ from app.models.customer import Customer
 from app.models.invoice import Invoice, InvoiceLine
 from app.models.product import Product
 from app.models.purchase_order import PurchaseOrder, POLine
-from app.models.quote import SalesOrder, SOLine
+from app.models.quote import LostSaleLog, SalesOrder, SOLine
 from app.services.base import BaseService
 
 
@@ -937,6 +937,133 @@ class ReportService(BaseService):
             "taxable_revenue":    total_rev,
             "tax_collected":      total_tax,
             "effective_rate_pct": effective_rate_pct,
+        }
+
+        return {
+            "start_date": start_date,
+            "end_date":   end_date,
+            "rows":       rows,
+            "totals":     totals,
+        }
+
+    # ── 9. Lost Sales Log ────────────────────────────────────────────────────
+
+    def get_lost_sales(
+        self, start_date: date, end_date: date
+    ) -> dict[str, Any]:
+        """
+        Lost-sale log entries in [start_date, end_date].
+
+        Per spec:
+          - Query LostSaleLog with Customer, Product, Quote left-outer joined.
+          - Date filter: logged_at >= start_dt AND < end_exclusive (inclusive both ends).
+          - Return ALL rows in range (no minimum filter).
+          - Sort by logged_at DESC.
+
+        Returns:
+          {
+            "start_date": date,
+            "end_date": date,
+            "rows": [
+              {
+                "log": LostSaleLog,
+                "logged_at": datetime,
+                "customer_name": str,
+                "product_sku": str,
+                "product_title": str,
+                "reason": str,
+                "competitor_name": str,
+                "competitor_price": float | None,
+                "quote_number": str | None,
+                "quote_id": int | None,
+              }, ...
+            ],
+            "totals": {
+              "count": int,
+              "with_competitor": int,
+              "top_reasons": dict,
+            }
+          }
+        """
+        end_exclusive = datetime.combine(end_date, datetime.min.time()) + timedelta(days=1)
+        start_dt = datetime.combine(start_date, datetime.min.time())
+
+        from app.models.quote import Quote  # local import avoids circular reference
+
+        log_entries = (
+            self.db.query(LostSaleLog)
+            .filter(
+                LostSaleLog.logged_at >= start_dt,
+                LostSaleLog.logged_at < end_exclusive,
+            )
+            .order_by(LostSaleLog.logged_at.desc())
+            .all()
+        )
+
+        # Bulk-load related objects to avoid N+1 queries
+        customer_ids = {e.customer_id for e in log_entries if e.customer_id is not None}
+        product_ids  = {e.product_id  for e in log_entries if e.product_id  is not None}
+        quote_ids    = {e.quote_id    for e in log_entries if e.quote_id    is not None}
+
+        customers_by_id: dict[int, Any] = {}
+        if customer_ids:
+            customers_by_id = {
+                c.id: c
+                for c in self.db.query(Customer).filter(Customer.id.in_(customer_ids)).all()
+            }
+
+        products_by_id: dict[int, Any] = {}
+        if product_ids:
+            products_by_id = {
+                p.id: p
+                for p in self.db.query(Product).filter(Product.id.in_(product_ids)).all()
+            }
+
+        quotes_by_id: dict[int, Any] = {}
+        if quote_ids:
+            quotes_by_id = {
+                q.id: q
+                for q in self.db.query(Quote).filter(Quote.id.in_(quote_ids)).all()
+            }
+
+        rows: list[dict[str, Any]] = []
+        for entry in log_entries:
+            customer = customers_by_id.get(entry.customer_id) if entry.customer_id else None
+            product  = products_by_id.get(entry.product_id)   if entry.product_id  else None
+            quote    = quotes_by_id.get(entry.quote_id)       if entry.quote_id    else None
+
+            rows.append({
+                "log": entry,
+                "logged_at": entry.logged_at,
+                "customer_name": customer.company_name if customer else "—",
+                "product_sku": product.sku if product else "—",
+                "product_title": product.title if product else "—",
+                "reason": entry.reason or "—",
+                "competitor_name": entry.competitor_name or "—",
+                "competitor_price": entry.competitor_price,
+                "quote_number": quote.quote_number if quote else None,
+                "quote_id": quote.id if quote else None,
+            })
+
+        # Totals
+        count = len(rows)
+        with_competitor = sum(
+            1 for r in rows if r["competitor_name"] and r["competitor_name"] != "—"
+        )
+
+        reason_counts: dict[str, int] = defaultdict(int)
+        for r in rows:
+            reason = r["reason"]
+            if reason and reason != "—":
+                reason_counts[reason] += 1
+        top_reasons = dict(
+            sorted(reason_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        )
+
+        totals = {
+            "count": count,
+            "with_competitor": with_competitor,
+            "top_reasons": top_reasons,
         }
 
         return {
