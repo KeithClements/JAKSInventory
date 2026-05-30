@@ -7,173 +7,314 @@
 {% endblock %}
 
 {% block content %}
+{# ── §7 macro library ──────────────────────────────────────────────────────── #}
+{% from "macros/list_behavior.html" import operational_list_script %}
+{% from "macros/filter_tabs.html"   import filter_tabs %}
+{% from "macros/bulk_toolbar.html"  import bulk_toolbar %}
+{% from "macros/chips.html"         import status_chip %}
+{% from "macros/empty_state.html"   import empty_state %}
+{{ operational_list_script() }}
 
-{# ── Filters ── #}
-<div class="flex items-center justify-between mb-4 gap-4 flex-wrap">
-  <div class="flex items-center gap-1 bg-gray-100 rounded-lg p-1 flex-wrap">
-    {% set tabs = [
-      ('',                    'All'),
-      (PaymentStatus.APPLIED,  'Applied'),
-      (PaymentStatus.REVERSED, 'Reversed'),
-      (PaymentStatus.NSF,      'NSF'),
-    ] %}
-    {% for val, label in tabs %}
-    <a href="/payments/?status={{ val }}&q={{ q }}"
-       class="px-3 py-1.5 text-sm font-medium rounded-md transition-colors
-              {% if status_filter == val %}bg-white shadow text-brand-700{% else %}text-gray-600 hover:text-gray-900{% endif %}">
-      {{ label }}
-    </a>
-    {% endfor %}
-  </div>
+{# ── Backend-contract guard: tab + counts arrive when backend adds them ───────
+   Route currently reads ?status= — tabs generate ?tab= which backend ignores
+   until updated. Template degrades gracefully (shows all) in the interim.
+────────────────────────────────────────────────────────────────────────────── #}
+{% set active_tab = active_tab if active_tab is defined else request.query_params.get('tab', status_filter|default('')) %}
+{% if counts is defined and counts %}
+  {% set _counts = counts %}
+{% else %}
+  {% set _counts = {'': 0, 'applied': 0, 'reversed': 0, 'nsf': 0} %}
+{% endif %}
 
-  <form method="get" action="/payments/" class="flex items-center gap-2">
-    <input type="hidden" name="status" value="{{ status_filter }}" />
-    <input type="text" name="q" value="{{ q }}"
-           placeholder="Customer name, check #…"
-           class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-56
-                  focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
-    <button type="submit"
-            class="px-3 py-1.5 bg-gray-100 text-gray-700 text-sm rounded-lg hover:bg-gray-200 transition-colors">
-      Search
-    </button>
-  </form>
-</div>
-
-{# ── Table ── #}
-{% set pmt_badges = {
-  'applied':  'badge-green',
-  'reversed': 'badge-red',
-  'nsf':      'badge-amber',
+{# ── Status chip map (§4 semantics) ──────────────────────────────────────── #}
+{% set pmt_chip = {
+  'applied':  ('bg-green-50 text-green-700',  'bg-green-500',  'Applied'),
+  'reversed': ('bg-red-100 text-red-700',     'bg-red-400',    'Reversed'),
+  'nsf':      ('bg-red-100 text-red-700',     'bg-red-400',    'NSF'),
 } %}
 
+{# ── Payment method chip map ──────────────────────────────────────────────── #}
+{% set method_chip = {
+  'cash':           ('bg-green-50 text-green-700',   'bg-green-500',   'Cash'),
+  'check':          ('bg-blue-50 text-blue-700',     'bg-blue-500',    'Check'),
+  'credit_card':    ('bg-purple-50 text-purple-700', 'bg-purple-500',  'Card'),
+  'ach':            ('bg-indigo-50 text-indigo-700', 'bg-indigo-500',  'ACH'),
+  'wire':           ('bg-cyan-50 text-cyan-700',     'bg-cyan-500',    'Wire'),
+  'account_credit': ('bg-gray-100 text-gray-700',    'bg-gray-400',    'Credit'),
+} %}
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   OPERATIONAL LIST WRAPPER — pb-52 reserves dock clearance
+   (preview dock deferred until Backend lands /payments/preview/{id})
+══════════════════════════════════════════════════════════════════════════════ #}
+<div
+  class="space-y-4 pb-52"
+  x-data="operationalListData('payment-preview-body', '/payments/preview/', [{% for pmt in payments %}{{ pmt.id }}{% if not loop.last %},{% endif %}{% endfor %}])"
+>
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   TOOLBAR — tabs + search
+══════════════════════════════════════════════════════════════════════════════ #}
+<div class="flex flex-wrap items-center gap-3">
+
+  {% set pmt_tabs = [
+    ('',         'All',      _counts.get('',        0)),
+    ('applied',  'Applied',  _counts.get('applied', 0)),
+    ('reversed', 'Reversed', _counts.get('reversed',0)),
+    ('nsf',      'NSF',      _counts.get('nsf',     0)),
+  ] %}
+  {{ filter_tabs(pmt_tabs, active_tab, q) }}
+
+  <form method="get" class="flex items-center gap-2 ml-auto">
+    <input type="hidden" name="tab" value="{{ active_tab }}" />
+    <div class="relative">
+      <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+           fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
+      </svg>
+      <input name="q" value="{{ q }}" placeholder="Customer name, check #…"
+             class="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white w-60
+                    focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400
+                    placeholder:text-gray-400" />
+    </div>
+    <button type="submit"
+            class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200
+                   rounded-lg hover:bg-gray-50 transition-colors">
+      Search
+    </button>
+    {% if q %}
+    <a href="?tab={{ active_tab }}"
+       class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</a>
+    {% endif %}
+  </form>
+
+</div>
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   BULK ACTION BAR — §7 Primitive 4
+══════════════════════════════════════════════════════════════════════════════ #}
+{% call bulk_toolbar() %}
+  <button class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">
+    Export CSV
+  </button>
+{% endcall %}
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   PAYMENTS TABLE
+══════════════════════════════════════════════════════════════════════════════ #}
 {% if payments %}
-<div class="card">
+<div class="card overflow-hidden">
   <div class="overflow-x-auto">
-    <table class="tbl">
-      <thead class="tbl-head">
-        <tr>
-          <th class="tbl-th">Date</th>
-          <th class="tbl-th">Customer</th>
-          <th class="tbl-th">Method</th>
-          <th class="tbl-th">Applied To</th>
-          <th class="tbl-th-r">Received</th>
-          <th class="tbl-th-r">Unapplied</th>
-          <th class="tbl-th">Status</th>
+    <table class="w-full min-w-[980px]">
+
+      {# ── Table head ── #}
+      <thead>
+        <tr class="bg-gray-50 border-b border-gray-200">
+          <th class="w-10 px-4 py-3 text-center">
+            <input type="checkbox"
+                   :checked="allSelected"
+                   @change="toggleAll()"
+                   aria-label="Select all payments"
+                   class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Payment / Date
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Customer
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide hidden md:table-cell">
+            Method
+          </th>
+          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Amount
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide hidden lg:table-cell">
+            Applied To
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Status
+          </th>
+          <th class="px-4 py-3 w-12"></th>
         </tr>
       </thead>
-      <tbody>
+
+      {# ── Table body ── #}
+      <tbody class="divide-y divide-gray-100">
         {% for pmt in payments %}
+
+        {# ── Per-row §2B computed values ── #}
         {% set active_allocs = pmt.allocations | selectattr('is_reversed', 'equalto', false) | list %}
-        <tr class="tbl-row">
-          <td class="tbl-td whitespace-nowrap">
-            <a href="/payments/{{ pmt.id }}" class="tbl-link text-sm font-normal">{{ pmt.payment_date.strftime('%m/%d/%Y') }}</a>
+        {% set is_problem     = pmt.status in ['reversed', 'nsf'] %}
+        {% set has_unapplied  = pmt.amount_unallocated > 0.005 %}
+
+        {# Left-edge stripe (§4 semantics):
+           red  = reversed or NSF (problem — money didn't land / was returned)
+           amber = has unapplied balance (attention — money not fully allocated)
+           transparent = fully applied (clean) #}
+        {% if is_problem %}{% set stripe = 'border-l-red-400' %}
+        {% elif has_unapplied and pmt.status == 'applied' %}{% set stripe = 'border-l-amber-400' %}
+        {% else %}{% set stripe = 'border-l-transparent' %}{% endif %}
+
+        {# ── Row ── #}
+        <tr
+          @click="togglePreview({{ pmt.id }})"
+          :class="{
+            'ring-inset ring-1 ring-brand-300 bg-brand-50/40': previewId === {{ pmt.id }},
+            'bg-red-50/20':   {{ 'true' if is_problem else 'false' }} && previewId !== {{ pmt.id }},
+            'bg-amber-50/20': {{ 'true' if (has_unapplied and not is_problem) else 'false' }} && previewId !== {{ pmt.id }},
+          }"
+          class="cursor-pointer hover:bg-gray-50/80 transition-colors group">
+
+          {# ── Checkbox — first <td> carries the left-edge health stripe ── #}
+          <td class="w-10 px-4 py-4 align-middle text-center border-l-4 {{ stripe }}"
+              @click.stop>
+            <input type="checkbox"
+                   :checked="isSelected({{ pmt.id }})"
+                   @change="toggleSelect({{ pmt.id }})"
+                   aria-label="Select payment #{{ pmt.id }}"
+                   class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
           </td>
-          <td class="tbl-td font-medium text-gray-900">{{ pmt.customer.company_name }}</td>
-          <td class="tbl-td">
-            {% if pmt.payment_method == PaymentMethod.CASH %}
-              <span class="inline-flex items-center gap-1 text-xs">
-                <svg class="w-3.5 h-3.5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"/>
-                </svg>
-                Cash
-              </span>
-            {% elif pmt.payment_method == PaymentMethod.CHECK %}
-              <span class="inline-flex items-center gap-1 text-xs">
-                <svg class="w-3.5 h-3.5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-                </svg>
-                Check{% if pmt.check_number %} <span class="font-mono text-xs text-gray-400">#{{ pmt.check_number }}</span>{% endif %}
-              </span>
-            {% elif pmt.payment_method == PaymentMethod.CREDIT_CARD %}
-              <span class="inline-flex items-center gap-1 text-xs">
-                <svg class="w-3.5 h-3.5 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
-                </svg>
-                Credit Card
-              </span>
-            {% elif pmt.payment_method == PaymentMethod.ACH %}
-              <span class="inline-flex items-center gap-1 text-xs">
-                <svg class="w-3.5 h-3.5 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/>
-                </svg>
-                ACH
-              </span>
-            {% elif pmt.payment_method == PaymentMethod.WIRE %}
-              <span class="inline-flex items-center gap-1 text-xs">
-                <svg class="w-3.5 h-3.5 text-cyan-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M13 10V3L4 14h7v7l9-11h-7z"/>
-                </svg>
-                Wire
-              </span>
+
+          {# ── §2B Payment # / Date ──────────────────────────────────────── #}
+          <td class="px-4 py-4 align-middle">
+            <a href="/payments/{{ pmt.id }}" @click.stop
+               class="font-mono text-sm font-bold text-brand-700 hover:text-brand-900 hover:underline leading-none">
+              #{{ pmt.id }}
+            </a>
+            <div class="text-xs text-gray-400 mt-0.5">
+              {{ pmt.payment_date.strftime('%m/%d/%y') }}
+            </div>
+          </td>
+
+          {# ── §2B Customer ──────────────────────────────────────────────── #}
+          <td class="px-4 py-4 align-middle">
+            <span class="text-sm font-medium text-gray-900">{{ pmt.customer.company_name }}</span>
+          </td>
+
+          {# ── §2B Method chip + check # ─────────────────────────────────── #}
+          <td class="px-4 py-4 align-middle hidden md:table-cell">
+            {% set mc = method_chip.get(pmt.payment_method) %}
+            {% if mc %}{{ status_chip(mc[0], mc[1], mc[2]) }}
             {% else %}
-              {{ pmt.payment_method | replace('_', ' ') | title }}
+            <span class="text-xs text-gray-500">{{ pmt.payment_method | replace('_', ' ') | title }}</span>
+            {% endif %}
+            {% if pmt.check_number %}
+            <div class="font-mono text-xs text-gray-400 mt-0.5">#{{ pmt.check_number }}</div>
             {% endif %}
           </td>
-          <td class="tbl-td">
-            {% if active_allocs %}
-              {% for alloc in active_allocs %}
-                <a href="/invoices/{{ alloc.invoice_id }}"
-                   class="inline-block font-mono text-xs link"
-                   onclick="event.stopPropagation()">
-                  {{ alloc.invoice.invoice_number }}
-                </a>{% if not loop.last %}, {% endif %}
-              {% endfor %}
-            {% else %}
-              <span class="text-amber-600 text-xs font-medium">Unapplied</span>
-            {% endif %}
-          </td>
-          <td class="tbl-td-r font-medium">${{ '%.2f' % pmt.amount_received }}</td>
-          <td class="tbl-td-r">
-            {% if pmt.amount_unallocated > 0.005 %}
-              <span class="text-amber-600 font-semibold">${{ '%.2f' % pmt.amount_unallocated }}</span>
-            {% else %}
-              <span class="text-gray-300">—</span>
-            {% endif %}
-          </td>
-          <td class="tbl-td">
-            <span class="{{ pmt_badges.get(pmt.status, 'badge-gray') }}">
-              {{ pmt.status | title }}
+
+          {# ── §2B Amount received + applied/unapplied breakdown ─────────── #}
+          <td class="px-4 py-4 align-middle text-right">
+            <span class="text-sm font-bold tabular-nums
+                         {% if is_problem %}text-red-600 line-through{% else %}text-gray-900{% endif %}">
+              ${{ '%.2f' % pmt.amount_received }}
             </span>
+            {% if pmt.nsf_fee > 0 %}
+            <div class="text-xs text-red-500 mt-0.5 tabular-nums">NSF fee: ${{ '%.2f' % pmt.nsf_fee }}</div>
+            {% endif %}
+            {% if has_unapplied and not is_problem %}
+            <div class="text-xs text-amber-600 mt-0.5 tabular-nums font-medium">
+              ${{ '%.2f' % pmt.amount_unallocated }} unapplied
+            </div>
+            {% endif %}
           </td>
+
+          {# ── §2B Related invoices ──────────────────────────────────────── #}
+          <td class="px-4 py-4 align-middle hidden lg:table-cell">
+            {% if active_allocs %}
+            <div class="flex flex-col gap-0.5">
+              {% for alloc in active_allocs[:3] %}
+              <div class="flex items-center gap-1.5">
+                <a href="/invoices/{{ alloc.invoice_id }}" @click.stop
+                   class="font-mono text-xs font-bold text-brand-700 hover:text-brand-900 hover:underline">
+                  {{ alloc.invoice.invoice_number }}
+                </a>
+                <span class="text-xs text-gray-400 tabular-nums">${{ '%.2f' % alloc.amount_applied }}</span>
+              </div>
+              {% endfor %}
+              {% if active_allocs | length > 3 %}
+              <span class="text-xs text-gray-400">+{{ (active_allocs | length) - 3 }} more</span>
+              {% endif %}
+            </div>
+            {% else %}
+            <span class="text-xs text-amber-600 font-medium">Unapplied</span>
+            {% endif %}
+          </td>
+
+          {# ── §2B Status chip + reversal/NSF flag ──────────────────────── #}
+          <td class="px-4 py-4 align-middle">
+            {% set pc = pmt_chip.get(pmt.status, ('bg-gray-100 text-gray-600', 'bg-gray-400', pmt.status | title)) %}
+            {{ status_chip(pc[0], pc[1], pc[2]) }}
+            {% if pmt.reversal_reason %}
+            <div class="text-xs text-red-500 mt-0.5">{{ pmt.reversal_reason | replace('_', ' ') | title }}</div>
+            {% endif %}
+          </td>
+
+          {# ── Quick action — open detail ────────────────────────────────── #}
+          <td class="px-4 py-4 align-middle" @click.stop>
+            <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+              <a href="/payments/{{ pmt.id }}"
+                 title="Open payment"
+                 aria-label="Open payment #{{ pmt.id }}"
+                 class="p-1.5 rounded-lg text-gray-400 hover:text-brand-700 hover:bg-brand-50 transition-colors
+                        focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-1">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+                </svg>
+              </a>
+            </div>
+          </td>
+
         </tr>
         {% endfor %}
       </tbody>
+
     </table>
+  </div>
+
+  {# ── Table footer: record count + selected count + financial summary ── #}
+  {% set total_received  = payments | selectattr('status', 'equalto', 'applied') | map(attribute='amount_received')    | sum %}
+  {% set total_unapplied = payments | selectattr('status', 'equalto', 'applied') | map(attribute='amount_unallocated') | sum %}
+  <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between flex-wrap gap-3">
+    <div class="flex items-center gap-4 text-xs text-gray-400 flex-wrap">
+      <span>{{ payments | length }} payment{{ 's' if payments | length != 1 else '' }}
+      {% if active_tab or q %} · filtered{% endif %}</span>
+      {% if total_received > 0 %}
+      <span>Total received: <strong class="text-gray-700">${{ '%.2f' % total_received }}</strong></span>
+      {% endif %}
+      {% if total_unapplied > 0.01 %}
+      <span>Unapplied credit: <strong class="text-amber-600">${{ '%.2f' % total_unapplied }}</strong></span>
+      {% endif %}
+    </div>
+    <span x-show="selectedCount > 0" x-cloak class="text-xs text-brand-700 font-medium">
+      <span x-text="selectedCount"></span> selected
+    </span>
   </div>
 </div>
 
-{# ── Summary bar ── #}
-{% set total_received = payments | selectattr('status', 'equalto', PaymentStatus.APPLIED) | map(attribute='amount_received') | sum %}
-{% set total_unapplied = payments | selectattr('status', 'equalto', PaymentStatus.APPLIED) | map(attribute='amount_unallocated') | sum %}
-<div class="mt-4 flex gap-6 text-sm text-gray-500">
-  <span>{{ payments | length }} payment{{ 's' if payments | length != 1 else '' }}</span>
-  {% if total_received > 0 %}
-  <span>Total received: <strong class="text-gray-900">${{ '%.2f' % total_received }}</strong></span>
-  {% endif %}
-  {% if total_unapplied > 0.01 %}
-  <span>Unapplied credit: <strong class="text-amber-600">${{ '%.2f' % total_unapplied }}</strong></span>
-  {% endif %}
-</div>
-
 {% else %}
-<div class="card flex flex-col items-center justify-center py-16">
-  <svg class="w-12 h-12 text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-          d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"/>
-  </svg>
-  <p class="text-gray-500 font-medium">No payments found</p>
-  {% if q or status_filter %}
-  <p class="text-gray-400 text-sm mt-1">Try adjusting your filter.</p>
-  {% else %}
-  <p class="text-gray-400 text-sm mt-1">Record payments from the invoice detail page or via New Payment.</p>
-  <a href="/payments/new" class="mt-3 btn-primary btn-sm">+ New Payment</a>
-  {% endif %}
-</div>
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   EMPTY STATE — §7 Primitive 6
+══════════════════════════════════════════════════════════════════════════════ #}
+{{ empty_state(
+  'M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z',
+  q, active_tab, 'No payments found',
+  'Record payments from the invoice detail page or via New Payment.',
+  '<a href="/payments/new" class="btn-primary btn-sm">+ New Payment</a>'
+) }}
+
 {% endif %}
 
+{# ── Preview dock — DEFERRED until Backend lands GET /payments/preview/{id}
+   Once the route is registered (before /{id}), uncomment the two lines below,
+   add the import at the top, and remove this comment block.
+   {% from "macros/preview_dock.html" import preview_dock_shell %}
+   {{ preview_dock_shell('Payment Preview', 'payment-preview-body') }}
+────────────────────────────────────────────────────────────────────────────── #}
+
+</div>{# end operationalListData wrapper #}
 {% endblock %}
