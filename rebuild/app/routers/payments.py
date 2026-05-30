@@ -15,12 +15,13 @@ from urllib.parse import quote as url_quote
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy.orm import Session
+from sqlalchemy import func, or_
+from sqlalchemy.orm import Session, selectinload
 
-from app.constants import InvoiceStatus, PaymentMethod, PaymentStatus
+from app.constants import InvoiceStatus, PaymentDirection, PaymentMethod, PaymentStatus
 from app.deps import get_current_user_id, get_db
 from app.models.customer import Customer
-from app.models.invoice import Invoice, Payment
+from app.models.invoice import Invoice, Payment, PaymentAllocation
 
 log = logging.getLogger(__name__)
 
@@ -63,9 +64,9 @@ def new_payment_form(
                 .all()
             )
     return templates.TemplateResponse(
+        request,
         "payments/new.html",
         {
-            "request": request,
             "customers": customers,
             "selected_customer": selected_customer,
             "open_invoices": open_invoices,
@@ -156,15 +157,34 @@ async def create_payment(
 @router.get("/", response_class=HTMLResponse)
 def payment_list(
     request: Request,
+    tab: str = "",
     status: str = "",
     q: str = "",
     db: Session = Depends(get_db),
 ):
-    from sqlalchemy import or_
-    query = db.query(Payment).join(Customer)
+    # ── Unfiltered tab counts ─────────────────────────────────────────────
+    _raw: dict = dict(
+        db.query(Payment.status, func.count(Payment.id))
+        .group_by(Payment.status)
+        .all()
+    )
+    counts: dict = {
+        "":                      sum(_raw.values()),
+        PaymentStatus.APPLIED:   _raw.get(PaymentStatus.APPLIED,  0),
+        PaymentStatus.REVERSED:  _raw.get(PaymentStatus.REVERSED, 0),
+        PaymentStatus.NSF:       _raw.get(PaymentStatus.NSF,      0),
+    }
 
-    if status:
-        query = query.filter(Payment.status == status)
+    _VALID = {"", PaymentStatus.APPLIED, PaymentStatus.REVERSED, PaymentStatus.NSF}
+    active_tab = tab if tab in _VALID else (status if status in _VALID else "")
+
+    query = (
+        db.query(Payment)
+        .join(Customer)
+        .options(selectinload(Payment.allocations))  # fix N+1 on amount_unallocated
+    )
+    if active_tab:
+        query = query.filter(Payment.status == active_tab)
     if q:
         query = query.filter(
             or_(
@@ -172,18 +192,101 @@ def payment_list(
                 Payment.check_number.ilike(f"%{q}%"),
             )
         )
-
     payments = query.order_by(Payment.payment_date.desc()).limit(300).all()
 
+    # ── Bulk §2B: invoice numbers per payment (fixes N+1 on alloc.invoice) ─
+    from collections import defaultdict
+    _pmt_ids = [p.id for p in payments]
+    _alloc_rows = (
+        db.query(PaymentAllocation.payment_id, Invoice.invoice_number, Invoice.id)
+        .join(Invoice, PaymentAllocation.invoice_id == Invoice.id)
+        .filter(
+            PaymentAllocation.payment_id.in_(_pmt_ids),
+            PaymentAllocation.is_reversed == False,  # noqa: E712
+        )
+        .all()
+    ) if _pmt_ids else []
+
+    # invoice_nums_map: {payment_id: [(invoice_number, invoice_id), ...]}
+    invoice_nums_map: dict = defaultdict(list)
+    for pmt_id, inv_num, inv_id in _alloc_rows:
+        invoice_nums_map[pmt_id].append((inv_num, inv_id))
+
     return templates.TemplateResponse(
+        request,
         "payments/list.html",
         {
-            "request": request,
-            "payments": payments,
-            "status_filter": status,
-            "q": q,
-            "PaymentStatus": PaymentStatus,
-            "PaymentMethod": PaymentMethod,
+            "request":           request,
+            "payments":          payments,
+            "active_tab":        active_tab,
+            "status_filter":     active_tab,  # back-compat alias
+            "counts":            counts,
+            "q":                 q,
+            "PaymentStatus":     PaymentStatus,
+            "PaymentMethod":     PaymentMethod,
+            "invoice_nums_map":  dict(invoice_nums_map),
+        },
+    )
+
+
+# ── Preview panel — MUST stay registered before /{payment_id} ────────────────
+
+@router.get("/preview/{payment_id}", response_class=HTMLResponse)
+def payment_preview_panel(
+    payment_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Bottom-dock preview partial for the Payment List (§7 Primitive 5).
+    Loaded via htmx.ajax() on row click; returns payments/_preview_panel.html.
+
+    Context published to UI lane:
+      payment         — Payment ORM (with .customer, .allocations pre-loaded)
+      invoice_entries — list[(invoice_number, invoice_id, amount_applied)]
+                        active (non-reversed) allocations only
+      PaymentStatus   — enum class
+      PaymentMethod   — enum class
+      PaymentDirection— enum class
+    """
+    pmt = (
+        db.query(Payment)
+        .options(selectinload(Payment.allocations))
+        .filter(Payment.id == payment_id)
+        .first()
+    )
+    if pmt is None:
+        return HTMLResponse(
+            '<p class="px-6 py-4 text-sm text-red-500">Payment not found.</p>',
+            status_code=404,
+        )
+
+    # Active allocations with invoice numbers — one join query
+    active_alloc_ids = [a.invoice_id for a in pmt.allocations if not a.is_reversed]
+    _inv_map: dict = {}
+    if active_alloc_ids:
+        _inv_map = dict(
+            db.query(Invoice.id, Invoice.invoice_number)
+            .filter(Invoice.id.in_(active_alloc_ids))
+            .all()
+        )
+
+    invoice_entries: list[tuple] = [
+        (_inv_map.get(a.invoice_id, f"INV-{a.invoice_id}"), a.invoice_id, a.amount_applied)
+        for a in pmt.allocations
+        if not a.is_reversed
+    ]
+
+    return templates.TemplateResponse(
+        request,
+        "payments/_preview_panel.html",
+        {
+            "request":          request,
+            "payment":          pmt,
+            "invoice_entries":  invoice_entries,
+            "PaymentStatus":    PaymentStatus,
+            "PaymentMethod":    PaymentMethod,
+            "PaymentDirection": PaymentDirection,
         },
     )
 
@@ -203,9 +306,9 @@ def payment_detail(
     active_allocations = [a for a in pmt.allocations if not a.is_reversed]
 
     return templates.TemplateResponse(
+        request,
         "payments/detail.html",
         {
-            "request": request,
             "payment": pmt,
             "active_allocations": active_allocations,
             "PaymentStatus": PaymentStatus,
