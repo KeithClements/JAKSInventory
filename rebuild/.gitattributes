@@ -1,0 +1,20 @@
+# Force LF line endings for generated/compiled files so `git diff` is clean
+# after any rebuild on any OS (Windows npm produces LF; this confirms it).
+app/static/css/app.css   text eol=lf
+
+# Also normalise these so they don't flip between contributors
+*.html                   text eol=lf
+*.css                    text eol=lf
+*.js                     text eol=lf
+*.py                     text eol=lf
+*.json                   text eol=lf
+*.yml                    text eol=lf
+*.yaml                   text eol=lf
+*.md                     text eol=lf
+
+# Binary — never diff or normalize
+*.png                    binary
+*.jpg                    binary
+*.jpeg                   binary
+*.ico                    binary
+*.woff2                  binary

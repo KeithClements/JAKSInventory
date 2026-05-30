@@ -1,0 +1,100 @@
+name: UI lint gate
+
+# Enforces class-token design-system rules across all templates.
+# Rules 1-7 map to class-tokens.md sections; all emit file:line output.
+#
+# Step order matters:
+#   1. Rebuild app.css from source (Tailwind CLI)
+#   2. Diff against committed app.css -- fail if they diverge (stale CSS)
+#   3. Run Python lint gate (Rule 7 re-checks the file is present and >10KB)
+#
+# This ensures app.css can never drift silently out of sync with templates:
+# the CSS rebuild runs on every template change and the git-diff step catches
+# any commit where the developer forgot to run `npm run build:css` locally.
+
+on:
+  push:
+    paths:
+      - "app/templates/**"
+      - "app/static/css/input.css"
+      - "app/static/js/**"
+      - "tailwind.config.js"
+      - "package.json"
+      - "tests/test_ui_lint.py"
+      - ".github/workflows/ui-lint.yml"
+  pull_request:
+    paths:
+      - "app/templates/**"
+      - "app/static/css/input.css"
+      - "app/static/js/**"
+      - "tailwind.config.js"
+      - "package.json"
+      - "tests/test_ui_lint.py"
+      - ".github/workflows/ui-lint.yml"
+
+jobs:
+  ui-lint:
+    name: "UI lint (Rules 1-7)"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rebuild
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Step 1: Rebuild compiled CSS ────────────────────────────────────
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: rebuild/package.json
+
+      - name: Install Node dependencies
+        run: npm ci --prefer-offline
+
+      - name: Build compiled CSS
+        run: npm run build:css
+
+      # ── Step 2: Drift detection ──────────────────────────────────────────
+      # Fail if the freshly-built app.css differs from what is committed.
+      # This catches: developer added a template class but forgot `npm run build:css`.
+
+      - name: Check app.css is up-to-date
+        run: |
+          if ! git diff --quiet -- app/static/css/app.css; then
+            echo ""
+            echo "ERROR: app/static/css/app.css is out of date."
+            echo "The compiled CSS differs from what is committed."
+            echo "Run 'npm run build:css' locally and commit the result."
+            echo ""
+            git diff --stat -- app/static/css/app.css
+            exit 1
+          fi
+          echo "app.css is up to date."
+
+      # ── Step 3: Python lint gate ─────────────────────────────────────────
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: pip install pytest
+
+      - name: Run UI lint gate
+        run: |
+          python -m pytest tests/test_ui_lint.py \
+            -v -s --tb=short -q 2>&1
+
+      # Emit the backlog summary as a step summary even when lint fails
+      - name: Emit lint summary to GitHub step summary
+        if: always()
+        run: |
+          python -m pytest tests/test_ui_lint.py::test_lint_summary \
+            -s --tb=no -q 2>&1 >> $GITHUB_STEP_SUMMARY || true
