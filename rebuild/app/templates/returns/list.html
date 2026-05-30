@@ -19,6 +19,7 @@
 {% from "macros/list_behavior.html" import operational_list_script %}
 {% from "macros/filter_tabs.html"   import filter_tabs %}
 {% from "macros/bulk_toolbar.html"  import bulk_toolbar %}
+{% from "macros/preview_dock.html"  import preview_dock_shell %}
 {% from "macros/chips.html"         import status_chip %}
 {% from "macros/empty_state.html"   import empty_state %}
 {{ operational_list_script() }}
@@ -334,12 +335,8 @@
 
 {% endif %}
 
-{# ── Preview dock — DEFERRED until Backend lands GET /returns/preview/{id}
-   Once the route is registered (before /{id}), uncomment the lines below,
-   import preview_dock_shell at the top, and remove this comment block.
-   {% from "macros/preview_dock.html" import preview_dock_shell %}
-   {{ preview_dock_shell('Return Authorization Preview', 'ra-preview-body') }}
-────────────────────────────────────────────────────────────────────────────── #}
+{# ── Preview dock — §7 Primitive 5 ───────────────────────────────────────── #}
+{{ preview_dock_shell('Return Authorization Preview', 'ra-preview-body') }}
 
 </div>{# end operationalListData wrapper #}
 {% endblock %}
