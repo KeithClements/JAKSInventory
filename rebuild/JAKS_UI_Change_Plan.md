@@ -1,7 +1,7 @@
 # JAKS UI Change Plan
 *Living document — updated as screens are built.*
 
-**Status:** Products List ✅ L2 ref · PO List ✅ L2 · Invoice List ✅ L2 · Customer List ✅ L2 · Invoice Workspace ✅ L3 · Quotes List ✅ L2 (governance 2026-05-29) · Sales Orders List 🟡 one blocker (dock uncomment) · Primitives extraction ✅ · **Compiled Tailwind ✅ LIVE** (CDN removed 2026-05-29, app.css 77.7 KB, no FOUC, no CDN request) · **§8B workspace action-header standard ⏳ drafting next.**
+**Status:** Products ✅ L2 ref · PO ✅ L2 · Invoices ✅ L2 · Customers ✅ L2 · Invoice Workspace ✅ L3 · Quotes ✅ L2 · Sales Orders ✅ L2 · Vendors ✅ L2 (all 2026-05-29) · Primitives ✅ · **Compiled Tailwind ✅ LIVE** (77.7 KB, CDN gone) · **§8B header standard ✅ DRAFTED** · PO `rose-*/sky-*` color ruling: sky permitted (§4 already lists it), rose → cosmetic fix in §8A · #11 PO Workspace next.
 
 **Scope:** All list and workspace screens in the JAKS Inventory ERP system.
 
@@ -447,8 +447,8 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 | — | **Primitives extraction** | ✅ Complete (2026-05-29) | — | All 6 macros extracted + governance-approved. Products/PO/Invoice ported. See §7 as-built. |
 | 4 | Customer List | ✅ L2 complete | L1.5 → L2 | Governance pass approved 2026-05-29. All §2 + §2B fields satisfied (Balance Due, Open Invoices/Quotes/SOs, Cores, Last Sale, Terms). M1/M2 cosmetic deferred. |
 | 5 | Quotes List | ✅ L2 complete | L2 → L2 | **Governance pass 2026-05-29 — FULL PASS.** All 11 §2 elements + §2B complete. AR chip landed: `ar_map` bulk-computed in route (open invoices group-by, zero N+1), rendered with overdue/open split in template. 5 non-blocking cosmetics in §8F. |
-| 6 | Sales Orders List | 🟡 SEND BACK (×2) | L1 → L2 | **Import still missing — second send-back.** Builder uncommented the dock call at line 348 but `{% from "macros/preview_dock.html" import preview_dock_shell %}` is not in the imports block (lines 19-25). Jinja2 throws `UndefinedError` on render. One-line fix: add the import after line 24. Everything else passes. |
-| 7 | Vendors List | 🟡 Pending builder dock | L1 → L2 | **Backend done.** `/preview/{vendor_id}` is registered before `/{vendor_id}` (router lines 221 vs 302), returns `vendors/_preview_panel.html`. Template has dock + import in a comment block — builder must uncomment both. **Tab mismatch to fix:** template uses slugs `open_pos`/`credits`; router handles `active`/`inactive`/`all`. Either align tab slugs or update router. See §7 builder brief below. |
+| 6 | Sales Orders List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** Dock import confirmed in place. All 11 §2 elements + §2B verified. `py-4` correct (not `py-3.5`). Backend-contract guard accepted as pattern. |
+| 7 | Vendors List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** Dock wired (import line 21 + call line 333). All 11 §2 elements + §2B (Open POs/Bills/Credits/LastPO/Contact). Tab counts stub-zeros via backend-contract guard — non-blocking, same pattern as SO. Lead time deferred per "if stored" qualifier. |
 | 8 | Returns List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
 | 9 | Payments List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
 | 10 | Product Detail | ⏳ Pending | L1 → L2 | Section-based card layout. |
@@ -628,7 +628,35 @@ Total. Ship/tracking column absent — no tracking data in model yet (non-blocki
 
 ---
 
-#### Vendors List — Builder Brief (#7) — 🟡 Pending dock + tab fix
+#### Vendors List — As-Built Record — ✅ L2 (governance 2026-05-29)
+
+**Governance pass: FULL PASS.**
+
+All 11 §2 structural elements verified:
+- `pb-52` wrapper · `divide-y divide-gray-100` tbody · `overflow-x-auto` + `min-w-[1020px]` ·
+  `border-l-4` on first `<td>` (checkbox cell) · `filter_tabs` macro (3 tabs: All/Active POs/Open Credits) ·
+  `bulk_toolbar` macro · `status_chip` macro · `operationalListData` factory ·
+  `preview_dock_shell` macro (import line 21 + call line 333) · `empty_state` macro ·
+  `px-4 py-4 align-middle` on all `<td>` ✅
+
+§2B fields verified: Open POs count (chip) · Open Bills count (billed-status POs) · Credits pending
+(chip + total dollar amount) · Last PO date (relative + PO# in monospace) · Primary contact
+(name + phone). Lead time deferred — no `lead_time` field on Vendor model; explicitly deferred
+per §2B "if stored" qualifier ✅
+
+**Stripe semantics accepted:** amber=open credits (vendor owes us money), blue=active open POs,
+transparent=no active relationship. Colour semantics are correct per §4 (amber=attention,
+blue=informational).
+
+**Backend-contract guard accepted** (lines 27-33): `active_tab` and `_counts` degrade gracefully
+when backend hasn't yet passed the `open_pos`/`credits` keys. Tabs show stub zeros; no error.
+Non-blocking. Backend update needed to pass real counts keyed by `open_pos`/`credits`.
+
+**Non-blocking cosmetics (none filed — screen is clean).**
+
+---
+
+#### Vendors List — Builder Brief (#7) — now superseded by as-built above
 
 **Backend is done.** Do not wait for backend — everything needed is live.
 
@@ -1017,6 +1045,18 @@ this conversation.
 4. **Customer List M2 — activity badge rounding.**
    Activity pills use `rounded-full`; system standard is `rounded-lg`. Cosmetic only.
    `app/templates/customers/list.html:286,294,303,312`.
+
+5. **PO List — `rose-*` row tint (QA Rule-5 advisory).**
+   `app/templates/purchase_orders/list.html:165` uses `bg-rose-50/30` for cancelled row tint.
+   `rose-*` is not in §4 permitted families; §4 only permits `red-*` for the red/problem semantic.
+   Fix: `bg-rose-50/30` → `bg-red-50/30`. One-character change.
+   **Ruling (Architect, 2026-05-29):** `rose-*` remains outside §4. This is a valid QA lint
+   advisory (not a block). The screen is ✅ L2 — this is a cosmetic fix only.
+   **QA note:** Keep the `rose-*` lint advisory as-is. Do not add `rose-*` to the allowlist.
+
+   *(The other 3 QA-flagged violations — `sky-*` in Drop Ship badge on PO list, preview panel, and
+   receiving queue — are **not violations**. §4 explicitly permits `blue-* / sky-*` together.
+   Update the lint pattern to accept `sky-*` wherever `blue-*` is accepted.)*
 
 #### 8D. Compiled CSS Cut-over — ✅ COMPLETE (2026-05-29)
 
