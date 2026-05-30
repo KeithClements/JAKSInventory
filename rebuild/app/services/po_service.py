@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 from app.constants import (
     AuditAction, EntityType, FulfillmentSource, InventoryTxnType, MatchResolution,
-    Permission, POStatus, QBOSyncStatus, VendorBillStatus, VendorCreditMemoTrigger,
+    Permission, POStatus, QBOSyncStatus, SOLineStatus, VendorBillStatus, VendorCreditMemoTrigger,
 )
 from app.models.inventory import InventoryTransaction
 from app.models.product import Product

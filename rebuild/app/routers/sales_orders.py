@@ -278,7 +278,7 @@ async def so_add_line(
     if product_id and not desc:
         p = db.query(Product).filter(Product.id == product_id).first()
         if p:
-            desc = p.name or p.description or p.sku or ""
+            desc = p.title or p.description or p.sku or ""
             if not price_raw or price_raw == "0":
                 price_raw = str(p.selling_price or 0.0)
             if not cost_raw or cost_raw == "0":
@@ -379,7 +379,7 @@ def so_product_search(request: Request, q: str = "", db: Session = Depends(get_d
                 Product.is_active == True,  # noqa: E712
                 or_(
                     Product.sku.ilike(f"%{q}%"),
-                    Product.name.ilike(f"%{q}%"),
+                    Product.title.ilike(f"%{q}%"),
                     Product.description.ilike(f"%{q}%"),
                 ),
             )
