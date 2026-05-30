@@ -1,11 +1,11 @@
 {
   "columns": [],
   "h1": "Payments",
-  "html_size_kb": 55,
+  "html_size_kb": 56,
   "markers": {
     "divide-y": true,
     "divide-y divide-gray-100": true,
-    "fixed bottom-0 left-64": false,
+    "fixed bottom-0 left-64": true,
     "overflow-x-auto": false,
     "pb-52": true,
     "preview_dock_shell": false,
