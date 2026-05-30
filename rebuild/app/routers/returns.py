@@ -17,14 +17,16 @@ from urllib.parse import quote as url_quote
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy.orm import Session
+from sqlalchemy import func, or_
+from sqlalchemy.orm import Session, selectinload
 
 from app.constants import RAStatus, ReturnDisposition
 from app.deps import get_current_user_id, get_db
+from app.models.credit_memo import CreditMemo
 from app.models.customer import Customer
 from app.models.invoice import Invoice
 from app.models.product import Product
-from app.models.returns import ReturnAuthorization
+from app.models.returns import ReturnAuthorization, ReturnLine
 from app.services.document_render import (
     customer_address_lines,
     get_company_dict,
@@ -44,14 +46,37 @@ templates = Jinja2Templates(
 @router.get("/", response_class=HTMLResponse)
 def ra_list(
     request: Request,
+    tab: str = "",
     status: str = "",
     q: str = "",
     db: Session = Depends(get_db),
 ):
-    from sqlalchemy import or_
-    query = db.query(ReturnAuthorization).join(Customer)
-    if status:
-        query = query.filter(ReturnAuthorization.status == status)
+    # ── Unfiltered tab counts ─────────────────────────────────────────────
+    _raw: dict = dict(
+        db.query(ReturnAuthorization.status, func.count(ReturnAuthorization.id))
+        .group_by(ReturnAuthorization.status)
+        .all()
+    )
+    counts: dict = {
+        "":                 sum(v for k, v in _raw.items() if k != RAStatus.CLOSED),
+        RAStatus.DRAFT:     _raw.get(RAStatus.DRAFT, 0),
+        RAStatus.OPEN:      _raw.get(RAStatus.OPEN, 0),
+        RAStatus.RECEIVED:  _raw.get(RAStatus.RECEIVED, 0),
+        RAStatus.CLOSED:    _raw.get(RAStatus.CLOSED, 0),
+    }
+
+    # `tab` is the canonical param from filter_tabs (?tab=<slug>).
+    # Legacy ?status= accepted for back-compat.
+    _VALID = {"", RAStatus.DRAFT, RAStatus.OPEN, RAStatus.RECEIVED, RAStatus.CLOSED}
+    active_tab = tab if tab in _VALID else (status if status in _VALID else "")
+
+    query = (
+        db.query(ReturnAuthorization)
+        .join(Customer)
+        .options(selectinload(ReturnAuthorization.lines))  # avoid N+1 on total_credit
+    )
+    if active_tab:
+        query = query.filter(ReturnAuthorization.status == active_tab)
     else:
         query = query.filter(ReturnAuthorization.status != RAStatus.CLOSED)
     if q:
@@ -62,14 +87,53 @@ def ra_list(
             )
         )
     ras = query.order_by(ReturnAuthorization.requested_at.desc()).limit(200).all()
+
+    # ── Bulk §2B aggregates (no N+1) ─────────────────────────────────────
+    _ra_ids = [ra.id for ra in ras]
+
+    # Credit memo numbers linked to these RAs (one CM per RA max)
+    credit_memo_map: dict = dict(
+        db.query(CreditMemo.ra_id, CreditMemo.cm_number)
+        .filter(CreditMemo.ra_id.in_(_ra_ids))
+        .all()
+    ) if _ra_ids else {}
+
+    # Invoice numbers for RAs that have an invoice_id
+    _inv_ids = [ra.invoice_id for ra in ras if ra.invoice_id]
+    invoice_number_map: dict = dict(
+        db.query(Invoice.id, Invoice.invoice_number)
+        .filter(Invoice.id.in_(_inv_ids))
+        .all()
+    ) if _inv_ids else {}
+
+    # Unique dispositions per RA (single query, Python grouping)
+    from collections import defaultdict
+    _disp_rows = (
+        db.query(ReturnLine.ra_id, ReturnLine.disposition)
+        .filter(ReturnLine.ra_id.in_(_ra_ids))
+        .all()
+    ) if _ra_ids else []
+    disposition_map: dict[int, list[str]] = defaultdict(list)
+    for _rid, _disp in _disp_rows:
+        if _disp not in disposition_map[_rid]:
+            disposition_map[_rid].append(_disp)
+
     return templates.TemplateResponse(
+        request,
         "returns/list.html",
         {
-            "request": request,
-            "ras": ras,
-            "status_filter": status,
-            "q": q,
-            "RAStatus": RAStatus,
+            "request":           request,
+            "ras":               ras,
+            "active_tab":        active_tab,
+            "status_filter":     active_tab,   # back-compat alias
+            "counts":            counts,
+            "q":                 q,
+            "RAStatus":          RAStatus,
+            "ReturnDisposition": ReturnDisposition,
+            # §2B aggregate maps (keyed by ra.id or invoice.id)
+            "credit_memo_map":   dict(credit_memo_map),
+            "invoice_number_map":invoice_number_map,
+            "disposition_map":   dict(disposition_map),
         },
     )
 
@@ -101,9 +165,9 @@ def ra_new(
         if customer_id else None
     )
     return templates.TemplateResponse(
+        request,
         "returns/_new_picker.html",
         {
-            "request": request,
             "customers": customers,
             "products": products,
             "selected_customer": selected_customer,
@@ -210,6 +274,65 @@ async def ra_create(
     return RedirectResponse(f"/returns/{ra.id}", status_code=303)
 
 
+# ── Preview panel — MUST stay registered before /{ra_id} ─────────────────────
+
+@router.get("/preview/{ra_id}", response_class=HTMLResponse)
+def ra_preview_panel(ra_id: int, request: Request, db: Session = Depends(get_db)):
+    """
+    Bottom-dock preview partial for the RA List (§7 Primitive 5).
+    Loaded via htmx.ajax() on row click; returns returns/_preview_panel.html.
+
+    Context published to UI lane:
+      ra               — ReturnAuthorization (with .customer, .lines pre-loaded)
+      credit_memo_num  — str | None
+      invoice_number   — str | None
+      dispositions     — list[str]  unique disposition values across lines
+      total_restock    — float  sum of all restocking_fee on lines
+      RAStatus         — enum class
+      ReturnDisposition — enum class
+    """
+    ra = (
+        db.query(ReturnAuthorization)
+        .options(selectinload(ReturnAuthorization.lines))
+        .filter(ReturnAuthorization.id == ra_id)
+        .first()
+    )
+    if ra is None:
+        return HTMLResponse(
+            '<p class="px-6 py-4 text-sm text-red-500">Return authorization not found.</p>',
+            status_code=404,
+        )
+
+    credit_memo_num: str | None = None
+    _cm = db.query(CreditMemo.cm_number).filter(CreditMemo.ra_id == ra_id).first()
+    if _cm:
+        credit_memo_num = _cm[0]
+
+    invoice_number: str | None = None
+    if ra.invoice_id:
+        _inv = db.query(Invoice.invoice_number).filter(Invoice.id == ra.invoice_id).first()
+        if _inv:
+            invoice_number = _inv[0]
+
+    dispositions: list[str] = list({ln.disposition for ln in ra.lines})
+    total_restock: float = round(sum(ln.restocking_fee for ln in ra.lines), 2)
+
+    return templates.TemplateResponse(
+        request,
+        "returns/_preview_panel.html",
+        {
+            "request":          request,
+            "ra":               ra,
+            "credit_memo_num":  credit_memo_num,
+            "invoice_number":   invoice_number,
+            "dispositions":     dispositions,
+            "total_restock":    total_restock,
+            "RAStatus":         RAStatus,
+            "ReturnDisposition":ReturnDisposition,
+        },
+    )
+
+
 # ── Detail ────────────────────────────────────────────────────────────────────
 
 @router.get("/{ra_id}", response_class=HTMLResponse)
@@ -218,9 +341,9 @@ def ra_detail(ra_id: int, request: Request, db: Session = Depends(get_db)):
     if not ra:
         return RedirectResponse("/returns/", status_code=303)
     return templates.TemplateResponse(
+        request,
         "returns/workspace.html",
         {
-            "request": request,
             "ra": ra,
             "RAStatus": RAStatus,
             "ReturnDisposition": ReturnDisposition,
@@ -377,8 +500,7 @@ def ra_print(ra_id: int, request: Request, db: Session = Depends(get_db)):
     if ra is None:
         return RedirectResponse("/returns/", status_code=303)
     ctx = _ra_print_context(ra, db)
-    ctx["request"] = request
-    return templates.TemplateResponse("returns/print.html", ctx)
+    return templates.TemplateResponse(request, "returns/print.html", ctx)
 
 
 @router.get("/{ra_id}/pdf")
