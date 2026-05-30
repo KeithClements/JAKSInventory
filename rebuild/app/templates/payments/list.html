@@ -13,6 +13,7 @@
 {% from "macros/bulk_toolbar.html"  import bulk_toolbar %}
 {% from "macros/chips.html"         import status_chip %}
 {% from "macros/empty_state.html"   import empty_state %}
+{% from "macros/preview_dock.html"  import preview_dock_shell %}
 {{ operational_list_script() }}
 
 {# ── Backend-contract guard: tab + counts arrive when backend adds them ───────
@@ -38,8 +39,8 @@
   'cash':           ('bg-green-50 text-green-700',   'bg-green-500',   'Cash'),
   'check':          ('bg-blue-50 text-blue-700',     'bg-blue-500',    'Check'),
   'credit_card':    ('bg-purple-50 text-purple-700', 'bg-purple-500',  'Card'),
-  'ach':            ('bg-indigo-50 text-indigo-700', 'bg-indigo-500',  'ACH'),
-  'wire':           ('bg-cyan-50 text-cyan-700',     'bg-cyan-500',    'Wire'),
+  'ach':            ('bg-blue-50 text-blue-700',     'bg-blue-500',    'ACH'),
+  'wire':           ('bg-sky-50 text-sky-700',       'bg-sky-500',     'Wire'),
   'account_credit': ('bg-gray-100 text-gray-700',    'bg-gray-400',    'Credit'),
 } %}
 
@@ -309,12 +310,8 @@
 
 {% endif %}
 
-{# ── Preview dock — DEFERRED until Backend lands GET /payments/preview/{id}
-   Once the route is registered (before /{id}), uncomment the two lines below,
-   add the import at the top, and remove this comment block.
-   {% from "macros/preview_dock.html" import preview_dock_shell %}
-   {{ preview_dock_shell('Payment Preview', 'payment-preview-body') }}
-────────────────────────────────────────────────────────────────────────────── #}
+{# ── Preview dock — §7 Primitive 5 ───────────────────────────────────────── #}
+{{ preview_dock_shell('Payment Preview', 'payment-preview-body') }}
 
 </div>{# end operationalListData wrapper #}
 {% endblock %}

@@ -4,6 +4,13 @@
 
 {% block header_actions %}
   <a href="/products/" class="text-sm text-gray-500 hover:text-gray-700">← Products</a>
+  {% if product.is_active %}
+  <button type="button"
+          @click="$dispatch('open-adjust-inventory')"
+          class="btn-ghost btn-sm text-amber-700 border border-amber-200 hover:bg-amber-50 transition-colors ml-2">
+    Adjust Inventory
+  </button>
+  {% endif %}
   <div class="flex items-center gap-2 ml-4">
     {% for src_name, src_code in [('PAI', 'pai'), ('HHP', 'hhp'), ('ATL', 'atl')] %}
     <button type="button"
@@ -68,7 +75,11 @@
       <input type="hidden" name="reason" value="archived via UI" />
     </form>
 
-    <form method="post" action="/products/{{ product.id }}" class="max-w-3xl space-y-4">
+    <form method="post" action="/products/{{ product.id }}"
+          x-data="{ _dirty: false }"
+          @change="_dirty = true"
+          @input="_dirty = true"
+          class="max-w-3xl space-y-4">
 
       {# Identity card #}
       <div class="card">
@@ -302,6 +313,19 @@
       <div class="flex items-center gap-3">
         <button type="submit" class="btn-primary">Save Changes</button>
         <a href="/products/" class="btn-secondary">Cancel</a>
+        {# Save indicator — shows dirty state / clean state (mirrors §8C Quote workspace pattern) #}
+        <span x-show="_dirty" x-cloak
+              class="inline-flex items-center gap-1 text-xs text-amber-600 font-medium">
+          <span class="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0"></span>
+          Unsaved changes
+        </span>
+        <span x-show="!_dirty"
+              class="inline-flex items-center gap-1 text-xs text-gray-400">
+          <svg class="w-3 h-3 text-green-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+          </svg>
+          All changes saved
+        </span>
         <button type="submit" form="deactivate-form"
                 class="ml-auto rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors">
           Archive Product
@@ -478,11 +502,12 @@
       </div>
     </div>
 
-    <div class="card">
+    {# overflow-visible so the select dropdown isn't clipped by the card boundary #}
+    <div class="card" style="overflow: visible">
       <div class="card-header">
         <h2 class="card-title">Add Cross Reference</h2>
       </div>
-      <div class="card-body">
+      <div class="card-body" style="overflow: visible">
         <form hx-post="/products/{{ product.id }}/cross-refs"
               hx-target="#cross-refs-body"
               hx-swap="beforeend"
@@ -617,11 +642,40 @@
               hx-swap="beforeend"
               hx-on::after-request="this.reset()"
               class="grid grid-cols-3 gap-4">
-          <div>
-            <label class="form-label">SKU <span class="text-red-500">*</span></label>
-            <input name="sku" type="text" placeholder="e.g. JAKS-PAI-12345"
-                   class="form-input font-mono" />
-            <p class="mt-0.5 text-xs text-gray-400">Exact SKU of the product to suggest</p>
+          <div x-data="{ _q: '', _sku: '', _showRes: false }"
+               @product-selected.window="
+                 if ($event.detail.sku) {
+                   _sku = $event.detail.sku;
+                   _q   = $event.detail.sku + ' — ' + $event.detail.desc;
+                   _showRes = false;
+                   var r = $refs.ssRes; if (r) r.innerHTML = '';
+                 }
+               ">
+            <label class="form-label">Product <span class="text-red-500">*</span></label>
+            <input type="hidden" name="sku" :value="_sku" />
+            <div class="relative">
+              <input type="text" x-model="_q"
+                     @input="_showRes = true; _sku = ''"
+                     @keydown.escape="_showRes = false"
+                     placeholder="Search by SKU or title…"
+                     autocomplete="off"
+                     class="form-input"
+                     hx-get="/purchase-orders/_/product-search"
+                     hx-trigger="input changed delay:250ms"
+                     hx-target="#ss-product-results"
+                     hx-params="q" />
+              <div id="ss-product-results" x-ref="ssRes"
+                   x-show="_showRes && _q.length >= 2"
+                   x-cloak
+                   @click.outside="_showRes = false"
+                   class="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200
+                          rounded-lg shadow-lg z-40 max-h-52 overflow-y-auto">
+              </div>
+            </div>
+            <p x-show="_sku" x-cloak class="mt-1 text-xs text-green-700">
+              <svg class="w-3 h-3 text-green-500 inline" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+              <span class="font-mono font-bold" x-text="_sku"></span> selected
+            </p>
           </div>
           <div>
             <label class="form-label">Type</label>
@@ -710,7 +764,10 @@
 
 {# ── Inventory Adjustment ──────────────────────────────────────────────── #}
 {% if product.is_active %}
-<div class="card border-amber-100 mt-6" x-data="{ open: false }">
+<div id="adjust-inventory"
+     class="card border-amber-100 mt-6"
+     x-data="{ open: false }"
+     @open-adjust-inventory.window="open = true; $nextTick(() => $el.scrollIntoView({behavior: 'smooth', block: 'start'}))">
   <div class="card-header">
     <div>
       <h3 class="card-title">Adjust Inventory</h3>
