@@ -13,17 +13,19 @@ Rules (all hard failures unless noted):
   Rule 3  [§3]  border-l-4 must NOT appear on <tr>; only on first <td>
   Rule 4  [§3]  Stripe colors outside the §3 permitted set
   Rule 5  [§4]  Color utility classes outside the permitted families  [advisory]
-  Rule 6  [§10] Inline x-transition:* / x-transition.* attributes (use motion.html macros)
+  Rule 6  [§10] Inline x-transition:* / x-transition.* (use motion.html macros)
+  Rule 7  [CSS] base.html must link compiled /static/css/app.css; no CDN fallback
 
 Every failure emits  file:line  so UI-Builder can fix screen by screen.
 
-Expected initial state:
-  Rule 1: ~781 violations (L1 backlog -- listed, not fixed here)
+Expected initial state after Tailwind cutover (2026-05-30):
+  Rule 1: ~721 violations (L1 backlog -- listed, not fixed here)
   Rule 2: violations on all un-upgraded list.html screens
-  Rule 3: 0 violations
+  Rule 3: 0 violations (clean)
   Rule 4: 6 violations (wrong shades in PO templates)
-  Rule 5: 63 advisory violations
-  Rule 6: 86 violations (inline x-transition, needs motion.html macros)
+  Rule 5: ~79 advisory violations
+  Rule 6: ~54 violations (inline x-transition, needs motion.html macros)
+  Rule 7: 0 violations (compiled CSS live, CDN removed)
 
 Do NOT fix templates in this file. Report only.
 """
@@ -361,6 +363,80 @@ def test_no_inline_x_transition():
 
 
 # ---------------------------------------------------------------------------
+# Rule 7 -- Compiled CSS guard: no CDN Tailwind in base.html
+# ---------------------------------------------------------------------------
+
+_BASE_HTML = TEMPLATES_DIR / "base.html"
+
+# The compiled stylesheet href we require (leading slash, no query string)
+_COMPILED_CSS_RE = re.compile(r'href=["\']/?static/css/app\.css["\']')
+# The CDN script that must NOT appear after the cutover
+_CDN_TAILWIND_RE = re.compile(r'cdn\.tailwindcss\.com')
+# Also ban the Play CDN <script> form used during development
+_CDN_SCRIPT_RE = re.compile(r'<script[^>]+cdn\.tailwindcss\.com')
+
+
+def test_compiled_css_no_cdn():
+    """[CSS] base.html must link the compiled stylesheet and must NOT reference the CDN.
+
+    After the Tailwind CLI cutover (2026-05-30):
+      REQUIRED: <link rel="stylesheet" href="/static/css/app.css">
+      FORBIDDEN: any reference to cdn.tailwindcss.com
+
+    This test acts as a regression guard: if the CDN script ever reappears
+    (e.g. a developer copies an old base.html snippet) the gate fails
+    immediately before the broken build ships.
+
+    The compiled file must exist on disk as well -- a dangling <link> is as bad
+    as the CDN fallback because the app will render unstyled.
+    """
+    if not _BASE_HTML.exists():
+        pytest.fail(f"base.html not found at expected path: {_BASE_HTML}")
+
+    content = _BASE_HTML.read_text(encoding="utf-8")
+    lines = content.splitlines()
+
+    failures: list[str] = []
+
+    # 1. Compiled <link> must be present
+    if not _COMPILED_CSS_RE.search(content):
+        failures.append(
+            "  MISSING: <link rel=\"stylesheet\" href=\"/static/css/app.css\"> "
+            "not found in base.html"
+        )
+
+    # 2. No CDN reference anywhere in base.html
+    for lineno, line in enumerate(lines, 1):
+        if _CDN_TAILWIND_RE.search(line):
+            failures.append(
+                f"  FORBIDDEN cdn.tailwindcss.com at base.html:{lineno}\n"
+                f"    >>> {line.strip()}"
+            )
+
+    # 3. The compiled CSS file must exist on disk
+    css_path = REPO_ROOT / "app" / "static" / "css" / "app.css"
+    if not css_path.exists():
+        failures.append(
+            f"  MISSING FILE: app/static/css/app.css does not exist on disk.\n"
+            f"  Run: npx tailwindcss -i app/static/css/input.css "
+            f"-o app/static/css/app.css --minify"
+        )
+    elif css_path.stat().st_size < 10_000:
+        # A real compiled Tailwind build is typically 50-200 KB minified.
+        # Under 10 KB almost certainly means an empty / stub file.
+        failures.append(
+            f"  SUSPICIOUS: app/static/css/app.css is only "
+            f"{css_path.stat().st_size} bytes -- rebuild may be needed.\n"
+            f"  Run: npx tailwindcss -i app/static/css/input.css "
+            f"-o app/static/css/app.css --minify"
+        )
+
+    assert not failures, (
+        "\n[Rule 7 -- compiled CSS guard]\n" + "\n".join(failures)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Summary -- always passes, prints per-rule counts in CI log
 # ---------------------------------------------------------------------------
 
@@ -396,6 +472,15 @@ def test_lint_summary(capsys):
         1 for p in non_macro_templates() for ln in _read(p)
         if _XTRANSITION_RE.search(ln)
     )
+
+    # Rule 7 -- compiled CSS guard (simple pass/fail)
+    base_content = _BASE_HTML.read_text(encoding="utf-8") if _BASE_HTML.exists() else ""
+    css_ok = (
+        _COMPILED_CSS_RE.search(base_content)
+        and not _CDN_TAILWIND_RE.search(base_content)
+        and (REPO_ROOT / "app" / "static" / "css" / "app.css").exists()
+    )
+    counts["[CSS] compiled CSS live / no CDN"] = 0 if css_ok else 1
 
     with capsys.disabled():
         print("\n\n=== UI Lint Backlog ===")
