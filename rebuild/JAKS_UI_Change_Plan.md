@@ -446,8 +446,8 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 | 3 | Invoice List | ✅ L2 complete | L1 → L2 | Governance pass 2026-05-28. Red stripe for financial overdue — accepted + codified in §4. |
 | — | **Primitives extraction** | ✅ Complete (2026-05-29) | — | All 6 macros extracted + governance-approved. Products/PO/Invoice ported. See §7 as-built. |
 | 4 | Customer List | ✅ L2 complete | L1.5 → L2 | Governance pass approved 2026-05-29. All §2 + §2B fields satisfied (Balance Due, Open Invoices/Quotes/SOs, Cores, Last Sale, Terms). M1/M2 cosmetic deferred. |
-| 5 | Quotes List | 🟡 L2 conditional | L2 → L2 | **Governance pass 2026-05-29 — CONDITIONAL PASS.** All 11 §2 elements + §2B satisfied. One blocker held: AR warning chip (line 387, `# TODO` — needs open-balance from list route). Becomes ✅ L2 the moment the AR chip lands; no re-review needed. 5 non-blocking cosmetics in §8 backlog. |
-| 6 | Sales Orders List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
+| 5 | Quotes List | ✅ L2 complete | L2 → L2 | **Governance pass 2026-05-29 — FULL PASS.** All 11 §2 elements + §2B complete. AR chip landed: `ar_map` bulk-computed in route (open invoices group-by, zero N+1), rendered with overdue/open split in template. 5 non-blocking cosmetics in §8F. |
+| 6 | Sales Orders List | 🟡 ONE BLOCKER | L1 → L2 | Governance pass 2026-05-29 — **SEND BACK: preview dock is commented out.** Fix is 2 lines (see as-built record). Everything else passes. Re-verify then ✅ L2 — no full re-review. |
 | 7 | Vendors List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
 | 8 | Returns List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
 | 9 | Payments List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
@@ -554,9 +554,9 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 
 ---
 
-#### Quotes List — As-Built Record — 🟡 L2 conditional (governance 2026-05-29)
+#### Quotes List — As-Built Record — ✅ L2 complete (governance 2026-05-29)
 
-**Governance pass: CONDITIONAL PASS — L2 complete once AR chip lands. No re-review needed.**
+**Governance pass: FULL PASS. AR chip landed; all §2 + §2B verified.**
 
 All 11 §2 structural elements verified present:
 - `pb-52` wrapper · `divide-y divide-gray-100` tbody · `overflow-x-auto` + `min-w-[1040px]` ·
@@ -568,10 +568,11 @@ All 11 §2 structural elements verified present:
 Follow-up date / status with overdue flag · Customer terms chip (`terms_map`) · Line count ·
 Valid-until date · Conversion status chip ✅
 
-**One conditional item (self-documented by builder):**
-- AR warning chip at `app/templates/quotes/list.html:387` — comment `# TODO: AR warning chip (needs
-  open-balance data from route)`. The preview route already computes `ar_overdue_count`; the list route
-  needs to pass customer balance data. **Flip to ✅ when the chip lands — no re-review.**
+**AR chip — LANDED (cleared 2026-05-29):**
+`ar_map` bulk-computed in `list_quotes` route using `defaultdict` over open invoices grouped by
+`customer_id` — zero N+1 queries. Passes `open_balance` (float, sum of `balance_due`) and
+`is_overdue` (bool). Template renders chip with two variants: `bg-red-100` (overdue) or
+`bg-amber-50` (open, not yet overdue). Amount displayed as `Overdue $NNN` / `AR $NNN`.
 
 **Accepted decisions:**
 - `emerald-*` color for Converted status chip — accepted (green family, semantically correct for
@@ -587,6 +588,43 @@ Valid-until date · Conversion status chip ✅
 3. `emerald-*` chip → align to `green-*` family
 4. Empty state: 2-case logic → spec prefers 3-case
 5. New Quote modal inline `x-transition:*` → should use motion macros (rule introduced 2026-05-29)
+
+---
+
+#### Sales Orders List — As-Built Record — 🟡 ONE BLOCKER (governance 2026-05-29)
+
+**Governance pass: SEND BACK — one functional blocker. Everything else passes. No full re-review needed after fix.**
+
+**Blocker — preview dock commented out (Builder fix required, 2 lines):**
+- `app/templates/sales_orders/list.html` line 19-25 — add this import after line 24:
+  `{% from "macros/preview_dock.html" import preview_dock_shell %}`
+- Lines 345-349 — replace the entire comment block with:
+  `{{ preview_dock_shell('Sales Order Preview', 'so-preview-body') }}`
+
+**Why this matters:** Without the dock, `togglePreview()` calls `document.getElementById('so-preview-body').innerHTML = ...` on a null element — runtime `TypeError` on every row click. The template already has `operationalListData('so-preview-body', '/sales-orders/preview/', [...])` wired correctly. The backend route `GET /sales-orders/preview/{so_id}` is registered and returns `sales_orders/_preview_panel.html`. The builder commented it out assuming the route wasn't live yet; it is.
+
+**What passes:**
+- `pb-52` wrapper ✅ · `divide-y divide-gray-100` tbody ✅ · `overflow-x-auto` + `min-w-[1100px]` ✅
+- `border-l-4` on first `<td>` (checkbox cell) ✅ · stripe semantics: red=cancelled, amber=hold, blue=open/partial, transparent=fulfilled/invoiced ✅
+- `filter_tabs` macro (7 tabs: All/Open/Partial/On Hold/Fulfilled/Invoiced/Cancelled) ✅
+- **Tab counts from full unfiltered dataset** ✅ (group_by before any filter applied)
+- **Search hidden input: `name="tab"` `value="{{ active_tab }}"`** ✅ (spec-clean, unlike Quotes)
+- `bulk_toolbar` macro ✅ · `status_chip` macro ✅ · `operationalListData` factory ✅
+- `@click.stop` on checkbox + action `<td>` ✅ · `cursor-pointer hover:bg-gray-50/80 transition-colors group` ✅
+- `empty_state` macro with 3-case logic (passes `q` + `active_tab` to macro) ✅
+- Preview route `/preview/{so_id}` registered before `/{so_id}` ✅ (lines 184 vs 220 in router)
+- No `tbl-*` classes ✅ · All `<td>` use `px-4 py-4 align-middle` ✅ (correct `py-4`, not `py-3.5`)
+
+**§2B fields all present:** SO # + line count + B/O flag · Customer + terms chip · PO # / ESN ·
+Fulfillment status + qty filled/ordered progress · Payment mode + deposit amount · Invoice status ·
+Total. Ship/tracking column absent — no tracking data in model yet (non-blocking, flag for later).
+
+**Non-blocking cosmetics:**
+- `emerald-*` chip for Invoiced status — same as Quotes; should align to `green-*` family (§4)
+- `sky-*` chip for Deposit payment mode — not in §4 permitted families; replace with `blue-*`
+- Ship/tracking column absent — add when `SalesOrder.tracking_number` or equivalent exists in model
+
+**Accepted:** Backend-contract guard at lines 31-37 (stub `_counts` if route doesn't pass `counts`) — pragmatic template resilience; accepted.
 
 ---
 
