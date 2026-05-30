@@ -1,7 +1,7 @@
 # JAKS UI Change Plan
 *Living document — updated as screens are built.*
 
-**Status:** Products List ✅ L2 ref · PO List ✅ L2 · Invoice List ✅ L2 · Customer List ✅ L2 (governance 2026-05-29) · Invoice Workspace ✅ L3 (governance PASS 2026-05-29) · Primitives extraction ✅ · **Build quality pass ✅ 2026-05-29** (Tailwind infra, class-token spec §17, motion macros) · **Phase 2 pending:** npm install → build:css → remove CDN block (high priority — gates QA visual snapshots) · Quotes List ⏳ awaiting Builder submission for governance pass · §8B workspace action-header standard ⏳ drafting next.
+**Status:** Products List ✅ L2 ref · PO List ✅ L2 · Invoice List ✅ L2 · Customer List ✅ L2 · Invoice Workspace ✅ L3 · Quotes List ✅ L2 (governance 2026-05-29) · Sales Orders List 🟡 one blocker (dock uncomment) · Primitives extraction ✅ · **Compiled Tailwind ✅ LIVE** (CDN removed 2026-05-29, app.css 77.7 KB, no FOUC, no CDN request) · **§8B workspace action-header standard ⏳ drafting next.**
 
 **Scope:** All list and workspace screens in the JAKS Inventory ERP system.
 
@@ -968,28 +968,18 @@ this conversation.
    Activity pills use `rounded-full`; system standard is `rounded-lg`. Cosmetic only.
    `app/templates/customers/list.html:286,294,303,312`.
 
-#### 8D. Compiled CSS Cut-over — HIGH PRIORITY (gates QA visual snapshots)
+#### 8D. Compiled CSS Cut-over — ✅ COMPLETE (2026-05-29)
 
-**Owner:** UI Architect lane. **Blocked on:** Node.js installation.
+**Node v24.16.0 + npm 11.13.0. Build ran 2026-05-29. CDN removed. FOUC eliminated.**
 
-Once Node.js is available on this machine:
-1. `npm install` (one-time, ~30s)
-2. `npm run build:css` (produces `app/static/css/app.css`, ~5s)
-3. Delete the `{# DEV FALLBACK #}` block in `app/templates/base.html` — the `window.tailwind`
-   config script and the `<script src="https://cdn.tailwindcss.com">` line immediately below it.
-4. Smoke-test: `GET /products/`, `/purchase-orders/`, `/invoices/`, `/customers/` — confirm
-   styling identical, no FOUC, screenshot tool no longer times out.
-5. Commit as "Phase 2: activate compiled Tailwind CSS, remove CDN dev fallback".
-
-**Why high priority:** The CDN adds ~8s page-weight before Alpine can initialise and before
-screenshot tools can capture a stable frame. QA's visual regression snapshots block on this.
-The compiled file also enables the §1–17 class-token lint gate in CI.
-
-**Standalone CLI alternative (no Node.js):** Download `tailwindcss-windows-x64.exe` from
-https://github.com/tailwindlabs/tailwindcss/releases and run:
-```
-tailwindcss-windows-x64.exe -i app/static/css/input.css -o app/static/css/app.css --minify
-```
+- `app.css` 77.7 KB compiled output, serving 200 OK, no `cdn.tailwindcss.com` request confirmed.
+- Two `@apply` violations fixed during build: `@apply group` and `@apply group-hover:opacity-100`
+  are not permitted by the CLI. Fixed by removing `group` from `.tbl-row @apply` (add in HTML)
+  and replacing `group-hover:opacity-100` with `.group:hover .row-actions { opacity: 1; }`.
+- `app.css` committed for dev parity (other lanes without Node can still run the app).
+  **Gitignore app.css in CI/CD pipelines** — rebuild from source on deploy.
+- To rebuild: `npm run build:css` (or `npm run watch:css` during active template work).
+- Node is at `C:\Program Files\nodejs\` — add to system PATH to use `npm` without full path.
 
 ---
 
