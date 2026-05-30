@@ -6,12 +6,13 @@ import json
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.constants import PaymentTerms
+from app.constants import PaymentTerms, POStatus, VendorBillStatus, VendorCreditStatus
 from app.deps import get_db
-from app.models.vendor import Vendor
-from app.models.purchase_order import PurchaseOrder
+from app.models.vendor import Vendor, VendorCredit
+from app.models.purchase_order import PurchaseOrder, VendorBill
 from app.models.product import ProductVendorSource
 
 router = APIRouter(prefix="/vendors", tags=["vendors"])
@@ -21,17 +22,129 @@ PAYMENT_TERMS = list(PaymentTerms)
 
 
 @router.get("/", response_class=HTMLResponse)
-def vendor_list(request: Request, db: Session = Depends(get_db)):
-    vendors = db.query(Vendor).filter(Vendor.is_active == True).order_by(Vendor.name).all()
+def vendor_list(
+    request: Request,
+    tab: str = "",
+    q: str = "",
+    db: Session = Depends(get_db),
+):
+    # ── Unfiltered tab counts ─────────────────────────────────────────────
+    _v_active   = db.query(func.count(Vendor.id)).filter(Vendor.is_active == True).scalar()  or 0
+    _v_inactive = db.query(func.count(Vendor.id)).filter(Vendor.is_active == False).scalar() or 0
+    counts: dict = {
+        "":         _v_active,
+        "active":   _v_active,
+        "inactive": _v_inactive,
+        "all":      _v_active + _v_inactive,
+    }
+
+    # `tab` drives the active filter; default shows active vendors.
+    active_tab = tab if tab in ("active", "inactive", "all") else "active"
+
+    vendor_query = db.query(Vendor).order_by(Vendor.name)
+    if active_tab == "inactive":
+        vendor_query = vendor_query.filter(Vendor.is_active == False)
+    elif active_tab == "all":
+        pass
+    else:
+        vendor_query = vendor_query.filter(Vendor.is_active == True)
+    if q:
+        vendor_query = vendor_query.filter(
+            Vendor.name.ilike(f"%{q}%") | Vendor.vendor_code.ilike(f"%{q}%")
+        )
+    vendors = vendor_query.all()
+
+    # ── Bulk §2B aggregates (no N+1) ─────────────────────────────────────
+    _vids = [v.id for v in vendors]
+
+    OPEN_PO_STATUSES = [
+        POStatus.VERBAL_ORDER, POStatus.DRAFT, POStatus.SENT, POStatus.PARTIAL,
+    ]
+    open_po_map: dict = dict(
+        db.query(PurchaseOrder.vendor_id, func.count(PurchaseOrder.id))
+        .filter(PurchaseOrder.vendor_id.in_(_vids), PurchaseOrder.status.in_(OPEN_PO_STATUSES))
+        .group_by(PurchaseOrder.vendor_id)
+        .all()
+    ) if _vids else {}
+
+    open_bill_map: dict = dict(
+        db.query(PurchaseOrder.vendor_id, func.count(VendorBill.id))
+        .join(VendorBill, VendorBill.po_id == PurchaseOrder.id)
+        .filter(
+            PurchaseOrder.vendor_id.in_(_vids),
+            VendorBill.status.in_([VendorBillStatus.PENDING, VendorBillStatus.DISCREPANCY]),
+        )
+        .group_by(PurchaseOrder.vendor_id)
+        .all()
+    ) if _vids else {}
+
+    # credit_map: {vendor_id: {"count": int, "amount": float}}
+    _credit_rows = (
+        db.query(
+            VendorCredit.vendor_id,
+            func.count(VendorCredit.id),
+            func.sum(VendorCredit.amount),
+        )
+        .filter(
+            VendorCredit.vendor_id.in_(_vids),
+            VendorCredit.status == VendorCreditStatus.OPEN,
+        )
+        .group_by(VendorCredit.vendor_id)
+        .all()
+    ) if _vids else []
+    credit_map: dict = {
+        vid: {"count": cnt, "amount": round(amt or 0.0, 2)}
+        for vid, cnt, amt in _credit_rows
+    }
+
+    last_po_map: dict = dict(
+        db.query(PurchaseOrder.vendor_id, func.max(PurchaseOrder.created_at))
+        .filter(PurchaseOrder.vendor_id.in_(_vids))
+        .group_by(PurchaseOrder.vendor_id)
+        .all()
+    ) if _vids else {}
+
+    lead_time_map: dict = {
+        vid: round(avg_days)
+        for vid, avg_days in (
+            db.query(
+                ProductVendorSource.vendor_id,
+                func.avg(ProductVendorSource.lead_time_days),
+            )
+            .filter(
+                ProductVendorSource.vendor_id.in_(_vids),
+                ProductVendorSource.lead_time_days.isnot(None),
+                ProductVendorSource.is_active == True,  # noqa: E712
+            )
+            .group_by(ProductVendorSource.vendor_id)
+            .all()
+        )
+        if avg_days is not None
+    } if _vids else {}
+
     return templates.TemplateResponse(
+        request,
         "vendors/list.html",
-        {"request": request, "vendors": vendors},
+        {
+            "request":      request,
+            "vendors":      vendors,
+            "active_tab":   active_tab,
+            "counts":       counts,
+            "q":            q,
+            # §2B aggregate maps (keyed by vendor_id)
+            "open_po_map":   open_po_map,
+            "open_bill_map": open_bill_map,
+            "credit_map":    credit_map,
+            "last_po_map":   last_po_map,
+            "lead_time_map": lead_time_map,
+        },
     )
 
 
 @router.get("/new", response_class=HTMLResponse)
 def vendor_new(request: Request):
     return templates.TemplateResponse(
+        request,
         "vendors/new.html",
         {"request": request, "payment_terms": PAYMENT_TERMS},
     )
@@ -61,7 +174,7 @@ async def vendor_create(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/quick-create-form", response_class=HTMLResponse)
 def vendor_quick_create_form(request: Request):
-    return templates.TemplateResponse("vendors/_quick_create.html", {"request": request})
+    return templates.TemplateResponse(request, "vendors/_quick_create.html")
 
 
 @router.post("/quick-create", response_class=HTMLResponse)
@@ -103,6 +216,89 @@ async def vendor_quick_create(request: Request, db: Session = Depends(get_db)):
     )
 
 
+# ── Preview panel — MUST stay registered before /{vendor_id} ─────────────────
+
+@router.get("/preview/{vendor_id}", response_class=HTMLResponse)
+def vendor_preview_panel(vendor_id: int, request: Request, db: Session = Depends(get_db)):
+    """
+    Bottom-dock preview partial for the Vendor List (§7 Primitive 5).
+    Loaded via htmx.ajax() on row click; returns vendors/_preview_panel.html.
+
+    Context published to UI lane:
+      vendor         — Vendor ORM object (with .contacts, .purchase_orders)
+      open_po_count  — int
+      open_bill_count— int
+      credit_count   — int
+      credit_amount  — float
+      last_po_date   — datetime | None
+      avg_lead_days  — int | None
+      POStatus       — enum class
+    """
+    v = db.query(Vendor).filter(Vendor.id == vendor_id).first()
+    if v is None:
+        return HTMLResponse(
+            '<p class="px-6 py-4 text-sm text-red-500">Vendor not found.</p>',
+            status_code=404,
+        )
+
+    OPEN_PO_STATUSES = [
+        POStatus.VERBAL_ORDER, POStatus.DRAFT, POStatus.SENT, POStatus.PARTIAL,
+    ]
+    open_po_count: int = (
+        db.query(func.count(PurchaseOrder.id))
+        .filter(PurchaseOrder.vendor_id == vendor_id, PurchaseOrder.status.in_(OPEN_PO_STATUSES))
+        .scalar() or 0
+    )
+    open_bill_count: int = (
+        db.query(func.count(VendorBill.id))
+        .join(PurchaseOrder, VendorBill.po_id == PurchaseOrder.id)
+        .filter(
+            PurchaseOrder.vendor_id == vendor_id,
+            VendorBill.status.in_([VendorBillStatus.PENDING, VendorBillStatus.DISCREPANCY]),
+        )
+        .scalar() or 0
+    )
+    _credit = (
+        db.query(func.count(VendorCredit.id), func.sum(VendorCredit.amount))
+        .filter(VendorCredit.vendor_id == vendor_id, VendorCredit.status == VendorCreditStatus.OPEN)
+        .first()
+    )
+    credit_count: int   = _credit[0] or 0
+    credit_amount: float = round(_credit[1] or 0.0, 2)
+
+    last_po_date = (
+        db.query(func.max(PurchaseOrder.created_at))
+        .filter(PurchaseOrder.vendor_id == vendor_id)
+        .scalar()
+    )
+    avg_lead = (
+        db.query(func.avg(ProductVendorSource.lead_time_days))
+        .filter(
+            ProductVendorSource.vendor_id == vendor_id,
+            ProductVendorSource.lead_time_days.isnot(None),
+            ProductVendorSource.is_active == True,  # noqa: E712
+        )
+        .scalar()
+    )
+    avg_lead_days: int | None = round(avg_lead) if avg_lead is not None else None
+
+    return templates.TemplateResponse(
+        request,
+        "vendors/_preview_panel.html",
+        {
+            "request":        request,
+            "vendor":         v,
+            "open_po_count":  open_po_count,
+            "open_bill_count":open_bill_count,
+            "credit_count":   credit_count,
+            "credit_amount":  credit_amount,
+            "last_po_date":   last_po_date,
+            "avg_lead_days":  avg_lead_days,
+            "POStatus":       POStatus,
+        },
+    )
+
+
 @router.get("/{vendor_id}", response_class=HTMLResponse)
 def vendor_detail(vendor_id: int, request: Request, db: Session = Depends(get_db)):
     v = db.query(Vendor).filter(Vendor.id == vendor_id).first()
@@ -127,9 +323,9 @@ def vendor_detail(vendor_id: int, request: Request, db: Session = Depends(get_db
     )
 
     return templates.TemplateResponse(
+        request,
         "vendors/detail.html",
         {
-            "request": request,
             "vendor": v,
             "recent_pos": recent_pos,
             "product_count": product_count,
