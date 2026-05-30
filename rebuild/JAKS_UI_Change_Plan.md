@@ -446,7 +446,7 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 | 3 | Invoice List | ✅ L2 complete | L1 → L2 | Governance pass 2026-05-28. Red stripe for financial overdue — accepted + codified in §4. |
 | — | **Primitives extraction** | ✅ Complete (2026-05-29) | — | All 6 macros extracted + governance-approved. Products/PO/Invoice ported. See §7 as-built. |
 | 4 | Customer List | ✅ L2 complete | L1.5 → L2 | Governance pass approved 2026-05-29. All §2 + §2B fields satisfied (Balance Due, Open Invoices/Quotes/SOs, Cores, Last Sale, Terms). M1/M2 cosmetic deferred. |
-| 5 | Quotes List | ⏳ Pending | L2 → L2 | Has tabs + divide-y. Needs: border-l-4 stripe, preview dock, pb-52. Alignment pass after Customer List. |
+| 5 | Quotes List | 🟡 L2 conditional | L2 → L2 | **Governance pass 2026-05-29 — CONDITIONAL PASS.** All 11 §2 elements + §2B satisfied. One blocker held: AR warning chip (line 387, `# TODO` — needs open-balance from list route). Becomes ✅ L2 the moment the AR chip lands; no re-review needed. 5 non-blocking cosmetics in §8 backlog. |
 | 6 | Sales Orders List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
 | 7 | Vendors List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
 | 8 | Returns List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
@@ -551,6 +551,42 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 **Do not invent anything.** If a situation arises that isn't covered by this brief or the reference screens, ask before building.
 
 **Submit for governance review** when complete — do not self-mark as L2.
+
+---
+
+#### Quotes List — As-Built Record — 🟡 L2 conditional (governance 2026-05-29)
+
+**Governance pass: CONDITIONAL PASS — L2 complete once AR chip lands. No re-review needed.**
+
+All 11 §2 structural elements verified present:
+- `pb-52` wrapper · `divide-y divide-gray-100` tbody · `overflow-x-auto` + `min-w-[1040px]` ·
+  `border-l-4` stripe on first `<td>` (checkbox cell) · `filter_tabs` macro (7 tabs incl. Follow-up Due) ·
+  `bulk_toolbar` macro · `status_chip` macro · `operationalListData` factory · `preview_dock_shell` macro ·
+  Row click → `togglePreview()` · `@click.stop` on checkbox + action `<td>` ✅
+
+§2B fields verified: Total · Margin % (computed inline from loaded lines, cost×qty vs subtotal) ·
+Follow-up date / status with overdue flag · Customer terms chip (`terms_map`) · Line count ·
+Valid-until date · Conversion status chip ✅
+
+**One conditional item (self-documented by builder):**
+- AR warning chip at `app/templates/quotes/list.html:387` — comment `# TODO: AR warning chip (needs
+  open-balance data from route)`. The preview route already computes `ar_overdue_count`; the list route
+  needs to pass customer balance data. **Flip to ✅ when the chip lands — no re-review.**
+
+**Accepted decisions:**
+- `emerald-*` color for Converted status chip — accepted (green family, semantically correct for
+  completed conversion). Logged as cosmetic for future unification to `green-*`.
+- Truck-down urgency dot (`animate-pulse`) — approved pattern, aligns with operational urgency intent.
+- Legend row for urgency indicators — non-standard but genuinely useful; accepted.
+- `trapFocus` inline `<script>` — builder added focus trap to New Quote modal (pre-dates §8E sweep);
+  acceptable; can be moved to a shared primitive in the a11y sweep.
+
+**Non-blocking cosmetics (see §8F):**
+1. Search hidden input: `name="status"` → should be `name="tab"` for spec compliance
+2. Row padding: `py-3.5` → spec is `py-4`
+3. `emerald-*` chip → align to `green-*` family
+4. Empty state: 2-case logic → spec prefers 3-case
+5. New Quote modal inline `x-transition:*` → should use motion macros (rule introduced 2026-05-29)
 
 ---
 
@@ -972,6 +1008,32 @@ Screens in scope:
 
 Deliverable: a punched list of specific inconsistencies + a proposed standard for the header strip,
 submitted to the Architect for approval before any template changes.
+
+#### 8F. Quotes List — Post-Governance Cosmetic Cleanup (low priority)
+
+Non-blocking items from the 2026-05-29 governance pass. Do not start without an Architect instruction.
+All five can be done in one small PR after the AR chip lands.
+
+1. **Search hidden input** — `app/templates/quotes/list.html:245`. Change `name="status"` →
+   `name="tab"`, `value="{{ status_filter }}"` → `value="{{ active_tab }}"`. The router back-compat
+   still works during the transition; this just makes the form consistent with the L2 standard.
+
+2. **Row padding** — `app/templates/quotes/list.html` — all `<td>` use `py-3.5`; spec is `py-4`.
+   One-pass find-replace.
+
+3. **`emerald-*` chip color** — `app/templates/quotes/list.html:272`. `bg-emerald-100 text-emerald-800`
+   / `bg-emerald-500` for Converted. Replace with `bg-green-50 text-green-700` / `bg-green-500`.
+   Aligns to §4 `green-*` = complete/success.
+
+4. **Empty state** — `app/templates/quotes/list.html:525-541`. Add third case: when both `q` and
+   `status_filter` are set, emit "No results for '{q}' in this filter" with separate clear-search
+   and clear-filter CTAs.
+
+5. **New Quote modal inline `x-transition`** — `app/templates/quotes/list.html:86-89, 98-101`.
+   Replace the six `x-transition:*` attributes on backdrop and panel with `{{ backdrop_fade() }}`
+   and `{{ modal_scale() }}` from `macros/motion.html`.
+
+---
 
 **Quote Workspace partial pass — Architect-approved & implemented 2026-05-29.** Owner testing of
 `quotes/workspace.html` surfaced three issues; fixes 2 & 3 approved and applied (verified live):
