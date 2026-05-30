@@ -8,40 +8,10 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  {# ── COMPILED CSS (Phase 1 — staged migration) ──────────────────────────
-     Canonical source: app/static/css/input.css  (design system components)
-     Config:           tailwind.config.js          (brand tokens, content paths)
-     Build command:    npm install && npm run build:css
-     Watch command:    npm run watch:css
-
-     Once app.css is built, the CDN below and the window.tailwind block can be
-     removed (Phase 2). Until then the CDN serves as dev fallback.
-     See JAKS_UI_Change_Plan.md §Build for step-by-step instructions. ─────── #}
+  {# ── Compiled Tailwind CSS — built from app/static/css/input.css ──────────
+     Tokens:  tailwind.config.js  (brand palette, font, content paths)
+     Rebuild: npm run build:css  |  Watch: npm run watch:css ─────────────── #}
   <link rel="stylesheet" href="/static/css/app.css">
-
-  {# ── DEV FALLBACK — Tailwind play-CDN (Phase 2: remove this block) ──────
-     Provides @apply processing and utilities while app.css is a placeholder.
-     window.tailwind config keeps the brand-* color family active under the CDN. #}
-  <script>
-    /* Brand palette for CDN — superseded by tailwind.config.js on compiled build */
-    window.tailwind = {
-      config: {
-        theme: {
-          extend: {
-            fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
-            colors: {
-              brand: {
-                '50':  '#f4f5e9', '100': '#e6e9cc', '200': '#cdd399',
-                '300': '#b0be71', '400': '#94a84e', '500': '#788436',
-                '600': '#5e6928', '700': '#4b5320', '800': '#363c18', '900': '#232710',
-              }
-            }
-          }
-        }
-      }
-    }
-  </script>
-  <script src="https://cdn.tailwindcss.com"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
