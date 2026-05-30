@@ -298,9 +298,13 @@ class SearchService(BaseService):
         q = query.strip()
         if not q:
             return []
+        _q_clean = re.sub(r"[^a-zA-Z0-9]", "", q)
+        _filters = [Quote.quote_number.ilike(f"%{q}%")]
+        if _q_clean and _q_clean.lower() != q.lower():
+            _filters.append(Quote.quote_number.ilike(f"%{_q_clean}%"))
         hits = (
             self.db.query(Quote)
-            .filter(Quote.quote_number.ilike(f"%{q}%"))
+            .filter(or_(*_filters))
             .order_by(Quote.created_at.desc())
             .limit(limit)
             .all()
@@ -320,11 +324,15 @@ class SearchService(BaseService):
         q = query.strip()
         if not q:
             return []
+        _q_clean = re.sub(r"[^a-zA-Z0-9]", "", q)
+        _so_filters = [SalesOrder.so_number.ilike(f"%{q}%")]
+        if _q_clean and _q_clean.lower() != q.lower():
+            _so_filters.append(SalesOrder.so_number.ilike(f"%{_q_clean}%"))
         hits = (
             self.db.query(SalesOrder)
             .filter(
                 or_(
-                    SalesOrder.so_number.ilike(f"%{q}%"),
+                    *_so_filters,
                     SalesOrder.customer_po_number.ilike(f"%{q}%"),
                     SalesOrder.esn.ilike(f"%{q}%"),
                 )

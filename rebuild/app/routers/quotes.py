@@ -193,17 +193,25 @@ async def list_quotes(
 # ── New Quote ─────────────────────────────────────────────────────────────────
 
 @router.get("/new", response_class=HTMLResponse)
-async def new_quote_form(request: Request, db: Session = Depends(get_db)):
+async def new_quote_form(
+    request: Request,
+    customer_id: int = 0,
+    db: Session = Depends(get_db),
+):
     customers = (
         db.query(Customer)
         .filter(Customer.is_active == True)  # noqa: E712
         .order_by(Customer.company_name)
         .all()
     )
+    selected_customer = (
+        db.query(Customer).filter(Customer.id == customer_id).first()
+        if customer_id else None
+    )
     return templates.TemplateResponse(
         request,
         "quotes/new.html",
-        {"customers": customers},
+        {"customers": customers, "selected_customer_id": customer_id, "selected_customer": selected_customer},
     )
 
 
