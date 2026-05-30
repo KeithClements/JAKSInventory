@@ -16,114 +16,337 @@
 {% endblock %}
 
 {% block content %}
-{# ── Filters ── #}
-<div class="flex items-center justify-between mb-4 gap-4 flex-wrap">
-  <div class="flex items-center gap-1 bg-gray-100 rounded-lg p-1 flex-wrap">
-    {% set tabs = [
-      ('',                   'All'),
-      (SOStatus.OPEN,        'Open'),
-      (SOStatus.PARTIAL,     'Partial'),
-      (SOStatus.HOLD,        'On Hold'),
-      (SOStatus.FULFILLED,   'Fulfilled'),
-      (SOStatus.INVOICED,    'Invoiced'),
-      (SOStatus.CANCELLED,   'Cancelled'),
-    ] %}
-    {% for val, label in tabs %}
-    <a href="/sales-orders/?status={{ val }}&q={{ q }}"
-       class="px-3 py-1.5 text-sm font-medium rounded-md transition-colors
-              {% if status_filter == val %}bg-white shadow text-brand-700{% else %}text-gray-600 hover:text-gray-900{% endif %}">
-      {{ label }}
-    </a>
-    {% endfor %}
-  </div>
+{# ── §7 macro library ──────────────────────────────────────────────────────── #}
+{% from "macros/list_behavior.html" import operational_list_script %}
+{% from "macros/filter_tabs.html"   import filter_tabs %}
+{% from "macros/bulk_toolbar.html"  import bulk_toolbar %}
+{% from "macros/chips.html"         import status_chip %}
+{% from "macros/empty_state.html"   import empty_state %}
+{{ operational_list_script() }}
 
-  <form method="get" action="/sales-orders/" class="flex items-center gap-2">
-    <input type="hidden" name="status" value="{{ status_filter }}" />
-    <input type="text" name="q" value="{{ q }}"
-           placeholder="SO#, customer, PO#, ESN…"
-           class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-56
-                  focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
-    <button type="submit"
-            class="px-3 py-1.5 bg-gray-100 text-gray-700 text-sm rounded-lg hover:bg-gray-200 transition-colors">
-      Search
-    </button>
-  </form>
-</div>
+{# ── Backend-contract guard: tab param arrives once backend adds counts ───────
+   Until then fall back to the query string so the toolbar renders without errors.
+   When backend adds GET /sales-orders/?tab= support, it will pass active_tab+counts.
+────────────────────────────────────────────────────────────────────────────── #}
+{% set active_tab = active_tab if active_tab is defined else request.query_params.get('tab', '') %}
+{% if counts is defined and counts %}
+  {% set _counts = counts %}
+{% else %}
+  {# Stub zeros — backend will replace once tab counts are computed #}
+  {% set _counts = {'all':0,'open':0,'partial':0,'hold':0,'fulfilled':0,'invoiced':0,'cancelled':0} %}
+{% endif %}
 
-{# ── Table ── #}
-{% set so_badges = {
-  'open':      'badge-blue',
-  'partial':   'badge-amber',
-  'hold':      'badge-amber',
-  'fulfilled': 'badge-green',
-  'invoiced':  'badge-green',
-  'cancelled': 'badge-gray',
+{# ── Status chip + stripe color maps (§4 semantics) ──────────────────────── #}
+{% set so_chip = {
+  'open':      ('bg-blue-50 text-blue-700',        'bg-blue-500',    'Open'),
+  'partial':   ('bg-amber-50 text-amber-700',       'bg-amber-500',   'Partial'),
+  'hold':      ('bg-amber-100 text-amber-800',      'bg-amber-500',   'On Hold'),
+  'fulfilled': ('bg-green-50 text-green-700',       'bg-green-500',   'Fulfilled'),
+  'invoiced':  ('bg-emerald-100 text-emerald-800',  'bg-emerald-500', 'Invoiced'),
+  'cancelled': ('bg-gray-100 text-gray-600',        'bg-gray-400',    'Cancelled'),
 } %}
 
+{# ── §2B Customer-terms chip map (§4 color semantics) ────────────────────── #}
+{% set terms_map = {
+  'cod':     ('bg-gray-100 text-gray-700',    'bg-gray-500',   'COD'),
+  'net_15':  ('bg-blue-50 text-blue-700',     'bg-blue-500',   'Net 15'),
+  'net_30':  ('bg-blue-50 text-blue-700',     'bg-blue-500',   'Net 30'),
+  'net_60':  ('bg-purple-50 text-purple-700', 'bg-purple-500', 'Net 60'),
+  'prepaid': ('bg-green-50 text-green-700',   'bg-green-500',  'Prepaid'),
+} %}
+
+{# ── §2B Payment-mode chip map ────────────────────────────────────────────── #}
+{% set pay_chip = {
+  'deposit': ('bg-sky-50 text-sky-700',     'bg-sky-500',    'Deposit'),
+  'prepaid': ('bg-green-50 text-green-700', 'bg-green-500',  'Prepaid'),
+  'net_30':  ('bg-blue-50 text-blue-700',   'bg-blue-500',   'Net 30'),
+} %}
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   OPERATIONAL LIST WRAPPER — pb-52 reserves dock clearance for the preview dock
+   (dock wired by backend once /sales-orders/preview/{id} route exists).
+══════════════════════════════════════════════════════════════════════════════ #}
+<div
+  class="space-y-4 pb-52"
+  x-data="operationalListData('so-preview-body', '/sales-orders/preview/', [{% for so in orders %}{{ so.id }}{% if not loop.last %},{% endif %}{% endfor %}])"
+>
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   TOOLBAR — tabs + search
+══════════════════════════════════════════════════════════════════════════════ #}
+<div class="flex flex-wrap items-center gap-3">
+
+  {# Filter tabs — counts are stub zeros until backend adds unfiltered counts #}
+  {% set so_tabs = [
+    ('',           'All',       _counts.get('all',       0)),
+    ('open',       'Open',      _counts.get('open',      0)),
+    ('partial',    'Partial',   _counts.get('partial',   0)),
+    ('hold',       'On Hold',   _counts.get('hold',      0)),
+    ('fulfilled',  'Fulfilled', _counts.get('fulfilled', 0)),
+    ('invoiced',   'Invoiced',  _counts.get('invoiced',  0)),
+    ('cancelled',  'Cancelled', _counts.get('cancelled', 0)),
+  ] %}
+  {{ filter_tabs(so_tabs, active_tab, q) }}
+
+  {# Search — hidden tab input preserves active tab on submit #}
+  <form method="get" class="flex items-center gap-2 ml-auto">
+    <input type="hidden" name="tab" value="{{ active_tab }}" />
+    <div class="relative">
+      <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+           fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
+      </svg>
+      <input name="q" value="{{ q }}" placeholder="SO #, customer, PO #, ESN…"
+             class="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white w-64
+                    focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400
+                    placeholder:text-gray-400" />
+    </div>
+    <button type="submit"
+            class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200
+                   rounded-lg hover:bg-gray-50 transition-colors">
+      Search
+    </button>
+    {% if q %}
+    <a href="?tab={{ active_tab }}"
+       class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</a>
+    {% endif %}
+  </form>
+
+</div>
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   BULK ACTION BAR — §7 Primitive 4
+══════════════════════════════════════════════════════════════════════════════ #}
+{% call bulk_toolbar() %}
+  <button class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">
+    Export CSV
+  </button>
+{% endcall %}
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   SALES ORDERS TABLE
+══════════════════════════════════════════════════════════════════════════════ #}
 {% if orders %}
-<div class="card">
+<div class="card overflow-hidden">
   <div class="overflow-x-auto">
-    <table class="tbl">
-      <thead class="tbl-head">
-        <tr>
-          <th class="tbl-th">SO #</th>
-          <th class="tbl-th">Customer</th>
-          <th class="tbl-th">PO # / ESN</th>
-          <th class="tbl-th-r">Lines</th>
-          <th class="tbl-th-r">Total</th>
-          <th class="tbl-th">Status</th>
-          <th class="tbl-th">Created</th>
+    <table class="w-full min-w-[1100px]">
+
+      {# ── Table head ── #}
+      <thead>
+        <tr class="bg-gray-50 border-b border-gray-200">
+          {# Select all — checkbox cell also carries the health stripe #}
+          <th class="w-10 px-4 py-3 text-center">
+            <input type="checkbox"
+                   :checked="allSelected"
+                   @change="toggleAll()"
+                   aria-label="Select all sales orders"
+                   class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            SO # / Lines
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Customer
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            PO # / ESN
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Fulfillment
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide hidden md:table-cell">
+            Payment
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide hidden lg:table-cell">
+            Invoice
+          </th>
+          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Total
+          </th>
+          <th class="px-4 py-3 w-12"></th>
         </tr>
       </thead>
-      <tbody>
+
+      {# ── Table body ── #}
+      <tbody class="divide-y divide-gray-100">
         {% for so in orders %}
-        <tr class="tbl-row">
-          <td class="tbl-td">
-            <a href="/sales-orders/{{ so.id }}" class="tbl-link font-mono text-xs">{{ so.so_number }}</a>
+
+        {# ── Per-row computed values ── #}
+        {% set qty_ord  = so.lines | sum(attribute='qty_ordered') %}
+        {% set qty_fill = so.lines | sum(attribute='qty_fulfilled') %}
+
+        {# Left-edge health stripe (§4 semantics):
+           red=cancelled(problem) · amber=hold(warning) · blue=open/partial(active) ·
+           transparent=fulfilled/invoiced(done) #}
+        {% if so.status == 'cancelled' %}{% set stripe = 'border-l-red-400' %}
+        {% elif so.status == 'hold' %}{% set stripe = 'border-l-amber-400' %}
+        {% elif so.status in ['fulfilled', 'invoiced'] %}{% set stripe = 'border-l-transparent' %}
+        {% else %}{% set stripe = 'border-l-blue-300' %}{% endif %}
+
+        {# Row tint follows stripe semantics #}
+        {# ── Row ── #}
+        <tr
+          @click="togglePreview({{ so.id }})"
+          :class="{
+            'ring-inset ring-1 ring-brand-300 bg-brand-50/40': previewId === {{ so.id }},
+            'bg-red-50/20':   '{{ so.status }}' === 'cancelled' && previewId !== {{ so.id }},
+            'bg-amber-50/20': '{{ so.status }}' === 'hold'      && previewId !== {{ so.id }},
+          }"
+          class="cursor-pointer hover:bg-gray-50/80 transition-colors group">
+
+          {# ── Checkbox — first <td> carries the left-edge health stripe ── #}
+          <td class="w-10 px-4 py-4 align-middle text-center border-l-4 {{ stripe }}"
+              @click.stop>
+            <input type="checkbox"
+                   :checked="isSelected({{ so.id }})"
+                   @change="toggleSelect({{ so.id }})"
+                   aria-label="Select {{ so.so_number }}"
+                   class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
           </td>
-          <td class="tbl-td font-medium text-gray-900">{{ so.customer.company_name }}</td>
-          <td class="tbl-td text-gray-500">
-            {% if so.customer_po_number %}<span class="font-mono text-xs">{{ so.customer_po_number }}</span>{% endif %}
-            {% if so.esn %}<span class="ml-1 text-xs text-gray-400">ESN: {{ so.esn }}</span>{% endif %}
-            {% if not so.customer_po_number and not so.esn %}—{% endif %}
+
+          {# ── §2B SO # + line count + backorder flag ────────────────────── #}
+          <td class="px-4 py-4 align-middle">
+            <a href="/sales-orders/{{ so.id }}" @click.stop
+               class="font-mono text-sm font-bold text-brand-700 hover:text-brand-900 hover:underline leading-none">
+              {{ so.so_number }}
+            </a>
+            <div class="flex items-center gap-1 mt-0.5 flex-wrap">
+              <span class="text-xs text-gray-400">
+                {{ so.lines | length }} line{{ 's' if so.lines | length != 1 }}
+              </span>
+              {% if so.has_backorder %}
+              <span class="inline-block px-1 py-0 rounded text-[10px] font-semibold bg-amber-50 text-amber-600 border border-amber-100">B/O</span>
+              {% endif %}
+            </div>
           </td>
-          <td class="tbl-td-r">{{ so.lines | length }}</td>
-          <td class="tbl-td-r font-medium">${{ '%.2f' % so.subtotal }}</td>
-          <td class="tbl-td">
-            <span class="{{ so_badges.get(so.status, 'badge-gray') }}">{{ so.status | title }}</span>
-            {% if so.payment_mode != 'none' %}
-            <span class="ml-1 inline-flex px-1.5 py-0.5 rounded text-xs bg-indigo-50 text-indigo-600">
-              {{ so.payment_mode | title }}
-            </span>
+
+          {# ── §2B Customer + terms chip ─────────────────────────────────── #}
+          <td class="px-4 py-4 align-middle">
+            <span class="text-sm font-medium text-gray-900">{{ so.customer.company_name }}</span>
+            {% set _tc = terms_map.get(so.customer.payment_terms) %}
+            {% if _tc %}
+            <div class="mt-0.5">{{ status_chip(_tc[0], _tc[1], _tc[2]) }}</div>
             {% endif %}
           </td>
-          <td class="tbl-td text-gray-400">{{ so.created_at.strftime('%m/%d/%Y') }}</td>
+
+          {# ── §2B PO # / ESN ────────────────────────────────────────────── #}
+          <td class="px-4 py-4 align-middle">
+            {% if so.customer_po_number %}
+            <span class="font-mono text-xs font-medium text-gray-700">{{ so.customer_po_number }}</span>
+            {% endif %}
+            {% if so.esn %}
+            <div class="text-xs text-gray-400 mt-0.5">ESN: {{ so.esn }}</div>
+            {% endif %}
+            {% if not so.customer_po_number and not so.esn %}
+            <span class="text-gray-300 text-xs">—</span>
+            {% endif %}
+          </td>
+
+          {# ── §2B Fulfillment status + progress ────────────────────────── #}
+          <td class="px-4 py-4 align-middle">
+            {% set sc = so_chip.get(so.status, ('bg-gray-100 text-gray-600', 'bg-gray-400', so.status | title)) %}
+            {{ status_chip(sc[0], sc[1], sc[2]) }}
+            {% if qty_ord > 0 %}
+            <div class="text-xs text-gray-400 mt-0.5 tabular-nums">{{ qty_fill }}/{{ qty_ord }} filled</div>
+            {% endif %}
+          </td>
+
+          {# ── §2B Payment mode + deposit amount ────────────────────────── #}
+          <td class="px-4 py-4 align-middle hidden md:table-cell">
+            {% if so.payment_mode and so.payment_mode != 'none' %}
+              {% set pc = pay_chip.get(so.payment_mode) %}
+              {% if pc %}{{ status_chip(pc[0], pc[1], pc[2]) }}
+              {% else %}
+              <span class="text-xs text-gray-500">{{ so.payment_mode | title }}</span>
+              {% endif %}
+              {% if so.deposit_amount > 0 %}
+              <div class="text-xs text-gray-500 mt-0.5 tabular-nums">${{ '%.2f' % so.deposit_amount }}</div>
+              {% endif %}
+            {% else %}
+            <span class="text-gray-300 text-xs">—</span>
+            {% endif %}
+          </td>
+
+          {# ── §2B Invoice status ─────────────────────────────────────────── #}
+          <td class="px-4 py-4 align-middle hidden lg:table-cell">
+            {% if so.is_fully_invoiced %}
+            {{ status_chip('bg-green-50 text-green-700', 'bg-green-500', 'Invoiced') }}
+            {% elif so.invoices %}
+            {{ status_chip('bg-amber-50 text-amber-700', 'bg-amber-500', 'Partial') }}
+            {% else %}
+            <span class="text-gray-300 text-xs">—</span>
+            {% endif %}
+          </td>
+
+          {# ── §2B Total ─────────────────────────────────────────────────── #}
+          <td class="px-4 py-4 align-middle text-right">
+            <span class="text-sm font-bold text-gray-900 tabular-nums">${{ '%.2f' % so.subtotal }}</span>
+          </td>
+
+          {# ── Quick action — open workspace ─────────────────────────────── #}
+          <td class="px-4 py-4 align-middle" @click.stop>
+            <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+              <a href="/sales-orders/{{ so.id }}"
+                 title="Open SO"
+                 aria-label="Open {{ so.so_number }}"
+                 class="p-1.5 rounded-lg text-gray-400 hover:text-brand-700 hover:bg-brand-50 transition-colors
+                        focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-1">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+                </svg>
+              </a>
+            </div>
+          </td>
+
         </tr>
         {% endfor %}
       </tbody>
+
     </table>
+  </div>
+
+  {# ── Table footer count ── #}
+  <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
+    <span class="text-xs text-gray-400">
+      {{ orders | length }} order{{ 's' if orders | length != 1 else '' }}
+      {% if active_tab or q %} · filtered{% endif %}
+    </span>
+    <span x-show="selectedCount > 0" x-cloak class="text-xs text-brand-700 font-medium">
+      <span x-text="selectedCount"></span> selected
+    </span>
   </div>
 </div>
 
 {% else %}
-<div class="card flex flex-col items-center justify-center py-16">
-  <svg class="w-12 h-12 text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-          d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
-  </svg>
-  <p class="text-gray-500 font-medium">No sales orders found</p>
-  {% if q or status_filter %}
-  <p class="text-gray-400 text-sm mt-1">Try adjusting your filter.</p>
-  {% else %}
-  <p class="text-gray-400 text-sm mt-1">Create orders from the <a href="/quotes/" class="link">Quote workspace</a> or start a direct order.</p>
-  <button class="mt-3 text-sm link"
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   EMPTY STATE — §7 Primitive 6
+══════════════════════════════════════════════════════════════════════════════ #}
+{% set _so_cta %}
+  <button class="btn-primary btn-sm"
           hx-get="/sales-orders/new"
           hx-target="#create-slide-content"
           hx-swap="innerHTML"
           @click="createSlideOpen = true; createSlideTitle = 'New Sales Order'">
     New Sales Order →
   </button>
-  {% endif %}
-</div>
+{% endset %}
+{{ empty_state(
+  'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01',
+  q, active_tab, 'No sales orders yet',
+  'Create orders from the Quote workspace or start a direct order.',
+  _so_cta
+) }}
+
 {% endif %}
+
+{# ── Preview dock — DEFERRED until Backend lands GET /sales-orders/preview/{id}
+   Once the route is registered (before /{id}), uncomment the next line and
+   remove this comment block.
+   {{ preview_dock_shell('Sales Order Preview', 'so-preview-body') }}
+────────────────────────────────────────────────────────────────────────────── #}
+
+</div>{# end operationalListData wrapper #}
 {% endblock %}
