@@ -447,8 +447,8 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 | — | **Primitives extraction** | ✅ Complete (2026-05-29) | — | All 6 macros extracted + governance-approved. Products/PO/Invoice ported. See §7 as-built. |
 | 4 | Customer List | ✅ L2 complete | L1.5 → L2 | Governance pass approved 2026-05-29. All §2 + §2B fields satisfied (Balance Due, Open Invoices/Quotes/SOs, Cores, Last Sale, Terms). M1/M2 cosmetic deferred. |
 | 5 | Quotes List | ✅ L2 complete | L2 → L2 | **Governance pass 2026-05-29 — FULL PASS.** All 11 §2 elements + §2B complete. AR chip landed: `ar_map` bulk-computed in route (open invoices group-by, zero N+1), rendered with overdue/open split in template. 5 non-blocking cosmetics in §8F. |
-| 6 | Sales Orders List | 🟡 ONE BLOCKER | L1 → L2 | Governance pass 2026-05-29 — **SEND BACK: preview dock is commented out.** Fix is 2 lines (see as-built record). Everything else passes. Re-verify then ✅ L2 — no full re-review. |
-| 7 | Vendors List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
+| 6 | Sales Orders List | 🟡 SEND BACK (×2) | L1 → L2 | **Import still missing — second send-back.** Builder uncommented the dock call at line 348 but `{% from "macros/preview_dock.html" import preview_dock_shell %}` is not in the imports block (lines 19-25). Jinja2 throws `UndefinedError` on render. One-line fix: add the import after line 24. Everything else passes. |
+| 7 | Vendors List | 🟡 Pending builder dock | L1 → L2 | **Backend done.** `/preview/{vendor_id}` is registered before `/{vendor_id}` (router lines 221 vs 302), returns `vendors/_preview_panel.html`. Template has dock + import in a comment block — builder must uncomment both. **Tab mismatch to fix:** template uses slugs `open_pos`/`credits`; router handles `active`/`inactive`/`all`. Either align tab slugs or update router. See §7 builder brief below. |
 | 8 | Returns List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
 | 9 | Payments List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
 | 10 | Product Detail | ⏳ Pending | L1 → L2 | Section-based card layout. |
@@ -625,6 +625,54 @@ Total. Ship/tracking column absent — no tracking data in model yet (non-blocki
 - Ship/tracking column absent — add when `SalesOrder.tracking_number` or equivalent exists in model
 
 **Accepted:** Backend-contract guard at lines 31-37 (stub `_counts` if route doesn't pass `counts`) — pragmatic template resilience; accepted.
+
+---
+
+#### Vendors List — Builder Brief (#7) — 🟡 Pending dock + tab fix
+
+**Backend is done.** Do not wait for backend — everything needed is live.
+
+**Two fixes needed before submitting for governance:**
+
+**Fix 1 — Preview dock (import + uncomment).**
+At the bottom of `app/templates/vendors/list.html` there is a comment block (lines 332-337).
+Replace the entire comment block with these two items — the import goes at the TOP with the other
+imports (after `empty_state`), the macro call stays at the bottom:
+
+```jinja2
+{# Add to imports block (after empty_state import): #}
+{% from "macros/preview_dock.html" import preview_dock_shell %}
+
+{# Replace the comment block with: #}
+{{ preview_dock_shell('Vendor Preview', 'vendor-preview-body') }}
+```
+
+The backend route `GET /vendors/preview/{vendor_id}` is already registered before `GET /vendors/{vendor_id}`
+and returns `vendors/_preview_panel.html`. No backend changes needed.
+
+**Fix 2 — Tab slug mismatch.**
+The template defines tabs with slugs `open_pos` and `credits`:
+```python
+vendor_tabs = [('', 'All', ...), ('open_pos', 'Active POs', ...), ('credits', 'Open Credits', ...)]
+```
+But the router (`app/routers/vendors.py`) only handles `active`/`inactive`/`all` as `active_tab` values,
+and the `counts` dict uses keys `""`, `"active"`, `"inactive"` — not `"open_pos"` or `"credits"`.
+
+**Recommended fix (template side):** Change tab slugs to `active`/`inactive` to match the router,
+or keep the current slugs and update the router to filter by `open_pos`/`credits` semantics (more
+useful for the workflow but requires a backend change). Pick one — confirm with Architect if unsure.
+The simpler option is to align the template to match what the router already computes:
+```python
+vendor_tabs = [
+  ('',         'All',      _counts.get('',         0)),
+  ('active',   'Active',   _counts.get('active',   0)),
+  ('inactive', 'Inactive', _counts.get('inactive', 0)),
+]
+```
+Or keep `open_pos`/`credits` as richer tabs and update the router to compute those counts —
+that's better operationally but is a backend-lane change.
+
+**Submit for governance when both fixes are in.** The Architect will do a full §2 + §2B pass.
 
 ---
 
@@ -890,6 +938,8 @@ npm run build:css
 npm run watch:css
 ```
 
+**⚠️ Rule: any new Tailwind utility class added to a template requires `npm run build:css` + commit of `app/static/css/app.css`. The compiled file is the sole CSS source — the CDN is gone. A class that exists only in a template but not in app.css will be invisible in the browser.**
+
 **Alternative — Tailwind standalone CLI (no Node.js needed):**
 Download the self-contained binary from https://github.com/tailwindlabs/tailwindcss/releases
 and run:
@@ -1006,36 +1056,99 @@ and should not interrupt the list-port rollout.
 
 ---
 
-#### 8B. Global Workspace Action Header Review — NEXT ARCHITECT DELIVERABLE
+#### 8B. Workspace Action-Header Standard — ✅ DRAFTED 2026-05-29
 
-**Priority elevated 2026-05-29.** This standard must be drafted before Sales Orders,
-Warranty, and Returns workspaces are built — those screens will copy whatever pattern is
-established here. Getting it wrong now means rework across 3+ screens.
+**Audit complete. Standard defined below. Apply to new workspace screens (SO, Warranty, Returns).
+Existing screens get conformance fixes as a low-priority sweep — non-blocking for their current maturity level.**
 
-**Architect action:** Draft the standard (button order, labels, back-link behavior, New X
-visibility rules) as a new subsection of §3. Submit for owner review before any builder
-implements it. The draft does not require running the app — it's a written spec based on
-auditing the existing workspace templates.
+---
 
-**Scope:** The action button strip and back-link area that appears in the `header_actions` block
-across Customer, Quote, Invoice, Sales Order, and PO workspaces.
+##### As-audited state (5 workspaces, verified in templates)
 
-**Problem observed:** Owner testing surfaced inconsistency in visibility, ordering, and behavior
-of New Quote / New Invoice / Statement / Back link across workspace screens. The area needs a
-cross-workspace audit and a consistent standard before further workspace screens are built.
+| Screen | Status chip | Back link | Button order (L→R) |
+|---|---|---|---|
+| **Customer detail** | None (not a workflow record) | `← Customers` always ✅ | New Quote (primary) · New Invoice (secondary) · Statement (secondary) |
+| **Quote workspace** | `badge-*` first ✅ | `← All quotes` — `hidden lg:inline` ❌ | chip · customer name · primary-CTA · More▾ · back-link |
+| **Invoice workspace** | **None in header** ❌ | **None** ❌ | (DRAFT) Save Draft · Finalize · (OPEN) Print · PDF · Take Payment · Void |
+| **SO workspace** | `badge-*` first ✅ | **None** ❌ | chip · Print · PDF · $ Deposit · Hold · Cancel |
+| **PO workspace** | `badge-*` first ✅ | `← Purchase Orders` always ✅ | chip · Print · PDF · primary-CTA · Cancel PO · back-link |
 
-**Do not redesign the dashboard or any list screen as part of this work.**
-**Draft spec first — no template changes until the standard is approved by the owner.**
+**Deviations punched:**
+1. **Invoice** — no status chip in header (status visible only in page body)
+2. **Invoice** — no back link to `← Invoices`
+3. **SO** — no back link to `← Sales Orders`
+4. **Quote** — back link hidden on mobile (`hidden lg:inline`); should always be visible
+5. **Back link classes split:** PO/Customer use `text-sm text-gray-500 hover:text-gray-700`; Quote uses `text-sm link-subtle` — unify to former
+6. **Quote** — convert-to-invoice form uses `return confirm()` in `onsubmit` — §3 requires Alpine modal
 
-Screens in scope:
-- `app/templates/customers/*.html` (customer workspace header)
-- `app/templates/quotes/workspace.html`
-- `app/templates/invoices/workspace.html`
-- `app/templates/sales_orders/workspace.html`
-- `app/templates/purchase_orders/workspace.html`
+---
 
-Deliverable: a punched list of specific inconsistencies + a proposed standard for the header strip,
-submitted to the Architect for approval before any template changes.
+##### The Standard — workspace header zones (left → right)
+
+```
+[status chip]  [back link]  ···  [secondary…]  [destructive]  [primary]
+```
+
+**Zone 1 — Status chip** (always present on workflow-record workspaces; absent on Customer detail which has no workflow state). Use the screen's `status_pill` dict defined above the block:
+```html
+<span class="{{ status_pill[record.status][0] }}">{{ status_pill[record.status][1] }}</span>
+```
+
+**Zone 2 — Back link** (always present, always visible — no `hidden lg:*`). Points to the list screen, same tab (no `target="_blank"` — navigating away is intentional). Placed second so the user can escape quickly.
+```html
+<a href="/{list}/" class="text-sm text-gray-500 hover:text-gray-700 transition-colors">← {List name}</a>
+```
+Exception: Customer detail keeps back link last because New Quote is the dominant CTA.
+
+**Zone 3 — Secondary utilities** (Print, PDF, Statement — things that don't change state). Class: `btn-secondary btn-sm`. Print before PDF when both present.
+
+**Zone 4 — Destructive action** (Cancel, Void — when the record isn't already terminal). Class: `btn-ghost btn-sm text-red-500` — not `btn-danger`, which is too visually heavy for a header. Must dispatch to an Alpine confirm modal per §3; never `window.confirm()` or `return confirm()`.
+
+**Zone 5 — Primary action** (the next workflow step: Finalize, Send, Take Payment, → SO). Class: `btn-primary btn-sm`. Rightmost. Only one primary at a time. Empty when the record is terminal (PAID, CANCELLED, CONVERTED, etc.).
+
+**Button cap:** max 4 buttons (excluding chip and back link). If more actions are needed for a given status, use a `More ▾` secondary dropdown (see Quote workspace `_header_actions.html` pattern).
+
+---
+
+##### Shell template for new workspace screens
+
+```html
+{% block header_actions %}
+  {# Zone 1 — status chip #}
+  <span class="{{ status_pill[record.status][0] }}">{{ status_pill[record.status][1] }}</span>
+
+  {# Zone 2 — back link (always visible) #}
+  <a href="/{list}/" class="text-sm text-gray-500 hover:text-gray-700 transition-colors">← {List name}</a>
+
+  {# Zone 3 — secondary utilities #}
+  <a href="/{record}/{{ record.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
+  <a href="/{record}/{{ record.id }}/pdf"                   class="btn-secondary btn-sm">PDF</a>
+
+  {# Zone 4 — destructive (when not terminal) #}
+  {% if record.status not in terminal_statuses %}
+  <form id="cancel-form" method="post" action="/{record}/{{ record.id }}/cancel" class="hidden"></form>
+  <button type="button" class="btn-ghost btn-sm text-red-500"
+          @click="$dispatch('confirm', {formId:'cancel-form', title:'Cancel?', body:'...', cta:'Cancel', danger:true})">
+    Cancel
+  </button>
+  {% endif %}
+
+  {# Zone 5 — primary action (next workflow step; absent when terminal) #}
+  {% if record.status == 'open' %}
+  <button type="submit" form="submit-form" class="btn-primary btn-sm">Next Step →</button>
+  {% endif %}
+{% endblock %}
+```
+
+---
+
+##### Conformance fixes for existing screens (low-priority sweep — do not start without instruction)
+
+| Screen | File | Fix |
+|---|---|---|
+| Invoice workspace | `app/templates/invoices/workspace.html` | Add `badge-{status}` chip as first element; add `← Invoices` back link |
+| SO workspace | `app/templates/sales_orders/workspace.html` | Add `← Sales Orders` back link |
+| Quote workspace | `app/templates/quotes/_header_actions.html` | Remove `hidden lg:inline` from back link; replace `return confirm()` in convert form with Alpine modal dispatch |
 
 #### 8F. Quotes List — Post-Governance Cosmetic Cleanup (low priority)
 
