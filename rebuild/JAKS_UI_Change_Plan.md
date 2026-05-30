@@ -1,7 +1,7 @@
 # JAKS UI Change Plan
 *Living document — updated as screens are built.*
 
-**Status:** Products ✅ L2 ref · PO ✅ L2 · Invoices ✅ L2 · Customers ✅ L2 · Invoice Workspace ✅ L3 · Quotes ✅ L2 · Sales Orders ✅ L2 · Vendors ✅ L2 (all 2026-05-29) · Primitives ✅ · **Compiled Tailwind ✅ LIVE** (77.7 KB, CDN gone) · **§8B header standard ✅ DRAFTED** · PO `rose-*/sky-*` color ruling: sky permitted (§4 already lists it), rose → cosmetic fix in §8A · #11 PO Workspace next.
+**Status:** Products ✅ · PO ✅ · Invoices ✅ · Customers ✅ · Invoice Workspace ✅ L3 · Quotes ✅ · **Vendors ✅ · Returns ✅ L2** (2026-05-29) · Sales Orders 🟡 dock fix pending · Payments 🟡 dock fix pending · Compiled Tailwind ✅ LIVE · §8B header standard ✅ DRAFTED · **#11 PO Workspace + remaining dock fixes next.**
 
 **Scope:** All list and workspace screens in the JAKS Inventory ERP system.
 
@@ -447,10 +447,10 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 | — | **Primitives extraction** | ✅ Complete (2026-05-29) | — | All 6 macros extracted + governance-approved. Products/PO/Invoice ported. See §7 as-built. |
 | 4 | Customer List | ✅ L2 complete | L1.5 → L2 | Governance pass approved 2026-05-29. All §2 + §2B fields satisfied (Balance Due, Open Invoices/Quotes/SOs, Cores, Last Sale, Terms). M1/M2 cosmetic deferred. |
 | 5 | Quotes List | ✅ L2 complete | L2 → L2 | **Governance pass 2026-05-29 — FULL PASS.** All 11 §2 elements + §2B complete. AR chip landed: `ar_map` bulk-computed in route (open invoices group-by, zero N+1), rendered with overdue/open split in template. 5 non-blocking cosmetics in §8F. |
-| 6 | Sales Orders List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** Dock import confirmed in place. All 11 §2 elements + §2B verified. `py-4` correct (not `py-3.5`). Backend-contract guard accepted as pattern. |
-| 7 | Vendors List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** Dock wired (import line 21 + call line 333). All 11 §2 elements + §2B (Open POs/Bills/Credits/LastPO/Contact). Tab counts stub-zeros via backend-contract guard — non-blocking, same pattern as SO. Lead time deferred per "if stored" qualifier. |
-| 8 | Returns List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
-| 9 | Payments List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
+| 6 | Sales Orders List | 🟡 Dock fix pending | L1 → L2 | **Record corrected.** Dock import still missing from `sales_orders/list.html` imports block (lines 19-25); call at line 348 is live but `preview_dock_shell` undefined → Jinja2 `UndefinedError`. Two-line fix needed. Re-verify after builder commits. |
+| 7 | Vendors List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** Dock wired (import line 21 + call line 333). All 11 §2 elements + §2B (Open POs/Bills/Credits/LastPO/Contact). Tab counts stub-zeros via backend-contract guard — non-blocking. Lead time deferred per "if stored" qualifier. |
+| 8 | Returns List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** All 11 §2 elements + §2B verified. Real tab counts from router group_by (no stub guard). Dock wired at line 339. Stripe: amber=received, blue=open, transparent=draft/closed. |
+| 9 | Payments List | 🟡 Dock fix pending | L1 → L2 | Governance pass 2026-05-29 — **SEND BACK.** Dock in comment block (lines 312-317); import missing. Backend route live at line 234. Two-line fix (see as-built). Also: `indigo-*`/`cyan-*` chips advisory (§4 violations). |
 | 10 | Product Detail | ⏳ Pending | L1 → L2 | Section-based card layout. |
 | 11 | PO Workspace | ⏳ Pending | L1 → L3 | Autosave, line editor, receive flow. |
 | 12 | Invoice Workspace | ✅ L3 complete | L3 candidate → L3 | Governance pass 2026-05-29. **PASS confirmed 2026-05-29** — window.confirm already cleared prior to pass. No blocking defects remain. A11y follow-up (role=dialog/aria-modal/focus-trap on payment/void/change-customer modals) tracked under §8 #4 a11y sweep — non-blocking for L3. |
@@ -701,6 +701,78 @@ Or keep `open_pos`/`credits` as richer tabs and update the router to compute tho
 that's better operationally but is a backend-lane change.
 
 **Submit for governance when both fixes are in.** The Architect will do a full §2 + §2B pass.
+
+---
+
+#### Returns List — As-Built Record — ✅ L2 (governance 2026-05-29)
+
+**Governance pass: FULL PASS.**
+
+All 11 §2 structural elements verified in template + router:
+- `pb-52` wrapper · `divide-y divide-gray-100` tbody · `overflow-x-auto` + `min-w-[1000px]` ·
+  `border-l-4` on first `<td>` (checkbox, line 190) · `filter_tabs` macro (5 tabs: All Open /
+  Draft / Authorized / Received / Closed) · `bulk_toolbar` macro · `status_chip` macro ·
+  `operationalListData` factory · `preview_dock_shell` wired (import line 22, call line 339) ·
+  `empty_state` macro (3-case, `q` + `active_tab` passed) · `px-4 py-4 align-middle` ✅
+
+Router verified: tab counts from `group_by` over full dataset — **no stub guard needed** (router
+provides real counts immediately). "All Open" tab correctly excludes CLOSED records
+(`sum(v for k, v in _raw.items() if k != RAStatus.CLOSED)`). Preview route `/preview/{ra_id}`
+at line 279 registered before `/{ra_id}` at line 338 ✅
+
+**Stripe semantics accepted:** amber=received (goods in, needs processing — §4 attention),
+blue=open/authorized (waiting for goods — §4 informational), transparent=draft/closed. ✅
+
+**§2B fields verified:** RA # (monospace) · Customer + reason snippet · Status chip ·
+Disposition chips (return_to_stock/quarantine/vendor_return) · Linked invoice # + credit memo # ·
+Total credit + restocking fee · Requested date · Line count ✅
+
+**Domain note:** §2B brief listed "Vendor" — this is a customer-facing RA screen, so Customer
+is the correct entity (not vendor). Accepted; no fix needed. Received date not shown as column —
+covered by Received status chip; acceptable.
+
+**Non-blocking:** none filed — screen is clean.
+
+---
+
+#### Payments List — As-Built Record — 🟡 SEND BACK (governance 2026-05-29)
+
+**Governance pass: SEND BACK — one blocker (dock), two advisory color violations.**
+
+**Blocker — preview dock commented out (same fix as SO List ×2, Payments is the third):**
+
+`app/templates/payments/list.html` lines 312-317 contain the dock in a Jinja2 comment block.
+The `preview_dock_shell` import is also inside the comment. Fix (2 lines, builder must do):
+
+1. Add to imports block (after line 15, with the other macros):
+   `{% from "macros/preview_dock.html" import preview_dock_shell %}`
+2. Replace lines 312-317 (the entire comment block) with:
+   `{{ preview_dock_shell('Payment Preview', 'payment-preview-body') }}`
+
+Backend route `GET /payments/preview/{payment_id}` is at line 234, registered before
+`GET /payments/{payment_id}` at line 296 — **backend is done**. Template fix only.
+
+**Advisory color violations (warn, do not block — §0 ruling 2026-05-29):**
+- `'ach': ('bg-indigo-50 text-indigo-700', 'bg-indigo-500', 'ACH')` — `indigo-*` not in §4.
+  Replace with `bg-blue-50 text-blue-700` / `bg-blue-500` (ACH = financial activity = blue ✅).
+- `'wire': ('bg-cyan-50 text-cyan-700', 'bg-cyan-500', 'Wire')` — `cyan-*` not in §4.
+  Replace with `bg-blue-50 text-blue-700` / `bg-blue-500` (Wire = financial activity = blue ✅).
+
+File: `app/templates/payments/list.html` lines 40-43 (`method_chip` dict).
+
+**Everything else passes:**
+- `pb-52` · `divide-y` · `border-l-4` on first `<td>` (line 171) · `overflow-x-auto` +
+  `min-w-[980px]` · no `tbl-*` · `px-4 py-4 align-middle` ✅
+- Router: real counts (group_by, no stub guard) · `active_tab` ✅ ·
+  preview route line 234 before `/{payment_id}` line 296 ✅
+- Stripe: red=reversed/NSF (§4 problem ✅), amber=unapplied balance (§4 attention ✅),
+  transparent=fully applied ✅
+- §2B: Payment # (monospace) · Customer · Amount + applied/unapplied · Method + check# ·
+  Related invoices (up to 3 shown + overflow count) · Status chip + reversal reason ·
+  NSF fee · Footer total-received + total-unapplied ✅
+- `name="tab"` hidden input ✅ · 3-case empty state ✅ · `@click.stop` on both cells ✅
+
+**Self-certify after dock fix + optional color cleanup.** No re-review needed.
 
 ---
 
