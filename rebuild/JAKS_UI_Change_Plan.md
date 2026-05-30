@@ -1,7 +1,7 @@
 # JAKS UI Change Plan
 *Living document — updated as screens are built.*
 
-**Status:** Products ✅ · PO ✅ · Invoices ✅ · Customers ✅ · Invoice Workspace ✅ L3 · Quotes ✅ · **Vendors ✅ · Returns ✅ L2** (2026-05-29) · Sales Orders 🟡 dock fix pending · Payments 🟡 dock fix pending · Compiled Tailwind ✅ LIVE · §8B header standard ✅ DRAFTED · **#11 PO Workspace + remaining dock fixes next.**
+**Status:** Products ✅ · PO ✅ · Invoices ✅ · Customers ✅ · Invoice Workspace ✅ L3 · Quotes ✅ · Sales Orders ✅ · Vendors ✅ · Returns ✅ L2 · Payments 🟡 dock+color fix pending · **#10/#11 HOLD (functional-test mode)** · Compiled Tailwind ✅ LIVE · §8B ✅ DRAFTED · Save-button standard ✅ RULED · Method-chip colors ✅ RULED.
 
 **Scope:** All list and workspace screens in the JAKS Inventory ERP system.
 
@@ -357,6 +357,30 @@ These rules apply to every screen in the app. Do not deviate without updating th
 - Error: red dot/icon
 - Auto-dismiss at 4000ms
 
+**Save button standard — RULED 2026-05-29 (recurring owner complaint):**
+
+| Screen grade | Standard | Rationale |
+|---|---|---|
+| **L3 workspace with autosave wired** | **Remove Save button. Add always-visible autosave indicator.** | The button is redundant and owner-confusing when autosave is running. |
+| **Invoice workspace "Save Draft" exception** | **Keep it.** | "Save Draft" signals workflow state (you need to Finalize), not just persistence. Removing it would confuse the Draft→Finalize progression. |
+| **L1/L2 form screens (no autosave)** | **Keep a real `btn-primary` Save in the footer.** | No autosave = user's only save mechanism. |
+
+**Autosave indicator format** (approved reference: `quotes/workspace.html` after 2026-05-29 fix):
+```html
+<span class="text-xs text-gray-400 flex items-center gap-1">
+  <span class="w-1.5 h-1.5 rounded-full bg-green-400"></span>
+  Saved automatically
+</span>
+```
+Placed adjacent to the form header or in the card header band — not in `header_actions`.
+
+**Screens that need this fix applied:**
+- `purchase_orders/workspace.html` — autosave is wired; add indicator, remove redundant Save
+- `product/detail.html` — L1 form, no autosave → keep Save button in footer
+- (Quote workspace: already fixed 2026-05-29 ✅)
+
+**Do not apply until explicitly instructed for each screen.**
+
 ---
 
 ### 4. Shared Visual Rules
@@ -373,6 +397,19 @@ These rules apply to every screen in the app. Do not deviate without updating th
 | Purple | Vendor, waiting, special workflow, serialized | `purple-*` |
 | Orange | Core charge, special cost items | `orange-*` |
 | Gray | Inactive, archived, neutral, metadata | `gray-*` / `slate-*` |
+
+**Payment method chip colors — RULED 2026-05-29:**
+
+| Method | `bg` / `dot` | Rationale |
+|---|---|---|
+| Cash | `bg-green-50 text-green-700` / `bg-green-500` | Immediate, certain — §4 "success/paid" |
+| Check | `bg-blue-50 text-blue-700` / `bg-blue-500` | Standard AR transaction — §4 "informational" |
+| Card (credit/debit) | `bg-purple-50 text-purple-700` / `bg-purple-500` | External processor workflow — §4 "special workflow" |
+| ACH | `bg-blue-50 text-blue-700` / `bg-blue-500` | Electronic transfer — §4 "informational/activity" |
+| Wire | `bg-gray-100 text-gray-700` / `bg-gray-400` | Owner ruling: different-type marker (not the standard AR flow) |
+| Account Credit | `bg-gray-100 text-gray-700` / `bg-gray-400` | Internal balance — §4 "neutral/metadata" |
+
+Apply to `app/templates/payments/list.html` `method_chip` dict (replaces `indigo-*` for ACH and `cyan-*` for Wire — both were §4 violations). QA: `gray-*` on Wire is intentional — not a lint advisory.
 
 **Badge/chip sizes:**
 
@@ -447,12 +484,12 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 | — | **Primitives extraction** | ✅ Complete (2026-05-29) | — | All 6 macros extracted + governance-approved. Products/PO/Invoice ported. See §7 as-built. |
 | 4 | Customer List | ✅ L2 complete | L1.5 → L2 | Governance pass approved 2026-05-29. All §2 + §2B fields satisfied (Balance Due, Open Invoices/Quotes/SOs, Cores, Last Sale, Terms). M1/M2 cosmetic deferred. |
 | 5 | Quotes List | ✅ L2 complete | L2 → L2 | **Governance pass 2026-05-29 — FULL PASS.** All 11 §2 elements + §2B complete. AR chip landed: `ar_map` bulk-computed in route (open invoices group-by, zero N+1), rendered with overdue/open split in template. 5 non-blocking cosmetics in §8F. |
-| 6 | Sales Orders List | 🟡 Dock fix pending | L1 → L2 | **Record corrected.** Dock import still missing from `sales_orders/list.html` imports block (lines 19-25); call at line 348 is live but `preview_dock_shell` undefined → Jinja2 `UndefinedError`. Two-line fix needed. Re-verify after builder commits. |
+| 6 | Sales Orders List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** Dock confirmed: import line 25, call line 346 (verified in committed code). All 11 §2 elements + §2B. `py-4` correct. Backend-contract guard accepted. |
 | 7 | Vendors List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** Dock wired (import line 21 + call line 333). All 11 §2 elements + §2B (Open POs/Bills/Credits/LastPO/Contact). Tab counts stub-zeros via backend-contract guard — non-blocking. Lead time deferred per "if stored" qualifier. |
 | 8 | Returns List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** All 11 §2 elements + §2B verified. Real tab counts from router group_by (no stub guard). Dock wired at line 339. Stripe: amber=received, blue=open, transparent=draft/closed. |
-| 9 | Payments List | 🟡 Dock fix pending | L1 → L2 | Governance pass 2026-05-29 — **SEND BACK.** Dock in comment block (lines 312-317); import missing. Backend route live at line 234. Two-line fix (see as-built). Also: `indigo-*`/`cyan-*` chips advisory (§4 violations). |
-| 10 | Product Detail | ⏳ Pending | L1 → L2 | Section-based card layout. |
-| 11 | PO Workspace | ⏳ Pending | L1 → L3 | Autosave, line editor, receive flow. |
+| 9 | Payments List | 🟡 Dock + color fix pending | L1 → L2 | Governance pass 2026-05-29 — **SEND BACK.** Dock still in comment (lines 312-317); import missing from imports section. Two-line fix. Also apply §4 method-chip color ruling (Cash/Check/Card/ACH/Wire/Credit — see §4). Re-pass targeted (dock + colors only) after commit. |
+| 10 | Product Detail | ⏳ **HOLD — functional-test mode** | L1 → L2 | Section-based card layout. Do not start until hold lifted. |
+| 11 | PO Workspace | ⏳ **HOLD — functional-test mode** | L1 → L3 | Autosave, line editor, receive flow. Do not start until hold lifted. |
 | 12 | Invoice Workspace | ✅ L3 complete | L3 candidate → L3 | Governance pass 2026-05-29. **PASS confirmed 2026-05-29** — window.confirm already cleared prior to pass. No blocking defects remain. A11y follow-up (role=dialog/aria-modal/focus-trap on payment/void/change-customer modals) tracked under §8 #4 a11y sweep — non-blocking for L3. |
 | 13 | PO Receiving Queue | ✅ QB2 complete | QB1 → QB2 | Queue Board archetype — §2A. Governance pass 2026-05-28. Official QB2 reference. |
 | 14 | PO Match Queue | ✅ QB2 complete | QB1 → QB2 | Queue Board archetype — §2A. Governance pass 2026-05-28. |
