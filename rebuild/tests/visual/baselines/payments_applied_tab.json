@@ -1,0 +1,23 @@
+{
+  "columns": [],
+  "h1": "Payments",
+  "html_size_kb": 55,
+  "markers": {
+    "divide-y": true,
+    "divide-y divide-gray-100": true,
+    "fixed bottom-0 left-64": false,
+    "overflow-x-auto": false,
+    "pb-52": true,
+    "preview_dock_shell": false,
+    "tbl-td": true,
+    "tbl-th": true,
+    "togglePreview": true,
+    "x-show=\"selectedCount > 0\"": true
+  },
+  "status_code": 200,
+  "tabs": [
+    "\n     class="
+  ],
+  "title": "Payments \u2014 JAKS Inventory",
+  "url": "/payments/?tab=applied"
+}
