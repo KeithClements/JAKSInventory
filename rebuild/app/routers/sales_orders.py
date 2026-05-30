@@ -1,4 +1,4 @@
-"""
+﻿"""
 app/routers/sales_orders.py
 ============================
 Sales Order workspace — HTMX-powered, modeled after the invoice workspace.
@@ -62,7 +62,6 @@ def _workspace_ctx(request: Request, so: SalesOrder) -> dict:
     editable = so.status in (SOStatus.OPEN, SOStatus.PARTIAL, SOStatus.HOLD)
     can_fulfill = so.status in (SOStatus.OPEN, SOStatus.PARTIAL)
     return {
-        "request": request,
         "so": so,
         "editable": editable,
         "can_fulfill": can_fulfill,
@@ -119,9 +118,9 @@ async def list_sales_orders(
         )
     orders = query.order_by(SalesOrder.created_at.desc()).limit(150).all()
     return templates.TemplateResponse(
+        request,
         "sales_orders/list.html",
         {
-            "request": request,
             "orders": orders,
             "active_tab": active_tab,
             "status_filter": status,
@@ -140,13 +139,15 @@ async def new_so_picker(request: Request, db: Session = Depends(get_db)):
     hx = request.headers.get("HX-Request")
     if hx:
         return templates.TemplateResponse(
+            request,
             "sales_orders/_new_picker.html",
-            {"request": request, "SOPaymentMode": SOPaymentMode},
+            {"SOPaymentMode": SOPaymentMode},
         )
     # Direct navigation: render a full page wrapping the picker
     return templates.TemplateResponse(
+        request,
         "sales_orders/new.html",
-        {"request": request, "SOPaymentMode": SOPaymentMode},
+        {"SOPaymentMode": SOPaymentMode},
     )
 
 
@@ -202,9 +203,9 @@ async def so_preview_panel(
             status_code=404,
         )
     return templates.TemplateResponse(
+        request,
         "sales_orders/_preview_panel.html",
         {
-            "request": request,
             "so": so,
             "SOStatus": SOStatus,
             "SOPaymentMode": SOPaymentMode,
@@ -222,6 +223,7 @@ async def so_workspace(
 ):
     so = _get_so_or_404(db, so_id)
     return templates.TemplateResponse(
+        request,
         "sales_orders/workspace.html",
         _workspace_ctx(request, so),
     )
@@ -298,6 +300,7 @@ async def so_add_line(
 
     so = _get_so_or_404(db, so_id)
     return templates.TemplateResponse(
+        request,
         "sales_orders/_lines_section.html",
         _workspace_ctx(request, so),
     )
@@ -335,6 +338,7 @@ async def so_update_line(
 
     so = _get_so_or_404(db, so_id)
     return templates.TemplateResponse(
+        request,
         "sales_orders/_lines_section.html",
         _workspace_ctx(request, so),
     )
@@ -356,6 +360,7 @@ async def so_delete_line(
 
     so = _get_so_or_404(db, so_id)
     return templates.TemplateResponse(
+        request,
         "sales_orders/_lines_section.html",
         _workspace_ctx(request, so),
     )
@@ -382,8 +387,9 @@ def so_product_search(request: Request, q: str = "", db: Session = Depends(get_d
             .all()
         )
     return templates.TemplateResponse(
+        request,
         "sales_orders/_product_search_results.html",
-        {"request": request, "results": results, "q": q},
+        {"results": results, "q": q},
     )
 
 

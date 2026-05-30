@@ -69,9 +69,9 @@ def warranty_list(
         )
     claims = query.order_by(WarrantyClaim.claim_date.desc()).limit(200).all()
     return templates.TemplateResponse(
+        request,
         "warranty/list.html",
         {
-            "request": request,
             "claims": claims,
             "status_filter": status,
             "q": q,
@@ -114,9 +114,9 @@ def warranty_new(
         if customer_id else None
     )
     return templates.TemplateResponse(
+        request,
         "warranty/_new_picker.html",
         {
-            "request": request,
             "customers": customers,
             "vendors": vendors,
             "products": products,
@@ -206,9 +206,9 @@ def warranty_detail(claim_id: int, request: Request, db: Session = Depends(get_d
     if not claim:
         return RedirectResponse("/warranty/", status_code=303)
     return templates.TemplateResponse(
+        request,
         "warranty/workspace.html",
         {
-            "request": request,
             "claim": claim,
             "WarrantyStatus": WarrantyStatus,
             "WarrantyDecision": WarrantyDecision,
@@ -404,8 +404,7 @@ def warranty_print(claim_id: int, request: Request, db: Session = Depends(get_db
     if claim is None:
         return RedirectResponse("/warranty/", status_code=303)
     ctx = _claim_print_context(claim, db)
-    ctx["request"] = request
-    return templates.TemplateResponse("warranty/print.html", ctx)
+    return templates.TemplateResponse(request, "warranty/print.html", ctx)
 
 
 @router.get("/{claim_id}/pdf")

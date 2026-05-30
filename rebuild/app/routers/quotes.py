@@ -1,4 +1,4 @@
-"""
+﻿"""
 app/routers/quotes.py
 ======================
 Quote workspace — keyboard-first, HTMX-powered.
@@ -171,9 +171,9 @@ async def list_quotes(
     )
 
     return templates.TemplateResponse(
+        request,
         "quotes/list.html",
         {
-            "request": request,
             "quotes": quotes,
             "active_tab": active_tab,
             "status_filter": status,
@@ -201,8 +201,9 @@ async def new_quote_form(request: Request, db: Session = Depends(get_db)):
         .all()
     )
     return templates.TemplateResponse(
+        request,
         "quotes/new.html",
-        {"request": request, "customers": customers},
+        {"customers": customers},
     )
 
 
@@ -318,9 +319,9 @@ async def quote_preview_panel(
     )
 
     return templates.TemplateResponse(
+        request,
         "quotes/_preview_panel.html",
         {
-            "request": request,
             "quote": quote,
             "margin_pct": margin_pct,
             "cost_total": cost_total,
@@ -347,9 +348,9 @@ async def workspace(
     bal = StatementService(db).get_customer_balance_summary(quote.customer_id)
 
     return templates.TemplateResponse(
+        request,
         "quotes/workspace.html",
         {
-            "request": request,
             "quote": quote,
             "sorted_lines": _tree_sort_lines(quote.lines),
             "QuoteStatus": QuoteStatus,
@@ -420,6 +421,7 @@ async def print_quote(
     }
 
     return templates.TemplateResponse(
+        request,
         "quotes/print.html",
         {
             "request":             request,
@@ -548,8 +550,9 @@ async def get_totals(
     """HTMX endpoint triggered by JS after any line mutation to refresh the totals bar."""
     quote = _get_quote_or_404(db, quote_id)
     return templates.TemplateResponse(
+        request,
         "quotes/_totals.html",
-        {"request": request, "quote": quote, **_totals_ctx(quote)},
+        {"quote": quote, **_totals_ctx(quote)},
     )
 
 
@@ -595,16 +598,18 @@ async def add_line(
         # JS call (which used beforeend) to an innerHTML swap on the tbody instead.
         quote = _get_quote_or_404(db, quote_id)
         resp = templates.TemplateResponse(
+            request,
             "quotes/_lines_tbody.html",
-            {"request": request, "lines": _tree_sort_lines(quote.lines)},
+            {"lines": _tree_sort_lines(quote.lines)},
         )
         resp.headers["HX-Retarget"] = "#quote-lines-tbody"
         resp.headers["HX-Reswap"] = "innerHTML"
         return resp
 
     return templates.TemplateResponse(
+        request,
         "quotes/_line_row.html",
-        {"request": request, "line": lines[0]},
+        {"line": lines[0]},
     )
 
 
@@ -635,8 +640,9 @@ async def update_line(
     line = svc.update_line(line_id, data)
     db.refresh(line)
     return templates.TemplateResponse(
+        request,
         "quotes/_line_row.html",
-        {"request": request, "line": line},
+        {"line": line},
     )
 
 
@@ -659,8 +665,9 @@ async def remove_line(
     if had_children:
         quote = _get_quote_or_404(db, quote_id)
         resp = templates.TemplateResponse(
+            request,
             "quotes/_lines_tbody.html",
-            {"request": request, "lines": _tree_sort_lines(quote.lines)},
+            {"lines": _tree_sort_lines(quote.lines)},
         )
         resp.headers["HX-Retarget"] = "#quote-lines-tbody"
         resp.headers["HX-Reswap"] = "innerHTML"
@@ -679,8 +686,9 @@ async def get_lines_tbody(
     """Return the full lines tbody; used by select-upgrade and toggle-included."""
     quote = _get_quote_or_404(db, quote_id)
     return templates.TemplateResponse(
+        request,
         "quotes/_lines_tbody.html",
-        {"request": request, "lines": _tree_sort_lines(quote.lines)},
+        {"lines": _tree_sort_lines(quote.lines)},
     )
 
 
@@ -716,8 +724,9 @@ async def add_upgrade_option(
     )
     db.refresh(line)
     return templates.TemplateResponse(
+        request,
         "quotes/_line_row.html",
-        {"request": request, "line": line},
+        {"line": line},
     )
 
 
@@ -749,8 +758,9 @@ async def add_optional_line(
     )
     db.refresh(line)
     return templates.TemplateResponse(
+        request,
         "quotes/_line_row.html",
-        {"request": request, "line": line},
+        {"line": line},
     )
 
 
@@ -766,8 +776,9 @@ async def select_upgrade(
     QuoteService(db, user_id).select_upgrade_option(line_id)
     quote = _get_quote_or_404(db, quote_id)
     return templates.TemplateResponse(
+        request,
         "quotes/_lines_tbody.html",
-        {"request": request, "lines": _tree_sort_lines(quote.lines)},
+        {"lines": _tree_sort_lines(quote.lines)},
     )
 
 
@@ -783,8 +794,9 @@ async def toggle_included(
     QuoteService(db, user_id).toggle_line_included(line_id)
     quote = _get_quote_or_404(db, quote_id)
     return templates.TemplateResponse(
+        request,
         "quotes/_lines_tbody.html",
-        {"request": request, "lines": _tree_sort_lines(quote.lines)},
+        {"lines": _tree_sort_lines(quote.lines)},
     )
 
 
@@ -833,8 +845,9 @@ async def set_research_status(
 
     # Return just the updated row
     return templates.TemplateResponse(
+        request,
         "quotes/_line_row.html",
-        {"request": request, "line": line},
+        {"line": line},
     )
 
 
@@ -893,9 +906,9 @@ async def set_follow_up(
     quote = _get_quote_or_404(db, quote_id)
     today = date.today()
     return templates.TemplateResponse(
+        request,
         "quotes/_follow_up_bar.html",
         {
-            "request": request,
             "quote": quote,
             "today": today,
             "tomorrow": today + timedelta(days=1),

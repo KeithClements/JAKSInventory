@@ -93,9 +93,9 @@ def cores_list(request: Request, db: Session = Depends(get_db)):
     )
 
     return templates.TemplateResponse(
+        request,
         "cores/list.html",
         {
-            "request": request,
             "awaiting_return": awaiting_return,
             "pending_inspection": pending_inspection,
             "pending_vendor_ship": pending_vendor_ship,
@@ -418,8 +418,7 @@ def core_slip_print(
         "email":   get_setting_value_db(db, "company_email",   ""),
     }
 
-    return templates.TemplateResponse("cores/slip_print.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "cores/slip_print.html", {
         "core": core,
         "slip": slip,
         "company": company,
@@ -450,8 +449,7 @@ def core_vendor_slip_print(
         "email":   get_setting_value_db(db, "company_email",   ""),
     }
 
-    return templates.TemplateResponse("cores/vendor_slip_print.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "cores/vendor_slip_print.html", {
         "core": core,
         "company": company,
     })
@@ -502,8 +500,7 @@ def core_slip_doc_print(slip_id: int, request: Request, db: Session = Depends(ge
     if slip is None:
         return RedirectResponse("/cores/", status_code=303)
     ctx = _slip_print_context(slip, db)
-    ctx["request"] = request
-    return templates.TemplateResponse("cores/print_slip.html", ctx)
+    return templates.TemplateResponse(request, "cores/print_slip.html", ctx)
 
 
 @router.get("/slips/{slip_id}/pdf")
@@ -555,8 +552,7 @@ def vcr_doc_print(vcr_id: int, request: Request, db: Session = Depends(get_db)):
     if vcr is None:
         return RedirectResponse("/cores/", status_code=303)
     ctx = _vcr_print_context(vcr, db)
-    ctx["request"] = request
-    return templates.TemplateResponse("cores/print_vcr.html", ctx)
+    return templates.TemplateResponse(request, "cores/print_vcr.html", ctx)
 
 
 @router.get("/vcr/{vcr_id}/pdf")

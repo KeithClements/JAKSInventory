@@ -1,4 +1,4 @@
-"""
+﻿"""
 app/routers/invoices.py
 ========================
 Invoice list, workspace (create→edit→finalize), payment, void, print/PDF.
@@ -91,7 +91,6 @@ def _workspace_context(db: Session, request: Request, invoice: Invoice) -> dict:
     bal = StatementService(db).get_customer_balance_summary(invoice.customer_id)
 
     return {
-        "request": request,
         "invoice": invoice,
         "totals": totals,
         "customers": customers,
@@ -225,9 +224,9 @@ def invoice_list(
         )
     invoices = query.order_by(Invoice.created_at.desc()).limit(200).all()
     return templates.TemplateResponse(
+        request,
         "invoices/list.html",
         {
-            "request": request,
             "invoices": invoices,
             "tabs": INV_LIST_TABS,
             "tab": tab,
@@ -261,9 +260,9 @@ def invoice_preview_panel(invoice_id: int, request: Request, db: Session = Depen
             status_code=404,
         )
     return templates.TemplateResponse(
+        request,
         "invoices/_preview_panel.html",
         {
-            "request": request,
             "inv": inv,
             "InvoiceStatus": InvoiceStatus,
             "LineType": LineType,
@@ -305,8 +304,9 @@ def invoice_new_picker(
         .all()
     )
     return templates.TemplateResponse(
+        request,
         "invoices/_new_picker.html",
-        {"request": request, "customers": customers},
+        {"customers": customers},
     )
 
 
@@ -357,6 +357,7 @@ def invoice_workspace(invoice_id: int, request: Request, db: Session = Depends(g
     if isinstance(inv, RedirectResponse):
         return inv
     return templates.TemplateResponse(
+        request,
         "invoices/workspace.html",
         _workspace_context(db, request, inv),
     )
@@ -415,6 +416,7 @@ async def invoice_update_header(
 
     inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
     return templates.TemplateResponse(
+        request,
         "invoices/_totals_panel.html",
         _workspace_context(db, request, inv),
     )
@@ -495,6 +497,7 @@ async def invoice_add_line(
 
     inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
     return templates.TemplateResponse(
+        request,
         "invoices/_lines_and_totals.html",
         _workspace_context(db, request, inv),
     )
@@ -539,6 +542,7 @@ async def invoice_update_line(
 
     inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
     return templates.TemplateResponse(
+        request,
         "invoices/_lines_and_totals.html",
         _workspace_context(db, request, inv),
     )
@@ -567,6 +571,7 @@ def invoice_delete_line(
 
     inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
     return templates.TemplateResponse(
+        request,
         "invoices/_lines_and_totals.html",
         _workspace_context(db, request, inv),
     )
@@ -596,6 +601,7 @@ def invoice_unlink_line(
 
     inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
     return templates.TemplateResponse(
+        request,
         "invoices/_lines_and_totals.html",
         _workspace_context(db, request, inv),
     )
@@ -624,8 +630,9 @@ def invoice_product_search(request: Request, q: str = "", db: Session = Depends(
         .all()
     )
     return templates.TemplateResponse(
+        request,
         "invoices/_search_results.html",
-        {"request": request, "results": results},
+        {"results": results},
     )
 
 
@@ -704,8 +711,7 @@ def invoice_print(invoice_id: int, request: Request, db: Session = Depends(get_d
         "email":   get_setting_value_db(db, "company_email",   ""),
     }
 
-    return templates.TemplateResponse("invoices/print.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "invoices/print.html", {
         "invoice": inv,
         "customer_addr_lines": addr_lines,
         "discount_amount": discount_amount,

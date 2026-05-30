@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import html
 import json
@@ -146,7 +146,7 @@ def vendor_new(request: Request):
     return templates.TemplateResponse(
         request,
         "vendors/new.html",
-        {"request": request, "payment_terms": PAYMENT_TERMS},
+        {"payment_terms": PAYMENT_TERMS},
     )
 
 

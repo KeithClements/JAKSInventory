@@ -43,9 +43,9 @@ async def global_search(
     customers = svc.search_customers(q, limit=4)
 
     return templates.TemplateResponse(
+        request,
         "search/_results_dropdown.html",
         {
-            "request": request,
             "q": q,
             "products": products,
             "customers": customers,

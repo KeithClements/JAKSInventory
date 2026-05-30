@@ -125,9 +125,9 @@ def reports_index(request: Request, db: Session = Depends(get_db)):
         error_message = "Could not load report snapshot. Check server logs for details."
 
     return templates.TemplateResponse(
+        request,
         "reports/index.html",
         {
-            "request": request,
             "today": today,
             "error_message": error_message,
             "ar_total":      ar_total,
@@ -171,9 +171,9 @@ def reports_ar_aging(
         error_message = "Could not load AR aging data. Check server logs for details."
 
     return templates.TemplateResponse(
+        request,
         "reports/ar_aging.html",
         {
-            "request": request,
             "today": as_of_date,
             "as_of": as_of_date,
             "aging_rows": rows,   # legacy template variable
@@ -207,9 +207,9 @@ def reports_sales_by_customer(
         error_message = "Could not load sales data. Check server logs for details."
 
     return templates.TemplateResponse(
+        request,
         "reports/sales_by_customer.html",
         {
-            "request": request,
             "start_date": start_date,
             "end_date": end_date,
             "rows": rows,
@@ -241,9 +241,9 @@ def reports_sales_by_product(
         error_message = "Could not load product sales data. Check server logs for details."
 
     return templates.TemplateResponse(
+        request,
         "reports/sales_by_product.html",
         {
-            "request": request,
             "start_date": start_date,
             "end_date": end_date,
             "rows": rows,
@@ -269,9 +269,9 @@ def reports_inventory_valuation(request: Request, db: Session = Depends(get_db))
         error_message = "Could not load inventory data. Check server logs for details."
 
     return templates.TemplateResponse(
+        request,
         "reports/inventory_valuation.html",
         {
-            "request": request,
             "today": date.today(),
             "rows": rows,
             "totals": totals,
@@ -298,9 +298,9 @@ def reports_open_pos(request: Request, db: Session = Depends(get_db)):
         error_message = "Could not load open PO data. Check server logs for details."
 
     return templates.TemplateResponse(
+        request,
         "reports/open_pos.html",
         {
-            "request": request,
             "today": today,
             "rows": rows,
             "totals": totals,
@@ -327,9 +327,9 @@ def reports_outstanding_cores(request: Request, db: Session = Depends(get_db)):
         error_message = "Could not load core charge data. Check server logs for details."
 
     return templates.TemplateResponse(
+        request,
         "reports/outstanding_cores.html",
         {
-            "request": request,
             "today": today,
             "rows": rows,
             "totals": totals,
@@ -359,9 +359,9 @@ def reports_overdue_invoices(
         error_message = "Could not load overdue invoices data. Check server logs for details."
 
     return templates.TemplateResponse(
+        request,
         "reports/overdue_invoices.html",
         {
-            "request": request,
             "as_of": as_of_date,
             "rows": rows,
             "totals": totals,
@@ -392,9 +392,9 @@ def reports_sales_tax(
         error_message = "Could not load sales tax data. Check server logs for details."
 
     return templates.TemplateResponse(
+        request,
         "reports/sales_tax.html",
         {
-            "request": request,
             "start_date": start_date,
             "end_date": end_date,
             "rows": rows,
@@ -426,9 +426,9 @@ def reports_lost_sales(
         error_message = "Could not load lost sales data. Check server logs for details."
 
     return templates.TemplateResponse(
+        request,
         "reports/lost_sales.html",
         {
-            "request": request,
             "start_date": start_date,
             "end_date": end_date,
             "rows": rows,

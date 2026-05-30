@@ -174,8 +174,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         monthly_labels.append(calendar.month_abbr[m])
         monthly_totals.append(round(float(total), 2))
 
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "dashboard.html", {
         "today_payments": today_payments,
         "ar_balance": ar_balance,
         "overdue_count": overdue_count,

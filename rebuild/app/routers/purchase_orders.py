@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 from datetime import datetime
@@ -156,9 +156,9 @@ def po_list(
 
     pos = query.all()
     return templates.TemplateResponse(
+        request,
         "purchase_orders/list.html",
         {
-            "request": request,
             "pos": pos,
             "tabs": PO_LIST_TABS,
             "tab": tab,
@@ -189,8 +189,9 @@ def po_preview_panel(po_id: int, request: Request, db: Session = Depends(get_db)
             '<p class="px-6 py-4 text-sm text-gray-400">Purchase order not found.</p>'
         )
     return templates.TemplateResponse(
+        request,
         "purchase_orders/_preview_panel.html",
-        {"request": request, "po": po},
+        {"po": po},
     )
 
 
@@ -288,9 +289,9 @@ def po_receiving_queue(request: Request, q: str = "", db: Session = Depends(get_
     ))
 
     return templates.TemplateResponse(
+        request,
         "purchase_orders/receiving_queue.html",
         {
-            "request": request,
             "rows": rows,
             "metrics": metrics,
             "q": q,
@@ -331,9 +332,9 @@ def po_match_queue(request: Request, db: Session = Depends(get_db)):
             flagged.append({"po": p, "match": summary})
 
     return templates.TemplateResponse(
+        request,
         "purchase_orders/match_queue.html",
         {
-            "request": request,
             "flagged": flagged,
             "total": len(flagged),
             "now": datetime.utcnow(),
@@ -349,8 +350,9 @@ def po_new(request: Request, db: Session = Depends(get_db)):
         return RedirectResponse("/purchase-orders/", status_code=303)
     vendors = db.query(Vendor).filter(Vendor.is_active == True).order_by(Vendor.name).all()
     return templates.TemplateResponse(
+        request,
         "purchase_orders/_new_picker.html",
-        {"request": request, "vendors": vendors, "POStatus": POStatus},
+        {"vendors": vendors, "POStatus": POStatus},
     )
 
 
@@ -400,8 +402,7 @@ def po_workspace(po_id: int, request: Request, db: Session = Depends(get_db)):
     if not po:
         return RedirectResponse("/purchase-orders/", status_code=303)
     ctx = _workspace_ctx(po)
-    ctx["request"] = request
-    return templates.TemplateResponse("purchase_orders/workspace.html", ctx)
+    return templates.TemplateResponse(request, "purchase_orders/workspace.html", ctx)
 
 
 # ── Header autosave ───────────────────────────────────────────────────────────
@@ -443,8 +444,7 @@ def _lines_response(po_id: int, request: Request, db: Session) -> HTMLResponse:
         .first()
     )
     ctx = _workspace_ctx(po)
-    ctx["request"] = request
-    return templates.TemplateResponse("purchase_orders/_lines_section.html", ctx)
+    return templates.TemplateResponse(request, "purchase_orders/_lines_section.html", ctx)
 
 
 @router.post("/{po_id}/lines", response_class=HTMLResponse)
@@ -539,8 +539,9 @@ def po_product_search(q: str = "", db: Session = Depends(get_db), request: Reque
             .all()
         )
     return templates.TemplateResponse(
+        request,
         "purchase_orders/_product_search_results.html",
-        {"request": request, "results": results},
+        {"results": results},
     )
 
 
@@ -919,8 +920,7 @@ def po_print(po_id: int, request: Request, db: Session = Depends(get_db)):
     if po is None:
         return RedirectResponse("/purchase-orders/", status_code=303)
     ctx = _po_print_context(po, db)
-    ctx["request"] = request
-    return templates.TemplateResponse("purchase_orders/print.html", ctx)
+    return templates.TemplateResponse(request, "purchase_orders/print.html", ctx)
 
 
 @router.get("/{po_id}/pdf")

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import html
 import io
@@ -268,9 +268,9 @@ def customer_list(
         outstanding_cores_map = {}
 
     return templates.TemplateResponse(
+        request,
         "customers/list.html",
         {
-            "request": request,
             "customers": customers,
             "q": q,
             "tab": tab,
@@ -384,9 +384,9 @@ def customer_preview_panel(
     )
 
     return templates.TemplateResponse(
+        request,
         "customers/_preview_panel.html",
         {
-            "request": request,
             "c": c,
             "open_invoice_count": open_invoice_count,
             "open_quote_count": open_quote_count,
@@ -403,8 +403,9 @@ def customer_preview_panel(
 @router.get("/new", response_class=HTMLResponse)
 def customer_new(request: Request):
     return templates.TemplateResponse(
+        request,
         "customers/new.html",
-        {"request": request, "payment_terms": list(PaymentTerms)},
+        {"payment_terms": list(PaymentTerms)},
     )
 
 
@@ -419,9 +420,9 @@ async def customer_create(request: Request, db: Session = Depends(get_db)):
         dup_matches = _find_duplicate_customers(db, company_name)
         if dup_matches:
             return templates.TemplateResponse(
+                request,
                 "customers/new.html",
                 {
-                    "request": request,
                     "payment_terms": list(PaymentTerms),
                     "dup_matches": dup_matches,
                     "prefill": {k: str(v) for k, v in form.items()},
@@ -457,7 +458,7 @@ async def customer_create(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/quick-create-form", response_class=HTMLResponse)
 def customer_quick_create_form(request: Request):
-    return templates.TemplateResponse("customers/_quick_create.html", {"request": request})
+    return templates.TemplateResponse(request, "customers/_quick_create.html")
 
 
 @router.post("/quick-create", response_class=HTMLResponse)
@@ -481,9 +482,9 @@ async def customer_quick_create(request: Request, db: Session = Depends(get_db))
         dup_matches = _find_duplicate_customers(db, company_name)
         if dup_matches:
             return templates.TemplateResponse(
+                request,
                 "customers/_quick_create.html",
                 {
-                    "request": request,
                     "dup_matches": dup_matches,
                     "prefill": {k: str(v) for k, v in form.items()},
                 },
@@ -535,8 +536,9 @@ async def customer_quick_create(request: Request, db: Session = Depends(get_db))
     # ── Save & New: return fresh form with in-panel success flash ──────────
     if _action == "save_new":
         return templates.TemplateResponse(
+            request,
             "customers/_quick_create.html",
-            {"request": request, "success_flash": f"✓ {company_name} saved."},
+            {"success_flash": f"✓ {company_name} saved."},
         )
 
     # ── Save & Quote: create a draft quote and drop into the quote workspace ──
@@ -609,8 +611,9 @@ def customer_search_partial(request: Request, q: str = "", db: Session = Depends
             .all()
         )
     return templates.TemplateResponse(
+        request,
         "customers/_search_results.html",
-        {"request": request, "customers": customers},
+        {"customers": customers},
     )
 
 
@@ -838,9 +841,9 @@ def _read_csv(content: bytes) -> list[dict[str, str]]:
 @router.get("/import", response_class=HTMLResponse)
 def customer_import_form(request: Request):
     return templates.TemplateResponse(
+        request,
         "customers/import.html",
         {
-            "request": request,
             "preview_rows": None,
             "import_json": None,
             "skipped": [],
@@ -867,9 +870,9 @@ async def customer_import_preview(
             raw_rows = _read_csv(content)
         else:
             return templates.TemplateResponse(
+                request,
                 "customers/import.html",
                 {
-                    "request": request,
                     "preview_rows": None,
                     "import_json": None,
                     "skipped": [],
@@ -881,9 +884,9 @@ async def customer_import_preview(
     except Exception as exc:
         log.exception("Failed to parse import file %s", filename)
         return templates.TemplateResponse(
+            request,
             "customers/import.html",
             {
-                "request": request,
                 "preview_rows": None,
                 "import_json": None,
                 "skipped": [],
@@ -904,9 +907,9 @@ async def customer_import_preview(
         row["_duplicate"] = row["company_name"].lower() in existing_names
 
     return templates.TemplateResponse(
+        request,
         "customers/import.html",
         {
-            "request": request,
             "preview_rows": valid_rows[:200],
             "import_json": json.dumps(valid_rows),
             "skipped": skipped_rows,
@@ -1008,8 +1011,9 @@ def customer_balance_mini(
     from app.services.statement_service import StatementService
     summary = StatementService(db).get_customer_balance_summary(customer_id)
     return templates.TemplateResponse(
+        request,
         "customers/_balance_mini.html",
-        {"request": request, **summary},
+        {**summary},
     )
 
 
@@ -1047,9 +1051,9 @@ def customer_detail(
     )
 
     return templates.TemplateResponse(
+        request,
         "customers/detail.html",
         {
-            "request": request,
             "customer": c,
             "recent_invoices": recent_invoices,
             "open_quotes": open_quotes,
@@ -1118,8 +1122,9 @@ async def log_call(
     )
 
     return templates.TemplateResponse(
+        request,
         "customers/_call_log_row.html",
-        {"request": request, "log": entry},
+        {"log": entry},
     )
 
 
@@ -1180,6 +1185,7 @@ def customer_communications(
             related_links[comm.id] = None
 
     return templates.TemplateResponse(
+        request,
         "customers/communications.html",
         {
             "request":        request,
@@ -1262,8 +1268,9 @@ def customer_balance(
     crm = CRMService(db, current_user_id=CURRENT_USER_ID)
     balance = crm.get_account_balance(customer_id)
     return templates.TemplateResponse(
+        request,
         "customers/_balance_widget.html",
-        {"request": request, "balance": balance},
+        {"balance": balance},
     )
 
 
@@ -1298,9 +1305,9 @@ def customer_statement_form(
     # Default: first of current month → today
     default_start = today.replace(day=1)
     return templates.TemplateResponse(
+        request,
         "customers/statement_form.html",
         {
-            "request": request,
             "customer": c,
             "default_start": default_start.isoformat(),
             "default_end": today.isoformat(),
@@ -1341,8 +1348,9 @@ def customer_statement_print(
         "email":   get_setting_value_db(db, "company_email",   ""),
     }
     return templates.TemplateResponse(
+        request,
         "customers/statement_print.html",
-        {"request": request, "stmt": stmt, "company": company},
+        {"stmt": stmt, "company": company},
     )
 
 

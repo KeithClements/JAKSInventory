@@ -56,9 +56,9 @@ def vr_list(
             vendors_map[v.id] = v
 
     return templates.TemplateResponse(
+        request,
         "vendor_returns/list.html",
         {
-            "request": request,
             "vendor_returns": vendor_returns,
             "vendors_map": vendors_map,
             "VendorReturnStatus": VendorReturnStatus,
@@ -80,9 +80,9 @@ def vr_new(
         .all()
     )
     return templates.TemplateResponse(
+        request,
         "vendor_returns/new.html",
         {
-            "request": request,
             "vendors": vendors,
         },
     )
@@ -197,9 +197,9 @@ def vr_detail(
         return RedirectResponse("/vendor-returns/", status_code=303)
     vendor = db.query(Vendor).filter(Vendor.id == vr.vendor_id).first()
     return templates.TemplateResponse(
+        request,
         "vendor_returns/workspace.html",
         {
-            "request": request,
             "vr": vr,
             "vendor": vendor,
             "VendorReturnStatus": VendorReturnStatus,

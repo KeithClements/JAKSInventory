@@ -109,8 +109,7 @@ def product_list(
         ).count(),
     }
 
-    return templates.TemplateResponse("products/list.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "products/list.html", {
         "products": products,
         "q": q,
         "tab": tab,
@@ -129,8 +128,7 @@ def product_preview_panel(
         return HTMLResponse(
             '<p class="px-6 py-4 text-sm text-gray-400">Product not found.</p>'
         )
-    return templates.TemplateResponse("products/_preview_panel.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "products/_preview_panel.html", {
         "p": p,
     })
 
@@ -140,8 +138,7 @@ def product_preview_panel(
 @router.get("/new", response_class=HTMLResponse)
 def product_new(request: Request, db: Session = Depends(get_db)):
     default_markup = get_setting_value_db(db, "default_markup_pct", "30.0")
-    return templates.TemplateResponse("products/new.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "products/new.html", {
         "vendors": _vendors(db),
         "categories": _categories(db),
         "manufacturers": MANUFACTURERS,
@@ -158,8 +155,7 @@ async def product_create(request: Request, db: Session = Depends(get_db)):
         return RedirectResponse(f"/products/{product.id}", status_code=303)
     except ValueError as exc:
         default_markup = get_setting_value_db(db, "default_markup_pct", "30.0")
-        return templates.TemplateResponse("products/new.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "products/new.html", {
             "vendors": _vendors(db),
             "categories": _categories(db),
             "manufacturers": MANUFACTURERS,
@@ -175,7 +171,7 @@ async def product_create(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/quick-create-form", response_class=HTMLResponse)
 def product_quick_create_form(request: Request):
-    return templates.TemplateResponse("products/_quick_create.html", {"request": request})
+    return templates.TemplateResponse(request, "products/_quick_create.html")
 
 
 @router.post("/quick-create", response_class=HTMLResponse)
@@ -253,8 +249,7 @@ def product_detail(
     p = db.query(Product).filter(Product.id == product_id).first()
     if not p:
         return RedirectResponse("/products/", status_code=303)
-    return templates.TemplateResponse("products/detail.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "products/detail.html", {
         "product": p,
         "vendors": _vendors(db),
         "categories": _categories(db),
@@ -279,8 +274,7 @@ async def product_update(product_id: int, request: Request, db: Session = Depend
     except ValueError as exc:
         # Re-fetch product fresh (may be partially updated in service before error)
         p = db.query(Product).filter(Product.id == product_id).first()
-        return templates.TemplateResponse("products/detail.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "products/detail.html", {
             "product": p,
             "vendors": _vendors(db),
             "categories": _categories(db),
@@ -322,8 +316,7 @@ async def vendor_source_add(product_id: int, request: Request, db: Session = Dep
         }
         source = _svc(db).add_vendor_source(product_id, vendor_id, data)
         db.refresh(source)
-        return templates.TemplateResponse("products/_vendor_source_row.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "products/_vendor_source_row.html", {
             "source": source,
             "product_id": product_id,
         })
@@ -340,8 +333,7 @@ def vendor_source_prefer(product_id: int, source_id: int, request: Request, db: 
         _svc(db).set_preferred_vendor(product_id, source_id)
         # Return the full updated sources list partial so preferred badges refresh
         p = db.query(Product).filter(Product.id == product_id).first()
-        return templates.TemplateResponse("products/_vendor_sources_table.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "products/_vendor_sources_table.html", {
             "product": p,
             "product_id": product_id,
         })
@@ -391,8 +383,7 @@ async def cross_ref_add(product_id: int, request: Request, db: Session = Depends
             .order_by(CrossReference.id.desc())
             .first()
         )
-        return templates.TemplateResponse("products/_cross_ref_row.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "products/_cross_ref_row.html", {
             "xref": xref,
         })
     except ValueError as exc:
@@ -421,8 +412,7 @@ async def cross_ref_update_status(
     status = str(form.get("status", "proven")).strip() or "proven"
     try:
         xref = _svc(db).update_cross_reference_status(xref_id, status)
-        return templates.TemplateResponse("products/_cross_ref_row.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "products/_cross_ref_row.html", {
             "xref": xref,
         })
     except ValueError as exc:
@@ -447,8 +437,7 @@ def product_enrich_panel(
             .filter(ScraperSource.name.ilike(source))
             .first()
         )
-    return templates.TemplateResponse("products/_enrich_panel.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "products/_enrich_panel.html", {
         "product_id": product_id,
         "source": scraper_source,
     })
@@ -494,8 +483,7 @@ async def product_image_upload(
     _svc(db).add_product_image(product_id, rel_path)
     db.refresh(p)
 
-    return templates.TemplateResponse("products/_images_grid.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "products/_images_grid.html", {
         "images": p.images,
         "product_id": product_id,
     })
@@ -519,8 +507,7 @@ def product_image_set_primary(
     except ValueError as exc:
         return HTMLResponse(f'<p class="text-sm text-red-600 p-4">{exc}</p>', status_code=422)
     p = db.query(Product).filter(Product.id == product_id).first()
-    return templates.TemplateResponse("products/_images_grid.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "products/_images_grid.html", {
         "images": p.images if p else [],
         "product_id": product_id,
     })
@@ -555,8 +542,7 @@ async def suggested_sell_add(
             relationship_type=rel_type,
             notes=notes,
         )
-        return templates.TemplateResponse("products/_suggested_sell_row.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "products/_suggested_sell_row.html", {
             "suggestion": suggestion,
             "product_id": product_id,
         })
@@ -579,8 +565,7 @@ async def suggested_sell_update(
         data["notes"] = str(form["notes"]).strip()
     try:
         suggestion = _ss_svc(db).update_suggestion(suggestion_id, data)
-        return templates.TemplateResponse("products/_suggested_sell_row.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "products/_suggested_sell_row.html", {
             "suggestion": suggestion,
             "product_id": product_id,
         })

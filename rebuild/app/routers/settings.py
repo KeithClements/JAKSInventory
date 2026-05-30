@@ -187,7 +187,7 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
         {"key": k, "label": DEFAULTS[k][1], "value": rows.get(k, DEFAULTS[k][0])}
         for k in VISIBLE_KEYS
     ]
-    return templates.TemplateResponse("settings/index.html", {"request": request, "settings": settings})
+    return templates.TemplateResponse(request, "settings/index.html", {"settings": settings})
 
 
 @router.post("/", response_class=RedirectResponse)
