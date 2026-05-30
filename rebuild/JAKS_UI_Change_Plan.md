@@ -1,7 +1,7 @@
 # JAKS UI Change Plan
 *Living document — updated as screens are built.*
 
-**Status:** Products ✅ · PO ✅ · Invoices ✅ · Customers ✅ · Invoice Workspace ✅ L3 · Quotes ✅ · Sales Orders ✅ · Vendors ✅ · Returns ✅ L2 · Payments 🟡 dock+color fix pending · **#10/#11 HOLD (functional-test mode)** · Compiled Tailwind ✅ LIVE · §8B ✅ DRAFTED · Save-button standard ✅ RULED · Method-chip colors ✅ RULED.
+**Status:** Products ✅ · PO ✅ · Invoices ✅ · Customers ✅ · Invoice Workspace ✅ L3 · Quotes ✅ · Sales Orders ✅ · Vendors ✅ · Returns ✅ · **Payments ✅ L2** (all lists complete 2026-05-29) · **#10/#11 HOLD — functional-test mode** · FIX 1-4 + bcda974 landed · "Can't receive" pending owner re-test · Compiled Tailwind ✅ LIVE · §8B + Save-button + method-chip-colors ✅ RULED.
 
 **Scope:** All list and workspace screens in the JAKS Inventory ERP system.
 
@@ -406,10 +406,10 @@ Placed adjacent to the form header or in the card header band — not in `header
 | Check | `bg-blue-50 text-blue-700` / `bg-blue-500` | Standard AR transaction — §4 "informational" |
 | Card (credit/debit) | `bg-purple-50 text-purple-700` / `bg-purple-500` | External processor workflow — §4 "special workflow" |
 | ACH | `bg-blue-50 text-blue-700` / `bg-blue-500` | Electronic transfer — §4 "informational/activity" |
-| Wire | `bg-gray-100 text-gray-700` / `bg-gray-400` | Owner ruling: different-type marker (not the standard AR flow) |
+| Wire | `bg-sky-50 text-sky-700` / `bg-sky-500` | Builder used `sky-*` (not initial `gray-*` recommendation) — **ratified 2026-05-29.** `sky-*` is §4-permitted (`blue-*/sky-*` co-listed); better semantic than gray for an active transfer. |
 | Account Credit | `bg-gray-100 text-gray-700` / `bg-gray-400` | Internal balance — §4 "neutral/metadata" |
 
-Apply to `app/templates/payments/list.html` `method_chip` dict (replaces `indigo-*` for ACH and `cyan-*` for Wire — both were §4 violations). QA: `gray-*` on Wire is intentional — not a lint advisory.
+Applied and verified in committed code (`payments/list.html:38-45`). Replaces `indigo-*` (ACH) and `cyan-*` (Wire) — both §4 violations. QA: no lint advisory on any of these families.
 
 **Badge/chip sizes:**
 
@@ -487,7 +487,7 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 | 6 | Sales Orders List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** Dock confirmed: import line 25, call line 346 (verified in committed code). All 11 §2 elements + §2B. `py-4` correct. Backend-contract guard accepted. |
 | 7 | Vendors List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** Dock wired (import line 21 + call line 333). All 11 §2 elements + §2B (Open POs/Bills/Credits/LastPO/Contact). Tab counts stub-zeros via backend-contract guard — non-blocking. Lead time deferred per "if stored" qualifier. |
 | 8 | Returns List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** All 11 §2 elements + §2B verified. Real tab counts from router group_by (no stub guard). Dock wired at line 339. Stripe: amber=received, blue=open, transparent=draft/closed. |
-| 9 | Payments List | 🟡 Dock + color fix pending | L1 → L2 | Governance pass 2026-05-29 — **SEND BACK.** Dock still in comment (lines 312-317); import missing from imports section. Two-line fix. Also apply §4 method-chip color ruling (Cash/Check/Card/ACH/Wire/Credit — see §4). Re-pass targeted (dock + colors only) after commit. |
+| 9 | Payments List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS (re-pass).** Dock: import line 16, call line 314 (live, not commented). Method chips: Cash=green, Check=blue, Card=purple, ACH=blue, Wire=sky (§4-permitted; sky co-listed with blue). All §2 + §2B previously verified. |
 | 10 | Product Detail | ⏳ **HOLD — functional-test mode** | L1 → L2 | Section-based card layout. Do not start until hold lifted. |
 | 11 | PO Workspace | ⏳ **HOLD — functional-test mode** | L1 → L3 | Autosave, line editor, receive flow. Do not start until hold lifted. |
 | 12 | Invoice Workspace | ✅ L3 complete | L3 candidate → L3 | Governance pass 2026-05-29. **PASS confirmed 2026-05-29** — window.confirm already cleared prior to pass. No blocking defects remain. A11y follow-up (role=dialog/aria-modal/focus-trap on payment/void/change-customer modals) tracked under §8 #4 a11y sweep — non-blocking for L3. |
@@ -1322,6 +1322,31 @@ All five can be done in one small PR after the AR chip lands.
 5. **New Quote modal inline `x-transition`** — `app/templates/quotes/list.html:86-89, 98-101`.
    Replace the six `x-transition:*` attributes on backdrop and panel with `{{ backdrop_fade() }}`
    and `{{ modal_scale() }}` from `macros/motion.html`.
+
+---
+
+#### 8G. Owner-Test Triage — Functional-Test Phase (2026-05-29)
+
+**Context:** Owner entered functional-test mode after list rollout. The following fixes landed
+during triage. Recorded here as the authoritative change log; not pending further action unless
+re-test surfaces new defects.
+
+**FIX 1-4 + commit `bcda974` — landed:**
+Details of the specific fixes are tracked in the backend/feature commit log. The Architect's
+record is that FIX 1-4 were verified by the backend/builder lane and committed at `bcda974`.
+No UI macro or base.html changes were involved in this set.
+
+**"Can't receive" cluster — pending owner re-test (not a code defect):**
+The receiving flow was reviewed against the codebase and no code defect was identified.
+The "can't receive" report is believed to be a workflow/UX discoverability issue (the two-step
+staging flow in the receiving queue) rather than a broken feature. Status: pending owner re-test
+after orientation on the staging step. If re-test confirms a real defect, it becomes a backend-lane
+ticket — do not start UI work on this without explicit instruction.
+
+**#10 Product Detail / #11 PO Workspace — on HOLD:**
+Both screens are explicitly deferred during functional-test phase. Do not start either until the
+owner lifts the hold. The Save-button ruling (§3) and §8B workspace header standard are the
+pre-work that will apply when these screens resume.
 
 ---
 
