@@ -384,7 +384,15 @@ function trapFocus(e, container) {
             {% if _tc %}
             <div class="mt-0.5">{{ status_chip(_tc[0], _tc[1], _tc[2]) }}</div>
             {% endif %}
-            {# TODO: AR warning chip (needs open-balance data from route) #}
+            {# §2B AR warning chip — bulk-computed in route, zero N+1 #}
+            {% set _ar = ar_map.get(quote.customer_id, {}) %}
+            {% if _ar.get('open_balance', 0) > 0 %}
+            <div class="mt-0.5">{{ status_chip(
+              'bg-red-100 text-red-700' if _ar.get('is_overdue') else 'bg-amber-50 text-amber-700',
+              'bg-red-500' if _ar.get('is_overdue') else 'bg-amber-400',
+              ('Overdue $' if _ar.get('is_overdue') else 'AR $') ~ ('%.0f' | format(_ar['open_balance']))
+            ) }}</div>
+            {% endif %}
           </td>
 
           {# ── Total + §2B Margin % ─────────────────────────────────────── #}

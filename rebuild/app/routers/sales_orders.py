@@ -26,6 +26,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.constants import LineType, PaymentMethod, SOPaymentMode, SOStatus
@@ -77,14 +78,36 @@ def _workspace_ctx(request: Request, so: SalesOrder) -> dict:
 @router.get("/", response_class=HTMLResponse)
 async def list_sales_orders(
     request: Request,
+    tab: str = "",
     status: str = "",
     q: str = "",
     db: Session = Depends(get_db),
 ):
-    from sqlalchemy import or_
+    # ── Unfiltered tab counts ─────────────────────────────────────────────
+    _so_counts: dict = dict(
+        db.query(SalesOrder.status, func.count(SalesOrder.id))
+        .group_by(SalesOrder.status)
+        .all()
+    )
+    _so_total = sum(_so_counts.values())
+    counts: dict = {
+        "":                 _so_total,
+        "all":              _so_total,   # alias: SO list template uses _counts.get('all', 0)
+        SOStatus.OPEN:      _so_counts.get(SOStatus.OPEN, 0),
+        SOStatus.PARTIAL:   _so_counts.get(SOStatus.PARTIAL, 0),
+        SOStatus.HOLD:      _so_counts.get(SOStatus.HOLD, 0),
+        SOStatus.FULFILLED: _so_counts.get(SOStatus.FULFILLED, 0),
+        SOStatus.INVOICED:  _so_counts.get(SOStatus.INVOICED, 0),
+        SOStatus.CANCELLED: _so_counts.get(SOStatus.CANCELLED, 0),
+    }
+
+    # `tab` is the canonical param from the filter_tabs macro (?tab=<slug>).
+    # Legacy ?status= accepted for back-compat.
+    active_tab = tab or status
+
     query = db.query(SalesOrder).join(Customer)
-    if status:
-        query = query.filter(SalesOrder.status == status)
+    if active_tab:
+        query = query.filter(SalesOrder.status == active_tab)
     if q:
         query = query.filter(
             or_(
@@ -100,7 +123,9 @@ async def list_sales_orders(
         {
             "request": request,
             "orders": orders,
+            "active_tab": active_tab,
             "status_filter": status,
+            "counts": counts,
             "q": q,
             "SOStatus": SOStatus,
         },
@@ -151,6 +176,40 @@ async def create_so(
         },
     )
     return RedirectResponse(f"/sales-orders/{so.id}", status_code=303)
+
+
+# ── Preview panel — MUST stay registered before /{so_id} ─────────────────────
+
+@router.get("/preview/{so_id}", response_class=HTMLResponse)
+async def so_preview_panel(
+    so_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Bottom-dock preview partial for the SO List (§7 Primitive 5).
+    Loaded via htmx.ajax() on row click; returns sales_orders/_preview_panel.html.
+
+    Context published to UI lane:
+      so          — SalesOrder ORM object (with .customer, .lines)
+      SOStatus    — enum class
+      SOPaymentMode — enum class
+    """
+    so = db.query(SalesOrder).filter(SalesOrder.id == so_id).first()
+    if so is None:
+        return HTMLResponse(
+            '<p class="px-6 py-4 text-sm text-red-500">Sales order not found.</p>',
+            status_code=404,
+        )
+    return templates.TemplateResponse(
+        "sales_orders/_preview_panel.html",
+        {
+            "request": request,
+            "so": so,
+            "SOStatus": SOStatus,
+            "SOPaymentMode": SOPaymentMode,
+        },
+    )
 
 
 # ── Workspace ─────────────────────────────────────────────────────────────────
@@ -479,8 +538,7 @@ def so_print(so_id: int, request: Request, db: Session = Depends(get_db)):
     if so is None:
         return RedirectResponse("/sales-orders/", status_code=303)
     ctx = _so_print_context(so, db)
-    ctx["request"] = request
-    return templates.TemplateResponse("sales_orders/print.html", ctx)
+    return templates.TemplateResponse(request, "sales_orders/print.html", ctx)
 
 
 @router.get("/{so_id}/pdf")

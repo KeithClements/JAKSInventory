@@ -1,0 +1,118 @@
+{# ── Sales Order bottom preview panel — loaded via htmx.ajax() on row click ──
+   §2B context (GET /sales-orders/preview/{id}):
+     so          : SalesOrder (with .customer, .lines)
+     SOStatus    : enum
+     SOPaymentMode: enum
+─────────────────────────────────────────────────────────────────────────── #}
+{% from "macros/chips.html" import status_chip %}
+
+{% set so_chip = {
+  'open':      ('bg-blue-50 text-blue-700',     'bg-blue-500',    'Open'),
+  'partial':   ('bg-indigo-50 text-indigo-700', 'bg-indigo-500',  'Partial'),
+  'hold':      ('bg-amber-100 text-amber-700',  'bg-amber-500',   'On Hold'),
+  'fulfilled': ('bg-teal-50 text-teal-700',     'bg-teal-500',    'Fulfilled'),
+  'invoiced':  ('bg-emerald-50 text-emerald-700','bg-emerald-500','Invoiced'),
+  'cancelled': ('bg-gray-100 text-gray-500',    'bg-gray-400',    'Cancelled'),
+} %}
+{% set chip_cls, chip_dot, chip_label = so_chip.get(so.status, ('bg-gray-100 text-gray-600', 'bg-gray-400', so.status | title)) %}
+{% set active_lines = so.lines | selectattr('line_status', 'ne', 'cancelled') | list %}
+
+<div class="px-6 py-4">
+  <div class="grid grid-cols-4 gap-6">
+
+    {# ── Identity ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Identity</p>
+      <div class="space-y-1.5">
+        <div class="flex items-center gap-2 flex-wrap">
+          <a href="/sales-orders/{{ so.id }}"
+             class="font-mono text-base font-bold text-brand-700 hover:text-brand-900 hover:underline leading-none">
+            {{ so.so_number }}
+          </a>
+          <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold {{ chip_cls }}">
+            <span class="w-1.5 h-1.5 rounded-full {{ chip_dot }} shrink-0"></span>
+            {{ chip_label }}
+          </span>
+        </div>
+        <p class="text-sm font-medium text-gray-800 leading-snug">{{ so.customer.company_name }}</p>
+        {% if so.customer_po_number %}
+        <p class="text-[11px] text-gray-400">PO: {{ so.customer_po_number }}</p>
+        {% endif %}
+        {% if so.esn %}
+        <p class="text-[11px] text-gray-400">ESN: {{ so.esn }}</p>
+        {% endif %}
+        <p class="text-[11px] text-gray-400">
+          Created {{ so.created_at.strftime('%b %d, %Y') if so.created_at else '—' }}
+        </p>
+        <p class="text-[11px] text-gray-400">
+          {{ active_lines | length }} line{{ 's' if active_lines | length != 1 }}
+        </p>
+      </div>
+    </div>
+
+    {# ── Financials ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Financials</p>
+      <div class="space-y-1.5">
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Payment Mode</span>
+          <span class="text-xs font-semibold text-gray-700 uppercase">{{ (so.payment_mode or '—') | replace('_', ' ') }}</span>
+        </div>
+        {% if so.deposit_amount and so.deposit_amount > 0 %}
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Deposit</span>
+          <span class="text-sm font-bold text-green-700 tabular-nums">${{ "%.2f"|format(so.deposit_amount) }}</span>
+        </div>
+        {% endif %}
+        {% set so_total = namespace(val=0.0) %}
+        {% for ln in active_lines %}{% set so_total.val = so_total.val + ln.line_total %}{% endfor %}
+        <div class="flex items-center justify-between pt-1 border-t border-gray-100">
+          <span class="text-xs text-gray-500">Est. Total</span>
+          <span class="text-sm font-bold text-gray-900 tabular-nums">${{ "%.2f"|format(so_total.val) }}</span>
+        </div>
+      </div>
+    </div>
+
+    {# ── Engine / Notes ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Engine</p>
+      <div class="space-y-1.5">
+        {% if so.engine_manufacturer or so.engine_model %}
+        <p class="text-sm text-gray-700">{{ [so.engine_manufacturer, so.engine_model] | select | join(' ') }}</p>
+        {% else %}
+        <p class="text-sm text-gray-400">—</p>
+        {% endif %}
+        {% if so.notes %}
+        <p class="text-[11px] text-gray-500 mt-2 line-clamp-3">{{ so.notes }}</p>
+        {% endif %}
+      </div>
+    </div>
+
+    {# ── Actions ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Actions</p>
+      <div class="flex flex-col gap-1.5">
+        <a href="/sales-orders/{{ so.id }}"
+           class="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold
+                  bg-brand-700 text-white hover:bg-brand-600 transition-colors">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+          </svg>
+          Open SO
+        </a>
+        {% if so.status in [SOStatus.OPEN, SOStatus.PARTIAL] %}
+        <a href="/sales-orders/{{ so.id }}#fulfill"
+           class="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold
+                  bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 transition-colors">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+          </svg>
+          Fulfill
+        </a>
+        {% endif %}
+      </div>
+    </div>
+
+  </div>{# end grid #}
+</div>

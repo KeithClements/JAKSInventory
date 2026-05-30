@@ -133,6 +133,35 @@ async def list_quotes(
         )
     quotes = query.order_by(Quote.created_at.desc()).limit(150).all()
 
+    # ── Bulk AR aggregate for visible customer set (no N+1) ───────────────
+    from collections import defaultdict
+    from sqlalchemy.orm import selectinload as _sload
+    from app.models.invoice import Invoice
+    from app.constants import InvoiceStatus
+
+    _cust_ids = list({q_.customer_id for q_ in quotes})
+    if _cust_ids:
+        _open_invoices = (
+            db.query(Invoice)
+            .options(_sload(Invoice.lines), _sload(Invoice.allocations))
+            .filter(
+                Invoice.customer_id.in_(_cust_ids),
+                Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL]),
+            )
+            .all()
+        )
+        _ar: dict = defaultdict(lambda: {"open_balance": 0.0, "is_overdue": False})
+        for _inv in _open_invoices:
+            _cid = _inv.customer_id
+            _ar[_cid]["open_balance"] = round(
+                _ar[_cid]["open_balance"] + _inv.balance_due, 2
+            )
+            if _inv.is_overdue:
+                _ar[_cid]["is_overdue"] = True
+        ar_map: dict = dict(_ar)
+    else:
+        ar_map = {}
+
     # Load active customers for the inline New Quote modal on the list page.
     customers = (
         db.query(Customer)
@@ -156,6 +185,7 @@ async def list_quotes(
             "now": now,
             "today": today,
             "counts": counts,
+            "ar_map": ar_map,
         },
     )
 
