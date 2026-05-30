@@ -22,6 +22,7 @@
 {% from "macros/bulk_toolbar.html"  import bulk_toolbar %}
 {% from "macros/chips.html"         import status_chip %}
 {% from "macros/empty_state.html"   import empty_state %}
+{% from "macros/preview_dock.html"  import preview_dock_shell %}
 {{ operational_list_script() }}
 
 {# ── Backend-contract guard: tab param arrives once backend adds counts ───────
@@ -342,11 +343,7 @@
 
 {% endif %}
 
-{# ── Preview dock — DEFERRED until Backend lands GET /sales-orders/preview/{id}
-   Once the route is registered (before /{id}), uncomment the next line and
-   remove this comment block.
-   {{ preview_dock_shell('Sales Order Preview', 'so-preview-body') }}
-────────────────────────────────────────────────────────────────────────────── #}
+{{ preview_dock_shell('Sales Order Preview', 'so-preview-body') }}
 
 </div>{# end operationalListData wrapper #}
 {% endblock %}
