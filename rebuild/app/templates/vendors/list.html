@@ -18,6 +18,7 @@
 {% from "macros/bulk_toolbar.html"  import bulk_toolbar %}
 {% from "macros/chips.html"         import status_chip %}
 {% from "macros/empty_state.html"   import empty_state %}
+{% from "macros/preview_dock.html"  import preview_dock_shell %}
 {{ operational_list_script() }}
 
 {# ── Backend-contract guard: tab + q + counts arrive when backend adds them ──
@@ -328,12 +329,8 @@
 
 {% endif %}
 
-{# ── Preview dock — DEFERRED until Backend lands GET /vendors/preview/{id}
-   Once the route is registered (before /{id}), uncomment the next two lines,
-   import preview_dock_shell at the top, and remove this comment block.
-   {% from "macros/preview_dock.html" import preview_dock_shell %}
-   {{ preview_dock_shell('Vendor Preview', 'vendor-preview-body') }}
-────────────────────────────────────────────────────────────────────────────── #}
+{# ── Preview dock — §7 Primitive 5 ───────────────────────────────────────── #}
+{{ preview_dock_shell('Vendor Preview', 'vendor-preview-body') }}
 
 </div>{# end operationalListData wrapper #}
 {% endblock %}
