@@ -361,3 +361,12 @@ def vendor_deactivate(vendor_id: int, db: Session = Depends(get_db)):
         v.is_active = False
         db.commit()
     return RedirectResponse("/vendors/", status_code=303)
+
+
+@router.post("/{vendor_id}/reactivate", response_class=RedirectResponse)
+def vendor_reactivate(vendor_id: int, db: Session = Depends(get_db)):
+    v = db.query(Vendor).filter(Vendor.id == vendor_id).first()
+    if v:
+        v.is_active = True
+        db.commit()
+    return RedirectResponse(f"/vendors/{vendor_id}", status_code=303)

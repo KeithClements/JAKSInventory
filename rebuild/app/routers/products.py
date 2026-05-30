@@ -5,8 +5,11 @@ import json
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+import csv
+import io
+
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
@@ -237,6 +240,116 @@ async def product_quick_create(request: Request, db: Session = Depends(get_db)):
     )
 
 
+# ── Bulk Set-Status — MUST be before /{product_id} ───────────────────────────
+
+@router.post("/bulk-status", response_class=RedirectResponse)
+async def product_bulk_status(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Set is_active status on a batch of products.
+    Form fields:
+      product_ids  — repeated int field (one per selected product)
+      action       — "activate" | "deactivate"
+    """
+    form = await request.form()
+    raw_ids = form.getlist("product_ids")
+    action = str(form.get("action", "")).strip()
+
+    product_ids = []
+    for raw in raw_ids:
+        try:
+            product_ids.append(int(raw))
+        except (ValueError, TypeError):
+            pass
+
+    if product_ids and action in ("activate", "deactivate"):
+        new_state = action == "activate"
+        db.query(Product).filter(Product.id.in_(product_ids)).update(
+            {"is_active": new_state}, synchronize_session=False
+        )
+        db.commit()
+
+    return RedirectResponse("/products/", status_code=303)
+
+
+# ── Export CSV — MUST be before /{product_id} ─────────────────────────────────
+
+@router.get("/export.csv")
+def product_export_csv(
+    request: Request,
+    tab: str = "",
+    q: str = "",
+    db: Session = Depends(get_db),
+):
+    """
+    Stream the current filtered product list as a CSV download.
+    Respects the same tab/q filters as the list view so "export what I see" works.
+    """
+    from app.utils import calc_sell_price
+
+    base = db.query(Product)
+
+    if tab == "zero_stock":
+        base = base.filter(Product.is_active == True, Product.qty_on_hand == 0)  # noqa: E712
+    elif tab == "special_order":
+        base = base.filter(Product.is_active == True, Product.special_order_only == True)  # noqa: E712
+    elif tab == "inactive":
+        base = base.filter(Product.is_active == False)  # noqa: E712
+    else:
+        base = base.filter(Product.is_active == True)  # noqa: E712
+
+    if q:
+        from sqlalchemy import or_
+        base = base.filter(
+            or_(
+                Product.sku.ilike(f"%{q}%"),
+                Product.title.ilike(f"%{q}%"),
+                Product.description.ilike(f"%{q}%"),
+            )
+        )
+
+    products = base.order_by(Product.sku).all()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "sku", "title", "description", "status",
+        "cost", "markup_pct", "price_override", "selling_price",
+        "qty_on_hand", "is_active", "category",
+    ])
+    for p in products:
+        markup = p.markup_pct or 30.0
+        try:
+            sell = p.price_override if (p.price_override and p.price_override > 0) \
+                else calc_sell_price(p.cost, markup)
+        except Exception:
+            sell = round(p.cost * (1 + markup / 100), 2)
+        writer.writerow([
+            p.sku,
+            p.title,
+            p.description,
+            p.status,
+            f"{p.cost:.4f}",
+            f"{markup:.2f}",
+            f"{p.price_override:.2f}" if p.price_override else "",
+            f"{sell:.2f}",
+            p.qty_on_hand,
+            "yes" if p.is_active else "no",
+            p.category.name if p.category else "",
+        ])
+
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=products.csv"},
+    )
+
+
+# ── Detail / Update / Deactivate / Reactivate ─────────────────────────────────
+
 @router.get("/{product_id}", response_class=HTMLResponse)
 def product_detail(
     product_id: int,
@@ -295,6 +408,15 @@ async def product_deactivate(product_id: int, request: Request, db: Session = De
     except ValueError:
         pass
     return RedirectResponse("/products/", status_code=303)
+
+
+@router.post("/{product_id}/reactivate", response_class=RedirectResponse)
+async def product_reactivate(product_id: int, db: Session = Depends(get_db)):
+    p = db.query(Product).filter(Product.id == product_id).first()
+    if p:
+        p.is_active = True
+        db.commit()
+    return RedirectResponse(f"/products/{product_id}", status_code=303)
 
 
 # ── Vendor Sources ────────────────────────────────────────────────────────────
