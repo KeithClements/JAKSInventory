@@ -192,6 +192,37 @@ All 13 services in `/app/services/`:
 
 ## 9. Build Status — What Is NOT YET BUILT ❌
 
+> **🔴 OWNER FUNCTIONAL TEST RECONCILIATION — 2026-05-30 (supersedes the 05-29 "support mode" claim below).**
+>
+> **✅ UPDATE (same day, later):** all three blockers below are **FIXED + regression-guarded** —
+> `3a700fd` (B1/B2 core-loop unblock) · `634d056` (B3 invoice search) · `e1d632d` (QA regression
+> gate: real-query SO product-search + linked-PO receive with full inventory-ledger assertions; 115
+> tests green). B5/B6 (vendor reactivate, products bulk-status/export) also landed (`82f7495`).
+> B4 (quote customer pre-fill) + search dash-normalization are implemented but **uncommitted** in the
+> working tree as of this writing. The text below is retained as the root-cause record / lesson.
+> Keith ran a screen-by-screen functional test (`Testing Feedback/TESTING_FEEDBACK5.30.26.docx`).
+> It surfaced **two LIVE core-loop blockers that the 125 passing tests did NOT catch**, both
+> introduced by recent "support-mode" commits:
+> - **Sales Order add-line is dead** — `app/routers/sales_orders.py:281,382` reference `Product.name`,
+>   a phantom attribute (model has `title`/`description`). Every product search 500s → no line can
+>   be added. Regression from commit `b097ddd`.
+> - **PO Receive is dead** — `app/services/po_service.py:448` uses `SOLineStatus` but commit `fa73f57`
+>   dropped it from the import block (lines 20-23) → `NameError` on any receive of an SO-linked PO
+>   line, swallowed by a bare `except` into "receipt was not recorded." Tests pass because no test
+>   creates SO-linked PO lines. This **refutes** the 05-29 §8G claim that "can't receive" was only a
+>   discoverability issue — it is a hard crash.
+> - **Invoice add-line** was the same class of bug (`suggested_sell_price` phantom in
+>   `invoices/_search_results.html`); fix is in the working copy, **uncommitted**.
+>
+> **Effect on status:** Backend is **NOT in clean support mode** — it has two live regressions from
+> its own commits. The "Quote/Returns won't open" report was a real HTTP 500 (old Starlette
+> `TemplateResponse` API) **already fixed in this branch by `b514196`** — owner tested a pre-pull
+> build; needs re-pull + re-test, not new work. Same for invoice "change customer" (cosmetic fix
+> already in `bcda974`). The whole CORES / RETURNS / WARRANTY / REPORTS / cross-workflow E2E section
+> is **entirely unverified** (owner marked "need to test"). **Action queue + lane tickets:
+> see the 2026-05-30 status-refresher output.** Do not trust "complete" below until owner re-test
+> on a fresh pull confirms the business task end-to-end.
+
 > **⚠️ RECONCILED 2026-05-29 against the actual codebase (service + router + template audit).**
 > The previous version of this section was badly stale: it listed PO receive, 3-way match,
 > SO→Invoice, invoice finalize/lock/void, core lifecycle, warranty/RA state machines, payment
