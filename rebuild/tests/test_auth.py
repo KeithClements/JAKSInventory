@@ -80,8 +80,9 @@ def test_session_token_expired_rejected():
     activate(fresh_engine())
     auth.reset_secret_cache()
     token = make_session_token(5)
-    # max_age=0 → already expired
-    assert read_session_token(token, max_age=0) is None
+    # max_age=-1 → any token is older than the allowed age (itsdangerous uses
+    # a strict age>max_age check, so max_age=0 would NOT reject a 0s-old token).
+    assert read_session_token(token, max_age=-1) is None
 
 
 # ── HTTP login flow ───────────────────────────────────────────────────────────
