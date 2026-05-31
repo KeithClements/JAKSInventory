@@ -1,0 +1,4 @@
+# Smoke-run artifacts: results JSON, screenshots, traces, videos, run logs.
+# Regenerated on every run — never committed.
+artifacts/
+__pycache__/

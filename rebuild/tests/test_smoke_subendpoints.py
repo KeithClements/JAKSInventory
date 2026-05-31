@@ -158,33 +158,52 @@ def _ok(resp, label: str) -> None:
 
 # ---------------------------------------------------------------------------
 # 1. Product-search HTMX endpoints
-#    Tests the specific crash that wrecked the owner's session.
-#    /sales-orders/_/product-search WILL FAIL until sales_orders.py:382 is
-#    fixed (Product.part_number does not exist; no such column on the model).
+#    The §8H line-adder migration retired the per-document search endpoints: every
+#    workspace's shared adder (line_items/_line_adder.html) now calls the canonical
+#    JSON endpoint GET /line-items/product-search (asserted in §1b below, and
+#    contract-locked in test_line_item_builder.py).
+#
+#    /quotes/product-search, /sales-orders/_/product-search and
+#    /invoices/_/product-search are now ORPHANED (no template calls them) and are
+#    slated for Backend deletion (Contract §4) — their smoke cases are dropped so
+#    the suite won't 404 post-cleanup.
+#
+#    /purchase-orders/_/product-search is RETAINED on purpose: products/detail.html
+#    (the PO-line product search widget, ~line 663) still drives this endpoint and
+#    has NOT migrated. Do NOT drop these cases or let Backend delete the route until
+#    that widget is moved to /line-items/product-search.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("url,label", [
-    ("/quotes/product-search",                        "quotes product-search empty"),
-    ("/quotes/product-search?q=s",                    "quotes product-search 1-char (no-op)"),
-    ("/quotes/product-search?q=sm",                   "quotes product-search 2-char"),
-    ("/quotes/product-search?q=SMOKE",                "quotes product-search match"),
-    ("/sales-orders/_/product-search",                "SO product-search empty"),      # BUG: part_number
-    ("/sales-orders/_/product-search?q=sm",           "SO product-search 2-char"),     # BUG: part_number
-    ("/sales-orders/_/product-search?q=SMOKE",        "SO product-search match"),      # BUG: part_number
-    ("/invoices/_/product-search",                    "invoice product-search empty"),
-    ("/invoices/_/product-search?q=sm",               "invoice product-search 2-char"),
-    ("/invoices/_/product-search?q=SMOKE",            "invoice product-search match"),
     ("/purchase-orders/_/product-search",             "PO product-search empty"),
     ("/purchase-orders/_/product-search?q=SMOKE",     "PO product-search match"),
 ], ids=lambda x: x if x.startswith("/") else x.replace(" ", "_"))
 def test_product_search(client, ids, url, label):
-    """Product-search endpoints must not 500 for any query string.
-
-    KNOWN FAILING: /sales-orders/_/product-search -- sales_orders.py:382
-    references Product.part_number which does not exist on the model.
-    Fix: remove or replace the Product.part_number filter.
-    """
+    """Legacy per-doc product-search must not 500. Only the PO endpoint remains —
+    still used by products/detail.html (see the §1 note above)."""
     _ok(client.get(url), label)
+
+
+# ---------------------------------------------------------------------------
+# 1b. Canonical line-item product search  (GET /line-items/product-search → JSON)
+#     The single endpoint every §8H workspace adder points at. Returns JSON (not an
+#     HTML partial), so assert shape + that a real query finds the seed. This is a
+#     liveness guard; the deep JSON contract is locked in test_line_item_builder.py.
+# ---------------------------------------------------------------------------
+
+def test_line_items_product_search(client, ids):
+    # Min-length guard: <2 chars → empty list (no 500, no results).
+    assert client.get("/line-items/product-search").json() == []
+    assert client.get("/line-items/product-search?q=s").json() == []
+    # A real query returns a JSON list and finds the seeded product (exact
+    # normalized SKU match), carrying the keys the line-adder reads off each hit.
+    resp = client.get("/line-items/product-search?q=SMOKE-001")
+    assert resp.status_code == 200, resp.text[:300]
+    body = resp.json()
+    assert isinstance(body, list) and body, f"expected >=1 hit, got {body!r}"
+    hit = next((h for h in body if h["product_id"] == ids["product_id"]), None)
+    assert hit is not None, f"seeded product not in results: {body!r}"
+    assert {"product_id", "sku", "title"}.issubset(hit), hit
 
 
 # ---------------------------------------------------------------------------
