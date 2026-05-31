@@ -139,7 +139,7 @@ Current target mapping (last audited 2026-05-29):
 | PO List | ✅ L2 | L2 | Governance pass done. Overdue bug fixed. |
 | Invoice List | ✅ L2 | L2 | Governance pass done 2026-05-28. Red stripe for financial overdue (intentional domain distinction). |
 | Quotes List | L2 | L2 | Has tabs+divide-y but no preview dock, no border-l-4 stripe. Pending final alignment pass. |
-| Quote Workspace | L3 | L3 | Autosave, inline editing done. **⚠️ "done" recorded in the 500-era build — gated on post-b514196 owner re-test (§8G).** |
+| Quote Workspace | L3 | L3 | Autosave, inline editing done. **⚠️ "done" recorded in the 500-era build — gated on post-b514196 owner re-test (§8G).** **Shared one-click line-adder (§8H) migrated @797a407 — immediate-add replaces 2-step staging; governance PASS 2026-05-31.** |
 | Customers List | ✅ L2 | L2 | Governance pass done 2026-05-29. §2B operational intelligence complete (Balance Due, Open Invoices/Quotes/SOs, Cores, Last Sale, Terms). M1/M2 cosmetic deferred. |
 | Product Detail | L1 | L2 | Raw form, no card sections. |
 | Sales Orders List | L1 | L2 | Old tbl-* table, no L2 elements. |
@@ -1589,6 +1589,78 @@ Each step deletes that screen's old search partial + endpoint per Contract §4, 
 **Lane ownership:** the data contract is Backend's (`LINE_ITEM_BUILDER_CONTRACT.md`); this UI pattern +
 visual contract is the Architect's, recorded here. UI-Builder implements per the §6 rollout; QA gates
 each screen's line-add against the functional suite.
+
+**✅ MIGRATION COMPLETE + GOVERNANCE PASS — 2026-05-31 (Architect).** All four workspaces now run the
+shared `line_items/_line_adder.html` include; verified **in-tree**, not on report:
+- **Commits (branch backend/workflow-series-3):** Quote + partial `797a407`; SO `2d76b83` (clears Re-seq
+  P0 "can't add parts to SO"); Invoice `5bb0bc0` (clears Re-seq P0); PO cost+core `1fb562c`.
+- **Immediate-add (§8H.1): PASS** — `selectProduct()` → `_post({product_id, qty})`; no staging, no disabled
+  +Add Line (`_line_adder.html:240-242`). Enter fast-path adds the top result / a misc line.
+- **Placement (the "gotcha"): PASS** — SO/Invoice/PO adders are preceding **siblings ABOVE** their
+  `outerHTML`-swapped sections (`#so-lines-section` L353<359 · `#lines-and-totals` L429<435 ·
+  `#po-lines-section` L254<258), so the adder survives re-render and keeps focus; Quote is `beforeend`
+  into `#quote-lines-tbody` (adder above the tbody). Configs verified: SO/Invoice `mode=sell` +
+  `show_discount=true`; **PO `mode=cost` + `show_discount=false`** (cost + core, orange); `child_mode=true`
+  Quote-only.
+- **Visual contract (§8H.4): PASS** — dropdown, hover/focus tokens, core=orange, qty_avail red-at-0 all
+  verbatim. `new_product` slide-over host is global in `base.html` (L300/L898) → + New Product wired on all four.
+- **§3/§4: clean** — no `window.confirm`; safe single-quoted `x-data` injection (cf. alpine injection rule).
+- **§7 three-screen gate: SATISFIED** (4/4 run it identically). Macro promotion to `macros/line_adder.html`
+  is therefore **PERMITTED but DEFERRED as optional** — the shared include is already single-source DRY;
+  promote only if a 5th consumer or a config-signature need arises. **Do not treat the gate as still pending.**
+
+*Non-blocking punch list (cosmetic — do NOT hold the migration):*
+1. `cross_ref` chip uses `badge-blue` not a literal "sky" token (`_line_adder.html:116`) — compliant
+   (blue/sky share the §4 informational bucket); reconcile §8H.4 wording to "blue/sky" or add `badge-sky`.
+2. Core chip uses inline `bg-orange-100 text-orange-700` (`_line_adder.html:140`) not a tokenized
+   `badge-orange` — add the token to `class-tokens.md` if the core chip recurs.
+3. + New Product create→add-back: confirm in-browser the quick-create slide-over dispatches
+   `record-created {type:'product', id}` so the new product auto-adds (search→click→add core path already
+   in-browser verified). QA item.
+
+**Do NOT re-flag the §8H migration as open** — it is in-tree and PASSED. Remaining follow-ups are QA's
+(stale smoke add-part selectors) and Backend's (delete the now-dead per-doc search routes/partials per
+Contract §4).
+
+---
+
+#### 8I. Phase-1A O-UI Visual Contracts — SET (Architect, 2026-05-31)
+
+Set **before** UI-Builder reaches them (pairs with Backend's O4/O5/O6 route contracts) so there is no
+rework. **Copy the referenced existing pattern — do not invent.** Grounded in `settings/index.html` and
+`vendors/detail.html`.
+
+**O4 — Vendor Contacts card** (`vendor_contacts` CRUD + `is_primary`). A `card` on `vendors/detail.html`:
+- Container: existing `card` + `card-header`/`card-title` ("Contacts"); header-right **`+ Add contact`**.
+- Table: **explicit Tailwind padding + `divide-y divide-gray-100`** — **NOT `tbl-*`** (banned; the legacy
+  `tbl` table at `vendors/detail.html:138` is the anti-pattern, do not copy it). Columns: Name · Role ·
+  Phone · Email · Primary · row-actions.
+- **`is_primary` chip:** a `badge-green` **"Primary"** pill on the primary row; exactly one primary — setting
+  a new one clears the others (backend enforces; UI reflects).
+- **Add row:** an inline final `<tr>` of fields + `+ Add`; HTMX POST returns the re-rendered card body
+  (swap the table region, keep the card). Edit/✕ inline per row; always editable, no modal.
+
+**O5 — Markup rules in Settings** (replace the hardcoded 30% at `product.py:202`). Copy the
+`settings/index.html` **percent-field** verbatim (`settings/index.html:28-35`): `label` +
+`flex items-center gap-2` + `<input type="number" step="0.1" min="0" class="w-32 rounded-lg border
+border-gray-200 …">` + `<span class="text-sm text-gray-400">%</span>`.
+- **Global default markup %** already IS this field (`default_markup_pct`) — keep as-is.
+- **Per-category override:** a "Pricing Defaults" card sub-table, one row per category (name + the same
+  percent-field + clear-to-inherit). Empty = inherit the global default.
+
+**O6 — Card surcharge** (replace the read-only banner at `invoices/workspace.html:566`). Two surfaces, same
+percent-field token as O5:
+- **Per-customer default %:** a percent-field on the customer create/edit form, labeled "Card surcharge
+  default %".
+- **Per-invoice override:** a small editable percent-field by the invoice totals, **DRAFT-gated**
+  (`{% if editable %}`), seeded from the customer default; blank = fall back to customer default → global
+  `cc_surcharge_pct`. The existing fee-estimate text stays as helper copy.
+- **Two-way** (can be cleared to 0) — fixes owner-test 1.9.e (the one-way 3% toggle). Writes the same field
+  the totals math already reads (`invoice.cc_surcharge_pct`).
+
+**Shared tokens (all three):** field = `rounded-lg border border-gray-200 px-3 py-2 text-sm focus:ring-2
+focus:ring-brand-400`; section card = `rounded-xl bg-white border border-gray-100 shadow-sm p-6`; save =
+`bg-brand-700 … hover:bg-brand-600`. **No new colors/classes.** §3/§4 apply; any modal/slide-over follows §3.
 
 ---
 
