@@ -34,6 +34,7 @@ from app.routers import vendor_returns as vendor_returns_router
 from app.routers import admin as admin_router
 from app.routers import line_items as line_items_router
 from app.routers import backup as backup_router
+from app.routers import auth as auth_router
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ def on_startup() -> None:
     try:
         seed_settings(db)
         seed_scraper_sources(db)
+        _seed_session_secret(db)
         _seed_default_user(db)
         _seed_core_locations(db)
         _lock_overdue_invoices(db)
@@ -131,22 +133,52 @@ def _seed_core_locations(db: Session) -> None:
     db.commit()
 
 
+def _seed_session_secret(db: Session) -> None:
+    """
+    O2 — ensure a random session-signing secret exists so login cookies survive
+    restarts. Generated once; never regenerated (that would invalidate sessions).
+    """
+    import os
+    from app.settings_utils import get_setting_value_db, set_setting_value_db
+
+    if not get_setting_value_db(db, "session_secret_key", ""):
+        set_setting_value_db(
+            db, "session_secret_key", os.urandom(32).hex(),
+            label="Signing key for login session cookies (auto-generated)",
+        )
+        db.commit()
+
+
 def _seed_default_user(db: Session) -> None:
     """
-    Ensure the single admin user (id=1) exists so audit log foreign keys
-    and any future auth queries always have a valid row to join against.
-    Password hash is a non-functional placeholder until auth is implemented.
+    Ensure the single admin user (id=1) exists so audit log foreign keys and auth
+    queries always have a valid row to join against.
+
+    O2 — the admin password is now a REAL pbkdf2 hash (was a non-functional
+    placeholder). Initial password comes from the JAKS_ADMIN_PASSWORD env var,
+    defaulting to "admin" for first local run (change it after first login). An
+    existing user #1 still carrying the old placeholder hash is upgraded in place
+    so pre-O2 databases get a working login without a manual reset.
     """
+    import os
+    from app.auth import hash_password
     from app.models.user import User
     from app.constants import UserRole
-    if not db.query(User).filter(User.id == 1).first():
+
+    initial_pw = os.environ.get("JAKS_ADMIN_PASSWORD", "admin")
+    user = db.query(User).filter(User.id == 1).first()
+    if user is None:
         db.add(User(
             id=1,
             name="JAKS Admin",
             username="admin",
-            password_hash="[single-user-mode-no-auth]",
+            password_hash=hash_password(initial_pw),
             role=UserRole.ADMIN,
         ))
+        db.commit()
+    elif not (user.password_hash or "").startswith("pbkdf2_"):
+        # Upgrade a legacy placeholder hash so login works on pre-O2 DBs.
+        user.password_hash = hash_password(initial_pw)
         db.commit()
 
 
@@ -226,3 +258,4 @@ app.include_router(vendor_returns_router.router)
 app.include_router(admin_router.router)
 app.include_router(line_items_router.router)
 app.include_router(backup_router.router)
+app.include_router(auth_router.router)
