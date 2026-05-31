@@ -1,7 +1,7 @@
 # JAKS UI Change Plan
 *Living document — updated as screens are built.*
 
-**Status:** Products ✅ · PO ✅ · Invoices ✅ · Customers ✅ · Invoice Workspace ✅ L3 · Quotes ✅ · Sales Orders ✅ · Vendors ✅ · Returns ✅ · **Payments ✅ L2** (all lists complete 2026-05-29) · **#10/#11 HOLD — functional-test mode** · FIX 1-4 + bcda974 landed · "Can't receive" pending owner re-test · Compiled Tailwind ✅ LIVE · §8B + Save-button + method-chip-colors ✅ RULED.
+**Status:** Products ✅ · PO ✅ · Invoices ✅ · Customers ✅ · Invoice Workspace ✅ L3 · Quotes ✅ · Sales Orders ✅ · Vendors ✅ · Returns ✅ · **Payments ✅ L2** (all lists complete 2026-05-29) · **#10/#11 HOLD — functional-test mode** · FIX 1-4 + bcda974 landed · "Can't receive" = NameError@po_service.py:448 FIXED @3a700fd (pending owner re-test) · Compiled Tailwind ✅ LIVE · §8B + Save-button + method-chip-colors ✅ RULED · **§2C Line-Item Workspace Standard ✅ RATIFIED 2026-05-30** · **§9 Functional Gate ✅ RATIFIED 2026-05-30** · **⚠️ P0 core-path failures active — §9 re-sequencing in effect** · **⚠️ Quotes/Returns/Quote-WS "complete" marks gated on post-b514196 owner re-test (§8G)**.
 
 **Scope:** All list and workspace screens in the JAKS Inventory ERP system.
 
@@ -139,7 +139,7 @@ Current target mapping (last audited 2026-05-29):
 | PO List | ✅ L2 | L2 | Governance pass done. Overdue bug fixed. |
 | Invoice List | ✅ L2 | L2 | Governance pass done 2026-05-28. Red stripe for financial overdue (intentional domain distinction). |
 | Quotes List | L2 | L2 | Has tabs+divide-y but no preview dock, no border-l-4 stripe. Pending final alignment pass. |
-| Quote Workspace | L3 | L3 | Autosave, inline editing done. |
+| Quote Workspace | L3 | L3 | Autosave, inline editing done. **⚠️ "done" recorded in the 500-era build — gated on post-b514196 owner re-test (§8G).** |
 | Customers List | ✅ L2 | L2 | Governance pass done 2026-05-29. §2B operational intelligence complete (Balance Due, Open Invoices/Quotes/SOs, Cores, Last Sale, Terms). M1/M2 cosmetic deferred. |
 | Product Detail | L1 | L2 | Raw form, no card sections. |
 | Sales Orders List | L1 | L2 | Old tbl-* table, no L2 elements. |
@@ -298,6 +298,125 @@ do not block the screen. No new schema may be introduced without UI Architect ap
 
 ---
 
+### 2C. Line-Item Workspace Standard
+
+**Ratified 2026-05-30.**
+
+The app has two ratified screen archetypes (§2 Operational List, §2A Queue Board). Neither covers
+the third major screen type — the workspace where the business actually makes money: a document
+header + an editable line grid where the user finds parts, sets prices, and commits records.
+
+Quote / Sales Order / Invoice / PO all implement this pattern. Before this standard existed, each
+grew its own "add a part" implementation (different transport, different wiring, different search
+quality), producing four divergent code paths — three of which were confirmed broken in the
+2026-05-30 functional test pass. This section defines the standard so the shared implementation
+replaces all four.
+
+#### What a Line-Item Workspace is
+
+A screen that combines a **document header** (customer, dates, status, autosave/save) with an
+**editable line grid** (products, quantities, prices, totals) and **workflow actions** (Finalize,
+Fulfill, Receive, Convert). The user finds parts, stages them, and commits.
+
+Examples: Quote Workspace, Sales Order Workspace, Invoice Workspace, PO Workspace.
+
+This is **not** an Operational List (it is not filtered/browsed — it is one record open for editing)
+and **not** a Queue Board (it does not group work items for sequential processing).
+
+#### Required Elements
+
+1. **Document header card** — customer name, document number, status chip, date fields, discount,
+   any screen-specific header fields (ESN, PO #, etc.). Autosave wired per §3. Back link always
+   visible per §8B standard.
+
+2. **Add-line panel** — full-width search input (icon-prefixed, 2+ character trigger) that returns
+   product results. Selection **immediately adds the line** at qty 1 / suggested sell — no separate
+   "Add" button step. Qty, price, and disc % are editable inline in the resulting row. Misc/free-text
+   lines supported (search ≥2 chars, no product selected → adds a free-text line on Enter).
+
+3. **One shared search endpoint** — `GET /search/products?q=` returns JSON:
+   ```json
+   [{"product_id": 1, "part_number": "OK-1", "description": "...", "qty_on_hand": 3,
+     "suggested_sell": 45.00, "current_cost": 22.00, "last_sold_price": 44.00}]
+   ```
+   Search normalizes: strip punctuation/spaces, case-fold, match on SKU **and** OEM **and**
+   cross-ref SKU. "ok1", "OK-1", "ok 1" must all resolve to the same result. All four workspace
+   types call this one endpoint — no per-screen product-search routes.
+
+4. **Line grid** — `divide-y divide-gray-100`, explicit `px-4 py-4 align-middle` (no `tbl-*`),
+   `overflow-x-auto` wrapper with `min-w-[...]`. Each row editable inline with HTMX
+   (`hx-trigger="change"`, `hx-target="#lines-section"`, `hx-swap="outerHTML"`). Delete via
+   Alpine confirm modal (§3) — never `window.confirm()`.
+
+5. **Totals bar** — HTMX-refreshed after every line action. Shows subtotal, tax, total,
+   balance-due or amount-paid as applicable. Stays pinned at the bottom of the line section.
+
+6. **Workflow action bar** — reflects current status. Primary action rightmost (`btn-primary btn-sm`).
+   Destructive action uses `btn-ghost btn-sm text-red-500` + Alpine confirm modal. Follows §8B
+   workspace header zone order.
+
+7. **Autosave indicator** — per §3 ruling (2026-05-29). L3 autosaved screens: small `✓ Saved
+   automatically` indicator, no redundant Save button. L1/L2 non-autosaved screens: real
+   `btn-primary` Save in the footer. No ambiguity about whether work is persisted.
+
+8. **Customer-context bar** — on sales-side workspaces (Quote, SO, Invoice): a compact strip
+   showing terms, tax-exempt status, open AR balance, overdue balance, credit balance, cores owed.
+   Collapsed by default to a single line; does not obscure the line grid.
+
+#### Reference Implementation
+
+`app/templates/quotes/workspace.html` is the official L3 reference for Line-Item Workspaces.
+
+It demonstrates:
+- Full-width part search with Alpine `lineAdder` component (JSON endpoint, keyboard-navigable results)
+- Immediate qty/price/disc staging after product selection, then `+ Add Line` commit
+- Child-line mode (warranty, upgrade options, optional lines)
+- Autosave indicator with `setInterval` staleness label
+- HTMX line mutations with chips-row lifecycle management
+- Keyboard navigation across Qty → Price → Disc → search (Enter-driven)
+- Misc/free-text line support (no product required)
+
+**Note on one-click vs. two-step add:** The reference currently uses a two-step flow (select
+product → + Add Line). Owner testing confirmed this reads as broken. **Decision pending Architect
+ruling:** either (a) selecting a product immediately adds the line with editable defaults, or
+(b) the "Add Line" button becomes much more prominent (large, brand-colored, keyboard-focused)
+and shows "↵ Enter to add" hint. Resolve before adopting for SO/Invoice/PO.
+
+#### What Is NOT Required
+
+| Element | Why exempt |
+|---|---|
+| Filter tabs with counts | One record open — not a browsable list |
+| Bulk action toolbar | Line-level actions only; no multi-select across lines |
+| Preview dock | The record IS open — the workspace is the "preview" |
+| Row selection checkboxes | No bulk actions |
+| `pb-52` on wrapper | No preview dock |
+
+#### Shared with Operational List and Queue Board
+
+- Color semantics (§4) — identical meaning for all status chips and stripes
+- Status chip format — `inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold`
+- Left-edge stripe on first `<td>` — same color logic as §2 (when used for line-level urgency)
+- Alpine confirm modal for all destructive actions (§3) — never `window.confirm()`
+- Motion macros for any overlays (§ Build → Motion primitives)
+- No `tbl-*` classes — explicit Tailwind padding only
+- Monospace identifiers — SKU, PO #, Quote #, Invoice # use `font-mono text-sm font-bold text-brand-700`
+
+#### Governance Checklist (Line-Item Workspace screens)
+
+- [ ] One shared `/search/products?q=` JSON endpoint used — no per-screen product-search route
+- [ ] Search normalizes punctuation and case (ok1 → OK-1; q2026 → Q-2026)
+- [ ] Line add is discoverable — result selection either adds immediately or reveals a clear, prominent Add button
+- [ ] No `window.confirm()` anywhere — all destructive actions use Alpine modal per §3
+- [ ] Autosave indicator always visible (L3) OR real Save button in footer (L1/L2) — never ambiguous
+- [ ] Customer-context bar (AR, terms, cores) present on sales-side workspaces
+- [ ] Totals bar HTMX-refreshed after every line mutation
+- [ ] `divide-y divide-gray-100` on line tbody; no `tbl-*` classes
+- [ ] Workspace header follows §8B zone order (chip → back → secondaries → destructive → primary)
+- [ ] Functional gate (§9) passed — end-to-end smoke completed, not just visual checklist
+
+---
+
 ### 3. Shared Interaction Rules
 
 These rules apply to every screen in the app. Do not deviate without updating this document.
@@ -364,6 +483,7 @@ These rules apply to every screen in the app. Do not deviate without updating th
 | **L3 workspace with autosave wired** | **Remove Save button. Add always-visible autosave indicator.** | The button is redundant and owner-confusing when autosave is running. |
 | **Invoice workspace "Save Draft" exception** | **Keep it.** | "Save Draft" signals workflow state (you need to Finalize), not just persistence. Removing it would confuse the Draft→Finalize progression. |
 | **L1/L2 form screens (no autosave)** | **Keep a real `btn-primary` Save in the footer.** | No autosave = user's only save mechanism. |
+| **Owner override — PO Workspace + Product Detail (RULED 2026-05-30)** | **Show BOTH — explicit `btn-primary` Save AND the autosave/dirty indicator.** | Owner explicitly wants a visible Save on these two screens; overrides the "remove redundant button" row above **for them only.** Quote / SO / Invoice workspaces unchanged (indicator-only stands). |
 
 **Autosave indicator format** (approved reference: `quotes/workspace.html` after 2026-05-29 fix):
 ```html
@@ -375,11 +495,17 @@ These rules apply to every screen in the app. Do not deviate without updating th
 Placed adjacent to the form header or in the card header band — not in `header_actions`.
 
 **Screens that need this fix applied:**
-- `purchase_orders/workspace.html` — autosave is wired; add indicator, remove redundant Save
-- `product/detail.html` — L1 form, no autosave → keep Save button in footer
-- (Quote workspace: already fixed 2026-05-29 ✅)
+- `purchase_orders/workspace.html` — autosave indicator is already wired (lines 204-218). **Per the
+  2026-05-30 owner override: ADD an explicit `btn-primary btn-sm` Save submit alongside the indicator —
+  do NOT remove the indicator.** The header form already `hx-post`s (`workspace.html:104`); add `submit`
+  to its `hx-trigger` (line 106 → `…delay:600ms, submit`) so the button fires the same POST. Mirrors the
+  pattern already live at `invoices/workspace.html:155`.
+- `products/detail.html` — **already compliant, no rework:** visible `Save Changes` submit at
+  `detail.html:314` + dirty/clean indicator at line 316. Owner re-test only.
+- (Quote workspace: indicator-only, already fixed 2026-05-29 ✅ — **not** in the override scope.)
 
-**Do not apply until explicitly instructed for each screen.**
+**The PO Save-button add is approved (2026-05-30 override); it is a surgical add only and does NOT lift
+the #11 PO-Workspace L3 HOLD. All other screens still require explicit per-screen instruction.**
 
 ---
 
@@ -474,6 +600,11 @@ It demonstrates:
 
 ### 6. Rollout Order
 
+**⚠️ Priority re-sequence in effect (2026-05-30):** Core money-path flows (Quote → SO/Invoice →
+PO receive) must be functionally verified before any new screen enters L2 work. See §9 Functional
+Gate — Re-sequencing Rule and the P0/P1 issue table there. The Rollout Order below reflects the
+visual governance history; §9 governs what gets worked next.
+
 Apply the Operational Workspace UI System to screens in this order. Do not skip ahead — each screen informs the next.
 
 | # | Screen | Status | Current → Target | Notes |
@@ -483,10 +614,10 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 | 3 | Invoice List | ✅ L2 complete | L1 → L2 | Governance pass 2026-05-28. Red stripe for financial overdue — accepted + codified in §4. |
 | — | **Primitives extraction** | ✅ Complete (2026-05-29) | — | All 6 macros extracted + governance-approved. Products/PO/Invoice ported. See §7 as-built. |
 | 4 | Customer List | ✅ L2 complete | L1.5 → L2 | Governance pass approved 2026-05-29. All §2 + §2B fields satisfied (Balance Due, Open Invoices/Quotes/SOs, Cores, Last Sale, Terms). M1/M2 cosmetic deferred. |
-| 5 | Quotes List | ✅ L2 complete | L2 → L2 | **Governance pass 2026-05-29 — FULL PASS.** All 11 §2 elements + §2B complete. AR chip landed: `ar_map` bulk-computed in route (open invoices group-by, zero N+1), rendered with overdue/open split in template. 5 non-blocking cosmetics in §8F. |
+| 5 | Quotes List | ⏳ **L2 — pending post-b514196 owner re-test** | L2 → L2 | **⚠️ The 2026-05-29 "FULL PASS" was recorded against a 500-ing build — the committed visual baseline `quotes_list@1280px.png` is an "Internal Server Error" screenshot (see §8G re-test gate). NOT re-affirmed until the owner re-tests a post-`b514196` pull + §9 passes.** Original record (unverified): all 11 §2 + §2B; AR chip `ar_map` bulk-computed (zero N+1); 5 non-blocking cosmetics in §8F. |
 | 6 | Sales Orders List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** Dock confirmed: import line 25, call line 346 (verified in committed code). All 11 §2 elements + §2B. `py-4` correct. Backend-contract guard accepted. |
 | 7 | Vendors List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** Dock wired (import line 21 + call line 333). All 11 §2 elements + §2B (Open POs/Bills/Credits/LastPO/Contact). Tab counts stub-zeros via backend-contract guard — non-blocking. Lead time deferred per "if stored" qualifier. |
-| 8 | Returns List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** All 11 §2 elements + §2B verified. Real tab counts from router group_by (no stub guard). Dock wired at line 339. Stripe: amber=received, blue=open, transparent=draft/closed. |
+| 8 | Returns List | ⏳ **L2 — pending post-b514196 owner re-test** | L1 → L2 | **⚠️ The 2026-05-29 "FULL PASS" was recorded in the same 500-era build as Quotes (see §8G re-test gate); not re-affirmed until the owner re-tests a post-`b514196` pull + §9 passes.** Original record (unverified): all 11 §2 + §2B; real tab counts from router group_by (no stub guard); dock wired at line 339; stripe amber=received/blue=open/transparent=draft-closed. |
 | 9 | Payments List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS (re-pass).** Dock: import line 16, call line 314 (live, not commented). Method chips: Cash=green, Check=blue, Card=purple, ACH=blue, Wire=sky (§4-permitted; sky co-listed with blue). All §2 + §2B previously verified. |
 | 10 | Product Detail | ⏳ **HOLD — functional-test mode** | L1 → L2 | Section-based card layout. Do not start until hold lifted. |
 | 11 | PO Workspace | ⏳ **HOLD — functional-test mode** | L1 → L3 | Autosave, line editor, receive flow. Do not start until hold lifted. |
@@ -1336,12 +1467,36 @@ Details of the specific fixes are tracked in the backend/feature commit log. The
 record is that FIX 1-4 were verified by the backend/builder lane and committed at `bcda974`.
 No UI macro or base.html changes were involved in this set.
 
-**"Can't receive" cluster — pending owner re-test (not a code defect):**
-The receiving flow was reviewed against the codebase and no code defect was identified.
-The "can't receive" report is believed to be a workflow/UX discoverability issue (the two-step
-staging flow in the receiving queue) rather than a broken feature. Status: pending owner re-test
-after orientation on the staging step. If re-test confirms a real defect, it becomes a backend-lane
-ticket — do not start UI work on this without explicit instruction.
+**"Can't receive" cluster — ❌ RETRACTED 2026-05-30: this WAS a code defect.**
+The earlier conclusion ("the receiving flow was reviewed… no code defect was identified… believed to
+be a workflow/UX discoverability issue") is **withdrawn.** Ground-truth of the receive path found a
+hard crash: `app/services/po_service.py` raised **`NameError` at line 448** — `SOLineStatus` was
+referenced but never imported from `constants`. Receiving 500'd before any "discoverability" question
+could apply; the code review that cleared it read past a missing import. **Fixed at commit `3a700fd`**
+(B2: "add `SOLineStatus` to constants import (NameError at line 448)"). Status: **automated-green @9d0ced2** — `tests/test_e2e_flows.py::test_e2e_a_po_receive_updates_inventory_and_cost`
+runs PO → Receive and asserts on-hand 0→10 + moving-avg cost 10→12 (re-verified passing 2026-05-31),
+so the §9 P1 re-test gate is **cleared** (owner spot-check optional, non-blocking). The §9 functional
+gate exists precisely because of this: "no defect" is not a valid finding until the flow has been *run*,
+not just read.
+
+**Post-b514196 re-test gate — Quotes / Quote Workspace / Returns (RULED 2026-05-30):**
+The L2/L3 "complete" marks for **Quotes List (#5), Quote Workspace, and Returns List (#8)** were
+recorded while the app was returning **HTTP 500** — pre-`b514196`, the deprecated Starlette
+`TemplateResponse(name, {"request": …})` signature broke template rendering app-wide. **Proof:** the
+committed visual baseline `tests/visual/baselines/pixels/quotes_list@1280px.png` is a screenshot of the
+**"Internal Server Error"** page, not the Quotes list. `b514196` (TemplateResponse migration) has since
+landed, with 9 commits on top of it. **Ruling:** these three statuses are **not re-affirmed on the
+Architect's word.** They stay gated until the **owner re-tests a post-`b514196` pull** and the §9
+functional gate passes end-to-end. The poisoned baseline must be re-captured by QA after that re-test.
+Until then §6 #5 / #8 read "L2 — pending re-test," not "FULL PASS."
+
+**Change-customer (TESTING_FEEDBACK §1.8.b) — ✅ close-out RULED 2026-05-30 (re-test, not rework):**
+`bcda974`'s **pencil-badge** is the **correct fix** and is **in-tree** at
+`app/templates/invoices/workspace.html:173` — edit-pencil icon + "Change" label, `type="button"`,
+`@click="changeCustomerOpen = true"`, DRAFT-gated via `{% if editable %}`. No rework needed; this is
+**closed pending owner re-test only.** Optional defensive hardening (low priority, not a blocker): add
+`@click.stop` to the button at `workspace.html:173` so the open-overlay click can never bubble to a
+future parent click handler.
 
 **#10 Product Detail / #11 PO Workspace — on HOLD:**
 Both screens are explicitly deferred during functional-test phase. Do not start either until the
@@ -1395,3 +1550,103 @@ pass — **pending Architect governance sign-off** (Builder does not self-mark c
    owner asked to defer cosmetic/UX polish. Do not redesign without an Architect instruction.
    Targets: `app/templates/customers/statement_form.html`, `.../statement_print.html`,
    and `customer_statement_*` routes in `app/routers/customers.py`.
+
+---
+
+### 9. Functional Gate — Definition of Done
+
+**Ratified 2026-05-30.**
+
+**Problem this addresses:** The maturity table (§1) uses visual checklist conformance as the
+definition of L2/L3 complete. The 2026-05-30 owner test pass showed that screens marked
+"✅ L2/L3 complete" had broken core workflows (quotes not opening, can't add parts to SO/Invoice,
+PO receiving failing). Visual conformance and functional correctness drifted apart because the
+governance pass never required end-to-end proof.
+
+**New rule:** A screen is not L2/L3 complete until it passes **both** the visual governance
+checklist (§0) **and** the functional gate below. The governance pass confirms the checklist.
+The functional gate confirms the work.
+
+---
+
+#### Functional Gate Checklist
+
+Every screen must be verified by actually running the app and completing the real user job, not
+just rendering the template. These tests must be run against a live server with real or realistic
+data — not mocked, not inferred from code review.
+
+**For all List screens (L2 gate):**
+- [ ] Clicking every filter tab changes the list and shows the correct count in the tab
+- [ ] Search returns correct results with partial input, dashes, mixed case (e.g., "ok1" finds "OK-1")
+- [ ] Clicking a row opens the preview dock and loads correct data for that record
+- [ ] Preview dock closes on X or second row click; does not interfere with tab/search
+- [ ] Empty state renders correctly for: no records, filtered-tab-miss, and search-miss
+- [ ] Bulk select: selecting rows shows toolbar; bulk action executes without error
+
+**For Workspace screens (L3 gate):**
+- [ ] **Add a line:** search for a real product (by SKU, partial name, and a variant with dashes/spaces), select it, confirm it appears in the line grid with correct price, qty, and line total
+- [ ] **Edit inline:** change qty and price on an existing line; confirm line total and document total both update
+- [ ] **Remove a line:** delete a line via the confirm modal; confirm it disappears and totals update
+- [ ] **Save/autosave:** edit a header field, leave the screen, return; confirm the change persisted
+- [ ] **Primary workflow action:** for Quote → Convert to Invoice or SO; for SO → Fulfill; for Invoice → Finalize; for PO → Receive items; confirm the action completes without error and status updates
+- [ ] **No window.confirm():** all destructive actions use the Alpine modal — no browser native dialogs appear anywhere in the workflow
+
+**For Queue Board screens (QB2 gate):**
+- [ ] Metrics strip shows real numbers matching actual database state
+- [ ] Group headers and item rows display for all active groups
+- [ ] Each inline action (Receive, Match, Open, Print) navigates to the correct target
+- [ ] Page-level empty state renders correctly when queue is empty
+
+---
+
+#### Smoke Test Reference
+
+The owner has an end-to-end smoke test document that covers the full cross-workflow lifecycle
+(TESTING_FEEDBACK.md in the repo root). The eight flows in Section 8 of that document are the
+definitive proof:
+
+| Flow | Screens touched |
+|---|---|
+| a | Vendor → Product → PO → Receive → inventory updated |
+| b | Quote (in stock) → Invoice → Finalize → inventory decremented → payment recorded |
+| c | Quote (out of stock) → SO → deposit → linked PO receive → fulfill → invoice |
+| d | Invoice with core item → core charge → customer return → vendor return → credit |
+| e | Overdue invoice → statement shows correct aging bucket |
+
+A screen that participates in one of these flows is not L2/L3 complete until that flow runs
+end-to-end without error.
+
+---
+
+#### Who Runs the Gate
+
+The **owner** runs the functional gate against a live server. The **UI Architect** runs the
+visual governance checklist. Both must pass before the Rollout Order entry is marked complete.
+If the owner's test reveals a functional defect after a governance pass, the screen reverts to
+"in progress" until re-tested — the governance check-mark does not survive a failing functional test.
+
+---
+
+#### Re-sequencing Rule (added 2026-05-30)
+
+The core money path — **Quote → SO/Invoice → PO receive → Payment** — takes priority over
+cosmetic L2 re-passes, §8 backlog items, and new screen rollouts. If any screen in that path
+fails the functional gate, it becomes the highest-priority ticket for all lanes. No new screen
+enters L2 work while the core path is broken.
+
+**Current status (as of 2026-05-30 test pass):**
+
+| Issue | Screen | Priority | Functional gate item |
+|---|---|---|---|
+| Quotes nav/workspace not opening | Quote List + Workspace | **P0** | b: Quote → Invoice flow |
+| Can't add parts to Sales Order | SO Workspace | **P0** | b/c: SO line add |
+| Can't add parts to Invoice | Invoice Workspace | **P0** | b: Invoice finalize flow |
+| PO "can't receive" — ✅ automated-green @9d0ced2 | PO Workspace + Receiving Queue | ~~P1~~ resolved | a: PO → receive flow |
+| Ctrl+K: "q2026" doesn't find quote | Global search | **P1** | Search normalization |
+| New Quote from Customer detail empty | Customer Detail → Quote | **P1** | b: Quote creation |
+| Card surcharge can't be unselected | Invoice Workspace | **P2** | d: payment edge case |
+| Vendor: only one contact visible | Vendor Detail | **P2** | UX gap, not blocking |
+| Product search: exact-SKU required | All workspaces | **P1** | §2C search normalization |
+
+P0 items must be resolved and owner-re-tested before any §8 backlog work or new screen rollout.
+P1 items are resolved in parallel with the P0 fix lane. P2 items are deferred until P0/P1 clear.
