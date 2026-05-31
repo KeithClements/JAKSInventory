@@ -191,6 +191,7 @@ Every major list screen must include these elements:
    - Title: `text-sm font-semibold text-gray-800`
    - Count badge: `text-xs text-gray-400 font-medium tabular-nums ml-2`
    - Optional: a group-level action button (e.g., "Receive All") right-aligned
+   - **As-built (ratified `receiving_queue.html` — the QB2 source of truth, 2026-05-28):** because queues render as a `<table>`, the divider is a full-width `<tr><td colspan="N">` using `bg-gray-50/70 px-4 py-2 text-xs font-bold text-gray-600 tracking-wide` with the group title; the **item-count badge is OPTIONAL** (neither receiving nor warranty render it). A queue that copies the reference verbatim is **conformant — do NOT punch it for the missing count or for `text-xs`/`py-2`.** The flex+count format above applies to non-table queue layouts; reconcile any future QB2 pass (Cores #16, Returns #17) against the reference, not this idealized prose.
 
 3. **Grouped item rows** — within each group, items are listed. Tighter row padding than Operational List is permitted: `px-4 py-2.5 align-middle`. Must still use `divide-y divide-gray-100` within a group.
 
@@ -625,7 +626,7 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 | 12 | Invoice Workspace | ✅ L3 complete | L3 candidate → L3 | Governance pass 2026-05-29. **PASS confirmed 2026-05-29** — window.confirm already cleared prior to pass. No blocking defects remain. A11y follow-up (role=dialog/aria-modal/focus-trap on payment/void/change-customer modals) tracked under §8 #4 a11y sweep — non-blocking for L3. |
 | 13 | PO Receiving Queue | ✅ QB2 complete | QB1 → QB2 | Queue Board archetype — §2A. Governance pass 2026-05-28. Official QB2 reference. |
 | 14 | PO Match Queue | ✅ QB2 complete | QB1 → QB2 | Queue Board archetype — §2A. Governance pass 2026-05-28. |
-| 15 | Warranty Queue | ⏳ Pending | QB1 → QB2 | Queue Board archetype. Copy `receiving_queue.html`. UI Builder A owns. |
+| 15 | Warranty Queue | ✅ **QB2 — Governance PASS 2026-05-31** | QB1 → QB2 | **PASS @e93cef9** — verified faithful copy of the ratified `receiving_queue.html`: metrics card-grid (Drafts/Awaiting Vendor/To Credit/To Notify), vendor group dividers, always-visible inline next-action+open+print, `border-l-4` on first `<td>`, `divide-y`, **no `tbl-*`**. Stripe/chip palette §4-consistent (purple=awaiting-vendor, green=approved/credited, amber=notified, red=denied, gray=draft). **1 required cosmetic (non-blocking):** `JAKS Ext` type chip uses orange (`list.html:156`) — §4 reserves orange for **core charges**; recolor to neutral gray/slate, and move the `Vendor` type chip off purple (collides with the 'Awaiting Vendor' status purple on the same row) — **fix before Cores Queue #16 ships.** Filename `list.html` kept (rename to `queue.html` declined — needless churn). UI Builder A owns. |
 | 16 | Cores Queue | ⏳ Pending | QB1 → QB2 | Queue Board archetype. Copy `receiving_queue.html`. UI Builder A owns. |
 | 17 | Returns Queue | ⏳ Pending | QB1 → QB2 | Queue Board archetype (or L2 list if returns are browsed not worked). Confirm with builder. |
 
