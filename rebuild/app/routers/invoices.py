@@ -607,33 +607,10 @@ def invoice_unlink_line(
     )
 
 
-# ── Product search (HTMX dropdown) ────────────────────────────────────────────
-
-@router.get("/_/product-search", response_class=HTMLResponse)
-def invoice_product_search(request: Request, q: str = "", db: Session = Depends(get_db)):
-    """Product search dropdown for the workspace line search bar."""
-    from sqlalchemy import or_
-    q = q.strip()
-    if len(q) < 2:
-        return HTMLResponse("")
-    results = (
-        db.query(Product)
-        .filter(
-            Product.is_active == True,  # noqa: E712
-            or_(
-                Product.sku.ilike(f"%{q}%"),
-                Product.title.ilike(f"%{q}%"),
-            ),
-        )
-        .order_by(Product.sku)
-        .limit(15)
-        .all()
-    )
-    return templates.TemplateResponse(
-        request,
-        "invoices/_search_results.html",
-        {"results": results},
-    )
+# ── Product search ───────────────────────────────────────────────────────────
+# The per-doc /invoices/_/product-search HTML endpoint was removed after the §8H
+# migration (its partial invoices/_search_results.html is gone). The invoice
+# workspace line-adder now calls GET /line-items/product-search (JSON).
 
 
 # ── Finalize ──────────────────────────────────────────────────────────────────

@@ -236,22 +236,10 @@ async def create_quote(
     return RedirectResponse(f"/quotes/{quote.id}", status_code=303)
 
 
-# ── Product Search (JSON for Alpine line-adder) ────────────────────────────────
-
-@router.get("/product-search")
-async def product_search_json(
-    q: str = "",
-    db: Session = Depends(get_db),
-    user_id: int = Depends(get_current_user_id),
-):
-    """
-    JSON product search for the quote line-adder.
-
-    DEPRECATED alias — the canonical endpoint is GET /line-items/product-search
-    (see LINE_ITEM_BUILDER_CONTRACT.md).  Kept working during the UI migration;
-    delegates to the shared serializer so the JSON shape stays identical.
-    """
-    return JSONResponse(search_products_json(q, db))
+# ── Product Search ─────────────────────────────────────────────────────────────
+# The deprecated /quotes/product-search JSON alias was removed after the §8H
+# migration — the quote line-adder now calls the canonical
+# GET /line-items/product-search (see LINE_ITEM_BUILDER_CONTRACT.md).
 
 
 # ── Preview panel (HTMX dock) ─────────────────────────────────────────────────

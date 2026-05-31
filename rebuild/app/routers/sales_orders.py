@@ -367,31 +367,10 @@ async def so_delete_line(
     )
 
 
-# ── Product search (HTMX typeahead) ──────────────────────────────────────────
-
-@router.get("/_/product-search", response_class=HTMLResponse)
-def so_product_search(request: Request, q: str = "", db: Session = Depends(get_db)):
-    from sqlalchemy import or_
-    results: list[Product] = []
-    if q and len(q) >= 2:
-        results = (
-            db.query(Product)
-            .filter(
-                Product.is_active == True,  # noqa: E712
-                or_(
-                    Product.sku.ilike(f"%{q}%"),
-                    Product.title.ilike(f"%{q}%"),
-                    Product.description.ilike(f"%{q}%"),
-                ),
-            )
-            .limit(12)
-            .all()
-        )
-    return templates.TemplateResponse(
-        request,
-        "sales_orders/_product_search_results.html",
-        {"results": results, "q": q},
-    )
+# ── Product search ───────────────────────────────────────────────────────────
+# The per-doc /sales-orders/_/product-search HTML endpoint was removed after the
+# §8H migration (its partial sales_orders/_product_search_results.html is gone).
+# The SO workspace line-adder now calls GET /line-items/product-search (JSON).
 
 
 # ── Fulfillment ───────────────────────────────────────────────────────────────

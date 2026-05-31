@@ -523,34 +523,12 @@ async def po_delete_line(po_id: int, line_id: int, request: Request, db: Session
     return _lines_response(po_id, request, db)
 
 
-# ── Product search (HTMX typeahead) ──────────────────────────────────────────
-
-@router.get("/_/product-search", response_class=HTMLResponse)
-def po_product_search(q: str = "", db: Session = Depends(get_db), request: Request = None):
-    results = []
-    if q and len(q) >= 2:
-        pattern = f"%{q}%"
-        _match = Product.sku.ilike(pattern) | Product.title.ilike(pattern)
-        # De-dashed SKU branch so "ok1" finds "OK-1" (separator-insensitive).
-        _q_clean = re.sub(r"[^a-zA-Z0-9]", "", q)
-        if _q_clean:
-            _dedashed_sku = func.replace(func.replace(Product.sku, "-", ""), " ", "")
-            _match = _match | _dedashed_sku.ilike(f"%{_q_clean}%")
-        results = (
-            db.query(Product)
-            .filter(
-                Product.is_active == True,
-                _match,
-            )
-            .order_by(Product.sku)
-            .limit(12)
-            .all()
-        )
-    return templates.TemplateResponse(
-        request,
-        "purchase_orders/_product_search_results.html",
-        {"results": results},
-    )
+# ── Product search ───────────────────────────────────────────────────────────
+# The per-doc /purchase-orders/_/product-search HTML endpoint was removed after
+# the §8H migration (its partial purchase_orders/_product_search_results.html is
+# gone, along with the now-redundant de-dash patch — separator-insensitive SKU
+# matching lives once in SearchService/normalize_part). The PO workspace and the
+# product-detail special-order box now call GET /line-items/product-search (JSON).
 
 
 # ── Status transitions ─────────────────────────────────────────────────────────
