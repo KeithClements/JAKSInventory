@@ -321,7 +321,13 @@ class QuoteService(BaseService):
             customer_id=quote.customer_id,
             payment_mode=payment_mode,
             data={
-                "customer_po_number": None,
+                # Carry the engine/job reference fields forward (SO already
+                # supports them; create_sales_order reads these keys).
+                "customer_po_number": quote.customer_po_number,
+                "customer_job_number": quote.customer_job_number,
+                "esn": quote.esn,
+                "engine_manufacturer": quote.engine_manufacturer or "",
+                "engine_model": quote.engine_model or "",
                 "notes": quote.notes,
                 "internal_notes": quote.internal_notes,
                 "lines": so_lines,
@@ -366,7 +372,17 @@ class QuoteService(BaseService):
         inv_svc = InvoiceService(self.db, self.current_user_id)
         invoice = inv_svc.create_invoice(
             customer_id=quote.customer_id,
-            data={"quote_id": quote_id, "notes": quote.notes},
+            data={
+                "quote_id": quote_id,
+                "notes": quote.notes,
+                # Direct quote→invoice (no SO) must still carry the engine/job refs;
+                # create_invoice reads these keys (see invoice_service.py:144-148).
+                "customer_po_number": quote.customer_po_number,
+                "customer_job_number": quote.customer_job_number,
+                "esn": quote.esn,
+                "engine_manufacturer": quote.engine_manufacturer or "",
+                "engine_model": quote.engine_model or "",
+            },
             lines=inv_lines,
         )
 
@@ -644,7 +660,14 @@ class QuoteService(BaseService):
         self.check_version(quote, submitted_updated_at)
         if quote.status in (QuoteStatus.CONVERTED, QuoteStatus.DECLINED):
             raise ValueError("Cannot edit a converted or declined quote")
-        for field in ("notes", "internal_notes", "discount_pct", "validity_days"):
+        # Whitelist of quote header fields the workspace can write. ESN/engine and
+        # the customer reference fields mirror InvoiceService.update_header so the
+        # same data the user enters on a quote persists (and later carries to SO).
+        for field in (
+            "notes", "internal_notes", "discount_pct", "validity_days",
+            "customer_po_number", "customer_job_number", "esn",
+            "engine_manufacturer", "engine_model",
+        ):
             if field in data:
                 setattr(quote, field, data[field])
         self.db.commit()

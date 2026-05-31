@@ -71,6 +71,17 @@ class Quote(Base):
     # Group names are configurable in settings (package_name_economy, etc.).
     selected_option_group: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
+    # ── Customer-Facing Reference Fields ──────────────────────────────────────
+    # Engine/job identifiers captured at the quote stage and carried forward into
+    # the SO and invoice (which already have matching columns). Diesel customers
+    # quote against a specific engine serial (ESN), so this must persist from the
+    # very first document in the chain.
+    customer_po_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    customer_job_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    esn: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    engine_manufacturer: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    engine_model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     internal_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

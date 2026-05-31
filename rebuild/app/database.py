@@ -147,6 +147,14 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
 
     # ── BUG-4 — core double-credit guard (idempotency stamp) ──────────────────
     ("core_charges", "credit_issued_at",     "DATETIME NULL"),
+
+    # ── Quote ESN/engine header fields (regression: were never on Quote, only ──
+    #    on SO/Invoice; carried forward quote→SO→invoice). ──────────────────────
+    ("quotes", "customer_po_number",  "VARCHAR(100) NULL"),
+    ("quotes", "customer_job_number", "VARCHAR(100) NULL"),
+    ("quotes", "esn",                 "VARCHAR(100) NULL"),
+    ("quotes", "engine_manufacturer", "VARCHAR(200) NULL"),
+    ("quotes", "engine_model",        "VARCHAR(200) NULL"),
 ]
 
 

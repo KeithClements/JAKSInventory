@@ -504,16 +504,29 @@ async def update_quote_header(
     internal_notes: str = Form(""),
     discount_pct: float = Form(0.0),
     validity_days: int = Form(30),
+    customer_po_number: str = Form(""),
+    customer_job_number: str = Form(""),
+    esn: str = Form(""),
+    engine_manufacturer: str = Form(""),
+    engine_model: str = Form(""),
     updated_at: str | None = Form(default=None),
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    """Update quote-level notes and settings."""
+    """Update quote-level notes, settings, and engine/job reference fields."""
     svc = QuoteService(db, user_id)
     svc.update_header(
         quote_id,
-        {"notes": notes, "internal_notes": internal_notes,
-         "discount_pct": discount_pct, "validity_days": validity_days},
+        {
+            "notes": notes, "internal_notes": internal_notes,
+            "discount_pct": discount_pct, "validity_days": validity_days,
+            # Empty optional refs persist as NULL (mirrors invoice header handler).
+            "customer_po_number": customer_po_number.strip() or None,
+            "customer_job_number": customer_job_number.strip() or None,
+            "esn": esn.strip() or None,
+            "engine_manufacturer": engine_manufacturer.strip(),
+            "engine_model": engine_model.strip(),
+        },
         updated_at,
     )
     return RedirectResponse(f"/quotes/{quote_id}?saved=1", status_code=303)
@@ -840,6 +853,11 @@ async def autosave_quote(
     internal_notes: str = Form(""),
     discount_pct: float = Form(0.0),
     validity_days: int = Form(30),
+    customer_po_number: str = Form(""),
+    customer_job_number: str = Form(""),
+    esn: str = Form(""),
+    engine_manufacturer: str = Form(""),
+    engine_model: str = Form(""),
     updated_at: str | None = Form(default=None),
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
@@ -848,8 +866,15 @@ async def autosave_quote(
     try:
         QuoteService(db, user_id).update_header(
             quote_id,
-            {"notes": notes, "internal_notes": internal_notes,
-             "discount_pct": discount_pct, "validity_days": validity_days},
+            {
+                "notes": notes, "internal_notes": internal_notes,
+                "discount_pct": discount_pct, "validity_days": validity_days,
+                "customer_po_number": customer_po_number.strip() or None,
+                "customer_job_number": customer_job_number.strip() or None,
+                "esn": esn.strip() or None,
+                "engine_manufacturer": engine_manufacturer.strip(),
+                "engine_model": engine_model.strip(),
+            },
             updated_at,
         )
         return HTMLResponse('<span class="text-xs text-green-600 font-medium">&#10003; Saved</span>')
