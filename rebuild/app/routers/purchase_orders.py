@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from urllib.parse import quote as url_quote
 
@@ -454,7 +455,8 @@ async def po_add_line(po_id: int, request: Request, db: Session = Depends(get_db
 
     pid_raw = str(form.get("product_id", "")).strip()
     desc = str(form.get("description", "")).strip()
-    qty_raw = str(form.get("qty_ordered", "1")).strip()
+    # Canonical line-item field is `qty`; accept legacy `qty_ordered` too.
+    qty_raw = str(form.get("qty", form.get("qty_ordered", "1"))).strip()
     cost_raw = str(form.get("unit_cost", "")).strip()
     core_raw = str(form.get("core_charge_per_unit", "")).strip()
 
@@ -528,11 +530,17 @@ def po_product_search(q: str = "", db: Session = Depends(get_db), request: Reque
     results = []
     if q and len(q) >= 2:
         pattern = f"%{q}%"
+        _match = Product.sku.ilike(pattern) | Product.title.ilike(pattern)
+        # De-dashed SKU branch so "ok1" finds "OK-1" (separator-insensitive).
+        _q_clean = re.sub(r"[^a-zA-Z0-9]", "", q)
+        if _q_clean:
+            _dedashed_sku = func.replace(func.replace(Product.sku, "-", ""), " ", "")
+            _match = _match | _dedashed_sku.ilike(f"%{_q_clean}%")
         results = (
             db.query(Product)
             .filter(
                 Product.is_active == True,
-                (Product.sku.ilike(pattern) | Product.title.ilike(pattern)),
+                _match,
             )
             .order_by(Product.sku)
             .limit(12)

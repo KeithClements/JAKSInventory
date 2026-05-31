@@ -226,3 +226,50 @@ def _serialize(v: Any) -> str | None:
     except (TypeError, ValueError) as exc:
         log.warning("audit _serialize fell back to str(): %s — %s", type(v).__name__, exc)
         return str(v)
+
+
+# ── Line-item defaults (shared by every add_line) ───────────────────────────────
+
+def apply_product_line_defaults(product, data: dict, *, include_price: bool) -> dict:
+    """
+    Backfill line-item fields from a product when the caller didn't supply them.
+
+    This is the backend half of "immediate add-on-select": the UI may POST only
+    ``product_id`` + ``qty`` and still expect a complete, sensible line.  Every
+    document's ``add_line`` (Quote, SO, Invoice, PO) calls this so the behaviour
+    is identical across all four.
+
+    Only fills blanks/zeros, so an explicit value from the caller always wins:
+      - ``description`` ← ``product.title`` (falls back to ``sku``)
+      - ``unit_cost``   ← ``product.cost``          when missing or 0
+      - ``unit_price``  ← ``product.selling_price`` (customer docs only;
+                          pass ``include_price=False`` for cost-only docs like POs)
+
+    Cost SOURCE nuances (preferred-vendor cost, the PO's own vendor source cost)
+    stay in each service and run BEFORE this helper; this only backfills from the
+    product's cached fields when the service left ``unit_cost`` at 0.
+
+    Mutates and returns ``data``.
+    """
+    if product is None:
+        return data
+
+    if not str(data.get("description", "") or "").strip():
+        data["description"] = product.title or product.sku or ""
+
+    try:
+        cost = float(data.get("unit_cost", 0) or 0)
+    except (TypeError, ValueError):
+        cost = 0.0
+    if cost == 0.0:
+        data["unit_cost"] = product.cost or 0.0
+
+    if include_price:
+        try:
+            price = float(data.get("unit_price", 0) or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        if price == 0.0:
+            data["unit_price"] = product.selling_price
+
+    return data

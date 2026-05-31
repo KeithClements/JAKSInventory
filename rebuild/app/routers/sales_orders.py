@@ -269,7 +269,8 @@ async def so_add_line(
     pid_raw = str(form.get("product_id", "")).strip()
     product_id = int(pid_raw) if pid_raw else None
 
-    qty_raw = str(form.get("qty_ordered", "1")).strip()
+    # Canonical line-item field is `qty`; accept legacy `qty_ordered` too.
+    qty_raw = str(form.get("qty", form.get("qty_ordered", "1"))).strip()
     price_raw = str(form.get("unit_price", "0")).strip()
     cost_raw = str(form.get("unit_cost", "0")).strip()
     desc = str(form.get("description", "")).strip()

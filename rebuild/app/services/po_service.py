@@ -29,7 +29,7 @@ from app.models.purchase_order import (
 )
 from app.models.quote import SOLine
 from app.settings_utils import bump_counter
-from app.services.base import BaseService
+from app.services.base import BaseService, apply_product_line_defaults
 from app.services.product_service import ProductService
 
 
@@ -202,28 +202,39 @@ class POService(BaseService):
 
         unit_cost = float(data.get("unit_cost", 0.0))
 
-        # Auto-fill cost from preferred vendor source
-        if product_id is not None and unit_cost == 0.0:
-            from app.models.product import ProductVendorSource
-            source = (
-                self.db.query(ProductVendorSource)
-                .filter(
-                    ProductVendorSource.product_id == product_id,
-                    ProductVendorSource.vendor_id == po.vendor_id,
-                    ProductVendorSource.is_active == True,  # noqa: E712
+        product = None
+        if product_id is not None:
+            product = self.db.query(Product).filter(Product.id == product_id).first()
+            # Auto-fill cost from THIS PO's vendor source (vendor-specific cost)
+            if unit_cost == 0.0:
+                from app.models.product import ProductVendorSource
+                source = (
+                    self.db.query(ProductVendorSource)
+                    .filter(
+                        ProductVendorSource.product_id == product_id,
+                        ProductVendorSource.vendor_id == po.vendor_id,
+                        ProductVendorSource.is_active == True,  # noqa: E712
+                    )
+                    .first()
                 )
-                .first()
-            )
-            if source:
-                unit_cost = source.vendor_cost
+                if source:
+                    unit_cost = source.vendor_cost
+
+        # Shared product-derived defaults: description (+ cost if still 0). POs are
+        # cost-only, so include_price=False. Core charge backfills from the product.
+        data["unit_cost"] = unit_cost
+        apply_product_line_defaults(product, data, include_price=False)
+        core_charge = float(data.get("core_charge_per_unit", 0.0) or 0.0)
+        if product is not None and core_charge == 0.0 and product.vendor_core_charge:
+            core_charge = product.vendor_core_charge
 
         line = POLine(
             po_id=po_id,
             product_id=product_id,
             description=data.get("description", ""),
             qty_ordered=int(data.get("qty_ordered", 1)),
-            unit_cost=unit_cost,
-            core_charge_per_unit=float(data.get("core_charge_per_unit", 0.0)),
+            unit_cost=float(data.get("unit_cost", 0.0)),
+            core_charge_per_unit=core_charge,
             notes=data.get("notes", ""),
         )
         self.db.add(line)

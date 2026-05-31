@@ -29,7 +29,7 @@ from app.deps import get_current_user_id, get_db
 from app.models.customer import Customer
 from app.models.quote import Quote
 from app.services.quote_service import QuoteService
-from app.services.search_service import SearchService
+from app.routers.line_items import search_products_json
 
 log = logging.getLogger(__name__)
 
@@ -245,29 +245,13 @@ async def product_search_json(
     user_id: int = Depends(get_current_user_id),
 ):
     """
-    JSON endpoint powering the Alpine.js product search in the line-adder row.
-    Returns ranked results including cost, suggested sell, and stock level.
+    JSON product search for the quote line-adder.
+
+    DEPRECATED alias — the canonical endpoint is GET /line-items/product-search
+    (see LINE_ITEM_BUILDER_CONTRACT.md).  Kept working during the UI migration;
+    delegates to the shared serializer so the JSON shape stays identical.
     """
-    q = q.strip()
-    if len(q) < 2:
-        return JSONResponse([])
-    svc = SearchService(db, user_id)
-    results = svc.search_products(q, limit=8)
-    return JSONResponse([
-        {
-            "product_id": r.product_id,
-            "part_number": r.part_number,
-            "description": r.description,
-            "current_cost": r.current_cost,
-            "suggested_sell": r.suggested_sell,
-            "qty_on_hand": r.qty_on_hand,
-            "vendor_name": r.vendor_name,
-            "match_type": r.match_type,
-            "last_sold_price": r.last_sold_price,
-            "last_sold_date": r.last_sold_date,
-        }
-        for r in results
-    ])
+    return JSONResponse(search_products_json(q, db))
 
 
 # ── Preview panel (HTMX dock) ─────────────────────────────────────────────────

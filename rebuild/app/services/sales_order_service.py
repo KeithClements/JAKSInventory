@@ -37,7 +37,7 @@ from app.models.inventory import InventoryTransaction
 from app.models.product import Product
 from app.models.quote import SalesOrder, SOLine
 from app.settings_utils import bump_counter
-from app.services.base import BaseService
+from app.services.base import BaseService, apply_product_line_defaults
 
 
 class SalesOrderService(BaseService):
@@ -123,9 +123,15 @@ class SalesOrderService(BaseService):
             raise ValueError(f"Cannot add lines to a {so.status} sales order")
 
         sort_order = max((ln.sort_order for ln in so.lines), default=-1) + 1
+        merged = {**data, "product_id": product_id}
+        # Backfill description / cost / price from the product so an immediate-add
+        # POST of just product_id + qty yields a complete line.
+        if product_id is not None:
+            _product = self.db.query(Product).filter(Product.id == product_id).first()
+            apply_product_line_defaults(_product, merged, include_price=True)
         line = self._add_line_internal(
             so.id,
-            {**data, "product_id": product_id},
+            merged,
             sort_order,
             allow_negative_inventory=allow_negative_inventory,
         )

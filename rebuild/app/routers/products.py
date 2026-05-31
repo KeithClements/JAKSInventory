@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import uuid
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import io
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.constants import CrossRefType, SuggestedSellType
@@ -87,12 +89,18 @@ def product_list(
     # Search
     if q:
         like = f"%{q}%"
-        query = query.filter(
+        _filter = (
             Product.sku.ilike(like)
             | Product.title.ilike(like)
             | Product.manufacturer.ilike(like)
             | Product.brand.ilike(like)
         )
+        # De-dashed SKU branch so "141234" finds "14-1234" and "ok1" finds "OK-1".
+        _q_clean = re.sub(r"[^a-zA-Z0-9]", "", q)
+        if _q_clean:
+            _dedashed_sku = func.replace(func.replace(Product.sku, "-", ""), " ", "")
+            _filter = _filter | _dedashed_sku.ilike(f"%{_q_clean}%")
+        query = query.filter(_filter)
 
     products = query.order_by(Product.sku).all()
 

@@ -27,7 +27,7 @@ from app.constants import (
     QuoteOutcome, QuoteStatus, SOPaymentMode,
 )
 from app.models.quote import LostSaleLog, Quote, QuoteLine
-from app.services.base import BaseService
+from app.services.base import BaseService, apply_product_line_defaults
 from app.settings_utils import bump_counter
 
 
@@ -100,6 +100,11 @@ class QuoteService(BaseService):
 
         # upgrade_option lines default to excluded unless caller explicitly set is_included
         merged = {**data, "product_id": product_id, "unit_cost": unit_cost}
+        # Backfill description / price from the product so an immediate-add POST of
+        # just product_id + qty yields a complete line (unit_cost resolved above).
+        if product_id is not None:
+            _product = self.db.query(Product).filter(Product.id == product_id).first()
+            apply_product_line_defaults(_product, merged, include_price=True)
         if merged.get("line_role") == LineRole.UPGRADE_OPTION and "is_included" not in data:
             merged["is_included"] = False
 

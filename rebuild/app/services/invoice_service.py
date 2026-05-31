@@ -27,7 +27,7 @@ from app.models.inventory import InventoryTransaction
 from app.models.invoice import Invoice, InvoiceLine
 from app.models.product import Product
 from app.settings_utils import bump_counter, get_setting_value_db
-from app.services.base import BaseService
+from app.services.base import BaseService, apply_product_line_defaults
 
 
 # Line types treated as billable parts (count toward Parts Subtotal, taxable).
@@ -287,6 +287,11 @@ class InvoiceService(BaseService):
         sort_order = max((ln.sort_order for ln in invoice.lines), default=-1) + 1
 
         merged = {**data, "product_id": product_id}
+        # Backfill description / cost / price from the product so an immediate-add
+        # POST of just product_id + qty yields a complete line.
+        if product_id is not None:
+            _product = self.db.query(Product).filter(Product.id == product_id).first()
+            apply_product_line_defaults(_product, merged, include_price=True)
         # Apply invoice-level default discount for new product lines
         if (
             merged.get("line_type", LineType.PRODUCT) == LineType.PRODUCT

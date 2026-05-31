@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from sqlalchemy import or_
 
 from sqlalchemy import desc as sa_desc
+from sqlalchemy import func as sa_func
 
 from app.models.customer import Customer
 from app.models.invoice import Invoice, InvoiceLine
@@ -31,7 +32,22 @@ from app.models.purchase_order import PurchaseOrder
 from app.models.quote import Quote, SalesOrder
 from app.models.vendor import Vendor
 from app.services.base import BaseService
-from app.utils import calc_sell_price
+from app.utils import calc_sell_price, normalize_part
+
+# Separators stripped from BOTH the query and the column so "OK-1" matches a
+# SKU/cross-ref stored as "OK1", "ok 1", "OK.1", etc.  This is the ONE place the
+# app normalizes part numbers — it supersedes the per-endpoint de-dash patches
+# once screens move to /line-items/product-search.
+_NORM_SEPARATORS = ("-", " ", ".", "/", "_")
+
+
+def _norm_col(col):
+    """SQL expression: lower-case `col` and strip common part-number separators,
+    so it can be compared against utils.normalize_part(query)."""
+    expr = sa_func.lower(col)
+    for _sep in _NORM_SEPARATORS:
+        expr = sa_func.replace(expr, _sep, "")
+    return expr
 
 
 @dataclass
@@ -110,68 +126,76 @@ class SearchService(BaseService):
         if not include_inactive:
             base_q = base_q.filter(Product.is_active == True)  # noqa: E712
 
-        upper = q.upper()
+        # Normalized query — separators stripped, lower-cased ("OK-1" == "ok1").
+        # One normalization for SKU, cross-ref and vendor SKU (this supersedes
+        # the earlier SKU-only de-dash patch).
+        nq = normalize_part(q)
 
-        # 1. Exact SKU match
-        exact = base_q.filter(Product.sku == upper).first()
-        if exact and exact.id not in seen:
-            seen.add(exact.id)
-            results.append(_to_result(exact, "part_number"))
+        if nq:
+            sku_norm = _norm_col(Product.sku)
 
-        # 2. SKU prefix match (e.g. user typed "14-" → matches "14-1234")
-        if len(results) < limit:
-            prefix_hits = (
-                base_q.filter(Product.sku.ilike(f"{upper}%"))
-                .limit(limit)
-                .all()
-            )
-            for p in prefix_hits:
-                if p.id not in seen:
-                    seen.add(p.id)
-                    results.append(_to_result(p, "part_number"))
-                if len(results) >= limit:
-                    break
+            # 1. Exact SKU match (normalized)
+            exact = base_q.filter(sku_norm == nq).first()
+            if exact and exact.id not in seen:
+                seen.add(exact.id)
+                results.append(_to_result(exact, "part_number"))
 
-        # 3. Cross-reference lookup (OEM + competitor + vendor_alt)
-        if len(results) < limit:
-            xref_hits = (
-                self.db.query(CrossReference, Product)
-                .join(Product, CrossReference.product_id == Product.id)
-                .filter(CrossReference.ref_number.ilike(f"%{q}%"))
-                .filter(Product.is_active == True if not include_inactive else True)  # noqa: E712
-                .limit(limit)
-                .all()
-            )
-            for xref, p in xref_hits:
-                if p.id not in seen:
-                    seen.add(p.id)
-                    results.append(_to_result(p, "cross_ref", cross_ref_number=xref.ref_number))
-                if len(results) >= limit:
-                    break
-
-        # 4. Vendor SKU / part number
-        if len(results) < limit:
-            pvs_hits = (
-                self.db.query(ProductVendorSource, Product)
-                .join(Product, ProductVendorSource.product_id == Product.id)
-                .filter(
-                    or_(
-                        ProductVendorSource.vendor_part_number.ilike(f"%{q}%"),
-                        ProductVendorSource.vendor_sku.ilike(f"%{q}%"),
-                    )
+            # 2. SKU contains (normalized), prefix matches ranked first —
+            #    "141" finds "14-1234"; "ok1" finds "OK-1".
+            if len(results) < limit:
+                sku_hits = (
+                    base_q.filter(sku_norm.like(f"%{nq}%"))
+                    .order_by(sku_norm.like(f"{nq}%").desc(), Product.sku)
+                    .limit(limit)
+                    .all()
                 )
-                .filter(ProductVendorSource.is_active == True)  # noqa: E712
-                .limit(limit)
-                .all()
-            )
-            for _src, p in pvs_hits:
-                if p.id not in seen:
-                    seen.add(p.id)
-                    results.append(_to_result(p, "vendor_sku"))
-                if len(results) >= limit:
-                    break
+                for p in sku_hits:
+                    if p.id not in seen:
+                        seen.add(p.id)
+                        results.append(_to_result(p, "part_number"))
+                    if len(results) >= limit:
+                        break
 
-        # 5. Description keyword (lowest priority — can match many unrelated items)
+            # 3. Cross-reference lookup (OEM + competitor + vendor_alt), normalized
+            if len(results) < limit:
+                xref_hits = (
+                    self.db.query(CrossReference, Product)
+                    .join(Product, CrossReference.product_id == Product.id)
+                    .filter(_norm_col(CrossReference.ref_number).like(f"%{nq}%"))
+                    .filter(Product.is_active == True if not include_inactive else True)  # noqa: E712
+                    .limit(limit)
+                    .all()
+                )
+                for xref, p in xref_hits:
+                    if p.id not in seen:
+                        seen.add(p.id)
+                        results.append(_to_result(p, "cross_ref", cross_ref_number=xref.ref_number))
+                    if len(results) >= limit:
+                        break
+
+            # 4. Vendor SKU / part number (normalized)
+            if len(results) < limit:
+                pvs_hits = (
+                    self.db.query(ProductVendorSource, Product)
+                    .join(Product, ProductVendorSource.product_id == Product.id)
+                    .filter(
+                        or_(
+                            _norm_col(ProductVendorSource.vendor_part_number).like(f"%{nq}%"),
+                            _norm_col(ProductVendorSource.vendor_sku).like(f"%{nq}%"),
+                        )
+                    )
+                    .filter(ProductVendorSource.is_active == True)  # noqa: E712
+                    .limit(limit)
+                    .all()
+                )
+                for _src, p in pvs_hits:
+                    if p.id not in seen:
+                        seen.add(p.id)
+                        results.append(_to_result(p, "vendor_sku"))
+                    if len(results) >= limit:
+                        break
+
+        # 5. Description keyword (lowest priority — raw prose, not part-normalized)
         if len(results) < limit:
             desc_hits = (
                 base_q.filter(
@@ -194,13 +218,16 @@ class SearchService(BaseService):
 
     def lookup_cross_reference(self, ref_number: str) -> list[ProductSearchResult]:
         """
-        Exact lookup by OEM or competitor part number.
+        Exact lookup by OEM or competitor part number (separator/case-insensitive).
         Returns the JAKS product(s) that match this cross reference.
         """
+        nref = normalize_part(ref_number)
+        if not nref:
+            return []
         hits = (
             self.db.query(CrossReference, Product)
             .join(Product, CrossReference.product_id == Product.id)
-            .filter(CrossReference.ref_number == ref_number.upper())
+            .filter(_norm_col(CrossReference.ref_number) == nref)
             .all()
         )
         results = []
@@ -300,8 +327,10 @@ class SearchService(BaseService):
             return []
         _q_clean = re.sub(r"[^a-zA-Z0-9]", "", q)
         _filters = [Quote.quote_number.ilike(f"%{q}%")]
-        if _q_clean and _q_clean.lower() != q.lower():
-            _filters.append(Quote.quote_number.ilike(f"%{_q_clean}%"))
+        if _q_clean:
+            # De-dash the column too so "q2026" finds "Q-2026-0001" (unconditional OR).
+            _dedashed = sa_func.replace(sa_func.replace(Quote.quote_number, "-", ""), " ", "")
+            _filters.append(_dedashed.ilike(f"%{_q_clean}%"))
         hits = (
             self.db.query(Quote)
             .filter(or_(*_filters))
@@ -326,8 +355,10 @@ class SearchService(BaseService):
             return []
         _q_clean = re.sub(r"[^a-zA-Z0-9]", "", q)
         _so_filters = [SalesOrder.so_number.ilike(f"%{q}%")]
-        if _q_clean and _q_clean.lower() != q.lower():
-            _so_filters.append(SalesOrder.so_number.ilike(f"%{_q_clean}%"))
+        if _q_clean:
+            # De-dash the column too so "so20260001" finds "SO-2026-0001" (unconditional OR).
+            _dedashed = sa_func.replace(sa_func.replace(SalesOrder.so_number, "-", ""), " ", "")
+            _so_filters.append(_dedashed.ilike(f"%{_q_clean}%"))
         hits = (
             self.db.query(SalesOrder)
             .filter(

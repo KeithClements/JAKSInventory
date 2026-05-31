@@ -6,6 +6,8 @@ No database access, no imports from app modules — safe to import anywhere.
 """
 from __future__ import annotations
 
+import re
+
 
 def calc_line_total(unit_price: float, qty: int, discount_pct: float = 0.0) -> float:
     """
@@ -67,3 +69,19 @@ def calc_sell_price(cost: float, markup_pct: float) -> float:
     markup_pct = 30 means sell = cost * 1.30
     """
     return round(cost * (1 + markup_pct / 100), 2)
+
+
+def normalize_part(s: str) -> str:
+    """
+    Fold a part / OEM / cross-reference number for matching: strip every
+    non-alphanumeric character and lower-case the rest.  Lets a user find a
+    part regardless of how separators or case were entered:
+
+        normalize_part("OK-1")  == "ok1"
+        normalize_part("ok 1")  == "ok1"
+        normalize_part("OK.1")  == "ok1"
+
+    Used by SearchService to match SKUs, cross-references, and vendor part
+    numbers.  Pure function — safe to import anywhere.
+    """
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
