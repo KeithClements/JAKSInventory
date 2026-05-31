@@ -32,6 +32,19 @@ def get_setting_value_db(db: Session, key: str, fallback: str = "") -> str:
     return row.value if row else fallback
 
 
+def set_setting_value_db(db: Session, key: str, value: str, label: str = "") -> None:
+    """Upsert a single setting value using an existing session.
+
+    Does NOT commit — the caller controls the transaction boundary (so several
+    setting writes can be batched into one commit). Creates the row if absent.
+    """
+    row = db.query(Setting).filter(Setting.key == key).first()
+    if row:
+        row.value = value
+    else:
+        db.add(Setting(key=key, value=value, label=label))
+
+
 def bump_counter(db: Session, key: str, prefix: str, year: int) -> str:
     """
     Atomically increment a document sequence number and return the formatted string.

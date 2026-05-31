@@ -141,6 +141,13 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     "next_vcm_number":             ("1",       "Vendor Credit Memo: VCM-2026-XXXX"),
     "next_vr_number":              ("1",       "Vendor Return: VR-2026-XXXX"),
     "next_statement_number":       ("1",       "Customer Statement: ST-2026-XXXX"),
+
+    # O3 — SQLite backup / restore (go-live gate, §11)
+    "backup_dir":                  ("",        "Backup directory (blank → <app>/backups)"),
+    "backup_retention_count":      ("10",      "Number of backups to keep"),
+    "backup_on_startup":           ("true",    "Run a backup automatically on startup"),
+    "backup_min_interval_hours":   ("12",      "Min hours between automatic startup backups"),
+    "backup_last_run":             ("",        "Last successful backup (ISO timestamp)"),
 }
 
 VISIBLE_KEYS = [

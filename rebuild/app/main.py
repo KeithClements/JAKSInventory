@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from pathlib import Path
 from fastapi import FastAPI
@@ -32,6 +33,9 @@ from app.routers import notifications as notifications_router
 from app.routers import vendor_returns as vendor_returns_router
 from app.routers import admin as admin_router
 from app.routers import line_items as line_items_router
+from app.routers import backup as backup_router
+
+log = logging.getLogger(__name__)
 
 app = FastAPI(title="JAKS Inventory", docs_url=None, redoc_url=None)
 
@@ -51,8 +55,50 @@ def on_startup() -> None:
         _seed_default_user(db)
         _seed_core_locations(db)
         _lock_overdue_invoices(db)
+        _startup_backup(db)
     finally:
         db.close()
+
+
+def _startup_backup(db: Session) -> None:
+    """
+    O3 — best-effort automatic SQLite backup on startup.
+
+    Skipped under tests / in-memory engines (nothing on disk to snapshot) and
+    throttled by ``backup_min_interval_hours`` so frequent restarts don't spam
+    the backup dir.  Never raises — a backup failure must not block startup.
+    """
+    from app.settings_utils import get_setting_value_db, set_setting_value_db
+    from app.services import backup_service
+
+    try:
+        # In-memory test engine → no file DB to back up.
+        if ":memory:" in str(_appdb.engine.url):
+            return
+        if get_setting_value_db(db, "backup_on_startup", "true").strip().lower() != "true":
+            return
+
+        # Throttle: skip if the last backup is newer than the configured interval.
+        last = get_setting_value_db(db, "backup_last_run", "")
+        try:
+            min_hours = float(get_setting_value_db(db, "backup_min_interval_hours", "12"))
+        except (TypeError, ValueError):
+            min_hours = 12.0
+        if last and min_hours > 0:
+            try:
+                elapsed = (datetime.now() - datetime.fromisoformat(last)).total_seconds()
+                if elapsed < min_hours * 3600:
+                    return
+            except ValueError:
+                pass  # unparseable timestamp — fall through and take a backup
+
+        backup_service.create_backup()
+        backup_service.prune_backups()
+        set_setting_value_db(db, "backup_last_run", datetime.now().isoformat(timespec="seconds"))
+        db.commit()
+        log.info("startup backup complete")
+    except Exception:
+        log.exception("startup backup failed (continuing startup)")
 
 
 def _seed_core_locations(db: Session) -> None:
@@ -179,3 +225,4 @@ app.include_router(notifications_router.router)
 app.include_router(vendor_returns_router.router)
 app.include_router(admin_router.router)
 app.include_router(line_items_router.router)
+app.include_router(backup_router.router)
