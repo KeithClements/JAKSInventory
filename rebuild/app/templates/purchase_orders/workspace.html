@@ -37,6 +37,13 @@
             @click="$dispatch('po-confirm', {formId:'cancel-po-form', title:'Cancel purchase order?', body:'Inventory on-order will be reversed.', cta:'Cancel PO', danger:true})">
       Cancel PO
     </button>
+
+  {% elif po.status == 'partial' %}
+    <form id="cancel-po-form" method="post" action="/purchase-orders/{{ po.id }}/cancel-status" class="hidden"></form>
+    <button type="button" class="btn-ghost btn-sm text-red-500"
+            @click="$dispatch('po-confirm', {formId:'cancel-po-form', title:'Cancel purchase order?', body:'This partially-received PO will be cancelled. Received inventory will be kept; outstanding quantities will be cleared.', cta:'Cancel PO', danger:true})">
+      Cancel PO
+    </button>
   {% endif %}
 
   <a href="/purchase-orders/" class="text-sm text-gray-500 hover:text-gray-700">← Purchase Orders</a>
@@ -257,17 +264,13 @@
                      class="w-44 text-xs border border-gray-200 rounded px-2 py-1 text-gray-500
                             focus:outline-none focus:ring-1 focus:ring-brand-400" />
             </div>
-            {# Cancel outstanding qty — posts separately from the receive form #}
+            {# Cancel outstanding qty — the cancel <form> is rendered OUTSIDE the receive form (below the loop)
+               so it doesn't nest inside it; the confirm modal submits it by id. #}
             <button type="button"
                     class="text-xs text-gray-400 hover:text-red-600 underline shrink-0"
                     @click="askConfirm('cancel-line-{{ line.id }}', 'Cancel outstanding line?', 'Cancel the outstanding {{ line.qty_outstanding }} unit(s) for this line? The remaining quantity will be cleared.', 'Cancel line', true)">
               Cancel
             </button>
-            <form id="cancel-line-{{ line.id }}" method="post"
-                  action="/purchase-orders/{{ po.id }}/cancel-line" class="hidden">
-              <input type="hidden" name="line_id" value="{{ line.id }}"/>
-              <input type="hidden" name="reason" value="cancelled by user"/>
-            </form>
           </div>
           {% endfor %}
         </div>
@@ -297,6 +300,17 @@
         </div>
         <button type="submit" class="btn-primary">Receive &amp; Update Inventory</button>
       </form>
+
+      {# Per-line cancel forms — kept OUTSIDE the receive form above. Nesting <form> elements is invalid HTML:
+         the browser closes the receive form at the first nested </form>, orphaning its submit button so
+         receiving silently no-ops. The confirm modal submits these by id (see askConfirm). #}
+      {% for line in unreceived_lines %}
+      <form id="cancel-line-{{ line.id }}" method="post"
+            action="/purchase-orders/{{ po.id }}/cancel-line" class="hidden">
+        <input type="hidden" name="line_id" value="{{ line.id }}"/>
+        <input type="hidden" name="reason" value="cancelled by user"/>
+      </form>
+      {% endfor %}
     </div>
   </div>
   {% endif %}
