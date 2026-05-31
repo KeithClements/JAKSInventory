@@ -17,6 +17,7 @@ Key rules:
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
 from app.constants import (
@@ -29,6 +30,8 @@ from app.models.customer import Customer
 from app.models.notification import Notification
 from app.settings_utils import get_setting_value_db as _get_setting, bump_counter
 from app.services.base import BaseService
+
+log = logging.getLogger(__name__)
 
 
 # R10 — default location name constants (matched against CoreLocation.name)
@@ -176,6 +179,10 @@ class CoreService(BaseService):
                     amount=credit_amount,
                     reason=f"Core return #{core_charge_id}",
                 )
+                # BUG-4 fix: stamp the credit so a later issue_core_credit() call
+                # can detect this core was already credited and refuse to double it.
+                core.credit_issued_at = datetime.utcnow()
+                core.credit_method = CoreCreditMethod.ACCOUNT_CREDIT
 
         self.audit(
             entity_type=EntityType.CORE_CHARGE,
@@ -335,20 +342,24 @@ class CoreService(BaseService):
             )
             self.db.add(vendor_credit)
 
-        # R10 — vendor kept the physical core; record final movement out of inventory
-        # by moving to a NULL/closed location. We record this as a Movement row with
-        # destination = "In Transit to Vendor" cleared to NULL via direct field set
-        # (no movement row needed when destination is "vendor's hands").
+        # R10 — vendor kept the physical core; clear its location.
+        # BUG-2 fix: only record a movement row when the core actually had a prior
+        # location to move FROM. CoreLocationMovement.to_location_id is NOT NULL, so
+        # a core that reached vendor-acceptance without ever being routed
+        # (location_id is None — e.g. direct acceptance, no submit_to_vendor) would
+        # otherwise insert to_location_id=None and raise an IntegrityError. With no
+        # prior location there is no physical movement to record, so we skip the row.
         old_location_id = core.location_id
         core.location_id = None
-        self.db.add(CoreLocationMovement(
-            core_charge_id=core.id,
-            from_location_id=old_location_id,
-            to_location_id=old_location_id,  # FK requires non-null; reuse from
-            moved_by_user_id=self.current_user_id,
-            reason="vendor_accepted_kept_core",
-            note="Vendor accepted and kept the physical core",
-        ))
+        if old_location_id is not None:
+            self.db.add(CoreLocationMovement(
+                core_charge_id=core.id,
+                from_location_id=old_location_id,
+                to_location_id=old_location_id,  # FK requires non-null; reuse from
+                moved_by_user_id=self.current_user_id,
+                reason="vendor_accepted_kept_core",
+                note="Vendor accepted and kept the physical core",
+            ))
 
         self.db.commit()
 
@@ -706,6 +717,20 @@ class CoreService(BaseService):
                 f"CoreCharge {core_charge_id} has no returned qty — nothing to credit"
             )
 
+        # BUG-4 fix: idempotency guard. record_customer_return(ACCEPTED) and
+        # complete_inspection(ACCEPTED) already issue the customer's account credit
+        # and stamp credit_issued_at. Without this guard, calling issue_core_credit
+        # afterward credits the customer a SECOND time for the same returned core.
+        # If credit was already issued, this is a no-op (financial action skipped);
+        # to change the method, reverse the original credit first.
+        if core.credit_issued_at is not None:
+            log.info(
+                "issue_core_credit: CoreCharge %s already credited at %s (method=%s)"
+                " — skipping to avoid double credit",
+                core_charge_id, core.credit_issued_at, core.credit_method,
+            )
+            return
+
         credit_amount = round(core.qty_returned * core.customer_unit_charge, 2)
 
         if credit_method == CoreCreditMethod.ACCOUNT_CREDIT:
@@ -718,6 +743,9 @@ class CoreService(BaseService):
                     + (f" — {notes}" if notes else "")
                 ),
             )
+            # Stamp so a subsequent call is a no-op (see guard above).
+            core.credit_issued_at = datetime.utcnow()
+            core.credit_method = CoreCreditMethod.ACCOUNT_CREDIT
 
         elif credit_method == CoreCreditMethod.CHECK:
             # Record an outbound payment (wife cuts the actual check)
@@ -738,6 +766,9 @@ class CoreService(BaseService):
                 qbo_sync_status=QBOSyncStatus.PENDING,
             )
             self.db.add(refund)
+            # Stamp so a subsequent call is a no-op (see guard above).
+            core.credit_issued_at = datetime.utcnow()
+            core.credit_method = CoreCreditMethod.CHECK
 
         # HOLD: no financial action — just record the intent in the audit log
 

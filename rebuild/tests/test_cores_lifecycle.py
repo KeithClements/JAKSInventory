@@ -17,11 +17,9 @@ Strategy
 Assertions are behaviour-level (status transitions, location routing, customer
 credit_balance, VendorCredit / Payment / inventory rows) — never just HTTP 200.
 
-KNOWN DEFECT documented here (see test_vendor_acceptance_requires_seeded_location):
-  CoreService.record_vendor_acceptance writes a CoreLocationMovement with
-  to_location_id = the core's current location_id. If that is None (core never
-  routed to a real location), to_location_id violates NOT NULL -> IntegrityError.
-  Seeded locations + a prior submit_to_vendor avoid it; the test pins the dependency.
+Regression guards (bottom of file): BUG-2 (vendor acceptance without a prior
+location) and BUG-4 (double credit on accepted-then-issue) were found here and
+are now FIXED in CoreService; the two tests that pin them must stay green.
 """
 from __future__ import annotations
 
@@ -438,19 +436,17 @@ def test_overdue_core_detected(db):
 
 
 # ===========================================================================
-# DOCUMENTED DEFECTS (xfail) — these encode real bugs found while testing.
-# They assert the CORRECT behaviour, so when the bug is fixed the test flips to
-# an XPASS and alerts the team. strict=False so they never break the suite.
+# FIXED DEFECTS — regression guards.
+# These encode two real bugs found while testing (BUG-2, BUG-4). Both are now
+# FIXED in CoreService; the tests assert the CORRECT behaviour and must stay
+# green. (Previously xfail; flipped to real passing tests when the bugs landed.)
 # ===========================================================================
 
-@pytest.mark.xfail(
-    reason="BUG-2: record_vendor_acceptance writes CoreLocationMovement with "
-           "to_location_id = core.location_id; when the core was never routed "
-           "(location_id is None) this violates NOT NULL -> IntegrityError. The "
-           "normal flow (return->submit_to_vendor) sets a location and avoids it.",
-    strict=False,
-)
 def test_vendor_acceptance_without_prior_location(db):
+    # BUG-2 (FIXED): record_vendor_acceptance used to write a CoreLocationMovement
+    # with to_location_id = core.location_id; when the core was never routed
+    # (location_id is None) that violated NOT NULL -> IntegrityError. The fix skips
+    # the movement row when there is no prior location. Vendor acceptance succeeds.
     from app.constants import CoreStatus
     from app.services.core_service import CoreService
 
@@ -463,13 +459,10 @@ def test_vendor_acceptance_without_prior_location(db):
     assert core.status == CoreStatus.VENDOR_ACCEPTED
 
 
-@pytest.mark.xfail(
-    reason="BUG-4: record_customer_return(ACCEPTED) already issues account credit; "
-           "issue_core_credit then credits AGAIN with no idempotency/status guard "
-           "-> the customer is credited twice for one returned core.",
-    strict=False,
-)
 def test_no_double_credit_on_accepted_then_issue(db):
+    # BUG-4 (FIXED): record_customer_return(ACCEPTED) issues account credit and now
+    # stamps credit_issued_at; issue_core_credit then detects that and no-ops instead
+    # of crediting the customer a second time for one returned core.
     from app.constants import CoreCreditMethod, CoreInspectionOutcome
     from app.services.core_service import CoreService
 

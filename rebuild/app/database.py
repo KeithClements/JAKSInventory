@@ -144,6 +144,9 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     ("sales_orders", "qbo_sync_error",       "TEXT NULL"),
     ("sales_orders", "qbo_sync_retry_count", "INTEGER NOT NULL DEFAULT 0"),
     ("sales_orders", "qbo_so_id",            "TEXT NULL"),
+
+    # ── BUG-4 — core double-credit guard (idempotency stamp) ──────────────────
+    ("core_charges", "credit_issued_at",     "DATETIME NULL"),
 ]
 
 
