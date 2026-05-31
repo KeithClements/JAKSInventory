@@ -122,6 +122,48 @@
   </div>
   {% endif %}
 
+  {# Vehicle / Engine Info (expandable) — parity with Invoice (invoices/workspace.html).
+     Inputs live inside quote-header-form, so they save via the existing autosave; the
+     Quote model already has these columns — persistence activates once Backend adds the
+     fields to the /quotes/{id}/autosave + update_header route params. #}
+  <div class="border-b border-gray-100 px-4 py-2"
+       x-data="{ showVehicle: {{ 'true' if (quote.esn or quote.engine_manufacturer or quote.engine_model or quote.customer_po_number or quote.customer_job_number) else 'false' }} }">
+    <button type="button" @click="showVehicle = !showVehicle"
+            class="flex items-center gap-1 text-xs font-medium text-brand-700 hover:text-brand-600">
+      <svg class="w-3.5 h-3.5" :class="showVehicle ? 'rotate-90' : ''" style="transition: transform 0.15s"
+           fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+      </svg>
+      Vehicle / Engine Info
+      {% if quote.esn or quote.engine_manufacturer or quote.engine_model %}
+      <span class="badge-brand">filled</span>
+      {% endif %}
+    </button>
+    <div x-show="showVehicle" x-cloak class="mt-2 grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+      <div>
+        <label class="form-label">ESN</label>
+        <input type="text" name="esn" value="{{ quote.esn or '' }}" class="form-input text-sm" />
+      </div>
+      <div>
+        <label class="form-label">Engine Make</label>
+        <input type="text" name="engine_manufacturer" value="{{ quote.engine_manufacturer or '' }}" class="form-input text-sm" />
+      </div>
+      <div>
+        <label class="form-label">Engine Model</label>
+        <input type="text" name="engine_model" value="{{ quote.engine_model or '' }}" class="form-input text-sm" />
+      </div>
+      <div>
+        <label class="form-label">Customer PO #</label>
+        <input type="text" name="customer_po_number" value="{{ quote.customer_po_number or '' }}" class="form-input text-sm" />
+      </div>
+      <div>
+        <label class="form-label">Truck / Job</label>
+        <input type="text" name="customer_job_number" value="{{ quote.customer_job_number or '' }}" class="form-input text-sm" />
+      </div>
+    </div>
+    <p x-show="showVehicle" x-cloak class="text-xs text-gray-400 italic mt-1.5">Optional — recommended for warranty traceability.</p>
+  </div>
+
   {# Row 2: Notes (compact inline, 1 row) #}
   <div class="grid grid-cols-2 divide-x divide-gray-100">
     <div class="flex items-center gap-2 px-4 py-2">
