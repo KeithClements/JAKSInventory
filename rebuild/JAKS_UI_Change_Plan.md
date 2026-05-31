@@ -1650,10 +1650,18 @@ rework. **Copy the referenced existing pattern — do not invent.** Grounded in 
 - Table: **explicit Tailwind padding + `divide-y divide-gray-100`** — **NOT `tbl-*`** (banned; the legacy
   `tbl` table at `vendors/detail.html:138` is the anti-pattern, do not copy it). Columns: Name · Role ·
   Phone · Email · Primary · row-actions.
-- **`is_primary` chip:** a `badge-green` **"Primary"** pill on the primary row; exactly one primary — setting
-  a new one clears the others (backend enforces; UI reflects).
-- **Add row:** an inline final `<tr>` of fields + `+ Add`; HTMX POST returns the re-rendered card body
-  (swap the table region, keep the card). Edit/✕ inline per row; always editable, no modal.
+- **`is_primary` chip:** a `badge-green` **"Primary"** pill on the primary row; backend guarantees **at most one
+  primary** per vendor. **"Make primary" is a dedicated per-row action** (`POST …/contacts/{cid}/make-primary`) —
+  the per-row **Edit** route deliberately ignores `is_primary` (no checkbox ambiguity), so the `is_primary`
+  checkbox appears **only on the Add form**.
+- **Per-row actions:** Edit (→ update route), Make primary (only when not primary), Delete (soft). Optional: a
+  small chip per function flag (`is_sales/warranty/returns/accounting_contact`) beside `role`.
+- **Submit mechanism — ✅ VERIFIED against shipped `VENDOR_CONTACTS_CONTRACT.md` @c17f2b6 (2026-05-31):** the
+  routes are **plain form-POSTs that 303-redirect** to `/vendors/{id}?saved=1#contacts` (or `?error=…#contacts`)
+  — **NOT** HTMX-partial swaps (there is no Backend-owned partial). Build the Add form + per-row forms as standard
+  POSTs; show the `saved`/`error` flash near the card; the `#contacts` anchor returns focus. Iterate
+  `vendor.contacts if c.is_active`; primary via `vendor.primary_contact`. Inline, no modal. **UI-Builder is
+  cleared to build the card to this — the O4 seam is consistent.**
 
 **O5 — Markup rules in Settings** (replace the hardcoded 30% at `product.py:202`). Copy the
 `settings/index.html` **percent-field** verbatim (`settings/index.html:28-35`): `label` +
