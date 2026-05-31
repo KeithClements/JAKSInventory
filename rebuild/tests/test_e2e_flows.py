@@ -298,3 +298,86 @@ def test_e2e_e_overdue_invoice_aging_and_statement(db, client):
     # customer statement page renders with the overdue invoice
     r = client.get(f"/customers/{cust.id}/statement")
     assert r.status_code == 200
+
+
+# ===========================================================================
+# §8.f — PO receive -> create vendor bill -> 3-way match AUTO-APPROVES on a
+#        clean qty/cost match (TESTING_FEEDBACK §2.4e — #13). Proves the full
+#        receive->bill chain end to end; the discrepancy branch is §8.g below.
+# ===========================================================================
+
+def test_e2e_f_receive_then_bill_auto_approves(db):
+    from app.constants import POStatus, VendorBillStatus
+    from app.models.purchase_order import PurchaseOrder, VendorBill
+    from app.services.po_service import POService
+
+    ven = _vendor(db)
+    prod = _product(db, qty_on_hand=0, cost=10.0)
+    po, line = _po_sent(db, ven, prod, qty=10, unit_cost=12.0)
+    db.commit()
+
+    svc = POService(db, _UID)
+    # Receive everything ordered, then bill exactly what was received at PO cost.
+    svc.create_receipt(vendor_id=ven.id, po_line_quantities={line.id: 10}, data={})
+    db.expire_all()
+
+    bill = svc.create_vendor_bill(
+        po_id=po.id, vendor_id=ven.id,
+        bill_number=f"BILL-E2E-{next(_counter)}",
+        bill_date=datetime.date.today(),
+        due_date=datetime.date.today() + datetime.timedelta(days=30),
+        lines=[{"po_line_id": line.id, "qty_billed": 10, "unit_cost": 12.0}],
+    )
+
+    db.expire_all()
+    bill_r = db.query(VendorBill).filter(VendorBill.id == bill.id).first()
+    assert bill_r.status == VendorBillStatus.APPROVED, (
+        "a clean 3-way match (billed qty == received qty) must AUTO-APPROVE the "
+        f"bill; got {bill_r.status}"
+    )
+    assert bill_r.total_amount == 120.0          # 10 * 12.00
+    po_r = db.query(PurchaseOrder).filter(PurchaseOrder.id == po.id).first()
+    assert po_r.status == POStatus.BILLED, (
+        "a PO whose every received line is fully billed must advance to BILLED; "
+        f"got {po_r.status}"
+    )
+
+
+# ===========================================================================
+# §8.g — counter-case: billing MORE than was received flags a DISCREPANCY and
+#        does NOT auto-approve (TESTING_FEEDBACK §2.4f — #13). Confirms approval
+#        is driven by the match, not granted blindly.
+# ===========================================================================
+
+def test_e2e_g_overbill_flags_discrepancy_not_approved(db):
+    from app.constants import POStatus, VendorBillStatus
+    from app.models.purchase_order import PurchaseOrder, VendorBill
+    from app.services.po_service import POService
+
+    ven = _vendor(db)
+    prod = _product(db, qty_on_hand=0, cost=10.0)
+    po, line = _po_sent(db, ven, prod, qty=10, unit_cost=12.0)
+    db.commit()
+
+    svc = POService(db, _UID)
+    svc.create_receipt(vendor_id=ven.id, po_line_quantities={line.id: 10}, data={})
+    db.expire_all()
+
+    # Bill 12 against 10 received -> over-billed -> discrepancy, NOT auto-approved.
+    bill = svc.create_vendor_bill(
+        po_id=po.id, vendor_id=ven.id,
+        bill_number=f"BILL-E2E-{next(_counter)}",
+        bill_date=datetime.date.today(),
+        due_date=datetime.date.today() + datetime.timedelta(days=30),
+        lines=[{"po_line_id": line.id, "qty_billed": 12, "unit_cost": 12.0}],
+    )
+
+    db.expire_all()
+    bill_r = db.query(VendorBill).filter(VendorBill.id == bill.id).first()
+    assert bill_r.status == VendorBillStatus.DISCREPANCY, (
+        "billing more than received must flag DISCREPANCY, not auto-approve; "
+        f"got {bill_r.status}"
+    )
+    # A flagged bill must NOT advance the PO to BILLED.
+    po_r = db.query(PurchaseOrder).filter(PurchaseOrder.id == po.id).first()
+    assert po_r.status != POStatus.BILLED

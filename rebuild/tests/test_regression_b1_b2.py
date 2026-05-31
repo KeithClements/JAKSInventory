@@ -6,13 +6,15 @@ session. Each guard here would have failed *before* the owner ever saw the bug.
 
 WHY THESE THREE (owner mandate, 2026-05-30)
 -------------------------------------------
-1. test_so_product_search_returns_active_product
-   GET /sales-orders/_/product-search?q=<sku> must return >= 1 row for a seeded
-   ACTIVE product. The shipped bug filtered on a phantom column (Product.name /
-   Product.part_number -- neither exists on the model) and 500'd. A weaker
-   "does not 500" probe would *still pass* if the query silently returned zero
-   rows, so this asserts the seeded product actually appears in the rendered
-   dropdown -- and that an INACTIVE product is correctly hidden.
+1. test_so_product_search_returns_active_product / _excludes_inactive
+   GET /line-items/product-search?q=<token> -- the canonical line-item search
+   every §8H workspace now uses (the per-doc /sales-orders/_/product-search was
+   retired by the migration) -- must return a seeded ACTIVE product and must NOT
+   return an INACTIVE one. The shipped bug filtered on a phantom column
+   (Product.name / Product.part_number -- neither exists on the model) and 500'd.
+   A weaker "does not 500" probe would *still pass* if the query silently returned
+   zero rows, so this asserts the seeded product actually appears in the JSON
+   results -- and that the is_active filter hides the inactive one.
 
 2. test_receive_so_linked_po_writes_inventory_txn
    POST /purchase-orders/{id}/receive on a PO whose line is linked to an SO line
@@ -185,25 +187,27 @@ def client(seed):
 # ===========================================================================
 
 def test_so_product_search_returns_active_product(client, seed):
-    r = client.get(f"/sales-orders/_/product-search?q=REGR-ACTIVE")
-    assert r.status_code == 200, f"product-search -> {r.status_code}"
-    assert _ACTIVE_SKU in r.text, (
-        "seeded ACTIVE product is missing from the product-search results -- "
-        "the endpoint returned zero rows (a phantom-column filter would do this "
-        f"silently if it didn't 500 first):\n{r.text[:600]}"
+    # Repointed to the canonical line-item search (the per-doc SO endpoint was
+    # retired by the §8H migration). It returns JSON, not an HTML partial.
+    r = client.get(f"/line-items/product-search?q={_ACTIVE_SKU}")
+    assert r.status_code == 200, f"product-search -> {r.status_code}: {r.text[:300]}"
+    ids = [row["product_id"] for row in r.json()]
+    assert seed["active_product_id"] in ids, (
+        "seeded ACTIVE product is missing from the canonical product-search results "
+        "-- a phantom-column filter would do this silently if it didn't 500 first:\n"
+        f"{r.json()!r}"
     )
-    assert "No products found" not in r.text
 
 
 def test_so_product_search_excludes_inactive(client, seed):
     # q matches only the inactive SKU; the is_active filter must hide it entirely.
-    r = client.get(f"/sales-orders/_/product-search?q=REGR-INACTIVE")
-    assert r.status_code == 200, f"product-search -> {r.status_code}"
-    assert _INACTIVE_SKU not in r.text, (
-        "INACTIVE product leaked into product-search -- the is_active filter is "
-        "not being applied"
+    r = client.get(f"/line-items/product-search?q={_INACTIVE_SKU}")
+    assert r.status_code == 200, f"product-search -> {r.status_code}: {r.text[:300]}"
+    ids = [row["product_id"] for row in r.json()]
+    assert seed["inactive_product_id"] not in ids, (
+        "INACTIVE product leaked into the canonical product-search -- the is_active "
+        f"filter is not being applied:\n{r.json()!r}"
     )
-    assert "No products found" in r.text
 
 
 # ===========================================================================

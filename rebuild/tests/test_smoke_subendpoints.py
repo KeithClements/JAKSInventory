@@ -158,30 +158,22 @@ def _ok(resp, label: str) -> None:
 
 # ---------------------------------------------------------------------------
 # 1. Product-search HTMX endpoints
-#    The §8H line-adder migration retired the per-document search endpoints: every
-#    workspace's shared adder (line_items/_line_adder.html) now calls the canonical
-#    JSON endpoint GET /line-items/product-search (asserted in §1b below, and
-#    contract-locked in test_line_item_builder.py).
+#    The §8H line-adder migration retired ALL per-document search endpoints. Every
+#    consumer now calls the canonical JSON endpoint GET /line-items/product-search
+#    (asserted in §1b below, contract-locked in test_line_item_builder.py): the
+#    four workspaces, plus the products/detail.html picker (the last consumer,
+#    migrated @f549f87).
 #
-#    /quotes/product-search, /sales-orders/_/product-search and
-#    /invoices/_/product-search are now ORPHANED (no template calls them) and are
-#    slated for Backend deletion (Contract §4) — their smoke cases are dropped so
-#    the suite won't 404 post-cleanup.
+#    /quotes/product-search, /sales-orders/_/product-search,
+#    /invoices/_/product-search and /purchase-orders/_/product-search are now fully
+#    ORPHANED — their HTML result partials were deleted @f549f87, so the routes that
+#    still exist now 500 (TemplateNotFound). They are pending Backend route deletion
+#    (Contract §4), so their direct-GET smoke cases are dropped here.
 #
-#    /purchase-orders/_/product-search is RETAINED on purpose: products/detail.html
-#    (the PO-line product search widget, ~line 663) still drives this endpoint and
-#    has NOT migrated. Do NOT drop these cases or let Backend delete the route until
-#    that widget is moved to /line-items/product-search.
+#    NOTE: the B1/B2 dynamic route sweep will stay RED on /sales-orders/_/product-search
+#    and /purchase-orders/_/product-search until Backend deletes those routes — that
+#    red IS the gate demanding the deletion, not a smoke gap. Don't add the cases back.
 # ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("url,label", [
-    ("/purchase-orders/_/product-search",             "PO product-search empty"),
-    ("/purchase-orders/_/product-search?q=SMOKE",     "PO product-search match"),
-], ids=lambda x: x if x.startswith("/") else x.replace(" ", "_"))
-def test_product_search(client, ids, url, label):
-    """Legacy per-doc product-search must not 500. Only the PO endpoint remains —
-    still used by products/detail.html (see the §1 note above)."""
-    _ok(client.get(url), label)
 
 
 # ---------------------------------------------------------------------------
