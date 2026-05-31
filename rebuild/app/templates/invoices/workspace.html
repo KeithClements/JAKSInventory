@@ -411,131 +411,22 @@
   {# ════════════════════════════════════════════════════════════════════════
      LINE SEARCH (DRAFT only)
   ═══════════════════════════════════════════════════════════════════════════ #}
+  {# ── Shared one-click line-adder (Architect §8H) — sibling above #lines-and-totals
+     so an add (which swaps the section outerHTML) never destroys the search box. #}
   {% if editable %}
-  <div x-data="invoiceLineAdder({{ invoice.id }})"
-       @click.away="results = []"
-       @record-created.window="if ($event.detail.type === 'product') addCreatedProduct($event.detail)"
-       class="card">
-    <div class="card-body py-3">
-      <div class="flex gap-2 items-center">
-        <div class="relative flex-1">
-          <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
-               fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
-          </svg>
-          <input type="text"
-                 x-ref="searchInput"
-                 x-model="q"
-                 @input.debounce.250ms="doSearch()"
-                 @keydown.escape="results = []; q = ''"
-                 placeholder="Search parts — Part #, OEM #, description (or type free text for a misc line)"
-                 autocomplete="off"
-                 class="w-full pl-10 pr-32 py-2.5 text-sm border-2 border-gray-300 rounded-lg focus:border-brand-400 focus:outline-none bg-white"/>
-          <button type="button" @click="addMiscLine()"
-                  x-show="q.length > 0 && results.length === 0"
-                  class="absolute right-2 top-1/2 -translate-y-1/2 btn-primary btn-xs">
-            + Add as misc line
-          </button>
-        </div>
-        <button type="button"
-                hx-get="/products/quick-create-form"
-                hx-target="#create-slide-content"
-                hx-swap="innerHTML"
-                @click="$dispatch('open-create-slide', { title: 'New Product' })"
-                title="Create a new product and add it to this invoice"
-                class="shrink-0 px-3 py-2 text-xs font-medium text-brand-700 border border-brand-200
-                       rounded-lg bg-brand-50 hover:bg-brand-100 transition-colors whitespace-nowrap">
-          + New Product
-        </button>
-      </div>
-
-      {# Search results dropdown #}
-      <div x-show="results.length > 0" x-cloak
-           class="mt-1 border border-gray-200 rounded-lg bg-white shadow-lg max-h-80 overflow-y-auto">
-        <template x-for="p in results" :key="p.id">
-          <button type="button" @click="addProduct(p)"
-                  class="w-full text-left px-3 py-2 hover:bg-stone-100 border-b border-gray-100 last:border-b-0 flex items-center gap-3">
-            <div class="flex-1 min-w-0">
-              <p class="font-mono text-xs font-bold text-brand-700" x-text="p.sku"></p>
-              <p class="text-xs text-gray-500 truncate" x-text="p.title"></p>
-            </div>
-            <div class="text-right shrink-0 text-xs">
-              <p class="tabular-nums font-semibold text-gray-700">$<span x-text="p.price.toFixed(2)"></span></p>
-              <p class="text-gray-400">QOH: <span x-text="p.qoh" class="tabular-nums"></span></p>
-              <p x-show="p.has_core" class="text-amber-600 font-medium">+core $<span x-text="p.core.toFixed(2)" class="tabular-nums"></span></p>
-            </div>
-          </button>
-        </template>
-      </div>
-    </div>
-  </div>
-
-  <script>
-    function invoiceLineAdder(invoiceId) {
-      return {
-        q: '',
-        results: [],
-        async doSearch() {
-          if (this.q.length < 2) { this.results = []; return; }
-          const r = await fetch('/invoices/_/product-search?q=' + encodeURIComponent(this.q));
-          const html = await r.text();
-          // Parse the returned HTML to extract product data attributes
-          const tmp = document.createElement('div');
-          tmp.innerHTML = html;
-          this.results = Array.from(tmp.querySelectorAll('[data-product]')).map(el => ({
-            id: parseInt(el.dataset.id),
-            sku: el.dataset.sku,
-            title: el.dataset.title,
-            price: parseFloat(el.dataset.price),
-            qoh: parseInt(el.dataset.qoh),
-            cost: parseFloat(el.dataset.cost),
-            has_core: el.dataset.hasCore === '1',
-            core: parseFloat(el.dataset.core || '0'),
-          }));
-        },
-        async addProduct(p) {
-          const fd = new FormData();
-          fd.set('product_id', p.id);
-          fd.set('description', p.title || p.sku);
-          fd.set('qty', '1');
-          fd.set('unit_price', p.price.toFixed(2));
-          fd.set('unit_cost', p.cost.toFixed(2));
-          fd.set('line_type', 'product');
-          const r = await fetch(`/invoices/${invoiceId}/lines`, {method: 'POST', body: fd});
-          const html = await r.text();
-          document.getElementById('lines-and-totals').outerHTML = html;
-          this.q = ''; this.results = [];
-          this.$nextTick(() => this.$refs.searchInput.focus());
-        },
-        async addMiscLine() {
-          const fd = new FormData();
-          fd.set('description', this.q);
-          fd.set('qty', '1');
-          fd.set('unit_price', '0');
-          fd.set('line_type', 'misc');
-          const r = await fetch(`/invoices/${invoiceId}/lines`, {method: 'POST', body: fd});
-          const html = await r.text();
-          document.getElementById('lines-and-totals').outerHTML = html;
-          this.q = ''; this.results = [];
-        },
-        async addCreatedProduct(detail) {
-          // Triggered after the quick-create slide-over saves a new product.
-          // Add it to this invoice immediately at qty 1, suggested sell.
-          await this.addProduct({
-            id: detail.id,
-            sku: detail.part_number || '',
-            title: detail.description || '',
-            price: detail.suggested_sell != null ? detail.suggested_sell : 0,
-            cost: detail.current_cost != null ? detail.current_cost : 0,
-            qoh: 0,
-            has_core: false,
-            core: 0,
-          });
-        }
-      }
-    }
-  </script>
+  {% set la = {
+       'doc_type':      'invoice',
+       'doc_id':        invoice.id,
+       'search_url':    '/line-items/product-search',
+       'post_url':      '/invoices/' ~ invoice.id ~ '/lines',
+       'mode':          'sell',
+       'show_discount': true,
+       'target':        '#lines-and-totals',
+       'swap':          'outerHTML',
+       'child_mode':    false,
+       'new_product':   true,
+     } %}
+  {% include "line_items/_line_adder.html" %}
   {% endif %}
 
   {# ════════════════════════════════════════════════════════════════════════
