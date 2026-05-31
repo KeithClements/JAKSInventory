@@ -613,6 +613,7 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 | 2 | PO List | ✅ L2 complete | L1 → L2 | Governance pass done; overdue bug fixed |
 | 3 | Invoice List | ✅ L2 complete | L1 → L2 | Governance pass 2026-05-28. Red stripe for financial overdue — accepted + codified in §4. |
 | — | **Primitives extraction** | ✅ Complete (2026-05-29) | — | All 6 macros extracted + governance-approved. Products/PO/Invoice ported. See §7 as-built. |
+| — | **Line-item builder (§8H) — 4 workspaces** | ✅ **Governance PASS (2026-05-31)** | — | Shared `line_items/_line_adder.html` migrated to Quote/SO/Invoice/PO (`797a407`/`2d76b83`/`5bb0bc0`/`1fb562c`). Immediate-add (no staging), sibling-above placement, match-type/orange-core/red-at-0/cost-vs-sell-by-mode visual contract all verified **in-tree**. §7 3-screen gate MET (macro promotion optional). Full record + punch list in §8H. |
 | 4 | Customer List | ✅ L2 complete | L1.5 → L2 | Governance pass approved 2026-05-29. All §2 + §2B fields satisfied (Balance Due, Open Invoices/Quotes/SOs, Cores, Last Sale, Terms). M1/M2 cosmetic deferred. |
 | 5 | Quotes List | ⏳ **L2 — pending post-b514196 owner re-test** | L2 → L2 | **⚠️ The 2026-05-29 "FULL PASS" was recorded against a 500-ing build — the committed visual baseline `quotes_list@1280px.png` is an "Internal Server Error" screenshot (see §8G re-test gate). NOT re-affirmed until the owner re-tests a post-`b514196` pull + §9 passes.** Original record (unverified): all 11 §2 + §2B; AR chip `ar_map` bulk-computed (zero N+1); 5 non-blocking cosmetics in §8F. |
 | 6 | Sales Orders List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** Dock confirmed: import line 25, call line 346 (verified in committed code). All 11 §2 elements + §2B. `py-4` correct. Backend-contract guard accepted. |
@@ -620,7 +621,7 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 | 8 | Returns List | ⏳ **L2 — pending post-b514196 owner re-test** | L1 → L2 | **⚠️ The 2026-05-29 "FULL PASS" was recorded in the same 500-era build as Quotes (see §8G re-test gate); not re-affirmed until the owner re-tests a post-`b514196` pull + §9 passes.** Original record (unverified): all 11 §2 + §2B; real tab counts from router group_by (no stub guard); dock wired at line 339; stripe amber=received/blue=open/transparent=draft-closed. |
 | 9 | Payments List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS (re-pass).** Dock: import line 16, call line 314 (live, not commented). Method chips: Cash=green, Check=blue, Card=purple, ACH=blue, Wire=sky (§4-permitted; sky co-listed with blue). All §2 + §2B previously verified. |
 | 10 | Product Detail | ⏳ **HOLD — functional-test mode** | L1 → L2 | Section-based card layout. Do not start until hold lifted. |
-| 11 | PO Workspace | ⏳ **HOLD — functional-test mode** | L1 → L3 | Autosave, line editor, receive flow. Do not start until hold lifted. |
+| 11 | PO Workspace | ⏳ **HOLD — functional-test mode** | L1 → L3 | Autosave, line editor, receive flow. Do not start until hold lifted. **Line-adder swap (§8H) applied during hold — line-adder ONLY; full L3 build remains HELD pending owner.** |
 | 12 | Invoice Workspace | ✅ L3 complete | L3 candidate → L3 | Governance pass 2026-05-29. **PASS confirmed 2026-05-29** — window.confirm already cleared prior to pass. No blocking defects remain. A11y follow-up (role=dialog/aria-modal/focus-trap on payment/void/change-customer modals) tracked under §8 #4 a11y sweep — non-blocking for L3. |
 | 13 | PO Receiving Queue | ✅ QB2 complete | QB1 → QB2 | Queue Board archetype — §2A. Governance pass 2026-05-28. Official QB2 reference. |
 | 14 | PO Match Queue | ✅ QB2 complete | QB1 → QB2 | Queue Board archetype — §2A. Governance pass 2026-05-28. |
@@ -1073,6 +1074,17 @@ QBO, or PDF changes — all POST actions and field names preserved; the Receive 
 These patterns exist as near-identical copy-paste HTML across Products List and PO List. They should be extracted into Jinja2 macros when building the third list screen (Invoice List). Do not extract prematurely — the pattern needs two real implementations before the right abstraction is obvious.
 
 **Do not build these yet. Define them here so the extraction decision is intentional, not reactive.**
+
+**↪ Line-item builder primitive (§8H) — 3-SCREEN GATE MET (2026-05-31).** The shared
+`line_items/_line_adder.html` include now runs in **4** workspaces (Quote/SO/Invoice/PO) identically, so
+the §7 "3 real implementations" gate is satisfied. Promoting the include to a `macros/line_adder.html`
+macro is therefore **PERMITTED but optional** — the include is already single-source DRY. **5th-consumer
+ruling:** `products/detail.html:663` is a product *picker* (selects a SKU into a hidden field for a
+suggested-sell relationship), **not** a line-adder — when migrated off the now-dead PO search route it will
+consume the `/line-items/product-search` **JSON** endpoint via a small Alpine dropdown (**NOT** a naive
+`hx-get` repoint — that endpoint returns JSON, not an HTML partial), so it does **not** consume
+`_line_adder.html` and does **not** change the macro calculus. Promote only if a genuine 4th+ *line-adder*
+consumer or a config-signature need arises.
 
 #### Primitive 1 — `filter_tabs` macro
 **File:** `app/templates/macros/filter_tabs.html`
@@ -1567,7 +1579,7 @@ All four adders look identical; `mode`/`showDiscount` only toggle field visibili
 - Results dropdown: `bg-white border border-gray-200 rounded-xl shadow-lg`; rows `divide-y
   divide-gray-100`, hover `hover:bg-gray-50/80 transition-colors`, keyboard focus `focus:bg-brand-50/40
   ring-inset ring-1 ring-brand-300`.
-- `match_type` chip per result (existing chip tokens): part_number → gray, cross_ref → sky,
+- `match_type` chip per result (existing chip tokens): part_number → gray, cross_ref → blue (`badge-blue` — RULED, see §8H PASS),
   vendor_sku → purple, description → gray.
 - Core indicator (`has_core`) → **orange** (palette: orange = core charge). `qty_available` → red at 0
   (out-of-stock), gray otherwise. `last_sold` → gray metadata, `text-[11px]`.
@@ -1611,7 +1623,9 @@ shared `line_items/_line_adder.html` include; verified **in-tree**, not on repor
 
 *Non-blocking punch list (cosmetic — do NOT hold the migration):*
 1. `cross_ref` chip uses `badge-blue` not a literal "sky" token (`_line_adder.html:116`) — compliant
-   (blue/sky share the §4 informational bucket); reconcile §8H.4 wording to "blue/sky" or add `badge-sky`.
+   **RULED 2026-05-31 — `badge-blue` ACCEPTED.** No `badge-sky` token exists; blue/sky are one §4
+   informational bucket (cf. Payments "Wire=sky co-listed with blue"). §8H.4 wording updated "sky" →
+   `badge-blue`; **no `badge-sky` token will be added.** Item closed.
 2. Core chip uses inline `bg-orange-100 text-orange-700` (`_line_adder.html:140`) not a tokenized
    `badge-orange` — add the token to `class-tokens.md` if the core chip recurs.
 3. + New Product create→add-back: confirm in-browser the quick-create slide-over dispatches
