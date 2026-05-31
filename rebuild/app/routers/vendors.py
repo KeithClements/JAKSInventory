@@ -2,16 +2,17 @@
 
 import html
 import json
+from urllib.parse import quote as url_quote
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.constants import PaymentTerms, POStatus, VendorBillStatus, VendorCreditStatus
+from app.constants import PaymentTerms, POStatus, VendorBillStatus, VendorContactRole, VendorCreditStatus
 from app.deps import get_db
-from app.models.vendor import Vendor, VendorCredit
+from app.models.vendor import Vendor, VendorContact, VendorCredit
 from app.models.purchase_order import PurchaseOrder, VendorBill
 from app.models.product import ProductVendorSource
 
@@ -370,3 +371,151 @@ def vendor_reactivate(vendor_id: int, db: Session = Depends(get_db)):
         v.is_active = True
         db.commit()
     return RedirectResponse(f"/vendors/{vendor_id}", status_code=303)
+
+
+# ── Vendor Contacts (O4 — CRUD for the Contacts card on vendors/detail.html) ──
+# Contract: VENDOR_CONTACTS_CONTRACT.md.  The vendor detail route already passes
+# `vendor` (with `.contacts` and `.primary_contact`) to the template; these routes
+# mutate that collection and 303-redirect back to the detail page, so the UI lane
+# only needs <form> posts — Backend owns no contacts partial.
+
+def _normalize_contact_role(role: str) -> str:
+    return role if role in {r.value for r in VendorContactRole} else VendorContactRole.GENERAL
+
+
+def _clear_other_primary_contacts(db: Session, vendor_id: int, keep_id: int | None = None) -> None:
+    """Enforce at most one primary contact per vendor."""
+    q = db.query(VendorContact).filter(
+        VendorContact.vendor_id == vendor_id,
+        VendorContact.is_primary == True,  # noqa: E712
+    )
+    if keep_id is not None:
+        q = q.filter(VendorContact.id != keep_id)
+    for other in q.all():
+        other.is_primary = False
+
+
+@router.post("/{vendor_id}/contacts", response_class=RedirectResponse)
+def vendor_contact_create(
+    vendor_id: int,
+    name: str = Form(...),
+    role: str = Form(VendorContactRole.GENERAL),
+    phone: str = Form(""),
+    email: str = Form(""),
+    is_primary: bool = Form(False),
+    is_sales_contact: bool = Form(False),
+    is_warranty_contact: bool = Form(False),
+    is_returns_contact: bool = Form(False),
+    is_accounting_contact: bool = Form(False),
+    notes: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    """Add a contact.  The first contact (or is_primary=on) becomes primary."""
+    vendor = db.query(Vendor).filter(Vendor.id == vendor_id).first()
+    if vendor is None:
+        return RedirectResponse("/vendors/", status_code=303)
+
+    name = name.strip()
+    if not name:
+        return RedirectResponse(
+            f"/vendors/{vendor_id}?error={url_quote('Contact name is required.')}#contacts",
+            status_code=303,
+        )
+
+    active_count = (
+        db.query(VendorContact)
+        .filter(VendorContact.vendor_id == vendor_id, VendorContact.is_active == True)  # noqa: E712
+        .count()
+    )
+    make_primary = bool(is_primary) or active_count == 0
+    if make_primary:
+        _clear_other_primary_contacts(db, vendor_id)
+
+    db.add(VendorContact(
+        vendor_id=vendor_id,
+        name=name,
+        role=_normalize_contact_role(role),
+        phone=phone.strip() or None,
+        email=email.strip() or None,
+        is_primary=make_primary,
+        is_sales_contact=bool(is_sales_contact),
+        is_warranty_contact=bool(is_warranty_contact),
+        is_returns_contact=bool(is_returns_contact),
+        is_accounting_contact=bool(is_accounting_contact),
+        notes=notes.strip(),
+    ))
+    db.commit()
+    return RedirectResponse(f"/vendors/{vendor_id}?saved=1#contacts", status_code=303)
+
+
+@router.post("/{vendor_id}/contacts/{contact_id}", response_class=RedirectResponse)
+def vendor_contact_update(
+    vendor_id: int,
+    contact_id: int,
+    name: str = Form(...),
+    role: str = Form(VendorContactRole.GENERAL),
+    phone: str = Form(""),
+    email: str = Form(""),
+    is_sales_contact: bool = Form(False),
+    is_warranty_contact: bool = Form(False),
+    is_returns_contact: bool = Form(False),
+    is_accounting_contact: bool = Form(False),
+    notes: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    """Edit a contact's fields.  Primary status is managed via /make-primary, not here."""
+    contact = (
+        db.query(VendorContact)
+        .filter(VendorContact.id == contact_id, VendorContact.vendor_id == vendor_id)
+        .first()
+    )
+    if contact is None:
+        return RedirectResponse(f"/vendors/{vendor_id}", status_code=303)
+
+    name = name.strip()
+    if name:
+        contact.name = name
+    contact.role = _normalize_contact_role(role)
+    contact.phone = phone.strip() or None
+    contact.email = email.strip() or None
+    contact.is_sales_contact = bool(is_sales_contact)
+    contact.is_warranty_contact = bool(is_warranty_contact)
+    contact.is_returns_contact = bool(is_returns_contact)
+    contact.is_accounting_contact = bool(is_accounting_contact)
+    contact.notes = notes.strip()
+    db.commit()
+    return RedirectResponse(f"/vendors/{vendor_id}?saved=1#contacts", status_code=303)
+
+
+@router.post("/{vendor_id}/contacts/{contact_id}/make-primary", response_class=RedirectResponse)
+def vendor_contact_make_primary(vendor_id: int, contact_id: int, db: Session = Depends(get_db)):
+    """Mark one contact primary; clears the flag on every other contact for this vendor."""
+    contact = (
+        db.query(VendorContact)
+        .filter(VendorContact.id == contact_id, VendorContact.vendor_id == vendor_id)
+        .first()
+    )
+    if contact is None:
+        return RedirectResponse(f"/vendors/{vendor_id}", status_code=303)
+    _clear_other_primary_contacts(db, vendor_id, keep_id=contact.id)
+    contact.is_primary = True
+    contact.is_active = True
+    db.commit()
+    return RedirectResponse(f"/vendors/{vendor_id}?saved=1#contacts", status_code=303)
+
+
+@router.post("/{vendor_id}/contacts/{contact_id}/delete", response_class=RedirectResponse)
+def vendor_contact_delete(vendor_id: int, contact_id: int, db: Session = Depends(get_db)):
+    """Soft-delete a contact (is_active=False).  If it was primary, the vendor is left
+    without a primary until another is promoted via /make-primary."""
+    contact = (
+        db.query(VendorContact)
+        .filter(VendorContact.id == contact_id, VendorContact.vendor_id == vendor_id)
+        .first()
+    )
+    if contact is None:
+        return RedirectResponse(f"/vendors/{vendor_id}", status_code=303)
+    contact.is_active = False
+    contact.is_primary = False
+    db.commit()
+    return RedirectResponse(f"/vendors/{vendor_id}?saved=1#contacts", status_code=303)
