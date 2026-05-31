@@ -15,12 +15,14 @@
 {% endif %}
 
 <form method="post" action="/products/new" class="max-w-3xl space-y-6"
+      data-sku="{{ (form_data.sku if form_data else '') | e }}"
       x-data="{
-        sku: {{ (form_data.sku if form_data else '') | tojson }},
+        sku: '',
         skuTouched: false,
         get skuValid() { return this.sku.trim().length > 0; },
         categoryAddOpen: false,
       }"
+      x-init="sku = $el.dataset.sku"
       @submit="if (!skuValid) { $event.preventDefault(); skuTouched = true; }">
 
   <!-- Identity -->
