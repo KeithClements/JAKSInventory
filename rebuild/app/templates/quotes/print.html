@@ -271,6 +271,19 @@
     {% endif %}
   </div>
 
+  {# ── Engine / Reference ──────────────────────────────────────────────────── #}
+  {% if quote.esn or quote.engine_manufacturer or quote.engine_model or quote.customer_po_number or quote.customer_job_number %}
+  <div class="bill-section">
+    <div class="bill-label">Engine / Reference</div>
+    <div class="bill-detail">
+      {% if quote.esn %}<strong>ESN:</strong> {{ quote.esn }}<br>{% endif %}
+      {% if quote.engine_manufacturer or quote.engine_model %}<strong>Engine:</strong> {{ quote.engine_manufacturer }} {{ quote.engine_model }}<br>{% endif %}
+      {% if quote.customer_po_number %}<strong>Customer PO:</strong> {{ quote.customer_po_number }}<br>{% endif %}
+      {% if quote.customer_job_number %}<strong>Job #:</strong> {{ quote.customer_job_number }}{% endif %}
+    </div>
+  </div>
+  {% endif %}
+
   {# ── Main line items ─────────────────────────────────────────────────────── #}
   <table class="lines">
     <thead>
