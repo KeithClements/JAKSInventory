@@ -1188,6 +1188,31 @@ These were inferred or set as defaults — flag if any are wrong:
 
 ---
 
+## Phase 1A Owner Decisions — Locked 2026-05-30
+
+Keith froze these (full record in `MASTER_PLAN.md` §5, items O1–O9). They **authorize new
+Phase-1A backend work that overrides the 2026-05-29 support-mode "no new work" freeze for these
+items only:**
+
+- **O2 — Minimal 2-user login + audit attribution.** Two users (Keith, wife). The actor on every
+  audit/financial write is the signed-in user (Architecture Rule #4). Supersedes the placeholder
+  password hash at `app/main.py:92`. Keep it minimal — local single box, not a public auth system.
+- **O3 — Automatic SQLite backup + tested restore** before 1A go-live. Timestamped copies of
+  `data/jaks.db` (scheduled and/or on startup) + a documented, tested restore path. This is the
+  point at which jaks.db stops being disposable.
+- **O4 — Multiple vendor contacts.** Use the existing `vendor_contacts` table; expose CRUD +
+  `is_primary`. Backend owns routes/model; UI-Builder owns the Contacts card template.
+- **O5 — Markup rules in Settings.** Replace the hardcoded 30% fallback (`product.py:202`,
+  `selling_price`) with a settings-driven default markup %; per-category override preferred.
+- **O6 — Card surcharge model.** Per-customer default surcharge % (new column on customers),
+  overridable per invoice/payment at entry. Replaces the one-way 3% toggle.
+
+QBO (the old **Phase M**) is now formally **Phase 1B** — unchanged gating, just renamed; do not
+start until 1A is stable and signed off. **O7 (core-slip popup) and O8 (receiving-slip print) are
+deferred/optional for 1A — do not build them now.**
+
+---
+
 *This document is the source of truth for backend work during Keith's UI build.*
 *Update it as decisions are refined or scope changes.*
 *Match work to the priority phase before starting — do not skip ahead.*

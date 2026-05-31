@@ -120,6 +120,24 @@ Lock triggers (first one wins):
 2. Pushed to QBO (`qbo_sync_status = 'synced'`)
 3. Fully paid
 
+### Owner Decisions — Locked 2026-05-30 (Phase 1A scope)
+
+*Frozen by Keith. These govern current work; lanes build to them. Several **authorize new
+Phase-1A backend work that overrides the 2026-05-29 "backend support-mode / no new work" freeze
+for these items only.***
+
+| # | Decision | Locked answer | Touches |
+|---|---|---|---|
+| O1 | **Phase split** | **Phase 1A = full operational ERP WITHOUT QBO** (the go-live target). **Phase 1B = QBO** (OAuth + push; the old "Backend Phase M"). QBO is **not** a 1A go-live blocker. | Plan / all |
+| O2 | **Auth** | Add **minimal 2-user login** (Keith + wife). Every financial/audit event is **attributed to the signed-in user** (satisfies Architecture Rule #4). Replaces the placeholder at `main.py:92`. **In 1A scope.** | Backend |
+| O3 | **Data safety** | **Automatic `data/jaks.db` backup + a tested restore** must exist **before 1A go-live.** This is the cutover that ends jaks.db's "disposable" status once real data is loaded. | Backend |
+| O4 | **Vendor contacts** | **Support multiple contacts per vendor** (`vendor_contacts` table already exists). Vendor detail gets a Contacts card: list + add/edit/delete + mark primary. | Backend + UI-Builder |
+| O5 | **Markup** | **Move markup rules into Settings** — out of the hardcoded 30% fallback (`product.py:202`). Min: a global default markup %; per-category override preferred. | Backend + Settings UI |
+| O6 | **Card surcharge** | **Per-customer default surcharge %, overridable per invoice** at entry. Replaces the one-way 3% toggle (owner-test 1.9.e). | Backend + UI |
+| O7 | **Core-slip popup** | **Deferred to Phase 2.** The auto-trigger "print core return slip" popup at invoice finalize (TODO in `invoices.py`) is **not** 1A. Manual core-slip/VCR printing stays available. | — (deferred) |
+| O8 | **Receiving-slip print** | **Optional for Phase 1A** — the `/receiving-slip` print route (currently a disabled placeholder) is nice-to-have, **not** a 1A go-live blocker. | — (optional) |
+| O9 | **QA actions** | QA **verifies** the partial quote-line research-status UI (§9.3) and **triages the 2 cores edge-case bugs** from `9d0ced2` into 1A-fix vs deferred. | QA → Backend |
+
 ---
 
 ## 6. Schema — Tables Built ✅
@@ -361,10 +379,15 @@ Research status on quote lines, quote pop-out window, quote duplication, custome
 
 ---
 
-## 11. Go-Live Checklist (Phase 1 Complete)
+## 11. Go-Live Checklist (Phase 1A Complete — operational ERP, no QBO)
+
+> **Phase split locked 2026-05-30 (§5 O1):** This gates **Phase 1A** go-live (operational ERP
+> *without* QBO). **Phase 1B = QBO** OAuth + push — see the 1B line below; QBO is **not** a 1A blocker.
 
 Keith signs off when ALL of these work in real daily use (not test data):
 
+- [ ] **Minimal 2-user login works; every invoice / payment / adjustment is attributed to the signed-in user** *(O2)*
+- [ ] **Automatic `data/jaks.db` backup runs on schedule; a restore has been tested from a backup** *(O3)*
 - [ ] Enter new vendor + product in under 3 minutes (including enrichment)
 - [ ] Create PO, receive it partially, inventory updates correctly
 - [ ] Build a quote in 45 seconds on a live phone call
@@ -375,7 +398,7 @@ Keith signs off when ALL of these work in real daily use (not test data):
 - [ ] Core return shipment document prints with RMA and tracking
 - [ ] Warranty claim moves through all states; account credit issued on approval
 - [ ] Return authorization generates; credit applied to customer balance
-- [ ] Wife pushes invoices, payments, vendor bills to QBO with one click
+- [ ] *(Phase 1B — not a 1A go-live blocker)* Wife pushes invoices, payments, vendor bills to QBO with one click
 - [ ] Dashboard shows: open SOs, follow-up quotes today, overdue invoices, outstanding cores
 - [ ] No data integrity issues in 2 weeks of real daily use
 - [ ] Wife has no open bookkeeping accuracy questions
