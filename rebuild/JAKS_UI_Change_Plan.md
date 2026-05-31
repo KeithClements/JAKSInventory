@@ -251,6 +251,8 @@ These elements apply to both archetypes:
 
 **When building Warranty, Cores, or Returns queues:** copy `receiving_queue.html` structure. Adapt the state_meta mapping, group-by key, and metrics cards. Keep everything else identical.
 
+**Inline-action-form variant — ratified 2026-05-31 via Cores #16 (`cores/list.html` @c6468af).** When a queue's items have **no per-item workspace** to link to, the always-visible action (§2A.6) may **expand a stage-specific inline `<form>` row** instead of linking out. Implement with **ONE board-level `x-data`** (e.g. `{ openId, … }`) on the wrapper `<div>` and `x-show="openId === {{ id }}"` on the form `<tr>`s — the form rows **must be descendants** of that div. **Do NOT** put `x-data` on a main `<tr>` and `x-show` on a *sibling* `<tr>`: Alpine scopes don't bridge siblings, so the toggle silently fails. `cores/list.html` is the reference for this variant; the group-by key may be a **lifecycle stage** (not just vendor).
+
 #### Queue Board Maturity Levels
 
 | Level | Name | What it means |
@@ -627,7 +629,7 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 | 13 | PO Receiving Queue | ✅ QB2 complete | QB1 → QB2 | Queue Board archetype — §2A. Governance pass 2026-05-28. Official QB2 reference. |
 | 14 | PO Match Queue | ✅ QB2 complete | QB1 → QB2 | Queue Board archetype — §2A. Governance pass 2026-05-28. |
 | 15 | Warranty Queue | ✅ **QB2 — Governance PASS 2026-05-31** | QB1 → QB2 | **PASS @e93cef9** — verified faithful copy of the ratified `receiving_queue.html`: metrics card-grid (Drafts/Awaiting Vendor/To Credit/To Notify), vendor group dividers, always-visible inline next-action+open+print, `border-l-4` on first `<td>`, `divide-y`, **no `tbl-*`**. Stripe/chip palette §4-consistent (purple=awaiting-vendor, green=approved/credited, amber=notified, red=denied, gray=draft). **1 required cosmetic (non-blocking):** `JAKS Ext` type chip uses orange (`list.html:156`) — §4 reserves orange for **core charges**; recolor to neutral gray/slate, and move the `Vendor` type chip off purple (collides with the 'Awaiting Vendor' status purple on the same row) — **fix before Cores Queue #16 ships.** Filename `list.html` kept (rename to `queue.html` declined — needless churn). UI Builder A owns. |
-| 16 | Cores Queue | ⏳ Pending | QB1 → QB2 | Queue Board archetype. Copy `receiving_queue.html`. UI Builder A owns. |
+| 16 | Cores Queue | ✅ **QB2 — Governance PASS 2026-05-31** | QB1 → QB2 | **PASS @c6468af** — owner-ruled variant: ONE **stage-grouped** board (Awaiting Return → Pending Inspection → Ready to Ship → Awaiting Vendor) that **keeps inline action forms** (cores have no per-item workspace to link to). All §2A QB2 elements present: metrics card-grid (4 stages + overdue sub-count), colspan-td stage dividers, `border-l-4` on first `<td>` (red override for overdue), always-visible primary buttons expanding inline forms, status chips, `divide-y`, **no `tbl-*`**. Orange at `list.html:176` is the **legitimate** §4 core-charge (`customer_unit_charge`) — correctly NOT punished. Alpine expandable rows verified: ONE board-level `x-data`, form `<tr>`s as descendants (fixes the old sibling-scope toggle bug). **No punch items.** UI Builder A owns. |
 | 17 | Returns Queue | ⏳ Pending | QB1 → QB2 | Queue Board archetype (or L2 list if returns are browsed not worked). Confirm with builder. |
 
 **Constraint:** Do not redesign every screen differently. Do not create new modal, table, or badge patterns without updating this plan. Use shared UI primitives wherever possible:
