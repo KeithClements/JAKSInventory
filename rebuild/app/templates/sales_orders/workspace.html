@@ -334,6 +334,25 @@
   </div>{# /so-header-strip #}
 
 
+  {# ── Shared one-click line-adder (Architect §8H). Placed as a sibling ABOVE
+     #so-lines-section: an add swaps the section's outerHTML, so keeping the adder
+     outside it preserves the search box (and focus) across rapid multi-add. #}
+  {% if editable %}
+  {% set la = {
+       'doc_type':      'sales_order',
+       'doc_id':        so.id,
+       'search_url':    '/line-items/product-search',
+       'post_url':      '/sales-orders/' ~ so.id ~ '/lines',
+       'mode':          'sell',
+       'show_discount': true,
+       'target':        '#so-lines-section',
+       'swap':          'outerHTML',
+       'child_mode':    false,
+       'new_product':   true,
+     } %}
+  {% include "line_items/_line_adder.html" %}
+  {% endif %}
+
   {# ══════════════════════════════════════════════════════════════════════════
      LINE ITEMS + FULFILL — HTMX-swappable section
   ════════════════════════════════════════════════════════════════════════════ #}
