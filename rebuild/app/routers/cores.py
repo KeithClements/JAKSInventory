@@ -46,7 +46,7 @@ templates = Jinja2Templates(
 # ── List ──────────────────────────────────────────────────────────────────────
 
 @router.get("/", response_class=HTMLResponse)
-def cores_list(request: Request, db: Session = Depends(get_db)):
+def cores_list(request: Request, q: str = "", db: Session = Depends(get_db)):
     # Customer cores awaiting return (OPEN or PARTIAL)
     awaiting_return = (
         db.query(CoreCharge)
@@ -92,14 +92,48 @@ def cores_list(request: Request, db: Session = Depends(get_db)):
         .all()
     )
 
+    # ── Assemble the QB2 board: one row per open core, tagged with its stage ──
+    # (Queue-route assembly is UI-builder scope per the §6 queue-board precedent.)
+    def _match(c):
+        if not q:
+            return True
+        ql = q.lower()
+        cust = (c.customer.company_name if c.customer else "") or ""
+        sku = (c.product.sku if c.product else "") or ""
+        return ql in cust.lower() or ql in sku.lower()
+
+    rows = []
+    for stage, items in (
+        ("awaiting_return", awaiting_return),
+        ("pending_inspection", pending_inspection),
+        ("ready_to_ship", pending_vendor_ship),
+        ("awaiting_vendor", awaiting_vendor),
+    ):
+        for c in items:
+            if _match(c):
+                rows.append({
+                    "core": c,
+                    "stage": stage,
+                    "overdue": stage == "awaiting_return" and bool(getattr(c, "is_overdue", False)),
+                })
+
+    # Metrics count the FULL stage lists (real DB state), independent of the search filter.
+    metrics = {
+        "awaiting_return":    len(awaiting_return),
+        "overdue":            sum(1 for c in awaiting_return if getattr(c, "is_overdue", False)),
+        "pending_inspection": len(pending_inspection),
+        "ready_to_ship":      len(pending_vendor_ship),
+        "awaiting_vendor":    len(awaiting_vendor),
+    }
+
     return templates.TemplateResponse(
         request,
         "cores/list.html",
         {
-            "awaiting_return": awaiting_return,
-            "pending_inspection": pending_inspection,
-            "pending_vendor_ship": pending_vendor_ship,
-            "awaiting_vendor": awaiting_vendor,
+            "rows": rows,
+            "metrics": metrics,
+            "total": len(rows),
+            "q": q,
             "CoreDenialResolution": CoreDenialResolution,
             "CoreInspectionOutcome": CoreInspectionOutcome,
         },
