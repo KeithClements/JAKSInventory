@@ -72,7 +72,6 @@ SCREENS: list[ScreenVariant] = [
     ScreenVariant("dashboard",              "/"),
     ScreenVariant("products_new",           "/products/new"),
     ScreenVariant("customers_new",          "/customers/new"),
-    ScreenVariant("purchase_orders_new",    "/purchase-orders/new"),
     ScreenVariant("quotes_new",             "/quotes/new"),
     ScreenVariant("invoices_new",           "/invoices/new"),
 ]

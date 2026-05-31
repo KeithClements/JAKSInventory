@@ -163,3 +163,100 @@ def test_get_current_user_id_reads_session_cookie(client_db):
 
     token = make_session_token(uid)
     assert get_current_user_id(_fake_request({SESSION_COOKIE: token})) == uid
+
+
+# ── end-to-end: the signed-in user is the actor on a FINANCIAL write ───────────
+#    THE last-1A-gate proof: login → get_current_user_id(cookie) → the payments
+#    route's PaymentService.record_payment → audit() stamps the real actor. The
+#    seam tests above prove the dependency reads the cookie; these prove it flows
+#    all the way onto a money write's audit row.
+
+def test_signed_in_user_is_actor_on_payment(client_db):
+    from app.constants import AuditAction, EntityType, PaymentMethod, UserRole
+    from app.models.audit import AuditLog
+    from app.models.customer import Customer
+
+    client, SessionLocal = client_db
+
+    # A distinct, fully-permissioned user (id != seeded admin #1) + a customer.
+    db = SessionLocal()
+    try:
+        cashier = User(name="Cashier", username="cashier", is_active=True,
+                       password_hash=hash_password("pw"), role=UserRole.ADMIN)
+        db.add(cashier)
+        cust = Customer(company_name="Attribution Co", contact_name="QA",
+                        email="attr@test.local")
+        db.add(cust)
+        db.commit()
+        cashier_id, customer_id = cashier.id, cust.id
+    finally:
+        db.close()
+    assert cashier_id != DEFAULT_USER_ID, "test is meaningless if cashier == default actor"
+
+    # Log in — the session cookie now rides on every subsequent client request.
+    r = client.post("/login", data={"username": "cashier", "password": "pw"},
+                    follow_redirects=False)
+    assert r.status_code == 303 and SESSION_COOKIE in r.cookies
+
+    # Record a payment (a financial write) through the route while signed in.
+    r = client.post("/payments/new", data={
+        "customer_id": str(customer_id),
+        "amount": "50.00",
+        "method": PaymentMethod.CASH.value,
+    }, follow_redirects=False)
+    assert r.status_code in (200, 303), r.text[:300]
+
+    # The payment's audit row must name the signed-in cashier as the actor.
+    db = SessionLocal()
+    try:
+        row = (db.query(AuditLog)
+               .filter(AuditLog.entity_type == EntityType.PAYMENT,
+                       AuditLog.action == AuditAction.PAYMENT_APPLIED)
+               .order_by(AuditLog.id.desc()).first())
+        assert row is not None, "no PAYMENT_APPLIED audit row was written"
+        assert row.user_id == cashier_id, (
+            f"financial write attributed to user {row.user_id}; expected the "
+            f"signed-in cashier {cashier_id} (DEFAULT_USER_ID is {DEFAULT_USER_ID})"
+        )
+    finally:
+        db.close()
+
+
+def test_unauthenticated_financial_write_falls_back_to_default_actor(client_db):
+    """Counter-case: with NO session cookie the same write attributes to
+    DEFAULT_USER_ID — proving the cashier attribution above is session-driven,
+    not incidental."""
+    from app.constants import AuditAction, EntityType, PaymentMethod
+    from app.models.audit import AuditLog
+    from app.models.customer import Customer
+
+    client, SessionLocal = client_db
+    db = SessionLocal()
+    try:
+        cust = Customer(company_name="Anon Co", contact_name="QA", email="anon@test.local")
+        db.add(cust); db.commit()
+        customer_id = cust.id
+    finally:
+        db.close()
+
+    # No /login: the request carries no session cookie.
+    r = client.post("/payments/new", data={
+        "customer_id": str(customer_id),
+        "amount": "25.00",
+        "method": PaymentMethod.CASH.value,
+    }, follow_redirects=False)
+    assert r.status_code in (200, 303), r.text[:300]
+
+    db = SessionLocal()
+    try:
+        row = (db.query(AuditLog)
+               .filter(AuditLog.entity_type == EntityType.PAYMENT,
+                       AuditLog.action == AuditAction.PAYMENT_APPLIED)
+               .order_by(AuditLog.id.desc()).first())
+        assert row is not None
+        assert row.user_id == DEFAULT_USER_ID, (
+            f"unauthenticated write attributed to {row.user_id}, expected "
+            f"DEFAULT_USER_ID {DEFAULT_USER_ID}"
+        )
+    finally:
+        db.close()
