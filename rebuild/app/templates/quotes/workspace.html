@@ -159,174 +159,22 @@
 
 {# ── Add-line search (above the table, always visible) ────────────────────── #}
 {% if quote.status in (QuoteStatus.DRAFT, QuoteStatus.SENT) %}
-<div x-data="lineAdder({{ quote.id }}, {{ quote.discount_pct }})"
-     @start-child-add.window="setChildMode($event.detail)"
-     @record-created.window="
-       if ($event.detail.type === 'product') {
-         selectProduct({
-           product_id: $event.detail.id,
-           part_number: $event.detail.part_number,
-           description: $event.detail.description,
-           current_cost: $event.detail.current_cost,
-           suggested_sell: $event.detail.suggested_sell
-         });
-       }
-     "
-     class="bg-white rounded-xl border border-gray-200 shadow-sm mb-3 px-3 py-3">
-
-  {# Child-mode banner #}
-  <div x-show="childMode" x-cloak
-       class="flex items-center gap-2 mb-2 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700">
-    <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 9l3 3-3 3M6 12h10"/>
-    </svg>
-    <span>Adding <span class="font-semibold" x-text="childModeLabel"></span> to line <span class="font-mono" x-text="'#' + parentLineId"></span></span>
-    <button type="button" @click="clearChildMode()" class="ml-auto text-amber-400 hover:text-amber-600">✕</button>
-  </div>
-
-  {# Row 1: Full-width part search (prominent, like Design B) #}
-  <div class="relative mb-2" @click.away="results = []">
-    <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
-         fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-            d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
-    </svg>
-    <input
-      type="text"
-      id="line-search-input"
-      x-ref="searchInput"
-      x-model="q"
-      @input.debounce.250ms="doSearch()"
-      @keydown.escape="results = []; q = ''; selectedProduct = null"
-      @keydown.arrow-down.prevent="focusResult(0)"
-      placeholder="Search parts: Part#, OEM#, cross-ref, description — or type free text to add a misc line"
-      autocomplete="off"
-      class="w-full pl-10 pr-20 py-2.5 text-sm border-2 border-gray-300 rounded-lg
-             focus:border-brand-400 focus:outline-none focus:ring-0 bg-white font-medium"
-    />
-    {# Spinner + keyboard hint #}
-    <div class="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
-      <div x-show="loading" class="pointer-events-none">
-        <svg class="w-3.5 h-3.5 animate-spin text-gray-400" fill="none" viewBox="0 0 24 24">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-        </svg>
-      </div>
-      <span x-show="!loading" class="text-xs text-gray-400 font-mono pointer-events-none">/</span>
-    </div>
-    {# Results dropdown #}
-    <div x-show="results.length > 0" x-cloak
-         class="absolute left-0 top-full z-40 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl
-                max-h-60 overflow-y-auto w-full">
-      <template x-for="(r, idx) in results" :key="r.product_id">
-        <button
-          type="button"
-          :id="'result-' + idx"
-          @click="selectProduct(r)"
-          @keydown.enter.prevent="selectProduct(r)"
-          @keydown.arrow-down.prevent="focusResult(idx + 1)"
-          @keydown.arrow-up.prevent="idx > 0 ? focusResult(idx - 1) : $refs.searchInput.focus()"
-          class="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-blue-50
-                 transition-colors focus:bg-blue-50 focus:outline-none border-b border-gray-50 last:border-0">
-          <span class="font-mono text-xs font-bold text-blue-700 w-24 shrink-0 truncate" x-text="r.part_number"></span>
-          <span class="flex-1 text-sm text-gray-800 truncate" x-text="r.description"></span>
-          <span class="text-xs shrink-0 tabular-nums font-medium"
-                :class="r.qty_on_hand <= 0 ? 'text-red-500' : 'text-gray-400'"
-                x-text="r.qty_on_hand <= 0 ? 'Out' : r.qty_on_hand + ' ea'"></span>
-          <span class="text-xs text-gray-500 shrink-0 tabular-nums" x-text="'$' + r.suggested_sell.toFixed(2)"></span>
-          <span x-show="r.last_sold_price"
-                class="text-xs text-brand-400 shrink-0 tabular-nums"
-                x-text="r.last_sold_price ? 'Last $' + r.last_sold_price.toFixed(2) : ''"></span>
-        </button>
-      </template>
-    </div>
-  </div>
-
-  {# Row 2: Selected indicator (left) + controls (right) #}
-  <div class="flex items-center gap-2">
-
-    {# Selected product indicator — shrinks when space is tight #}
-    <p x-show="selectedProduct" x-cloak
-       class="min-w-0 text-xs text-green-600 flex items-center gap-1 truncate mr-auto">
-      <svg class="w-3 h-3 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
-      </svg>
-      <span class="truncate" x-text="selectedProduct ? selectedProduct.description : ''"></span>
-    </p>
-
-    {# Qty #}
-    <div class="flex items-center gap-1 shrink-0">
-      <label class="text-xs text-gray-500 font-medium">Qty</label>
-      <input
-        type="number"
-        x-ref="qtyInput"
-        x-model.number="qty"
-        min="1"
-        @keydown.enter.prevent="$refs.priceInput.select()"
-        class="w-14 text-right border border-gray-300 rounded-lg px-2 py-1.5 text-sm
-               focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400"
-      />
-    </div>
-
-    {# Price #}
-    <div class="flex items-center gap-1 shrink-0">
-      <label class="text-xs text-gray-500 font-medium">$</label>
-      <input
-        type="number"
-        x-ref="priceInput"
-        x-model.number="unitPrice"
-        step="0.01"
-        min="0"
-        @keydown.enter.prevent="$refs.discInput.select()"
-        class="w-24 text-right border border-gray-300 rounded-lg px-2 py-1.5 text-sm
-               focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400"
-      />
-    </div>
-
-    {# Discount % #}
-    <div class="flex items-center gap-1 shrink-0">
-      <label class="text-xs text-gray-500 font-medium">Disc&nbsp;%</label>
-      <input
-        type="number"
-        x-ref="discInput"
-        x-model.number="discountPct"
-        step="0.5"
-        min="0"
-        max="100"
-        @keydown.enter.prevent="addLine()"
-        class="w-14 text-right border border-gray-300 rounded-lg px-2 py-1.5 text-sm
-               focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400"
-      />
-    </div>
-
-    {# New Product shortcut — opens quick-create slide-over #}
-    <button
-      type="button"
-      hx-get="/products/quick-create-form"
-      hx-target="#create-slide-content"
-      hx-swap="innerHTML"
-      @click="$dispatch('open-create-slide', { title: 'New Product' })"
-      class="px-3 py-1.5 text-xs font-medium text-brand-700 border border-brand-200
-             rounded-lg bg-brand-50 hover:bg-brand-100 transition-colors shrink-0"
-      title="Create a new product record and auto-select it"
-    >
-      + New Product
-    </button>
-
-    {# Add button #}
-    <button
-      type="button"
-      @click="addLine()"
-      :disabled="!selectedProduct && q.trim().length < 2"
-      class="px-4 py-1.5 bg-brand-700 text-white text-sm font-medium rounded-lg
-             hover:bg-brand-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
-    >
-      + Add Line
-    </button>
-
-  </div>{# /controls row #}
-</div>
-{% endif %}{# /add-line card #}
+{# Shared one-click line-item builder (Architect §8H) — sell mode, inline
+   per-line discount, child-mode sub-lines. Click a result → immediate add. #}
+{% set la = {
+     'doc_type':      'quote',
+     'doc_id':        quote.id,
+     'search_url':    '/line-items/product-search',
+     'post_url':      '/quotes/' ~ quote.id ~ '/lines',
+     'mode':          'sell',
+     'show_discount': true,
+     'target':        '#quote-lines-tbody',
+     'swap':          'beforeend',
+     'child_mode':    true,
+     'new_product':   true,
+   } %}
+{% include "line_items/_line_adder.html" %}
+{% endif %}
 
 {# ── Line items ───────────────────────────────────────────────────────────── #}
 <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden mb-0">
@@ -376,127 +224,8 @@
 {# ── Follow-Up Bar ────────────────────────────────────────────────────────── #}
 {% include "quotes/_follow_up_bar.html" %}
 
-{# ── JS: Alpine lineAdder component + htmx:afterRequest → totals refresh ─── #}
+{# ── JS: header autosave + line-row keyboard nav + totals refresh. The line-adder Alpine component lives in the shared line_items/_line_adder.html ─── #}
 <script>
-function lineAdder(quoteId, defaultDisc) {
-  return {
-    q: '',
-    results: [],
-    loading: false,
-    selectedProduct: null,
-    qty: 1,
-    unitPrice: 0.00,
-    unitCost: 0.00,
-    discountPct: defaultDisc,
-
-    // ── Child-mode state ──────────────────────────────────────────────────
-    childMode: false,       // true when adding a child to a specific parent
-    parentLineId: null,     // which parent
-    childLineRole: 'primary', // 'upgrade_option' | 'optional' | 'warranty' | 'suggested'
-    childModeLabel: '',     // human label for the banner
-
-    setChildMode(detail) {
-      this.childMode = true;
-      this.parentLineId = detail.parentLineId;
-      this.childLineRole = detail.lineRole || 'upgrade_option';
-      this.childModeLabel = detail.label || 'child line';
-      this.$nextTick(() => {
-        this.$refs.searchInput.focus();
-        this.$refs.searchInput.select();
-      });
-    },
-
-    clearChildMode() {
-      this.childMode = false;
-      this.parentLineId = null;
-      this.childLineRole = 'primary';
-      this.childModeLabel = '';
-    },
-
-    async doSearch() {
-      if (this.q.trim().length < 2) {
-        this.results = [];
-        return;
-      }
-      this.loading = true;
-      try {
-        const resp = await fetch('/quotes/product-search?q=' + encodeURIComponent(this.q.trim()));
-        this.results = await resp.json();
-      } finally {
-        this.loading = false;
-      }
-    },
-
-    focusResult(idx) {
-      const el = document.getElementById('result-' + idx);
-      if (el) el.focus();
-    },
-
-    selectProduct(r) {
-      this.selectedProduct = r;
-      this.q = r.part_number;
-      this.unitCost = r.current_cost;
-      this.unitPrice = r.suggested_sell;
-      this.results = [];
-      this.$nextTick(() => {
-        this.$refs.qtyInput.focus();
-        this.$refs.qtyInput.select();
-      });
-    },
-
-    addLine() {
-      const desc = (this.selectedProduct ? this.selectedProduct.description : '') || this.q.trim();
-      if (!desc) return;
-
-      // Remove empty-state row if present
-      const emptyRow = document.getElementById('empty-state-row');
-      if (emptyRow) emptyRow.remove();
-
-      const values = {
-        description: desc,
-        qty: this.qty,
-        unit_price: this.unitPrice,
-        unit_cost: this.unitCost,
-        discount_pct: this.discountPct,
-        line_type: this.selectedProduct ? 'product' : 'misc',
-        line_role: this.childMode ? this.childLineRole : 'primary',
-      };
-      if (this.selectedProduct) {
-        values.product_id = this.selectedProduct.product_id;
-      }
-
-      if (this.childMode && this.parentLineId) {
-        // Insert child line immediately before the parent's chips row
-        values.parent_line_id = this.parentLineId;
-        htmx.ajax('POST', '/quotes/' + quoteId + '/lines', {
-          values: values,
-          target: '#chips-' + this.parentLineId,
-          swap: 'beforebegin',
-        });
-      } else {
-        // Normal top-level line: append to tbody
-        htmx.ajax('POST', '/quotes/' + quoteId + '/lines', {
-          values: values,
-          target: '#quote-lines-tbody',
-          swap: 'beforeend',
-        });
-      }
-
-      this.reset();
-    },
-
-    reset() {
-      this.q = '';
-      this.results = [];
-      this.selectedProduct = null;
-      this.qty = 1;
-      this.unitPrice = 0;
-      this.unitCost = 0;
-      this.clearChildMode();
-      this.$nextTick(() => this.$refs.searchInput.focus());
-    },
-  };
-}
 
 // ── Autosave: debounced header field save ──────────────────────────────────
 (function () {
