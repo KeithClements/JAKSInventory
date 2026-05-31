@@ -49,33 +49,86 @@ templates = Jinja2Templates(
 @router.get("/", response_class=HTMLResponse)
 def warranty_list(
     request: Request,
-    status: str = "",
     q: str = "",
     db: Session = Depends(get_db),
 ):
-    from sqlalchemy import or_
-    query = db.query(WarrantyClaim).join(Customer)
-    if status:
-        query = query.filter(WarrantyClaim.status == status)
-    else:
-        # Default: hide closed claims
-        query = query.filter(WarrantyClaim.status != WarrantyStatus.CLOSED)
+    """
+    Warranty Queue — QB2 Queue Board (§2A): active claims grouped by vendor, with a
+    metrics strip and a per-state stripe/chip + next-action link into the claim.
+    Closed claims are excluded — this is a work queue, not an archive.  Queue-route
+    assembly is UI-builder scope per the §6 queue-board precedent (cf. po_receiving_queue).
+    """
+    from datetime import datetime
+
+    # status → queue-state slug (drives stripe / chip / next-action in the template)
+    _state_of = {
+        WarrantyStatus.DRAFT:               "draft",
+        WarrantyStatus.SUBMITTED_TO_VENDOR: "submitted",
+        WarrantyStatus.VENDOR_APPROVED:     "approved",
+        WarrantyStatus.VENDOR_DENIED:       "denied",
+        WarrantyStatus.CUSTOMER_CREDITED:   "credited",
+        WarrantyStatus.CUSTOMER_NOTIFIED:   "notified",
+    }
+    NO_VENDOR = "— No Vendor Assigned —"
+    STALE_DAYS = 14  # awaiting a vendor decision longer than this flags red
+
+    # All open (non-closed) claims drive the metrics; the visible rows may be search-filtered.
+    active = (
+        db.query(WarrantyClaim)
+        .join(Customer)
+        .filter(WarrantyClaim.status != WarrantyStatus.CLOSED)
+        .order_by(WarrantyClaim.claim_date.desc())
+        .all()
+    )
+
+    claims = active
     if q:
-        query = query.filter(
-            or_(
-                WarrantyClaim.claim_number.ilike(f"%{q}%"),
-                Customer.company_name.ilike(f"%{q}%"),
-            )
-        )
-    claims = query.order_by(WarrantyClaim.claim_date.desc()).limit(200).all()
+        ql = q.lower()
+        claims = [
+            c for c in active
+            if ql in (c.claim_number or "").lower()
+            or ql in (c.customer.company_name or "").lower()
+        ]
+
+    now = datetime.now()
+    rows = []
+    for c in claims:
+        wait_days = None
+        stale = False
+        if c.status == WarrantyStatus.SUBMITTED_TO_VENDOR and c.submitted_to_vendor_at:
+            wait_days = (now - c.submitted_to_vendor_at).days
+            stale = wait_days >= STALE_DAYS
+        rows.append({
+            "claim": c,
+            "vendor_name": c.vendor.name if c.vendor else NO_VENDOR,
+            "state": _state_of.get(c.status, "draft"),
+            "wait_days": wait_days,
+            "stale": stale,
+        })
+
+    # Group by vendor — real vendors first (alpha), "no vendor" last; newest first within.
+    rows.sort(key=lambda r: (
+        r["vendor_name"] == NO_VENDOR,
+        r["vendor_name"],
+        -(r["claim"].claim_date.timestamp() if r["claim"].claim_date else 0.0),
+    ))
+
+    metrics = {
+        "drafts":          sum(1 for c in active if c.status == WarrantyStatus.DRAFT),
+        "awaiting_vendor": sum(1 for c in active if c.status == WarrantyStatus.SUBMITTED_TO_VENDOR),
+        "to_credit":       sum(1 for c in active if c.status == WarrantyStatus.VENDOR_APPROVED),
+        "to_notify":       sum(1 for c in active if c.status == WarrantyStatus.VENDOR_DENIED),
+    }
+
     return templates.TemplateResponse(
         request,
         "warranty/list.html",
         {
-            "claims": claims,
-            "status_filter": status,
+            "rows": rows,
+            "metrics": metrics,
+            "total": len(rows),
             "q": q,
-            "WarrantyStatus": WarrantyStatus,
+            "now": now,
         },
     )
 
