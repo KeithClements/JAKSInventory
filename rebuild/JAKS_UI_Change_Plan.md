@@ -1511,13 +1511,86 @@ pre-work that will apply when these screens resume.
    Root cause is a hidden two-step "staging" flow: clicking a search result only stages the part
    (`selectProduct()`), and **+ Add Line** sits greyed-out/`disabled` until then, so it reads as
    broken. **Left as-is pending Architect decision** between one-click-add vs. a prominent-staged-
-   button + "↵ Enter to add" hint. Still an open discoverability gap.
+   button + "↵ Enter to add" hint. **RULED 2026-05-31 (§8H): one-click immediate-add adopted** (ratifies Contract §3.2); the staging step is
+retired. This discoverability gap is **closed by design — pending UI-Builder implementation** of the
+generalized shared line-adder.
 2. *Account link lost work* — the Account / customer-name / "← All quotes" links navigated away
    in-tab, discarding staged (uncommitted) search input. Now `target="_blank" rel="noopener"`.
 3. *No visible Save* — the grey **Save** button was **redundant** (its `POST /quotes/{id}` updates
    the same 4 fields as the 2.5s autosave). Removed it, added `onsubmit="return false"` to block
    accidental Enter-submit, and made the autosave indicator always-visible ("✓ Saved automatically").
 This is a targeted fix, **not** the full cross-workspace header standard — §8B proper is still open.
+
+#### 8H. Line-Item Builder — Shared-Primitive Governance Ruling (Architect, 2026-05-31)
+
+Backend shipped the data contract (`LINE_ITEM_BUILDER_CONTRACT.md`: one `GET /line-items/product-search`
++ one unified add-line POST per doc). This ruling sets the **UI** pattern **before** UI-Builder
+generalizes the quote `lineAdder` into a shared component — per Contract §4 ("Style passes are the
+Architect lane's call") and the standing rule that design deviations are the Architect's call.
+
+**1. Interaction model — RULED: one-click immediate add-on-select.** Ratifies Contract §3.2.
+Click a result → immediately `POST {product_id, qty}` (qty from a small stepper, default 1) → swap the
+returned partial → reset the search box. This **retires the 2-step staging flow** (`selectProduct()` →
+disabled **+ Add Line**) currently in `quotes/workspace.html:435-478`, and **resolves the §8G #1 "can't
+add a part" discoverability gap** (the greyed-out + Add Line button that read as broken) **by design**.
+Reversibility requirement: one-click inline line-delete must stay (an accidental add is trivially undone).
+Fallback if accidental-adds surface in test: Enter-to-add on the keyboard-highlighted result — **not** a
+return to the disabled staging button.
+
+**2. Where it lives — RULED: ONE shared `{% include %}` partial now, NOT a `macros/` macro yet.**
+Governance §7 forbids macro extraction until **three** screens use the pattern identically (premature
+abstraction = wrong interface). Today only Quote has a proven adder; SO/Invoice/PO diverge (Contract §2:
+different qty/money fields, returned partials, status guards; PO is cost-only + core). A frozen macro
+signature now would be premature.
+- **Location:** new shared `app/templates/line_items/_line_adder.html` (+ co-located JS), namespaced to
+  the backend `/line-items` route prefix. Each workspace `{% include %}`s it with a per-doc config (below)
+  — single source of truth (satisfies Contract §4) **without** a frozen macro interface.
+- **Promotion gate:** convert include → `app/templates/macros/line_adder.html` **only after 3 of the 4
+  workspaces run it identically** (the §7 three-screen gate). PO is the expected permanent config-variant
+  (cost-mode + core), so Quote/SO/Invoice are the three that will prove the interface.
+
+**3. Config surface — RATIFIED (Contract §3).** The include's **only** divergence surface; everything
+visual stays identical across all four:
+
+    { docType, searchUrl:"/line-items/product-search", postUrl:"/<doc>/{id}/lines",
+      mode:"sell"|"cost", showDiscount:bool, target:"<lines region>", swap:"beforeend"|...,
+      childMode:{parentLineId,lineRole}|null  /* Quote only */ }
+
+Extraction map from `quotes/workspace.html`: hardcoded `/quotes/product-search` (L423) → `searchUrl`;
+`/quotes/{id}/lines` (L471) → `postUrl`; the child-vs-top-level target/swap branch (L468-478) →
+`target`/`swap` + `childMode`. Keep the legacy result aliases (`part_number`/`current_cost`/
+`suggested_sell`/`description`) working at first; prefer canonical (`sku`/`title`/`unit_cost`) in new code.
+
+**4. Visual contract — SET (Architect's call). Existing tokens only — no new colors/classes.**
+All four adders look identical; `mode`/`showDiscount` only toggle field visibility.
+- Search input: icon-prefixed (list-search convention), `rounded-xl border-gray-200`.
+- Results dropdown: `bg-white border border-gray-200 rounded-xl shadow-lg`; rows `divide-y
+  divide-gray-100`, hover `hover:bg-gray-50/80 transition-colors`, keyboard focus `focus:bg-brand-50/40
+  ring-inset ring-1 ring-brand-300`.
+- `match_type` chip per result (existing chip tokens): part_number → gray, cross_ref → sky,
+  vendor_sku → purple, description → gray.
+- Core indicator (`has_core`) → **orange** (palette: orange = core charge). `qty_available` → red at 0
+  (out-of-stock), gray otherwise. `last_sold` → gray metadata, `text-[11px]`.
+- Qty stepper: small inline numeric, default 1.
+This dropdown is a **new workspace visual primitive — defined here = approved**; UI-Builder copies it
+verbatim, no improvisation. It is independent of **§8B** (workspace-header standard, still OPEN); §8B,
+when it lands, governs the header above the adder, not the adder itself.
+
+**5. Rollout — incremental, core-money-path first (NOT big-bang).** The Contract keeps the old per-doc
+endpoints alive for one-at-a-time migration. Order anchored to the Re-sequencing Rule:
+1. Extract the include from Quote's working `lineAdder` (Quote → immediate-add; closes §8G #1).
+2. Wire **SO** — clears Re-sequence **P0** "Can't add parts to Sales Order."
+3. Wire **Invoice** — clears Re-sequence **P0** "Can't add parts to Invoice."
+4. **§7 gate** → promote include to `macros/line_adder.html`.
+5. Wire **PO** (cost-mode + core) last (P1).
+Each step deletes that screen's old search partial + endpoint per Contract §4, and verifies line-add
+(plus, for SO/Invoice, the core money path) before moving to the next.
+
+**Lane ownership:** the data contract is Backend's (`LINE_ITEM_BUILDER_CONTRACT.md`); this UI pattern +
+visual contract is the Architect's, recorded here. UI-Builder implements per the §6 rollout; QA gates
+each screen's line-add against the functional suite.
+
+---
 
 #### 8C. Customer Profile UX Fixes — IMPLEMENTED (UI Builder, 2026-05-29)
 
