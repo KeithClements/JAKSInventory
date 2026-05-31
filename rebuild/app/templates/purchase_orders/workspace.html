@@ -235,6 +235,25 @@
     </form>
   </div>
 
+  {# ── Shared one-click line-adder (Architect §8H, cost+core variant). Sibling
+     ABOVE #po-lines-section so an add (section outerHTML swap) keeps the search
+     box. §8H rollout step 5 — surgical line-adder swap; does NOT lift the #11 hold. #}
+  {% if editable %}
+  {% set la = {
+       'doc_type':      'purchase_order',
+       'doc_id':        po.id,
+       'search_url':    '/line-items/product-search',
+       'post_url':      '/purchase-orders/' ~ po.id ~ '/lines',
+       'mode':          'cost',
+       'show_discount': false,
+       'target':        '#po-lines-section',
+       'swap':          'outerHTML',
+       'child_mode':    false,
+       'new_product':   true,
+     } %}
+  {% include "line_items/_line_adder.html" %}
+  {% endif %}
+
   {# ── Lines section ── #}
   {% include "purchase_orders/_lines_section.html" %}
 
