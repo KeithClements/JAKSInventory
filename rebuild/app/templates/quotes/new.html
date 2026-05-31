@@ -5,11 +5,14 @@
 {% block content %}
 <div class="max-w-lg mx-auto">
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden"
+       data-cust-id="{{ selected_customer_id or '' }}"
+       data-cust-name="{{ selected_customer.company_name | default('', true) | e }}"
        x-data="{
          customerId: '',
          displayName: '',
          hasCustomers: {{ 'true' if customers else 'false' }}
        }"
+       x-init="customerId = $el.dataset.custId; displayName = $el.dataset.custName"
        @customer-selected.window="customerId = String($event.detail.id); displayName = $event.detail.name"
        @record-created.window="
          if ($event.detail.type === 'customer') {
