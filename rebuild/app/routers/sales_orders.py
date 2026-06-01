@@ -21,6 +21,7 @@ Workspace pattern:
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -221,11 +222,14 @@ async def so_workspace(
     request: Request,
     db: Session = Depends(get_db),
 ):
+    from app.services.document_links import related_documents
     so = _get_so_or_404(db, so_id)
+    ctx = _workspace_ctx(request, so)
+    ctx["linked_documents"] = related_documents(db, so)
     return templates.TemplateResponse(
         request,
         "sales_orders/workspace.html",
-        _workspace_ctx(request, so),
+        ctx,
     )
 
 
@@ -367,6 +371,36 @@ async def so_delete_line(
     )
 
 
+@router.post("/{so_id}/lines/{line_id}/create-po", response_class=HTMLResponse)
+async def so_create_po_for_line(
+    so_id: int,
+    line_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Order a backordered line on a new draft PO, then send the user to that PO.
+
+    On success returns HX-Redirect so the htmx button navigates the whole page to
+    the new PO (review → send). On failure re-renders the lines section with the
+    error banner so the reason (e.g. no preferred vendor) is visible in place.
+    """
+    try:
+        po = SalesOrderService(db, user_id).create_po_for_line(so_id, line_id)
+    except ValueError as exc:
+        db.rollback()
+        so = _get_so_or_404(db, so_id)
+        ctx = _workspace_ctx(request, so)
+        ctx["order_error"] = str(exc)
+        return templates.TemplateResponse(
+            request, "sales_orders/_lines_section.html", ctx
+        )
+
+    resp = HTMLResponse("")
+    resp.headers["HX-Redirect"] = f"/purchase-orders/{po.id}"
+    return resp
+
+
 # ── Product search ───────────────────────────────────────────────────────────
 # The per-doc /sales-orders/_/product-search HTML endpoint was removed after the
 # §8H migration (its partial sales_orders/_product_search_results.html is gone).
@@ -387,7 +421,11 @@ async def fulfill_and_invoice(
     Form fields: line_qty_{line_id} = qty_to_ship for each line.
     Redirects to the new invoice on success.
     """
+    _t0 = time.perf_counter()
+
     form = await request.form()
+    _t_form = time.perf_counter()
+
     line_quantities: dict[int, int] = {}
     for key, value in form.items():
         if key.startswith("line_qty_") and value:
@@ -414,7 +452,19 @@ async def fulfill_and_invoice(
             status_code=303,
         )
 
-    return RedirectResponse(f"/invoices/{invoice.id}?ok=Created+from+SO+{so_id}", status_code=303)
+    _t_svc = time.perf_counter()
+    _form_ms = (_t_form - _t0) * 1000
+    _svc_ms  = (_t_svc - _t_form) * 1000
+    _total_ms = (_t_svc - _t0) * 1000
+    log.info(
+        "TIMING fulfill_and_invoice so=%s  total=%.1fms  form=%.1fms  svc=%.1fms",
+        so_id, _total_ms, _form_ms, _svc_ms,
+    )
+    resp = RedirectResponse(f"/invoices/{invoice.id}?ok=Created+from+SO+{so_id}", status_code=303)
+    resp.headers["Server-Timing"] = (
+        f"form;dur={_form_ms:.1f},svc;dur={_svc_ms:.1f},total;dur={_total_ms:.1f}"
+    )
+    return resp
 
 
 # ── Hold / Release ────────────────────────────────────────────────────────────

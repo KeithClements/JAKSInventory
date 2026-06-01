@@ -2,6 +2,7 @@
 
 import logging
 import re
+import time
 from datetime import datetime
 from urllib.parse import quote as url_quote
 
@@ -344,14 +345,29 @@ def po_match_queue(request: Request, db: Session = Depends(get_db)):
 # ── New PO picker (slide-over) ─────────────────────────────────────────────
 
 @router.get("/new", response_class=HTMLResponse)
-def po_new(request: Request, db: Session = Depends(get_db)):
+def po_new(
+    request: Request,
+    db: Session = Depends(get_db),
+    product_id: int | None = None,
+    vendor_id: int | None = None,
+):
     if not request.headers.get("HX-Request"):
         return RedirectResponse("/purchase-orders/", status_code=303)
-    vendors = db.query(Vendor).filter(Vendor.is_active == True).order_by(Vendor.name).all()
+    vendors = db.query(Vendor).filter(Vendor.is_active == True).order_by(Vendor.name).all()  # noqa: E712
+    # When launched from a product ("New PO" in the product preview dock) seed the
+    # part being ordered and pre-select its preferred vendor.
+    product = (
+        db.query(Product).filter(Product.id == product_id).first() if product_id else None
+    )
     return templates.TemplateResponse(
         request,
         "purchase_orders/_new_picker.html",
-        {"vendors": vendors, "POStatus": POStatus},
+        {
+            "vendors": vendors,
+            "POStatus": POStatus,
+            "product": product,
+            "preselect_vendor_id": vendor_id,
+        },
     )
 
 
@@ -381,6 +397,16 @@ async def po_create(request: Request, db: Session = Depends(get_db), user_id: in
 
     po = svc.create_po(vendor_id=int(form["vendor_id"]), data=po_data)
 
+    # Seed the selected part as the first line when launched from a product
+    # ("New PO" in the product preview dock). add_line backfills the unit cost
+    # (from this vendor's source), description, and core charge from the product.
+    seed_pid = str(form.get("product_id", "")).strip()
+    if seed_pid.isdigit():
+        try:
+            svc.add_line(po_id=po.id, product_id=int(seed_pid), data={"qty_ordered": 1})
+        except ValueError as exc:
+            log.warning("New-PO product seed failed (po=%s, product=%s): %s", po.id, seed_pid, exc)
+
     if status_override == POStatus.VERBAL_ORDER:
         po.status = POStatus.VERBAL_ORDER
         db.commit()
@@ -400,7 +426,9 @@ def po_workspace(po_id: int, request: Request, db: Session = Depends(get_db)):
     )
     if not po:
         return RedirectResponse("/purchase-orders/", status_code=303)
+    from app.services.document_links import related_documents
     ctx = _workspace_ctx(po)
+    ctx["linked_documents"] = related_documents(db, po)
     return templates.TemplateResponse(request, "purchase_orders/workspace.html", ctx)
 
 
@@ -554,6 +582,8 @@ def po_send(po_id: int, db: Session = Depends(get_db), user_id: int = Depends(ge
 
 @router.post("/{po_id}/receive", response_class=RedirectResponse)
 async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    _t0 = time.perf_counter()
+
     po = db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()
     if not po:
         return RedirectResponse("/purchase-orders/", status_code=303)
@@ -566,6 +596,8 @@ async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)
         )
 
     form = await request.form()
+    _t_form = time.perf_counter()
+
     po_line_quantities: dict[int, int] = {}
     condition_notes_map: dict[int, str] = {}
     for line in po.lines:
@@ -606,7 +638,19 @@ async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)
                 status_code=303,
             )
 
-    return RedirectResponse(f"/purchase-orders/{po_id}?ok=received", status_code=303)
+    _t_svc = time.perf_counter()
+    _form_ms  = (_t_form - _t0) * 1000
+    _svc_ms   = (_t_svc - _t_form) * 1000
+    _total_ms = (_t_svc - _t0) * 1000
+    log.info(
+        "TIMING po_receive po=%s  total=%.1fms  form=%.1fms  svc=%.1fms",
+        po_id, _total_ms, _form_ms, _svc_ms,
+    )
+    resp = RedirectResponse(f"/purchase-orders/{po_id}?ok=received", status_code=303)
+    resp.headers["Server-Timing"] = (
+        f"form;dur={_form_ms:.1f},svc;dur={_svc_ms:.1f},total;dur={_total_ms:.1f}"
+    )
+    return resp
 
 
 @router.post("/{po_id}/cancel-status", response_class=RedirectResponse)
