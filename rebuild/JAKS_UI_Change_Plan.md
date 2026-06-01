@@ -169,6 +169,17 @@ Every major list screen must include these elements:
 10. **Empty state** — centered card with icon, distinguishes: no records yet (CTA to create) vs no filter match (CTA to clear filter) vs no search match (CTA to clear search)
 11. **Preview dock** — fixed bottom panel (`fixed bottom-0 left-64`) loaded via `htmx.ajax()` on row click, shows key fields in 3-4 columns, includes action buttons, dismisses on X or second row click
 
+**Optional — Sort control (Builder-introduced 2026-06-01, pending Architect ratification):** lists that
+need user-controlled ordering add a compact sort dropdown to the toolbar, right-aligned alongside the
+search — a `<form method="get">` carrying hidden `tab`/`q`, a `<select name="sort"
+onchange="this.form.submit()">` styled like the search field, and a `Sort by` label. The route reads
+`sort` (default = the list's natural key) and normalizes unknown values back to the default; the search
+form and Clear link must carry `sort` so it survives a search. Products list (`sku` / `vendor` /
+`category`) is the reference. **Ordering that depends on a self-referential hierarchy (category
+`full_path` = Major Group → Category → Sub-category) or a relationship's display name (preferred
+vendor) is computed in Python after `.all()` with the relevant `joinedload`s — not raw SQL — with
+no-value rows sorted last and the natural key as the tiebreaker.**
+
 ---
 
 ### 2A. Queue Board Standard
@@ -430,6 +441,17 @@ These rules apply to every screen in the app. Do not deviate without updating th
 - Entire row click = open preview dock (not navigate — **Operational List only**; Queue Boards use inline actions instead)
 - Ctrl+click or action button = navigate to detail page
 - Checkbox click must `@click.stop` to prevent row click
+
+**Action buttons inside injected content (preview dock, htmx fragments):**
+- A button rendered inside content loaded via `htmx.ajax()` (e.g. the preview dock partial) that needs
+  to open a slide-over must trigger the load with an **explicit `htmx.ajax('GET', url,
+  {target:'#create-slide-content', swap:'innerHTML'})` from `@click`**. Declarative `hx-get`/`hx-target`
+  are **not** reliably wired on htmx-injected descendants, so a declarative button silently no-ops — the
+  slide-over opens but stays on the loading skeleton. Alpine `@click` itself *does* run on injected
+  content, so combine `@click` (open the slide + fire `htmx.ajax`) and stash the URL in a `data-` attribute
+  read via `$el.dataset` to keep quoting sane. Reference: products `_preview_panel.html` "New PO" (2026-06-01).
+- A plain `<a href="/…/new?…">` to a GET route that gates on the `HX-Request` header will redirect to that
+  resource's list for a normal click — never use one for an action meant to open a slide-over.
 
 **Overlays (Esc to close):**
 - Slide-over panel: backdrop `z-40`, panel `z-50`
@@ -1789,6 +1811,82 @@ colors/classes** — type stays informational/neutral, outcome carries green/amb
 
 **This replaces** the old "Call Log" tab and the `/customers/{id}/communications` page (Contract §4). Ratified
 **before** the build — UI-Builder copies this; no improvisation.
+
+---
+
+#### 8K. Linked-Documents Strip — New UI Primitive (workspace cross-doc nav) — BUILT 2026-06-01
+
+A compact **"Linked"** chip strip rendered at the top of every Line-Item Workspace (Quote / SO / Invoice /
+PO), directly under the §8B action bar. It surfaces the document graph — source quote, sales order, related
+invoices, the PO sourcing a backorder — as clickable, status-toned chips so a user hops between linked
+records without leaving the workspace. Owner-requested 2026-06-01 ("link these together… the PO should show
+it's linked up; bills / invoices / quotes linked").
+
+**Why a primitive (not per-screen):** the same need recurred on all four workspaces, and three prior one-off
+treatments already existed (SO "Source Quote" field, SO "Related Invoices" card, Invoice "Sales Order" row).
+The strip unifies them. The legacy field/card were left in place (additive); the strip is the glance layer.
+
+- **Resolver (single source of truth):** `app/services/document_links.py` →
+  `related_documents(db, entity) -> list[DocLink]`. Reads only relationships/columns that already exist —
+  **no new schema**. The one link never stored on the PO side (PO → the SO it sources) is recovered by
+  walking `SOLine.linked_po_line_id` backwards. `DocLink` carries `(relation, kind, number, url, tone,
+  status_label, group)`; the resolver returns a coarse semantic **tone**, never CSS — colour stays in the
+  template per §5.
+- **Macro:** `app/templates/macros/linked_docs.html` → `linked_strip(links)`. Chip uses the §5 format
+  (`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold` + dot). The tone→class map
+  lives in the macro (one place → identical on every workspace). **All colours are §4-permitted families**
+  (gray/blue/amber/green/red) — no new colour. Renders nothing when `links` is empty.
+- **Wiring:** each workspace route sets `ctx["linked_documents"] = related_documents(db, entity)`; each
+  `workspace.html` calls `{{ linked_strip(linked_documents|default([])) }}` at the top of `content`.
+- **Tests:** `tests/test_document_links.py` (every direction + the PO→SO reverse + re-order-after-cancel).
+
+**Companion (SO line lifecycle).** The backordered-line chip in `sales_orders/_lines_section.html` now tracks
+the sourcing PO's progress — Backorder → **Ordering** (draft PO) → **On order · ETA** (sent) → **Receiving**
+(partial) → **Ready** (reserved_stock) — and falls back to **Backorder + Re-order** if that PO is cancelled.
+Owner ruling 2026-06-01: a line reads "On order" only once the PO is actually **sent** (a draft still reads
+"Ordering"). `SalesOrderService.create_po_for_line` now treats a cancelled linked PO as re-orderable (drops
+the stale link) so Re-order doesn't hit the "already linked" guard.
+
+**Status:** BUILT 2026-06-01 (owner-directed). **Pending Architect governance sign-off** — this is a genuinely
+new primitive (a clickable navigation chip, distinct from the read-only §5 `status_chip` span). If ratified,
+add to the §7 primitives list.
+
+---
+
+#### 8L. After-Sale Service Section — start cores / warranty / RA from an invoice — BUILT 2026-06-01
+
+Owner-requested 2026-06-01 ("start the core return process from the invoice screen as well start a warranty or
+return from this screen"). The natural counterpart to §8K: where the Linked strip *navigates* to documents
+already tied to the invoice, this *creates* the downstream service documents from it.
+
+A new **"After-Sale Service" card** renders on the Invoice workspace for **finalized** invoices
+(OPEN / PARTIAL / PAID; hidden on DRAFT/VOID), placed after the Payments panel. Two parts:
+- **Core Returns** — one row per open `CoreCharge` on this invoice (resolved in `invoices.py`
+  `_workspace_context` by joining `CoreCharge.invoice_line_id → InvoiceLine.invoice_id`), each with the inline
+  qty/inspection/condition form copied from `cores/list.html` (the `awaiting_return` block) posting to the
+  unchanged `POST /cores/{id}/return`. Copied, not extracted — §7 needs 3 identical users (this is the 2nd).
+- **Warranty & Returns** — two buttons that open the existing global create slide-over (`createSlideOpen` /
+  `#create-slide-content` in base.html) loading `/warranty/new?invoice_id=` and `/returns/new?invoice_id=`.
+
+The picker GET routes now seed from the invoice: customer pre-selected, invoice number carried (warranty got a
+hidden field — it had none before, so the POST's invoice link was previously unreachable from the UI), and the
+invoice's PRODUCT lines pre-loaded as editable lines (seeded via a `<script type="application/json">` block +
+`x-init` JSON.parse — never tojson-in-attribute, per the product-new footgun). Seeded products are unioned into
+the `<select>` options so an inactive part still resolves. The create/money paths
+(`WarrantyService.create_claim`, `RAService.create_ra`, `CoreService.record_customer_return`) are **unchanged** —
+the POST handlers already accepted `invoice_number` + line arrays.
+
+- **Files:** `app/routers/invoices.py` (`_workspace_context` → `invoice_cores`), `app/routers/warranty.py` +
+  `app/routers/returns.py` (GET `…/new` invoice seeding), `app/templates/invoices/workspace.html` (the card),
+  `app/templates/warranty/_new_picker.html` + `app/templates/returns/_new_picker.html` (seed + invoice field).
+- **Tests:** `tests/test_invoice_after_sale_actions.py` (9 — GET seeding, `invoice_cores` join, card visibility
+  by status, POST invoice-link).
+- **Governance:** composes existing primitives only — no new CSS class, no new colour (orange = core is
+  §4-permitted). The `bg-orange-50/30` opacity variant was added → `npm run build:css` re-run.
+
+**Status:** BUILT 2026-06-01 (owner-directed). **Pending Architect governance sign-off** — new workspace section
+composing existing primitives; confirm the placement and the copied cores form (vs. extraction once a 3rd user
+appears).
 
 ---
 
