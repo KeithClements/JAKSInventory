@@ -219,17 +219,54 @@ All 13 services in `/app/services/`:
 >   tests (`9d0ced2`), all passing.
 > - **O3** automatic SQLite backup/restore shipped (`619a156`). Warranty Queue **#15** QB2 shipped (`e93cef9`).
 >
-> **Remaining for Phase-1A go-live (none are spine blockers):**
-> - **(a) Cores money bug** — `test_cores_lifecycle.py` xfails: **BUG-4 `issue_core_credit` double-credit
->   (financial-integrity bug)** + BUG-2 vendor-accept-without-location `IntegrityError` → Backend fix.
-> - **(b) O2** minimal 2-user login + audit attribution — last new go-live gate (`main.py:92` placeholder).
-> - **(c) O3 restore acceptance test** (QA) — closes the §11 backup gate.
-> - **(d)** old `…/_/product-search` route cleanup — gated (5th consumer `products/detail.html:663`;
->   `products.py:99-102` is the LIST filter, **keep**).
-> - **(e)** O4 vendor contacts · O5 markup→settings · O6 surcharge; Cores Queue **#16** / Returns Queue **#17**.
+> **Remaining for Phase-1A go-live — RECONCILED 2026-05-31 (PM, external-review ground-truth).**
+> Most of the earlier (a)–(e) list has since LANDED. Verified this pass against code + targeted tests:
+> - ~~(a) Cores BUG-2/BUG-4~~ ✅ **DONE** `e119c19` — `tests/test_cores_lifecycle.py` 16 green
+>   (`credit_issued_at` idempotency stamp + skip location-movement when `location_id is None`).
+> - ~~(c) O3 restore acceptance~~ ✅ **DONE** — `tests/test_backup_restore.py` green (`619a156`).
+> - ~~(d) `…/_/product-search` route cleanup~~ ✅ **DONE** `331a872` (4 endpoints deleted, 224 routes).
+> - ~~(e) O4 vendor contacts~~ ✅ `c17f2b6` · ~~O5 markup→settings~~ ✅ `7f69572`. Search dash/case
+>   normalization ✅ live + tested (`normalize_part`, `tests/test_line_item_builder.py` 16 green).
 >
-> The 31 failing `test_visual_regression` cases are **cosmetic / known-unstable** (mutable-DB pixel diffs +
-> stale baselines for the rebuilt Warranty + deleted PO-new screens) — **not** workflow failures.
+> **⚡ SINCE THE PM BANNER (2026-05-31, late status-refresher — 545 non-visual tests green):** two of the
+> items below have LANDED — **(2) cost-variance** ✅ `c36769c`+`c5b49ac` (3-way match now flags DISCREPANCY
+> on unit-cost variance, qty-only gate closed, QA-guarded); **(3) O2-enforce** ✅ `07f7747`+`c4f10f9`
+> (auth middleware: unauthenticated production requests → `/login`, HTMX gets `HX-Redirect`). Also landed:
+> void-balance fix `52a9fdd`, the schema-drift CI gate, quote-flow cluster Bugs 1/3/5/6/8 (`e93048d`/`d9ee57d`),
+> Save Standard v2 (`59e7fa5`), Cores #16 (`c6468af`) + Returns #17 (`6416a9d`). **NEW cosmetic bug:** quote PDF
+> never prints part #s — `quotes/print.html:327/413/458` reference `line.product.part_number` (does not exist;
+> the real attr is `ProductVendorSource.vendor_part_number`), so the `{% if %}` is always falsy. Non-blocking.
+> **Net: the only true remaining go-live gate is (1) the owner's hand-run §8 acceptance.** Code-side, 1A is
+> essentially complete; (5) O6 surcharge is in-flight, Activity Log (contract `dd28051`) + beta sandbox are fast-follow.
+>
+> **What ACTUALLY remains for 1A go-live (priority order):**
+> - **(1) OWNER END-TO-END ACCEPTANCE of both spines — the real gate.** Code + `tests/test_e2e_flows.py`
+>   are green, but Keith has **never personally run** the §8 cross-workflow rows (sale→paid; OOS→SO→
+>   receive→invoice; core→credit) on a fresh build — the owner test sheet's §8 is entirely unmarked.
+>   This is a *confidence* gate, not a code gap. Schedule a guided owner pass.
+> - **(2) Vendor-bill COST-ONLY mismatch auto-approves — money-correctness bug (Backend).** A bill with
+>   exact qty but wrong unit cost (e.g. 10@$110 vs 10 received @$100) sets `status=APPROVED` and queues
+>   QBO PENDING; only qty variance is flagged. `po_service.py:632-633` + model `has_discrepancy`
+>   (`purchase_order.py:269-272`) test only `qty_billed > qty_received`, never `unit_cost`. The cost
+>   variance IS computed (`compute_match_line` cost_variance flag) but is not a hard approval gate. Unguarded by tests.
+> - **(3) O2 login — ENFORCE (owner ruled 2026-05-31).** Mechanism shipped (`90245d0`: pbkdf2 + signed
+>   cookie, `/login`,`/logout`) but today opt-in: `deps.py:20` `DEFAULT_USER_ID=1`, `deps.py:23-34`
+>   silently falls back to user 1, no guard. **Backend ticket:** add a global session dependency /
+>   middleware so production routes redirect to `/login` when there's no valid session, and make the
+>   `deps.py` fallback raise/redirect instead of defaulting to user 1 (keep a test/dev bypass). +QA test.
+> - **(4) Owner-flagged data/money bugs to confirm + fix:** Customer CSV/Excel import drops phone+email
+>   (`§1.2h` — data integrity); card surcharge can't be un-selected once chosen (`§1.9e` — money-path UX).
+>   Re-confirm B5 vendor-reactivate / B6 products-bulk landed cleanly (`82f7495`).
+> - **(5)** O6 customer card-surcharge default+override (Backend, money path, needs migration);
+>   Cores Queue **#16** / Returns Queue **#17** (UI-Builder, copy `receiving_queue.html`).
+>
+> **Cosmetic / NOT go-live blockers** (confirmed this pass — do NOT jump the queue): UI-lint gate red is
+> **5 cosmetic failures / 167 pass** (628 `tbl-*`, 54 inline x-transition, color+stripe allowlist — the
+> lint module's own docstring says "report only"); `tbl-*` still defined in `base.html:133` (~28 screens
+> still L1); login page uses CDN Tailwind in `auth.py:44` (trivial fix: link local `/static/css/app.css`).
+> The **"repo mojibake" claim is REFUTED** — a raw-byte scan found zero; the bytes are valid UTF-8 (§ /
+> em-dash), i.e. a local terminal codepage display issue, not repo corruption. Visual-regression pixel
+> diffs remain known-unstable (mutable-DB), **not** workflow failures.
 
 > **🔴 OWNER FUNCTIONAL TEST RECONCILIATION — 2026-05-30 (supersedes the 05-29 "support mode" claim below).**
 >
@@ -330,15 +367,19 @@ eBay listings · full TaxJar (multi-state) · ESN lookup scraper live · serial-
 > (DB recreate, slide-overs, PO receive, Ctrl+K, invoice lock, SO→Invoice, 3-way match, core/RA/warranty
 > state machines) — proven by the 477-test suite + `tests/test_e2e_flows.py`. Kept as history only.
 >
-> **CURRENT priority queue (Phase-1A finish), in dependency order:**
-> 1. **Cores BUG-4 (double-credit — MONEY) + BUG-2 (IntegrityError)** — Backend; `test_cores_lifecycle.py` xfails.
-> 2. **O2 minimal login + audit attribution** — Backend (last new 1A go-live gate).
-> 3. **O3 restore acceptance test** — QA (closes the §11 backup gate).
-> 4. **Old product-search route cleanup** — UI migrates `products/detail.html:663` → QA drops test refs →
->    Backend deletes the 3 safe endpoints (`quotes.py:241`, `sales_orders.py:372`, `invoices.py:612`);
->    **keep `products.py:99-102`** (product-list search filter, not a redundant patch).
-> 5. **O4 vendor contacts · O5 markup→settings · O6 surcharge** — Backend lands routes → UI builds to §8I.
-> 6. **Cores Queue #16 · Returns Queue #17** — UI-Builder (copy `receiving_queue.html`).
+> **CURRENT priority queue — RECONCILED 2026-05-31 (PM). The prior items 1–4 are now DONE**
+> (Cores BUG-2/4 `e119c19` · O3 acceptance test · route cleanup `331a872` · O4 `c17f2b6` · O5 `7f69572`).
+> Remaining, in dependency order:
+> 1. **Owner end-to-end acceptance pass of both spines** — Owner + QA. Run the §8 cross-workflow rows on a
+>    fresh build (sale→paid; OOS→SO→receive→invoice; core→credit). The real go-live gate: code is green,
+>    owner confidence is not yet established.
+> 2. **Vendor-bill COST-ONLY mismatch → flag DISCREPANCY (stop auto-approving)** — Backend; money bug.
+>    `po_service.py:632-633` + `has_discrepancy` (`purchase_order.py:269-272`) must also test `unit_cost`. +QA guard.
+> 3. **O2 login ENFORCEMENT** — owner ruled ENFORCE (2026-05-31). Backend adds a global session guard
+>    (redirect to /login when no valid session; fallback raises instead of defaulting to user 1). +QA test.
+> 4. **Owner-flagged bugs** — CSV import phone+email drop · card-surcharge can't-unselect — Backend/UI; +confirm B5/B6.
+> 5. **O6 customer surcharge default+override** (Backend, needs migration) · **Cores Queue #16 · Returns Queue #17** (UI-Builder).
+> 6. **UI maturity rollout (§9.2)** — the long-tail L1→L2 work; never ahead of items 1–4.
 
 These are ordered by what blocks daily use most directly.
 
@@ -421,7 +462,7 @@ Research status on quote lines, quote pop-out window, quote duplication, custome
 
 Keith signs off when ALL of these work in real daily use (not test data):
 
-- [ ] **Minimal 2-user login works; every invoice / payment / adjustment is attributed to the signed-in user** *(O2)*
+- [ ] **2-user login ENFORCED on production routes; every invoice / payment / adjustment is attributed to the signed-in user** *(O2 — mechanism shipped `90245d0`; owner RULED enforce 2026-05-31. Today still OPT-IN, falling back to user 1 at `deps.py:20` — Backend to add the session guard.)*
 - [ ] **Automatic `data/jaks.db` backup runs on schedule; a restore has been tested from a backup** *(O3)*
 - [ ] Enter new vendor + product in under 3 minutes (including enrichment)
 - [ ] Create PO, receive it partially, inventory updates correctly
