@@ -125,7 +125,7 @@ class StatementService:
 
         for pmt in period_payments:
             pmt_date = pmt.payment_date.date() if isinstance(pmt.payment_date, datetime) else pmt.payment_date
-            ref = pmt.reference_number or pmt.payment_method or "Payment"
+            ref = pmt.check_number or pmt.payment_method or "Payment"
             raw_txns.append((pmt_date, "payment", ref, 0.0, pmt.amount_received))
 
         raw_txns.sort(key=lambda t: t[0])

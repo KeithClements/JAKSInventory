@@ -322,6 +322,40 @@ def test_e2e_e_overdue_invoice_aging_and_statement(db, client):
     assert r.status_code == 200
 
 
+def test_e2e_e_statement_print_renders_with_payment_in_period(db, client):
+    """Regression (Suite-B B-5): /statement/print 500'd whenever the period
+    contained a payment — statement_service read a nonexistent
+    Payment.reference_number. Any customer with payment activity (i.e. every
+    real net-terms customer) could never print a statement. Guard the print
+    path with a payment in-range and assert the reference (check #) renders."""
+    from app.constants import InvoiceStatus, PaymentMethod
+    from app.models.invoice import Invoice, InvoiceLine
+    from app.services.payment_service import PaymentService
+
+    cust = _customer(db)
+    inv = Invoice(invoice_number=f"INV-STMT-{next(_counter)}", customer_id=cust.id,
+                  status=InvoiceStatus.OPEN)
+    db.add(inv); db.flush()
+    db.add(InvoiceLine(invoice_id=inv.id, qty=1, unit_price=200.0, is_taxable=False))
+    db.commit()
+
+    PaymentService(db, _UID).record_payment(
+        customer_id=cust.id, amount_received=50.0,
+        payment_method=PaymentMethod.CHECK,
+        data={"check_number": "CHK-7788", "notes": "partial"},
+        invoice_ids=[inv.id],
+    )
+    db.commit()
+
+    # Range straddles "today" (local + UTC) so the payment is always in-period.
+    today = datetime.date.today()
+    start = (today - datetime.timedelta(days=1)).isoformat()
+    end = (today + datetime.timedelta(days=1)).isoformat()
+    r = client.get(f"/customers/{cust.id}/statement/print?start={start}&end={end}")
+    assert r.status_code == 200, "statement print must not 500 when a payment is in-period"
+    assert "CHK-7788" in r.text, "payment reference (check #) should render on the statement"
+
+
 # ===========================================================================
 # §8.f — PO receive -> create vendor bill -> 3-way match AUTO-APPROVES on a
 #        clean qty/cost match (TESTING_FEEDBACK §2.4e — #13). Proves the full
