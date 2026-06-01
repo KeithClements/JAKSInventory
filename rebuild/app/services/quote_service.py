@@ -420,19 +420,25 @@ class QuoteService(BaseService):
             (c.sort_order for c in parent.children), default=parent.sort_order
         ) + 1
 
-        line = self._add_line_internal(
-            parent.quote_id,
-            {
-                **data,
-                "product_id": product_id,
-                "unit_cost": unit_cost,
-                "line_role": LineRole.UPGRADE_OPTION,
-                "is_included": False,
-                "parent_line_id": parent_line_id,
-                "line_type": LineType.PRODUCT,
-            },
-            sibling_sort,
-        )
+        merged = {
+            **data,
+            "product_id": product_id,
+            "unit_cost": unit_cost,
+            "line_role": LineRole.UPGRADE_OPTION,
+            "is_included": False,
+            "parent_line_id": parent_line_id,
+            "line_type": LineType.PRODUCT,
+        }
+        # Bug 7 — child lines get the same product backfill as main lines: an
+        # immediate-add of just product_id yields description + price from the
+        # product (apply_product_line_defaults only fills blanks, so an explicit
+        # description/price from the caller still wins).
+        if product_id is not None:
+            from app.models.product import Product
+            _product = self.db.query(Product).filter(Product.id == product_id).first()
+            apply_product_line_defaults(_product, merged, include_price=True)
+
+        line = self._add_line_internal(parent.quote_id, merged, sibling_sort)
         self.db.commit()
         return line
 
@@ -479,19 +485,23 @@ class QuoteService(BaseService):
             (c.sort_order for c in parent.children), default=parent.sort_order
         ) + 1
 
-        line = self._add_line_internal(
-            parent.quote_id,
-            {
-                **data,
-                "product_id": product_id,
-                "unit_cost": unit_cost,
-                "line_role": LineRole.OPTIONAL,
-                "is_included": False,  # (A) optionals excluded from total — customer opts in
-                "parent_line_id": parent_line_id,
-                "line_type": LineType.PRODUCT,
-            },
-            sibling_sort,
-        )
+        merged = {
+            **data,
+            "product_id": product_id,
+            "unit_cost": unit_cost,
+            "line_role": LineRole.OPTIONAL,
+            "is_included": False,  # (A) optionals excluded from total — customer opts in
+            "parent_line_id": parent_line_id,
+            "line_type": LineType.PRODUCT,
+        }
+        # Bug 7 — same product backfill as main lines (description + price from the
+        # product when the caller didn't supply them; explicit values still win).
+        if product_id is not None:
+            from app.models.product import Product
+            _product = self.db.query(Product).filter(Product.id == product_id).first()
+            apply_product_line_defaults(_product, merged, include_price=True)
+
+        line = self._add_line_internal(parent.quote_id, merged, sibling_sort)
         self.db.commit()
         return line
 
