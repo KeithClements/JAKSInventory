@@ -308,6 +308,34 @@
     toggleSidebar() {
       this.sidebarCollapsed = !this.sidebarCollapsed;
       localStorage.setItem('sidebarCollapsed', this.sidebarCollapsed ? '1' : '0');
+    },
+    // ── Event-driven toast (Pattern A) ──────────────────────────────────
+    // Triggered by HX-Trigger: {"toast": {"message": "...", "kind": "success"}}
+    // Works alongside the OOB/Pattern-B appends — both routes write to
+    // #toast-container; this one uses pure DOM, no x-for conflict.
+    showToast(opts) {
+      if (!opts) return;
+      const msg  = typeof opts === 'string' ? opts : (opts.message || opts.msg || '');
+      const kind = (typeof opts === 'object' ? opts.kind : null) || 'success';
+      const ms   = (typeof opts === 'object' ? opts.ms : null) || (kind === 'error' ? 6000 : 4000);
+      const ICONS = {
+        success: '<svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>',
+        error:   '<svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>',
+        warning: '<svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3L13.74 5a2 2 0 00-3.48 0L3.19 16a2 2 0 001.74 3z"/></svg>',
+        info:    '<svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>',
+      };
+      const el = document.createElement('div');
+      el.className = 'toast toast-' + kind;
+      el.innerHTML = (ICONS[kind] || '') + '<span>' + msg + '</span>';
+      const ctr = document.getElementById('toast-container');
+      if (ctr && msg) {
+        ctr.appendChild(el);
+        setTimeout(() => {
+          el.style.transition = 'opacity 0.15s';
+          el.style.opacity = '0';
+          setTimeout(() => el.remove(), 150);
+        }, ms);
+      }
     }
   }"
   @keydown.window="if ((event.ctrlKey || event.metaKey) && event.key === 'k') { event.preventDefault(); cmdKOpen = true; }"
@@ -333,6 +361,7 @@
     }
   "
   @jak-discard-slide.window="createSlideDirty = false; createSlideOpen = false"
+  @toast.window="showToast($event.detail)"
   @htmx:send-error.window="
     if (createSlideOpen) {
       const _el = document.getElementById('create-slide-content');
