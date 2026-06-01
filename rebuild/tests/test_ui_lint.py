@@ -45,15 +45,44 @@ import pytest
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 TEMPLATES_DIR = REPO_ROOT / "app" / "templates"
 MACROS_DIR = TEMPLATES_DIR / "macros"
+ADMIN_DIR = TEMPLATES_DIR / "admin"
+
+# ---------------------------------------------------------------------------
+# Exclusion scope
+# ---------------------------------------------------------------------------
+
+# Templates excluded from governed-screen scanning.
+#
+#  base.html — the CSS component stylesheet defines the legacy .tbl-* classes
+#              (e.g. ".tbl-head { @apply bg-gray-50; }"). Those *definitions*
+#              are not template usages; scanning base.html inflates the §1
+#              tbl-* count with false positives and hides the real L1 backlog.
+#
+#  admin/    — internal debug / tooling screens (smoke test dashboard, backup
+#              UI). They are not governed L2 screens and should not set off the
+#              color-allowlist or stripe-color rules.
+_SCREEN_EXCLUDES: frozenset[pathlib.Path] = frozenset(
+    [TEMPLATES_DIR / "base.html"]
+    + (list(ADMIN_DIR.glob("*.html")) if ADMIN_DIR.exists() else [])
+)
 
 
 def all_templates() -> list[pathlib.Path]:
     return sorted(TEMPLATES_DIR.rglob("*.html"))
 
 
+def screen_templates() -> list[pathlib.Path]:
+    """Governed screen templates only — excludes CSS-definition files and admin tooling.
+
+    Use this (not all_templates) for rules that measure L2+ screen compliance:
+    §1 tbl-*, §3 border-l-4, §4 stripe/color, §10 x-transition.
+    """
+    return [p for p in all_templates() if p not in _SCREEN_EXCLUDES]
+
+
 def non_macro_templates() -> list[pathlib.Path]:
-    """All templates except macros/ -- macros define the allowed primitives."""
-    return [p for p in all_templates() if MACROS_DIR not in p.parents]
+    """Screen templates excluding macros/ and lint-excluded paths."""
+    return [p for p in screen_templates() if MACROS_DIR not in p.parents]
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +133,7 @@ def test_no_tbl_classes():
       tbl-td-r -> explicit right-align classes
     """
     violations: list[Violation] = []
-    for path in all_templates():
+    for path in screen_templates():   # base.html (CSS defs) and admin/ excluded
         for lineno, line in enumerate(_read(path), 1):
             for m in _TBL_CLASSES.finditer(line):
                 violations.append(Violation(path, lineno, line,
@@ -219,7 +248,7 @@ def test_border_l4_on_td_not_tr():
     Wrong:    <tr class="border-l-4 border-l-red-400 ...">
     """
     violations: list[Violation] = []
-    for path in all_templates():
+    for path in screen_templates():   # admin/ excluded
         for lineno, line in enumerate(_read(path), 1):
             if _TR_BORDER_L4_RE.search(line):
                 violations.append(Violation(path, lineno, line,
@@ -256,7 +285,7 @@ def test_stripe_colors_permitted():
     Any other shade / color requires UI Architect approval.
     """
     violations: list[Violation] = []
-    for path in all_templates():
+    for path in screen_templates():   # admin/ excluded
         for lineno, line in enumerate(_read(path), 1):
             for m in _BORDER_L_COLOR_RE.finditer(line):
                 token = "border-l-" + m.group(1)
@@ -306,7 +335,7 @@ def test_color_classes_within_allowlist():
     stone-* permitted since 2026-05-29 for sidebar/page tone use.
     """
     violations: list[Violation] = []
-    for path in all_templates():
+    for path in screen_templates():   # admin/ excluded
         for lineno, line in enumerate(_read(path), 1):
             stripped = line.strip()
             if stripped.startswith("{#") or stripped.startswith("<!--"):
@@ -445,7 +474,7 @@ def test_lint_summary(capsys):
     counts: dict[str, int] = {}
 
     counts["[§1]  tbl-* classes"] = sum(
-        1 for p in all_templates() for ln in _read(p)
+        1 for p in screen_templates() for ln in _read(p)
         for _ in _TBL_CLASSES.finditer(ln)
     )
     counts["[§2]  list-screen markers missing"] = sum(
@@ -455,16 +484,16 @@ def test_lint_summary(capsys):
         and not pat.search(p.read_text(encoding="utf-8", errors="replace"))
     )
     counts["[§3]  border-l-4 on <tr>"] = sum(
-        1 for p in all_templates() for ln in _read(p)
+        1 for p in screen_templates() for ln in _read(p)
         if _TR_BORDER_L4_RE.search(ln)
     )
     counts["[§3]  non-permitted stripe colors"] = sum(
-        1 for p in all_templates() for ln in _read(p)
+        1 for p in screen_templates() for ln in _read(p)
         for m in _BORDER_L_COLOR_RE.finditer(ln)
         if ("border-l-" + m.group(1)) not in _PERMITTED_STRIPE_COLORS
     )
     counts["[§4]  colors outside allowlist (advisory)"] = sum(
-        1 for p in all_templates() for ln in _read(p)
+        1 for p in screen_templates() for ln in _read(p)
         if not ln.strip().startswith(("{#", "<!--"))
         for _ in _FORBIDDEN_COLOR_RE.finditer(ln)
     )
