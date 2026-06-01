@@ -1,3 +1,9 @@
+{#- line_part_no: printable part # for a product. product.part_number does NOT exist;
+    vendor_part_number lives per-vendor in product_vendor_sources. Prefer the preferred
+    source's vendor_part_number, fall back to the JAKS master SKU so a part # always prints. -#}
+{%- macro line_part_no(product) -%}
+{%- if product -%}{%- set pvs = product.preferred_vendor_source -%}{{- (pvs.vendor_part_number if pvs else '') or product.sku or '' -}}{%- endif -%}
+{%- endmacro -%}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -324,8 +330,9 @@
               {% endif %}
             {% endif %}
             {{ line.description }}
-            {% if line.product and line.product.part_number %}
-              <span class="part-num">{{ line.product.part_number }}</span>
+            {% set part_no = line_part_no(line.product) %}
+            {% if part_no %}
+              <span class="part-num">{{ part_no }}</span>
             {% endif %}
           </td>
 
@@ -410,8 +417,9 @@
               <span class="option-label">{{ line.option_label }}</span>
             {% endif %}
             {{ line.description }}
-            {% if line.product and line.product.part_number %}
-              <span class="part-num">{{ line.product.part_number }}</span>
+            {% set part_no = line_part_no(line.product) %}
+            {% if part_no %}
+              <span class="part-num">{{ part_no }}</span>
             {% endif %}
           </td>
           <td class="td-rgt">{{ line.qty }}</td>
@@ -455,7 +463,7 @@
           <td>
             {% if line.option_label %}<span class="option-label">{{ line.option_label }}</span>{% endif %}
             {{ line.description }}
-            {% if line.product and line.product.part_number %}<span class="part-num">{{ line.product.part_number }}</span>{% endif %}
+            {% set part_no = line_part_no(line.product) %}{% if part_no %}<span class="part-num">{{ part_no }}</span>{% endif %}
           </td>
           <td class="td-rgt">{{ line.qty }}</td>
           <td class="td-rgt">${{ "%.2f"|format(line.unit_price) }}</td>
