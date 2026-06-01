@@ -259,6 +259,30 @@
   {% include "quotes/_totals.html" %}
 </div>
 
+{# ── Optional Add-ons (excluded optionals — not in the quote total). Static: renders
+   from sorted_lines on load; the /totals partial carries no line data, so it does NOT
+   live-refresh — reload to update after adding/removing an optional (Bug 6). #}
+{% set optional_lines = sorted_lines | selectattr('line_role', 'equalto', 'optional') | rejectattr('is_included') | list %}
+{% if optional_lines %}
+<div class="bg-white border border-gray-200 rounded-xl shadow-sm mt-3 px-4 py-3">
+  <div class="flex items-center justify-between">
+    <span class="text-xs font-semibold text-sky-700 uppercase tracking-wide">Optional Add-ons</span>
+    <span class="text-sm font-bold text-sky-700 tabular-nums">${{ '%.2f' % (optional_lines | sum(attribute='line_total')) }}</span>
+  </div>
+  <p class="text-xs text-gray-400 mt-0.5">Not included in the quote total — the customer can add these on request.</p>
+  <div class="mt-2 divide-y divide-gray-50">
+    {% for line in optional_lines %}
+    <div class="flex items-center justify-between gap-3 py-1 text-xs">
+      <span class="min-w-0 truncate text-gray-700">
+        {% if line.product %}<span class="font-mono text-sky-600">{{ line.product.sku }}</span> {% endif %}{{ line.description }}
+      </span>
+      <span class="shrink-0 tabular-nums text-gray-500">{{ line.qty }} × ${{ '%.2f' % line.unit_price }} = <span class="font-medium text-gray-700">${{ '%.2f' % line.line_total }}</span></span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 {# ── Follow-Up Bar ────────────────────────────────────────────────────────── #}
 {% include "quotes/_follow_up_bar.html" %}
 

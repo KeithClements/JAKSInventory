@@ -427,6 +427,47 @@
   </div>
   {% endif %}
 
+  {# ── Optional Add-ons (excluded optionals — not in the total above) ─────────── #}
+  {% set optional_lines = quote.lines | selectattr('line_role', 'equalto', 'optional') | rejectattr('is_included') | list %}
+  {% if optional_lines %}
+  {% set opt_total = optional_lines | sum(attribute='line_total') %}
+  <div class="alt-section">
+    <div class="alt-heading">+ Optional Add-ons: ${{ "%.2f"|format(opt_total) }}</div>
+    <div class="alt-subhead">
+      The optional items below are <strong>not included</strong> in the total above.
+      Add any of them to your order on request.
+    </div>
+    <table class="lines alt-table">
+      <thead>
+        <tr>
+          <th class="ctr" style="width:28px">#</th>
+          <th class="lft">Description</th>
+          <th class="rgt" style="width:42px">Qty</th>
+          <th class="rgt" style="width:90px">Unit Price</th>
+          <th class="rgt" style="width:46px">Disc</th>
+          <th class="rgt" style="width:86px">Extended</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for line in optional_lines %}
+        <tr{% if loop.index % 2 == 0 %} class="even-row"{% endif %}>
+          <td class="td-num">{{ loop.index }}</td>
+          <td>
+            {% if line.option_label %}<span class="option-label">{{ line.option_label }}</span>{% endif %}
+            {{ line.description }}
+            {% if line.product and line.product.part_number %}<span class="part-num">{{ line.product.part_number }}</span>{% endif %}
+          </td>
+          <td class="td-rgt">{{ line.qty }}</td>
+          <td class="td-rgt">${{ "%.2f"|format(line.unit_price) }}</td>
+          <td class="td-disc">{% if line.discount_pct %}{{ "%.0f"|format(line.discount_pct) }}%{% else %}—{% endif %}</td>
+          <td class="td-total">${{ "%.2f"|format(line.line_total) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
   {# ── Footer ──────────────────────────────────────────────────────────────── #}
   <div class="doc-footer">
     Thank you for your business
