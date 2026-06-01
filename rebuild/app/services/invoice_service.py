@@ -580,6 +580,14 @@ class InvoiceService(BaseService):
             else:
                 ln.tax_amount = 0.0
 
+        # Reconcile the invoice-level is_taxable flag with the frozen per-line
+        # taxation so the raw column can never contradict the lines for any future
+        # consumer (print view, finalized label, reports/exports). The totals
+        # engine already derives display flags from tax_amount, but this closes
+        # the divergence at the source: an invoice with any taxable line is marked
+        # taxable, one with none is not. tax_rate_snapshot is guaranteed set above.
+        invoice.is_taxable = any(ln.is_taxable for ln in invoice.lines)
+
         for ln in invoice.lines:
             if ln.line_type != LineType.PRODUCT:
                 continue
