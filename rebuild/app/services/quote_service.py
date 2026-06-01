@@ -105,7 +105,10 @@ class QuoteService(BaseService):
         if product_id is not None:
             _product = self.db.query(Product).filter(Product.id == product_id).first()
             apply_product_line_defaults(_product, merged, include_price=True)
-        if merged.get("line_role") == LineRole.UPGRADE_OPTION and "is_included" not in data:
+        # Optionals AND upgrade-options default to EXCLUDED from the quote total — the
+        # customer opts in. (Owner decision 2026-05-31 "A": optional add-ons are quoted
+        # separately, not baked into the base total.)
+        if merged.get("line_role") in (LineRole.UPGRADE_OPTION, LineRole.OPTIONAL) and "is_included" not in data:
             merged["is_included"] = False
 
         # Auto-apply customer discount / enforce non-discountable rules
@@ -460,8 +463,8 @@ class QuoteService(BaseService):
     ) -> QuoteLine:
         """
         Add an optional add-on (bolts, install kit, freight, etc.) under a parent
-        line.  Optional lines are included in the total by default — the customer
-        may ask to remove them.
+        line.  Optional lines are EXCLUDED from the total by default (owner decision
+        2026-05-31 "A") — the customer opts in; they are quoted separately as add-ons.
 
         data keys: description, qty, unit_price, unit_cost, discount_pct
         """
@@ -483,7 +486,7 @@ class QuoteService(BaseService):
                 "product_id": product_id,
                 "unit_cost": unit_cost,
                 "line_role": LineRole.OPTIONAL,
-                "is_included": True,
+                "is_included": False,  # (A) optionals excluded from total — customer opts in
                 "parent_line_id": parent_line_id,
                 "line_type": LineType.PRODUCT,
             },
