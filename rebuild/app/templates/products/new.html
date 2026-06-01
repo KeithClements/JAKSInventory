@@ -155,26 +155,48 @@
     </div>
 
     <!-- Core charge -->
-    <div x-data="{ hasCore: {{ 'true' if form_data and form_data.get('has_core') else 'false' }} }">
+    <div x-data="{
+           hasCore: {{ 'true' if form_data and form_data.get('has_core') else 'false' }},
+           vendorCore: {{ (form_data.get('vendor_core_charge', 0) | float(0)) if form_data else 0 }},
+           customerCore: {{ (form_data.get('customer_core_charge', 0) | float(0)) if form_data else 0 }},
+           get coreFlag() { return this.hasCore && Number(this.customerCore || 0) < Number(this.vendorCore || 0); }
+         }">
       <label class="flex items-center gap-2 cursor-pointer select-none">
         <input type="checkbox" name="has_core" x-model="hasCore"
                class="rounded border-gray-300 text-green-600 focus:ring-brand-400" />
         <span class="text-sm font-medium text-gray-700">This product has a core charge</span>
       </label>
-      <div x-show="hasCore" x-cloak class="mt-3 grid grid-cols-2 gap-4">
-        <div>
-          <label class="block text-xs font-medium text-gray-500 mb-1">Vendor Core Charge ($)</label>
-          <input name="vendor_core_charge" type="number" step="0.01" min="0"
-                 value="{{ form_data.vendor_core_charge if form_data else '0.00' }}"
-                 placeholder="0.00"
-                 class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+      <div x-show="hasCore" x-cloak class="mt-3 space-y-3">
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">Vendor Core Charge ($)</label>
+            <input name="vendor_core_charge" type="number" step="0.01" min="0"
+                   x-model.number="vendorCore"
+                   value="{{ form_data.vendor_core_charge if form_data else '0.00' }}"
+                   placeholder="0.00"
+                   class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400"
+                   :class="coreFlag ? 'ring-1 ring-red-400 border-red-300' : ''" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">Customer Core Charge ($)</label>
+            <input name="customer_core_charge" type="number" step="0.01" min="0"
+                   x-model.number="customerCore"
+                   value="{{ form_data.customer_core_charge if form_data else '0.00' }}"
+                   placeholder="0.00"
+                   class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400"
+                   :class="coreFlag ? 'ring-1 ring-red-400 border-red-300' : ''" />
+          </div>
         </div>
-        <div>
-          <label class="block text-xs font-medium text-gray-500 mb-1">Customer Core Charge ($)</label>
-          <input name="customer_core_charge" type="number" step="0.01" min="0"
-                 value="{{ form_data.customer_core_charge if form_data else '0.00' }}"
-                 placeholder="0.00"
-                 class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        <div x-show="coreFlag" x-cloak
+             class="flex items-start gap-2 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">
+          <svg class="w-4 h-4 shrink-0 mt-px" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/>
+          </svg>
+          <span>
+            Customer core charge (<span x-text="'$' + Number(customerCore || 0).toFixed(2)"></span>)
+            is less than the vendor core charge (<span x-text="'$' + Number(vendorCore || 0).toFixed(2)"></span>).
+            The customer core charge must be at least the vendor core charge — otherwise JAKS loses money on cores that aren't returned.
+          </span>
         </div>
       </div>
     </div>

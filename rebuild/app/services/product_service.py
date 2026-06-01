@@ -31,6 +31,26 @@ class ProductService(BaseService):
 
     # ── Product CRUD ──────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _validate_core_charges(has_core: bool, vendor_core, customer_core) -> None:
+        """
+        A core charge is a deposit JAKS recovers from the vendor when the old core
+        is returned. If we charge the customer LESS than the vendor charges us,
+        every unreturned core is a loss. Require customer core >= vendor core.
+        (Equal is allowed — that's a clean pass-through deposit.)
+        """
+        if not has_core:
+            return
+        vendor = float(vendor_core or 0)
+        customer = float(customer_core or 0)
+        if customer < vendor:
+            raise ValueError(
+                f"Customer core charge (${customer:,.2f}) can't be less than the "
+                f"vendor core charge (${vendor:,.2f}). Charge the customer at least "
+                f"the vendor core charge, or JAKS loses money on cores that aren't "
+                f"returned."
+            )
+
     def create_product(self, data: dict) -> Product:
         """
         Create a new product record.
@@ -45,6 +65,12 @@ class ProductService(BaseService):
         existing = self.db.query(Product).filter(Product.sku == sku).first()
         if existing:
             raise ValueError(f"SKU '{sku}' already exists (product_id={existing.id})")
+
+        self._validate_core_charges(
+            bool(data.get("has_core", False)),
+            data.get("vendor_core_charge", 0.0),
+            data.get("customer_core_charge", 0.0),
+        )
 
         product = Product(
             sku=sku,
@@ -88,6 +114,14 @@ class ProductService(BaseService):
         Audits every call with old/new snapshot.
         """
         product = self._get_or_404(product_id)
+
+        # Validate the *effective* core charges (incoming value, else current) before
+        # any mutation so a bad save is rejected cleanly with nothing partially written.
+        self._validate_core_charges(
+            bool(data["has_core"]) if "has_core" in data else product.has_core,
+            data["vendor_core_charge"] if "vendor_core_charge" in data else product.vendor_core_charge,
+            data["customer_core_charge"] if "customer_core_charge" in data else product.customer_core_charge,
+        )
 
         old_snapshot = {
             "sku": product.sku,
