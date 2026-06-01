@@ -1,6 +1,6 @@
 {% extends "base.html" %}
-{% block title %}Return Authorizations — JAKS Inventory{% endblock %}
-{% block heading %}Return Authorizations{% endblock %}
+{% block title %}Returns Queue — JAKS Inventory{% endblock %}
+{% block heading %}Returns Queue{% endblock %}
 
 {% block header_actions %}
   <button hx-get="/returns/new"
@@ -15,74 +15,99 @@
 {% endblock %}
 
 {% block content %}
-{# ── §7 macro library ──────────────────────────────────────────────────────── #}
-{% from "macros/list_behavior.html" import operational_list_script %}
-{% from "macros/filter_tabs.html"   import filter_tabs %}
-{% from "macros/bulk_toolbar.html"  import bulk_toolbar %}
-{% from "macros/preview_dock.html"  import preview_dock_shell %}
-{% from "macros/chips.html"         import status_chip %}
-{% from "macros/empty_state.html"   import empty_state %}
-{{ operational_list_script() }}
-
-{# ── Status chip + stripe color maps (§4 semantics) ──────────────────────── #}
-{% set ra_chip = {
-  'draft':    ('bg-gray-100 text-gray-600',   'bg-gray-400',   'Draft'),
-  'open':     ('bg-blue-50 text-blue-700',    'bg-blue-500',   'Authorized'),
-  'received': ('bg-amber-50 text-amber-700',  'bg-amber-500',  'Received'),
-  'closed':   ('bg-green-50 text-green-700',  'bg-green-500',  'Closed'),
+{% from "macros/empty_state.html" import empty_state %}
+{# QB2 Queue Board (§2A) for the return-authorization lifecycle — receiving_queue.html
+   archetype (triage + navigate, NOT inline edit): RAs have a rich workspace, so each
+   row LINKS to /returns/{id} where the approve / per-line receive / close forms live.
+   Owner ruling 2026-05-31: rebuild the Returns L2 list as a QB2 board to match Cores #16.
+   stage → (left stripe, row tint, chip bg+text, chip dot, label, primary action label). #}
+{% set stage_meta = {
+  'draft':    ('border-l-gray-300',  '',               'bg-gray-100 text-gray-600',   'bg-gray-400',  'Draft',      'Authorize'),
+  'open':     ('border-l-blue-400',  '',               'bg-blue-50 text-blue-700',    'bg-blue-500',  'Authorized', 'Receive'),
+  'received': ('border-l-amber-400', 'bg-amber-50/20', 'bg-amber-100 text-amber-700', 'bg-amber-500', 'Received',   'Close & Credit'),
+  'closed':   ('border-l-green-400', '',               'bg-green-50 text-green-700',  'bg-green-500', 'Closed',     ''),
 } %}
-
-{# ── §2B Disposition chip map ─────────────────────────────────────────────── #}
-{% set disp_chip = {
-  'return_to_stock': ('bg-green-50 text-green-700',   'bg-green-500',   'Stock'),
-  'quarantine':      ('bg-amber-50 text-amber-700',   'bg-amber-500',   'Quarantine'),
-  'vendor_return':   ('bg-purple-50 text-purple-700', 'bg-purple-500',  'Vendor Return'),
+{% set stage_titles = {
+  'draft':    'Draft — needs authorization',
+  'open':     'Authorized — awaiting returned goods',
+  'received': 'Received — ready to close & credit',
+  'closed':   'Closed',
 } %}
+{# Filtered view shows just the active stage; default shows the open lifecycle in order. #}
+{% set stage_order = [active_tab] if active_tab else ['draft', 'open', 'received'] %}
 
-{# Flash messages (preserved from L1) #}
-{% if request.query_params.get('ok') %}
-<div class="rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800 flex items-center gap-2">
-  <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-    <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
-  </svg>
-  {{ request.query_params.get('ok') }}
-</div>
-{% endif %}
-{% if request.query_params.get('error') %}
-<div class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700 flex items-center gap-2">
-  <svg class="w-4 h-4 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
-  </svg>
-  {{ request.query_params.get('error') }}
-</div>
-{% endif %}
+<div class="space-y-4">
 
-{# ══════════════════════════════════════════════════════════════════════════════
-   OPERATIONAL LIST WRAPPER — pb-52 reserves dock clearance
-   (preview dock deferred until Backend lands /returns/preview/{id})
-══════════════════════════════════════════════════════════════════════════════ #}
-<div
-  class="space-y-4 pb-52"
-  x-data="operationalListData('ra-preview-body', '/returns/preview/', [{% for ra in ras %}{{ ra.id }}{% if not loop.last %},{% endif %}{% endfor %}])"
->
+  {# ── Flash messages ── #}
+  {% if request.query_params.get('ok') %}
+  <div class="rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800 flex items-center gap-2">
+    <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+    {{ request.query_params.get('ok') }}
+  </div>
+  {% endif %}
+  {% if request.query_params.get('error') %}
+  <div class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700 flex items-center gap-2">
+    <svg class="w-4 h-4 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+    {{ request.query_params.get('error') }}
+  </div>
+  {% endif %}
 
-{# ══════════════════════════════════════════════════════════════════════════════
-   TOOLBAR — tabs + search
-   Backend already provides counts + active_tab — no stub guard needed.
-══════════════════════════════════════════════════════════════════════════════ #}
-<div class="flex flex-wrap items-center gap-3">
+  {# ══════════════════════════════ METRICS STRIP ══════════════════════════════ #}
+  {# Clickable cards filter the board to that stage (?tab=). Active card is ringed. #}
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+    {# Draft — needs authorization (gray) #}
+    <a href="?tab=draft" class="card card-body flex items-center gap-3 hover:ring-1 hover:ring-gray-200 transition {% if active_tab == 'draft' %}ring-2 ring-brand-300{% endif %}">
+      <div class="w-9 h-9 rounded-lg bg-gray-100 flex items-center justify-center shrink-0">
+        <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+        </svg>
+      </div>
+      <div>
+        <p class="text-2xl font-bold leading-none tabular-nums {% if counts.get('draft') %}text-gray-700{% else %}text-gray-400{% endif %}">{{ counts.get('draft', 0) }}</p>
+        <p class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mt-1">Draft</p>
+      </div>
+    </a>
+    {# Authorized — awaiting returned goods (blue) #}
+    <a href="?tab=open" class="card card-body flex items-center gap-3 hover:ring-1 hover:ring-blue-100 transition {% if active_tab == 'open' %}ring-2 ring-brand-300{% endif %}">
+      <div class="w-9 h-9 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
+        <svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+      </div>
+      <div>
+        <p class="text-2xl font-bold leading-none tabular-nums {% if counts.get('open') %}text-blue-600{% else %}text-gray-400{% endif %}">{{ counts.get('open', 0) }}</p>
+        <p class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mt-1">Authorized</p>
+      </div>
+    </a>
+    {# Received — goods in, ready to credit (amber, attention) #}
+    <a href="?tab=received" class="card card-body flex items-center gap-3 hover:ring-1 hover:ring-amber-100 transition {% if active_tab == 'received' %}ring-2 ring-brand-300{% elif counts.get('received') %}ring-1 ring-amber-100{% endif %}">
+      <div class="w-9 h-9 rounded-lg bg-amber-50 flex items-center justify-center shrink-0">
+        <svg class="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+        </svg>
+      </div>
+      <div>
+        <p class="text-2xl font-bold leading-none tabular-nums {% if counts.get('received') %}text-amber-600{% else %}text-gray-400{% endif %}">{{ counts.get('received', 0) }}</p>
+        <p class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mt-1">Received</p>
+      </div>
+    </a>
+    {# Closed — terminal (green); link kept so history stays reachable #}
+    <a href="?tab=closed" class="card card-body flex items-center gap-3 hover:ring-1 hover:ring-green-100 transition {% if active_tab == 'closed' %}ring-2 ring-brand-300{% endif %}">
+      <div class="w-9 h-9 rounded-lg bg-green-50 flex items-center justify-center shrink-0">
+        <svg class="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+        </svg>
+      </div>
+      <div>
+        <p class="text-2xl font-bold leading-none tabular-nums {% if counts.get('closed') %}text-green-700{% else %}text-gray-400{% endif %}">{{ counts.get('closed', 0) }}</p>
+        <p class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mt-1">Closed</p>
+      </div>
+    </a>
+  </div>
 
-  {% set ra_tabs = [
-    ('',         'All Open',   counts.get('',        0)),
-    ('draft',    'Draft',      counts.get('draft',   0)),
-    ('open',     'Authorized', counts.get('open',    0)),
-    ('received', 'Received',   counts.get('received',0)),
-    ('closed',   'Closed',     counts.get('closed',  0)),
-  ] %}
-  {{ filter_tabs(ra_tabs, active_tab, q) }}
-
-  <form method="get" class="flex items-center gap-2 ml-auto">
-    <input type="hidden" name="tab" value="{{ active_tab }}" />
+  {# ══════════════════════════════ SEARCH ══════════════════════════════ #}
+  <form method="get" class="flex items-center gap-2">
+    {% if active_tab %}<input type="hidden" name="tab" value="{{ active_tab }}" />{% endif %}
     <div class="relative">
       <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
            fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -90,253 +115,165 @@
               d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
       </svg>
       <input name="q" value="{{ q }}" placeholder="RA #, customer…"
-             class="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white w-56
+             class="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white w-64
                     focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400
                     placeholder:text-gray-400" />
     </div>
     <button type="submit"
             class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200
-                   rounded-lg hover:bg-gray-50 transition-colors">
-      Search
-    </button>
-    {% if q %}
-    <a href="?tab={{ active_tab }}"
-       class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</a>
+                   rounded-lg hover:bg-gray-50 transition-colors">Search</button>
+    {% if q or active_tab %}
+    <a href="/returns/" class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</a>
     {% endif %}
   </form>
 
-</div>
+  {# ══════════════════════════════ QUEUE (grouped by stage) ══════════════════════════════ #}
+  {% if ras %}
+  <div class="card overflow-hidden">
+    <div class="overflow-x-auto">
+      <table class="w-full min-w-[980px]">
+        <thead>
+          <tr class="bg-gray-50 border-b border-gray-200">
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">RA # / Lines</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Customer</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide hidden lg:table-cell">Invoice / Credit</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Restock / Credit</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide hidden sm:table-cell">Requested</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Action</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for stage in stage_order %}
+          {% set stage_ras = ras | selectattr('status', 'equalto', stage) | list %}
+          {% if stage_ras %}
+          {% set meta = stage_meta[stage] %}
 
-{# ══════════════════════════════════════════════════════════════════════════════
-   BULK ACTION BAR — §7 Primitive 4
-══════════════════════════════════════════════════════════════════════════════ #}
-{% call bulk_toolbar() %}
-  <button class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">
-    Export CSV
-  </button>
-{% endcall %}
+          {# ── Stage group divider ── #}
+          <tr class="bg-gray-50/70">
+            <td colspan="7" class="px-4 py-2 text-xs font-bold text-gray-600 tracking-wide">
+              {{ stage_titles[stage] }} <span class="text-gray-400 font-medium">· {{ stage_ras | length }}</span>
+            </td>
+          </tr>
 
-{# ══════════════════════════════════════════════════════════════════════════════
-   RETURN AUTHORIZATIONS TABLE
-══════════════════════════════════════════════════════════════════════════════ #}
-{% if ras %}
-<div class="card overflow-hidden">
-  <div class="overflow-x-auto">
-    <table class="w-full min-w-[1000px]">
+          {% for ra in stage_ras %}
+          {% set restock_total = ra.lines | sum(attribute='restocking_fee') %}
+          {% set linked_inv_num = invoice_number_map.get(ra.invoice_id) if ra.invoice_id else none %}
+          {% set linked_cm_num  = credit_memo_map.get(ra.id) %}
 
-      {# ── Table head ── #}
-      <thead>
-        <tr class="bg-gray-50 border-b border-gray-200">
-          <th class="w-10 px-4 py-3 text-center">
-            <input type="checkbox"
-                   :checked="allSelected"
-                   @change="toggleAll()"
-                   aria-label="Select all return authorizations"
-                   class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            RA # / Lines
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Customer
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Status
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide hidden md:table-cell">
-            Disposition
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide hidden lg:table-cell">
-            Invoice / Credit
-          </th>
-          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Restock / Total
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide hidden sm:table-cell">
-            Requested
-          </th>
-          <th class="px-4 py-3 w-12"></th>
-        </tr>
-      </thead>
-
-      {# ── Table body ── #}
-      <tbody class="divide-y divide-gray-100">
-        {% for ra in ras %}
-
-        {# ── Per-row §2B computed values ── #}
-        {% set restock_total = ra.lines | sum(attribute='restocking_fee') %}
-        {% set ra_dispositions = disposition_map.get(ra.id, []) %}
-        {% set linked_inv_num  = invoice_number_map.get(ra.invoice_id) if ra.invoice_id else none %}
-        {% set linked_cm_num   = credit_memo_map.get(ra.id) %}
-
-        {# Left-edge stripe (§4 semantics):
-           amber = received (goods in, needs processing — attention)
-           blue  = open/authorized (awaiting return goods — informational)
-           transparent = draft (pending) or closed (done) #}
-        {% if ra.status == 'received' %}{% set stripe = 'border-l-amber-400' %}
-        {% elif ra.status == 'open' %}{% set stripe = 'border-l-blue-300' %}
-        {% else %}{% set stripe = 'border-l-transparent' %}{% endif %}
-
-        {# ── Row ── #}
-        <tr
-          @click="togglePreview({{ ra.id }})"
-          :class="{
-            'ring-inset ring-1 ring-brand-300 bg-brand-50/40': previewId === {{ ra.id }},
-            'bg-amber-50/20': '{{ ra.status }}' === 'received' && previewId !== {{ ra.id }},
-          }"
-          class="cursor-pointer hover:bg-gray-50/80 transition-colors group">
-
-          {# ── Checkbox — first <td> carries the left-edge health stripe ── #}
-          <td class="w-10 px-4 py-4 align-middle text-center border-l-4 {{ stripe }}"
-              @click.stop>
-            <input type="checkbox"
-                   :checked="isSelected({{ ra.id }})"
-                   @change="toggleSelect({{ ra.id }})"
-                   aria-label="Select {{ ra.ra_number }}"
-                   class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
-          </td>
-
-          {# ── §2B RA # + line count ─────────────────────────────────────── #}
-          <td class="px-4 py-4 align-middle">
-            <a href="/returns/{{ ra.id }}" @click.stop
-               class="font-mono text-sm font-bold text-brand-700 hover:text-brand-900 hover:underline leading-none">
-              {{ ra.ra_number }}
-            </a>
-            <div class="text-xs text-gray-400 mt-0.5">
-              {{ ra.lines | length }} line{{ 's' if ra.lines | length != 1 }}
-            </div>
-          </td>
-
-          {# ── §2B Customer ──────────────────────────────────────────────── #}
-          <td class="px-4 py-4 align-middle">
-            <span class="text-sm font-medium text-gray-900">{{ ra.customer.company_name }}</span>
-            {% if ra.reason %}
-            <div class="text-xs text-gray-400 mt-0.5 truncate max-w-[160px]"
-                 title="{{ ra.reason }}">{{ ra.reason[:60] }}{% if ra.reason | length > 60 %}…{% endif %}</div>
-            {% endif %}
-          </td>
-
-          {# ── §2B Status chip ───────────────────────────────────────────── #}
-          <td class="px-4 py-4 align-middle">
-            {% set rc = ra_chip.get(ra.status, ('bg-gray-100 text-gray-600', 'bg-gray-400', ra.status | title)) %}
-            {{ status_chip(rc[0], rc[1], rc[2]) }}
-          </td>
-
-          {# ── §2B Disposition ───────────────────────────────────────────── #}
-          <td class="px-4 py-4 align-middle hidden md:table-cell">
-            {% if ra_dispositions %}
-            <div class="flex flex-col gap-1">
-              {% for disp in ra_dispositions %}
-                {% set dc = disp_chip.get(disp) %}
-                {% if dc %}{{ status_chip(dc[0], dc[1], dc[2]) }}
-                {% else %}
-                <span class="text-xs text-gray-500">{{ disp | replace('_', ' ') | title }}</span>
-                {% endif %}
-              {% endfor %}
-            </div>
-            {% else %}
-            <span class="text-gray-300 text-xs">—</span>
-            {% endif %}
-          </td>
-
-          {# ── §2B Linked invoice / credit memo ─────────────────────────── #}
-          <td class="px-4 py-4 align-middle hidden lg:table-cell">
-            {% if linked_inv_num %}
-            <div>
-              <span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Inv</span>
-              <a href="/invoices/{{ ra.invoice_id }}" @click.stop
-                 class="ml-1 font-mono text-xs font-bold text-brand-700 hover:text-brand-900 hover:underline">
-                {{ linked_inv_num }}
-              </a>
-            </div>
-            {% endif %}
-            {% if linked_cm_num %}
-            <div class="{% if linked_inv_num %}mt-1{% endif %}">
-              <span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">CM</span>
-              <span class="ml-1 font-mono text-xs font-bold text-green-700">{{ linked_cm_num }}</span>
-            </div>
-            {% endif %}
-            {% if not linked_inv_num and not linked_cm_num %}
-            <span class="text-gray-300 text-xs">—</span>
-            {% endif %}
-          </td>
-
-          {# ── §2B Restocking fee + Total credit ────────────────────────── #}
-          <td class="px-4 py-4 align-middle text-right">
-            {% if restock_total > 0 %}
-            <div class="text-xs text-amber-600 tabular-nums">-${{ '%.2f' % restock_total }} restock</div>
-            {% endif %}
-            {% if ra.total_credit > 0 %}
-            <span class="text-sm font-bold text-brand-700 tabular-nums">${{ '%.2f' % ra.total_credit }}</span>
-            {% else %}
-            <span class="text-gray-300 text-sm">—</span>
-            {% endif %}
-          </td>
-
-          {# ── Requested date ────────────────────────────────────────────── #}
-          <td class="px-4 py-4 align-middle hidden sm:table-cell">
-            <span class="text-xs text-gray-500">{{ ra.requested_at.strftime('%m/%d/%y') }}</span>
-          </td>
-
-          {# ── Quick action — open workspace ─────────────────────────────── #}
-          <td class="px-4 py-4 align-middle" @click.stop>
-            <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+          <tr class="hover:bg-gray-50/80 transition-colors group {{ meta[1] }}">
+            {# RA # + line count (stripe) #}
+            <td class="px-4 py-4 align-middle border-l-4 {{ meta[0] }}">
               <a href="/returns/{{ ra.id }}"
-                 title="Open RA"
-                 aria-label="Open {{ ra.ra_number }}"
-                 class="p-1.5 rounded-lg text-gray-400 hover:text-brand-700 hover:bg-brand-50 transition-colors
-                        focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-1">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
-                </svg>
-              </a>
-            </div>
-          </td>
+                 class="font-mono text-sm font-bold text-brand-700 hover:text-brand-900 hover:underline leading-none">{{ ra.ra_number }}</a>
+              <div class="text-xs text-gray-400 mt-0.5">{{ ra.lines | length }} line{{ 's' if ra.lines | length != 1 }}</div>
+            </td>
 
-        </tr>
-        {% endfor %}
-      </tbody>
+            {# Customer (+ reason) #}
+            <td class="px-4 py-4 align-middle">
+              <span class="text-sm font-medium text-gray-900">{{ ra.customer.company_name }}</span>
+              {% if ra.reason %}
+              <div class="text-xs text-gray-400 mt-0.5 truncate max-w-[180px]" title="{{ ra.reason }}">{{ ra.reason[:60] }}{% if ra.reason | length > 60 %}…{% endif %}</div>
+              {% endif %}
+            </td>
 
-    </table>
+            {# Status chip #}
+            <td class="px-4 py-4 align-middle">
+              <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold {{ meta[2] }}">
+                <span class="w-1.5 h-1.5 rounded-full {{ meta[3] }} shrink-0"></span>{{ meta[4] }}
+              </span>
+            </td>
+
+            {# Linked invoice / credit memo #}
+            <td class="px-4 py-4 align-middle hidden lg:table-cell">
+              {% if linked_inv_num %}
+              <div>
+                <span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Inv</span>
+                <a href="/invoices/{{ ra.invoice_id }}" class="ml-1 font-mono text-xs font-bold text-brand-700 hover:text-brand-900 hover:underline">{{ linked_inv_num }}</a>
+              </div>
+              {% endif %}
+              {% if linked_cm_num %}
+              <div class="{% if linked_inv_num %}mt-1{% endif %}">
+                <span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">CM</span>
+                <span class="ml-1 font-mono text-xs font-bold text-green-700">{{ linked_cm_num }}</span>
+              </div>
+              {% endif %}
+              {% if not linked_inv_num and not linked_cm_num %}<span class="text-gray-300 text-xs">—</span>{% endif %}
+            </td>
+
+            {# Restocking fee + total credit #}
+            <td class="px-4 py-4 align-middle text-right">
+              {% if restock_total > 0 %}
+              <div class="text-xs text-amber-600 tabular-nums">-${{ '%.2f' % restock_total }} restock</div>
+              {% endif %}
+              {% if ra.total_credit > 0 %}
+              <span class="text-sm font-bold text-brand-700 tabular-nums">${{ '%.2f' % ra.total_credit }}</span>
+              {% else %}
+              <span class="text-gray-300 text-sm">—</span>
+              {% endif %}
+            </td>
+
+            {# Requested date #}
+            <td class="px-4 py-4 align-middle hidden sm:table-cell">
+              <span class="text-xs text-gray-500">{{ ra.requested_at.strftime('%m/%d/%y') }}</span>
+            </td>
+
+            {# Action — link into the RA workspace (where the stage forms live) #}
+            <td class="px-4 py-4 align-middle">
+              <div class="flex items-center justify-end gap-1.5">
+                {% if meta[5] %}
+                <a href="/returns/{{ ra.id }}"
+                   class="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-white transition-colors
+                          {% if stage == 'received' %}bg-green-700 hover:bg-green-600{% else %}bg-brand-700 hover:bg-brand-600{% endif %}">
+                  {{ meta[5] }}
+                </a>
+                {% endif %}
+                <a href="/returns/{{ ra.id }}" title="Open RA workspace"
+                   class="p-1.5 rounded-lg text-gray-400 hover:text-brand-700 hover:bg-brand-50 transition-colors">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+                  </svg>
+                </a>
+                <a href="/returns/{{ ra.id }}/print" target="_blank" title="Print RA"
+                   class="p-1.5 rounded-lg text-gray-400 hover:text-brand-700 hover:bg-brand-50 transition-colors">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/>
+                  </svg>
+                </a>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+          {% endif %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/60">
+      <span class="text-xs text-gray-400">
+        {{ ras | length }} return authorization{{ 's' if ras | length != 1 }} in the lifecycle{% if active_tab or q %} · filtered{% endif %}
+      </span>
+    </div>
   </div>
 
-  {# ── Table footer count ── #}
-  <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
-    <span class="text-xs text-gray-400">
-      {{ ras | length }} return authorization{{ 's' if ras | length != 1 else '' }}
-      {% if active_tab or q %} · filtered{% endif %}
-    </span>
-    <span x-show="selectedCount > 0" x-cloak class="text-xs text-brand-700 font-medium">
-      <span x-text="selectedCount"></span> selected
-    </span>
-  </div>
+  {% else %}
+  {# ══════════════════════════════ EMPTY STATE — §7 Primitive 6 ══════════════ #}
+  {% set _ra_cta %}
+    <button hx-get="/returns/new"
+            hx-target="#create-slide-content"
+            @click="createSlideOpen = true; createSlideTitle = 'New Return Authorization'"
+            class="btn-primary btn-sm">New RA →</button>
+  {% endset %}
+  {{ empty_state(
+    'M16 15v-1a4 4 0 00-4-4H8m0 0l3 3m-3-3l3-3m9 14V5a2 2 0 00-2-2H6a2 2 0 00-2 2v16l4-2 4 2 4-2 4 2z',
+    q, active_tab,
+    'Returns queue is clear',
+    'No return authorizations need attention right now.',
+    _ra_cta
+  ) }}
+  {% endif %}
+
 </div>
-
-{% else %}
-
-{# ══════════════════════════════════════════════════════════════════════════════
-   EMPTY STATE — §7 Primitive 6
-══════════════════════════════════════════════════════════════════════════════ #}
-{% set _ra_cta %}
-  <button hx-get="/returns/new"
-          hx-target="#create-slide-content"
-          @click="createSlideOpen = true; createSlideTitle = 'New Return Authorization'"
-          class="btn-primary btn-sm">
-    New RA →
-  </button>
-{% endset %}
-{{ empty_state(
-  'M16 15v-1a4 4 0 00-4-4H8m0 0l3 3m-3-3l3-3m9 14V5a2 2 0 00-2-2H6a2 2 0 00-2 2v16l4-2 4 2 4-2 4 2z',
-  q, active_tab, 'No return authorizations',
-  'Create an RA when a customer needs to return parts.',
-  _ra_cta
-) }}
-
-{% endif %}
-
-{# ── Preview dock — §7 Primitive 5 ───────────────────────────────────────── #}
-{{ preview_dock_shell('Return Authorization Preview', 'ra-preview-body') }}
-
-</div>{# end operationalListData wrapper #}
 {% endblock %}
