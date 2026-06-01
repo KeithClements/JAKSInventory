@@ -16,7 +16,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.constants import CrossRefType, SuggestedSellType
-from app.deps import get_db
+from app.deps import get_db, get_current_user_id
 from app.models.product import (
     CrossReference, Product, ProductImage, ProductVendorSource, SuggestedSell,
 )
@@ -30,8 +30,6 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 router = APIRouter(prefix="/products", tags=["products"])
 templates = Jinja2Templates(directory="app/templates")
 
-CURRENT_USER_ID = 1
-
 MANUFACTURERS = [
     "Cummins", "Caterpillar", "Detroit Diesel", "Mack", "Volvo", "International",
 ]
@@ -39,12 +37,12 @@ MANUFACTURERS = [
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-def _svc(db: Session) -> ProductService:
-    return ProductService(db, current_user_id=CURRENT_USER_ID)
+def _svc(db: Session, user_id: int = 1) -> ProductService:
+    return ProductService(db, current_user_id=user_id)
 
 
-def _ss_svc(db: Session) -> SuggestedSellService:
-    return SuggestedSellService(db, current_user_id=CURRENT_USER_ID)
+def _ss_svc(db: Session, user_id: int = 1) -> SuggestedSellService:
+    return SuggestedSellService(db, current_user_id=user_id)
 
 
 def _vendors(db: Session) -> list[Vendor]:
@@ -158,11 +156,11 @@ def product_new(request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/new", response_class=HTMLResponse)
-async def product_create(request: Request, db: Session = Depends(get_db)):
+async def product_create(request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
     try:
         data = _parse_product_form(form)
-        product = _svc(db).create_product(data)
+        product = _svc(db, user_id).create_product(data)
         return RedirectResponse(f"/products/{product.id}", status_code=303)
     except ValueError as exc:
         default_markup = get_setting_value_db(db, "default_markup_pct", "30.0")
@@ -186,7 +184,7 @@ def product_quick_create_form(request: Request):
 
 
 @router.post("/quick-create", response_class=HTMLResponse)
-async def product_quick_create(request: Request, db: Session = Depends(get_db)):
+async def product_quick_create(request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
     sku_suffix = str(form.get("sku_suffix", "")).strip().upper()
     title = str(form.get("title", "")).strip()
@@ -196,7 +194,7 @@ async def product_quick_create(request: Request, db: Session = Depends(get_db)):
             status_code=422,
         )
     sku = f"JAKS-{sku_suffix}"
-    svc = _svc(db)
+    svc = _svc(db, user_id)
     try:
         product = svc.create_product({
             "sku": sku,
@@ -383,14 +381,14 @@ def product_detail(
 
 
 @router.post("/{product_id}", response_class=HTMLResponse)
-async def product_update(product_id: int, request: Request, db: Session = Depends(get_db)):
+async def product_update(product_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     p = db.query(Product).filter(Product.id == product_id).first()
     if not p:
         return RedirectResponse("/products/", status_code=303)
     form = await request.form()
     try:
         data = _parse_product_form(form)
-        _svc(db).update_product(product_id, data)
+        _svc(db, user_id).update_product(product_id, data)
         return RedirectResponse(f"/products/{product_id}?saved=1", status_code=303)
     except ValueError as exc:
         # Re-fetch product fresh (may be partially updated in service before error)
@@ -408,11 +406,11 @@ async def product_update(product_id: int, request: Request, db: Session = Depend
 # ── Deactivate ───────────────────────────────────────────────────────────────
 
 @router.post("/{product_id}/deactivate", response_class=HTMLResponse)
-async def product_deactivate(product_id: int, request: Request, db: Session = Depends(get_db)):
+async def product_deactivate(product_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
     reason = str(form.get("reason", "archived via UI")).strip() or "archived via UI"
     try:
-        _svc(db).deactivate_product(product_id, reason)
+        _svc(db, user_id).deactivate_product(product_id, reason)
     except ValueError:
         pass
     return RedirectResponse("/products/", status_code=303)
@@ -430,7 +428,7 @@ async def product_reactivate(product_id: int, db: Session = Depends(get_db)):
 # ── Vendor Sources ────────────────────────────────────────────────────────────
 
 @router.post("/{product_id}/vendor-sources", response_class=HTMLResponse)
-async def vendor_source_add(product_id: int, request: Request, db: Session = Depends(get_db)):
+async def vendor_source_add(product_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
     vendor_id_raw = str(form.get("vendor_id", "")).strip()
     if not vendor_id_raw:
@@ -444,7 +442,7 @@ async def vendor_source_add(product_id: int, request: Request, db: Session = Dep
             "is_preferred": bool(form.get("is_preferred")),
             "notes": str(form.get("notes", "")).strip(),
         }
-        source = _svc(db).add_vendor_source(product_id, vendor_id, data)
+        source = _svc(db, user_id).add_vendor_source(product_id, vendor_id, data)
         db.refresh(source)
         return templates.TemplateResponse(request, "products/_vendor_source_row.html", {
             "source": source,
@@ -458,9 +456,9 @@ async def vendor_source_add(product_id: int, request: Request, db: Session = Dep
 
 
 @router.post("/{product_id}/vendor-sources/{source_id}/prefer", response_class=HTMLResponse)
-def vendor_source_prefer(product_id: int, source_id: int, request: Request, db: Session = Depends(get_db)):
+def vendor_source_prefer(product_id: int, source_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     try:
-        _svc(db).set_preferred_vendor(product_id, source_id)
+        _svc(db, user_id).set_preferred_vendor(product_id, source_id)
         # Return the full updated sources list partial so preferred badges refresh
         p = db.query(Product).filter(Product.id == product_id).first()
         return templates.TemplateResponse(request, "products/_vendor_sources_table.html", {
@@ -492,7 +490,7 @@ def vendor_source_remove(product_id: int, source_id: int, db: Session = Depends(
 # ── Cross References ──────────────────────────────────────────────────────────
 
 @router.post("/{product_id}/cross-refs", response_class=HTMLResponse)
-async def cross_ref_add(product_id: int, request: Request, db: Session = Depends(get_db)):
+async def cross_ref_add(product_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
     ref_number = str(form.get("ref_number", "")).strip()
     if not ref_number:
@@ -501,7 +499,7 @@ async def cross_ref_add(product_id: int, request: Request, db: Session = Depends
     brand = str(form.get("brand", "")).strip()
     status = str(form.get("status", "proven")).strip() or "proven"
     try:
-        _svc(db).add_cross_reference(product_id, ref_type, ref_number, brand or None, status=status)
+        _svc(db, user_id).add_cross_reference(product_id, ref_type, ref_number, brand or None, status=status)
         # Fetch the newly inserted xref (last one for this product+type+number)
         xref = (
             db.query(CrossReference)
@@ -524,9 +522,9 @@ async def cross_ref_add(product_id: int, request: Request, db: Session = Depends
 
 
 @router.delete("/{product_id}/cross-refs/{xref_id}", response_class=HTMLResponse)
-def cross_ref_remove(product_id: int, xref_id: int, db: Session = Depends(get_db)):
+def cross_ref_remove(product_id: int, xref_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     try:
-        _svc(db).remove_cross_reference(xref_id)
+        _svc(db, user_id).remove_cross_reference(xref_id)
     except ValueError:
         pass
     return HTMLResponse("", status_code=200)
@@ -536,12 +534,13 @@ def cross_ref_remove(product_id: int, xref_id: int, db: Session = Depends(get_db
 
 @router.patch("/{product_id}/cross-refs/{xref_id}/status", response_class=HTMLResponse)
 async def cross_ref_update_status(
-    product_id: int, xref_id: int, request: Request, db: Session = Depends(get_db)
+    product_id: int, xref_id: int, request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     form = await request.form()
     status = str(form.get("status", "proven")).strip() or "proven"
     try:
-        xref = _svc(db).update_cross_reference_status(xref_id, status)
+        xref = _svc(db, user_id).update_cross_reference_status(xref_id, status)
         return templates.TemplateResponse(request, "products/_cross_ref_row.html", {
             "xref": xref,
         })
@@ -581,6 +580,7 @@ async def product_image_upload(
     request: Request,
     db: Session = Depends(get_db),
     file: UploadFile = File(...),
+    user_id: int = Depends(get_current_user_id),
 ):
     p = db.query(Product).filter(Product.id == product_id).first()
     if not p:
@@ -610,7 +610,7 @@ async def product_image_upload(
         )
     (STATIC_DIR / rel_path).write_bytes(content)
 
-    _svc(db).add_product_image(product_id, rel_path)
+    _svc(db, user_id).add_product_image(product_id, rel_path)
     db.refresh(p)
 
     return templates.TemplateResponse(request, "products/_images_grid.html", {
@@ -620,9 +620,9 @@ async def product_image_upload(
 
 
 @router.delete("/{product_id}/images/{image_id}", response_class=HTMLResponse)
-def product_image_remove(product_id: int, image_id: int, db: Session = Depends(get_db)):
+def product_image_remove(product_id: int, image_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     try:
-        _svc(db).remove_product_image(product_id, image_id)
+        _svc(db, user_id).remove_product_image(product_id, image_id)
     except ValueError:
         pass
     return HTMLResponse("", status_code=200)
@@ -630,10 +630,11 @@ def product_image_remove(product_id: int, image_id: int, db: Session = Depends(g
 
 @router.post("/{product_id}/images/{image_id}/set-primary", response_class=HTMLResponse)
 def product_image_set_primary(
-    product_id: int, image_id: int, request: Request, db: Session = Depends(get_db)
+    product_id: int, image_id: int, request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     try:
-        _svc(db).set_primary_image(product_id, image_id)
+        _svc(db, user_id).set_primary_image(product_id, image_id)
     except ValueError as exc:
         return HTMLResponse(f'<p class="text-sm text-red-600 p-4">{exc}</p>', status_code=422)
     p = db.query(Product).filter(Product.id == product_id).first()
@@ -647,7 +648,8 @@ def product_image_set_primary(
 
 @router.post("/{product_id}/suggested-sells", response_class=HTMLResponse)
 async def suggested_sell_add(
-    product_id: int, request: Request, db: Session = Depends(get_db)
+    product_id: int, request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     form = await request.form()
     sku = str(form.get("sku", "")).strip().upper()
@@ -666,7 +668,7 @@ async def suggested_sell_add(
     rel_type = str(form.get("relationship_type", "recommended")).strip()
     notes = str(form.get("notes", "")).strip()
     try:
-        suggestion = _ss_svc(db).add_suggestion(
+        suggestion = _ss_svc(db, user_id).add_suggestion(
             product_id=product_id,
             suggested_product_id=suggested.id,
             relationship_type=rel_type,
@@ -685,7 +687,8 @@ async def suggested_sell_add(
 
 @router.patch("/{product_id}/suggested-sells/{suggestion_id}", response_class=HTMLResponse)
 async def suggested_sell_update(
-    product_id: int, suggestion_id: int, request: Request, db: Session = Depends(get_db)
+    product_id: int, suggestion_id: int, request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     form = await request.form()
     data = {}
@@ -694,7 +697,7 @@ async def suggested_sell_update(
     if "notes" in form:
         data["notes"] = str(form["notes"]).strip()
     try:
-        suggestion = _ss_svc(db).update_suggestion(suggestion_id, data)
+        suggestion = _ss_svc(db, user_id).update_suggestion(suggestion_id, data)
         return templates.TemplateResponse(request, "products/_suggested_sell_row.html", {
             "suggestion": suggestion,
             "product_id": product_id,
@@ -705,10 +708,11 @@ async def suggested_sell_update(
 
 @router.delete("/{product_id}/suggested-sells/{suggestion_id}", response_class=HTMLResponse)
 def suggested_sell_remove(
-    product_id: int, suggestion_id: int, db: Session = Depends(get_db)
+    product_id: int, suggestion_id: int, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     try:
-        _ss_svc(db).remove_suggestion(suggestion_id)
+        _ss_svc(db, user_id).remove_suggestion(suggestion_id)
     except ValueError:
         pass
     return HTMLResponse("", status_code=200)
@@ -718,7 +722,8 @@ def suggested_sell_remove(
 
 @router.post("/{product_id}/adjust-inventory", response_class=HTMLResponse)
 async def adjust_inventory_handler(
-    product_id: int, request: Request, db: Session = Depends(get_db)
+    product_id: int, request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     from urllib.parse import quote as url_quote
     import logging
@@ -750,7 +755,7 @@ async def adjust_inventory_handler(
             pass
 
     try:
-        svc = InventoryService(db, current_user_id=CURRENT_USER_ID)
+        svc = InventoryService(db, current_user_id=user_id)
         svc.adjust_inventory(
             product_id=product_id,
             qty_delta=qty_delta,
