@@ -140,7 +140,7 @@ Current target mapping (last audited 2026-05-29):
 | Invoice List | ✅ L2 | L2 | Governance pass done 2026-05-28. Red stripe for financial overdue (intentional domain distinction). |
 | Quotes List | L2 | L2 | Has tabs+divide-y but no preview dock, no border-l-4 stripe. Pending final alignment pass. |
 | Quote Workspace | L3 | L3 | Autosave, inline editing done. **⚠️ "done" recorded in the 500-era build — gated on post-b514196 owner re-test (§8G).** **Shared one-click line-adder (§8H) migrated @797a407 — immediate-add replaces 2-step staging; governance PASS 2026-05-31.** |
-| Customers List | ✅ L2 | L2 | Governance pass done 2026-05-29. §2B operational intelligence complete (Balance Due, Open Invoices/Quotes/SOs, Cores, Last Sale, Terms). M1/M2 cosmetic deferred. |
+| Customers List | ✅ L2 | L2 | Governance pass done 2026-05-29. §2B operational intelligence complete (Balance Due, Open Invoices/Quotes/SOs, Cores, Last Sale, Terms). M1/M2 cosmetic deferred. **Inactive-tab + Reactivate gap fixed 2026-05-31 — deactivated customers reachable/reactivatable; locked by `tests/test_customer_list_tabs.py` (see As-Built "Fix").** |
 | Product Detail | L1 | L2 | Raw form, no card sections. |
 | Sales Orders List | L1 | L2 | Old tbl-* table, no L2 elements. |
 | Vendors List | L1 | L2 | Old tbl-* table, no L2 elements. |
@@ -617,10 +617,10 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 | 3 | Invoice List | ✅ L2 complete | L1 → L2 | Governance pass 2026-05-28. Red stripe for financial overdue — accepted + codified in §4. |
 | — | **Primitives extraction** | ✅ Complete (2026-05-29) | — | All 6 macros extracted + governance-approved. Products/PO/Invoice ported. See §7 as-built. |
 | — | **Line-item builder (§8H) — 4 workspaces** | ✅ **Governance PASS (2026-05-31)** | — | Shared `line_items/_line_adder.html` migrated to Quote/SO/Invoice/PO (`797a407`/`2d76b83`/`5bb0bc0`/`1fb562c`). Immediate-add (no staging), sibling-above placement, match-type/orange-core/red-at-0/cost-vs-sell-by-mode visual contract all verified **in-tree**. §7 3-screen gate MET (macro promotion optional). Full record + punch list in §8H. |
-| 4 | Customer List | ✅ L2 complete | L1.5 → L2 | Governance pass approved 2026-05-29. All §2 + §2B fields satisfied (Balance Due, Open Invoices/Quotes/SOs, Cores, Last Sale, Terms). M1/M2 cosmetic deferred. |
+| 4 | Customer List | ✅ L2 complete | L1.5 → L2 | Governance pass approved 2026-05-29. All §2 + §2B fields satisfied (Balance Due, Open Invoices/Quotes/SOs, Cores, Last Sale, Terms). M1/M2 cosmetic deferred. **Inactive customers now reachable + reactivatable (2026-05-31, see As-Built "Fix"); locked by `tests/test_customer_list_tabs.py`.** |
 | 5 | Quotes List | ⏳ **L2 — pending post-b514196 owner re-test** | L2 → L2 | **⚠️ The 2026-05-29 "FULL PASS" was recorded against a 500-ing build — the committed visual baseline `quotes_list@1280px.png` is an "Internal Server Error" screenshot (see §8G re-test gate). NOT re-affirmed until the owner re-tests a post-`b514196` pull + §9 passes.** Original record (unverified): all 11 §2 + §2B; AR chip `ar_map` bulk-computed (zero N+1); 5 non-blocking cosmetics in §8F. |
 | 6 | Sales Orders List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** Dock confirmed: import line 25, call line 346 (verified in committed code). All 11 §2 elements + §2B. `py-4` correct. Backend-contract guard accepted. |
-| 7 | Vendors List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** Dock wired (import line 21 + call line 333). All 11 §2 elements + §2B (Open POs/Bills/Credits/LastPO/Contact). Tab counts stub-zeros via backend-contract guard — non-blocking. Lead time deferred per "if stored" qualifier. |
+| 7 | Vendors List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** Dock wired (import line 21 + call line 333). All 11 §2 elements + §2B (Open POs/Bills/Credits/LastPO/Contact). **Tab slugs realigned to the router contract (active/inactive/all) — RESOLVED 2026-05-31 (see "Fix 2" below); inactive vendors are now reachable and the detail page gained a Reactivate button. Locked by `tests/test_vendor_list_tabs.py`.** Lead time deferred per "if stored" qualifier. |
 | 8 | Returns List | ⏳ **L2 — pending post-b514196 owner re-test** | L1 → L2 | **⚠️ The 2026-05-29 "FULL PASS" was recorded in the same 500-era build as Quotes (see §8G re-test gate); not re-affirmed until the owner re-tests a post-`b514196` pull + §9 passes.** Original record (unverified): all 11 §2 + §2B; real tab counts from router group_by (no stub guard); dock wired at line 339; stripe amber=received/blue=open/transparent=draft-closed. |
 | 9 | Payments List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS (re-pass).** Dock: import line 16, call line 314 (live, not commented). Method chips: Cash=green, Check=blue, Card=purple, ACH=blue, Wire=sky (§4-permitted; sky co-listed with blue). All §2 + §2B previously verified. |
 | 10 | Product Detail | ⏳ **HOLD — functional-test mode** | L1 → L2 | Section-based card layout. Do not start until hold lifted. |
@@ -858,21 +858,61 @@ vendor_tabs = [('', 'All', ...), ('open_pos', 'Active POs', ...), ('credits', 'O
 But the router (`app/routers/vendors.py`) only handles `active`/`inactive`/`all` as `active_tab` values,
 and the `counts` dict uses keys `""`, `"active"`, `"inactive"` — not `"open_pos"` or `"credits"`.
 
-**Recommended fix (template side):** Change tab slugs to `active`/`inactive` to match the router,
-or keep the current slugs and update the router to filter by `open_pos`/`credits` semantics (more
-useful for the workflow but requires a backend change). Pick one — confirm with Architect if unsure.
-The simpler option is to align the template to match what the router already computes:
+**✅ RESOLVED 2026-05-31 (template-side, the plan's preferred option).** Tabs now match what the
+router computes:
 ```python
 vendor_tabs = [
-  ('',         'All',      _counts.get('',         0)),
   ('active',   'Active',   _counts.get('active',   0)),
   ('inactive', 'Inactive', _counts.get('inactive', 0)),
+  ('all',      'All',      _counts.get('all',      0)),
 ]
 ```
-Or keep `open_pos`/`credits` as richer tabs and update the router to compute those counts —
-that's better operationally but is a backend-lane change.
+**Correction to the original snippet:** the All tab uses slug **`all`**, not `''`. The router
+defaults any unrecognized slug to the `active` filter (`active_tab = tab if tab in
+("active","inactive","all") else "active"`), so an All tab keyed `''` would have shown active-only
+rows with the active count — a silent lie. Default view stays `active` (deactivated vendors hidden,
+matching the deactivate copy "they will no longer appear in vendor lists"); the **Inactive** tab
+surfaces them and **All** shows both. Footer "· filtered" is now suppressed on the All tab (matches
+the products reference convention `{% if tab != 'all' or q %}`).
 
-**Submit for governance when both fixes are in.** The Architect will do a full §2 + §2B pass.
+**Paired fix — `vendors/detail.html` Reactivate button.** The `/vendors/{id}/reactivate` route
+existed but had no UI, so a deactivated vendor was a dead end. Added a **Reactivate vendor** button
+(form-outside-form, mirroring the deactivate pattern) shown when `not vendor.is_active`.
+
+Both locked by `tests/test_vendor_list_tabs.py` (7 tests, green). The `open_pos`/`credits` "richer
+tabs" idea is dropped; if wanted later it is a separate backend-lane change.
+
+---
+
+#### Customers List — Inactive-tab + Reactivate Fix — ✅ (2026-05-31)
+
+Same "deactivated records unreachable" gap the Vendors List had, fixed the same day the same way.
+`customer_list` hard-filtered `is_active == True` on every tab and shipped no `/reactivate` route,
+so a customer deactivated via `POST /customers/{id}/deactivate` was unreachable from the UI and
+could never be turned back on.
+
+**Decision (owner-confirmed):** unlike Vendors — whose `all` tab is a true active+inactive union —
+the Customer List is the busy counter screen, so its four operational tabs (**including `all`**)
+stay scoped to **active** customers (`all` = all *active*). A dedicated **`inactive`** lifecycle tab
+(`is_active == False` only) surfaces deactivated accounts; the default view is unchanged.
+
+- **Backend (`app/routers/customers.py`):** added the `inactive` tab branch (dedicated query — it
+  lives outside `all_active` and its activity maps); an `inactive` count in `counts` from the full
+  dataset; per-row invoice/quote count lookups for inactive rows (so a deactivated account with
+  lingering open items still reads true); and `POST /customers/{id}/reactivate` (mirrors
+  `/vendors/{id}/reactivate`; 303 → detail). Factored shared `_OPEN_INVOICE_STATUSES` /
+  `_CLOSED_QUOTE_STATUSES` constants and dropped the dead `tab_ids` assignments.
+- **Template (`customers/list.html`):** added the **Inactive** filter tab (5th pill, count-badged).
+- **Template (`customers/detail.html`):** state-aware status forms (deactivate-form when active /
+  reactivate-form when inactive — form-outside-form, no nesting); a gray **Inactive** banner with a
+  one-click **Reactivate** button (visible in view *and* edit mode); the edit-footer Deactivate
+  button is now active-only. An inactive customer's page carries no deactivate path, and vice-versa.
+- **Locked by `tests/test_customer_list_tabs.py`** (12 tests, green — part of the 513-passed
+  functional suite). The only red in the full run is the known run-to-run-unstable
+  `test_visual_regression` baseline set (diffs vs the live mutable `jaks.db`); it now includes an
+  *expected* `customers_list` diff from the new tab — do **not** re-baseline. Verified live on
+  :8000: deactivate → row appears only under Inactive (count 1, hidden from default) → detail shows
+  the Reactivate banner → reactivate → back in the active list (count 0).
 
 ---
 

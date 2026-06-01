@@ -210,6 +210,27 @@ All 13 services in `/app/services/`:
 
 ## 9. Build Status — What Is NOT YET BUILT ❌
 
+> **🟢 STRATEGIC REVIEW — 2026-05-31 (status-refresher). BOTH CORE SPINES PROVEN GREEN.**
+> Verified against the test suite (**477 passing**, non-visual) — not self-reports:
+> - **Quote→SO→Invoice→Payment** and **PO→Receive→Inventory** both pass **end-to-end** in
+>   `tests/test_e2e_flows.py` (in-stock sale→paid; OOS→SO→deposit→linked-PO-receive→partial invoice;
+>   PO receive + moving-avg cost). One-click line-add (§8H shared adder) is live in all 4 workspaces.
+> - **Cores / Returns / Warranty / Vendor-Returns / Reports** now functionally tested — 52 behaviour
+>   tests (`9d0ced2`), all passing.
+> - **O3** automatic SQLite backup/restore shipped (`619a156`). Warranty Queue **#15** QB2 shipped (`e93cef9`).
+>
+> **Remaining for Phase-1A go-live (none are spine blockers):**
+> - **(a) Cores money bug** — `test_cores_lifecycle.py` xfails: **BUG-4 `issue_core_credit` double-credit
+>   (financial-integrity bug)** + BUG-2 vendor-accept-without-location `IntegrityError` → Backend fix.
+> - **(b) O2** minimal 2-user login + audit attribution — last new go-live gate (`main.py:92` placeholder).
+> - **(c) O3 restore acceptance test** (QA) — closes the §11 backup gate.
+> - **(d)** old `…/_/product-search` route cleanup — gated (5th consumer `products/detail.html:663`;
+>   `products.py:99-102` is the LIST filter, **keep**).
+> - **(e)** O4 vendor contacts · O5 markup→settings · O6 surcharge; Cores Queue **#16** / Returns Queue **#17**.
+>
+> The 31 failing `test_visual_regression` cases are **cosmetic / known-unstable** (mutable-DB pixel diffs +
+> stale baselines for the rebuilt Warranty + deleted PO-new screens) — **not** workflow failures.
+
 > **🔴 OWNER FUNCTIONAL TEST RECONCILIATION — 2026-05-30 (supersedes the 05-29 "support mode" claim below).**
 >
 > **✅ UPDATE (same day, later):** all three blockers below are **FIXED + regression-guarded** —
@@ -304,6 +325,20 @@ eBay listings · full TaxJar (multi-state) · ESN lookup scraper live · serial-
 ---
 
 ## 10. Next Build Queue (Priority Order)
+
+> **⚠️ SUPERSEDED 2026-05-31 — Sprints 1–5 below are the *original* build order and are ALL DONE**
+> (DB recreate, slide-overs, PO receive, Ctrl+K, invoice lock, SO→Invoice, 3-way match, core/RA/warranty
+> state machines) — proven by the 477-test suite + `tests/test_e2e_flows.py`. Kept as history only.
+>
+> **CURRENT priority queue (Phase-1A finish), in dependency order:**
+> 1. **Cores BUG-4 (double-credit — MONEY) + BUG-2 (IntegrityError)** — Backend; `test_cores_lifecycle.py` xfails.
+> 2. **O2 minimal login + audit attribution** — Backend (last new 1A go-live gate).
+> 3. **O3 restore acceptance test** — QA (closes the §11 backup gate).
+> 4. **Old product-search route cleanup** — UI migrates `products/detail.html:663` → QA drops test refs →
+>    Backend deletes the 3 safe endpoints (`quotes.py:241`, `sales_orders.py:372`, `invoices.py:612`);
+>    **keep `products.py:99-102`** (product-list search filter, not a redundant patch).
+> 5. **O4 vendor contacts · O5 markup→settings · O6 surcharge** — Backend lands routes → UI builds to §8I.
+> 6. **Cores Queue #16 · Returns Queue #17** — UI-Builder (copy `receiving_queue.html`).
 
 These are ordered by what blocks daily use most directly.
 
