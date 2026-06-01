@@ -541,24 +541,29 @@
                   <svg class="w-3.5 h-3.5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01"/>
                   </svg>
-                  Discrepancy — billed qty exceeds received qty on:
+                  Discrepancy — billed amounts differ from the PO on:
                 </p>
                 <ul class="space-y-0.5 pl-5 list-disc mb-3">
                   {% for bl in bill.lines if bl.has_discrepancy %}
                   <li>
                     <span class="font-mono">{{ bl.po_line.product.sku if bl.po_line and bl.po_line.product else '—' }}</span>
+                    {# Branch the clause: qty over-bill vs cost-only variance — has_discrepancy covers both
+                       (qty_billed > qty_received OR |unit_cost − po unit_cost| ≥ tolerance). #}
+                    {% if bl.po_line and bl.qty_billed > bl.po_line.qty_received %}
                     — billed <span class="font-semibold">{{ bl.qty_billed }}</span>,
-                    received {{ bl.po_line.qty_received if bl.po_line else '?' }}
-                    <span class="text-red-600 font-semibold">
-                      (+{{ bl.qty_billed - bl.po_line.qty_received if bl.po_line else '?' }} over)
-                    </span>
+                    received {{ bl.po_line.qty_received }}
+                    <span class="text-red-600 font-semibold">(+{{ bl.qty_billed - bl.po_line.qty_received }} over)</span>
+                    {% elif bl.po_line %}
+                    — unit cost differs
+                    <span class="text-red-600 font-semibold">(billed ${{ '%.2f' | format(bl.unit_cost) }} vs PO ${{ '%.2f' | format(bl.po_line.unit_cost) }})</span>
+                    {% endif %}
                   </li>
                   {% endfor %}
                 </ul>
                 <form id="approve-bill-{{ bill.id }}" method="post"
                       action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/approve" class="hidden"></form>
                 <button type="button"
-                        @click="askConfirm('approve-bill-{{ bill.id }}', 'Approve bill with discrepancy?', 'Billed quantity exceeds received quantity on this bill. Approving accepts the variance.', 'Approve anyway', true)"
+                        @click="askConfirm('approve-bill-{{ bill.id }}', 'Approve bill with discrepancy?', 'This bill differs from the PO (quantity and/or unit cost). Approving accepts the variance.', 'Approve anyway', true)"
                         class="px-3 py-1.5 text-xs font-semibold text-white bg-red-600
                                hover:bg-red-700 rounded-lg transition-colors">
                   Approve Anyway
