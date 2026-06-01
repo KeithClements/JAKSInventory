@@ -47,7 +47,7 @@
         {% else %}
         {# Static read-only summary #}
         <p class="text-xs text-gray-500">
-          {% if invoice.is_taxable %}Taxable at {{ "%g" | format(invoice.tax_rate) }}%{% else %}Non-taxable{% endif %}
+          {% if totals.is_taxable_display %}Taxable at {{ "%g"|format(totals.tax_rate_display) }}%{% else %}Non-taxable{% endif %}
           {% if invoice.apply_cc_surcharge %} · {{ "%g" | format(invoice.cc_surcharge_pct) }}% card fee applied{% endif %}
         </p>
         {% endif %}
@@ -109,6 +109,7 @@
           <span>CC Convenience Fee</span>
           <span class="tabular-nums">${{ "%.2f"|format(totals.cc_fee_amount) }}</span>
         </div>
+        <p class="text-[11px] text-gray-400">Estimate if paid by card — applied at processing, not in the total.</p>
         {% endif %}
 
         <div class="flex justify-between border-t-2 border-gray-300 pt-2 mt-2">
