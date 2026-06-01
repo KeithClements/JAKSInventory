@@ -11,11 +11,27 @@ Flows:
   c. OOS SO (linked PO) -> deposit -> PO receive allocates -> fulfill -> invoice (deposit applied)
   d. core charge (invoice hook) -> customer return (credit) -> submit to vendor -> vendor credit
   e. overdue invoice -> appears in the right AR-aging bucket + statement page renders
+  f. receive PO -> create vendor bill with exact qty/cost match -> AUTO-APPROVED
+  g. receive PO -> bill with over-qty -> DISCREPANCY (not approved)
+  h. receive PO -> bill with exact qty but cost variance -> DISCREPANCY (not approved)  ← #13
 
 Strategy: module TestClient runs startup (admin user #1 = ADMIN, core locations),
 so every service runs as a fully-permissioned user and core location routing works.
 Services are called directly; assertions are behaviour-level (inventory, cost,
 status, balances, ledger), never just HTTP 200.
+
+── OWNER ACCEPTANCE TESTS ───────────────────────────────────────────────────
+The §8 cross-workflow flows (b, c, d, f, g, h) are marked @pytest.mark.acceptance.
+Run the acceptance suite against any fresh build with:
+
+    .venv\\Scripts\\python.exe -m pytest tests/test_e2e_flows.py -m acceptance -v
+
+These are the three core business spines the owner validates before go-live:
+  sale→paid  :  pytest -m acceptance -k "instock_sale"
+  OOS→invoice:  pytest -m acceptance -k "oos_linked"
+  core→credit:  pytest -m acceptance -k "core_charge"
+
+All tests use an isolated in-memory DB seeded fresh per run — never touch jaks.db.
 """
 from __future__ import annotations
 
@@ -32,6 +48,9 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import activate, fresh_engine
 from app.main import app
+
+# Acceptance marker — see module docstring for how to run.
+pytestmark_acceptance = pytest.mark.acceptance
 
 _ENGINE = fresh_engine()
 _UID = 1  # admin user seeded by startup
@@ -152,6 +171,7 @@ def test_e2e_a_po_receive_updates_inventory_and_cost(db):
 # ===========================================================================
 # §8.b — in-stock SO -> fulfill -> invoice -> inventory down -> payment -> PAID
 # ===========================================================================
+@pytest.mark.acceptance
 
 def test_e2e_b_instock_sale_to_paid(db):
     from app.constants import InvoiceStatus, PaymentMethod
@@ -185,6 +205,7 @@ def test_e2e_b_instock_sale_to_paid(db):
 
 # ===========================================================================
 # §8.c — OOS SO + linked PO -> deposit -> receive allocates -> fulfill -> invoice
+@pytest.mark.acceptance
 # ===========================================================================
 
 def test_e2e_c_oos_linkedpo_deposit_fulfill(db):
@@ -232,6 +253,7 @@ def test_e2e_c_oos_linkedpo_deposit_fulfill(db):
 # ===========================================================================
 # §8.d — core charge (invoice hook) -> customer return -> vendor return -> credit
 # ===========================================================================
+@pytest.mark.acceptance
 
 def test_e2e_d_core_charge_to_vendor_credit(db):
     from app.constants import (CoreInspectionOutcome, CoreStatus, InvoiceStatus)
@@ -305,6 +327,7 @@ def test_e2e_e_overdue_invoice_aging_and_statement(db, client):
 #        clean qty/cost match (TESTING_FEEDBACK §2.4e — #13). Proves the full
 #        receive->bill chain end to end; the discrepancy branch is §8.g below.
 # ===========================================================================
+@pytest.mark.acceptance
 
 def test_e2e_f_receive_then_bill_auto_approves(db):
     from app.constants import POStatus, VendorBillStatus
@@ -348,6 +371,7 @@ def test_e2e_f_receive_then_bill_auto_approves(db):
 #        does NOT auto-approve (TESTING_FEEDBACK §2.4f — #13). Confirms approval
 #        is driven by the match, not granted blindly.
 # ===========================================================================
+@pytest.mark.acceptance
 
 def test_e2e_g_overbill_flags_discrepancy_not_approved(db):
     from app.constants import POStatus, VendorBillStatus
@@ -381,3 +405,95 @@ def test_e2e_g_overbill_flags_discrepancy_not_approved(db):
     # A flagged bill must NOT advance the PO to BILLED.
     po_r = db.query(PurchaseOrder).filter(PurchaseOrder.id == po.id).first()
     assert po_r.status != POStatus.BILLED
+
+
+# ===========================================================================
+# §8.h — #13 cost-mismatch gap: exact qty received+billed, but the vendor
+#        charges a DIFFERENT unit cost than the PO. Must flag DISCREPANCY
+#        (not auto-approve). Previously untested — cost variance path was
+#        implemented in create_vendor_bill but had no regression guard.
+# ===========================================================================
+
+@pytest.mark.acceptance
+def test_e2e_h_cost_variance_flags_discrepancy(db):
+    """Exact qty match + cost mismatch → DISCREPANCY, not APPROVED.
+
+    This is the missing #13 guard. The quantity-only mismatch is §8.g.
+    This test covers the `has_cost_discrepancy` branch (abs(billed - ordered)
+    >= COST_VARIANCE_TOLERANCE). A vendor who billed exact qty but at a higher
+    cost than the PO must NOT auto-approve — AP must review the overcharge.
+    """
+    from app.constants import POStatus, VendorBillStatus
+    from app.models.purchase_order import PurchaseOrder, VendorBill
+    from app.models.purchase_order import COST_VARIANCE_TOLERANCE
+    from app.services.po_service import POService
+
+    ven = _vendor(db)
+    prod = _product(db, qty_on_hand=0, cost=10.0)
+    # PO ordered at $12.00
+    po, line = _po_sent(db, ven, prod, qty=10, unit_cost=12.0)
+    db.commit()
+
+    svc = POService(db, _UID)
+    svc.create_receipt(vendor_id=ven.id, po_line_quantities={line.id: 10}, data={})
+    db.expire_all()
+
+    # Bill exact qty (10) but at $15.00 — $3.00 over the PO cost (>> tolerance).
+    bill = svc.create_vendor_bill(
+        po_id=po.id, vendor_id=ven.id,
+        bill_number=f"BILL-E2E-{next(_counter)}",
+        bill_date=datetime.date.today(),
+        due_date=datetime.date.today() + datetime.timedelta(days=30),
+        lines=[{"po_line_id": line.id, "qty_billed": 10, "unit_cost": 15.0}],
+    )
+
+    db.expire_all()
+    bill_r = db.query(VendorBill).filter(VendorBill.id == bill.id).first()
+    assert bill_r.status == VendorBillStatus.DISCREPANCY, (
+        f"Exact qty but billed cost ($15.00) > PO cost ($12.00) by "
+        f"${15.0 - 12.0:.2f} (COST_VARIANCE_TOLERANCE={COST_VARIANCE_TOLERANCE}); "
+        f"must flag DISCREPANCY not auto-approve; got {bill_r.status!r}"
+    )
+    # PO must NOT advance to BILLED when the bill has a cost discrepancy.
+    po_r = db.query(PurchaseOrder).filter(PurchaseOrder.id == po.id).first()
+    assert po_r.status != POStatus.BILLED
+
+    # Sanity: total is based on billed qty × billed cost (not PO cost).
+    assert bill_r.total_amount == 150.0   # 10 × $15.00
+
+
+@pytest.mark.acceptance
+def test_e2e_h_within_cost_tolerance_still_approves(db):
+    """Cost variance < COST_VARIANCE_TOLERANCE ($0.01) → still APPROVED.
+
+    Rounding differences below the tolerance must not block auto-approval.
+    """
+    from app.constants import VendorBillStatus
+    from app.models.purchase_order import VendorBill, COST_VARIANCE_TOLERANCE
+    from app.services.po_service import POService
+
+    ven = _vendor(db)
+    prod = _product(db, qty_on_hand=0, cost=10.0)
+    po, line = _po_sent(db, ven, prod, qty=5, unit_cost=10.0)
+    db.commit()
+
+    svc = POService(db, _UID)
+    svc.create_receipt(vendor_id=ven.id, po_line_quantities={line.id: 5}, data={})
+    db.expire_all()
+
+    # Bill at $10.009 — delta of $0.009 is below the $0.01 tolerance.
+    billed_cost = round(line.unit_cost + COST_VARIANCE_TOLERANCE - 0.001, 3)
+    bill = svc.create_vendor_bill(
+        po_id=po.id, vendor_id=ven.id,
+        bill_number=f"BILL-E2E-{next(_counter)}",
+        bill_date=datetime.date.today(),
+        due_date=datetime.date.today() + datetime.timedelta(days=30),
+        lines=[{"po_line_id": line.id, "qty_billed": 5, "unit_cost": billed_cost}],
+    )
+
+    db.expire_all()
+    bill_r = db.query(VendorBill).filter(VendorBill.id == bill.id).first()
+    assert bill_r.status == VendorBillStatus.APPROVED, (
+        f"Cost delta {billed_cost - line.unit_cost:.4f} is below tolerance "
+        f"{COST_VARIANCE_TOLERANCE}; must still auto-approve; got {bill_r.status!r}"
+    )
