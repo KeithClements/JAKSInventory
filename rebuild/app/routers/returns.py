@@ -11,6 +11,7 @@ All mutations route through RAService — no direct model writes here.
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from urllib.parse import quote as url_quote
 
@@ -340,11 +341,21 @@ def ra_detail(ra_id: int, request: Request, db: Session = Depends(get_db)):
     ra = db.query(ReturnAuthorization).filter(ReturnAuthorization.id == ra_id).first()
     if not ra:
         return RedirectResponse("/returns/", status_code=303)
+
+    # Bug 7 fix: expose the originating invoice so the workspace template can
+    # show its number/total and the template can guard gracefully when absent.
+    from app.models.invoice import Invoice
+    invoice = (
+        db.query(Invoice).filter(Invoice.id == ra.invoice_id).first()
+        if ra.invoice_id else None
+    )
+
     return templates.TemplateResponse(
         request,
         "returns/workspace.html",
         {
             "ra": ra,
+            "invoice": invoice,
             "RAStatus": RAStatus,
             "ReturnDisposition": ReturnDisposition,
         },
@@ -362,7 +373,10 @@ async def ra_approve(
 ):
     from app.services.ra_service import RAService
 
+    _t0 = time.perf_counter()
     form = await request.form()
+    _t_form = time.perf_counter()
+
     override_reason = str(form.get("override_reason", "")).strip() or None
     try:
         RAService(db, user_id).approve_ra(ra_id, override_reason=override_reason)
@@ -378,10 +392,23 @@ async def ra_approve(
             f"/returns/{ra_id}?error={url_quote('Unexpected error — RA was not approved.')}",
             status_code=303,
         )
-    return RedirectResponse(
+
+    _t_svc = time.perf_counter()
+    _form_ms = (_t_form - _t0) * 1000
+    _svc_ms  = (_t_svc - _t_form) * 1000
+    _total_ms = (_t_svc - _t0) * 1000
+    log.info(
+        "TIMING ra_approve ra=%s  total=%.1fms  form=%.1fms  svc=%.1fms",
+        ra_id, _total_ms, _form_ms, _svc_ms,
+    )
+    resp = RedirectResponse(
         f"/returns/{ra_id}?ok={url_quote('Return authorized — customer may ship parts back.')}",
         status_code=303,
     )
+    resp.headers["Server-Timing"] = (
+        f"form;dur={_form_ms:.1f},svc;dur={_svc_ms:.1f},total;dur={_total_ms:.1f}"
+    )
+    return resp
 
 
 # ── Receive Goods ─────────────────────────────────────────────────────────────
@@ -449,6 +476,7 @@ def ra_close(
 ):
     from app.services.ra_service import RAService
 
+    _t0 = time.perf_counter()
     try:
         ra = RAService(db, user_id).close_ra(ra_id)
     except ValueError as exc:
@@ -463,12 +491,18 @@ def ra_close(
             f"/returns/{ra_id}?error={url_quote('Unexpected error — return was not closed.')}",
             status_code=303,
         )
+
+    _svc_ms = (time.perf_counter() - _t0) * 1000
+    log.info("TIMING ra_close ra=%s  total=%.1fms  svc=%.1fms", ra_id, _svc_ms, _svc_ms)
+
     credit = ra.total_credit
     if credit > 0:
         msg = f"Return closed — ${credit:.2f} credit applied to account."
     else:
         msg = "Return closed."
-    return RedirectResponse(f"/returns/{ra_id}?ok={url_quote(msg)}", status_code=303)
+    resp = RedirectResponse(f"/returns/{ra_id}?ok={url_quote(msg)}", status_code=303)
+    resp.headers["Server-Timing"] = f"svc;dur={_svc_ms:.1f},total;dur={_svc_ms:.1f}"
+    return resp
 
 
 # ── Print / PDF ───────────────────────────────────────────────────────────────

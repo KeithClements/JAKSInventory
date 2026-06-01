@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 
 from app.constants import (
     AuditAction, EntityType, FulfillmentSource, InventoryTxnType,
-    LineType, PaymentTerms, Permission, SOLineSource, SOLineStatus, SOPaymentMode, SOStatus,
+    LineType, PaymentTerms, Permission, POStatus, SOLineSource, SOLineStatus, SOPaymentMode, SOStatus,
 )
 from app.models.inventory import InventoryTransaction
 from app.models.product import Product
@@ -55,6 +55,10 @@ class SalesOrderService(BaseService):
         Create a new sales order. Generates SO-YEAR-NNNN.
         Writes SO_COMMITTED inventory transactions for each product line.
         Links to originating quote if quote_id supplied.
+
+        Bug 1 fix: core-bearing PRODUCT lines automatically get a discrete
+        CORE_CHARGE child line so the SO subtotal includes the core (mirrors
+        QuoteService.add_line and InvoiceService._add_line_internal behaviour).
         """
         year = datetime.utcnow().year
         so_number = bump_counter(self.db, "next_so_number", "SO", year)
@@ -79,8 +83,10 @@ class SalesOrderService(BaseService):
 
         sort_order = 0
         for line_data in data.get("lines", []):
-            self._add_line_internal(so.id, line_data, sort_order)
+            line = self._add_line_internal(so.id, line_data, sort_order)
             sort_order += 1
+            if self._maybe_add_core_line(so.id, line, sort_order):
+                sort_order += 1
 
         self.audit(
             entity_type=EntityType.SALES_ORDER,
@@ -117,6 +123,10 @@ class SalesOrderService(BaseService):
         requested qty exceeds qty_available, this raises unless caller has
         NEGATIVE_INVENTORY_OVERRIDE permission AND passes allow_negative_inventory=True.
         Writes SO_COMMITTED inventory transaction for committed product lines.
+
+        Bug 1 fix: if the product has a core charge, a discrete CORE_CHARGE child
+        line is auto-derived (matching the quote and invoice behaviour so the SO
+        subtotal includes the core deposit).
         """
         so = self._get_so_or_404(so_id)
         if so.status in (SOStatus.CANCELLED, SOStatus.INVOICED):
@@ -135,6 +145,7 @@ class SalesOrderService(BaseService):
             sort_order,
             allow_negative_inventory=allow_negative_inventory,
         )
+        self._maybe_add_core_line(so.id, line, sort_order + 1)
         self.db.commit()
         return line
 
@@ -208,6 +219,86 @@ class SalesOrderService(BaseService):
         # Freeze at what's already invoiced — remaining qty is gone
         line.qty_ordered = line.qty_invoiced
         self.db.commit()
+
+    def create_po_for_line(self, so_id: int, line_id: int):
+        """Order a backordered SO line on a new draft PO and link the two.
+
+        Per-line "Order" action on the SO workspace (TESTING_FEEDBACK 2026-06-01).
+        Pre-fills a draft PO with the part, the still-unsourced qty, and the
+        product's PREFERRED vendor (POService.add_line pulls that vendor's cost),
+        then links the SO line to the new PO line via linked_po_line_id and
+        advances it to fulfillment_source=LINKED_PO / line_status=AWAITING_PO_RECEIPT.
+
+        Receiving the linked PO commits the goods back to this SO line and flips
+        it AWAITING_PO_RECEIPT → RESERVED_STOCK (POService.create_receipt). The
+        PO→SO direction is recovered for display by walking linked_po_line_id
+        backwards (app.services.document_links). Re-running after the linked PO
+        was cancelled drops the stale link and orders onto a fresh PO. Returns
+        the created PurchaseOrder.
+        """
+        from app.services.po_service import POService
+        from app.models.purchase_order import POLine
+
+        so = self._get_so_or_404(so_id)
+        if so.status in (SOStatus.CANCELLED, SOStatus.INVOICED):
+            raise ValueError(f"Cannot order parts for a {so.status} sales order")
+
+        line = (
+            self.db.query(SOLine)
+            .filter(SOLine.id == line_id, SOLine.so_id == so_id)
+            .first()
+        )
+        if line is None:
+            raise ValueError(f"SOLine {line_id} not found on {so.so_number}")
+        if line.line_type != LineType.PRODUCT or not line.product_id:
+            raise ValueError("Only stocked product lines can be ordered on a PO")
+        if line.linked_po_line_id:
+            existing = self.db.get(POLine, line.linked_po_line_id)
+            if existing and existing.po and existing.po.status != POStatus.CANCELLED:
+                raise ValueError("This line is already linked to a purchase order")
+            # The previously linked PO was cancelled (or no longer exists): fall
+            # through and re-link onto a fresh PO. The assignment below overwrites
+            # the stale linked_po_line_id, so the "Re-order" action can succeed.
+
+        short_qty = line.qty_ordered - line.qty_fulfilled
+        if short_qty <= 0:
+            raise ValueError("This line has no outstanding quantity to order")
+
+        product = self.db.query(Product).filter(Product.id == line.product_id).first()
+        source = product.preferred_vendor_source if product else None
+        if source is None:
+            sku = product.sku if product else "this part"
+            raise ValueError(
+                f"No preferred vendor is set for {sku}. Set one on the product, "
+                "then order again."
+            )
+
+        po_svc = POService(self.db, self.current_user_id)
+        po = po_svc.create_po(
+            vendor_id=source.vendor_id,
+            data={"notes": f"Auto-created from {so.so_number} to source a backordered line."},
+        )
+        po_line = po_svc.add_line(
+            po.id,
+            line.product_id,
+            {"qty_ordered": short_qty, "description": line.description},
+        )
+
+        old_status = line.line_status
+        line.linked_po_line_id = po_line.id
+        line.fulfillment_source = FulfillmentSource.LINKED_PO
+        line.line_status = SOLineStatus.AWAITING_PO_RECEIPT
+
+        self.audit(
+            entity_type=EntityType.SALES_ORDER,
+            entity_id=so_id,
+            action=AuditAction.STATUS_CHANGED,
+            old_value=old_status,
+            new_value=line.line_status,
+            notes=f"line {line_id} ordered on {po.po_number} (qty {short_qty})",
+        )
+        self.db.commit()
+        return po
 
     # ── Fulfillment ───────────────────────────────────────────────────────────
 
@@ -701,6 +792,54 @@ class SalesOrderService(BaseService):
         self.db.commit()
         return so
 
+    def _maybe_add_core_line(
+        self,
+        so_id: int,
+        parent_line: SOLine,
+        sort_order: int,
+    ) -> SOLine | None:
+        """
+        Bug 1 fix — auto-derive a discrete CORE_CHARGE child SOLine whenever
+        a top-level PRODUCT line is added whose product has a core charge.
+
+        Mirrors QuoteService.add_line (quote_service.py:127-149) and
+        InvoiceService's core-line derivation so all three document types
+        agree: the core deposit is its own line whose line_total is included
+        in the document subtotal via SOLine.line_total (and therefore
+        SalesOrder.subtotal) rather than being silently buried in the legacy
+        core_charge float which line_total ignores.
+
+        Skips if:
+          - line is not a top-level PRODUCT (already has a parent or is itself a core)
+          - product has no core (product.has_core is False)
+          - customer_core_charge == 0 (no charge to collect)
+        """
+        if (
+            parent_line.line_type != LineType.PRODUCT
+            or parent_line.parent_line_id is not None  # skip child lines
+            or parent_line.is_core_line                # skip re-processing a core line
+            or not parent_line.product_id
+        ):
+            return None
+
+        product = self.db.query(Product).filter(Product.id == parent_line.product_id).first()
+        if not product or not product.has_core or product.customer_core_charge <= 0:
+            return None
+
+        return self._add_line_internal(so_id, {
+            "product_id": parent_line.product_id,
+            "description": f"Core — {product.title or product.sku}",
+            "qty_ordered": parent_line.qty_ordered,
+            "unit_price": product.customer_core_charge,
+            "unit_cost": product.vendor_core_charge,
+            "line_type": LineType.CORE_CHARGE,
+            "is_core_line": True,
+            "is_auto_generated": True,
+            "is_locked_to_parent": True,
+            "parent_line_id": parent_line.id,
+            "discount_pct": 0.0,
+        }, sort_order)
+
     def _get_so_or_404(self, so_id: int) -> SalesOrder:
         so = self.db.query(SalesOrder).filter(SalesOrder.id == so_id).first()
         if so is None:
@@ -786,6 +925,12 @@ class SalesOrderService(BaseService):
             line_status=initial_status,
             linked_po_line_id=linked_po_line_id,
             sort_order=sort_order,
+            # Parent/child linkage — forwarded from the caller so auto-generated
+            # CORE_CHARGE children carry the right metadata.
+            parent_line_id=data.get("parent_line_id"),
+            is_core_line=bool(data.get("is_core_line", False)),
+            is_auto_generated=bool(data.get("is_auto_generated", False)),
+            is_locked_to_parent=bool(data.get("is_locked_to_parent", False)),
         )
         self.db.add(line)
         self.db.flush()

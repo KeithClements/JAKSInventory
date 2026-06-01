@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.constants import CrossRefType, SuggestedSellType
 from app.deps import get_db, get_current_user_id
@@ -51,12 +51,15 @@ def _vendors(db: Session) -> list[Vendor]:
 
 def _categories(db: Session):
     from app.models.product import ProductCategory
-    return (
+    cats = (
         db.query(ProductCategory)
         .filter(ProductCategory.is_active == True)  # noqa: E712
-        .order_by(ProductCategory.name)
+        .options(joinedload(ProductCategory.parent))
         .all()
     )
+    # Sort by full path so each Major Group sits directly above its sub-categories
+    # ("Engine", "Engine → Bearings", …) rather than scattered by bare name.
+    return sorted(cats, key=lambda c: c.full_path.lower())
 
 
 # ── List ─────────────────────────────────────────────────────────────────────
@@ -66,6 +69,7 @@ def product_list(
     request: Request,
     q: str = "",
     tab: str = "all",
+    sort: str = "sku",
     db: Session = Depends(get_db),
 ):
     base = db.query(Product).filter(Product.is_active == True)  # noqa: E712
@@ -100,7 +104,34 @@ def product_list(
             _filter = _filter | _dedashed_sku.ilike(f"%{_q_clean}%")
         query = query.filter(_filter)
 
-    products = query.order_by(Product.sku).all()
+    from app.models.product import ProductCategory
+
+    products = (
+        query.options(
+            # Eager-load so the category sub-line and vendor sort don't N+1.
+            joinedload(Product.category).joinedload(ProductCategory.parent),
+            joinedload(Product.vendor_sources).joinedload(ProductVendorSource.vendor),
+        )
+        .order_by(Product.sku)
+        .all()
+    )
+
+    # Sort: SKU (default) · Vendor · Category. Done in Python so the
+    # self-referential category full_path (Major Group → Category → Sub-category)
+    # can drive a hierarchical order; products with no value sort last.
+    if sort == "vendor":
+        def _vendor_key(p):
+            pvs = p.preferred_vendor_source
+            name = pvs.vendor.name if pvs and pvs.vendor else ""
+            return (name == "", name.lower(), p.sku.lower())
+        products.sort(key=_vendor_key)
+    elif sort == "category":
+        def _category_key(p):
+            path = p.category.full_path if p.category else ""
+            return (path == "", path.lower(), p.sku.lower())
+        products.sort(key=_category_key)
+    else:
+        sort = "sku"  # normalize unknown values back to the default
 
     # Tab counts (always based on full active set, ignoring current tab/search)
     counts = {
@@ -122,6 +153,7 @@ def product_list(
         "products": products,
         "q": q,
         "tab": tab,
+        "sort": sort,
         "counts": counts,
     })
 
@@ -202,9 +234,13 @@ async def product_quick_create(request: Request, db: Session = Depends(get_db), 
     markup_raw = str(form.get("markup_pct", "")).strip()
     markup_pct = float(markup_raw) if markup_raw else _pricing.default_markup_pct()
     try:
+        # Bug 3 fix: include description so the quick-create slide-over passes
+        # it through to the product record (the main /new form already does via
+        # _parse_product_form; the inline dict here was the gap).
         product = svc.create_product({
             "sku": sku,
             "title": title,
+            "description": str(form.get("description", "")).strip(),
             "cost": float(form.get("cost") or 0),
             "markup_pct": markup_pct,
             "has_core": bool(form.get("has_core")),
@@ -378,6 +414,7 @@ def product_detail(
         "manufacturers": MANUFACTURERS,
         "cross_ref_types": list(CrossRefType),
         "suggested_sell_types": list(SuggestedSellType),
+        "default_markup": float(get_setting_value_db(db, "default_markup_pct", "30.0")),
         "ok": ok or (saved and "Saved.") or "",
         "error": error,
     })
@@ -402,6 +439,8 @@ async def product_update(product_id: int, request: Request, db: Session = Depend
             "categories": _categories(db),
             "manufacturers": MANUFACTURERS,
             "cross_ref_types": list(CrossRefType),
+            "suggested_sell_types": list(SuggestedSellType),
+            "default_markup": float(get_setting_value_db(db, "default_markup_pct", "30.0")),
             "error": str(exc),
         }, status_code=422)
 
@@ -447,10 +486,18 @@ async def vendor_source_add(product_id: int, request: Request, db: Session = Dep
         }
         source = _svc(db, user_id).add_vendor_source(product_id, vendor_id, data)
         db.refresh(source)
-        return templates.TemplateResponse(request, "products/_vendor_source_row.html", {
+        resp = templates.TemplateResponse(request, "products/_vendor_source_row.html", {
             "source": source,
             "product_id": product_id,
         })
+        # When this source became the preferred one, product.cost was mirrored
+        # from it. Tell the Info tab to live-update the "Our Cost" field (and the
+        # derived sell price) without a full page reload.
+        if source.is_preferred:
+            resp.headers["HX-Trigger"] = json.dumps(
+                {"product-cost-synced": {"cost": round(source.vendor_cost, 2)}}
+            )
+        return resp
     except ValueError as exc:
         return HTMLResponse(
             f'<tr><td colspan="6" class="px-4 py-2 text-red-600 text-sm">{exc}</td></tr>',
@@ -464,10 +511,17 @@ def vendor_source_prefer(product_id: int, source_id: int, request: Request, db: 
         _svc(db, user_id).set_preferred_vendor(product_id, source_id)
         # Return the full updated sources list partial so preferred badges refresh
         p = db.query(Product).filter(Product.id == product_id).first()
-        return templates.TemplateResponse(request, "products/_vendor_sources_table.html", {
+        resp = templates.TemplateResponse(request, "products/_vendor_sources_table.html", {
             "product": p,
             "product_id": product_id,
         })
+        # Switching the preferred vendor changes product.cost — live-update the
+        # Info tab's Pricing card to match.
+        if p is not None:
+            resp.headers["HX-Trigger"] = json.dumps(
+                {"product-cost-synced": {"cost": round(p.cost, 2)}}
+            )
+        return resp
     except ValueError as exc:
         return HTMLResponse(f'<span class="text-red-600 text-sm">{exc}</span>', status_code=422)
 

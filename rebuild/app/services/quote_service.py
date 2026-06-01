@@ -303,7 +303,11 @@ class QuoteService(BaseService):
         from app.services.sales_order_service import SalesOrderService
         quote = self._get_or_404(quote_id)
 
-        # Build SO line data — only included product lines convert
+        # Build SO line data — only included PRODUCT lines.
+        # Bug 1 fix: CORE_CHARGE quote lines are intentionally excluded here;
+        # SalesOrderService.create_sales_order re-derives discrete CORE_CHARGE
+        # child SOLines from the product's has_core / customer_core_charge fields.
+        # This mirrors convert_to_invoice and avoids double-counting.
         so_lines = [
             {
                 "product_id": ln.product_id,
@@ -313,7 +317,6 @@ class QuoteService(BaseService):
                 "unit_price": ln.unit_price,
                 "unit_cost": ln.unit_cost,
                 "discount_pct": ln.discount_pct,
-                "core_charge": 0.0,
             }
             for ln in sorted(quote.lines, key=lambda l: l.sort_order)
             if ln.line_type == LineType.PRODUCT and ln.is_included

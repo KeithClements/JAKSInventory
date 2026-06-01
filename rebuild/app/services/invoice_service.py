@@ -465,6 +465,22 @@ class InvoiceService(BaseService):
         if invoice.total < 0:
             errors.append("Invoice total cannot be negative.")
 
+        # UX5: block finalizing a genuinely empty invoice (no billable value).
+        # Cores-only or freight-only invoices are valid (total > 0 catches them).
+        # A $0.00 total almost always means lines were cleared / product prices
+        # not set — surface this as a hard error rather than silently creating
+        # a zero-dollar OPEN invoice that confuses A/R.
+        if invoice.total == 0.0 and invoice.lines:
+            billable = [
+                ln for ln in invoice.lines
+                if ln.unit_price != 0.0 or ln.line_type == LineType.CORE_CHARGE
+            ]
+            if not billable:
+                errors.append(
+                    "Invoice total is $0.00. Add at least one line with a price, "
+                    "or remove all lines to keep as draft."
+                )
+
         return errors
 
     def check_inventory_for_finalise(self, invoice_id: int) -> list[dict]:
@@ -976,6 +992,14 @@ class InvoiceService(BaseService):
         for allocation in invoice.allocations:
             allocation.is_reversed = True
 
+        # Roll the linked sales order back to un-invoiced. Voiding means "this
+        # invoice never happened", so the qty it fulfilled/invoiced must return
+        # to the SO — otherwise the SO is stuck looking fully invoiced (its
+        # qty_remaining stays 0, blocking re-invoice) and the SO list shows a
+        # stale "Invoiced" badge that contradicts the status tabs.
+        if invoice.sales_order_id:
+            self._rollback_sales_order_after_void(invoice)
+
         invoice.status = InvoiceStatus.VOID
         invoice.locked_at = datetime.utcnow()
         invoice.lock_reason = InvoiceLockReason.VOIDED
@@ -987,6 +1011,65 @@ class InvoiceService(BaseService):
             new_value={"reason": reason},
         )
         self.db.commit()
+
+    def _rollback_sales_order_after_void(self, invoice) -> None:
+        """Reverse the SO-line fulfillment a now-voided invoice represented.
+
+        Mirrors ``SalesOrderService.fulfill_and_invoice`` in reverse: decrements
+        ``qty_invoiced`` / ``qty_fulfilled`` on each linked SO line, recomputes
+        the line state machine, and recomputes the SO status from the rolled-back
+        quantities so it agrees with the SO list tabs.
+
+        Inventory (``qty_on_hand``) is restored by ``void_invoice`` itself; SO
+        line *commitments* were released at fulfillment time and are intentionally
+        NOT re-reserved here — a fresh fulfill re-checks live availability.
+        """
+        from app.constants import SOLineStatus, SOStatus
+        from app.models.quote import SalesOrder, SOLine
+
+        touched = False
+        for ln in invoice.lines:
+            if not ln.so_line_id or not ln.qty:
+                continue
+            so_line = self.db.query(SOLine).filter(SOLine.id == ln.so_line_id).first()
+            if so_line is None:
+                continue
+            so_line.qty_invoiced = max(0, so_line.qty_invoiced - ln.qty)
+            so_line.qty_fulfilled = max(0, so_line.qty_fulfilled - ln.qty)
+
+            # Recompute the line state from the rolled-back quantities.
+            if so_line.qty_ordered > 0 and so_line.qty_invoiced >= so_line.qty_ordered:
+                so_line.line_status = SOLineStatus.INVOICED
+            elif so_line.qty_invoiced > 0 or so_line.qty_fulfilled > 0:
+                so_line.line_status = SOLineStatus.FULFILLED
+            else:
+                # Fully un-invoiced — return to the line's source baseline.
+                # FulfillmentSource and SOLineStatus share string values for the
+                # initial states (stock/backorder/linked_po/...), so this maps 1:1.
+                try:
+                    so_line.line_status = SOLineStatus(so_line.fulfillment_source)
+                except ValueError:
+                    so_line.line_status = SOLineStatus.STOCK
+            touched = True
+
+        if not touched:
+            return
+
+        self.db.flush()  # so the SalesOrder relationship sees the updated qtys
+        so = (
+            self.db.query(SalesOrder)
+            .filter(SalesOrder.id == invoice.sales_order_id)
+            .first()
+        )
+        if so is None or so.status == SOStatus.CANCELLED:
+            return
+        self.db.expire(so)
+        if so.is_fully_invoiced:
+            so.status = SOStatus.INVOICED
+        elif any(line.qty_invoiced > 0 for line in so.lines):
+            so.status = SOStatus.PARTIAL
+        else:
+            so.status = SOStatus.OPEN
 
     # ── Totals (full breakdown for workspace totals panel) ────────────────────
 
