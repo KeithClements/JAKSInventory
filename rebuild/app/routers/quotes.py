@@ -585,10 +585,13 @@ async def add_line(
     for ln in lines:
         db.refresh(ln)
 
-    if len(lines) > 1:
-        # Core charge was auto-added — return full tbody so both rows land in the
-        # right tree-sorted positions.  HX-Retarget/HX-Reswap override the original
-        # JS call (which used beforeend) to an innerHTML swap on the tbody instead.
+    if len(lines) > 1 or parent_line_id is not None:
+        # Return the full tbody when a core child was auto-added (len > 1) OR this is
+        # a child/optional sub-line (parent_line_id set), so every row lands in its
+        # right tree-sorted position. HX-Retarget/HX-Reswap override the JS call's
+        # beforeend/beforebegin swap to an innerHTML swap on the tbody. This also
+        # fixes the orphaned-<tr> bug: a bare <tr> swapped relative to a <tr> target
+        # (#chips-N) gets reparented to <html> by the HTMX fragment parser.
         quote = _get_quote_or_404(db, quote_id)
         resp = templates.TemplateResponse(
             request,
