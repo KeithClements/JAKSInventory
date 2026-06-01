@@ -20,7 +20,8 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
+from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.auth import (
@@ -33,48 +34,12 @@ from app.deps import get_db
 from app.models.user import User
 
 router = APIRouter(tags=["auth"])
+templates = Jinja2Templates(directory="app/templates")
 
 
-_LOGIN_PAGE = """<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sign in — JAKS Inventory</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="bg-gray-100 min-h-screen flex items-center justify-center">
-  <form method="post" action="/login"
-        class="bg-white shadow-md rounded-lg px-8 py-8 w-full max-w-sm">
-    <h1 class="text-xl font-bold text-gray-800 mb-1">JAKS Inventory</h1>
-    <p class="text-sm text-gray-500 mb-6">Sign in to continue</p>
-    {error_block}
-    <label class="block text-sm font-medium text-gray-700 mb-1">Username</label>
-    <input name="username" autofocus autocomplete="username"
-           class="w-full border border-gray-300 rounded-md px-3 py-2 mb-4
-                  focus:outline-none focus:ring-2 focus:ring-blue-500" />
-    <label class="block text-sm font-medium text-gray-700 mb-1">Password</label>
-    <input name="password" type="password" autocomplete="current-password"
-           class="w-full border border-gray-300 rounded-md px-3 py-2 mb-6
-                  focus:outline-none focus:ring-2 focus:ring-blue-500" />
-    <button type="submit"
-            class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium
-                   rounded-md px-4 py-2">Sign in</button>
-  </form>
-</body>
-</html>"""
-
-_ERROR_BLOCK = (
-    '<div class="bg-red-50 border border-red-200 text-red-700 text-sm '
-    'rounded-md px-3 py-2 mb-4">Invalid username or password.</div>'
-)
-
-
-@router.get("/login", response_class=HTMLResponse)
-def login_form(request: Request, error: str = "") -> HTMLResponse:
-    return HTMLResponse(
-        _LOGIN_PAGE.format(error_block=_ERROR_BLOCK if error else "")
-    )
+@router.get("/login")
+def login_form(request: Request, error: str = ""):
+    return templates.TemplateResponse(request, "auth/login.html", {"error": bool(error)})
 
 
 @router.post("/login")

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in — JAKS Inventory</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center font-sans">
+
+  <form method="post" action="/login"
+        class="bg-white shadow-md rounded-xl px-8 py-8 w-full max-w-sm">
+
+    <h1 class="text-xl font-bold text-gray-800 mb-1">JAKS Inventory</h1>
+    <p class="text-sm text-gray-500 mb-6">Sign in to continue</p>
+
+    {% if error %}
+    <div class="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-3 py-2 mb-4">
+      Invalid username or password.
+    </div>
+    {% endif %}
+
+    <label class="block text-xs font-medium text-gray-600 mb-1">Username</label>
+    <input name="username" autofocus autocomplete="username"
+           class="w-full rounded-lg border border-gray-200 px-3 py-2 mb-4 text-sm
+                  focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400" />
+
+    <label class="block text-xs font-medium text-gray-600 mb-1">Password</label>
+    <input name="password" type="password" autocomplete="current-password"
+           class="w-full rounded-lg border border-gray-200 px-3 py-2 mb-6 text-sm
+                  focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400" />
+
+    <button type="submit"
+            class="w-full bg-brand-700 hover:bg-brand-600 text-white font-medium
+                   rounded-lg px-4 py-2 text-sm transition-colors">
+      Sign in
+    </button>
+
+  </form>
+
+</body>
+</html>
