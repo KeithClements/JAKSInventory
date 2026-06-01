@@ -678,8 +678,9 @@ def invoice_print(invoice_id: int, request: Request, db: Session = Depends(get_d
     if c.phone and c.phone.strip():
         addr_lines.append(c.phone.strip())
 
-    gross = round(sum(ln.line_total for ln in inv.lines), 2)
-    discount_amount = round(gross - inv.subtotal, 2) if inv.discount_pct else 0.0
+    # Invoice-level discount, computed by the model so the printed document agrees
+    # with the List total, the Preview panel, and the workspace totals panel.
+    discount_amount = inv.discount_amount
 
     company = {
         "name":    get_setting_value_db(db, "company_name",    "JAKS Parts"),
@@ -718,8 +719,9 @@ def invoice_pdf(invoice_id: int, request: Request, db: Session = Depends(get_db)
     if c.phone and c.phone.strip():
         addr_lines.append(c.phone.strip())
 
-    gross = round(sum(ln.line_total for ln in inv.lines), 2)
-    discount_amount = round(gross - inv.subtotal, 2) if inv.discount_pct else 0.0
+    # Invoice-level discount, computed by the model so the printed document agrees
+    # with the List total, the Preview panel, and the workspace totals panel.
+    discount_amount = inv.discount_amount
 
     company = {
         "name":    get_setting_value_db(db, "company_name",    "JAKS Parts"),

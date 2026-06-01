@@ -18,10 +18,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from app.constants import (
-    AuditAction, EntityType, InventoryTxnType,
+    AuditAction, EntityType, FREIGHT_LINE_TYPES, InventoryTxnType,
     InvoiceLockReason, InvoiceStatus, LineType, NON_TAXABLE_LINE_TYPES,
     PaymentTerms, Permission, QBOSyncStatus,
 )
+from app.invoice_totals import compute_invoice_totals
 from app.models.customer import Customer
 from app.models.inventory import InventoryTransaction
 from app.models.invoice import Invoice, InvoiceLine
@@ -30,12 +31,11 @@ from app.settings_utils import bump_counter, get_setting_value_db
 from app.services.base import BaseService, apply_product_line_defaults
 
 
-# Line types treated as billable parts (count toward Parts Subtotal, taxable).
-_PARTS_LINE_TYPES = {LineType.PRODUCT, LineType.MISC, LineType.WARRANTY}
-# Line types treated as freight/delivery (separate totals bucket).
-_FREIGHT_LINE_TYPES = {
-    LineType.SHIPPING, LineType.FREIGHT, LineType.LOCAL_DELIVERY, LineType.FUEL_SERVICE_CHARGE,
-}
+# Line types treated as freight/delivery. Aliases the canonical
+# app/constants.FREIGHT_LINE_TYPES (also used by the totals engine) so
+# validate_for_finalise buckets freight identically. All the totals bucketing
+# (parts/core/freight/other) now lives in app.invoice_totals.
+_FREIGHT_LINE_TYPES = FREIGHT_LINE_TYPES
 
 
 class InvoiceService(BaseService):
@@ -255,10 +255,13 @@ class InvoiceService(BaseService):
             invoice.due_date = None
 
         if recalc_pricing:
-            # Apply new customer discount across lines, re-snap unit_cost from product
+            # Apply the new customer's invoice-level discount and re-snap unit prices.
+            # The discount lives at the invoice level (applied once in
+            # Invoice.discount_amount / calculate_totals) — it must NOT be pushed onto
+            # the lines, which would double-count it. Per-line discounts are an
+            # independent layer and are left untouched here.
             invoice.discount_pct = new_customer.discount_pct or 0.0
             for ln in invoice.lines:
-                ln.discount_pct = invoice.discount_pct
                 if ln.product_id and ln.line_type == LineType.PRODUCT:
                     product = self.db.query(Product).filter(Product.id == ln.product_id).first()
                     if product and product.selling_price > 0:
@@ -292,13 +295,12 @@ class InvoiceService(BaseService):
         if product_id is not None:
             _product = self.db.query(Product).filter(Product.id == product_id).first()
             apply_product_line_defaults(_product, merged, include_price=True)
-        # Apply invoice-level default discount for new product lines
-        if (
-            merged.get("line_type", LineType.PRODUCT) == LineType.PRODUCT
-            and "discount_pct" not in data
-            and invoice.discount_pct
-        ):
-            merged["discount_pct"] = invoice.discount_pct
+        # NOTE: the invoice-level discount (invoice.discount_pct) is applied exactly
+        # ONCE at the invoice level (see Invoice.discount_amount / calculate_totals).
+        # It must NOT be copied onto the new line here — doing so double-counted the
+        # discount (line_total discounted, then the invoice discount applied again on
+        # top, e.g. a 10% customer discount became ~19% off). The per-line discount_pct
+        # is an independent per-line markdown the user sets explicitly.
 
         line = self._add_line_internal(invoice_id, merged, sort_order)
 
@@ -970,103 +972,24 @@ class InvoiceService(BaseService):
 
     def calculate_totals(self, invoice_id: int) -> dict:
         """
-        Full totals breakdown per Phase A spec — cores are ALWAYS surfaced as
-        a separate subtotal (refundable liability, never silently rolled into parts).
+        Full totals breakdown for the workspace totals panel.
 
-        Returns:
-          parts_subtotal   — sum of product / misc / warranty lines (pre-discount)
-          core_subtotal    — sum of all CORE_CHARGE lines (separately tracked)
-          freight_subtotal — sum of shipping/freight/delivery/fuel service
-          discount_amount  — invoice-level % discount applied to parts only
-          taxable_amount   — what tax is calculated on (after discount, taxable lines only)
-          tax_amount       — taxable_amount × tax_rate
-          cc_fee_amount    — CC surcharge on (subtotal + tax) if enabled
-          total            — grand total
-          amount_paid, balance_due
+        Delegates to the ONE totals engine
+        (``app.invoice_totals.compute_invoice_totals``) that also backs the
+        Invoice model's money properties (``subtotal`` / ``discount_amount`` /
+        ``tax_amount`` / ``total`` / ``balance_due`` — read by the List, Preview
+        and print/PDF), so the workspace and the customer-facing surfaces can
+        never disagree. See that module for the policy (cores are ALWAYS a
+        separate subtotal and never taxed; fees & credits count toward total;
+        the invoice-level discount applies to parts only).
+
+        Returns: subtotal, parts_subtotal, core_subtotal, freight_subtotal,
+        other_subtotal, discount_amount, taxable_amount, tax_rate_display,
+        is_taxable_display, tax_amount, cc_fee_amount, cc_surcharge_estimate,
+        total, amount_paid, balance_due.
         """
         invoice = self._get_or_404(invoice_id)
-
-        parts_subtotal = 0.0
-        core_subtotal = 0.0
-        freight_subtotal = 0.0
-        for ln in invoice.lines:
-            if ln.line_type in _PARTS_LINE_TYPES:
-                parts_subtotal += ln.line_total
-            elif ln.line_type == LineType.CORE_CHARGE:
-                core_subtotal += ln.line_total
-            elif ln.line_type in _FREIGHT_LINE_TYPES:
-                freight_subtotal += ln.line_total
-
-        parts_subtotal = round(parts_subtotal, 2)
-        core_subtotal = round(core_subtotal, 2)
-        freight_subtotal = round(freight_subtotal, 2)
-
-        # Invoice-level discount applies to parts only (cores are pass-through)
-        discount_amount = round(parts_subtotal * (invoice.discount_pct / 100), 2) if invoice.discount_pct else 0.0
-        parts_after_discount = round(parts_subtotal - discount_amount, 2)
-
-        # R1 — Tax computation: prefer frozen per-line tax_amount (set at finalize),
-        # fall back to legacy invoice-level rate for drafts that haven't been finalized.
-        sum_line_tax = round(sum((ln.tax_amount or 0.0) for ln in invoice.lines), 2)
-        if sum_line_tax > 0:
-            # Frozen path: use snapshotted per-line tax_amounts
-            tax_rate_display = invoice.tax_rate_snapshot or invoice.tax_rate
-            is_taxable_display = not invoice.tax_exempt_snapshot
-            taxable_amount = round(
-                sum(
-                    ln.unit_price * ln.qty * (1 - (ln.discount_pct or 0) / 100)
-                    for ln in invoice.lines
-                    if ln.is_taxable
-                ),
-                2,
-            )
-            tax_amount = sum_line_tax
-        else:
-            # Draft / legacy fallback: live calc from invoice-level rate
-            tax_rate_display = invoice.tax_rate_snapshot or invoice.tax_rate
-            is_taxable_display = (
-                not invoice.tax_exempt_snapshot
-                and (invoice.is_taxable or tax_rate_display > 0)
-            )
-            taxable_amount = (
-                round(parts_after_discount + freight_subtotal, 2)
-                if is_taxable_display
-                else 0.0
-            )
-            tax_amount = (
-                round(taxable_amount * (tax_rate_display / 100), 2)
-                if is_taxable_display
-                else 0.0
-            )
-
-        # R1 — Invoice total does NOT include CC surcharge anymore.
-        # Surcharge is computed AT PAYMENT TIME on the card portion only.
-        # `cc_fee_amount` is now an INFORMATIONAL estimate ("if customer pays
-        # the full balance by card, this is what the surcharge would be") and
-        # is NOT added to the invoice total or balance_due.
-        total = round(parts_after_discount + core_subtotal + freight_subtotal + tax_amount, 2)
-
-        cc_surcharge_estimate = (
-            round(total * (invoice.cc_surcharge_pct / 100), 2)
-            if invoice.apply_cc_surcharge or (invoice.cc_surcharge_pct or 0) > 0
-            else 0.0
-        )
-
-        return {
-            "parts_subtotal":   parts_subtotal,
-            "core_subtotal":    core_subtotal,
-            "freight_subtotal": freight_subtotal,
-            "discount_amount":  discount_amount,
-            "taxable_amount":   taxable_amount,
-            "tax_amount":       tax_amount,
-            # Informational only — surcharge isn't added to total. Templates can
-            # show "If paid by card: total + estimated surcharge = $X.XX".
-            "cc_fee_amount":    cc_surcharge_estimate,
-            "cc_surcharge_estimate": cc_surcharge_estimate,
-            "total":            total,
-            "amount_paid":      invoice.amount_paid,
-            "balance_due":      round(total - invoice.amount_paid, 2),
-        }
+        return compute_invoice_totals(invoice)
 
     # ── QBO Sync ──────────────────────────────────────────────────────────────
 

@@ -74,6 +74,17 @@
         </div>
         {% endif %}
 
+        {# Fees & adjustments (NSF / restocking / misc fee, credits) — counted in
+           TOTAL by the totals engine, surfaced here so the total visibly reconciles. #}
+        {% if totals.other_subtotal != 0 %}
+        <div class="flex justify-between">
+          <span class="text-gray-500">Fees / Adjustments</span>
+          <span class="tabular-nums text-gray-800">
+            {%- if totals.other_subtotal < 0 %}–${{ "%.2f"|format(-totals.other_subtotal) }}{% else %}${{ "%.2f"|format(totals.other_subtotal) }}{% endif -%}
+          </span>
+        </div>
+        {% endif %}
+
         {% if totals.discount_amount > 0 %}
         <div class="flex justify-between text-red-600">
           <span>Discount ({{ "%g" | format(invoice.discount_pct) }}%)</span>

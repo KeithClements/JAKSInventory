@@ -272,6 +272,27 @@ class LineType(StrEnum):
     MISC                = "misc"
 
 
+# Line types that make up the discountable "parts" subtotal. The invoice-level
+# discount (invoice.discount_pct) applies to THESE ONLY — cores are pass-through
+# liability and freight is billed at cost. Single source of truth shared by the
+# Invoice model's totals and InvoiceService.calculate_totals so the two never drift.
+PARTS_LINE_TYPES = frozenset({
+    LineType.PRODUCT,
+    LineType.MISC,
+    LineType.WARRANTY,
+})
+
+# Line types billed as freight / delivery — surfaced in their own totals bucket
+# (billed at cost, never discounted). Single source of truth shared by the
+# Invoice model's totals and InvoiceService.calculate_totals via
+# app.invoice_totals.compute_invoice_totals so the two engines never drift.
+FREIGHT_LINE_TYPES = frozenset({
+    LineType.SHIPPING,
+    LineType.FREIGHT,
+    LineType.LOCAL_DELIVERY,
+    LineType.FUEL_SERVICE_CHARGE,
+})
+
 # R5 — line types that NEVER take a discount, even from customer.discount_pct
 NON_DISCOUNTABLE_LINE_TYPES = frozenset({
     LineType.CORE_CHARGE,
