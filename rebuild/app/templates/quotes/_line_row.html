@@ -92,7 +92,7 @@
       {{ '✓ UPGR' if line.is_included else 'ALT' }}
     </span>
     {% elif line.line_role == 'optional' %}
-    <span class="inline-flex items-center rounded-full bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-700">OPT</span>
+    <span class="inline-flex items-center rounded-full bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-700">Optional</span>
     {% elif line.line_role == 'core' %}
     <span class="inline-flex items-center rounded-full bg-orange-100 px-2 py-0.5 text-xs font-medium text-orange-700">CORE</span>
     {% elif line.product %}
@@ -181,8 +181,8 @@
     />
   </td>
 
-  {# Unit Price (editable) #}
-  <td class="px-2 py-1 w-24">
+  {# Unit Price (editable) — wider cell so $#,###.## doesn't truncate (Bug 1) #}
+  <td class="px-2 py-1 w-32">
     <div class="relative">
       <span class="absolute left-1.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs pointer-events-none">$</span>
       <input
