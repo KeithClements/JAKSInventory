@@ -5,7 +5,7 @@ from sqlalchemy import String, Text, Date, DateTime, Float, Boolean, Integer, Fo
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 from app.constants import (
-    PaymentTerms, DeliveryType, AddressType, CallType, CallOutcome,
+    PaymentTerms, DeliveryType, AddressType, ActivityType, CallType, CallOutcome,
     PreferredContactMethod, SMSConsentMethod,
 )
 
@@ -195,10 +195,25 @@ class CustomerContact(Base):
 
 
 class CustomerCallLog(Base):
+    """Unified Activity Log (contract: ACTIVITY_LOG_CONTRACT.md).
+
+    Extends the original call-log table with five columns so that every kind
+    of customer interaction (call, text, counter visit, email, note) lands in
+    one place with optional follow-up tracking and a polymorphic document link.
+    The table name and existing columns are unchanged for backward compatibility;
+    new code should use ``log_activity()`` and read ``activity_type`` as the
+    primary classification.
+
+    Alias: ``Activity = CustomerCallLog`` is used in new code for readability.
+    """
     __tablename__ = "customer_call_logs"
     __table_args__ = (
-        # compound: covers ORDER BY logged_at DESC on every call log fetch
+        # PRIMARY query: ORDER BY logged_at DESC per customer (timeline)
         Index("ix_customer_call_logs_customer_id_logged_at", "customer_id", "logged_at"),
+        # Dashboard widget: open follow-ups due by date
+        Index("ix_customer_call_logs_follow_up_date", "follow_up_date"),
+        # Doc-side panel: all activities linked to one document
+        Index("ix_customer_call_logs_entity", "related_entity_type", "related_entity_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -208,20 +223,36 @@ class CustomerCallLog(Base):
     )
     logged_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
-    # ── CRM Classification ────────────────────────────────────────────────────
+    # ── Original CRM classification (kept for backward compat) ───────────────
     call_type: Mapped[str] = mapped_column(
         String(20), nullable=False, default=CallType.INBOUND
-    )  # CallType
-    outcome: Mapped[str] = mapped_column(
-        String(30), nullable=False, default=CallOutcome.OTHER
+    )  # direction — only meaningful when activity_type='call'
+    outcome: Mapped[str | None] = mapped_column(
+        String(30), nullable=True                   # nullable: a NOTE has no outcome
     )  # CallOutcome
     quote_id: Mapped[int | None] = mapped_column(
-        ForeignKey("quotes.id"), nullable=True
+        ForeignKey("quotes.id"), nullable=True       # back-compat alias for related_entity
     )
-
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
+    # ── Activity Log extensions (+5 columns, ACTIVITY_LOG_CONTRACT.md §1) ─────
+    # activity_type: kind of interaction; default 'call' preserves existing rows.
+    activity_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=ActivityType.CALL
+    )
+    # follow_up_date: "follow up by this date" — drives the dashboard widget.
+    follow_up_date: Mapped[datetime | None] = mapped_column(Date, nullable=True)
+    # follow_up_done_at: stamped when AP marks done; NULL = still open/pending.
+    follow_up_done_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Polymorphic link to a quote, invoice, or PO.
+    related_entity_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    related_entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     customer: Mapped[Customer] = relationship("Customer", back_populates="call_logs")
+
+
+# Readable alias for new code (table + schema unchanged).
+Activity = CustomerCallLog
 
 
 # ── Late imports ───────────────────────────────────────────────────────────────

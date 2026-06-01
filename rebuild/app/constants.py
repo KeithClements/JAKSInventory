@@ -152,10 +152,23 @@ class CallType(StrEnum):
     IN_PERSON = "in_person"
 
 
+class ActivityType(StrEnum):
+    """Kind of customer interaction — the primary field for the unified Activity Log.
+    activity_type governs which outcome options are relevant; call_type (direction)
+    is a secondary field for calls only. Contract: ACTIVITY_LOG_CONTRACT.md."""
+    CALL          = "call"
+    TEXT          = "text"
+    COUNTER_VISIT = "counter_visit"
+    EMAIL         = "email"
+    NOTE          = "note"
+
+
 class CallOutcome(StrEnum):
     QUOTED           = "quoted"
     ORDER_PLACED     = "order_placed"
     NO_ANSWER        = "no_answer"
+    REACHED          = "reached"       # Activity Log: call connected, no specific outcome
+    VOICEMAIL        = "voicemail"     # Activity Log: left a voicemail
     FOLLOW_UP_NEEDED = "follow_up_needed"
     RESOLVED         = "resolved"
     OTHER            = "other"

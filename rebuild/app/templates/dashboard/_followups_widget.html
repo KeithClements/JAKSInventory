@@ -1,0 +1,22 @@
+{# dashboard/_followups_widget.html
+   Dashboard "Follow-ups due" widget partial.
+   Context: due (list[Activity]), today (date).
+
+   Backend stub — UI-Builder builds the full widget UI here.
+   Each item exposes: id, customer_id, customer.company_name, note, follow_up_date.
+#}
+{% if not due %}
+<p class="text-sm text-gray-400 px-4 py-3">No follow-ups due today.</p>
+{% else %}
+<ul class="divide-y divide-gray-100">
+  {% for item in due %}
+  <li class="px-4 py-2 flex items-center gap-3">
+    <span class="text-xs text-gray-400">{{ item.follow_up_date }}</span>
+    <span class="text-sm text-gray-700 grow truncate">{{ item.notes }}</span>
+    <form method="post" action="/activities/{{ item.id }}/follow-up-done">
+      <button type="submit" class="text-xs text-blue-600 hover:underline">Done</button>
+    </form>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}

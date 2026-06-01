@@ -24,15 +24,66 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import and_, func
 
-from app.constants import AuditAction, EntityType, InvoiceStatus
-from app.models.customer import Customer, CustomerCallLog
+from datetime import date as date_type
+
+from app.constants import AuditAction, ActivityType, CallType, EntityType, InvoiceStatus
+from app.models.customer import Activity, Customer, CustomerCallLog
 from app.models.invoice import Invoice, Payment
+from app.models.communication import Communication
 from app.services.base import BaseService
 
 
 class CRMService(BaseService):
 
     # ── Call Log ──────────────────────────────────────────────────────────────
+
+    # ── Unified Activity Log (ACTIVITY_LOG_CONTRACT.md) ──────────────────────
+
+    def log_activity(
+        self,
+        customer_id: int,
+        activity_type: str = ActivityType.CALL,
+        outcome: str | None = None,
+        notes: str = "",
+        follow_up_date: date_type | None = None,
+        related_entity_type: str | None = None,
+        related_entity_id: int | None = None,
+        direction: str | None = None,
+    ) -> Activity:
+        """
+        The ONE write path for all customer interactions.
+
+        activity_type: ActivityType value — 'call' | 'text' | 'counter_visit' |
+                       'email' | 'note'.
+        outcome:       CallOutcome value — optional (a NOTE has no outcome).
+        follow_up_date: ISO date — drives the dashboard "follow-ups due" widget.
+        related_entity_type: 'quote' | 'invoice' | 'purchase_order'
+        related_entity_id:   pk of the linked document.
+        direction:     CallType value (inbound/outbound) — only meaningful for calls.
+        """
+        self._get_customer_or_404(customer_id)
+        call_type = direction or CallType.INBOUND
+        # Back-compat: set quote_id when logging against a quote.
+        quote_id: int | None = (
+            related_entity_id
+            if related_entity_type == "quote" and related_entity_id
+            else None
+        )
+        entry = Activity(
+            customer_id=customer_id,
+            logged_by_id=self.current_user_id,
+            call_type=call_type,
+            outcome=outcome,
+            quote_id=quote_id,
+            notes=notes,
+            activity_type=activity_type,
+            follow_up_date=follow_up_date,
+            related_entity_type=related_entity_type,
+            related_entity_id=related_entity_id,
+        )
+        self.db.add(entry)
+        self.db.commit()
+        return entry
 
     def log_call(
         self,
@@ -42,23 +93,118 @@ class CRMService(BaseService):
         notes: str = "",
         quote_id: int | None = None,
     ) -> CustomerCallLog:
-        """
-        Record a customer interaction.
-        call_type: CallType value — 'inbound' | 'outbound' | 'email' | 'in_person'
-        outcome:   CallOutcome value — 'quoted' | 'order_placed' | 'no_answer' | etc.
-        """
-        self._get_customer_or_404(customer_id)
-        entry = CustomerCallLog(
+        """Thin back-compat alias for log_activity with activity_type='call'."""
+        return self.log_activity(
             customer_id=customer_id,
-            logged_by_id=self.current_user_id,
-            call_type=call_type,
+            activity_type=ActivityType.CALL,
             outcome=outcome,
-            quote_id=quote_id,
             notes=notes,
+            direction=call_type,
+            related_entity_type="quote" if quote_id else None,
+            related_entity_id=quote_id,
         )
-        self.db.add(entry)
+
+    def follow_ups_due(
+        self,
+        through: date_type | None = None,
+    ) -> list[Activity]:
+        """Activities with a follow_up_date on or before `through` (default today)
+        that have not yet been marked done (follow_up_done_at IS NULL)."""
+        cutoff = through or date_type.today()
+        return (
+            self.db.query(Activity)
+            .filter(
+                Activity.follow_up_date <= cutoff,
+                Activity.follow_up_done_at.is_(None),
+            )
+            .order_by(Activity.follow_up_date.asc())
+            .all()
+        )
+
+    def mark_follow_up_done(self, activity_id: int) -> None:
+        """Stamp follow_up_done_at = now, removing the activity from the due list."""
+        entry = self.db.query(Activity).filter(Activity.id == activity_id).first()
+        if entry is None:
+            raise ValueError(f"Activity {activity_id} not found")
+        entry.follow_up_done_at = datetime.utcnow()
         self.db.commit()
-        return entry
+
+    def get_timeline(self, customer_id: int, limit: int = 100) -> list[dict]:
+        """Merge manual activities + system-sent communications for this customer,
+        newest first. Each item has a 'kind' field ('activity' | 'comm') so the
+        template can render both in a single chronological feed."""
+        self._get_customer_or_404(customer_id)
+
+        # Manual activities
+        activities = (
+            self.db.query(Activity)
+            .filter(Activity.customer_id == customer_id)
+            .order_by(Activity.logged_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+        # System-sent communications (read-only — never mutated)
+        comms = (
+            self.db.query(Communication)
+            .filter(Communication.customer_id == customer_id)
+            .order_by(Communication.sent_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+        items: list[dict] = []
+        for a in activities:
+            items.append({
+                "kind":            "activity",
+                "id":              a.id,
+                "when":            a.logged_at,
+                "activity_type":   a.activity_type,
+                "outcome":         a.outcome,
+                "note":            a.notes,   # contract key (QA uses "note" not "notes")
+                "follow_up_date":  a.follow_up_date,
+                "follow_up_done":  a.follow_up_done_at is not None,
+                "related": (
+                    {
+                        "type":  a.related_entity_type,
+                        "id":    a.related_entity_id,
+                    }
+                    if a.related_entity_type else None
+                ),
+                "logged_by_id":   a.logged_by_id,
+            })
+        for c in comms:
+            items.append({
+                "kind":          "comm",
+                "id":            c.id,
+                "when":          c.sent_at,
+                "activity_type": c.channel,
+                "outcome":       None,
+                "note":          c.subject or "",
+                "follow_up_date": None,
+                "follow_up_done": True,
+                "related":       None,
+                "logged_by_id":  None,
+            })
+
+        items.sort(key=lambda x: x["when"], reverse=True)
+        return items[:limit]
+
+    def activities_for_entity(
+        self,
+        entity_type: str,
+        entity_id: int,
+    ) -> list[Activity]:
+        """All activities linked to a specific document (doc-side panel)."""
+        return (
+            self.db.query(Activity)
+            .filter(
+                Activity.related_entity_type == entity_type,
+                Activity.related_entity_id == entity_id,
+            )
+            .order_by(Activity.logged_at.desc())
+            .all()
+        )
 
     def get_call_history(self, customer_id: int, limit: int = 50) -> list[CustomerCallLog]:
         return (

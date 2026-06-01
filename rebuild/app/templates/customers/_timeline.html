@@ -1,0 +1,28 @@
+{# customers/_timeline.html
+   Activity Log timeline partial.
+   Context: customer_id, items (list[dict] from CRMService.get_timeline),
+            ActivityType enum.
+
+   Backend stub — UI-Builder builds the full timeline UI here.
+   Each item has keys:  kind ('activity'|'comm'), when (datetime), activity_type,
+   outcome, note, follow_up_date, follow_up_done (bool), related ({type,id}|None),
+   logged_by_id.
+#}
+{% if not items %}
+<div class="px-6 py-8 text-sm text-gray-400 text-center">No activity yet.</div>
+{% else %}
+<ul class="divide-y divide-gray-100">
+  {% for item in items %}
+  <li class="px-6 py-3 flex items-start gap-3">
+    <span class="text-xs font-mono text-gray-400 whitespace-nowrap">{{ item.when.strftime('%m/%d %H:%M') if item.when else '' }}</span>
+    <span class="text-xs font-medium text-gray-700">{{ item.activity_type }}</span>
+    <span class="text-sm text-gray-600 grow">{{ item.note }}</span>
+    {% if item.follow_up_date and not item.follow_up_done %}
+    <form method="post" action="/activities/{{ item.id }}/follow-up-done" class="shrink-0">
+      <button type="submit" class="text-xs text-blue-600 hover:underline">Done</button>
+    </form>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}

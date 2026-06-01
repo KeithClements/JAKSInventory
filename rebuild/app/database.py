@@ -158,6 +158,14 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
 
     # ── O6 — per-customer CC surcharge override (NULL = use system setting) ───
     ("customers", "card_surcharge_pct", "REAL NULL"),
+
+    # ── Activity Log extensions (ACTIVITY_LOG_CONTRACT.md §1) ────────────────
+    # Extend customer_call_logs in place — table name unchanged, 5 new columns.
+    ("customer_call_logs", "activity_type",       "TEXT NOT NULL DEFAULT 'call'"),
+    ("customer_call_logs", "follow_up_date",      "DATE NULL"),
+    ("customer_call_logs", "follow_up_done_at",   "DATETIME NULL"),
+    ("customer_call_logs", "related_entity_type", "TEXT NULL"),
+    ("customer_call_logs", "related_entity_id",   "INTEGER NULL"),
 ]
 
 
