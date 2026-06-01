@@ -12,7 +12,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.constants import POStatus
-from app.deps import get_db
+from app.deps import get_db, get_current_user_id
 from app.models.customer import Customer, CustomerAddress
 from app.models.product import Product
 from app.models.purchase_order import PurchaseOrder, POLine, VendorBill
@@ -29,8 +29,6 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/purchase-orders", tags=["purchase_orders"])
 templates = Jinja2Templates(directory="app/templates")
-
-CURRENT_USER_ID = 1
 
 # ── L2 list tab definitions (JAKS_UI_Change_Plan.md §2) ──────────────────────
 # Maps user-facing tab slug → underlying PO statuses it covers.
@@ -358,9 +356,9 @@ def po_new(request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/new", response_class=RedirectResponse)
-async def po_create(request: Request, db: Session = Depends(get_db)):
+async def po_create(request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+    svc = POService(db, current_user_id=user_id)
 
     po_data: dict = {
         "notes": str(form.get("notes", "")).strip(),
@@ -409,9 +407,9 @@ def po_workspace(po_id: int, request: Request, db: Session = Depends(get_db)):
 # ── Header autosave ───────────────────────────────────────────────────────────
 
 @router.post("/{po_id}/header", response_class=HTMLResponse)
-async def po_header_save(po_id: int, request: Request, db: Session = Depends(get_db)):
+async def po_header_save(po_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+    svc = POService(db, current_user_id=user_id)
 
     expected_raw = str(form.get("expected_at", "")).strip()
     expected_dt = None
@@ -449,9 +447,9 @@ def _lines_response(po_id: int, request: Request, db: Session) -> HTMLResponse:
 
 
 @router.post("/{po_id}/lines", response_class=HTMLResponse)
-async def po_add_line(po_id: int, request: Request, db: Session = Depends(get_db)):
+async def po_add_line(po_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+    svc = POService(db, current_user_id=user_id)
 
     pid_raw = str(form.get("product_id", "")).strip()
     desc = str(form.get("description", "")).strip()
@@ -484,9 +482,9 @@ async def po_add_line(po_id: int, request: Request, db: Session = Depends(get_db
 
 
 @router.post("/{po_id}/lines/{line_id}", response_class=HTMLResponse)
-async def po_update_line(po_id: int, line_id: int, request: Request, db: Session = Depends(get_db)):
+async def po_update_line(po_id: int, line_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+    svc = POService(db, current_user_id=user_id)
 
     data: dict = {}
     if "description" in form:
@@ -514,8 +512,8 @@ async def po_update_line(po_id: int, line_id: int, request: Request, db: Session
 
 
 @router.post("/{po_id}/lines/{line_id}/delete", response_class=HTMLResponse)
-async def po_delete_line(po_id: int, line_id: int, request: Request, db: Session = Depends(get_db)):
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+async def po_delete_line(po_id: int, line_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    svc = POService(db, current_user_id=user_id)
     try:
         svc.delete_line(line_id)
     except ValueError as exc:
@@ -534,8 +532,8 @@ async def po_delete_line(po_id: int, line_id: int, request: Request, db: Session
 # ── Status transitions ─────────────────────────────────────────────────────────
 
 @router.post("/{po_id}/send", response_class=RedirectResponse)
-def po_send(po_id: int, db: Session = Depends(get_db)):
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+def po_send(po_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    svc = POService(db, current_user_id=user_id)
     try:
         svc.send_to_vendor(po_id)
     except ValueError as exc:
@@ -555,7 +553,7 @@ def po_send(po_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{po_id}/receive", response_class=RedirectResponse)
-async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)):
+async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     po = db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()
     if not po:
         return RedirectResponse("/purchase-orders/", status_code=303)
@@ -582,7 +580,7 @@ async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)
 
     if po_line_quantities:
         try:
-            svc = POService(db, current_user_id=CURRENT_USER_ID)
+            svc = POService(db, current_user_id=user_id)
             receipt_data = {
                 "tracking_number": str(form.get("tracking_number", "")).strip() or None,
                 "carrier": str(form.get("carrier", "")).strip() or None,
@@ -612,8 +610,8 @@ async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)
 
 
 @router.post("/{po_id}/cancel-status", response_class=RedirectResponse)
-def po_cancel(po_id: int, db: Session = Depends(get_db)):
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+def po_cancel(po_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    svc = POService(db, current_user_id=user_id)
     try:
         svc.cancel(po_id)
     except ValueError as exc:
@@ -633,12 +631,12 @@ def po_cancel(po_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{po_id}/cancel-line", response_class=RedirectResponse)
-async def po_cancel_line(po_id: int, request: Request, db: Session = Depends(get_db)):
+async def po_cancel_line(po_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
     try:
         line_id = int(str(form.get("line_id", "0")))
         reason = str(form.get("reason", "")).strip() or "cancelled"
-        POService(db, current_user_id=CURRENT_USER_ID).cancel_line(line_id, reason)
+        POService(db, current_user_id=user_id).cancel_line(line_id, reason)
     except (ValueError, TypeError) as exc:
         db.rollback()
         return RedirectResponse(
@@ -659,13 +657,13 @@ async def po_cancel_line(po_id: int, request: Request, db: Session = Depends(get
 
 
 @router.post("/{po_id}/create-bill", response_class=RedirectResponse)
-async def po_create_bill(po_id: int, request: Request, db: Session = Depends(get_db)):
+async def po_create_bill(po_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     po = db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()
     if not po:
         return RedirectResponse("/purchase-orders/", status_code=303)
 
     form = await request.form()
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+    svc = POService(db, current_user_id=user_id)
 
     bill_number = str(form.get("bill_number", "")).strip()
     bill_date: datetime | None = None
@@ -730,8 +728,8 @@ async def po_create_bill(po_id: int, request: Request, db: Session = Depends(get
 
 
 @router.post("/{po_id}/bills/{bill_id}/approve", response_class=RedirectResponse)
-async def po_approve_bill(po_id: int, bill_id: int, db: Session = Depends(get_db)):
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+async def po_approve_bill(po_id: int, bill_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    svc = POService(db, current_user_id=user_id)
     try:
         svc.approve_bill(bill_id)
     except ValueError as exc:
@@ -754,6 +752,7 @@ async def po_approve_bill(po_id: int, bill_id: int, db: Session = Depends(get_db
 async def po_resolve_match_line(
     po_id: int, bill_id: int, line_id: int,
     request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     """
     Record an AP resolution decision on a flagged PO match line.
@@ -766,7 +765,7 @@ async def po_resolve_match_line(
     decision = str(form.get("decision", "")).strip()
     reason = str(form.get("reason", "")).strip()
 
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+    svc = POService(db, current_user_id=user_id)
     try:
         svc.resolve_match_line(line_id, decision, reason)
     except (ValueError, PermissionError) as exc:
@@ -789,6 +788,7 @@ async def po_resolve_match_line(
 async def po_create_match_credit(
     po_id: int, bill_id: int,
     request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     """
     Create a vendor credit memo for a match discrepancy on a specific PO line.
@@ -821,7 +821,7 @@ async def po_create_match_credit(
                 status_code=303,
             )
 
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+    svc = POService(db, current_user_id=user_id)
     try:
         vcm = svc.create_match_vendor_credit(
             po_line_id=po_line_id,
