@@ -50,6 +50,7 @@
 {% endblock %}
 
 {% block content %}
+{% from "macros/linked_docs.html" import linked_strip %}
 <div class="max-w-5xl space-y-4"
      x-data="{
        showNotes: {{ 'true' if (po.notes or po.internal_notes) else 'false' }},
@@ -63,6 +64,9 @@
      }"
      @po-confirm.window="askConfirm($event.detail.formId, $event.detail.title, $event.detail.body, $event.detail.cta, $event.detail.danger)"
      @keydown.escape.window="confirm.open = false">
+
+  {# ── Linked documents (cross-document navigation strip) ── #}
+  {{ linked_strip(linked_documents|default([])) }}
 
   {# ── Flash banners ── #}
   {% set ok_msg = {
@@ -498,7 +502,7 @@
   {% endif %}
 
   {% if po.bills %}
-  <div class="card">
+  <div id="vendor-bills" class="card scroll-mt-4">
     <div class="card-header">
       <h2 class="card-title">Vendor Bills</h2>
       <span class="text-xs text-gray-400">{{ po.bills | length }} bill{{ 's' if po.bills | length != 1 }}</span>

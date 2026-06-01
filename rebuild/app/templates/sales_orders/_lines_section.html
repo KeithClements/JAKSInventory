@@ -5,6 +5,26 @@
 ═══════════════════════════════════════════════════════════════════════════ #}
 <div id="so-lines-section">
 
+  {# Linked-PO state → micro-chip colour + label. Once a backordered line is
+     ordered onto a PO the chip tracks the PO's progress. Decision (owner,
+     2026-06-01): a line reads "On order" only when the PO has actually been
+     Sent; a draft PO still reads "Ordering" (it isn't placed with the vendor
+     yet). reserved_stock overrides this with "Ready" (see below). #}
+  {% set po_state_chip = {
+    'draft':        ('bg-amber-50 text-amber-600', 'Ordering'),
+    'verbal_order': ('bg-amber-50 text-amber-600', 'Ordering'),
+    'sent':         ('bg-blue-50 text-blue-700',   'On order'),
+    'partial':      ('bg-blue-50 text-blue-700',   'Receiving'),
+    'received':     ('bg-green-50 text-green-700', 'Received'),
+    'billed':       ('bg-green-50 text-green-700', 'Received'),
+  } %}
+
+  {% if order_error %}
+  <div class="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+    {{ order_error }}
+  </div>
+  {% endif %}
+
   <div class="card">
     <div class="card-header">
       <h2 class="card-title">Line Items</h2>
@@ -49,8 +69,9 @@
               {% else %}
               <span class="text-xs font-semibold text-gray-400 uppercase">{{ line.line_type | replace('_', ' ') }}</span>
               {% endif %}
-              {# Fulfillment source badge #}
-              {% if line.fulfillment_source and line.fulfillment_source != 'stock' %}
+              {# Fulfillment-source badge. 'backorder' and 'linked_po' have richer
+                 chips of their own in the description cell, so skip them here. #}
+              {% if line.fulfillment_source and line.fulfillment_source not in ['stock', 'backorder', 'linked_po'] %}
               <p class="text-xs text-amber-600 font-medium mt-0.5">
                 {{ line.fulfillment_source | replace('_', ' ') | title }}
               </p>
@@ -71,8 +92,38 @@
               {% else %}
               <span class="text-sm {% if cancelled %}line-through{% endif %}">{{ line.description }}</span>
               {% endif %}
-              {% if line.is_backordered and not done and not cancelled %}
+              {# Backorder → Order → on-order lifecycle. reserved_stock = goods
+                 received & earmarked for this line (Ready); otherwise the chip
+                 tracks the linked PO's progress (Ordering → On order · ETA →
+                 Receiving). A cancelled PO falls back to Backorder + Re-order. #}
+              {% if line.linked_po_line and line.linked_po_line.po.status != 'cancelled' %}
+                {% set lpo = line.linked_po_line.po %}
+                {% if line.line_status == 'reserved_stock' %}
+                <a href="/purchase-orders/{{ lpo.id }}"
+                   title="Received on this PO and reserved for this order — ready to fulfill"
+                   class="inline-flex mt-0.5 items-center px-1.5 py-0.5 rounded text-xs bg-green-50 text-green-700 font-medium hover:bg-green-100 transition-colors">
+                  Ready · PO {{ lpo.po_number }} →
+                </a>
+                {% else %}
+                {% set sc = po_state_chip.get(lpo.status, ('bg-blue-50 text-blue-700', 'On order')) %}
+                <a href="/purchase-orders/{{ lpo.id }}"
+                   title="{{ sc[1] }} on {{ lpo.po_number }}"
+                   class="inline-flex mt-0.5 items-center px-1.5 py-0.5 rounded text-xs font-medium hover:opacity-80 transition-opacity {{ sc[0] }}">
+                  {{ sc[1] }} · {{ lpo.po_number }}{% if lpo.status in ['sent', 'partial'] and lpo.expected_at %} · ETA {{ lpo.expected_at.strftime('%b %d') }}{% endif %} →
+                </a>
+                {% endif %}
+              {% elif line.is_backordered and not done and not cancelled %}
               <span class="inline-flex mt-0.5 px-1.5 py-0.5 rounded text-xs bg-amber-50 text-amber-600 font-medium">Backorder</span>
+              {% if editable %}
+              <button type="button"
+                      hx-post="/sales-orders/{{ so.id }}/lines/{{ line.id }}/create-po"
+                      hx-target="#so-lines-section"
+                      hx-swap="outerHTML"
+                      class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium text-brand-700 bg-brand-50 hover:bg-brand-100 transition-colors"
+                      title="Create a purchase order for this backordered part">
+                {{ 'Re-order' if line.linked_po_line else 'Order' }}&nbsp;→
+              </button>
+              {% endif %}
               {% endif %}
               {% if cancelled %}
               <span class="inline-flex mt-0.5 px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-400 font-medium">Cancelled</span>

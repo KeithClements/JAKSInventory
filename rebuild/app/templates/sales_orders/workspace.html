@@ -142,8 +142,12 @@
 
 
 {% block content %}
+{% from "macros/linked_docs.html" import linked_strip %}
 <div class="max-w-6xl space-y-3"
      x-data="{ showVehicle: {{ 'true' if (so.esn or so.engine_manufacturer or so.engine_model) else 'false' }} }">
+
+  {# ── Linked documents (cross-document navigation strip) ── #}
+  {{ linked_strip(linked_documents|default([])) }}
 
   {# ── Flash banners ─────────────────────────────────────────────────────── #}
   {% if request.query_params.get('ok') %}

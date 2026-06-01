@@ -325,6 +325,7 @@ async def workspace(
     today = date.today()
 
     from app.services.statement_service import StatementService
+    from app.services.document_links import related_documents
     bal = StatementService(db).get_customer_balance_summary(quote.customer_id)
 
     return templates.TemplateResponse(
@@ -332,6 +333,7 @@ async def workspace(
         "quotes/workspace.html",
         {
             "quote": quote,
+            "linked_documents": related_documents(db, quote),
             "sorted_lines": _tree_sort_lines(quote.lines),
             "QuoteStatus": QuoteStatus,
             "SOPaymentMode": SOPaymentMode,

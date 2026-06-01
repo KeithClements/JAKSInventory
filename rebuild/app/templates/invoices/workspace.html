@@ -63,6 +63,7 @@
 
 
 {% block content %}
+{% from "macros/linked_docs.html" import linked_strip %}
 <div class="max-w-6xl space-y-3"
      x-data="{
        showVehicleInfo: {{ 'true' if (invoice.esn or invoice.engine_manufacturer or invoice.engine_model) else 'false' }},
@@ -80,6 +81,9 @@
      @open-change-customer.window="changeCustomerOpen = true"
      @inv-line-confirm.window="lineConfirmUrl = $event.detail.url; lineConfirmMsg = $event.detail.msg; lineConfirmOpen = true"
      @keydown.escape.window="paymentOpen = false; voidOpen = false; finalizeOpen = false; changeCustomerOpen = false; lineConfirmOpen = false">
+
+  {# ── Linked documents (cross-document navigation strip) ── #}
+  {{ linked_strip(linked_documents|default([])) }}
 
   {# ── Flash / Success banner after finalize ──────────────────────────────── #}
   {% if request.query_params.get('ok') %}

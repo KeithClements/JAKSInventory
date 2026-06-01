@@ -90,10 +90,28 @@ def _workspace_context(db: Session, request: Request, invoice: Invoice) -> dict:
 
     bal = StatementService(db).get_customer_balance_summary(invoice.customer_id)
 
+    # ── Open customer-owes cores on THIS invoice (After-Sale Service card) ──
+    # Joined via the core child line: finalise() stamps each CoreCharge with
+    # invoice_line_id = <core line> (invoice_service.py ~635), so this is exact.
+    from app.constants import CoreDirection, CoreStatus
+    from app.models.core import CoreCharge
+    invoice_cores = (
+        db.query(CoreCharge)
+        .join(InvoiceLine, CoreCharge.invoice_line_id == InvoiceLine.id)
+        .filter(
+            InvoiceLine.invoice_id == invoice.id,
+            CoreCharge.direction == CoreDirection.CUSTOMER_OWES_RETURN,
+            CoreCharge.status.in_([CoreStatus.OPEN, CoreStatus.PARTIAL]),
+        )
+        .order_by(CoreCharge.id)
+        .all()
+    )
+
     return {
         "invoice": invoice,
         "totals": totals,
         "customers": customers,
+        "invoice_cores": invoice_cores,
         "editable": invoice.status == InvoiceStatus.DRAFT,
         "cc_surcharge_pct": cc_surcharge_pct,
         "InvoiceStatus": InvoiceStatus,
@@ -356,10 +374,13 @@ def invoice_workspace(invoice_id: int, request: Request, db: Session = Depends(g
     inv = _get_invoice_or_redirect(db, invoice_id)
     if isinstance(inv, RedirectResponse):
         return inv
+    from app.services.document_links import related_documents
+    ctx = _workspace_context(db, request, inv)
+    ctx["linked_documents"] = related_documents(db, inv)
     return templates.TemplateResponse(
         request,
         "invoices/workspace.html",
-        _workspace_context(db, request, inv),
+        ctx,
     )
 
 

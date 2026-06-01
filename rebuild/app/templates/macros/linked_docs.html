@@ -1,0 +1,42 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   linked_strip(links)  — Linked-Documents chip strip
+   (JAKS_UI_Change_Plan.md §8K — workspace cross-document navigation primitive)
+
+   A compact, glanceable row of clickable, status-toned chips connecting a
+   workspace document to its neighbours (source quote, sales order, invoices,
+   sourcing PO …). `links` is the list of DocLink objects returned by
+   app.services.document_links.related_documents(). Renders nothing when empty.
+
+   The chip format matches §5 (dot + label) and every colour is a §4-permitted
+   family. The tone→class map lives here (not per-screen) so the strip is
+   pixel-identical on Quote / SO / Invoice / PO workspaces.
+═════════════════════════════════════════════════════════════════════════════ #}
+{% macro linked_strip(links) %}
+{%- if links -%}
+{%- set tone_cls = {
+  'neutral': ('bg-gray-100 text-gray-600 hover:bg-gray-200/70',   'bg-gray-400'),
+  'info':    ('bg-blue-50 text-blue-700 hover:bg-blue-100',       'bg-blue-500'),
+  'warning': ('bg-amber-100 text-amber-700 hover:bg-amber-200/70','bg-amber-500'),
+  'success': ('bg-green-50 text-green-700 hover:bg-green-100',    'bg-green-500'),
+  'danger':  ('bg-red-100 text-red-700 hover:bg-red-200/70',      'bg-red-400'),
+} -%}
+<div class="flex items-center gap-x-2 gap-y-1.5 flex-wrap">
+  <span class="inline-flex items-center gap-1 text-[10px] font-bold text-gray-400 uppercase tracking-widest shrink-0">
+    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+    </svg>
+    Linked
+  </span>
+  {%- for link in links -%}
+  {%- set cls = tone_cls.get(link.tone, tone_cls['neutral']) -%}
+  <a href="{{ link.url }}"
+     class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold transition-colors {{ cls[0] }}"
+     title="{{ link.relation }} · {{ link.status_label }}">
+    <span class="w-1.5 h-1.5 rounded-full {{ cls[1] }} shrink-0"></span>
+    <span class="font-medium opacity-60">{{ link.relation }}</span>
+    <span class="font-mono">{{ link.number }}</span>
+  </a>
+  {%- endfor -%}
+</div>
+{%- endif -%}
+{% endmacro %}
