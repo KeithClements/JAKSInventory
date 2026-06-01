@@ -74,11 +74,18 @@ class InvoiceService(BaseService):
             due_date = now + timedelta(days=60)
         # COD: due_date = None (paid at pickup)
 
-        cc_raw = get_setting_value_db(self.db, "cc_surcharge_pct", "3.0") or "3.0"
-        try:
-            cc_surcharge_pct = float(cc_raw)
-        except (TypeError, ValueError):
-            cc_surcharge_pct = 3.0
+        # O6 — customer.card_surcharge_pct overrides the system default when set.
+        # NULL means "use the system cc_surcharge_pct setting"; a customer-level
+        # value (including 0.0, which disables surcharge for this customer)
+        # pre-fills the invoice so AP doesn't have to adjust every time.
+        if customer.card_surcharge_pct is not None:
+            cc_surcharge_pct = customer.card_surcharge_pct
+        else:
+            cc_raw = get_setting_value_db(self.db, "cc_surcharge_pct", "3.0") or "3.0"
+            try:
+                cc_surcharge_pct = float(cc_raw)
+            except (TypeError, ValueError):
+                cc_surcharge_pct = 3.0
 
         invoice = Invoice(
             invoice_number=inv_number,
@@ -135,6 +142,17 @@ class InvoiceService(BaseService):
         is_taxable_legacy = data.get("is_taxable", not cust_tax_exempt and cust_tax_rate > 0)
         tax_rate_legacy = data.get("tax_rate", cust_tax_rate)
 
+        # O6 — customer.card_surcharge_pct overrides the system default when set.
+        # (Same resolution as create_draft above.)
+        if customer.card_surcharge_pct is not None:
+            cc_surcharge_pct = customer.card_surcharge_pct
+        else:
+            cc_raw = get_setting_value_db(self.db, "cc_surcharge_pct", "3.0") or "3.0"
+            try:
+                cc_surcharge_pct = float(cc_raw)
+            except (TypeError, ValueError):
+                cc_surcharge_pct = 3.0
+
         invoice = Invoice(
             invoice_number=inv_number,
             customer_id=customer_id,
@@ -148,7 +166,9 @@ class InvoiceService(BaseService):
             engine_model=data.get("engine_model", ""),
             discount_pct=float(data.get("discount_pct", 0.0)),
             apply_cc_surcharge=bool(data.get("apply_cc_surcharge", False)),
-            cc_surcharge_pct=float(data.get("cc_surcharge_pct", 3.0)),
+            # O6: use caller-supplied override if present, else the resolved
+            # customer/system default (cc_surcharge_pct computed above).
+            cc_surcharge_pct=float(data.get("cc_surcharge_pct", cc_surcharge_pct)),
             is_taxable=bool(is_taxable_legacy),
             tax_rate=float(tax_rate_legacy),
             # R1 — snapshot at creation

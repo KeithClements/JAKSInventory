@@ -393,12 +393,14 @@ async def invoice_update_header(
         data["discount_pct"] = float(form.get("discount_pct") or 0)
     if "tax_rate" in form:
         data["tax_rate"] = float(form.get("tax_rate") or 0)
-    # Checkbox fields use a hidden "0" + checkbox "1" pattern so unchecked state
-    # is explicitly submitted. getlist() reads both values; "1" wins if present.
-    if "is_taxable" in form:
-        data["is_taxable"] = "1" in form.getlist("is_taxable")
-    if "apply_cc_surcharge" in form:
-        data["apply_cc_surcharge"] = "1" in form.getlist("apply_cc_surcharge")
+    # Checkbox fields: a hidden input sends "0" unconditionally; the checkbox
+    # sends "1" when checked. getlist() collects both values; "1" wins if present.
+    # This is done UNCONDITIONALLY (no "if field in form" gate) so that unchecking
+    # a box that WAS checked correctly writes False — the old gated approach was the
+    # §1.9e bug: when unchecked, the field was absent from the form so the old value
+    # was never cleared.
+    data["is_taxable"] = "1" in form.getlist("is_taxable")
+    data["apply_cc_surcharge"] = "1" in form.getlist("apply_cc_surcharge")
     if "due_date" in form:
         due_raw = str(form.get("due_date", "")).strip()
         try:

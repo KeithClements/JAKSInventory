@@ -725,28 +725,48 @@ async def log_call_global(request: Request, db: Session = Depends(get_db)):
 
 # Maps common column name variants → canonical field name
 _IMPORT_ALIASES: dict[str, str] = {
+    # ── Company name (§1.2h fix: add CRM export variants) ─────────────────────
     "company": "company_name",
     "company name": "company_name",
+    "company_name": "company_name",
     "business": "company_name",
     "business name": "company_name",
+    # QuickBooks exports "Customer Name"; Salesforce/HubSpot use "Account Name";
+    # Sage/Xero use "Client" or "Client Name"; generic exports use "Name" too.
+    "customer name": "company_name",
+    "customer": "company_name",
+    "account name": "company_name",
+    "account": "company_name",
+    "client name": "company_name",
+    "client": "company_name",
+    "vendor name": "company_name",   # vendors imported as customers occasionally
+    "organization": "company_name",
+    "organisation": "company_name",
+    "org": "company_name",
+    # ── Contact name ──────────────────────────────────────────────────────────
     "contact": "contact_name",
     "contact name": "contact_name",
     "name": "contact_name",
+    # ── Phone (§1.2h fix: mobile number + office variants) ───────────────────
     "phone": "phone",
     "phone number": "phone",
     "tel": "phone",
     "telephone": "phone",
     "mobile": "phone",
     "mobile phone": "phone",
+    "mobile number": "phone",       # missing — common CRM export
     "cell": "phone",
     "cell phone": "phone",
     "work phone": "phone",
+    "office phone": "phone",        # missing — common CRM export
+    "direct": "phone",              # missing — common CRM export
     "main phone": "phone",
     "primary phone": "phone",
     "phone 1": "phone",
     "phone1": "phone",
     "ph": "phone",
     "phone #": "phone",
+    # ── Email ─────────────────────────────────────────────────────────────────
     "email": "email",
     "email address": "email",
     "e-mail": "email",
@@ -758,7 +778,6 @@ _IMPORT_ALIASES: dict[str, str] = {
     "email1": "email",
     "email 1": "email",
     "e mail": "email",
-    "company_name": "company_name",
     "address": "address_line1",
     "address line 1": "address_line1",
     "address_line1": "address_line1",

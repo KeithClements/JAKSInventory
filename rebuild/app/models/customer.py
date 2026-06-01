@@ -60,6 +60,13 @@ class Customer(Base):
     # Pricing tier: standard | wholesale | fleet | dealer
     pricing_tier: Mapped[str] = mapped_column(String(20), nullable=False, default="standard")
 
+    # O6 — per-customer CC surcharge override. NULL means "use the system
+    # default cc_surcharge_pct setting"; a non-NULL value (including 0.0) overrides
+    # the system default at invoice creation time, pre-filling the invoice's own
+    # cc_surcharge_pct field. The invoice-level field then governs what's shown
+    # on the workspace and used in payment calculations.
+    card_surcharge_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     # ── QBO ───────────────────────────────────────────────────────────────────
     qbo_customer_id: Mapped[str] = mapped_column(String(100), nullable=False, default="")
 

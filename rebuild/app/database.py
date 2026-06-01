@@ -155,6 +155,9 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     ("quotes", "esn",                 "VARCHAR(100) NULL"),
     ("quotes", "engine_manufacturer", "VARCHAR(200) NULL"),
     ("quotes", "engine_model",        "VARCHAR(200) NULL"),
+
+    # ── O6 — per-customer CC surcharge override (NULL = use system setting) ───
+    ("customers", "card_surcharge_pct", "REAL NULL"),
 ]
 
 
