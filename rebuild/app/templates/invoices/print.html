@@ -399,16 +399,16 @@
         <span class="val">${{ "%.2f"|format(invoice.tax_amount) }}</span>
       </div>
       {% endif %}
-      {% if invoice.apply_cc_surcharge %}
-      <div class="t-row surcharge-row">
-        <span class="lbl">CC Surcharge ({{ invoice.cc_surcharge_pct }}%)</span>
-        <span class="val">${{ "%.2f"|format(invoice.surcharge_amount) }}</span>
-      </div>
-      {% endif %}
       <div class="t-row grand">
         <span class="lbl">Total</span>
         <span class="val">${{ "%.2f"|format(invoice.total) }}</span>
       </div>
+      {% if invoice.apply_cc_surcharge %}
+      <p style="margin-top:6px;font-size:10px;line-height:1.45;color:#888;font-style:italic;">
+        If paid by card, a {{ invoice.cc_surcharge_pct }}% convenience fee (~${{ "%.2f"|format(invoice.surcharge_amount) }})
+        applies to the card portion at processing — not included in the total above.
+      </p>
+      {% endif %}
       {% if invoice.amount_paid > 0 %}
       <hr class="t-divider">
       <div class="t-row paid-row">

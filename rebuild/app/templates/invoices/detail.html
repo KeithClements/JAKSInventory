@@ -235,15 +235,6 @@
             <td></td>
           </tr>
           {% endif %}
-          {% if invoice.apply_cc_surcharge %}
-          <tr>
-            <td colspan="4" class="px-4 py-1.5 text-right text-xs text-gray-400">
-              CC Surcharge ({{ invoice.cc_surcharge_pct }}%)
-            </td>
-            <td class="px-4 py-1.5 text-right text-sm tabular-nums">${{ '%.2f' % invoice.surcharge_amount }}</td>
-            <td></td>
-          </tr>
-          {% endif %}
           <tr class="border-t border-gray-200 bg-gray-50">
             <td colspan="4" class="px-4 py-3 text-right text-sm font-semibold text-gray-700">Total</td>
             <td class="px-4 py-3 text-right text-xl font-bold text-gray-900 tabular-nums">
@@ -251,6 +242,15 @@
             </td>
             <td></td>
           </tr>
+          {% if invoice.apply_cc_surcharge %}
+          <tr>
+            <td colspan="6" class="px-4 py-1.5 text-right text-[11px] italic text-gray-400 font-normal leading-snug">
+              If paid by card: a {{ invoice.cc_surcharge_pct }}% convenience fee
+              (~${{ '%.2f' % invoice.surcharge_amount }}) applies to the card portion at processing —
+              not included in the total above.
+            </td>
+          </tr>
+          {% endif %}
           {% if invoice.amount_paid > 0 %}
           <tr>
             <td colspan="4" class="px-4 py-2 text-right text-xs text-green-700 font-medium">Paid</td>
@@ -352,8 +352,10 @@
             {{ alloc.payment.payment_date.strftime('%m/%d/%Y') }}
           </td>
           <td class="tbl-td">{{ alloc.payment.payment_method.replace('_', ' ') | title }}</td>
-          <td class="tbl-td font-mono text-xs text-gray-400">
-            {{ alloc.payment.check_number or '—' }}
+          <td class="tbl-td text-xs">
+            {% if alloc.payment.check_number %}<span class="font-mono text-gray-500">{{ alloc.payment.check_number }}</span>{% endif %}
+            {% if alloc.payment.notes %}<div class="text-gray-400 {% if alloc.payment.check_number %}mt-0.5{% endif %}">{{ alloc.payment.notes }}</div>{% endif %}
+            {% if not alloc.payment.check_number and not alloc.payment.notes %}<span class="text-gray-300">—</span>{% endif %}
           </td>
           <td class="tbl-td-r font-semibold text-brand-700">
             ${{ '%.2f' % alloc.amount_applied }}
