@@ -41,7 +41,7 @@
           <tr>
             <th class="tbl-th w-8">#</th>
             <th class="tbl-th w-24">SKU</th>
-            <th class="tbl-th">Description</th>
+            <th class="tbl-th min-w-[14rem]">Description</th>
             <th class="tbl-th-r w-20">Ordered</th>
             {% if not editable %}
             <th class="tbl-th-r w-20">Invoiced</th>
@@ -58,17 +58,22 @@
           {% for line in so.lines %}
           {% set cancelled = line.qty_ordered == line.qty_invoiced and line.qty_invoiced == 0 and line.line_status == 'cancelled' %}
           {% set done = line.qty_remaining == 0 and line.qty_invoiced > 0 %}
-          <tr class="tbl-row {% if done %}bg-gray-50/60{% elif cancelled %}bg-gray-50/40{% endif %}">
+          {# Bug 1: CORE_CHARGE child line — render the way invoice lines do (amber tint,
+             ↳ indent under parent, read-only "core charge" label; line_total flows into Subtotal). #}
+          {% set is_core = line.line_type == 'core_charge' %}
+          {% set is_child = line.parent_line_id is not none %}
+          <tr class="tbl-row {% if is_core %}bg-amber-50/50{% elif done %}bg-gray-50/60{% elif cancelled %}bg-gray-50/40{% endif %}">
 
-            <td class="tbl-td text-xs text-gray-400 tabular-nums">{{ loop.index }}</td>
+            <td class="tbl-td text-xs text-gray-400 tabular-nums">{% if is_child %}<span title="Linked to the line above">↳</span>{% else %}{{ loop.index }}{% endif %}</td>
 
             <td class="tbl-td">
               {% if line.product %}
               <a href="/products/{{ line.product_id }}"
                  class="font-mono text-xs font-bold text-brand-700 hover:underline">{{ line.product.sku }}</a>
               {% else %}
-              <span class="text-xs font-semibold text-gray-400 uppercase">{{ line.line_type | replace('_', ' ') }}</span>
+              <span class="text-xs font-semibold {% if is_core %}text-amber-700{% else %}text-gray-400{% endif %} uppercase">{{ line.line_type | replace('_', ' ') }}</span>
               {% endif %}
+              {% if is_core %}<p class="text-xs text-amber-700 font-medium mt-0.5">Refundable core{% if line.is_locked_to_parent %} · linked{% endif %}</p>{% endif %}
               {# Fulfillment-source badge. 'backorder' and 'linked_po' have richer
                  chips of their own in the description cell, so skip them here. #}
               {% if line.fulfillment_source and line.fulfillment_source not in ['stock', 'backorder', 'linked_po'] %}
@@ -79,7 +84,7 @@
             </td>
 
             <td class="tbl-td {% if done or cancelled %}text-gray-400{% endif %}">
-              {% if editable and not done and not cancelled %}
+              {% if editable and not done and not cancelled and not is_core %}
               <input type="text" value="{{ line.description }}"
                      hx-post="/sales-orders/{{ so.id }}/lines/{{ line.id }}"
                      hx-trigger="change delay:400ms"
@@ -131,7 +136,7 @@
             </td>
 
             <td class="tbl-td-r {% if done or cancelled %}text-gray-400{% endif %}">
-              {% if editable and not done and not cancelled %}
+              {% if editable and not done and not cancelled and not is_core %}
               <input type="number" value="{{ line.qty_ordered }}" min="1"
                      hx-post="/sales-orders/{{ so.id }}/lines/{{ line.id }}"
                      hx-trigger="change"
@@ -154,7 +159,7 @@
             {% endif %}
 
             <td class="tbl-td-r {% if done or cancelled %}text-gray-400{% endif %}">
-              {% if editable and not done and not cancelled %}
+              {% if editable and not done and not cancelled and not is_core %}
               <input type="number" value="{{ '%.2f' % line.unit_price }}" step="0.01" min="0"
                      hx-post="/sales-orders/{{ so.id }}/lines/{{ line.id }}"
                      hx-trigger="change"
@@ -169,7 +174,7 @@
             </td>
 
             <td class="tbl-td-r {% if done or cancelled %}text-gray-400{% endif %}">
-              {% if editable and not done and not cancelled %}
+              {% if editable and not done and not cancelled and not is_core %}
               <input type="number" value="{{ '%.1f' % line.discount_pct }}" step="0.5" min="0" max="100"
                      hx-post="/sales-orders/{{ so.id }}/lines/{{ line.id }}"
                      hx-trigger="change"
@@ -205,8 +210,8 @@
             </td>
             {% endif %}
 
-            {# Delete button #}
-            {% if editable and not cancelled %}
+            {# Delete button — suppressed for auto-derived core lines (locked to parent) #}
+            {% if editable and not cancelled and not is_core %}
             <td class="tbl-td text-center">
               <button type="button"
                       hx-post="/sales-orders/{{ so.id }}/lines/{{ line.id }}/delete"
@@ -220,7 +225,7 @@
                 </svg>
               </button>
             </td>
-            {% elif editable and cancelled %}
+            {% elif editable %}
             <td class="tbl-td"></td>
             {% endif %}
 
