@@ -1,4 +1,5 @@
 {% from "macros/motion.html" import slide_right, backdrop_fade, dropdown_scale, modal_scale %}
+{% from "macros/confirm_modal.html" import confirm_modal %}
 <!DOCTYPE html>
 <html lang="en" class="h-full bg-stone-50">
 <head>
@@ -13,8 +14,8 @@
      Rebuild: npm run build:css  |  Watch: npm run watch:css ─────────────── #}
   <link rel="stylesheet" href="/static/css/app.css">
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script defer src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <style>
     [x-cloak] { display: none !important; }
 
@@ -67,6 +68,12 @@
     }
     .slide-over-footer {
       @apply flex justify-end gap-3 px-5 py-4 border-t border-gray-200 shrink-0;
+    }
+
+    /* ── Keyboard-navigable typeahead: highlighted result row ─────────── */
+    /* Plain CSS (not @apply) so it survives Tailwind purge without a rebuild. */
+    .cust-pick-active {
+      background-color: #eef1e4;
     }
 
     /* ── Toasts ──────────────────────────────────────────────────────── */
@@ -286,7 +293,15 @@
     cmdKOpen: false,
     notifOpen: false,
     closeCreateSlide() {
-      if (this.createSlideDirty && !window.confirm('Discard this customer? Anything you have entered will be lost.')) return;
+      if (this.createSlideDirty) {
+        window.jakConfirm({
+          title: 'Discard changes?',
+          body: 'Anything you have entered will be lost.',
+          cta: 'Discard', danger: true,
+          confirmEvent: 'jak-discard-slide',
+        });
+        return;
+      }
       this.createSlideDirty = false;
       this.createSlideOpen = false;
     },
@@ -317,6 +332,7 @@
       if (_el) _el.innerHTML = '<div class=\'flex-1 overflow-y-auto px-5 py-4\'><div class=\'rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700\'>Could not load the form (' + ($event.detail.xhr ? $event.detail.xhr.status : '?') + '). Close this panel and try again.</div></div>';
     }
   "
+  @jak-discard-slide.window="createSlideDirty = false; createSlideOpen = false"
   @htmx:send-error.window="
     if (createSlideOpen) {
       const _el = document.getElementById('create-slide-content');
@@ -779,8 +795,9 @@
 
       {# Customer search #}
       <div
-        x-data="{ displayName: '', selectedId: '' }"
-        @customer-selected.window="displayName = $event.detail.name; selectedId = $event.detail.id"
+        x-data="customerPicker('log-call-customer-results')"
+        x-init="_wireResults()"
+        @customer-selected.window="onCustomerSelected($event.detail)"
       >
         <label class="form-label">Customer <span class="text-red-500 normal-case">*</span></label>
         <div class="relative">
@@ -790,7 +807,11 @@
             placeholder="Search by name or phone…"
             autocomplete="off"
             :value="displayName"
-            @input="displayName = $el.value; selectedId = ''"
+            @input="pickInput($el.value)"
+            @keydown.down.prevent="pickMove(1)"
+            @keydown.up.prevent="pickMove(-1)"
+            @keydown.enter.prevent="pickChoose()"
+            @keydown.escape.prevent="pickClose()"
             class="form-input"
             hx-get="/customers/search-json"
             hx-trigger="input changed delay:200ms"
@@ -800,13 +821,13 @@
           />
           <div id="log-call-customer-results"
                class="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-10 max-h-48 overflow-y-auto text-sm"
-               x-show="displayName.length >= 2 && selectedId === ''"
+               x-show="displayName.length >= 2 && customerId === '' && !_dismissed"
                x-cloak>
           </div>
           {# Hidden ID submitted with form — populated when user clicks a result #}
-          <input type="hidden" name="customer_id" :value="selectedId" />
+          <input type="hidden" name="customer_id" :value="customerId" />
         </div>
-        <p x-show="displayName && selectedId" x-cloak
+        <p x-show="displayName && customerId" x-cloak
            class="mt-1 text-sm text-brand-700 font-medium" x-text="'✓ ' + displayName"></p>
       </div>
 
@@ -1140,6 +1161,126 @@
   </div>
 </div>
 
+{# ── Shared customer-typeahead behavior (keyboard navigation) ─────────────────
+   Every customer search box (New Quote, New SO, New Invoice, Log Call) uses
+   /customers/search-json → customers/_search_results.html, then dispatches a
+   `customer-selected` window event on click.  This Alpine factory layers
+   keyboard control on top of that existing click flow WITHOUT changing it:
+     ↓ / ↑  move the highlight    Enter  select the highlight
+     Esc    clear the field       (mouse click still works exactly as before)
+   The result rows are server-rendered by HTMX, so we operate over the live DOM
+   ([data-result] buttons) rather than Alpine state; htmx:afterSwap re-seeds the
+   highlight to the first row whenever a new result set arrives. #}
+<script>
+  window.customerPicker = window.customerPicker || function (resultsId) {
+    return {
+      customerId: '',
+      displayName: '',
+      _ai: -1,                          // index of the highlighted row (-1 = none)
+      _dismissed: false,                // true after Esc — hides the list until next keystroke
+      _wireResults() {
+        const box = document.getElementById(resultsId);
+        if (!box) return;
+        box.addEventListener('htmx:afterSwap', () => {
+          this._ai = this._rows().length ? 0 : -1;
+          this._paint();
+        });
+      },
+      _rows() {
+        const box = document.getElementById(resultsId);
+        return box ? Array.from(box.querySelectorAll('[data-result]')) : [];
+      },
+      _paint() {
+        this._rows().forEach((el, i) =>
+          el.classList.toggle('cust-pick-active', i === this._ai));
+      },
+      pickInput(v) { this.displayName = v; this.customerId = ''; this._ai = -1; this._dismissed = false; },
+      pickMove(d) {
+        const rows = this._rows();
+        if (!rows.length) return;
+        this._ai = (this._ai + d + rows.length) % rows.length;
+        this._paint();
+        if (rows[this._ai]) rows[this._ai].scrollIntoView({ block: 'nearest' });
+      },
+      pickChoose() {
+        const rows = this._rows();
+        if (this._ai >= 0 && rows[this._ai]) rows[this._ai].click();
+      },
+      pickClose() {
+        // Esc closes the suggestion list but keeps what was typed. Driven through
+        // reactive state (not DOM) so x-show stays the single source of truth and
+        // correctly re-opens the list on the next keystroke (pickInput resets it).
+        this._dismissed = true;
+        this._ai = -1;
+        this._paint();
+      },
+      onCustomerSelected(detail) {
+        this.customerId = String(detail.id);
+        this.displayName = detail.name;
+        this._ai = -1;
+      },
+    };
+  };
+</script>
+
+{# ════════════════════════════════════════════════════════════════════════════
+   GLOBAL CONFIRM MODAL — §8L shared primitive (see macros/confirm_modal.html)
+   Mounted once here so every screen + HTMX-swapped partial can call
+   window.jakConfirm({…}) without per-workspace boilerplate.
+   Replaces: window.confirm(), hx-confirm attributes, per-workspace askConfirmHx().
+════════════════════════════════════════════════════════════════════════════ #}
+{{ confirm_modal() }}
+
+<script>
+/* ── Submit-pending guard (UX4 + Bug-2 double-click protection) ─────────────
+   Disables the triggering button and shows a spinner on any mutating HTMX
+   request (hx-post / hx-put / hx-delete) and on native form submits.
+   Re-enables on htmx:afterRequest; native form submits reset on page reload.
+
+   Opt-out: add  data-no-pending  to a button that must not be locked.
+   This is the defence against duplicate records from the Bug-2 redirect stall.
+────────────────────────────────────────────────────────────────────────── */
+(function () {
+  var SPIN = '<svg class="inline w-4 h-4 animate-spin mr-1 -mt-0.5 shrink-0" fill="none" '
+           + 'viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" '
+           + 'stroke="currentColor" stroke-width="4"/><path class="opacity-75" '
+           + 'fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>'
+           + '</svg><span class="opacity-60">Working…</span>';
+
+  function lock(btn) {
+    if (!btn || btn.hasAttribute('data-no-pending') || btn.dataset.pendingLock) return;
+    btn.dataset.pendingLock = '1';
+    btn.dataset.pendingHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = SPIN;
+  }
+  function unlock(btn) {
+    if (!btn || !btn.dataset.pendingLock) return;
+    btn.disabled = false;
+    btn.innerHTML = btn.dataset.pendingHtml;
+    delete btn.dataset.pendingLock;
+    delete btn.dataset.pendingHtml;
+  }
+
+  /* HTMX mutating requests — only hx-post / hx-put / hx-delete */
+  document.body.addEventListener('htmx:beforeRequest', function (evt) {
+    var elt = evt.detail.elt;
+    if (!elt || elt.tagName !== 'BUTTON') return;
+    if (elt.getAttribute('hx-post') || elt.getAttribute('hx-put') || elt.getAttribute('hx-delete')) {
+      lock(elt);
+    }
+  });
+  document.body.addEventListener('htmx:afterRequest', function (evt) {
+    unlock(evt.detail.elt);
+  });
+
+  /* Native form submits — lock the first submit button; clears on page load */
+  document.addEventListener('submit', function (evt) {
+    var btn = evt.target.querySelector('button[type="submit"]:not([data-no-pending])');
+    if (btn) lock(btn);
+  });
+})();
+</script>
 
 </body>
 </html>
