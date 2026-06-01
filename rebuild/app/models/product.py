@@ -197,12 +197,14 @@ class Product(Base):
     def selling_price(self) -> float:
         """
         Quick estimated sell price using the product's own markup_pct.
-        Falls back to 30 % when markup_pct is not set on the product.
 
-        IMPORTANT: This property uses a hardcoded fallback, NOT the
-        default_markup_pct setting from the database.  For prices that
-        respect the current setting value, call:
-            PricingService(db).calculate_sell_price(product)
+        IMPORTANT: a model property has no DB session, so when markup_pct is unset
+        this uses a hardcoded 30 % estimate — NOT the default_markup_pct setting.
+        For a price that respects the current setting (the O5 path), call:
+            PricingService(db).sell_price_for(product)
+        which the search results, product CSV export, and pickers now use.
+        A 0 % markup is honored as a real value (sell at cost); only an unset
+        (NULL) markup falls back to the estimate here.
         """
         if self.price_override and self.price_override > 0:
             return self.price_override

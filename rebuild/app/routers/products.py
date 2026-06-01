@@ -195,12 +195,18 @@ async def product_quick_create(request: Request, db: Session = Depends(get_db), 
         )
     sku = f"JAKS-{sku_suffix}"
     svc = _svc(db, user_id)
+    # O5 — when the quick-create form leaves markup blank, inherit the configured
+    # default_markup_pct rather than a hardcoded 30.
+    from app.services.pricing_service import PricingService
+    _pricing = PricingService(db)
+    markup_raw = str(form.get("markup_pct", "")).strip()
+    markup_pct = float(markup_raw) if markup_raw else _pricing.default_markup_pct()
     try:
         product = svc.create_product({
             "sku": sku,
             "title": title,
             "cost": float(form.get("cost") or 0),
-            "markup_pct": float(form.get("markup_pct") or 30),
+            "markup_pct": markup_pct,
             "has_core": bool(form.get("has_core")),
             "vendor_core_charge": float(form.get("vendor_core_charge") or 0),
             "customer_core_charge": float(form.get("customer_core_charge") or 0),
@@ -211,12 +217,7 @@ async def product_quick_create(request: Request, db: Session = Depends(get_db), 
             status_code=422,
         )
     db.commit()
-    from app.utils import calc_sell_price
-    sell = (
-        product.price_override
-        if (product.price_override and product.price_override > 0)
-        else calc_sell_price(product.cost, product.markup_pct or 30.0)
-    )
+    sell = _pricing.sell_price_for(product)
     _detail = html.escape(json.dumps({
         "type": "product",
         "id": product.id,
@@ -293,8 +294,6 @@ def product_export_csv(
     Stream the current filtered product list as a CSV download.
     Respects the same tab/q filters as the list view so "export what I see" works.
     """
-    from app.utils import calc_sell_price
-
     base = db.query(Product)
 
     if tab == "zero_stock":
@@ -318,6 +317,10 @@ def product_export_csv(
 
     products = base.order_by(Product.sku).all()
 
+    # O5 — settings-backed sell price (default markup from default_markup_pct).
+    from app.services.pricing_service import PricingService
+    _pricing = PricingService(db)
+
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow([
@@ -326,19 +329,19 @@ def product_export_csv(
         "qty_on_hand", "is_active", "category",
     ])
     for p in products:
-        markup = p.markup_pct or 30.0
         try:
-            sell = p.price_override if (p.price_override and p.price_override > 0) \
-                else calc_sell_price(p.cost, markup)
+            sell = _pricing.sell_price_for(p)
         except Exception:
-            sell = round(p.cost * (1 + markup / 100), 2)
+            sell = round(p.cost, 2)
         writer.writerow([
             p.sku,
             p.title,
             p.description,
             p.status,
             f"{p.cost:.4f}",
-            f"{markup:.2f}",
+            # The product's OWN markup (blank when unset — the selling_price column
+            # already reflects the settings-backed default for unset products).
+            f"{p.markup_pct:.2f}" if p.markup_pct is not None else "",
             f"{p.price_override:.2f}" if p.price_override else "",
             f"{sell:.2f}",
             p.qty_on_hand,

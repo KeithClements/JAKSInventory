@@ -18,7 +18,13 @@ from __future__ import annotations
 
 from app.models.product import Product, ProductVendorSource
 from app.services.base import BaseService
+from app.settings_utils import get_setting_value_db
 from app.utils import calc_sell_price, calc_margin_pct
+
+# Last-resort fallback only when the default_markup_pct setting row is missing or
+# unparseable. The seeded settings value (30.0) is the real default; this literal
+# exists so pricing never crashes on a corrupt/empty settings table.
+_HARD_FALLBACK_MARKUP = 30.0
 
 
 class PricingService(BaseService):
@@ -26,6 +32,37 @@ class PricingService(BaseService):
     All price calculation helpers.
     Stateless math — does NOT write to the database.
     """
+
+    # ── Markup resolution (O5 — settings-backed default) ──────────────────────
+
+    def default_markup_pct(self) -> float:
+        """The configured global default markup %, from the default_markup_pct
+        setting. Falls back to a hard literal only if the setting is missing or
+        unparseable (so a corrupt settings table can't crash pricing)."""
+        raw = get_setting_value_db(self.db, "default_markup_pct", str(_HARD_FALLBACK_MARKUP))
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return _HARD_FALLBACK_MARKUP
+
+    def resolve_markup_pct(self, product: Product) -> float:
+        """The effective markup % for a product: its OWN markup_pct when set
+        (0% is a valid, deliberate value → sell at cost), else the configured
+        default_markup_pct setting. This is the single source of truth — callers
+        must NOT re-implement `product.markup_pct or 30.0` (that literal both
+        hard-codes the default AND wrongly treats a real 0% as unset)."""
+        if product.markup_pct is not None:
+            return product.markup_pct
+        return self.default_markup_pct()
+
+    def sell_price_for(self, product: Product) -> float:
+        """Settings-aware sell price for a product: honor price_override first,
+        else cost × (1 + resolve_markup_pct/100). Use this everywhere a product's
+        estimated sell price is shown (search results, CSV export, pickers) so the
+        number always reflects the current default markup setting."""
+        if product.price_override and product.price_override > 0:
+            return product.price_override
+        return calc_sell_price(product.cost, self.resolve_markup_pct(product))
 
     def calculate_sell_price(self, cost: float, markup_pct: float) -> float:
         """Return sell price given cost and markup percent."""
@@ -109,5 +146,9 @@ class PricingService(BaseService):
         """
         if product.price_override and product.price_override > 0:
             return product.price_override
-        markup = markup_pct_override if markup_pct_override is not None else (product.markup_pct or 30.0)
+        markup = (
+            markup_pct_override
+            if markup_pct_override is not None
+            else self.resolve_markup_pct(product)
+        )
         return calc_sell_price(product.cost, markup)

@@ -87,13 +87,17 @@ class SearchService(BaseService):
         if not q:
             return []
 
+        from app.services.pricing_service import PricingService
+        _pricing = PricingService(self.db)
+
         seen: set[int] = set()
         results: list[ProductSearchResult] = []
 
         def _to_result(product: Product, match_type: str, cross_ref_number: str | None = None) -> ProductSearchResult:
             src = next((s for s in product.vendor_sources if s.is_preferred), None)
-            markup = product.markup_pct or 30.0
-            sell = product.price_override if (product.price_override and product.price_override > 0) else calc_sell_price(product.cost, markup)
+            # O5 — settings-backed default markup (0% is a real value; only NULL
+            # falls through to the default_markup_pct setting).
+            sell = _pricing.sell_price_for(product)
 
             # Last sold price — most recent finalised invoice line for this product.
             # N+1 is acceptable: max 8 results, local single-user app.
@@ -224,6 +228,8 @@ class SearchService(BaseService):
         nref = normalize_part(ref_number)
         if not nref:
             return []
+        from app.services.pricing_service import PricingService
+        _pricing = PricingService(self.db)
         hits = (
             self.db.query(CrossReference, Product)
             .join(Product, CrossReference.product_id == Product.id)
@@ -233,8 +239,7 @@ class SearchService(BaseService):
         results = []
         for xref, p in hits:
             src = next((s for s in p.vendor_sources if s.is_preferred), None)
-            markup = p.markup_pct or 30.0
-            sell = p.price_override if (p.price_override and p.price_override > 0) else calc_sell_price(p.cost, markup)
+            sell = _pricing.sell_price_for(p)  # O5 — settings-backed default markup
             results.append(ProductSearchResult(
                 product_id=p.id,
                 part_number=p.sku,
