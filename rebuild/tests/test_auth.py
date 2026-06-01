@@ -1,12 +1,15 @@
 """
 tests/test_auth.py
 ==================
-Tests for O2 minimal login + audit attribution.
+Tests for O2 minimal login + audit attribution, including the O2-ENFORCE update
+(redirect to /login when no session in production; test bypass via in-memory DB).
 
-Covers the auth primitives (pbkdf2 hash/verify, signed session token) and the
-HTTP login flow, plus the attribution seam: get_current_user_id returns the
-signed-in user when a valid cookie is present and falls back to DEFAULT_USER_ID
-otherwise (so unauthenticated / TestClient calls keep working in single-user mode).
+Covers:
+  - pbkdf2 hash/verify + signed session token primitives
+  - HTTP login flow
+  - Attribution seam (get_current_user_id → signed-in user or DEFAULT_USER_ID)
+  - Enforcement behaviour: unauthenticated → 302 /login in production, or
+    DEFAULT_USER_ID fallback in tests (in-memory DB bypass)
 """
 from __future__ import annotations
 
@@ -28,6 +31,7 @@ from app.auth import (
     read_session_token,
     verify_password,
 )
+import app.deps as _deps
 from app.deps import DEFAULT_USER_ID, get_current_user_id
 from app.main import app
 from app.models.user import User
@@ -260,3 +264,56 @@ def test_unauthenticated_financial_write_falls_back_to_default_actor(client_db):
         )
     finally:
         db.close()
+
+
+# ── O2-ENFORCE: redirect when no session in production ───────────────────────
+
+def _htmx_request(cookies: dict) -> Request:
+    scope = {
+        "type": "http",
+        "headers": [
+            (b"cookie", "; ".join(f"{k}={v}" for k, v in cookies.items()).encode()),
+            (b"hx-request", b"true"),
+        ],
+    }
+    return Request(scope)
+
+
+def test_enforcement_raises_302_when_no_session_in_production(monkeypatch):
+    """In production (non-test env) a missing session must redirect to /login."""
+    from fastapi import HTTPException
+    monkeypatch.setattr(_deps, "_is_test_env", lambda: False)
+    with pytest.raises(HTTPException) as exc_info:
+        get_current_user_id(_fake_request({}))
+    assert exc_info.value.status_code == 302
+    assert exc_info.value.headers["Location"] == "/login"
+
+
+def test_enforcement_sends_hx_redirect_for_htmx_requests(monkeypatch):
+    """HTMX requests get HX-Redirect (200 + header) not a bare 302 redirect.
+    This prevents the login-page HTML from being injected into a partial slot."""
+    from fastapi import HTTPException
+    monkeypatch.setattr(_deps, "_is_test_env", lambda: False)
+    with pytest.raises(HTTPException) as exc_info:
+        get_current_user_id(_htmx_request({}))
+    assert exc_info.value.status_code == 200
+    assert exc_info.value.headers.get("HX-Redirect") == "/login"
+
+
+def test_test_env_bypass_returns_default_user_id():
+    """In test mode (in-memory DB) a missing cookie falls back to DEFAULT_USER_ID."""
+    activate(fresh_engine())
+    auth.reset_secret_cache()
+    # _is_test_env() returns True naturally because activate() set :memory: engine
+    result = get_current_user_id(_fake_request({}))
+    assert result == DEFAULT_USER_ID
+
+
+def test_valid_cookie_always_wins_over_enforcement(monkeypatch):
+    """A valid session cookie returns the correct user id regardless of env."""
+    activate(fresh_engine())
+    auth.reset_secret_cache()
+    # Even with prod-mode enforcement active, a real cookie should pass
+    monkeypatch.setattr(_deps, "_is_test_env", lambda: False)
+    token = make_session_token(99)
+    assert get_current_user_id(_fake_request({SESSION_COOKIE: token})) == 99
