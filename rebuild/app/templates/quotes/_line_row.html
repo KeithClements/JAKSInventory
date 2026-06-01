@@ -227,10 +227,31 @@
     </div>
   </td>
 
-  {# Margin % (color-coded) — before Total per Design B #}
-  <td class="px-2 py-1.5 text-right text-xs tabular-nums w-14
-             {{ 'text-red-500' if line.margin_pct < 0 else ('text-amber-500' if line.margin_pct < 15 else 'text-gray-400') }}">
-    {{ '%.0f' % line.margin_pct }}%
+  {# Margin % (editable) — editing back-calcs Sell = Cost ÷ (1 − margin); bidirectional with Sell (Bug 3) #}
+  <td class="px-2 py-1 text-right w-20">
+    <input
+      type="number"
+      value="{{ '%.0f' % line.margin_pct }}"
+      step="1" min="-99" max="99"
+      data-cost="{{ '%.2f' % line.unit_cost }}"
+      @focus="$event.target.select()"
+      @change="
+        const cost = parseFloat($el.dataset.cost) || 0;
+        const m = parseFloat($el.value);
+        if (cost > 0 && !isNaN(m) && m < 100) {
+          htmx.ajax('POST', '/quotes/{{ line.quote_id }}/lines/{{ line.id }}', {
+            values: { unit_price: (cost / (1 - m / 100)).toFixed(2) },
+            target: '#line-{{ line.id }}', swap: 'outerHTML'
+          });
+        }
+      "
+      @keydown.enter.prevent="$el.blur()"
+      title="Edit margin % to set the sell price (Sell = Cost ÷ (1 − margin))"
+      class="w-12 text-right border border-transparent hover:border-gray-300 focus:border-brand-400
+             focus:outline-none rounded px-1 py-1 text-xs bg-transparent focus:bg-white transition-colors tabular-nums
+             {{ 'text-red-500' if line.margin_pct < 0 else ('text-amber-500' if line.margin_pct < 15 else 'text-gray-500') }}"
+    />
+    <span class="text-gray-400 text-xs pointer-events-none">%</span>
   </td>
 
   {# Line total — struck out when excluded upgrade_option #}
