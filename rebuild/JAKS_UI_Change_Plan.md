@@ -358,9 +358,10 @@ and **not** a Queue Board (it does not group work items for sequential processin
    Destructive action uses `btn-ghost btn-sm text-red-500` + Alpine confirm modal. Follows §8B
    workspace header zone order.
 
-7. **Autosave indicator** — per §3 ruling (2026-05-29). L3 autosaved screens: small `✓ Saved
-   automatically` indicator, no redundant Save button. L1/L2 non-autosaved screens: real
-   `btn-primary` Save in the footer. No ambiguity about whether work is persisted.
+7. **Save affordance** — per **Save Standard v2 (2026-05-31)**. Autosave (L3) screens show **all three**:
+   manual `btn-primary` Save + honest dirty-state pill + sticky save bar (the old "indicator-only, no Save
+   button" rule is **superseded**). L1/L2 non-autosaved screens: real `btn-primary` Save in the footer.
+   No ambiguity about whether work is persisted.
 
 8. **Customer-context bar** — on sales-side workspaces (Quote, SO, Invoice): a compact strip
    showing terms, tax-exempt status, open AR balance, overdue balance, credit balance, cores owed.
@@ -411,7 +412,7 @@ and shows "↵ Enter to add" hint. Resolve before adopting for SO/Invoice/PO.
 - [ ] Search normalizes punctuation and case (ok1 → OK-1; q2026 → Q-2026)
 - [ ] Line add is discoverable — result selection either adds immediately or reveals a clear, prominent Add button
 - [ ] No `window.confirm()` anywhere — all destructive actions use Alpine modal per §3
-- [ ] Autosave indicator always visible (L3) OR real Save button in footer (L1/L2) — never ambiguous
+- [ ] Save Standard v2: autosave (L3) screens show manual Save + honest dirty-state pill + sticky save bar; L1/L2 have a real footer Save — never ambiguous; pill green ONLY when truly saved
 - [ ] Customer-context bar (AR, terms, cores) present on sales-side workspaces
 - [ ] Totals bar HTMX-refreshed after every line mutation
 - [ ] `divide-y divide-gray-100` on line tbody; no `tbl-*` classes
@@ -479,7 +480,21 @@ These rules apply to every screen in the app. Do not deviate without updating th
 - Error: red dot/icon
 - Auto-dismiss at 4000ms
 
-**Save button standard — RULED 2026-05-29 (recurring owner complaint):**
+**Save Standard v2 — RATIFIED 2026-05-31 (SUPERSEDES the 2026-05-29 rule below; the owner asked repeatedly).**
+Every **autosave workspace** (Quote / SO / Invoice / PO / Product Detail) now shows **all three**:
+1. **Manual `btn-primary` Save** — fires the same persist POST as autosave. Reverses the 2026-05-29 "remove
+   redundant Save"; generalizes the 2026-05-30 PO + Product-Detail override to **all** autosave workspaces.
+2. **Honest dirty-state pill** — reflects the **actual** state, never a permanent "Saved" lie:
+   `dirty` (amber · "Unsaved changes") → `saving` (gray pulse · "Saving…") → `clean` (green · "Saved") →
+   `error` (red · "Save failed — retry"). Driven by a real Alpine `saveState`: set `dirty` on `@input`,
+   `saving` on POST, `clean` only on a 2xx, `error` on failure. Format under "Dirty-state pill format" below.
+3. **Sticky save bar** — a `sticky bottom-0` bar within the workspace holding the pill (left) + Save (right),
+   always reachable without scrolling.
+The Invoice **Save Draft** exception and the L1/L2 (no-autosave) real-Save rows below still stand.
+
+---
+
+**Save button standard — RULED 2026-05-29 — ⚠️ SUPERSEDED 2026-05-31 by Save Standard v2 above (kept as history):**
 
 | Screen grade | Standard | Rationale |
 |---|---|---|
@@ -488,14 +503,20 @@ These rules apply to every screen in the app. Do not deviate without updating th
 | **L1/L2 form screens (no autosave)** | **Keep a real `btn-primary` Save in the footer.** | No autosave = user's only save mechanism. |
 | **Owner override — PO Workspace + Product Detail (RULED 2026-05-30)** | **Show BOTH — explicit `btn-primary` Save AND the autosave/dirty indicator.** | Owner explicitly wants a visible Save on these two screens; overrides the "remove redundant button" row above **for them only.** Quote / SO / Invoice workspaces unchanged (indicator-only stands). |
 
-**Autosave indicator format** (approved reference: `quotes/workspace.html` after 2026-05-29 fix):
+**Dirty-state pill format (v2 — replaces the old always-green "Saved automatically" indicator):**
 ```html
-<span class="text-xs text-gray-400 flex items-center gap-1">
-  <span class="w-1.5 h-1.5 rounded-full bg-green-400"></span>
-  Saved automatically
+<!-- Alpine saveState ∈ 'clean'|'dirty'|'saving'|'error': set 'dirty' on @input, 'saving' on POST,
+     'clean' on a 2xx response, 'error' on failure. Green ONLY when truly persisted. -->
+<span class="text-xs flex items-center gap-1.5"
+      :class="{ 'text-amber-600': saveState==='dirty', 'text-gray-400': saveState==='clean'||saveState==='saving', 'text-red-600': saveState==='error' }">
+  <span class="w-1.5 h-1.5 rounded-full"
+        :class="{ 'bg-amber-400': saveState==='dirty', 'bg-green-400': saveState==='clean', 'bg-gray-300 animate-pulse': saveState==='saving', 'bg-red-500': saveState==='error' }"></span>
+  <span x-text="({clean:'Saved', dirty:'Unsaved changes', saving:'Saving…', error:'Save failed — retry'})[saveState]"></span>
 </span>
 ```
-Placed adjacent to the form header or in the card header band — not in `header_actions`.
+Lives in the **sticky save bar** beside the manual Save — not in `header_actions`. A permanent green "Saved
+automatically" is **banned**: it lied while mid-edit or when autosave failed (the owner's recurring complaint).
+The pill shows green **only** after a confirmed successful save.
 
 **Screens that need this fix applied:**
 - `purchase_orders/workspace.html` — autosave indicator is already wired (lines 204-218). **Per the
@@ -623,7 +644,7 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 | 7 | Vendors List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** Dock wired (import line 21 + call line 333). All 11 §2 elements + §2B (Open POs/Bills/Credits/LastPO/Contact). **Tab slugs realigned to the router contract (active/inactive/all) — RESOLVED 2026-05-31 (see "Fix 2" below); inactive vendors are now reachable and the detail page gained a Reactivate button. Locked by `tests/test_vendor_list_tabs.py`.** Lead time deferred per "if stored" qualifier. |
 | 8 | Returns List | ⏳ **L2 — pending post-b514196 owner re-test** | L1 → L2 | **⚠️ The 2026-05-29 "FULL PASS" was recorded in the same 500-era build as Quotes (see §8G re-test gate); not re-affirmed until the owner re-tests a post-`b514196` pull + §9 passes.** Original record (unverified): all 11 §2 + §2B; real tab counts from router group_by (no stub guard); dock wired at line 339; stripe amber=received/blue=open/transparent=draft-closed. |
 | 9 | Payments List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS (re-pass).** Dock: import line 16, call line 314 (live, not commented). Method chips: Cash=green, Check=blue, Card=purple, ACH=blue, Wire=sky (§4-permitted; sky co-listed with blue). All §2 + §2B previously verified. |
-| 10 | Product Detail | ⏳ **HOLD — functional-test mode** | L1 → L2 | Section-based card layout. Do not start until hold lifted. |
+| 10 | Product Detail | ⏳ **HOLD — functional-test mode** | L1 → L2 | Section-based card layout. Do not start until hold lifted. **When lifted, the owner's UX review IS the spec** (not a generic L2 card upgrade) — build to the owner's review; Architect governs against it. Save Standard v2 applies (manual Save + honest pill + sticky bar). |
 | 11 | PO Workspace | ⏳ **HOLD — functional-test mode** | L1 → L3 | Autosave, line editor, receive flow. Do not start until hold lifted. **Line-adder swap (§8H) applied during hold — line-adder ONLY; full L3 build remains HELD pending owner.** |
 | 12 | Invoice Workspace | ✅ L3 complete | L3 candidate → L3 | Governance pass 2026-05-29. **PASS confirmed 2026-05-29** — window.confirm already cleared prior to pass. No blocking defects remain. A11y follow-up (role=dialog/aria-modal/focus-trap on payment/void/change-customer modals) tracked under §8 #4 a11y sweep — non-blocking for L3. |
 | 13 | PO Receiving Queue | ✅ QB2 complete | QB1 → QB2 | Queue Board archetype — §2A. Governance pass 2026-05-28. Official QB2 reference. |
@@ -1726,6 +1747,48 @@ percent-field token as O5:
 **Shared tokens (all three):** field = `rounded-lg border border-gray-200 px-3 py-2 text-sm focus:ring-2
 focus:ring-brand-400`; section card = `rounded-xl bg-white border border-gray-100 shadow-sm p-6`; save =
 `bg-brand-700 … hover:bg-brand-600`. **No new colors/classes.** §3/§4 apply; any modal/slide-over follows §3.
+
+---
+
+#### 8J. Activity Timeline — New UI Primitive (Timeline/Feed archetype) — RATIFIED 2026-05-31
+
+Governs the customer **Activity** timeline per `ACTIVITY_LOG_CONTRACT.md` §4 (Backend owns the data + merge;
+this is the UI pattern, ratified **before** UI-Builder builds it). The Timeline/Feed is a **third read
+archetype** — **not** a §2 Operational List, **not** a §2A Queue Board.
+
+**Archetype rules (what it is NOT):** no filter tabs, no bulk toolbar, no preview dock, no per-item queue
+actions. It is a **chronological, newest-first, read-only feed** merging manual activities + system-sent
+comms (`get_timeline`). The only write affordance is the shared **"+ Log Activity" modal** (Contract §4.1);
+the feed never edits in place (both stores are append-only).
+
+**Row format (one entry):** a left **rail** (type dot + vertical connector) then the body —
+- **Timestamp** — relative ("2h ago"), absolute on hover; optional **date sub-headers** (Today / Yesterday /
+  Mon DD) between days.
+- **Type chip** — `activity_type` as icon + label: call · text · email (informational → `badge-blue`),
+  counter_visit (in-person → `badge-gray` + store icon), note (`badge-gray`). The **icon** carries the type;
+  the chip color stays in the §4 informational/neutral family so it never competes with the outcome.
+- **Outcome chip** *(optional; activities only)* — `reached` → `badge-green`, `voicemail` → `badge-amber`,
+  `no_answer` → `badge-gray`. A NOTE has no outcome.
+- **Note** — the free text (`text-sm text-gray-700`).
+- **Linked-doc chip** *(when `related_entity_type` set)* — `font-mono` doc number in a chip linking to the
+  doc, e.g. `→ Q2026-0001` (`text-brand-700`), via the doc-identifier token.
+- **Logged-by** — the signed-in user who logged it (`text-[11px] text-gray-400`).
+- **System-sent comms** (`kind='comm'`) render in the SAME feed but **muted** (lighter rail dot + a small
+  "sent" tag) to mark them read-only audit, distinct from manual activity.
+
+**Empty state:** centered `.card` empty state — "No activity yet" + an explicit **"+ Log Activity"** CTA
+(unlike a queue, logging IS the action here, so a CTA is correct).
+
+**Reuse:** the doc-side activity panel (Contract §4.4, `activities_for_entity`) uses a **compact** variant of
+this same row (no rail / no date headers) — same chips, same linked-doc + logged-by. Build the row as one
+`{% include %}`-able partial so the Activity tab and the doc panel share it (don't fork two row layouts).
+
+**Tokens:** existing `badge-*` chips, `divide-y divide-gray-100` between entries, `.card` container. **No new
+colors/classes** — type stays informational/neutral, outcome carries green/amber. §3/§4 apply; the
+"+ Log Activity" modal follows §3 (role=dialog, z-[60], rounded-2xl, @keydown.escape).
+
+**This replaces** the old "Call Log" tab and the `/customers/{id}/communications` page (Contract §4). Ratified
+**before** the build — UI-Builder copies this; no improvisation.
 
 ---
 
