@@ -7,6 +7,13 @@ from app.database import Base
 from app.models.mixins import QBOSyncMixin
 from app.constants import POStatus, VendorBillStatus, QBOSyncStatus, Carrier, MatchResolution
 
+# 3-way-match cost tolerance: a billed unit cost is a DISCREPANCY when it differs
+# from the PO/receipt unit cost by at least this much (1 cent). Single source of
+# truth — POService.compute_match_line and create_vendor_bill import this so the
+# match grid, the bill-status gate, and the line flag can never use different
+# thresholds. Money path: a vendor overcharge must never silently auto-approve.
+COST_VARIANCE_TOLERANCE = 0.01
+
 
 class PurchaseOrder(QBOSyncMixin, Base):
     __tablename__ = "purchase_orders"
@@ -207,7 +214,9 @@ class POReceiptLine(Base):
 class VendorBill(QBOSyncMixin, Base):
     """
     Vendor's invoice to JAKS. Matched against receipts (3-way match).
-    Status = discrepancy when qty_billed > qty_received on any line.
+    Status = DISCREPANCY when any line is over-billed (qty_billed > qty_received)
+    OR cost-varied (billed unit cost differs from PO/receipt cost beyond
+    COST_VARIANCE_TOLERANCE). Either blocks approval.
     """
     __tablename__ = "vendor_bills"
     __table_args__ = (
@@ -267,9 +276,16 @@ class VendorBillLine(Base):
 
     @property
     def has_discrepancy(self) -> bool:
+        """A bill line is a discrepancy when EITHER the billed qty exceeds the
+        received qty (over-billed) OR the billed unit cost differs from the PO/
+        receipt unit cost beyond tolerance (vendor overcharge/undercharge).
+        Both must block approval — a cost overcharge is just as much a money
+        problem as an over-billed quantity."""
         if self.po_line is None:
             return False
-        return self.qty_billed > self.po_line.qty_received
+        if self.qty_billed > self.po_line.qty_received:
+            return True
+        return abs(self.unit_cost - self.po_line.unit_cost) >= COST_VARIANCE_TOLERANCE
 
 
 # ── Late imports ───────────────────────────────────────────────────────────────

@@ -24,6 +24,7 @@ from app.constants import (
 from app.models.inventory import InventoryTransaction
 from app.models.product import Product
 from app.models.purchase_order import (
+    COST_VARIANCE_TOLERANCE,
     POLine, POReceipt, POReceiptLine,
     PurchaseOrder, VendorBill, VendorBillLine,
 )
@@ -78,7 +79,7 @@ class POService(BaseService):
 
         if line.qty_billed > line.qty_received:
             raw_state = "over_billed"
-        elif billed_cost is not None and abs(cost_var) >= 0.01:
+        elif billed_cost is not None and abs(cost_var) >= COST_VARIANCE_TOLERANCE:
             raw_state = "cost_variance"
         elif line.qty_received < open_qty:
             raw_state = "awaiting_receipt"
@@ -609,7 +610,8 @@ class POService(BaseService):
         self.db.add(bill)
         self.db.flush()
 
-        has_discrepancy = False
+        has_qty_discrepancy = False
+        has_cost_discrepancy = False
         total = 0.0
 
         for line_data in lines:
@@ -630,23 +632,35 @@ class POService(BaseService):
             if po_line:
                 po_line.qty_billed += qty_billed
                 if qty_billed > po_line.qty_received:
-                    has_discrepancy = True
+                    has_qty_discrepancy = True
+                # Money bug fix — a billed unit cost that differs from the PO/
+                # receipt cost beyond tolerance is a discrepancy too (vendor
+                # overcharge/undercharge). Must NOT silently auto-approve.
+                if abs(unit_cost - po_line.unit_cost) >= COST_VARIANCE_TOLERANCE:
+                    has_cost_discrepancy = True
 
             total += round(qty_billed * unit_cost, 2)
 
+        has_discrepancy = has_qty_discrepancy or has_cost_discrepancy
         bill.total_amount = round(total, 2)
         bill.status = VendorBillStatus.DISCREPANCY if has_discrepancy else VendorBillStatus.APPROVED
 
         if has_discrepancy:
             po = self.db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first() if po_id else None
             po_number = po.po_number if po else str(po_id)
+            # Describe whichever discrepancy/-ies fired so AP knows what to review.
+            _reasons = []
+            if has_qty_discrepancy:
+                _reasons.append("billed qty exceeds received qty")
+            if has_cost_discrepancy:
+                _reasons.append("billed unit cost differs from PO/receipt cost")
             from app.services.notification_service import NotificationService
             NotificationService.build_bill_discrepancy(
                 self.db,
                 bill_id=bill.id,
                 po_id=po_id or 0,
                 po_number=po_number,
-                detail="billed qty exceeds received qty on one or more lines",
+                detail=" and ".join(_reasons) + " on one or more lines",
             )
         elif po_id:
             po = self.db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()
