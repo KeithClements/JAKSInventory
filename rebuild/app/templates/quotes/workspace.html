@@ -123,9 +123,10 @@
   {% endif %}
 
   {# Vehicle / Engine Info (expandable) — parity with Invoice (invoices/workspace.html).
-     Inputs live inside quote-header-form, so they save via the existing autosave; the
-     Quote model already has these columns — persistence activates once Backend adds the
-     fields to the /quotes/{id}/autosave + update_header route params. #}
+     Inputs live inside quote-header-form and save via autosave. Backend @640c2e2 added
+     esn/engine_manufacturer/engine_model/customer_po_number/customer_job_number to the
+     Quote model + both route handlers (autosave + update_header). Carry-through to
+     SO and Invoice is wired in convert_to_sales_order / convert_to_invoice. #}
   <div class="border-b border-gray-100 px-4 py-2"
        x-data="{ showVehicle: {{ 'true' if (quote.esn or quote.engine_manufacturer or quote.engine_model or quote.customer_po_number or quote.customer_job_number) else 'false' }} }">
     <button type="button" @click="showVehicle = !showVehicle"
