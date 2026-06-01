@@ -149,6 +149,9 @@
 
 <script>
 (function () {
+  // B-3: defer chart init until DOMContentLoaded — Chart.js loads with `defer`
+  // (base.html), so it isn't defined yet when this inline script first runs.
+  document.addEventListener('DOMContentLoaded', function () {
   const labels = {{ monthly_labels_json | safe }};
   const data   = {{ monthly_totals_json | safe }};
   const ctx = document.getElementById('revenue-chart');
@@ -217,6 +220,7 @@
       }
     }
   });
+  });  // end DOMContentLoaded wrapper (B-3)
 })();
 </script>
 
