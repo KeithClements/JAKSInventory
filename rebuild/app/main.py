@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -42,6 +44,24 @@ app = FastAPI(title="JAKS Inventory", docs_url=None, redoc_url=None)
 
 BASE_DIR = Path(__file__).resolve().parent
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+# ── Auth enforcement (O2 — "A: enforce") ──────────────────────────────────────
+# Redirects every unauthenticated request to /login.
+# Set JAKS_SKIP_AUTH=1 to bypass (used by the test suite — tests are not
+# testing auth enforcement, they test business logic).
+_AUTH_EXEMPT = frozenset({"/login", "/logout"})
+
+@app.middleware("http")
+async def enforce_login(request: Request, call_next):
+    if os.getenv("JAKS_SKIP_AUTH"):                    # test bypass
+        return await call_next(request)
+    path = request.url.path
+    if path in _AUTH_EXEMPT or path.startswith("/static/"):
+        return await call_next(request)
+    from app.auth import SESSION_COOKIE, read_session_token
+    if read_session_token(request.cookies.get(SESSION_COOKIE)) is None:
+        return RedirectResponse("/login", status_code=303)
+    return await call_next(request)
 
 
 @app.on_event("startup")

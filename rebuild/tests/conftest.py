@@ -26,11 +26,16 @@ regardless of import order.
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import sys
 
 # Ensure the project root is importable as `app`.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+
+# Disable auth enforcement for the test suite — tests verify business logic,
+# not the auth middleware (which has its own test when needed).
+os.environ.setdefault("JAKS_SKIP_AUTH", "1")
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
