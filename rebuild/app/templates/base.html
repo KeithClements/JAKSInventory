@@ -325,11 +325,14 @@
   "
   x-effect="if (!createSlideOpen) $dispatch('slide-over-closed')"
 >
-<div class="flex lg:flex-row-reverse h-screen overflow-hidden">
+<div class="flex h-screen overflow-hidden" style="flex-direction: row-reverse;">
 
   {# Layout: <main> renders before <aside> so Tab reaches page inputs first;
-     the wrapper uses lg:flex-row-reverse to put the SIDEBAR (below) back on
-     the visual left at lg+ (DOM order stays main-first for keyboard nav). #}
+     row-reverse (inline, ALL widths) puts the SIDEBAR (below) back on the visual
+     left. Was `lg:flex-row-reverse` — but that only reversed at >=1024px, so the
+     sidebar fell to the RIGHT on any narrower window. Inline style is breakpoint-
+     independent and needs no app.css rebuild. ARCHITECT follow-up: fold into a
+     compiled `.flex-row-reverse` on the next `npm run build:css` + drop the inline. #}
 
   {# Mobile overlay #}
   <div
