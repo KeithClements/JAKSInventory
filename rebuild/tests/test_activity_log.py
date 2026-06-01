@@ -244,10 +244,17 @@ def test_log_activity_attribution_uses_signed_in_user(db):
     )
 
 
-# ── Route smoke ───────────────────────────────────────────────────────────────
+# ── Route smokes (§3 — the three invocation contexts) ────────────────────────
+# Same POST /activities endpoint, three call-site contexts per the contract:
+#   1. global  — no customer selected yet (customer_id provided, no related_*)
+#   2. customer page — customer pre-filled, no related_* (same as global smoke)
+#   3. doc workspace — customer + related_entity_type + related_entity_id
+# Tests 1 and 2 share the same assertion shape because the API is identical;
+# the distinction is only in the UI affordance that triggers the call.
+# Additional route smokes: follow-up-done (POST) and timeline (GET).
 
 def test_post_activities_global_persists(client, db):
-    """POST /activities (global — no document link) persists the activity."""
+    """POST /activities (global context — customer_id, no related entity)."""
     from app.models.customer import CustomerCallLog
 
     cust = _customer(db)
@@ -297,3 +304,46 @@ def test_post_activities_from_quote_sets_related_entity(client, db):
     assert row is not None
     assert row.related_entity_type == "quote"
     assert row.related_entity_id == quote.id
+
+
+def test_post_follow_up_done_route(client, db):
+    """POST /activities/{id}/follow-up-done marks the follow-up as done."""
+    from app.models.customer import CustomerCallLog
+
+    cust = _customer(db)
+    r_create = client.post("/activities", data={
+        "customer_id": str(cust.id),
+        "activity_type": "call",
+        "notes": "follow-up smoke",
+        "follow_up_date": str(datetime.date.today()),
+    }, follow_redirects=False)
+    assert r_create.status_code in (200, 201, 303), r_create.text[:300]
+
+    row = (
+        db.query(CustomerCallLog)
+        .filter(CustomerCallLog.customer_id == cust.id,
+                CustomerCallLog.notes == "follow-up smoke")
+        .first()
+    )
+    assert row is not None, "activity with follow_up_date must persist"
+    assert row.follow_up_done_at is None, "should not be done yet"
+
+    r_done = client.post(f"/activities/{row.id}/follow-up-done",
+                         follow_redirects=False)
+    assert r_done.status_code in (200, 204, 303), r_done.text[:300]
+
+    db.expire_all()
+    row2 = db.query(CustomerCallLog).filter(CustomerCallLog.id == row.id).first()
+    assert row2.follow_up_done_at is not None, (
+        "POST /activities/{id}/follow-up-done must stamp follow_up_done_at"
+    )
+
+
+def test_get_customer_timeline_route(client, db):
+    """GET /customers/{id}/timeline returns the activity tab partial (HTTP 200)."""
+    cust = _customer(db)
+    r = client.get(f"/customers/{cust.id}/timeline",
+                   headers={"HX-Request": "true"})
+    assert r.status_code == 200, (
+        f"GET /customers/{{id}}/timeline must return 200; got {r.status_code}: {r.text[:300]}"
+    )
