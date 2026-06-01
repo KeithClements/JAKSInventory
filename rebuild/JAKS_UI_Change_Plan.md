@@ -364,6 +364,14 @@ and **not** a Queue Board (it does not group work items for sequential processin
 
 5. **Totals bar** — HTMX-refreshed after every line action. Shows subtotal, tax, total,
    balance-due or amount-paid as applicable. Stays pinned at the bottom of the line section.
+   **R1 — CC convenience fee (documented design decision; do NOT re-flag as a math bug):** the card
+   surcharge is applied *at payment time* on the card portion only. The totals bar shows an
+   **informational estimate** ("~$X.XX if paid by card") with a helper note — it is NOT added to the
+   invoice total. Source: `app/invoice_totals.py:117-120` ("R1 — CC surcharge is applied AT PAYMENT TIME
+   on the card portion only; this is an INFORMATIONAL estimate … and is NOT added to the total.").
+   QA rule: any test that expects the surcharge in `invoice.total` or `balance_due` is testing the wrong
+   thing — the total intentionally excludes the fee. Relabelling the estimate is UI polish; changing the
+   math would violate R1.
 
 6. **Workflow action bar** — reflects current status. Primary action rightmost (`btn-primary btn-sm`).
    Destructive action uses `btn-ghost btn-sm text-red-500` + Alpine confirm modal. Follows §8B
@@ -1772,6 +1780,43 @@ focus:ring-brand-400`; section card = `rounded-xl bg-white border border-gray-10
 
 ---
 
+#### 8M. Chart.js Init Pattern — RATIFIED 2026-06-01
+
+**The rule: `defer` the lib at `base.html`; guard every `new Chart(...)` call with `DOMContentLoaded`.**
+
+`base.html` loads Chart.js with `defer` (L18). A deferred script executes after HTML parsing completes but
+before `DOMContentLoaded` fires — so any inline `<script>` that calls `new Chart(...)` at parse time will
+reference an undefined `Chart` constructor and silently no-op (or throw). The correct guard:
+
+```html
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    var ctx = document.getElementById('my-chart').getContext('2d');
+    new Chart(ctx, { /* config */ });
+  });
+</script>
+```
+
+Reference: `app/templates/dashboard.html:152` — "B-3: defer chart init until DOMContentLoaded — Chart.js
+loads with `defer`". This is the only approved Chart.js init pattern; any bare `new Chart(...)` outside a
+`DOMContentLoaded` listener is a bug.
+
+**Offline / CDN risk gate.** Alpine, HTMX, and Chart.js all load from CDN (`cdn.jsdelivr.net` /
+`unpkg.com`). A network outage or CDN failure renders the app non-functional. This is an acceptable risk for
+a local-network ERP (owner's laptop + local WiFi), but must be resolved before any cloud/SaaS deployment:
+self-host the three scripts under `/static/js/` and update the three `<script>` tags in `base.html`. Tag as
+a Phase 1B go-live prerequisite for cloud hosting; for local 1A use, CDN remains acceptable.
+
+**Print / totals parity (follow-up, NOT this round).** Ideally `quotes/print.html` and invoice print
+templates render from the same `totals` engine dict (`app/invoice_totals.compute_invoice_totals(...)`) that
+the workspace already uses — this guarantees identical subtotal / discount / tax / total across the screen,
+print, and PDF, and means cores/fees parity is automatic rather than duplicated logic. Current state: print
+templates recompute totals via Jinja2 arithmetic (e.g. `line.unit_price * line.qty`), which can drift from
+the service layer when edge-cases (cores, NSF lines, restocking fees) are involved. Flag for the next print
+pass — do not address in the current round.
+
+---
+
 #### 8J. Activity Timeline — New UI Primitive (Timeline/Feed archetype) — RATIFIED 2026-05-31
 
 Governs the customer **Activity** timeline per `ACTIVITY_LOG_CONTRACT.md` §4 (Backend owns the data + merge;
@@ -1847,9 +1892,15 @@ Owner ruling 2026-06-01: a line reads "On order" only once the PO is actually **
 "Ordering"). `SalesOrderService.create_po_for_line` now treats a cancelled linked PO as re-orderable (drops
 the stale link) so Re-order doesn't hit the "already linked" guard.
 
-**Status:** BUILT 2026-06-01 (owner-directed). **Pending Architect governance sign-off** — this is a genuinely
-new primitive (a clickable navigation chip, distinct from the read-only §5 `status_chip` span). If ratified,
-add to the §7 primitives list.
+**Status:** BUILT 2026-06-01 (owner-directed). **✅ Architect governance PASS 2026-06-01.** Ruling:
+- **Pattern:** PASS. A clickable navigation chip distinct from the read-only §5 `status_chip` span — correct
+  to define as a new primitive rather than overloading the status chip.
+- **Condition (previously noted):** `related_documents()` must be defensively safe (never raise; return `[]`
+  on any error). The template's `|default([])` is a guard against `None` only — the service itself must
+  be wrapped. Confirm before committing the full §8K router/service diff.
+- **§7 list:** Add `linked_strip(links)` to the §7 primitives backlog as Primitive 7. Three-screen gate
+  satisfied once Quote/SO/Invoice/PO all call it (currently 4 workspaces via the wired workspace diffs).
+- **Do NOT re-pass or rebuild.**
 
 ---
 
@@ -1884,9 +1935,15 @@ the POST handlers already accepted `invoice_number` + line arrays.
 - **Governance:** composes existing primitives only — no new CSS class, no new colour (orange = core is
   §4-permitted). The `bg-orange-50/30` opacity variant was added → `npm run build:css` re-run.
 
-**Status:** BUILT 2026-06-01 (owner-directed). **Pending Architect governance sign-off** — new workspace section
-composing existing primitives; confirm the placement and the copied cores form (vs. extraction once a 3rd user
-appears).
+**Status:** BUILT 2026-06-01 (owner-directed). **✅ Architect governance PASS 2026-06-01.** Ruling:
+- **Pattern:** PASS. Composes existing primitives only: the global create slide-over (already in base.html),
+  the §5 status chip, the cores inline form (copied from `cores/list.html` — copying is correct at this
+  stage; §7 extraction gate fires when a 3rd consumer appears, not before). No new CSS class; no new colour.
+- **Placement:** After the Payments panel, finalized-only — correct. The card is invisible on DRAFT/VOID,
+  preventing action on documents that aren't settled.
+- **`bg-orange-50/30` opacity variant:** Permitted under §4 `orange-*` (core-charge semantic); opacity
+  modifier does not change the colour family. `npm run build:css` re-run required before shipping.
+- **Do NOT re-pass or rebuild.**
 
 ---
 
