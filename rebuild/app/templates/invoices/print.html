@@ -393,9 +393,9 @@
         <span class="val">&#x2212;${{ "%.2f"|format(discount_amount) }}</span>
       </div>
       {% endif %}
-      {% if invoice.is_taxable %}
+      {% if invoice.tax_amount > 0 %}
       <div class="t-row">
-        <span class="lbl">Tax ({{ invoice.tax_rate }}%)</span>
+        <span class="lbl">Tax ({{ invoice.tax_rate_snapshot or invoice.tax_rate }}%)</span>
         <span class="val">${{ "%.2f"|format(invoice.tax_amount) }}</span>
       </div>
       {% endif %}
