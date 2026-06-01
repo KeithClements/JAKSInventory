@@ -50,9 +50,25 @@
   {# ═══════════════════════════════════════════════════════════════════════ #}
   <div x-show="tab === 'account'" x-cloak>
 
-    {# Deactivate form — placed outside the edit form to avoid nesting #}
+    {# Status-change forms live outside the edit form to avoid nesting. Only the
+       form matching the current state renders, so an inactive customer's page
+       carries no deactivate path and an active one carries no reactivate path. #}
+    {% if customer.is_active %}
     <form id="deactivate-form" method="post" action="/customers/{{ customer.id }}/deactivate"
           onsubmit="return confirm('Deactivate {{ customer.company_name }}?')"></form>
+    {% else %}
+    <form id="reactivate-form" method="post" action="/customers/{{ customer.id }}/reactivate"></form>
+
+    {# Inactive banner — gray (§4 inactive semantics) with a one-click Reactivate.
+       Sits above the account card so it stays visible in both view and edit mode. #}
+    <div class="rounded-xl bg-gray-100 border border-gray-200 px-5 py-3 mb-4 flex items-center justify-between gap-4">
+      <div class="flex items-center gap-2.5 min-w-0">
+        <span class="badge-gray shrink-0">Inactive</span>
+        <span class="text-sm text-gray-600 truncate">This customer is deactivated and hidden from the default lists.</span>
+      </div>
+      <button type="submit" form="reactivate-form" class="btn-primary btn-sm shrink-0">Reactivate</button>
+    </div>
+    {% endif %}
 
     <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
 
@@ -324,10 +340,12 @@
                stays visible at the bottom of the edit form. #}
             <div class="sticky bottom-0 z-10 -mx-5 -mb-5 mt-6 flex items-center gap-3
                         border-t border-gray-200 bg-white px-5 py-3">
+              {% if customer.is_active %}
               <button type="submit" form="deactivate-form"
                       class="px-4 py-2 border border-red-200 text-sm font-medium text-red-600 rounded-lg hover:bg-red-50 transition-colors">
                 Deactivate
               </button>
+              {% endif %}
               <div class="flex-1"></div>
               <button type="button" @click="editMode = false" class="btn-secondary">Cancel</button>
               <button type="submit" class="btn-primary">Save Changes</button>

@@ -90,12 +90,16 @@
 ══════════════════════════════════════════════════════════════════════════════ #}
 <div class="flex flex-wrap items-center gap-3">
 
-  {# Status tabs — §7 Primitive 1 #}
+  {# Status tabs — §7 Primitive 1.
+     The first four scope to active customers ("all" = all active); "Inactive"
+     is the lifecycle tab that surfaces deactivated accounts so they stay
+     reachable + reactivatable (router contract in app/routers/customers.py). #}
   {% set customer_tabs = [
     ('all',           'All',           tab_counts.get('all', 0)),
     ('open_invoices', 'Open Invoices', tab_counts.get('open_invoices', 0)),
     ('open_quotes',   'Open Quotes',   tab_counts.get('open_quotes', 0)),
     ('terms',         'On Terms',      tab_counts.get('terms', 0)),
+    ('inactive',      'Inactive',      tab_counts.get('inactive', 0)),
   ] %}
   {{ filter_tabs(customer_tabs, active_tab, q) }}
 

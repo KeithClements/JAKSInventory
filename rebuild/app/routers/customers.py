@@ -71,16 +71,29 @@ def _find_duplicate_customers(
 
 # ── List tab definitions (JAKS_UI_Change_Plan.md §2) ─────────────────────────
 
-# Tab slug → filter behavior.  "all" = no extra filter beyond is_active=True.
+# Tab slug → filter behavior.  The four operational tabs all scope to ACTIVE
+# customers ("all" = every *active* customer); this is the busy counter screen
+# and its default view must not surface deactivated accounts.  The "inactive"
+# lifecycle tab is the only one that drops the is_active==True filter — it shows
+# *only* deactivated customers so they stay reachable and can be reactivated from
+# detail.  (Mirrors the Vendors fix, which defaults to `active` and hides
+# deactivated records; Customers keeps `all` as its active-scoped default rather
+# than a true union — see JAKS_UI_Change_Plan.md "Customers List".)
 _CUST_TABS: list[tuple[str, str]] = [
     ("all",           "All"),
     ("open_invoices", "Open Invoices"),
     ("open_quotes",   "Open Quotes"),
     ("terms",         "On Terms"),
+    ("inactive",      "Inactive"),   # lifecycle tab — is_active == False only
 ]
 
 # Payment-terms values that fall under the "On Terms" tab.
 _TERMS_VALUES = {"net_15", "net_30", "net_60"}
+
+# Invoice statuses that count as an "open invoice" (activity chips + tab).
+_OPEN_INVOICE_STATUSES = ["draft", "open", "partial"]
+# Quote statuses that are terminal (NOT open) — any other status is an open quote.
+_CLOSED_QUOTE_STATUSES = [QuoteStatus.CONVERTED, QuoteStatus.DECLINED, QuoteStatus.EXPIRED]
 
 
 # ── List ──────────────────────────────────────────────────────────────────────
@@ -97,16 +110,21 @@ def customer_list(
     if tab not in valid_tabs:
         tab = "all"
 
-    # ── Unfiltered counts (must come from the full active dataset) ────────────
+    # ── Unfiltered counts ─────────────────────────────────────────────────────
+    # Operational-tab counts come from the full ACTIVE dataset; the lifecycle
+    # "inactive" tab is counted separately (it lives outside `all_active`).
     all_active = db.query(Customer).filter(Customer.is_active == True).all()
     all_ids = [c.id for c in all_active]
+    inactive_count = (
+        db.query(func.count(Customer.id)).filter(Customer.is_active == False).scalar() or 0
+    )
 
     if all_ids:
         _inv_active = dict(
             db.query(Invoice.customer_id, func.count(Invoice.id))
             .filter(
                 Invoice.customer_id.in_(all_ids),
-                Invoice.status.in_(["draft", "open", "partial"]),
+                Invoice.status.in_(_OPEN_INVOICE_STATUSES),
             )
             .group_by(Invoice.customer_id)
             .all()
@@ -115,11 +133,7 @@ def customer_list(
             db.query(Quote.customer_id, func.count(Quote.id))
             .filter(
                 Quote.customer_id.in_(all_ids),
-                Quote.status.notin_([
-                    QuoteStatus.CONVERTED,
-                    QuoteStatus.DECLINED,
-                    QuoteStatus.EXPIRED,
-                ]),
+                Quote.status.notin_(_CLOSED_QUOTE_STATUSES),
             )
             .group_by(Quote.customer_id)
             .all()
@@ -133,23 +147,24 @@ def customer_list(
         "open_invoices": sum(1 for c in all_active if _inv_active.get(c.id, 0) > 0),
         "open_quotes":   sum(1 for c in all_active if _quote_active.get(c.id, 0) > 0),
         "terms":         sum(1 for c in all_active if (c.payment_terms or "") in _TERMS_VALUES),
+        "inactive":      inactive_count,
     }
 
     # ── Apply tab filter ──────────────────────────────────────────────────────
-    if tab == "open_invoices":
+    if tab == "inactive":
+        # The only tab that surfaces deactivated customers — pulled with a
+        # dedicated query since `all_active` (and its activity maps) exclude them.
+        base_pool = db.query(Customer).filter(Customer.is_active == False).all()
+    elif tab == "open_invoices":
         with_inv = {cid for cid, cnt in _inv_active.items() if cnt > 0}
-        tab_ids = [c.id for c in all_active if c.id in with_inv]
         base_pool = [c for c in all_active if c.id in with_inv]
     elif tab == "open_quotes":
         with_q = {cid for cid, cnt in _quote_active.items() if cnt > 0}
-        tab_ids = [c.id for c in all_active if c.id in with_q]
         base_pool = [c for c in all_active if c.id in with_q]
     elif tab == "terms":
         base_pool = [c for c in all_active if (c.payment_terms or "") in _TERMS_VALUES]
-        tab_ids = [c.id for c in base_pool]
     else:
         base_pool = all_active
-        tab_ids = all_ids
 
     # ── Apply search ──────────────────────────────────────────────────────────
     if q:
@@ -171,8 +186,32 @@ def customer_list(
 
     # ── Per-customer activity counts (for the rows we're actually showing) ────
     customer_ids = [c.id for c in customers]
-    open_invoice_counts = {cid: _inv_active.get(cid, 0) for cid in customer_ids}
-    open_quote_counts = {cid: _quote_active.get(cid, 0) for cid in customer_ids}
+    if tab == "inactive" and customer_ids:
+        # Inactive rows aren't in the active-dataset maps; look their counts up
+        # directly so a deactivated account with lingering open items reads true.
+        _inv_inactive = dict(
+            db.query(Invoice.customer_id, func.count(Invoice.id))
+            .filter(
+                Invoice.customer_id.in_(customer_ids),
+                Invoice.status.in_(_OPEN_INVOICE_STATUSES),
+            )
+            .group_by(Invoice.customer_id)
+            .all()
+        )
+        _q_inactive = dict(
+            db.query(Quote.customer_id, func.count(Quote.id))
+            .filter(
+                Quote.customer_id.in_(customer_ids),
+                Quote.status.notin_(_CLOSED_QUOTE_STATUSES),
+            )
+            .group_by(Quote.customer_id)
+            .all()
+        )
+        open_invoice_counts = {cid: _inv_inactive.get(cid, 0) for cid in customer_ids}
+        open_quote_counts = {cid: _q_inactive.get(cid, 0) for cid in customer_ids}
+    else:
+        open_invoice_counts = {cid: _inv_active.get(cid, 0) for cid in customer_ids}
+        open_quote_counts = {cid: _quote_active.get(cid, 0) for cid in customer_ids}
 
     # ── Last-sale dates ───────────────────────────────────────────────────────
     if customer_ids:
@@ -1295,7 +1334,7 @@ def customer_balance(
     )
 
 
-# ── Deactivate ────────────────────────────────────────────────────────────────
+# ── Deactivate / Reactivate ─────────────────────────────────────────────────
 
 @router.post("/{customer_id}/deactivate", response_class=RedirectResponse)
 def customer_deactivate(
@@ -1307,6 +1346,21 @@ def customer_deactivate(
         c.is_active = False
         db.commit()
     return RedirectResponse("/customers/", status_code=303)
+
+
+@router.post("/{customer_id}/reactivate", response_class=RedirectResponse)
+def customer_reactivate(
+    customer_id: int,
+    db: Session = Depends(get_db),
+):
+    """Undo a deactivate — restores the customer to the active lists.
+    Redirects back to the detail page (not the list) so the user sees the
+    now-reactivated record, mirroring /vendors/{id}/reactivate."""
+    c = db.query(Customer).filter(Customer.id == customer_id).first()
+    if c:
+        c.is_active = True
+        db.commit()
+    return RedirectResponse(f"/customers/{customer_id}", status_code=303)
 
 
 # ── Statement ─────────────────────────────────────────────────────────────────
