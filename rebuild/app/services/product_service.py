@@ -212,6 +212,8 @@ class ProductService(BaseService):
         """
         Add a vendor source for a product.
         If is_preferred=True, clears preferred flag on all other sources first.
+        If the product has no preferred source yet, the new source becomes
+        preferred automatically so the cached product.cost mirrors it.
         Generates vendor_sku = JAKS-[VENDOR_CODE]-[PART#].
         """
         self._get_or_404(product_id)
@@ -222,6 +224,13 @@ class ProductService(BaseService):
         is_preferred = bool(data.get("is_preferred", False))
         if is_preferred:
             self._clear_preferred_vendor(product_id)
+        elif not self._has_preferred_vendor(product_id):
+            # The first vendor source becomes preferred automatically. Without
+            # this, adding a single source with "Set as preferred" unchecked left
+            # the product with NO preferred vendor, so product.cost — the "our
+            # cost" shown in the list, preview dock, and Pricing card — never
+            # updated to the source's cost. (Owner-reported 2026-06-01.)
+            is_preferred = True
 
         part_number = data.get("vendor_part_number", "").strip()
         vendor_sku = f"JAKS-{vendor.vendor_code.upper()}-{part_number}" if part_number else ""
@@ -239,11 +248,11 @@ class ProductService(BaseService):
         )
         self.db.add(source)
 
-        # If this is the preferred source, sync cost up to product
+        # The preferred source's cost is the product's cost of record — mirror it
+        # up to the cached product.cost (and log it for the Cost History tab).
         if is_preferred:
             product = self._get_or_404(product_id)
-            product.cost = source.vendor_cost
-            product.cost_source = "vendor"
+            self._sync_cost_from_preferred(product, source.vendor_cost, vendor_id)
 
         self.db.commit()
         return source
@@ -263,10 +272,9 @@ class ProductService(BaseService):
             raise ValueError(f"VendorSource {vendor_source_id} not found for product {product_id}")
         source.is_preferred = True
 
-        # Sync cost up to product
+        # The preferred source governs product.cost — mirror it up.
         product = self._get_or_404(product_id)
-        product.cost = source.vendor_cost
-        product.cost_source = "vendor"
+        self._sync_cost_from_preferred(product, source.vendor_cost, source.vendor_id)
         self.db.commit()
 
     def compare_and_record_cost_change(
@@ -305,10 +313,10 @@ class ProductService(BaseService):
         source.vendor_cost = new_cost
         source.last_cost_updated_at = datetime.utcnow()
 
-        if source.is_preferred:
-            product = self._get_or_404(product_id)
-            product.cost = new_cost
-            product.cost_source = "vendor"
+        # Option A (owner-ruled 2026-06-01): product.cost is the moving-weighted-average
+        # COGS, written only by InventoryService._apply_moving_average_cost on receipt.
+        # DO NOT mirror vendor_cost to product.cost here — the vendor quote price lives
+        # on ProductVendorSource.vendor_cost (already updated above). See §8N.
 
         # flush only — caller (POService.create_receipt) commits the whole transaction
         self.db.flush()
@@ -460,3 +468,39 @@ class ProductService(BaseService):
             ProductVendorSource.product_id == product_id,
             ProductVendorSource.is_preferred == True,  # noqa: E712
         ).update({"is_preferred": False}, synchronize_session="fetch")
+
+    def _has_preferred_vendor(self, product_id: int) -> bool:
+        """True if an active vendor source is already flagged preferred."""
+        return (
+            self.db.query(ProductVendorSource)
+            .filter(
+                ProductVendorSource.product_id == product_id,
+                ProductVendorSource.is_active == True,  # noqa: E712
+                ProductVendorSource.is_preferred == True,  # noqa: E712
+            )
+            .first()
+            is not None
+        )
+
+    def _sync_cost_from_preferred(
+        self, product: Product, new_cost, vendor_id: int | None = None
+    ) -> None:
+        """
+        Record that the preferred vendor source's quoted cost changed.
+        Does NOT write product.cost — product.cost is the moving-weighted-average
+        COGS maintained by InventoryService._apply_moving_average_cost (Option A,
+        owner-ruled 2026-06-01, see JAKS_UI_Change_Plan.md §8N).
+
+        The ProductCostHistory row is kept so the Cost History tab shows vendor-
+        quote changes alongside receipt-driven cost changes.
+        """
+        new_cost = float(new_cost or 0.0)
+        if abs(product.cost - new_cost) >= 0.001:
+            self.db.add(ProductCostHistory(
+                product_id=product.id,
+                vendor_id=vendor_id,
+                old_cost=product.cost,   # moving-avg at time of vendor quote change
+                new_cost=new_cost,
+                changed_by_id=self.current_user_id,
+                notes="vendor source cost updated (product.cost moving-avg unchanged)",
+            ))

@@ -1869,10 +1869,21 @@ a net-zero behaviour change from the owner's perspective. (3) Option A is a two-
 `_sync_cost_from_preferred` / `compare_and_record_cost_change`. (4) Vendor quote prices belong on
 `ProductVendorSource.vendor_cost` — that column already exists and is the right home for them.
 
-**Ruling: PENDING OWNER CONFIRMATION.** Document the chosen option here once decided so the receipt path
-(`po_service.py`) and `_sync_cost_from_preferred` (`product_service.py`) stop fighting on every receipt.
-Update the `product.py:71-73` model comment to match. Until ruled, **do not add any new code that reads
-`product.cost` and assumes either semantic** — the column is ambiguous.
+**Ruling: OPTION A — owner confirmed 2026-06-01. Implemented + regression-guarded.**
+
+- `product_service.compare_and_record_cost_change`: removed the `if source.is_preferred: product.cost = …`
+  write (L316-319). Keeps the `ProductVendorSource.vendor_cost` update and cost-history row.
+- `product_service._sync_cost_from_preferred`: removed `product.cost = new_cost; cost_source = "vendor"`.
+  Keeps the cost-history row (notes updated to "vendor source cost updated — product.cost moving-avg
+  unchanged"). Docstring updated.
+- `inventory_service._apply_moving_average_cost`: adds `product.cost_source = "receipt"` so the field
+  unambiguously marks the moving-avg write.
+- `product.py:71-73`: model comment updated — `product.cost` is COGS moving-avg only; vendor quote lives
+  on `ProductVendorSource.vendor_cost`.
+- **Test:** `tests/test_product_cost_semantic.py` (3 passing) — guards the receipt case (PO cost ≠ stored
+  vendor cost), the weighted-average formula, and the `_sync_cost_from_preferred` no-op.
+- **Allowed reads of `product.cost`:** margin calculation, `selling_price`, invoice default unit_cost,
+  search `current_cost` — all are COGS-based margin, which is the correct semantic under Option A.
 
 ---
 

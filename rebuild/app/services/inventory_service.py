@@ -315,3 +315,4 @@ class InventoryService(BaseService):
             product.cost = round(new_avg, 4)
 
         product.last_cost = round(receipt_unit_cost, 4)
+        product.cost_source = "receipt"   # R11 Option A — only valid writer of product.cost

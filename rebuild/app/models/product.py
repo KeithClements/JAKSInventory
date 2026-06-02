@@ -68,12 +68,15 @@ class Product(Base):
     )
 
     # ── Pricing ───────────────────────────────────────────────────────────────
-    # cost mirrors the preferred vendor source cost for quick access.
-    # Source of truth for per-vendor cost is product_vendor_sources.vendor_cost.
-    # R11 — moving weighted average cost; updated on every PO receipt.
+    # R11 — MOVING WEIGHTED-AVERAGE COGS cost (Option A, owner-ruled 2026-06-01).
+    # Written ONLY by InventoryService._apply_moving_average_cost on PO receipt.
+    # DO NOT write product.cost from vendor-source sync — vendor quote price
+    # belongs on ProductVendorSource.vendor_cost (per-source, source of truth).
+    # See JAKS_UI_Change_Plan.md §8N for the ruling.
     cost: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    # R11 — most recent receipt unit cost (vs. avg cost above)
+    # R11 — most recent receipt unit cost (vs. weighted avg above)
     last_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # "receipt" = set by moving-avg path; "manual" = user-set; "vendor" = legacy (do not set)
     cost_source: Mapped[str] = mapped_column(String(50), nullable=False, default="manual")
     markup_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     price_override: Mapped[float | None] = mapped_column(Float, nullable=True)
