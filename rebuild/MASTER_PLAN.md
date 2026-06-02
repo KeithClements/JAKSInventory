@@ -137,6 +137,7 @@ for these items only.***
 | O7 | **Core-slip popup** | **Deferred to Phase 2.** The auto-trigger "print core return slip" popup at invoice finalize (TODO in `invoices.py`) is **not** 1A. Manual core-slip/VCR printing stays available. | — (deferred) |
 | O8 | **Receiving-slip print** | **Optional for Phase 1A** — the `/receiving-slip` print route (currently a disabled placeholder) is nice-to-have, **not** a 1A go-live blocker. | — (optional) |
 | O9 | **QA actions** | QA **verifies** the partial quote-line research-status UI (§9.3) and **triages the 2 cores edge-case bugs** from `9d0ced2` into 1A-fix vs deferred. | QA → Backend |
+| R1 | **CC convenience fee is informational — NOT a bug, NOT to be added to invoice total** | The card-processing surcharge is an **estimate displayed for customer awareness only** ("~$X if paid by card"). It is **never charged in-system** — the processor handles it at swipe time. `invoice.total` and `balance_due` **intentionally exclude the fee.** Source: `app/invoice_totals.py:117-120`. Ruled: Suite-C W-3, e2e Bug4, D-5e, full-audit Bug4. **Any QA flag claiming the fee should appear in the total is a false positive — close without action.** The fee display/caption is UI polish; math changes violate R1. | Backend (locked) |
 
 ---
 
@@ -330,6 +331,8 @@ duplicate + reactivate · customer import · report suite (9 reports) · dashboa
 | Server-side PDF rendering | Falls back to browser print | WeasyPrint v68.1 installed but GTK/Pango missing on Windows → `?auto=1` browser print. Install GTK to enable true PDF (no code change). |
 
 ### 9.2 — The real Phase-1 gap: UI maturity rollout 🟡
+
+> **Full system audit (workflows, UI, security, go-live grades):** see **§16 ERP System Audit Report Card** (2026-05-31).
 
 Backend can do these workflows; the **screens are still raw L1 `tbl-*` tables** (see
 `JAKS_UI_Change_Plan.md` §6 Rollout Order — the authoritative UI status). Remaining L1→L2/L3 work:
@@ -561,6 +564,205 @@ Sequences reset annually (Jan 1). `current_sequence_year` in settings detected o
 
 ---
 
+## 16. ERP System Audit Report Card
+
+*Added: 2026-05-31 — comprehensive audit of workflows, UI, code health, features, security, and Phase 1A go-live readiness. Use this section to prioritize lanes; reconcile §9 bullets when code changes.*
+
+**Audit sources:** codebase (`app/routers/`, `app/services/`, templates), `JAKS_UI_Change_Plan.md` §6/§9, `TESTING_FEEDBACK.md`, automated test suite (~330+ `def test_*` across 36+ files).
+
+**Standing rule reminder:** Financial integrity rule (header) requires visible error banners — broad `except Exception` → redirect on money routes is a known violation of spirit if not letter.
+
+### 16.1 — Overall GPA: **B−**
+
+| Lens | Grade | Summary |
+|---|---|---|
+| Backend / workflows | **A−** | Core ERP paths built, routed, and tested |
+| Daily-use proof (owner) | **C** | `TESTING_FEEDBACK.md` still entirely ⬜ |
+| UI consistency / polish | **B−** | Main lists L2; detail/report/dashboard L1 |
+| Security (2-user local LAN) | **C+** | Login enforced; CSRF, roles, attribution gaps |
+| Integrations (QBO, scrapers, email) | **D+** | Deferred by design — not broken |
+| Phase 1A go-live readiness | **C+** | Close; not owner-signed |
+
+**Verdict:** Strong rebuild — not yet certified for unsupervised daily shop use without owner functional test pass + P0/P1 hardening.
+
+### 16.2 — Report card by indicator
+
+#### Sales workflow (Quote → SO → Invoice → Payment) — **B+**
+
+| Built ✅ | Gap ❌ / ⚠️ |
+|---|---|
+| Quote workspace: autosave, line roles, warranty tiers, upgrades | Owner has not signed off quote/SO/invoice add-line on current build |
+| Quote → SO (OOS) and Quote → Invoice (in-stock) | Customer pre-fill from customer detail still flaky (B4) |
+| SO deposits: Full / Deposit / None | SO workspace not full L3 |
+| Invoice finalize, lock, void, credit memo | Core-slip auto-popup deferred (O7 → Phase 2) |
+| Payments: record, allocate, reverse, NSF | O6 surcharge: partial — see §16.4 |
+
+**Code disruption history:** SO `Product.name`, PO receive `SOLineStatus`, invoice search phantom attrs — fixed with regression tests (`test_regression_b1_b2.py`, `test_e2e_flows.py`). Lesson: router attribute typos + bare `except` hide production failures.
+
+#### Purchasing (PO → Receive → 3-way match → Vendor bill) — **A−**
+
+| Built ✅ | Gap ❌ |
+|---|---|
+| PO create, partial/full receive, inventory + moving-avg cost | PO workspace L3 on **HOLD** (#11 in UI plan) |
+| 3-way match + discrepancy resolution | `vendors.py` has no service layer — direct ORM |
+| PO / Receiving / Match queues (QB2) | Receiving-slip print optional (O8) |
+
+#### Inventory & products — **B**
+
+| Built ✅ | Gap ❌ |
+|---|---|
+| Products list = L2 reference | Product Detail L1, **HOLD** (#10) |
+| Inventory via controlled events only | Serial number UI, kit BOM UI not built |
+| Cross-refs, suggested sells | Enrichment scrapers Phase 2 stubs |
+| Markup from Settings (O5 partial) | `Product.selling_price` still 30% fallback when `markup_pct` NULL; no per-category override |
+
+#### Cores, returns, warranty, vendor returns — **B**
+
+| Built ✅ | Gap ❌ |
+|---|---|
+| Core lifecycle + print/PDF (slip, VCR) | Core-slip popup not auto-triggered at invoice finalize |
+| RA workflow + credit memos | Returns / warranty workspaces L1 (`tbl-*`, `confirm()`) |
+| Warranty state machine + tests | Vendor Returns list = only major list still on `tbl-*` |
+| Cores + Warranty queue boards (QB2) | Returns Queue (#17) not built |
+
+#### Reporting & dashboard — **C+**
+
+| Built ✅ | Gap ❌ |
+|---|---|
+| 9 reports, server-side math, `tests/test_reports.py` | All reports `tbl-*` — wife-facing polish weak |
+| Dashboard KPIs (SOs, follow-ups, overdue, cores, research) | Dashboard legacy tables, not L2 dock pattern |
+| Customer statements + print/PDF | Statement screen polish deferred |
+
+#### UI / UX maturity — **B−**
+
+| Level | Screens |
+|---|---|
+| L2 ✅ | Products, PO, Invoices, Customers, SO, Vendors, Payments; PO Receiving/Match queues |
+| L2 ⚠️ unverified | Quotes list, Returns list — pass recorded during HTTP 500 era; re-test post-`b514196` |
+| L3 ✅ | Invoice workspace |
+| L3 ⚠️ | Quote workspace — owner re-test required |
+| HOLD | Product detail (#10), PO workspace (#11) |
+| L1 legacy | All detail pages, dashboard, all reports, returns/warranty/vendor-return workspaces |
+
+**Consistency gaps:** Alpine modals (invoice) vs `window.confirm()` (returns, warranty, quote convert); `JAKS_UI_Change_Plan.md` §1 mapping stale vs §6 rollout.
+
+#### Data integrity & financial controls — **B+**
+
+**Strengths:** Service layer on money paths; `invoice_totals.py`; audit logging; invoice lock; payment caps; 3-way match cost-variance gate (`po_service.py`, `tests/test_bill_cost_variance.py`); optimistic locking.
+
+**Weaknesses:**
+
+| Issue | Location | Impact |
+|---|---|---|
+| ~63 `except Exception` on routers | invoices, PO, cores, payments, reports, etc. | Errors → redirect; masks bugs |
+| `CURRENT_USER_ID = 1` hardcoded | `app/routers/customers.py:36` | CRM/call-log audit always user 1 |
+| Direct ORM writes | customers, vendors, products bulk | Some paths skip audit |
+| Inline `ALTER TABLE` migrations | `app/database.py` | No Alembic — OK for local SQLite |
+| `qbo_sync_status = PENDING` with no push | models | Misleading until Phase 1B |
+
+#### Security & access control — **C+**
+
+| Present ✅ | Missing ❌ |
+|---|---|
+| PBKDF2 passwords, signed session cookie (`app/auth.py`) | **No CSRF** on POST forms |
+| Global login middleware (`app/main.py` L48–64) | **No role gates** on backup restore, admin, settings |
+| `JAKS_SKIP_AUTH` for tests only | **Any logged-in user can POST `/admin/backup/restore`** |
+| FastAPI docs disabled | Default password `"admin"` if `JAKS_ADMIN_PASSWORD` unset |
+| `_ROLE_PERMISSIONS` + `assert_can()` in services | Used on ~9 services only; customers router ignores session user |
+| | Second user (wife) not seeded — manual `users` row required |
+
+**Local LAN, 2 trusted users:** acceptable with P1 fixes. **Internet-exposed:** not acceptable without CSRF, role gates, strong defaults.
+
+#### Testing & QA — **B**
+
+| Strong ✅ | Weak ❌ |
+|---|---|
+| ~330+ tests: E2E, cores, PO match, reports, auth, backup | `TESTING_FEEDBACK.md` entirely ⬜ — no owner sign-off |
+| `tests/test_e2e_flows.py` (`@pytest.mark.acceptance`) | No full vendor CRUD / settings / dashboard tests |
+| Regression: B1/B2, bill variance, O6 (`test_o6_surcharge.py`), CSV import | Visual regression known unstable |
+| UI lint (`test_ui_lint.py`) — report-only gate | Smoke not CI-gated |
+
+#### Integrations — **D+** *(deferred by design)*
+
+| System | Status |
+|---|---|
+| QBO (Phase 1B) | Scaffold only — `qbo_*` fields, no OAuth/API client |
+| Email/SMS | `NullMessagingProvider` — logs to `communication_log` only |
+| PAI/HHP/ATL scrapers | `vendor_availability_service.py` → `NotImplementedError` |
+| ESN lookup | `esn_lookup_service.py` → `NotImplementedError` |
+| Shopify / eBay / TaxJar | Phase 2/3 |
+| Server PDF | WeasyPrint → browser print on Windows without GTK |
+
+### 16.3 — Phase 1A owner items (O1–O9) — audit status
+
+| ID | Requirement | Audit status |
+|---|---|---|
+| O1 | 1A without QBO / 1B = QBO | ✅ Locked |
+| O2 | 2-user login + attribution | ⚠️ Middleware ✅; `customers.py` still `CURRENT_USER_ID = 1`; wife user not seeded |
+| O3 | Auto backup + tested restore | ✅ `backup_service`, startup hook, `tests/test_backup_restore.py`; restore not admin-gated |
+| O4 | Vendor contacts | ✅ `vendors.py` + `tests/test_vendor_contacts.py` |
+| O5 | Markup in Settings | ⚠️ Global `default_markup_pct` ✅; 30% fallback + no category override |
+| O6 | Per-customer card surcharge + invoice override | ⚠️ `card_surcharge_pct` + tests (`test_o6_surcharge.py`); verify UI end-to-end |
+| O7 | Core-slip popup | Deferred Phase 2 |
+| O8 | Receiving-slip print | Optional placeholder |
+| O9 | QA triage (research UI, core edge bugs) | ⬜ Open |
+
+### 16.4 — Critical missing areas (priority queue)
+
+**P0 — Trust in daily use**
+1. Owner functional test pass — fill `TESTING_FEEDBACK.md` on current build
+2. Fix audit attribution — replace `CURRENT_USER_ID = 1` with `get_current_user_id` in `customers.py`
+3. Seed second user (wife, `BOOKKEEPING` role) or document creation steps
+4. Re-test Quotes / Quote workspace / Returns after latest fixes (§8G gate)
+
+**P1 — Before irreplaceable production data**
+5. Gate `/admin/backup/restore` behind admin permission
+6. Add CSRF tokens on HTMX POST forms
+7. Reduce bare `except Exception` on money routes → log + visible error banner
+8. Enforce strong admin password via env on first run
+
+**P2 — Sustainable polish**
+9. Lift HOLD: Product Detail (#10), PO workspace (#11) after P0 clears
+10. Port Vendor Returns list to L2 (last unported operational list)
+11. Reports + dashboard off `tbl-*` (wife-facing: AR Aging, Statements)
+12. Replace `window.confirm()` on returns/warranty with Alpine modals
+
+**P3 — After 1A stable**
+13. Phase 1B: QBO OAuth + push
+14. Phase 2: scrapers, real email, Shopify, TaxJar
+15. Phase 3: eBay, multi-state tax, ESN live, serial/kit UI
+
+### 16.5 — Code disruption hotspots
+
+| Area | Issue | Severity |
+|---|---|---|
+| `customers.py:36` | `CURRENT_USER_ID = 1` | High — wrong audit trail for wife |
+| Money routers | ~63× `except Exception` → silent redirect | High — violates error-banner rule |
+| `vendors.py` | No service layer | Medium — no audit on vendor CRUD |
+| `MASTER_PLAN.md` §9 | Some bullets stale vs code (O2 enforce, cost variance) | Low — planning confusion |
+| `JAKS_UI_Change_Plan.md` §1 | Stale L1 labels for completed L2 lists | Low — builder confusion |
+| Inline migrations | No Alembic | Medium long-term |
+| QBO fields | `PENDING` never synced | Low until 1B |
+
+### 16.6 — Go-live readiness snapshot
+
+```
+                    GO-LIVE (Phase 1A)
+    Backend workflows     ████████░░  ~85%
+    Automated tests       ███████░░░  ~78%
+    Owner acceptance      ██░░░░░░░░  ~15%
+    UI L2/L3 (main paths) ██████░░░░  ~65%
+    Security hardening    ████░░░░░░  ~50%
+    Integrations          █░░░░░░░░░  ~10%
+    §11 checklist signed  ███░░░░░░░  ~35%
+```
+
+**Honest assessment:** Backend workflow completeness is high; remaining 1A risk is **product/ops** (owner walkthrough, O2 attribution, security on backup, UI polish on wife-facing surfaces) — estimated **2–4 focused weeks**, not months of new backend.
+
+**Related docs:** `JAKS_UI_Change_Plan.md` (UI rollout + §9 functional gate), `TESTING_FEEDBACK.md` (owner test sheet), `BACKEND_IMPLEMENTATION_PLAN.md` (backend letter-phases A–O).
+
+---
+
 *This document is the single source of truth for all JAKS Inventory build decisions.*
 *Update it as decisions change. All other planning documents are superseded.*
-*Last updated: 2026-05-29 — §9 reconciled against the codebase; §12 PDF status corrected.*
+*Last updated: 2026-05-31 — §16 ERP audit report card added.*

@@ -1377,6 +1377,43 @@ Items confirmed as real, scoped, and worth doing — but explicitly deferred. Do
 an Architect instruction. Each item includes the file targets and enough context to act without
 this conversation.
 
+---
+
+#### 8-STANDING. Permanent By-Design Decisions — do NOT re-open in any QA pass
+
+These have been ruled multiple times (Suite-C W-3, e2e Bug4, D-5e, full-audit Bug4) and are final.
+**Any future QA flag on these items is a false positive — close it without action.**
+
+**CC convenience fee is informational only — NEVER a math bug (R1, multi-audit ruling).**
+The card-processing surcharge is an *estimate* displayed below the invoice total for the customer's
+awareness ("~$X.XX if the full balance is paid by card"). It is **never** added to `invoice.total` or
+`balance_due`. The actual charge is applied by the card processor at the moment the card is swiped —
+JAKS does not charge it in-system. Source code anchor: `app/invoice_totals.py:117-120` (comment reads
+"R1 — CC surcharge is applied AT PAYMENT TIME on the card portion only; this is an INFORMATIONAL
+estimate … and is NOT added to the total.").
+Correct QA behaviour:
+- Any test asserting `invoice.total` or `balance_due` *includes* the surcharge → **wrong test; close it.**
+- Display of the estimate, the `cc_surcharge_estimate` key, the helper copy → all correct.
+- Relabelling the estimate copy (e.g. "convenience fee" vs "surcharge") is UI polish, not a math fix.
+- Changing the math to add the fee to the total would violate R1 and break real money-path tests.
+
+**D-6 quick-create `coreFlag` inline validation — ✅ GOVERNANCE PASS 2026-06-01.**
+UI-Builder added `x-model.number="vendorCore"` and `x-model.number="customerCore"` to the core-charge
+inputs in `app/templates/products/_quick_create.html` (the inputs previously lacked these bindings, so
+`coreFlag` was a dead getter — it could never evaluate true). The D-6 diff also adds the warning banner
+and `:disabled="coreFlag"` on the submit button.
+Governance verdict: **PASS.**
+- Warning banner tokens (`bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700`) — **identical
+  to `new.html`**. Same warning-triangle SVG. `mt-2` is correct for the quick-create layout context.
+- Copy is intentionally shorter than `new.html` (appropriate for the constrained slide-over space).
+- `:disabled="coreFlag"` on submit is *stronger* than `new.html` (client-side guard prevents submission).
+- No `{% if error %}` block for server-side validation errors — **pre-existing gap, not introduced by D-6.**
+  Client-side guard prevents the core-charge-specific server error; other server errors re-render the form
+  via HTMX OOB. Non-blocking; worth adding in a future slide-over robustness pass.
+- No `window.confirm`, no `tbl-*`, no §3 violations.
+
+---
+
 #### 8A. Post-Extraction Cosmetic Cleanup (low priority)
 
 1. **Macro adoption — fold Products/PO inline chips onto `status_chip`.**
