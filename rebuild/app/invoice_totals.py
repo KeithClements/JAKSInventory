@@ -96,10 +96,17 @@ def compute_invoice_totals(invoice) -> dict:
     else:
         # Draft / legacy fallback — live calc on (discounted parts + freight).
         # Cores are excluded (refundable deposit, never taxed).
-        is_taxable_display = (
-            not invoice.tax_exempt_snapshot
-            and (invoice.is_taxable or tax_rate_display > 0)
-        )
+        #
+        # D-1: invoice-level is_taxable is the AUTHORITATIVE gate. It is reliably
+        # set at draft creation (InvoiceService.create_draft / create_invoice from
+        # the customer's is_tax_exempt + tax_rate), so a False value is a real
+        # signal — either a tax-exempt account or the user unchecking "Taxable" on
+        # the workspace — and must zero tax everywhere. The old
+        # `or tax_rate_display > 0` fallback re-enabled tax whenever a rate snapshot
+        # existed, which silently defeated an explicit uncheck. Re-checking
+        # "Taxable" sets is_taxable back to True and the retained tax_rate_snapshot
+        # restores the rate.
+        is_taxable_display = (not invoice.tax_exempt_snapshot) and bool(invoice.is_taxable)
         taxable_amount = (
             round(parts_after_discount + freight_subtotal, 2)
             if is_taxable_display

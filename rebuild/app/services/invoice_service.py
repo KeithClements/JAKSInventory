@@ -571,9 +571,14 @@ class InvoiceService(BaseService):
 
         # R1 — freeze per-line tax_amount based on snapshot at finalize time.
         # After this, line.tax_amount is the source of truth (calculate_totals reads it).
+        # D-1: gate the per-line freeze on the invoice-level is_taxable header flag.
+        # When the user unchecks "Taxable", invoice.is_taxable is False but the
+        # per-line is_taxable flags are left untouched — so without this gate the
+        # lines would freeze a non-zero tax_amount and resurrect tax after finalize.
+        # The header flag is authoritative: if it's off, no line is taxed.
         tax_rate = 0.0 if invoice.tax_exempt_snapshot else invoice.tax_rate_snapshot
         for ln in invoice.lines:
-            if ln.is_taxable and tax_rate > 0:
+            if invoice.is_taxable and ln.is_taxable and tax_rate > 0:
                 # Discount-adjusted line subtotal
                 discounted = ln.unit_price * ln.qty * (1 - (ln.discount_pct or 0) / 100)
                 ln.tax_amount = round(discounted * tax_rate / 100, 2)
@@ -584,9 +589,15 @@ class InvoiceService(BaseService):
         # taxation so the raw column can never contradict the lines for any future
         # consumer (print view, finalized label, reports/exports). The totals
         # engine already derives display flags from tax_amount, but this closes
-        # the divergence at the source: an invoice with any taxable line is marked
-        # taxable, one with none is not. tax_rate_snapshot is guaranteed set above.
-        invoice.is_taxable = any(ln.is_taxable for ln in invoice.lines)
+        # the divergence at the source.
+        #
+        # D-1: AND with the existing header flag instead of overwriting it. The
+        # eac2ed8 hardening set this to `any(ln.is_taxable ...)`, which resurrected
+        # a user-cleared header whenever a line still carried is_taxable=True. The
+        # header is authoritative — it may only NARROW (a taxable header with no
+        # taxable line becomes non-taxable), never re-enable a cleared one.
+        # tax_rate_snapshot is left intact so re-checking "Taxable" restores the rate.
+        invoice.is_taxable = invoice.is_taxable and any(ln.is_taxable for ln in invoice.lines)
 
         for ln in invoice.lines:
             if ln.line_type != LineType.PRODUCT:
