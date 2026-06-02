@@ -68,7 +68,12 @@
       </div>
     </div>
 
-    <div x-data="{ hasCore: false }">
+    <div x-data="{
+           hasCore: false,
+           vendorCore: 0,
+           customerCore: 0,
+           get coreFlag() { return this.hasCore && Number(this.customerCore||0) < Number(this.vendorCore||0); }
+         }">
       <label class="flex items-center gap-2 cursor-pointer">
         <input type="checkbox" name="has_core" x-model="hasCore"
                class="rounded border-gray-300 text-blue-600 focus:ring-brand-400"/>
@@ -78,15 +83,29 @@
         <div class="flex-1">
           <label class="block text-xs text-gray-500 mb-1">Vendor Core $</label>
           <input type="number" name="vendor_core_charge" min="0" step="0.01" value="0.00"
+                 x-model.number="vendorCore"
                  class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg
-                        focus:outline-none focus:ring-1 focus:ring-brand-400"/>
+                        focus:outline-none focus:ring-1 focus:ring-brand-400"
+                 :class="coreFlag ? 'ring-1 ring-red-400 border-red-300' : ''"/>
         </div>
         <div class="flex-1">
           <label class="block text-xs text-gray-500 mb-1">Customer Core $</label>
           <input type="number" name="customer_core_charge" min="0" step="0.01" value="0.00"
+                 x-model.number="customerCore"
                  class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg
-                        focus:outline-none focus:ring-1 focus:ring-brand-400"/>
+                        focus:outline-none focus:ring-1 focus:ring-brand-400"
+                 :class="coreFlag ? 'ring-1 ring-red-400 border-red-300' : ''"/>
         </div>
+      </div>
+      <div x-show="coreFlag" x-cloak
+           class="mt-2 flex items-start gap-2 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">
+        <svg class="w-4 h-4 shrink-0 mt-px" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/>
+        </svg>
+        <span>
+          Customer core (<span x-text="'$' + Number(customerCore||0).toFixed(2)"></span>)
+          must be ≥ vendor core (<span x-text="'$' + Number(vendorCore||0).toFixed(2)"></span>).
+        </span>
       </div>
     </div>
 
@@ -99,7 +118,9 @@
       Cancel
     </button>
     <button type="submit"
-            class="px-4 py-2 text-sm font-medium text-white bg-brand-700 hover:bg-brand-600 rounded-lg">
+            :disabled="coreFlag"
+            class="px-4 py-2 text-sm font-medium text-white bg-brand-700 hover:bg-brand-600 rounded-lg
+                   disabled:opacity-50 disabled:cursor-not-allowed">
       Save &amp; Select
     </button>
   </div>
