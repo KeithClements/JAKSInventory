@@ -372,6 +372,14 @@ and **not** a Queue Board (it does not group work items for sequential processin
    QA rule: any test that expects the surcharge in `invoice.total` or `balance_due` is testing the wrong
    thing — the total intentionally excludes the fee. Relabelling the estimate is UI polish; changing the
    math would violate R1.
+   **Tax gate — `invoice.is_taxable` is AUTHORITATIVE (do NOT re-introduce the `or tax_rate_display > 0`
+   fallback).** The totals engine (`app/invoice_totals.py:83-110`) has two paths: the finalized path uses
+   per-line `is_taxable` (correct); the draft/legacy fallback used `invoice.is_taxable or tax_rate_display > 0`,
+   meaning an invoice could appear taxable even when `is_taxable=False` if the customer had a tax rate on file
+   — wrong for tax-exempt customers. The fallback is being removed: `invoice.is_taxable` is the only gate.
+   At finalize, `invoice_service.py:589` reconciles it: `invoice.is_taxable = any(ln.is_taxable for ln in
+   invoice.lines)`. Any future draft-path calc must also key off `invoice.is_taxable` only — the rate-based
+   fallback has caused silent tax errors and is permanently banned.
 
 6. **Workflow action bar** — reflects current status. Primary action rightmost (`btn-primary btn-sm`).
    Destructive action uses `btn-ghost btn-sm text-red-500` + Alpine confirm modal. Follows §8B
@@ -1814,6 +1822,57 @@ print, and PDF, and means cores/fees parity is automatic rather than duplicated 
 templates recompute totals via Jinja2 arithmetic (e.g. `line.unit_price * line.qty`), which can drift from
 the service layer when edge-cases (cores, NSF lines, restocking fees) are involved. Flag for the next print
 pass — do not address in the current round.
+
+---
+
+#### 8N. D-10 — `product.cost` Semantic Decision (owner ruling required)
+
+**The collision.** Two features write `product.cost` with incompatible intent, and they run back-to-back
+on every PO receipt:
+
+| Write site | When | Intent | Source |
+|---|---|---|---|
+| `inv_svc._apply_moving_average_cost(product, qty, unit_cost)` | PO receipt, R11 | **Moving weighted-average cost** (COGS for existing inventory) | `po_service.py:359-361` |
+| `product_svc.compare_and_record_cost_change(…, new_cost=po_line.unit_cost)` → `_sync_cost_from_preferred()` → `product.cost = new_cost` | Same receipt, when PO cost ≠ stored vendor_source.vendor_cost | **Vendor quote price mirror** | `product_service.py:504-505`, `318-319` |
+
+When these differ, the vendor-sync fires second and **overwrites the moving average**. The product model's own comments are contradictory: L71-72 says "mirrors preferred vendor source cost for quick access"; L73 says "R11 — moving weighted average cost; updated on every PO receipt." The D-10 test case that prompted R11 fails because of this overwrite.
+
+**Options (owner must choose one):**
+
+**Option A — `product.cost` = moving-average COGS (RECOMMENDED).** The receipt path writes the moving
+average and owns `product.cost`. `_sync_cost_from_preferred` is narrowed to write only
+`ProductVendorSource.vendor_cost` — it stops touching `product.cost`. When a user updates a vendor source
+price manually (not from a receipt), the cached `product.cost` is deliberately NOT updated — the on-hand
+inventory was bought at the old price. `selling_price` and margin displays continue reading `product.cost`
+(they already do; behavior unchanged). Margin = `(sell_price - product.cost) / sell_price` = **COGS-based
+margin on current inventory** — the financially correct number for a diesel parts shop. When stock = 0,
+`product.cost` is the last receipt cost (standard moving-average convention).
+*Fix scope:* remove the `product.cost = new_cost` write from `_sync_cost_from_preferred` and
+`compare_and_record_cost_change` (keep `ProductVendorSource.vendor_cost` writes and cost-history rows).
+Zero migration needed — the column is unchanged.
+
+**Option A′ — add `product.avg_cost`, keep `product.cost` = vendor mirror.**
+Add a dedicated column (`avg_cost`) for the moving average; leave `product.cost` as the vendor-price mirror
+(the old intent from L71-72). Repoint margin display, `invoice_service.py:597`, and
+`search_service.py:118/247` to read `avg_cost`. *Cost:* small migration + repoint all ~5 read-sites.
+Cleanest long-term semantics (two distinct columns, unambiguous names).
+
+**Option B — reject R11; `product.cost` = vendor mirror only.**
+Remove `_apply_moving_average_cost` from the receipt path entirely. No moving average is maintained.
+`product.cost` is always the vendor quote price. *Only valid if the owner explicitly overrides the D-10
+design decision* ("product cost should update on receipt to reflect what we actually paid") — if D-10 was
+intentional, Option B directly contradicts it.
+
+**Architect recommendation: Option A.** Rationale: (1) D-10 was an explicit owner-tested behaviour —
+respecting it rules out Option B. (2) Option A′ is cleaner but costs 5 read-site rewrites + a migration for
+a net-zero behaviour change from the owner's perspective. (3) Option A is a two-line fix in
+`_sync_cost_from_preferred` / `compare_and_record_cost_change`. (4) Vendor quote prices belong on
+`ProductVendorSource.vendor_cost` — that column already exists and is the right home for them.
+
+**Ruling: PENDING OWNER CONFIRMATION.** Document the chosen option here once decided so the receipt path
+(`po_service.py`) and `_sync_cost_from_preferred` (`product_service.py`) stop fighting on every receipt.
+Update the `product.py:71-73` model comment to match. Until ruled, **do not add any new code that reads
+`product.cost` and assumes either semantic** — the column is ambiguous.
 
 ---
 
