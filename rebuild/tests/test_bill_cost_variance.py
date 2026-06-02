@@ -113,6 +113,103 @@ def test_approve_blocks_cost_overcharge(db):
     assert bill.status == VendorBillStatus.DISCREPANCY  # still blocked
 
 
+# ── D-4b: billing the over-received qty exceeds the PO ceiling ───────────────
+#
+# Bug: create_vendor_bill checks `qty_billed > qty_received` but NOT
+# `qty_billed > qty_ordered`.  When a vendor over-delivers (recv=7, ordered=5)
+# and then bills for every unit received (bill=7), the check
+#   7 > 7  → False
+# passes with APPROVED.  The vendor billed for 2 units that were never ordered —
+# that is a discrepancy that AP must review.
+#
+# Two layers need the same fix:
+#   • create_vendor_bill (po_service.py) — sets bill.status
+#   • VendorBillLine.has_discrepancy (models/purchase_order.py) — model property
+#
+# xfail(strict=True): flip these two marks to plain `assert` in the same PR that
+# adds `qty_billed > open_qty` to both locations.
+
+def _po_with_over_received_line(db, *, ordered=5, received=7, unit_cost=10.0):
+    """PO line where more was received than ordered (simulate R6 over-receipt)."""
+    from app.models.vendor import Vendor
+    from app.models.product import Product
+    from app.models.purchase_order import PurchaseOrder, POLine
+    vendor = Vendor(name="Over-Recv Vendor")
+    prod   = Product(sku="OVRRECV-1", title="Widget", cost=unit_cost,
+                     qty_on_hand=0, is_active=True)
+    db.add_all([vendor, prod]); db.commit(); db.refresh(vendor); db.refresh(prod)
+    po   = PurchaseOrder(po_number="PO-OVRRECV-1", vendor_id=vendor.id,
+                         status=POStatus.RECEIVED)
+    db.add(po); db.commit(); db.refresh(po)
+    line = POLine(po_id=po.id, product_id=prod.id,
+                  qty_ordered=ordered, qty_received=received, qty_billed=0,
+                  unit_cost=unit_cost,
+                  over_received=True, over_received_qty=received - ordered)
+    db.add(line); db.commit(); db.refresh(line)
+    return vendor, po, line
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "D-4b: create_vendor_bill and VendorBillLine.has_discrepancy both use "
+        "`qty_billed > qty_received` as the ceiling, ignoring qty_ordered. "
+        "When over-receipt happens (recv=7, ordered=5) and the vendor bills all "
+        "received units (bill=7), `7 > 7` is False → APPROVED. "
+        "Fix: also flag when qty_billed > open_qty (= qty_ordered - qty_cancelled). "
+        "Flip these marks to plain asserts in the same PR that lands the fix."
+    ),
+)
+def test_over_po_qty_bill_flags_discrepancy(db):
+    """
+    PO ordered 5 → received 7 (over-receipt allowed) → vendor bills 7 @ correct cost.
+
+    Current (buggy) behaviour:  bill.status == APPROVED   ← xfail
+    Correct behaviour:          bill.status == DISCREPANCY
+
+    The vendor billed for two units that were never on the purchase order.
+    Even though qty_billed == qty_received, the bill exceeds the PO ceiling.
+    Both the service (status) and the model property (has_discrepancy) must flag it.
+    """
+    vendor, po, line = _po_with_over_received_line(db, ordered=5, received=7, unit_cost=10.0)
+    bill = _bill(db, vendor, po, line, billed_cost=10.0, qty_billed=7)
+
+    # Service must set status = DISCREPANCY
+    assert bill.status == VendorBillStatus.DISCREPANCY, (
+        f"Billing 7 units when only 5 were ordered must be DISCREPANCY; "
+        f"got {bill.status!r} — fix create_vendor_bill qty ceiling check."
+    )
+    # Model property must agree (both layers checked)
+    assert bill.has_discrepancy is True, (
+        "VendorBill.has_discrepancy must be True for a PO-ceiling-exceeding bill; "
+        "fix VendorBillLine.has_discrepancy to also check qty_billed > qty_ordered."
+    )
+    assert bill.lines[0].has_discrepancy is True
+
+
+def test_over_receipt_billed_within_order_qty_approves(db):
+    """
+    Guard: ordered=5, received=7 (over-receipt), billed=5.
+    Billing within the ordered qty must remain APPROVED even when more
+    was received — the over-receipt warning is separate from over-billing.
+    """
+    vendor, po, line = _po_with_over_received_line(db, ordered=5, received=7, unit_cost=10.0)
+    bill = _bill(db, vendor, po, line, billed_cost=10.0, qty_billed=5)
+    assert bill.status == VendorBillStatus.APPROVED, (
+        f"Billing within the ordered qty (bill=5, ordered=5, recv=7) must be "
+        f"APPROVED; got {bill.status!r}."
+    )
+    assert bill.has_discrepancy is False
+
+
+def test_clean_match_still_approves(db):
+    """Guard: ordered=5, received=5, billed=5 — the normal path stays APPROVED."""
+    vendor, po, line = _po_with_received_line(db, ordered_cost=10.0, qty=5)
+    bill = _bill(db, vendor, po, line, billed_cost=10.0, qty_billed=5)
+    assert bill.status == VendorBillStatus.APPROVED
+    assert bill.has_discrepancy is False
+
+
 def test_match_line_reports_cost_variance_state(db):
     vendor, po, line = _po_with_received_line(db, ordered_cost=10.0, qty=5)
     _bill(db, vendor, po, line, billed_cost=12.0, qty_billed=5)
