@@ -115,19 +115,17 @@ def test_approve_blocks_cost_overcharge(db):
 
 # ── D-4b: billing the over-received qty exceeds the PO ceiling ───────────────
 #
-# Bug: create_vendor_bill checks `qty_billed > qty_received` but NOT
+# Bug (FIXED): create_vendor_bill checked `qty_billed > qty_received` but NOT
 # `qty_billed > qty_ordered`.  When a vendor over-delivers (recv=7, ordered=5)
 # and then bills for every unit received (bill=7), the check
 #   7 > 7  → False
-# passes with APPROVED.  The vendor billed for 2 units that were never ordered —
-# that is a discrepancy that AP must review.
+# passed with APPROVED.  The vendor billed for 2 units that were never ordered.
 #
-# Two layers need the same fix:
-#   • create_vendor_bill (po_service.py) — sets bill.status
-#   • VendorBillLine.has_discrepancy (models/purchase_order.py) — model property
-#
-# xfail(strict=True): flip these two marks to plain `assert` in the same PR that
-# adds `qty_billed > open_qty` to both locations.
+# The PO-ordered qty is now a ceiling in all three copies of the predicate:
+#   • create_vendor_bill (po_service.py) — sets bill.status (CUMULATIVE qty_billed)
+#   • VendorBillLine.has_discrepancy   (models/purchase_order.py) — model property
+#   • POLine.has_billing_discrepancy   (models/purchase_order.py) — line property
+# The xfail below was flipped to a plain assert when the fix landed.
 
 def _po_with_over_received_line(db, *, ordered=5, received=7, unit_cost=10.0):
     """PO line where more was received than ordered (simulate R6 over-receipt)."""
@@ -149,17 +147,6 @@ def _po_with_over_received_line(db, *, ordered=5, received=7, unit_cost=10.0):
     return vendor, po, line
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "D-4b: create_vendor_bill and VendorBillLine.has_discrepancy both use "
-        "`qty_billed > qty_received` as the ceiling, ignoring qty_ordered. "
-        "When over-receipt happens (recv=7, ordered=5) and the vendor bills all "
-        "received units (bill=7), `7 > 7` is False → APPROVED. "
-        "Fix: also flag when qty_billed > open_qty (= qty_ordered - qty_cancelled). "
-        "Flip these marks to plain asserts in the same PR that lands the fix."
-    ),
-)
 def test_over_po_qty_bill_flags_discrepancy(db):
     """
     PO ordered 5 → received 7 (over-receipt allowed) → vendor bills 7 @ correct cost.
@@ -220,3 +207,65 @@ def test_match_line_reports_cost_variance_state(db):
     assert row["cost_var"] == 2.0
     # suggested credit = overcharge × billed qty = 2.00 × 5
     assert row["suggested_credit"] == 10.0
+
+
+# ── D-4b supplementary coverage ───────────────────────────────────────────────
+# QA's section above locks down the core matrix. These add the cumulative
+# (split-bill) semantics, the approval gate, the POLine predicate (third copy),
+# and the AP-facing reason string — the parts the three-row matrix doesn't reach.
+
+def test_over_received_full_bill_flags_discrepancy(db):
+    # ordered5 / recv5 / bill7 — billed beyond BOTH received and ordered; the path
+    # that already worked (qty_billed > qty_received). Regression guard.
+    vendor, po, line = _po_with_received_line(db, ordered_cost=10.0, qty=5)
+    bill = _bill(db, vendor, po, line, billed_cost=10.0, qty_billed=7)
+    assert bill.status == VendorBillStatus.DISCREPANCY
+    assert bill.has_discrepancy is True
+
+
+def test_approve_blocks_over_po_qty_bill(db):
+    # The money gate: an over-ordered bill must not approve until AP resolves it.
+    vendor, po, line = _po_with_over_received_line(db, ordered=5, received=7)
+    bill = _bill(db, vendor, po, line, billed_cost=10.0, qty_billed=7)
+    svc = POService(db, current_user_id=None)
+    with pytest.raises(ValueError, match="unresolved match discrepanc"):
+        svc.approve_bill(bill.id)
+    db.refresh(bill)
+    assert bill.status == VendorBillStatus.DISCREPANCY
+
+
+def test_split_bills_cannot_each_slip_under_po_ceiling(db):
+    # ordered5 / recv7. Two bills 4 + 3 = 7. Neither single bill line exceeds
+    # received(7), but cumulatively they bill 7 > ordered 5. The SECOND bill must
+    # flag — split bills can't dodge the PO ceiling one slice at a time.
+    vendor, po, line = _po_with_over_received_line(db, ordered=5, received=7)
+    first = _bill(db, vendor, po, line, billed_cost=10.0, qty_billed=4)
+    assert first.status == VendorBillStatus.APPROVED       # cumulative 4 ≤ 5
+    db.refresh(line)
+    second = _bill(db, vendor, po, line, billed_cost=10.0, qty_billed=3)
+    assert second.status == VendorBillStatus.DISCREPANCY   # cumulative 7 > 5
+
+
+def test_poline_has_billing_discrepancy_honors_po_ceiling(db):
+    # The POLine predicate (third copy of the check) must also clamp to qty_ordered.
+    vendor, po, line = _po_with_over_received_line(db, ordered=5, received=7)
+    _bill(db, vendor, po, line, billed_cost=10.0, qty_billed=7)
+    db.refresh(line)
+    assert line.has_billing_discrepancy is True
+
+
+def test_over_po_qty_reason_names_po_ordered_ceiling(db):
+    # AP must be told WHY: the discrepancy notification should name the PO-ordered
+    # ceiling, distinct from over-receipt or cost variance.
+    from app.models.notification import Notification
+
+    vendor, po, line = _po_with_over_received_line(db, ordered=5, received=7)
+    bill = _bill(db, vendor, po, line, billed_cost=10.0, qty_billed=7)
+    note = (
+        db.query(Notification)
+        .filter(Notification.entity_type == "vendor_bill",
+                Notification.entity_id == bill.id)
+        .first()
+    )
+    assert note is not None
+    assert "billed qty exceeds PO-ordered qty" in note.message

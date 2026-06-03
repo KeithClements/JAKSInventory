@@ -19,7 +19,8 @@ from datetime import datetime, timezone
 
 from app.constants import (
     AuditAction, EntityType, FulfillmentSource, InventoryTxnType, MatchResolution,
-    Permission, POStatus, QBOSyncStatus, SOLineStatus, VendorBillStatus, VendorCreditMemoTrigger,
+    Permission, POStatus, QBOSyncStatus, SOLineSource, SOLineStatus, VendorBillStatus,
+    VendorCreditMemoTrigger,
 )
 from app.models.inventory import InventoryTransaction
 from app.models.product import Product
@@ -455,9 +456,12 @@ class POService(BaseService):
                     product.qty_committed += take
                     product.qty_backordered = max(0, product.qty_backordered - take)
 
-            # Advance line_status when fully met
+            # Advance line_status when fully met. Once the ordered qty is reserved
+            # the line is no longer a backorder — clear the legacy `source` flag so
+            # is_backordered / SO.has_backorder stop reporting it as outstanding.
             if so_line.qty_committed >= so_line.qty_ordered - so_line.qty_invoiced:
                 so_line.line_status = SOLineStatus.RESERVED_STOCK
+                so_line.source = SOLineSource.STOCK
             # else: stay in AWAITING_PO_RECEIPT for partial linked receipt
 
             # Write ledger row for the reservation
@@ -595,8 +599,10 @@ class POService(BaseService):
     ) -> VendorBill:
         """
         Create a vendor bill from vendor invoice.
-        Flags discrepancies: billed qty > received qty on any line.
-        Auto-approves if no discrepancies.
+        Flags discrepancies on any line: billed qty > received qty, cumulative
+        billed qty > PO-ordered qty (D-4b — over-receipt can't authorise paying
+        beyond the order), or billed unit cost varying from the PO/receipt cost.
+        Auto-approves only when no discrepancies.
         """
         bill = VendorBill(
             po_id=po_id,
@@ -610,7 +616,8 @@ class POService(BaseService):
         self.db.add(bill)
         self.db.flush()
 
-        has_qty_discrepancy = False
+        has_qty_over_received = False
+        has_qty_over_ordered = False
         has_cost_discrepancy = False
         total = 0.0
 
@@ -632,7 +639,15 @@ class POService(BaseService):
             if po_line:
                 po_line.qty_billed += qty_billed
                 if qty_billed > po_line.qty_received:
-                    has_qty_discrepancy = True
+                    has_qty_over_received = True
+                # D-4b — over-receipt (R6, allow-with-warning) can lift
+                # qty_received above the PO ceiling, so the received check alone
+                # lets a bill over-pay what the PO authorized. Compare the
+                # CUMULATIVE billed qty (after the += above) against qty_ordered —
+                # cumulative, not this-bill, so split bills can't each slip under
+                # the ceiling while together they over-bill the order.
+                if po_line.qty_billed > po_line.qty_ordered:
+                    has_qty_over_ordered = True
                 # Money bug fix — a billed unit cost that differs from the PO/
                 # receipt cost beyond tolerance is a discrepancy too (vendor
                 # overcharge/undercharge). Must NOT silently auto-approve.
@@ -641,6 +656,7 @@ class POService(BaseService):
 
             total += round(qty_billed * unit_cost, 2)
 
+        has_qty_discrepancy = has_qty_over_received or has_qty_over_ordered
         has_discrepancy = has_qty_discrepancy or has_cost_discrepancy
         bill.total_amount = round(total, 2)
         bill.status = VendorBillStatus.DISCREPANCY if has_discrepancy else VendorBillStatus.APPROVED
@@ -650,8 +666,10 @@ class POService(BaseService):
             po_number = po.po_number if po else str(po_id)
             # Describe whichever discrepancy/-ies fired so AP knows what to review.
             _reasons = []
-            if has_qty_discrepancy:
+            if has_qty_over_received:
                 _reasons.append("billed qty exceeds received qty")
+            if has_qty_over_ordered:
+                _reasons.append("billed qty exceeds PO-ordered qty")
             if has_cost_discrepancy:
                 _reasons.append("billed unit cost differs from PO/receipt cost")
             from app.services.notification_service import NotificationService

@@ -162,7 +162,10 @@ class POLine(Base):
 
     @property
     def has_billing_discrepancy(self) -> bool:
-        return self.qty_billed > self.qty_received
+        # D-4b — billed qty is a discrepancy when it exceeds EITHER the received
+        # qty or the PO-ordered ceiling. Over-receipt can push qty_received above
+        # qty_ordered, so the received check alone lets an over-ordered bill pass.
+        return self.qty_billed > self.qty_received or self.qty_billed > self.qty_ordered
 
 
 class POReceipt(Base):
@@ -214,9 +217,10 @@ class POReceiptLine(Base):
 class VendorBill(QBOSyncMixin, Base):
     """
     Vendor's invoice to JAKS. Matched against receipts (3-way match).
-    Status = DISCREPANCY when any line is over-billed (qty_billed > qty_received)
+    Status = DISCREPANCY when any line is over-billed (qty_billed > qty_received),
+    over-ordered (qty_billed > qty_ordered — billed beyond what the PO authorized),
     OR cost-varied (billed unit cost differs from PO/receipt cost beyond
-    COST_VARIANCE_TOLERANCE). Either blocks approval.
+    COST_VARIANCE_TOLERANCE). Any of these blocks approval.
     """
     __tablename__ = "vendor_bills"
     __table_args__ = (
@@ -276,14 +280,21 @@ class VendorBillLine(Base):
 
     @property
     def has_discrepancy(self) -> bool:
-        """A bill line is a discrepancy when EITHER the billed qty exceeds the
-        received qty (over-billed) OR the billed unit cost differs from the PO/
-        receipt unit cost beyond tolerance (vendor overcharge/undercharge).
-        Both must block approval — a cost overcharge is just as much a money
-        problem as an over-billed quantity."""
+        """A bill line is a discrepancy when the billed qty exceeds the received
+        qty (over-billed), OR exceeds the PO-ordered qty (billed beyond what was
+        authorized), OR the billed unit cost differs from the PO/receipt unit
+        cost beyond tolerance (vendor overcharge/undercharge). Each must block
+        approval — paying for more units than were ordered, or at a higher cost
+        than agreed, is just as much a money problem as over-billing what was
+        received."""
         if self.po_line is None:
             return False
         if self.qty_billed > self.po_line.qty_received:
+            return True
+        # D-4b — over-receipt (R6, allow-with-warning) can lift qty_received above
+        # the PO ceiling, so a bill that "matches receipts" can still bill MORE
+        # than the PO authorized. The 3-way match must clamp to qty_ordered too.
+        if self.qty_billed > self.po_line.qty_ordered:
             return True
         return abs(self.unit_cost - self.po_line.unit_cost) >= COST_VARIANCE_TOLERANCE
 
