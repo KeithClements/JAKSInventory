@@ -231,6 +231,13 @@ async def so_workspace(
     ctx["linked_documents"] = related_documents(db, so)
     # §5.10 — SO↔PO status rollup per linked line (UI renders the chip + ETA)
     ctx["po_link_map"] = SalesOrderMetricsService(db).po_link_map(so)
+    # §4.5 credit warn (WARN-ONLY) — same contract as customer detail / invoice.
+    # An SO's value is never in open AR (AR starts at invoicing), so the full SO
+    # total is the prospective charge for the over-limit check.
+    from app.services.customer_service import CustomerService
+    ctx["credit_status"] = (
+        CustomerService(db).credit_status(so.customer, so.subtotal) if so.customer else None
+    )
     return templates.TemplateResponse(
         request,
         "sales_orders/workspace.html",

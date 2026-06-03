@@ -111,12 +111,23 @@ def _workspace_context(db: Session, request: Request, invoice: Invoice) -> dict:
     from app.services.invoice_metrics_service import InvoiceMetricsService
     invoice_intelligence = InvoiceMetricsService(db).intelligence_for(invoice)
 
+    # ── §4.5 credit warn (WARN-ONLY) — same contract as customer detail ──────
+    # A DRAFT invoice isn't in open AR yet, so its total is the prospective charge;
+    # a posted invoice is already counted in open AR → prospective 0 (no double-count).
+    from app.services.customer_service import CustomerService
+    _prospective = invoice.total if invoice.status == InvoiceStatus.DRAFT else 0.0
+    credit_status = (
+        CustomerService(db).credit_status(invoice.customer, _prospective)
+        if invoice.customer else None
+    )
+
     return {
         "invoice": invoice,
         "totals": totals,
         "customers": customers,
         "invoice_cores": invoice_cores,
         "invoice_intelligence": invoice_intelligence,
+        "credit_status": credit_status,
         "editable": invoice.status == InvoiceStatus.DRAFT,
         "cc_surcharge_pct": cc_surcharge_pct,
         "InvoiceStatus": InvoiceStatus,
