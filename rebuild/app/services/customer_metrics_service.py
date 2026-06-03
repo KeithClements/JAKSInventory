@@ -26,7 +26,7 @@ from sqlalchemy.orm import selectinload
 
 from app.constants import (
     InvoiceStatus, CreditMemoStatus, PaymentStatus, PaymentDirection,
-    CoreDirection, CoreStatus,
+    CoreDirection, CoreStatus, CustomerFlag,
 )
 from app.models.customer import Customer
 from app.models.invoice import Invoice, Payment
@@ -37,11 +37,17 @@ from app.services.base import BaseService
 
 
 # Metric keys — exported so callers/tests can rely on the shape.
+# The *_balance / avg_order_value / credit_hold keys are aliases matching the
+# UI intelligence-panel macro contract (app/templates/macros/intelligence.html);
+# they hold the same values as open_ar / aov plus the credit-hold flag, so the
+# customer_intelligence_panel(metrics) call lights up with no template rework.
 METRIC_KEYS = (
     "lifetime_sales", "ytd_sales", "gross_invoiced", "invoice_count", "aov",
     "last_quote_date", "last_invoice_date", "last_payment_date",
     "open_ar", "credit_limit", "available_credit", "credit_balance",
     "outstanding_core_credits",
+    # UI intelligence-panel aliases
+    "avg_order_value", "open_ar_balance", "credit_hold",
 )
 
 
@@ -105,6 +111,8 @@ class CustomerMetricsService(BaseService):
             ytd = round(gross_ytd - credits_ytd.get(cid, 0.0), 2)
             aov = round(gross / count, 2) if count else 0.0
             available = round(limit - open_ar, 2) if limit > 0 else None
+            open_ar = round(open_ar, 2)
+            on_hold = bool(cust and CustomerFlag.CREDIT_HOLD in cust.flag_keys)
 
             out[cid] = {
                 "lifetime_sales": lifetime,
@@ -115,11 +123,15 @@ class CustomerMetricsService(BaseService):
                 "last_quote_date": last_quote.get(cid),
                 "last_invoice_date": agg.get("last_invoice_date"),
                 "last_payment_date": last_payment.get(cid),
-                "open_ar": round(open_ar, 2),
+                "open_ar": open_ar,
                 "credit_limit": round(limit, 2),
                 "available_credit": available,
                 "credit_balance": round(credit_balance, 2),
                 "outstanding_core_credits": round(core_out.get(cid, 0.0), 2),
+                # UI intelligence-panel aliases (macros/intelligence.html contract)
+                "avg_order_value": aov,
+                "open_ar_balance": open_ar,
+                "credit_hold": on_hold,
             }
         return out
 

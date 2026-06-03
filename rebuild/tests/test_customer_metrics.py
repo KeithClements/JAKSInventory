@@ -191,6 +191,24 @@ def test_batch_matches_single(db, rich_customer):
     assert batch[rich_customer.id] == svc.metrics_for(rich_customer)
 
 
+def test_ui_panel_aliases(db, rich_customer):
+    # The intelligence-panel macro reads avg_order_value / open_ar_balance /
+    # credit_hold — they must carry the same values as aov / open_ar / the flag.
+    m = CustomerMetricsService(db).metrics_for(rich_customer)
+    assert m["avg_order_value"] == m["aov"]
+    assert m["open_ar_balance"] == m["open_ar"]
+    assert m["credit_hold"] is False         # rich_customer has no credit-hold flag
+
+
+def test_credit_hold_alias_reflects_flag(db):
+    from app.constants import CustomerFlag
+    from app.services.customer_service import CustomerService
+    c = _customer(db)
+    CustomerService(db).set_flag(c, CustomerFlag.CREDIT_HOLD, True)
+    db.commit()
+    assert CustomerMetricsService(db).metrics_for(c)["credit_hold"] is True
+
+
 def test_empty_customer_is_all_zero(db):
     c = _customer(db)   # no limit, no activity
     m = CustomerMetricsService(db).metrics_for(c)

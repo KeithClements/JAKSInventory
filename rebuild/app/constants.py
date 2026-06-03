@@ -167,6 +167,17 @@ CUSTOMER_FLAG_LABELS: dict[str, str] = {
     CustomerFlag.WARRANTY_ESCALATION: "Warranty Escalation",
 }
 
+# Flags persisted in Customer.flags (CSV). TAX_EXEMPT / TEXT_PREFERRED are NOT
+# here — they are DERIVED from the canonical columns (is_tax_exempt /
+# preferred_contact_method) by Customer.flag_keys so a chip can't contradict the
+# field. Single source shared by the model property and CustomerService writers.
+CUSTOMER_STORED_FLAGS: frozenset[str] = frozenset({
+    CustomerFlag.REQUIRES_PO,
+    CustomerFlag.CREDIT_HOLD,
+    CustomerFlag.CALL_FIRST,
+    CustomerFlag.WARRANTY_ESCALATION,
+})
+
 
 class DeliveryType(StrEnum):
     LOCAL_DELIVERY = "local_delivery"

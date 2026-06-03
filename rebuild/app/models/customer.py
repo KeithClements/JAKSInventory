@@ -7,6 +7,7 @@ from app.database import Base
 from app.constants import (
     PaymentTerms, DeliveryType, AddressType, ActivityType, CallType, CallOutcome,
     PreferredContactMethod, SMSConsentMethod, CustomerType,
+    CustomerFlag, CUSTOMER_STORED_FLAGS,
 )
 
 
@@ -158,6 +159,25 @@ class Customer(Base):
     @property
     def display_name(self) -> str:
         return self.company_name or self.contact_name or f"Customer #{self.id}"
+
+    @property
+    def flag_keys(self) -> list[str]:
+        """P2-D2 — merged flag key strings for the chips macro. This is the single
+        derivation point the UI calls (``customer_flags(customer.flag_keys)``):
+        the manually-managed CSV flags PLUS TAX_EXEMPT / TEXT_PREFERRED derived
+        from the canonical columns, returned in CustomerFlag (display) order.
+        CustomerService.flags_for() delegates here; set_flag / set_stored_flags
+        are the writers."""
+        active: set[str] = {
+            tok.strip()
+            for tok in (self.flags or "").split(",")
+            if tok.strip() in CUSTOMER_STORED_FLAGS
+        }
+        if self.is_tax_exempt:
+            active.add(CustomerFlag.TAX_EXEMPT)
+        if self.preferred_contact_method == PreferredContactMethod.TEXT:
+            active.add(CustomerFlag.TEXT_PREFERRED)
+        return [f.value for f in CustomerFlag if f in active]
 
 
 class CustomerAddress(Base):

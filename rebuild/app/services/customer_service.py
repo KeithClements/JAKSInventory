@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from app.constants import (
     CustomerFlag, CustomerType, PaymentTerms, PricingTier, PreferredContactMethod,
+    CUSTOMER_STORED_FLAGS,
 )
 from app.models.customer import Customer, CustomerTypeDefault
 from app.services.base import BaseService
@@ -25,13 +26,10 @@ from app.services.customer_metrics_service import CustomerMetricsService
 # Only these flags are persisted in the Customer.flags CSV. TAX_EXEMPT and
 # TEXT_PREFERRED are DERIVED from canonical columns (is_tax_exempt /
 # preferred_contact_method) so a chip can never disagree with the field that
-# actually governs tax/comms behaviour.
-_STORED_FLAGS: frozenset[str] = frozenset({
-    CustomerFlag.REQUIRES_PO,
-    CustomerFlag.CREDIT_HOLD,
-    CustomerFlag.CALL_FIRST,
-    CustomerFlag.WARRANTY_ESCALATION,
-})
+# actually governs tax/comms behaviour. The read-side merge lives on
+# Customer.flag_keys (the UI's single derivation point); these writers keep the
+# CSV column in sync. Single source of the stored set is constants.CUSTOMER_STORED_FLAGS.
+_STORED_FLAGS: frozenset[str] = CUSTOMER_STORED_FLAGS
 
 # Stable display order = enum definition order.
 _FLAG_ORDER: list[str] = list(CustomerFlag)
@@ -123,19 +121,12 @@ class CustomerService(BaseService):
     # ════════════════════════════════════════════════════════════════════════
 
     def flags_for(self, customer: Customer) -> list[CustomerFlag]:
-        """The merged, authoritative set of flags for display.
-
-        Combines the manually-managed flags stored in ``customer.flags`` with the
-        two DERIVED flags (TAX_EXEMPT, TEXT_PREFERRED) read from the customer's
-        canonical columns, so the chip set is always consistent with the fields
-        that actually drive behaviour. Returned in stable enum order.
-        """
-        active: set[str] = set(self._parse_stored(customer.flags))
-        if customer.is_tax_exempt:
-            active.add(CustomerFlag.TAX_EXEMPT)
-        if customer.preferred_contact_method == PreferredContactMethod.TEXT:
-            active.add(CustomerFlag.TEXT_PREFERRED)
-        return [CustomerFlag(f) for f in _FLAG_ORDER if f in active]
+        """The merged, authoritative set of flags for display, as CustomerFlag
+        values. Delegates to Customer.flag_keys (the single derivation point the
+        chips macro also calls) so the service and template never diverge: stored
+        CSV flags plus TAX_EXEMPT / TEXT_PREFERRED derived from the canonical
+        columns, in stable enum order."""
+        return [CustomerFlag(k) for k in customer.flag_keys]
 
     def has_flag(self, customer: Customer, flag: str) -> bool:
         return CustomerFlag(flag) in self.flags_for(customer)
