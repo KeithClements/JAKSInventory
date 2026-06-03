@@ -78,6 +78,7 @@ def on_startup() -> None:
         seed_default_categories(db)
         _seed_session_secret(db)
         _seed_default_user(db)
+        _warn_if_default_admin_password(db)
         _seed_core_locations(db)
         _lock_overdue_invoices(db)
         _startup_backup(db)
@@ -203,6 +204,46 @@ def _seed_default_user(db: Session) -> None:
         # Upgrade a legacy placeholder hash so login works on pre-O2 DBs.
         user.password_hash = hash_password(initial_pw)
         db.commit()
+
+    # O2 — also seed the second operator (bookkeeping / "the wife") so she has an
+    # attributed, NON-admin login out of the box (satisfies §11 "second user").
+    # Password from JAKS_BOOKKEEPER_PASSWORD (default "bookkeeper"); change after
+    # first login. Idempotent: skipped if any bookkeeping user already exists or
+    # the username is taken, so a real account the owner creates later wins.
+    bk_username = os.environ.get("JAKS_BOOKKEEPER_USERNAME", "bookkeeper")
+    bk_pw = os.environ.get("JAKS_BOOKKEEPER_PASSWORD", "bookkeeper")
+    already_bookkeeper = db.query(User).filter(User.role == UserRole.BOOKKEEPING).first()
+    username_taken = db.query(User).filter(User.username == bk_username).first()
+    if already_bookkeeper is None and username_taken is None:
+        db.add(User(
+            name="JAKS Bookkeeping",
+            username=bk_username,
+            password_hash=hash_password(bk_pw),
+            role=UserRole.BOOKKEEPING,
+        ))
+        db.commit()
+
+
+def _warn_if_default_admin_password(db: Session) -> None:
+    """O2 hardening — log a loud SECURITY warning if the admin account still uses
+    the well-known default 'admin' password, so a production instance is never
+    unknowingly left wide open. Skipped for in-memory test engines. The owner
+    changes it at /account after signing in, or sets JAKS_ADMIN_PASSWORD before
+    first run.
+    """
+    import logging
+    from app.auth import verify_password
+    from app.models.user import User
+
+    if ":memory:" in str(_appdb.engine.url):
+        return
+    admin = db.query(User).filter(User.username == "admin").first()
+    if admin is not None and verify_password("admin", admin.password_hash):
+        logging.getLogger("app.security").warning(
+            "SECURITY: the 'admin' account is using the DEFAULT password. Set the "
+            "JAKS_ADMIN_PASSWORD env var before go-live, or change it at /account "
+            "after signing in. (This warning persists until the password is changed.)"
+        )
 
 
 def _lock_overdue_invoices(db: Session) -> None:

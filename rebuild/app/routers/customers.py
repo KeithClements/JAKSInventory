@@ -18,7 +18,7 @@ from app.constants import (
     CommunicationChannel, CommunicationDirection,
     CoreStatus, PaymentTerms, PricingTier, QuoteStatus, SOStatus,
 )
-from app.deps import get_db
+from app.deps import get_db, get_current_user_id
 from app.models.communication import Communication
 from app.models.customer import Customer, CustomerAddress, CustomerCallLog
 from app.models.core import CoreCharge
@@ -32,8 +32,6 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/customers", tags=["customers"])
 templates = Jinja2Templates(directory="app/templates")
-
-CURRENT_USER_ID = 1
 
 
 def _digits(s: str | None) -> str:
@@ -501,7 +499,7 @@ def customer_quick_create_form(request: Request):
 
 
 @router.post("/quick-create", response_class=HTMLResponse)
-async def customer_quick_create(request: Request, db: Session = Depends(get_db)):
+async def customer_quick_create(request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
     company_name = str(form.get("company_name", "")).strip()
     if not company_name:
@@ -584,7 +582,7 @@ async def customer_quick_create(request: Request, db: Session = Depends(get_db))
     # Mirrors POST /quotes/new (row "+ Quote" + preview-panel Quote both do this),
     # so the "Save & Quote →" label actually delivers the quote screen.
     if _action == "save_quote":
-        quote = QuoteService(db, CURRENT_USER_ID).create_quote(
+        quote = QuoteService(db, user_id).create_quote(
             customer_id=c.id,
             data={
                 "discount_pct": c.discount_pct,
@@ -659,7 +657,7 @@ def customer_search_partial(request: Request, q: str = "", db: Session = Depends
 # ── Global Log Call (from header button — customer selected in form body) ─────
 
 @router.post("/log-call", response_class=HTMLResponse)
-async def log_call_global(request: Request, db: Session = Depends(get_db)):
+async def log_call_global(request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     """
     Handles the Quick Log Call slide-over in base.html.
     customer_id comes from the form body (chosen via typeahead, not URL).
@@ -692,7 +690,7 @@ async def log_call_global(request: Request, db: Session = Depends(get_db)):
     outcome   = str(form.get("outcome", CallOutcome.OTHER))
     notes     = str(form.get("notes", "")).strip()
 
-    crm = CRMService(db, current_user_id=CURRENT_USER_ID)
+    crm = CRMService(db, current_user_id=user_id)
     crm.log_call(
         customer_id=customer.id,
         call_type=call_type,
@@ -1171,6 +1169,8 @@ async def customer_update(
     c.credit_limit  = float(form.get("credit_limit") or 0)
     c.discount_pct  = float(form.get("discount_pct") or 0)
     c.interest_rate = float(form.get("interest_rate") or 0)
+    _cs = str(form.get("card_surcharge_pct", "")).strip()
+    c.card_surcharge_pct = float(_cs) if _cs else None  # blank → NULL = use system default; 0 = no surcharge
     c.is_tax_exempt = bool(form.get("is_tax_exempt"))
     c.tax_exempt_cert_number = str(form.get("tax_exempt_cert_number", "")).strip() or None
     c.notes = str(form.get("notes", "")).strip()
@@ -1186,13 +1186,14 @@ async def log_call(
     customer_id: int,
     request: Request,
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     form = await request.form()
     call_type = str(form.get("call_type", CallType.INBOUND))
     outcome = str(form.get("outcome", CallOutcome.OTHER))
     notes = str(form.get("notes", "")).strip()
 
-    crm = CRMService(db, current_user_id=CURRENT_USER_ID)
+    crm = CRMService(db, current_user_id=user_id)
     entry = crm.log_call(
         customer_id=customer_id,
         call_type=call_type,
@@ -1292,6 +1293,7 @@ async def customer_communications_log(
     customer_id: int,
     request: Request,
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     """Log a manual communication entry (no real send — all go through NullProvider)."""
     form = await request.form()
@@ -1308,7 +1310,7 @@ async def customer_communications_log(
         (CommunicationChannel.MANUAL_NOTE, CommunicationDirection.OUTBOUND),
     )
 
-    svc = MessagingService(db, current_user_id=CURRENT_USER_ID)
+    svc = MessagingService(db, current_user_id=user_id)
     if direction == CommunicationDirection.INBOUND:
         svc.record_inbound(
             customer_id=customer_id,
@@ -1343,8 +1345,9 @@ def customer_balance(
     customer_id: int,
     request: Request,
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
-    crm = CRMService(db, current_user_id=CURRENT_USER_ID)
+    crm = CRMService(db, current_user_id=user_id)
     balance = crm.get_account_balance(customer_id)
     return templates.TemplateResponse(
         request,

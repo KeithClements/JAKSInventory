@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Generator
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
 
@@ -67,3 +67,35 @@ def get_current_user_id(request: Request) -> int:
         status_code=302,
         headers={"Location": "/login"},
     )
+
+
+def get_current_user(
+    uid: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    """Load the acting :class:`~app.models.user.User` row (enforces auth).
+
+    Builds on ``get_current_user_id`` so the same login enforcement / in-memory
+    test bypass applies, then resolves the full user so callers can check role.
+    In the test bypass ``uid`` is ``DEFAULT_USER_ID`` (#1), which startup seeds
+    as an ADMIN, so existing in-memory route tests keep passing. If the id maps
+    to no row we treat the request as unauthenticated and redirect to /login.
+    """
+    from app.models.user import User
+
+    user = db.query(User).filter(User.id == uid).first()
+    if user is None:
+        raise HTTPException(status_code=302, headers={"Location": "/login"})
+    return user
+
+
+def require_admin(user=Depends(get_current_user)):
+    """Gate a route to ADMIN-role users only — HTTP 403 otherwise.
+
+    Used for destructive admin operations such as restoring a backup over the
+    live database: a non-admin (e.g. the bookkeeping user) must never be able to
+    overwrite production data. Returns the user so the route can use it if needed.
+    """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Administrator role required.")
+    return user

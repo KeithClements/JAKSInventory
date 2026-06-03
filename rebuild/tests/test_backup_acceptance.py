@@ -92,6 +92,14 @@ def isolated_app(tmp_path, monkeypatch):
         db.close()
 
     with TestClient(app) as client:
+        # Restore is now ADMIN-gated (app/deps.require_admin). This DB is file-
+        # based, so the in-memory auth bypass is OFF — authenticate as the seeded
+        # admin so the backup/restore round-trip below reaches the route.
+        import app.auth as auth
+        auth.reset_secret_cache()
+        login = client.post("/login", data={"username": "admin", "password": "admin"},
+                            follow_redirects=False)
+        assert login.status_code == 303, login.text[:200]
         yield client, SessionLocal, db_file
 
     app.dependency_overrides.pop(get_db, None)
@@ -152,3 +160,17 @@ def test_restore_rejects_path_traversal(isolated_app):
     r = client.post("/admin/backup/restore", data={"filename": "../jaks.db"})
     assert r.status_code == 404, r.text
     assert r.json()["ok"] is False
+
+
+def test_restore_requires_admin_role(isolated_app):
+    """A non-admin (the seeded bookkeeping user) must NOT be able to restore the
+    database — restore overwrites live data, so it is gated to ADMIN only."""
+    client, _SessionLocal, _db_file = isolated_app
+    # The fixture signed in as admin; switch to the seeded bookkeeper (non-admin).
+    r = client.post("/login", data={"username": "bookkeeper", "password": "bookkeeper"},
+                    follow_redirects=False)
+    assert r.status_code == 303, r.text[:200]
+
+    r = client.post("/admin/backup/restore", data={"filename": "anything.db"})
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] == "Administrator role required."

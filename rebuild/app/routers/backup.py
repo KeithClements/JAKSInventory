@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 import app.database as _appdb
-from app.deps import get_db
+from app.deps import get_db, require_admin
 from app.services import backup_service
 from app.settings_utils import get_setting_value_db, set_setting_value_db
 
@@ -77,12 +77,18 @@ def backup_run(db: Session = Depends(get_db)):
 
 
 @router.post("/restore")
-def backup_restore(filename: str = Form(...), db: Session = Depends(get_db)):
+def backup_restore(
+    filename: str = Form(...),
+    db: Session = Depends(get_db),
+    _admin=Depends(require_admin),
+):
     """Restore a named backup over the live DB.
 
-    Security: only a bare filename inside the configured backup dir is accepted
-    (no path traversal).  The SQLAlchemy engine is disposed first so the live
-    file is not locked (required on Windows), then the file is copied into place.
+    Security: ADMIN role required (``require_admin``) — restoring overwrites the
+    live database, so a non-admin (e.g. the bookkeeping user) must never reach
+    here. Only a bare filename inside the configured backup dir is accepted (no
+    path traversal). The SQLAlchemy engine is disposed first so the live file is
+    not locked (required on Windows), then the file is copied into place.
     """
     backup_dir = backup_service.resolve_backup_dir()
     # Reject any path component — only a plain filename in the backup dir is valid.

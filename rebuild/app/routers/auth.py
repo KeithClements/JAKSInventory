@@ -18,6 +18,7 @@ so every service's audit() row is stamped with the real signed-in user.
 from __future__ import annotations
 
 from datetime import datetime
+from urllib.parse import quote as url_quote
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
@@ -27,10 +28,11 @@ from sqlalchemy.orm import Session
 from app.auth import (
     SESSION_COOKIE,
     SESSION_MAX_AGE,
+    hash_password,
     make_session_token,
     verify_password,
 )
-from app.deps import get_db
+from app.deps import get_db, get_current_user
 from app.models.user import User
 
 router = APIRouter(tags=["auth"])
@@ -77,3 +79,51 @@ def logout():
     resp = RedirectResponse("/login", status_code=303)
     resp.delete_cookie(SESSION_COOKIE)
     return resp
+
+
+# ── Self-service account / change password ────────────────────────────────────
+# The in-app way to get OFF the default 'admin' password without an env reseed.
+
+@router.get("/account")
+def account_page(request: Request, user=Depends(get_current_user), ok: str = "", error: str = ""):
+    return templates.TemplateResponse(
+        request,
+        "auth/account.html",
+        {"user": user, "ok": bool(ok), "error": error},
+    )
+
+
+@router.post("/account/password")
+def change_password(
+    request: Request,
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+    confirm_password: str = Form(...),
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Let the signed-in user change THEIR OWN password (verify current → set new).
+
+    ``user`` is bound to the same request-scoped session as ``db`` (FastAPI caches
+    the get_db dependency), so committing here persists the new hash. Min length 8;
+    new must match the confirmation.
+    """
+    if not verify_password(current_password, user.password_hash):
+        return RedirectResponse(
+            "/account?error=" + url_quote("Current password is incorrect."),
+            status_code=303,
+        )
+    if len(new_password) < 8:
+        return RedirectResponse(
+            "/account?error=" + url_quote("New password must be at least 8 characters."),
+            status_code=303,
+        )
+    if new_password != confirm_password:
+        return RedirectResponse(
+            "/account?error=" + url_quote("New passwords do not match."),
+            status_code=303,
+        )
+
+    user.password_hash = hash_password(new_password)
+    db.commit()
+    return RedirectResponse("/account?ok=1", status_code=303)
