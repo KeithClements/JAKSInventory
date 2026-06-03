@@ -130,16 +130,10 @@ def test_quote_badge_excludes_converted_and_declined(client, db):
     assert _badge_count(html) == 1
 
 
-# ── 3. EXPIRED must be excluded too — the Phase-1.1 defect ─────────────────────
+# ── 3. EXPIRED must be excluded too — the Phase-1.1 defect (FIXED) ─────────────
+# customer_detail() now builds open_quotes with _CLOSED_QUOTE_STATUSES (incl.
+# EXPIRED), matching the list/preview paths. xfail marker dropped → hard guard.
 
-@pytest.mark.xfail(
-    strict=False,
-    reason="Phase-1.1: customer_detail() open_quotes excludes only "
-           "[CONVERTED, DECLINED] — it omits QuoteStatus.EXPIRED, so expired "
-           "quotes inflate the badge and show in the Open-quotes panel. Fix: use "
-           "_CLOSED_QUOTE_STATUSES (like the preview panel). Drop this marker "
-           "once the route is fixed.",
-)
 def test_quote_badge_excludes_expired(client, db):
     cust = _customer(db)
     open_ids = {_quote(db, cust.id, st).id for st in _OPEN_STATUSES}  # 3 open

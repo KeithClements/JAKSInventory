@@ -1179,7 +1179,10 @@ def customer_detail(
         db.query(Quote)
         .filter(
             Quote.customer_id == customer_id,
-            Quote.status.notin_([QuoteStatus.CONVERTED, QuoteStatus.DECLINED]),
+            # Phase-1.1 — use the canonical closed-status list (includes EXPIRED)
+            # so expired quotes don't inflate the badge or the Open-quotes panel,
+            # matching the list/preview paths.
+            Quote.status.notin_(_CLOSED_QUOTE_STATUSES),
         )
         .order_by(Quote.created_at.desc())
         .all()
