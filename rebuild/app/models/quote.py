@@ -300,6 +300,9 @@ class SOLine(Base):
     linked_po_line_id: Mapped[int | None] = mapped_column(
         ForeignKey("po_lines.id"), nullable=True
     )
+    # §5.2 — customer-facing arrival estimate for a backordered / on-PO line.
+    # Feeds the SO↔PO rollup + backorder management; nullable (unknown ETA).
+    eta_date: Mapped[datetime | None] = mapped_column(Date, nullable=True)
     # R6 — line-level cancellation tracking
     qty_cancelled: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cancel_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -331,6 +334,12 @@ class SOLine(Base):
     children: Mapped[list[SOLine]] = relationship(
         "SOLine", back_populates="parent",
         foreign_keys="SOLine.parent_line_id",
+    )
+    # Read-only nav to the PO line that sources this SO line (set by the "Order"
+    # action on a backordered line). The linked_po_line_id FK column already exists.
+    linked_po_line = relationship(
+        "POLine", foreign_keys="SOLine.linked_po_line_id",
+        uselist=False, viewonly=True,
     )
 
     @property

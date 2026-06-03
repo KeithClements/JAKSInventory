@@ -220,6 +220,31 @@ class SalesOrderService(BaseService):
         line.qty_ordered = line.qty_invoiced
         self.db.commit()
 
+    def set_line_eta(self, line_id: int, eta_date) -> SOLine:
+        """§5.2 — set/clear a SO line's customer-facing ETA (backorder / on-PO
+        arrival estimate). Accepts a date, an ISO 'YYYY-MM-DD' string, or ''/None
+        to clear. Mutates + commits."""
+        line = self.db.query(SOLine).filter(SOLine.id == line_id).first()
+        if line is None:
+            raise ValueError(f"SOLine {line_id} not found")
+        line.eta_date = self._parse_eta(eta_date)
+        self.db.commit()
+        return line
+
+    @staticmethod
+    def _parse_eta(value):
+        from datetime import date as _date
+        if value in (None, ""):
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, _date):
+            return value
+        try:
+            return _date.fromisoformat(str(value).strip())
+        except ValueError:
+            return None
+
     def create_po_for_line(self, so_id: int, line_id: int):
         """Order a backordered SO line on a new draft PO and link the two.
 

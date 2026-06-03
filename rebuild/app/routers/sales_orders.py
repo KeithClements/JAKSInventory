@@ -41,6 +41,7 @@ from app.services.document_render import (
     render_pdf_or_fallback,
 )
 from app.services.sales_order_service import SalesOrderService
+from app.services.sales_order_metrics_service import SalesOrderMetricsService
 
 log = logging.getLogger(__name__)
 
@@ -128,6 +129,8 @@ async def list_sales_orders(
             "counts": counts,
             "q": q,
             "SOStatus": SOStatus,
+            # §5.1 — SO dashboard strip metrics (UI renders the tiles)
+            "so_metrics": SalesOrderMetricsService(db).dashboard_metrics(),
         },
     )
 
@@ -226,11 +229,29 @@ async def so_workspace(
     so = _get_so_or_404(db, so_id)
     ctx = _workspace_ctx(request, so)
     ctx["linked_documents"] = related_documents(db, so)
+    # §5.10 — SO↔PO status rollup per linked line (UI renders the chip + ETA)
+    ctx["po_link_map"] = SalesOrderMetricsService(db).po_link_map(so)
     return templates.TemplateResponse(
         request,
         "sales_orders/workspace.html",
         ctx,
     )
+
+
+# ── Line ETA (§5.2 — backorder arrival estimate) ──────────────────────────────
+
+@router.post("/{so_id}/lines/{line_id}/eta", response_class=RedirectResponse)
+async def so_set_line_eta(
+    so_id: int,
+    line_id: int,
+    eta_date: str = Form(""),
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Set/clear a backordered SO line's ETA. Accepts ISO 'YYYY-MM-DD' or blank
+    to clear. Redirects back to the workspace (UI may HTMX-swap later)."""
+    SalesOrderService(db, user_id).set_line_eta(line_id, eta_date)
+    return RedirectResponse(f"/sales-orders/{so_id}", status_code=303)
 
 
 # ── Header update ─────────────────────────────────────────────────────────────

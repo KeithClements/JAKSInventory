@@ -172,6 +172,9 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     # the two new columns on the existing customers table need a backfill here.
     ("customers", "customer_type", "TEXT NOT NULL DEFAULT 'other'"),
     ("customers", "flags",         "VARCHAR(255) NOT NULL DEFAULT ''"),
+
+    # ── Phase 2 §5.2 — SO line ETA (backorder / on-PO arrival estimate) ──────
+    ("so_lines", "eta_date", "DATE NULL"),
 ]
 
 
