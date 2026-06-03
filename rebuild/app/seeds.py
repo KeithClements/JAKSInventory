@@ -101,3 +101,14 @@ def seed_default_categories(db: Session) -> None:
                 name=sub, parent_id=parent.id, level=2, is_active=True,
             ))
     db.commit()
+
+
+# ── Customer type-default profiles (Phase 2, P2-D1) ───────────────────────────────
+# One editable customer_type_defaults row per CustomerType, from the in-code
+# starting profiles. Idempotent — only fills missing types, never clobbers a row
+# the owner has customised. resolve_defaults() falls back to the in-code profiles
+# anyway, so this is a convenience that makes the rows visible/editable.
+
+def seed_customer_type_defaults(db: Session) -> None:
+    from app.services.customer_service import CustomerService
+    CustomerService(db).ensure_type_defaults_seeded()

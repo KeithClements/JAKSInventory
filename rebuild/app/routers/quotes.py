@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.constants import (
     QuoteOutcome, QuoteStatus, SOPaymentMode, LineRole,
+    LostReason, LOST_REASON_LABELS,
 )
 from app.deps import get_current_user_id, get_db
 from app.models.customer import Customer
@@ -348,6 +349,9 @@ async def workspace(
             "cust_cores_owed_qty": bal["cores_owed_qty"],
             "cust_last_payment_date": bal["last_payment_date"],
             "cust_open_invoice_count": bal["open_invoice_count"],
+            # P2-D7 — structured Mark-Lost reason picker (UI wires the dropdown).
+            "lost_reasons": list(LostReason),
+            "lost_reason_labels": LOST_REASON_LABELS,
             **_totals_ctx(quote),
         },
     )
@@ -942,10 +946,21 @@ async def send_quote(
 async def mark_lost(
     quote_id: int,
     lost_reason: str = Form(""),
+    note: str = Form(""),
+    competitor_name: str = Form(""),
+    competitor_price: float | None = Form(None),
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    QuoteService(db, user_id).mark_lost(quote_id, lost_reason or "No reason given")
+    # P2-D7 — structured lost-reason picker (reason + optional note; competitor
+    # name/price when reason = competitor). Free text still tolerated (→ OTHER).
+    QuoteService(db, user_id).mark_lost(
+        quote_id,
+        lost_reason or "No reason given",
+        note=note,
+        competitor_name=competitor_name or None,
+        competitor_price=competitor_price,
+    )
     return RedirectResponse(f"/quotes/{quote_id}", status_code=303)
 
 

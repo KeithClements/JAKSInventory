@@ -22,7 +22,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from app.constants import (
-    AuditAction, EntityType, LineRole, LineType,
+    AuditAction, EntityType, LineRole, LineType, LostReason,
     NON_DISCOUNTABLE_LINE_TYPES,
     QuoteOutcome, QuoteStatus, SOPaymentMode,
 )
@@ -214,22 +214,71 @@ class QuoteService(BaseService):
         quote.outcome = QuoteOutcome.WON
         self.db.flush()  # caller (conversion) commits
 
-    def mark_lost(self, quote_id: int, lost_reason: str) -> None:
-        """Mark quote lost. Writes LostSaleLog row for pipeline reporting."""
+    @staticmethod
+    def _normalize_lost_reason(value: str) -> tuple[str, str]:
+        """Map a submitted reason to (LostReason value, leftover free-text).
+
+        A recognised LostReason returns (reason, ""). Anything else maps to OTHER
+        and returns the raw text as leftover so it can be preserved in the note —
+        this also keeps legacy callers that passed a free string lossless."""
+        raw = str(value or "").strip()
+        try:
+            return LostReason(raw.lower()), ""
+        except ValueError:
+            return LostReason.OTHER, raw
+
+    def mark_lost(
+        self,
+        quote_id: int,
+        lost_reason: str,
+        *,
+        note: str = "",
+        competitor_name: str | None = None,
+        competitor_price: float | None = None,
+    ) -> None:
+        """Mark a quote lost with a structured reason (P2-D7).
+
+        ``lost_reason`` is a LostReason value; an unrecognised string maps to
+        OTHER and is preserved in the note (legacy callers stay lossless). Writes
+        one LostSaleLog row per product line (for product-level lost analysis),
+        and a single quote-level row when the quote has no product lines, so a
+        lost sale is ALWAYS captured. For COMPETITOR, the optional competitor
+        name/price ride along on the log rows."""
         quote = self._get_or_404(quote_id)
         quote.status = QuoteStatus.DECLINED
         quote.outcome = QuoteOutcome.LOST
-        quote.lost_reason = lost_reason
 
+        reason, leftover = self._normalize_lost_reason(lost_reason)
+        note = (note or "").strip() or leftover
+        # Human-readable reason on the quote record: code + optional note.
+        quote.lost_reason = f"{reason} — {note}" if note else reason
+
+        # Competitor fields only meaningful for the COMPETITOR reason.
+        comp_name = (competitor_name or "").strip() or None
+        if reason != LostReason.COMPETITOR:
+            comp_name = None
+            competitor_price = None
+
+        row_notes = note or f"Quote {quote.quote_number} lost"
+
+        def _log(product_id: int | None) -> None:
+            self.db.add(LostSaleLog(
+                quote_id=quote_id,
+                customer_id=quote.customer_id,
+                product_id=product_id,
+                reason=reason,
+                competitor_name=comp_name,
+                competitor_price=competitor_price,
+                notes=row_notes,
+            ))
+
+        logged_any = False
         for line in quote.lines:
             if line.line_type == LineType.PRODUCT and line.product_id:
-                self.db.add(LostSaleLog(
-                    quote_id=quote_id,
-                    customer_id=quote.customer_id,
-                    product_id=line.product_id,
-                    reason=lost_reason,
-                    notes=f"Quote {quote.quote_number} lost",
-                ))
+                _log(line.product_id)
+                logged_any = True
+        if not logged_any:
+            _log(None)  # no product lines — still capture the lost sale
 
         self.audit(
             entity_type=EntityType.QUOTE,
@@ -237,7 +286,7 @@ class QuoteService(BaseService):
             action=AuditAction.STATUS_CHANGED,
             old_value=QuoteStatus.SENT,
             new_value=QuoteStatus.DECLINED,
-            notes=lost_reason,
+            notes=quote.lost_reason,
         )
         self.db.commit()
 

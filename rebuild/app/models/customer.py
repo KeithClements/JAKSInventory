@@ -6,7 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 from app.constants import (
     PaymentTerms, DeliveryType, AddressType, ActivityType, CallType, CallOutcome,
-    PreferredContactMethod, SMSConsentMethod,
+    PreferredContactMethod, SMSConsentMethod, CustomerType,
 )
 
 
@@ -16,6 +16,13 @@ class Customer(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     company_name: Mapped[str] = mapped_column(String(200), nullable=False)
     contact_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+
+    # ── Classification (P2-D6) ────────────────────────────────────────────────
+    # Single customer type from a fixed list; the key that maps to type-driven
+    # default profiles (customer_type_defaults). Existing rows default to OTHER.
+    customer_type: Mapped[str] = mapped_column(
+        String(30), nullable=False, default=CustomerType.OTHER
+    )
 
     # ── Primary contact (quick access; full list → customer_contacts) ─────────
     phone: Mapped[str] = mapped_column(String(50), nullable=False, default="")
@@ -69,6 +76,15 @@ class Customer(Base):
 
     # ── QBO ───────────────────────────────────────────────────────────────────
     qbo_customer_id: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+
+    # ── Structured Flags (P2-D2) ──────────────────────────────────────────────
+    # CSV of CustomerFlag values for the manually-managed flags (Requires-PO,
+    # Credit-Hold, Call-first, Warranty-escalation). Read through
+    # CustomerService.flags_for(), which merges in TAX_EXEMPT / TEXT_PREFERRED
+    # derived from is_tax_exempt / preferred_contact_method so a chip can never
+    # contradict the canonical column. Never edit this string directly — use
+    # CustomerService.set_flag().
+    flags: Mapped[str] = mapped_column(String(255), nullable=False, default="")
 
     # ── Notes ─────────────────────────────────────────────────────────────────
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -253,6 +269,43 @@ class CustomerCallLog(Base):
 
 # Readable alias for new code (table + schema unchanged).
 Activity = CustomerCallLog
+
+
+class CustomerTypeDefault(Base):
+    """P2-D1 — type-driven default profile. One row per CustomerType holds the
+    field defaults the new-customer form pre-fills when that type is picked
+    (every field still overridable). OTHER is the global fallback. Owner-editable
+    later via Settings → Customer Defaults. CustomerService.resolve_defaults()
+    reads these (falling back to in-code defaults when a row is absent), so the
+    service works with or without the table being seeded.
+
+    NULL semantics: card_surcharge_pct NULL → "use the system cc_surcharge_pct
+    setting" (same convention as Customer.card_surcharge_pct)."""
+    __tablename__ = "customer_type_defaults"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    customer_type: Mapped[str] = mapped_column(String(30), unique=True, nullable=False)
+
+    payment_terms: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=PaymentTerms.COD
+    )
+    pricing_tier: Mapped[str] = mapped_column(String(20), nullable=False, default="standard")
+    discount_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    credit_limit: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    is_tax_exempt: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # NULL = use the system cc_surcharge_pct setting (Customer.card_surcharge_pct convention)
+    card_surcharge_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    apply_card_surcharge_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    # "status" default — maps to Customer.is_active on create
+    status_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # "same as billing" default for the new-customer shipping block
+    same_as_billing_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
 
 
 # ── Late imports ───────────────────────────────────────────────────────────────

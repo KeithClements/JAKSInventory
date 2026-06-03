@@ -17,6 +17,7 @@ from app.constants import (
     AddressType, CallOutcome, CallType,
     CommunicationChannel, CommunicationDirection,
     CoreStatus, PaymentTerms, PricingTier, QuoteStatus, SOStatus,
+    CustomerType, CustomerFlag, CUSTOMER_TYPE_LABELS, CUSTOMER_FLAG_LABELS,
 )
 from app.deps import get_db, get_current_user_id
 from app.models.communication import Communication
@@ -25,6 +26,8 @@ from app.models.core import CoreCharge
 from app.models.invoice import Invoice, PaymentAllocation
 from app.models.quote import Quote, SalesOrder
 from app.services.crm_service import CRMService
+from app.services.customer_service import CustomerService
+from app.services.customer_metrics_service import CustomerMetricsService
 from app.services.messaging_service import MessagingService
 from app.services.quote_service import QuoteService
 
@@ -42,6 +45,15 @@ def _digits(s: str | None) -> str:
 def _normalize_name(s: str | None) -> str:
     """Lowercase + strip non-alphanumerics — for fuzzy duplicate-name detection."""
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def _form_customer_type(form) -> str:
+    """Read + validate the customer_type form field, defaulting to OTHER (P2-D6).
+    Keeps an unknown/blank value from ever reaching the column."""
+    try:
+        return CustomerType(str(form.get("customer_type", "")))
+    except ValueError:
+        return CustomerType.OTHER
 
 
 def _find_duplicate_customers(
@@ -304,6 +316,19 @@ def customer_list(
         open_so_counts = {}
         outstanding_cores_map = {}
 
+    # ── Phase 2 §4 — flags + relationship metrics for the visible rows ─────────
+    # Scoped to `customer_ids` (the rendered subset), like the §2B maps above, so
+    # it scales with what's shown. flags_for is pure-Python on already-loaded rows;
+    # metrics_for_batch is the §4.4 contract (P2-Q1 single definition). The plan
+    # flags cache/materialisation as the later perf path.
+    if customer_ids:
+        _csvc = CustomerService(db)
+        customer_flags = {c.id: _csvc.flags_for(c) for c in customers}
+        customer_metrics = CustomerMetricsService(db).metrics_for_batch(customer_ids)
+    else:
+        customer_flags = {}
+        customer_metrics = {}
+
     return templates.TemplateResponse(
         request,
         "customers/list.html",
@@ -320,6 +345,11 @@ def customer_list(
             "balance_due_map": balance_due_map,
             "open_so_counts": open_so_counts,
             "outstanding_cores_map": outstanding_cores_map,
+            # Phase 2 §4 contracts (UI wires columns/chips)
+            "customer_flags": customer_flags,
+            "customer_metrics": customer_metrics,
+            "customer_flag_labels": CUSTOMER_FLAG_LABELS,
+            "customer_type_labels": CUSTOMER_TYPE_LABELS,
         },
     )
 
@@ -420,6 +450,7 @@ def customer_preview_panel(
         or 0
     )
 
+    _csvc = CustomerService(db)
     return templates.TemplateResponse(
         request,
         "customers/_preview_panel.html",
@@ -431,6 +462,12 @@ def customer_preview_panel(
             "balance_due": balance_due,
             "open_so_count": open_so_count,
             "outstanding_core_count": outstanding_core_count,
+            # Phase 2 §4 contracts (condensed on preview)
+            "flags": _csvc.flags_for(c),
+            "metrics": CustomerMetricsService(db).metrics_for(c),
+            "credit_status": _csvc.credit_status(c),
+            "customer_flag_labels": CUSTOMER_FLAG_LABELS,
+            "customer_type_labels": CUSTOMER_TYPE_LABELS,
         },
     )
 
@@ -438,12 +475,29 @@ def customer_preview_panel(
 # ── New ───────────────────────────────────────────────────────────────────────
 
 @router.get("/new", response_class=HTMLResponse)
-def customer_new(request: Request):
+def customer_new(request: Request, db: Session = Depends(get_db)):
     return templates.TemplateResponse(
         request,
         "customers/new.html",
-        {"payment_terms": list(PaymentTerms)},
+        {
+            "payment_terms": list(PaymentTerms),
+            "pricing_tiers": list(PricingTier),
+            # P2-D1/D6 — Customer Type + type-driven default profiles. The UI picks
+            # a type, then pre-fills the form from `type_defaults[<type>]` client-side.
+            "customer_types": list(CustomerType),
+            "customer_type_labels": CUSTOMER_TYPE_LABELS,
+            "customer_flag_labels": CUSTOMER_FLAG_LABELS,
+            "type_defaults": CustomerService(db).all_type_defaults(),
+        },
     )
+
+
+@router.get("/type-defaults/{customer_type}")
+def customer_type_defaults(customer_type: str, db: Session = Depends(get_db)):
+    """JSON contract — resolved default profile for one Customer Type. The
+    new-customer form can fetch this on type-change as an alternative to the
+    embedded `type_defaults` map. Unknown types resolve to the OTHER profile."""
+    return CustomerService(db).resolve_defaults(customer_type)
 
 
 @router.post("/new", response_class=RedirectResponse)
@@ -469,6 +523,7 @@ async def customer_create(request: Request, db: Session = Depends(get_db)):
     c = Customer(
         company_name=str(form.get("company_name", "")).strip(),
         contact_name=str(form.get("contact_name", "")).strip(),
+        customer_type=_form_customer_type(form),
         phone=str(form.get("phone", "")).strip(),
         email=str(form.get("email", "")).strip(),
         address_line1=str(form.get("address_line1", "")).strip(),
@@ -487,6 +542,9 @@ async def customer_create(request: Request, db: Session = Depends(get_db)):
         internal_notes=str(form.get("internal_notes", "")).strip(),
     )
     db.add(c)
+    # P2-D2 — flags chip editor (Requires-PO / Credit-Hold / Call-first /
+    # Warranty-escalation). No-op for a new customer when the form omits them.
+    CustomerService(db).set_stored_flags(c, form.getlist("flags"))
     db.commit()
     return RedirectResponse(f"/customers/{c.id}", status_code=303)
 
@@ -1127,6 +1185,7 @@ def customer_detail(
         .all()
     )
 
+    svc = CustomerService(db)
     return templates.TemplateResponse(
         request,
         "customers/detail.html",
@@ -1138,6 +1197,13 @@ def customer_detail(
             "pricing_tiers": list(PricingTier),
             "call_types": list(CallType),
             "call_outcomes": list(CallOutcome),
+            # ── Phase 2 §4 contracts (UI wires the chips/panel) ───────────────
+            "customer_types": list(CustomerType),
+            "customer_type_labels": CUSTOMER_TYPE_LABELS,
+            "customer_flag_labels": CUSTOMER_FLAG_LABELS,
+            "flags": svc.flags_for(c),                       # §4.3 chips (merged view)
+            "metrics": CustomerMetricsService(db).metrics_for(c),  # §4.4 live panel
+            "credit_status": svc.credit_status(c),           # §4.5 warn-only
         },
     )
 
@@ -1175,6 +1241,15 @@ async def customer_update(
     c.tax_exempt_cert_number = str(form.get("tax_exempt_cert_number", "")).strip() or None
     c.notes = str(form.get("notes", "")).strip()
     c.internal_notes = str(form.get("internal_notes", "")).strip()
+    # P2-D6 — only touch type when the form sends it (older edit forms don't, and
+    # must not silently reset an existing customer's type to OTHER).
+    if "customer_type" in form:
+        c.customer_type = _form_customer_type(form)
+    # P2-D2 — only rewrite flags when the chip editor submitted them (hidden
+    # flags_submitted marker), else a save from a form without the editor would
+    # wipe the flags. set_stored_flags leaves tax-exempt / contact-method alone.
+    if form.get("flags_submitted"):
+        CustomerService(db).set_stored_flags(c, form.getlist("flags"))
     db.commit()
     return RedirectResponse(f"/customers/{customer_id}?saved=1", status_code=303)
 

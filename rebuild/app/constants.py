@@ -116,6 +116,58 @@ class PricingTier(StrEnum):
     DEALER    = "dealer"
 
 
+class CustomerType(StrEnum):
+    """P2-D6 — single customer type, fixed list. The key that maps to the
+    type-driven default profiles (customer_type_defaults / P2-D1). OTHER is the
+    global-fallback profile. Existing customers default to OTHER (unaffected)."""
+    FLEET          = "fleet"
+    OWNER_OPERATOR = "owner_operator"
+    REPAIR_SHOP    = "repair_shop"
+    DEALER         = "dealer"
+    MUNICIPALITY   = "municipality"
+    INTERNAL       = "internal"
+    OTHER          = "other"
+
+
+# Human labels for the Customer Type chips/select (UI reads these; enum stays the
+# wire/DB value). Order matches the fixed list in P2-D6.
+CUSTOMER_TYPE_LABELS: dict[str, str] = {
+    CustomerType.FLEET:          "Fleet",
+    CustomerType.OWNER_OPERATOR: "Owner-Operator",
+    CustomerType.REPAIR_SHOP:    "Repair Shop",
+    CustomerType.DEALER:         "Dealer",
+    CustomerType.MUNICIPALITY:   "Municipality",
+    CustomerType.INTERNAL:       "Internal",
+    CustomerType.OTHER:          "Other",
+}
+
+
+class CustomerFlag(StrEnum):
+    """P2-D2 — structured customer flags shown as chips everywhere transactions
+    happen (list, preview, detail, quote/SO/invoice workspaces). Flags can drive
+    rules later (e.g. Requires-PO warns before finalize). Stored on Customer.flags
+    as a CSV of these values; CustomerService.flags_for() is the merged read view
+    that also surfaces TAX_EXEMPT / TEXT_PREFERRED derived from the customer's
+    canonical columns so a chip can never contradict the underlying field."""
+    REQUIRES_PO         = "requires_po"
+    CREDIT_HOLD         = "credit_hold"
+    TAX_EXEMPT          = "tax_exempt"
+    CALL_FIRST          = "call_first"
+    TEXT_PREFERRED      = "text_preferred"
+    WARRANTY_ESCALATION = "warranty_escalation"
+
+
+# Human labels for flag chips. Order matches the enum (= display order).
+CUSTOMER_FLAG_LABELS: dict[str, str] = {
+    CustomerFlag.REQUIRES_PO:         "Requires PO #",
+    CustomerFlag.CREDIT_HOLD:         "Credit Hold",
+    CustomerFlag.TAX_EXEMPT:          "Tax Exempt",
+    CustomerFlag.CALL_FIRST:          "Call First",
+    CustomerFlag.TEXT_PREFERRED:      "Text Preferred",
+    CustomerFlag.WARRANTY_ESCALATION: "Warranty Escalation",
+}
+
+
 class DeliveryType(StrEnum):
     LOCAL_DELIVERY = "local_delivery"
     PICKUP         = "pickup"
@@ -190,6 +242,29 @@ class QuoteOutcome(StrEnum):
     WON         = "won"
     LOST        = "lost"
     NO_DECISION = "no_decision"
+
+
+class LostReason(StrEnum):
+    """P2-D7 — structured reason captured when a quote is marked lost. Drives the
+    lost_sales_log → win-rate / lost-revenue reporting. COMPETITOR pairs with an
+    optional competitor name + price on the log row."""
+    PRICE            = "price"
+    LEAD_TIME        = "lead_time"
+    COMPETITOR       = "competitor"
+    NO_LONGER_NEEDED = "no_longer_needed"
+    NO_RESPONSE      = "no_response"
+    OTHER            = "other"
+
+
+# Human labels for the Mark-Lost reason picker. Order matches the enum.
+LOST_REASON_LABELS: dict[str, str] = {
+    LostReason.PRICE:            "Price",
+    LostReason.LEAD_TIME:        "Lead time",
+    LostReason.COMPETITOR:       "Competitor",
+    LostReason.NO_LONGER_NEEDED: "No longer needed",
+    LostReason.NO_RESPONSE:      "No response",
+    LostReason.OTHER:            "Other",
+}
 
 
 # ─── Sales Orders ─────────────────────────────────────────────────────────────

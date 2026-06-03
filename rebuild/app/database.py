@@ -166,6 +166,12 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     ("customer_call_logs", "follow_up_done_at",   "DATETIME NULL"),
     ("customer_call_logs", "related_entity_type", "TEXT NULL"),
     ("customer_call_logs", "related_entity_id",   "INTEGER NULL"),
+
+    # ── Phase 2 — Customer Type (P2-D6) + structured Flags (P2-D2) ───────────
+    # customer_type_defaults is a brand-new table → create_all() handles it; only
+    # the two new columns on the existing customers table need a backfill here.
+    ("customers", "customer_type", "TEXT NOT NULL DEFAULT 'other'"),
+    ("customers", "flags",         "VARCHAR(255) NOT NULL DEFAULT ''"),
 ]
 
 

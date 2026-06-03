@@ -15,7 +15,9 @@ from app.models.audit import AuditLog
 
 # ── Master data ───────────────────────────────────────────────────────────────
 from app.models.vendor import Vendor, VendorContact, VendorCredit, VendorProgram
-from app.models.customer import Customer, CustomerAddress, CustomerContact, CustomerCallLog
+from app.models.customer import (
+    Customer, CustomerAddress, CustomerContact, CustomerCallLog, CustomerTypeDefault,
+)
 from app.models.product import (
     ProductCategory,
     Product,
@@ -115,6 +117,7 @@ __all_models__ = [
     CustomerAddress,
     CustomerContact,
     CustomerCallLog,
+    CustomerTypeDefault,
     ProductCategory,
     Product,
     ProductVendorSource,
