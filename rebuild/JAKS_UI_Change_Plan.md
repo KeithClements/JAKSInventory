@@ -2199,9 +2199,9 @@ template rework. No caller introduces new schema (§2B).
 1. **Customer Flags** — ✅ WIRED @406d322 + governance PASS 2026-06-03 (customer list compact / preview /
    detail + Quote/SO/Invoice workspace headers; correct `flagmacro.customer_flags(… | default([]))`).
 2. **Customer Intelligence Panel** — ✅ WIRED @406d322 (customer `detail` Account header + `_preview_panel`).
-3. **Credit Status** — ⛔ NOT DONE. `credit_badge`/`credit_warn` are called nowhere; `customers/detail.html`
-   hand-rolls a credit badge instead (punch #1). Next: `credit_badge` on customer surfaces + SO/Invoice
-   headers, `credit_warn` on Quote/SO/Invoice workspaces (router must pass `credit_status`).
+3. **Credit Status** — 🟡 PARTIAL. ✅ `credit_badge` + `credit_warn` on customer `detail` + `_preview_panel`
+   @505fc4b (governance PASS 2026-06-03). ⏳ Pending: `credit_warn` on Quote/SO/Invoice workspaces (route must
+   pass `credit_status(customer, doc_total)` — Backend seam).
 4. **SO §5 wave** (Backend @aceae25 SHIPPED) — both macros READY for UI-Builder to wire: (a) `metric_strip`
    for the §5.1 dashboard strip (feed `SalesOrderMetricsService.dashboard_metrics()` → `SO_DASHBOARD_KEYS`);
    (b) `so_po_status_chip` for the §5.2/§5.10 backorder/ETA status (feed `po_link_status`/`po_link_map`).
@@ -2252,12 +2252,18 @@ review usage, punch, don't rebuild).
 - **Verdict:** flag-chip + intelligence-panel rollout **PASS** (usage correct — no rebuilds). Credit-status
   rollout **INCOMPLETE** + 1 divergence to reconcile. Punches 1-2 are non-blocking; do not hold the passed work.
 
-**Status check — 2026-06-03 (later).** Nothing new committed to governance-pass since: the 3 punches above are
-still OPEN (`customers/detail.html` still hand-rolls the credit badge; `credit_badge`/`credit_warn` imported
-nowhere), and the §5 SO UI (metric strip + backorder chip wiring) has not landed yet. Architect provided the
-two §5 shared macros so UI-Builder wires (not invents) them: `metric_strip` (Primitive 11) + `so_po_status_chip`
-(Primitive 12, off Backend's §5.10 rollup @aceae25). Vendor-catalog integration is OUT of scope (@1afd51a /
-P2-D9) — no macros. Will governance-pass the punch-clears + surcharge + SO strip the moment they commit.
+**Governance pass — 505fc4b (2026-06-03, later): ✅ PASS.** The punch-clears + surcharge landed:
+- ✅ **Punch #1 CLEARED** — `customers/detail.html:86` now renders `creditmacro.credit_badge(credit_status |
+  default({}))` (hand-roll gone) + a `credit_warn` banner (L77, gated on `.warn`); `_preview_panel.html:109`
+  uses `credit_badge` too. Both `{% import "macros/credit_status.html" as creditmacro %}`; the route passes
+  `credit_status` (`customers.py` :468 preview/list, :1215 detail). Correct macro usage — no rebuild.
+- ✅ **Punch #2 CLEARED** — the redundant quote-workspace "Tax Exempt" pill is removed (flag chip is canonical).
+- ✅ **Surcharge** — `new.html` gained the Card Surcharge % (default) field + type-default pre-fill, consistent
+  with the `detail.html` D-7 field (same helper copy). PASS.
+- ⏳ **STILL OPEN (punch #3 remainder):** `credit_warn` on the SO / Invoice / quote WORKSPACES (§4.5) — needs
+  the route to pass `credit_status(customer, doc_total)` (prospective_amount = the doc total); Backend seam.
+- §5 SO UI not yet wired — `metric_strip` (P11) + `so_po_status_chip` (P12) are READY; `sales_orders/list.html`
+  is dirty-gated, left to UI-Builder. Vendor-catalog OUT of scope @1afd51a — no macros.
 
 ---
 
