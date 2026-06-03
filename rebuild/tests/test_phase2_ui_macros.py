@@ -1,0 +1,169 @@
+"""
+tests/test_phase2_ui_macros.py
+==============================
+Render guards for the Phase-2 shared UI primitives authored by the UI-Architect
+lane (JAKS_UI_Change_Plan.md §8M):
+
+  - macros/customer_flags.html   → customer_flags / customer_flag      (Primitive 8, P2-D2)
+  - macros/intelligence.html     → intelligence_panel + typed wrappers (Primitive 9, P2-Q1/§5.8)
+  - base.html margin toggle      → showMargin / toggleMargin()         (P2-D3)
+
+These are PURE-PRESENTATION macros that must render today against data Backend
+has NOT built yet (the flag schema + CustomerMetricsService). The key contracts
+under guard: no 500 on empty/missing data, the §4-permitted colour families, and
+the showMargin gating on margin metrics.
+
+Rendered with autoescape=True to match the production FastAPI Jinja env.
+
+Run:
+    .venv\\Scripts\\python.exe -m pytest tests/test_phase2_ui_macros.py -v
+"""
+from __future__ import annotations
+
+import datetime
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+
+import pytest
+from fastapi.testclient import TestClient
+from jinja2 import Environment, FileSystemLoader
+
+from app.main import app
+from tests.conftest import activate, fresh_engine
+
+_ENGINE = fresh_engine()
+
+
+@pytest.fixture(scope="module")
+def jenv():
+    # autoescape=True → matches the production FastAPI Jinja2Templates env, so the
+    # macros are proven safe/correct under escaping (not just the bare-env case).
+    return Environment(loader=FileSystemLoader("app/templates"), autoescape=True)
+
+
+def _render(jenv, src, **ctx):
+    return jenv.from_string(src).render(**ctx)
+
+
+# ===========================================================================
+# customer_flags — Primitive 8 (P2-D2)
+# ===========================================================================
+
+IMPORT_FLAGS = "{% from 'macros/customer_flags.html' import customer_flags, customer_flag %}"
+
+
+def test_customer_flags_renders_known_keys_with_labels_and_colours(jenv):
+    html = _render(jenv, IMPORT_FLAGS + "{{ customer_flags(['requires_po','credit_hold','tax_exempt','warranty_escalation']) }}")
+    # Labels present
+    for label in ("Requires PO #", "Credit Hold", "Tax Exempt", "Warranty Watch"):
+        assert label in html, f"missing flag label: {label}"
+    # §4-permitted colour families, mapped per taxonomy
+    assert "bg-amber-100 text-amber-700" in html      # requires_po → warning
+    assert "bg-red-100 text-red-700" in html          # credit_hold → danger
+    assert "bg-blue-50 text-blue-700" in html         # tax_exempt → info
+    assert "bg-purple-50 text-purple-700" in html     # warranty_escalation → special
+    # Wrapper + icons
+    assert html.count("<svg") == 4
+    assert 'class="flex flex-wrap items-center gap-1.5"' in html
+
+
+def test_customer_flags_compact_hides_label_keeps_icon_and_aria(jenv):
+    full = _render(jenv, IMPORT_FLAGS + "{{ customer_flags(['requires_po']) }}")
+    compact = _render(jenv, IMPORT_FLAGS + "{{ customer_flags(['requires_po'], compact=True) }}")
+    # Full mode shows the visible label span; compact mode drops it...
+    assert "<span>Requires PO #</span>" in full
+    assert "<span>Requires PO #</span>" not in compact
+    # ...but keeps the icon and an accessible label
+    assert "<svg" in compact
+    assert 'aria-label="Requires PO #"' in compact
+
+
+def test_customer_flags_empty_or_none_renders_nothing(jenv):
+    """The no-500 seam: before Backend builds Customer.flag_keys, callers pass
+    [] / None and the macro must emit no markup (not error)."""
+    for expr in ("customer_flags([])", "customer_flags(none)", "customer_flags()"):
+        html = _render(jenv, IMPORT_FLAGS + "{{ %s }}" % expr)
+        assert "<div" not in html and "<span" not in html, f"{expr} should render nothing"
+        assert html.strip() == ""
+
+
+def test_customer_flags_unknown_key_is_defensive_not_fatal(jenv):
+    html = _render(jenv, IMPORT_FLAGS + "{{ customer_flags(['totally_made_up']) }}")
+    assert "bg-gray-100 text-gray-600" in html            # neutral fallback chip
+    assert "Totally Made Up" in html                      # humanised key, visible
+    assert "Unregistered flag: totally_made_up" in html   # surfaced in title, not silently dropped
+
+
+# ===========================================================================
+# intelligence_panel + customer/invoice wrappers — Primitive 9 (P2-Q1 / §5.8)
+# ===========================================================================
+
+IMPORT_INTEL = ("{% from 'macros/intelligence.html' import "
+                "intelligence_panel, customer_intelligence_panel, invoice_intelligence_panel %}")
+
+
+def test_customer_intelligence_panel_formats_money_and_dates(jenv):
+    m = {
+        "lifetime_sales": 12340.5, "ytd_sales": 5000.0, "avg_order_value": 257.25,
+        "open_ar_balance": 1200.0, "credit_limit": 5000.0, "available_credit": 3800.0,
+        "outstanding_core_credits": 150.0, "last_invoice_date": datetime.date(2026, 6, 1),
+        "credit_hold": False,
+    }
+    html = _render(jenv, IMPORT_INTEL + "{{ customer_intelligence_panel(m) }}", m=m)
+    assert "Lifetime Sales" in html and "$12340.50" in html   # house money format (no commas)
+    assert "Available Credit" in html and "$3800.00" in html
+    assert "text-green-700" in html                            # available credit, not on hold → good
+    assert "Jun 01, 2026" in html                              # date formatting
+    assert "Core Credits" in html
+
+
+def test_customer_intelligence_panel_credit_hold_tones_red(jenv):
+    m = {"available_credit": 0.0, "credit_hold": True}
+    html = _render(jenv, IMPORT_INTEL + "{{ customer_intelligence_panel(m) }}", m=m)
+    assert "text-red-700" in html
+    assert "On credit hold" in html
+
+
+def test_customer_intelligence_panel_empty_is_safe(jenv):
+    """No CustomerMetricsService yet → m=None must render zeros, not 500."""
+    html = _render(jenv, IMPORT_INTEL + "{{ customer_intelligence_panel() }}")
+    assert "$0.00" in html        # money zeros
+    assert "No limit" in html     # credit_limit 0 → "No limit"
+    assert "—" in html            # last sale with no date
+
+
+def test_invoice_intelligence_panel_gates_margin_behind_toggle(jenv):
+    """P2-D3: Profit and Margin must be wrapped in x-show='showMargin'; the other
+    metrics must not be."""
+    m = {"profit": 400.0, "margin_pct": 32.5, "core_liability": 50.0,
+         "warranty_exposure": 0.0, "customer_lifetime_sales": 9999.0}
+    html = _render(jenv, IMPORT_INTEL + "{{ invoice_intelligence_panel(m) }}", m=m)
+    assert "Profit" in html and "Margin" in html
+    assert "32.5%" in html
+    assert 'x-show="showMargin"' in html                 # gating present
+    assert html.count('x-show="showMargin"') == 2        # exactly the 2 margin metrics
+    assert "Core Liability" in html                       # non-gated metric still renders
+
+
+def test_generic_intelligence_panel_empty_renders_nothing(jenv):
+    html = _render(jenv, IMPORT_INTEL + "{{ intelligence_panel([]) }}")
+    assert html.strip() == ""
+
+
+# ===========================================================================
+# base.html margin toggle — P2-D3 (rendered through the real app stack)
+# ===========================================================================
+
+def test_base_html_renders_margin_toggle_through_app():
+    """The in-memory engine puts deps.py in test mode (auth bypass), so a real GET
+    renders base.html in full — proving the toggle markup + Alpine wiring survive."""
+    activate(_ENGINE)
+    with TestClient(app, raise_server_exceptions=False) as c:
+        r = c.get("/customers/")
+        assert r.status_code == 200, r.status_code
+        body = r.text
+        assert "toggleMargin()" in body            # header control wired
+        assert "showMargin:" in body               # root x-data state declared
+        assert "localStorage.setItem('showMargin'" in body  # persistence

@@ -1,0 +1,74 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   Customer Flags — Phase-2 Primitive 8  (PHASE_2_PLAN.md P2-D2 / §4.3)
+   Governance: JAKS_UI_Change_Plan.md §8M
+
+   customer_flags(flags, compact=False)  → a wrap-row of flag chips
+   customer_flag(key,   compact=False)   → one flag chip
+
+   PURE PRESENTATION. These macros NEVER read customer columns — they render a
+   list of flag KEY strings. That keeps the chips decoupled from the Phase-2
+   flag schema, which Backend has not built yet: render today, light up the
+   moment the data lands, with zero template rework.
+
+   Single derivation point (Backend, P2-D2): `Customer.flag_keys -> list[str]`,
+   returning keys from the taxonomy below. Canonical call sites (note: do NOT
+   nest {#..#} comments inside this block — Jinja comments do not nest):
+
+     customer_flags(customer.flag_keys | default([]))                -> detail / workspace
+     customer_flags(customer.flag_keys | default([]), compact=True)   -> list row (icon-only)
+
+   The `| default([])` is the no-500 seam: before `flag_keys` exists the access
+   yields Undefined → default([]) → nothing renders. No new schema is required
+   of any caller (§2B).
+
+   TAXONOMY = single source of truth (below). Every colour is a §4-permitted
+   family (amber / red / blue / purple) reusing the proven §5 chip tone classes
+   from linked_docs.html. To add a flag: add a key here AND record it in
+   JAKS_UI_Change_Plan.md §8M. A NEW colour family needs Architect approval.
+═════════════════════════════════════════════════════════════════════════════ #}
+
+{% macro customer_flag(key, compact=False) %}
+{%- set META = {
+  'requires_po':         ('Requires PO #',   'bg-amber-100 text-amber-700',  'Requires a PO number before an order is finalized.',
+                          'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2'),
+  'credit_hold':         ('Credit Hold',     'bg-red-100 text-red-700',      'Account is on credit hold — review before extending terms.',
+                          'M18.364 5.636L5.636 18.364M21 12a9 9 0 11-18 0 9 9 0 0118 0z'),
+  'do_not_contact':      ('Do Not Contact',  'bg-red-100 text-red-700',      'Do not contact for marketing or outreach.',
+                          'M15 12H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z'),
+  'tax_exempt':          ('Tax Exempt',      'bg-blue-50 text-blue-700',     'Tax-exempt customer — sales tax not applied.',
+                          'M9 14l6-6m-5.5.5h.01m4.99 5h.01M5 3h14a2 2 0 012 2v14l-3-2-2 2-2-2-2 2-2-2-3 2V5a2 2 0 012-2z'),
+  'call_first':          ('Call First',      'bg-blue-50 text-blue-700',     'Call before processing — customer preference.',
+                          'M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z'),
+  'text_preferred':      ('Text Preferred',  'bg-blue-50 text-blue-700',     'Prefers SMS / text contact.',
+                          'M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z'),
+  'warranty_escalation': ('Warranty Watch',  'bg-purple-50 text-purple-700', 'Active warranty escalation — handle with care.',
+                          'M12 9v2m0 4h.01M12 3l8 4v5c0 4.418-3.582 8-8 9-4.418-1-8-4.582-8-9V7l8-4z'),
+} -%}
+{%- set m = META.get(key) -%}
+{%- if m -%}
+<span class="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold {{ m[1] }}"
+      title="{{ m[2] }}"{% if compact %} aria-label="{{ m[0] }}"{% endif %}>
+  <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+    <path stroke-linecap="round" stroke-linejoin="round" d="{{ m[3] }}"/>
+  </svg>
+  {%- if not compact %}<span>{{ m[0] }}</span>{% endif -%}
+</span>
+{%- else -%}
+{# Unknown key → neutral chip, never a 500. Surface the raw key so a typo or a
+   not-yet-registered flag is visible rather than silently dropped. #}
+<span class="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold bg-gray-100 text-gray-600"
+      title="Unregistered flag: {{ key }}">
+  {%- if not compact %}<span>{{ key | replace('_', ' ') | title }}</span>{% else %}<span>•</span>{% endif -%}
+</span>
+{%- endif -%}
+{% endmacro %}
+
+
+{% macro customer_flags(flags=None, compact=False) %}
+{%- set flags = flags or [] -%}
+{%- if flags | length -%}
+<div class="flex flex-wrap items-center gap-1.5">
+{%- for key in flags -%}{{ customer_flag(key, compact=compact) }}{%- endfor -%}
+</div>
+{%- endif -%}
+{% endmacro %}

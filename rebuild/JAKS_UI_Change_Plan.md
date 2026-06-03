@@ -1291,6 +1291,19 @@ pending a running server.
 
 ---
 
+#### Phase-2 Primitives — added to the backlog (2026-06-02)
+
+The P1–P6 set above was the original list-screen extraction. Three further primitives have since been
+ratified as net-new shared infrastructure — authored by the Architect **ahead of** the 3-screen gate
+(gate-waiver rationale in §8M / §8K: the gate guards premature extraction of *existing* duplication;
+for a net-new cross-cutting feature the risk is the inverse — N divergent per-screen builds).
+
+- **Primitive 7 — `linked_strip(links)`** — `macros/linked_docs.html`. Workspace cross-doc nav. Ratified §8K (gate met: 4 workspaces).
+- **Primitive 8 — `customer_flags(flags, compact=False)`** — `macros/customer_flags.html`. Customer flag chips (P2-D2). Ratified §8M.
+- **Primitive 9 — `intelligence_panel(metrics, cols=4)`** — `macros/intelligence.html`. Metric-grid layout + `customer_intelligence_panel` / `invoice_intelligence_panel` wrappers (P2-Q1 / §5.8). Ratified §8M.
+
+---
+
 ### Build — Tailwind Compiled CSS
 
 **Status: ✅ Infra complete (2026-05-29) — Phase 2 (CDN removal) pending one `npm install` + build run.**
@@ -2085,6 +2098,79 @@ pass — **pending Architect governance sign-off** (Builder does not self-mark c
    owner asked to defer cosmetic/UX polish. Do not redesign without an Architect instruction.
    Targets: `app/templates/customers/statement_form.html`, `.../statement_print.html`,
    and `customer_statement_*` routes in `app/routers/customers.py`.
+
+---
+
+#### 8M. Phase-2 Shared Components — flags · margin toggle · intelligence panel — BUILT + RATIFIED 2026-06-02
+
+The first wave of Phase 2 (`PHASE_2_PLAN.md` §8 build order) needs three cross-cutting UI primitives
+that recur on many screens. Per the §8J/§8K precedent, the Architect authors these as the canonical
+contract **up front** — ahead of the §7 "3 identical screens" extraction gate. That gate guards against
+premature extraction of *existing duplication*; here the risk is the inverse — if UI-Builder hand-rolls
+flags / metrics / margin-gating per screen we get N divergent versions of a net-new feature. Defining
+the interface once is the governance-correct move. **These three UNBLOCK the UI-Builder lane.**
+
+All three are **pure presentation**: they render against data Backend has **not built yet** (the flag
+schema + `CustomerMetricsService`) without erroring — render today, light up when the data lands, zero
+template rework. No caller introduces new schema (§2B).
+
+**Component 1 — Customer Flags (Primitive 8 · P2-D2 / §4.3).**
+- **File / macros:** `app/templates/macros/customer_flags.html` → `customer_flags(flags, compact=False)`,
+  `customer_flag(key, compact=False)`.
+- **Contract:** `flags` is a list of flag KEY strings. The macro NEVER reads customer columns — it maps
+  keys → chip via the taxonomy registry (single source of truth in the file). Unknown keys render a
+  neutral gray chip with the raw key in the `title` (never a 500, never silently dropped).
+- **Taxonomy (keys → §4 colour):** `requires_po` (amber), `credit_hold` (red), `do_not_contact` (red),
+  `tax_exempt` (blue), `call_first` (blue), `text_preferred` (blue), `warranty_escalation` (purple).
+  All §4-permitted families, reusing the §5 chip tone classes. Add a flag = add a key here + record it
+  in this section; a NEW colour family needs Architect approval.
+- **Compact mode** = icon-only (label → `aria-label` + `title`) for dense list rows.
+- **Backend contract (single derivation point):** `Customer.flag_keys -> list[str]` (P2-D2) returns the
+  active keys. Until it exists, callers pass `customer.flag_keys | default([])` → renders nothing.
+
+**Component 2 — Margin Show/Hide Toggle (P2-D3).**
+- **Where:** `base.html`. Root `<body>` x-data gains `showMargin` (persisted to `localStorage`, **OFF by
+  default**) + `toggleMargin()`, mirroring the existing `sidebarCollapsed` pattern. A header control
+  (between the Live indicator and the notifications bell) flips it; brand-tinted when ON.
+- **Consumption (app-wide, no per-screen wiring):** wrap margin/profit figures in
+  `x-show="showMargin" x-cloak`. `showMargin` is inherited from the root scope. No role gate (P2-D3).
+- **Mechanism choice:** body-x-data + localStorage (the established pattern) — **NOT** a new
+  `Alpine.store`. Consistency over novelty.
+
+**Component 3 — Intelligence Panel (Primitive 9 · P2-Q1 / §5.8 / §2B).**
+- **File / macros:** `app/templates/macros/intelligence.html` → `intelligence_panel(metrics, cols=4)`
+  (generic layout primitive) + `customer_intelligence_panel(m, cols=4)` (§4.4) +
+  `invoice_intelligence_panel(m, cols=4)` (§5.8).
+- **Generic contract:** `metrics` = list of descriptors `{label, value (pre-formatted str), tone?, hint?,
+  margin?}`. A descriptor with `margin: true` is auto-wrapped in `x-show="showMargin"` (ties Component 2
+  to the data). Grid uses only compiled classes (`grid-cols-2 md:grid-cols-4|3|2`); section labels use
+  the preview-dock micro-label token. Renders nothing when empty.
+- **Backend contract — `CustomerMetricsService` (P2-Q1), `m` keys:** money — `lifetime_sales`,
+  `ytd_sales`, `avg_order_value`, `open_ar_balance`, `credit_limit`, `available_credit`,
+  `outstanding_core_credits`; dates — `last_quote_date`, `last_invoice_date`, `last_payment_date`; bool —
+  `credit_hold`. Invoice panel (§5.8) keys: `profit`, `margin_pct`, `core_liability`, `warranty_exposure`,
+  `customer_lifetime_sales`. One definition per P2-Q1 so list / preview / detail / panel all agree.
+
+**Rollout order (UI-Builder) — tracks `PHASE_2_PLAN.md` §8 build order:**
+1. **Customer Flags** first (highest owner priority, P2-D2). Surfaces: Customer list (compact), customer
+   `_preview_panel`, customer `detail` (Account header), then Quote / SO / Invoice workspace customer
+   headers. Each call site: `customer_flags(customer.flag_keys | default([]) [, compact=True])`.
+2. **Customer Intelligence Panel** (P2-Q1) — Account tab on `customers/detail.html`, condensed in
+   `customers/_preview_panel.html`. Depends on Backend `CustomerMetricsService`; renders zeros until then.
+3. **Margin consumers** alongside the Invoice Intelligence Panel (§5.8) + quote/invoice margin columns —
+   wrap each margin figure in `x-show="showMargin"`. The toggle itself is already live.
+
+**Governance ruling (Architect, 2026-06-02): ✅ PASS.**
+- **Pattern:** PASS. Net-new cross-cutting primitives authored as the contract before the 3-screen gate,
+  per the §8J/§8K precedent. No new CSS class; no new colour family (all §4-permitted, verified compiled
+  in `app/static/css/app.css`).
+- **Safety condition (MET):** all three render against empty/missing data without erroring — verified by
+  `tests/test_phase2_ui_macros.py` (10 tests: known/compact/empty/unknown flags; money/date/credit-hold/
+  empty metrics; the margin-gating count; `base.html` toggle through the real app stack).
+- **Schema:** none added (§2B). Backend owns the two data contracts above; the view layer holds no
+  business logic (which flags are active / how metrics are computed live in Python).
+- **Do NOT re-pass or rebuild.** When Backend lands `Customer.flag_keys` + `CustomerMetricsService`, the
+  surfaces populate with zero template changes.
 
 ---
 

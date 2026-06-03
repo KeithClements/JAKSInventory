@@ -1,0 +1,96 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   Intelligence Panel — Phase-2 Primitive 9  (PHASE_2_PLAN.md §4.4 / §5.8 · P2-Q1 · P2-D3)
+   Governance: JAKS_UI_Change_Plan.md §8M / §2B
+
+   intelligence_panel(metrics, cols=4)        → generic metric grid (the primitive)
+   customer_intelligence_panel(m, cols=4)     → §4.4 customer relationship metrics
+   invoice_intelligence_panel(m, cols=4)      → §5.8 invoice context (margin behind toggle)
+
+   The generic macro is PURE LAYOUT: it renders a list of metric descriptors and
+   nothing else. Callers (or the typed wrappers below) build the list. This mirrors
+   the chips.html philosophy — the macro renders; the caller supplies the data.
+
+   metric descriptor (dict):
+     { 'label': 'Lifetime Sales',     # required — uppercase micro-label
+       'value': '$12,340.00',          # required — PRE-FORMATTED display string
+       'tone':  'default'|'good'|'warn'|'bad'|'muted',   # optional value colour
+       'hint':  'Net invoiced, less credits',            # optional sub-line
+       'margin': true }                # optional — gate behind the Show-margin toggle (P2-D3)
+
+   §2B compliance: consumes cheap aggregates / deferred placeholders only. The
+   metrics mapping `m` is produced by Backend's CustomerMetricsService (P2-Q1,
+   not yet built) — until it exists, callers pass `m={}` / `metrics=[]` and the
+   panel renders harmlessly (each money cell shows $0.00, each date shows —).
+   NO new schema is required of any caller.
+
+   Margin gating (P2-D3): a metric with `margin: true` is wrapped in
+   `x-show="showMargin"` (the per-user toggle on base.html, OFF by default). It
+   inherits `showMargin` from the root <body> Alpine scope — no per-screen wiring.
+═════════════════════════════════════════════════════════════════════════════ #}
+
+{% macro intelligence_panel(metrics=None, cols=4) %}
+{%- set metrics = metrics or [] -%}
+{%- if metrics | length -%}
+{%- set tone_cls = {
+  'default': 'text-gray-900',
+  'good':    'text-green-700',
+  'warn':    'text-amber-700',
+  'bad':     'text-red-700',
+  'muted':   'text-gray-400',
+} -%}
+{%- set grid = 'grid-cols-2 md:grid-cols-3' if cols == 3 else ('grid-cols-2' if cols == 2 else 'grid-cols-2 md:grid-cols-4') -%}
+<div class="grid {{ grid }} gap-x-6 gap-y-4">
+{%- for mtr in metrics -%}
+{%- set v = mtr.get('value') -%}
+<div{% if mtr.get('margin') %} x-show="showMargin" x-cloak{% endif %}>
+  <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">{{ mtr.get('label') }}</p>
+  <p class="text-sm font-semibold tabular-nums {{ tone_cls.get(mtr.get('tone'), tone_cls['default']) }}">{{ '—' if v is none or v == '' else v }}</p>
+  {%- if mtr.get('hint') %}<p class="text-[11px] text-gray-400 mt-0.5 leading-snug">{{ mtr.get('hint') }}</p>{% endif -%}
+</div>
+{%- endfor -%}
+</div>
+{%- endif -%}
+{% endmacro %}
+
+
+{# ── §4.4 Customer Intelligence Panel (P2-Q1) ──────────────────────────────────
+   `m` keys (CustomerMetricsService contract):
+     money:  lifetime_sales · ytd_sales · avg_order_value · open_ar_balance ·
+             credit_limit · available_credit · outstanding_core_credits
+     dates:  last_quote_date · last_invoice_date · last_payment_date (date | None)
+     bool:   credit_hold (optional — tones available-credit red)
+   Single definition per P2-Q1 so list / preview / detail all agree. #}
+{% macro customer_intelligence_panel(m=None, cols=4) %}
+{%- set m = m or {} -%}
+{%- set avail = m.get('available_credit') -%}
+{%- set on_hold = m.get('credit_hold') -%}
+{%- set ar = m.get('open_ar_balance') or 0 -%}
+{%- set metrics = [
+  {'label': 'Lifetime Sales',  'value': '$' ~ '%.2f'|format(m.get('lifetime_sales') or 0),  'hint': 'Net invoiced, less returns/credits'},
+  {'label': 'YTD Sales',       'value': '$' ~ '%.2f'|format(m.get('ytd_sales') or 0)},
+  {'label': 'Avg Order',       'value': '$' ~ '%.2f'|format(m.get('avg_order_value') or 0)},
+  {'label': 'Open AR',         'value': '$' ~ '%.2f'|format(ar), 'tone': ('warn' if ar > 0 else 'muted')},
+  {'label': 'Credit Limit',    'value': ('$' ~ '%.2f'|format(m.get('credit_limit') or 0)) if (m.get('credit_limit') or 0) > 0 else 'No limit', 'tone': ('default' if (m.get('credit_limit') or 0) > 0 else 'muted')},
+  {'label': 'Available Credit','value': ('—' if avail is none else '$' ~ '%.2f'|format(avail)), 'tone': ('bad' if (on_hold or (avail is not none and avail < 0)) else 'good'), 'hint': ('On credit hold' if on_hold else '')},
+  {'label': 'Core Credits',    'value': '$' ~ '%.2f'|format(m.get('outstanding_core_credits') or 0), 'tone': ('default' if (m.get('outstanding_core_credits') or 0) > 0 else 'muted'), 'hint': 'Outstanding to customer'},
+  {'label': 'Last Sale',       'value': (m.get('last_invoice_date').strftime('%b %d, %Y') if m.get('last_invoice_date') else '—'), 'tone': 'muted'},
+] -%}
+{{ intelligence_panel(metrics, cols=cols) }}
+{% endmacro %}
+
+
+{# ── §5.8 Invoice Intelligence Panel (P2-D3 — margin behind toggle) ────────────
+   `m` keys: profit · margin_pct · core_liability · warranty_exposure ·
+             customer_lifetime_sales. profit & margin_pct render only when the
+             per-user Show-margin toggle is ON (OFF by default). #}
+{% macro invoice_intelligence_panel(m=None, cols=4) %}
+{%- set m = m or {} -%}
+{%- set metrics = [
+  {'label': 'Profit',          'value': '$' ~ '%.2f'|format(m.get('profit') or 0),       'tone': (('good' if (m.get('profit') or 0) >= 0 else 'bad')), 'margin': true},
+  {'label': 'Margin',          'value': '%.1f'|format(m.get('margin_pct') or 0) ~ '%',   'tone': (('good' if (m.get('margin_pct') or 0) >= 0 else 'bad')), 'margin': true},
+  {'label': 'Core Liability',  'value': '$' ~ '%.2f'|format(m.get('core_liability') or 0), 'tone': ('warn' if (m.get('core_liability') or 0) > 0 else 'muted')},
+  {'label': 'Warranty Exposure','value': '$' ~ '%.2f'|format(m.get('warranty_exposure') or 0), 'tone': 'muted'},
+  {'label': 'Customer Lifetime','value': '$' ~ '%.2f'|format(m.get('customer_lifetime_sales') or 0), 'tone': 'muted'},
+] -%}
+{{ intelligence_panel(metrics, cols=cols) }}
+{% endmacro %}

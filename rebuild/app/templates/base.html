@@ -286,6 +286,9 @@
   x-data="{
     sidebarOpen: false,
     sidebarCollapsed: localStorage.getItem('sidebarCollapsed') === '1',
+    {# P2-D3 — per-user Show-margin toggle. Persisted, OFF by default. Consumed app-wide
+       via x-show="showMargin" (inherited from this root scope). See JAKS_UI_Change_Plan.md §8M. #}
+    showMargin: localStorage.getItem('showMargin') === '1',
     logCallOpen: false,
     createSlideOpen: false,
     createSlideTitle: '',
@@ -309,20 +312,29 @@
       this.sidebarCollapsed = !this.sidebarCollapsed;
       localStorage.setItem('sidebarCollapsed', this.sidebarCollapsed ? '1' : '0');
     },
+    toggleMargin() {
+      this.showMargin = !this.showMargin;
+      localStorage.setItem('showMargin', this.showMargin ? '1' : '0');
+    },
     // ── Event-driven toast (Pattern A) ──────────────────────────────────
-    // Triggered by HX-Trigger: {"toast": {"message": "...", "kind": "success"}}
+    // Triggered by HX-Trigger toast payloads (a message plus a kind, e.g. success).
     // Works alongside the OOB/Pattern-B appends — both routes write to
     // #toast-container; this one uses pure DOM, no x-for conflict.
+    // IMPORTANT: keep every string in this x-data free of raw double-quote chars.
+    // This whole object lives inside the double-quoted x-data attribute on <body>,
+    // so a raw double-quote closes the attribute early and breaks Alpine body scope
+    // (slide-overs / cmd-K / toasts) across every page. The ICONS SVGs below escape
+    // their quotes as &quot; (the browser decodes that back before Alpine reads it).
     showToast(opts) {
       if (!opts) return;
       const msg  = typeof opts === 'string' ? opts : (opts.message || opts.msg || '');
       const kind = (typeof opts === 'object' ? opts.kind : null) || 'success';
       const ms   = (typeof opts === 'object' ? opts.ms : null) || (kind === 'error' ? 6000 : 4000);
       const ICONS = {
-        success: '<svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>',
-        error:   '<svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>',
-        warning: '<svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3L13.74 5a2 2 0 00-3.48 0L3.19 16a2 2 0 001.74 3z"/></svg>',
-        info:    '<svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>',
+        success: '<svg class=&quot;w-4 h-4 shrink-0&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; viewBox=&quot;0 0 24 24&quot;><path stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot; stroke-width=&quot;2.5&quot; d=&quot;M5 13l4 4L19 7&quot;/></svg>',
+        error:   '<svg class=&quot;w-4 h-4 shrink-0&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; viewBox=&quot;0 0 24 24&quot;><path stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot; stroke-width=&quot;2.5&quot; d=&quot;M6 18L18 6M6 6l12 12&quot;/></svg>',
+        warning: '<svg class=&quot;w-4 h-4 shrink-0&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; viewBox=&quot;0 0 24 24&quot;><path stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot; stroke-width=&quot;2&quot; d=&quot;M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3L13.74 5a2 2 0 00-3.48 0L3.19 16a2 2 0 001.74 3z&quot;/></svg>',
+        info:    '<svg class=&quot;w-4 h-4 shrink-0&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; viewBox=&quot;0 0 24 24&quot;><path stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot; stroke-width=&quot;2&quot; d=&quot;M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z&quot;/></svg>',
       };
       const el = document.createElement('div');
       el.className = 'toast toast-' + kind;
@@ -431,6 +443,23 @@
         <span class="inline-block w-2 h-2 rounded-full bg-green-400" style="box-shadow: 0 0 0 3px rgba(74,222,128,0.2);"></span>
         <span>Live</span>
       </div>
+
+      {# Margin show/hide toggle (P2-D3) — per-user, persisted, OFF by default. Flips
+         app-wide visibility of profit/margin figures via the root `showMargin` scope
+         (consumers use x-show="showMargin"). See JAKS_UI_Change_Plan.md §8M. #}
+      <button type="button"
+              @click="toggleMargin()"
+              :aria-pressed="showMargin"
+              :title="showMargin ? 'Hide profit / margin figures' : 'Show profit / margin figures'"
+              :class="showMargin
+                ? 'bg-brand-50 text-brand-700 border-brand-200'
+                : 'bg-white text-gray-400 border-stone-200 hover:text-gray-600 hover:bg-gray-50'"
+              class="hidden md:inline-flex items-center gap-1.5 h-9 px-2.5 text-xs font-semibold border rounded-lg transition-colors shrink-0">
+        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+        </svg>
+        <span>Margin</span>
+      </button>
 
       {# Notifications bell #}
       <div class="relative hidden md:flex" @click.away="notifOpen = false">
