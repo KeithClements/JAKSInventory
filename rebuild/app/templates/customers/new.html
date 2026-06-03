@@ -61,8 +61,18 @@
         class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
     </div>
 
-    {# Customer Type slots here once P2-D1 (type-driven defaults) ships the
-       customer_type column + create handler. Deferred: no backend field yet. #}
+    {# ── Customer Type (§3 / P2-D1) — pre-fills the fields below from type_defaults ── #}
+    <div>
+      <label class="block text-xs font-medium text-gray-500 mb-1">Customer Type</label>
+      <select name="customer_type" @change="applyCustomerTypeDefaults($event.target)"
+        class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">
+        {% set _seltype = prefill.get('customer_type', 'other') %}
+        {% for t in customer_types | default([]) %}
+        <option value="{{ t.value }}" {% if _seltype == t.value %}selected{% endif %}>{{ customer_type_labels.get(t, t.value | replace('_', ' ') | title) }}</option>
+        {% endfor %}
+      </select>
+      <p class="text-xs text-gray-400 mt-0.5">Pre-fills payment terms, pricing tier, credit limit, discount &amp; tax-exempt below. Every field stays overridable.</p>
+    </div>
 
     <div>
       <label class="block text-xs font-medium text-gray-500 mb-1">Contact Name</label>
@@ -213,4 +223,37 @@
   </div>
 
 </form>
+
+{# ── Customer Type defaults (§3 / P2-D1) ───────────────────────────────────────
+   Server map embedded as JSON (the safe house pattern — avoids the tojson-in-
+   x-data-attr footgun). On type change we pre-fill the form fields client-side;
+   the user can override any field, and the form posts the resulting values.
+   `type_defaults` keys are CustomerType values → resolved-profile dicts. #}
+<script type="application/json" id="cust-type-defaults">{{ (type_defaults | default({})) | tojson }}</script>
+<script>
+  function applyCustomerTypeDefaults(sel) {
+    var map = {};
+    try { map = JSON.parse(document.getElementById('cust-type-defaults').textContent || '{}'); }
+    catch (e) { return; }
+    var d = map[sel.value];
+    if (!d) return;
+    var form = sel.form;
+    function set(name, val) {
+      if (val === undefined || val === null) return;
+      var el = form.querySelector('[name=' + name + ']');
+      if (!el) return;
+      el.value = val;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    set('payment_terms', d.payment_terms);
+    set('pricing_tier', d.pricing_tier);
+    set('credit_limit', d.credit_limit);
+    set('discount_pct', d.discount_pct);
+    var tx = form.querySelector('[name=is_tax_exempt]');
+    if (tx) {
+      tx.checked = !!d.is_tax_exempt;            // notify Alpine x-model (cert-# reveal)
+      tx.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }
+</script>
 {% endblock %}

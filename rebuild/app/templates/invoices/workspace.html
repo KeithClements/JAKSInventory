@@ -72,6 +72,7 @@
 {% block content %}
 {% from "macros/linked_docs.html" import linked_strip %}
 {% import "macros/customer_flags.html" as flagmacro %}
+{% import "macros/intelligence.html" as intel %}
 <div class="max-w-6xl space-y-3"
      x-data="{
        showVehicleInfo: {{ 'true' if (invoice.esn or invoice.engine_manufacturer or invoice.engine_model) else 'false' }},
@@ -357,6 +358,18 @@
       </div>
     </div>
   </form>
+
+  {# ── Invoice Intelligence Panel (§5.8 / P2-D3) — Profit & Margin gated by the
+       live Show-margin toggle (the macro wraps them in x-show="showMargin",
+       inherited from the base.html <body> scope). metrics: invoice_intelligence. #}
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm mb-3">
+    <div class="px-4 py-2.5 border-b border-gray-100">
+      <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Invoice Intelligence</span>
+    </div>
+    <div class="px-4 py-3">
+      {{ intel.invoice_intelligence_panel(invoice_intelligence | default({})) }}
+    </div>
+  </div>
 
   {# ── Change-Customer Modal (DRAFT only) — §3 Modal standard ──────────────── #}
   {% if editable %}
