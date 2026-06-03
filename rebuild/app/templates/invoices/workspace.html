@@ -39,17 +39,24 @@
             @click="$dispatch('open-payment')">
       Take Payment
     </button>
+    {% if (invoice.amount_paid or 0) > 0 %}
+    <button type="button" class="btn-danger btn-sm opacity-50 cursor-not-allowed" disabled
+            title="Reverse the ${{ '%.2f'|format(invoice.amount_paid) }} in applied payments first, then void.">
+      Void
+    </button>
+    {% else %}
     <button type="button" class="btn-danger btn-sm"
             @click="$dispatch('open-void')">
       Void
     </button>
+    {% endif %}
 
-  {# PAID — Print only (and Void as escape hatch) #}
+  {# PAID — Print only (Void requires reversing payments first) #}
   {% elif invoice.status == InvoiceStatus.PAID %}
     <a href="/invoices/{{ invoice.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
     <a href="/invoices/{{ invoice.id }}/pdf" class="btn-secondary btn-sm">PDF</a>
-    <button type="button" class="btn-danger btn-sm"
-            @click="$dispatch('open-void')">
+    <button type="button" class="btn-danger btn-sm opacity-50 cursor-not-allowed" disabled
+            title="This invoice is paid. Reverse its payments first, then void.">
       Void
     </button>
 
@@ -486,12 +493,153 @@
 
 
   {# ════════════════════════════════════════════════════════════════════════
+     AFTER-SALE SERVICE — start a core return, warranty claim, or RA from the
+     invoice, pre-seeded with this customer + invoice + parts. Finalized only.
+     Core sub-block reuses the cores/list.html "awaiting_return" form pattern
+     (copied, not extracted — §7 needs 3 identical users; this is the 2nd). The
+     two buttons drive the global create slide-over defined in base.html.
+  ═══════════════════════════════════════════════════════════════════════════ #}
+  {% if invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL, InvoiceStatus.PAID] %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">After-Sale Service</h2>
+      <span class="text-xs text-gray-400">Core returns · warranty · returns</span>
+    </div>
+    <div class="card-body space-y-5">
+
+      {# ── Core returns — only when this invoice still has open cores ── #}
+      {% if invoice_cores %}
+      <div>
+        <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Core Returns</p>
+        <div class="space-y-2">
+          {% for core in invoice_cores %}
+          <div id="core-item-{{ core.id }}" x-data="{ open: false, outcome: 'accepted' }"
+               class="rounded-lg border border-orange-100 bg-orange-50/30 overflow-hidden">
+            {# Row summary + expand toggle #}
+            <div class="flex items-center justify-between gap-3 px-4 py-3">
+              <div class="min-w-0">
+                <div class="flex items-center gap-2">
+                  <span class="font-mono text-sm font-bold text-brand-700">{{ core.product.sku if core.product else '—' }}</span>
+                  <span class="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 font-semibold">⟲ Core</span>
+                  {% if core.is_overdue %}<span class="badge-red">Overdue</span>{% endif %}
+                </div>
+                <p class="text-xs text-gray-500 truncate max-w-[320px]">{{ core.product.title if core.product else '—' }}</p>
+              </div>
+              <div class="flex items-center gap-4 shrink-0">
+                <div class="text-right">
+                  <p class="text-[10px] text-gray-400 uppercase tracking-wide">Outstanding</p>
+                  <p class="text-sm font-semibold tabular-nums text-gray-700">
+                    {{ core.qty_outstanding }} × <span class="text-orange-600">${{ '%.2f' % core.customer_unit_charge }}</span>
+                  </p>
+                </div>
+                <button type="button" @click="open = !open"
+                        class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-brand-700 text-white hover:bg-brand-600 transition-colors">
+                  <span x-text="open ? 'Cancel' : 'Record Return'"></span>
+                </button>
+              </div>
+            </div>
+            {# Inline return form (qty + inspection + condition) — HTMX post so the
+               invoice STAYS OPEN: the row swaps to a confirmation in place, and the
+               core slip pops in a NEW window (openCoreSlip trigger). The from_invoice
+               flag is what tells /cores/{id}/return to return a fragment instead of
+               redirecting (the cores/list.html flow has no flag → unchanged redirect). #}
+            <div x-show="open" x-cloak class="px-4 pb-4 pt-1 border-t border-orange-100">
+              <form hx-post="/cores/{{ core.id }}/return"
+                    hx-target="#core-item-{{ core.id }}" hx-swap="outerHTML"
+                    class="space-y-3">
+                <input type="hidden" name="from_invoice" value="{{ invoice.id }}" />
+                <div class="flex items-end gap-3 flex-wrap">
+                  <div>
+                    <label class="form-label">Qty Returned</label>
+                    <input type="number" name="qty_returned" min="1" max="{{ core.qty_outstanding }}" value="{{ core.qty_outstanding }}"
+                           class="w-24 form-input" />
+                  </div>
+                  <div>
+                    <label class="form-label">Inspection</label>
+                    <select name="inspection_outcome" x-model="outcome" class="form-select">
+                      <option value="accepted">✓ Accept — issue credit now</option>
+                      <option value="hold">⏸ Hold — inspect later, defer credit</option>
+                      <option value="rejected">✗ Reject — bad core, no credit</option>
+                    </select>
+                  </div>
+                  <div class="flex-1 min-w-44">
+                    <label class="form-label">Condition Notes</label>
+                    <input type="text" name="condition" placeholder="Good condition, clean, no damage…" class="form-input" />
+                  </div>
+                </div>
+                <div class="flex items-center gap-3 flex-wrap">
+                  <button type="submit"
+                          :class="outcome === 'rejected' ? 'btn-danger' : (outcome === 'hold' ? 'btn-secondary' : 'btn-primary')">
+                    <span x-show="outcome === 'accepted'">Record Return &amp; Credit Account</span>
+                    <span x-show="outcome === 'hold'" x-cloak>Record Return — Hold for Inspection</span>
+                    <span x-show="outcome === 'rejected'" x-cloak>Refuse Core — Close Charge</span>
+                  </button>
+                  <p class="text-xs text-gray-400">
+                    <span x-show="outcome === 'accepted'">Credit ${{ '%.2f' | format(core.customer_unit_charge) }}/ea applied immediately.</span>
+                    <span x-show="outcome === 'hold'" x-cloak>Core logged; credit deferred until inspection complete.</span>
+                    <span x-show="outcome === 'rejected'" x-cloak>No credit issued; charge will be closed.</span>
+                  </p>
+                </div>
+              </form>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {# Pop the core slip in a new window when a return is recorded (HX-Trigger
+           openCoreSlip). Bound once; the "Print slip ↗" link in the swapped row is
+           the fallback if the browser blocks the popup. #}
+        <script>
+          if (!window.__coreSlipBound) {
+            window.__coreSlipBound = true;
+            document.body.addEventListener('openCoreSlip', function (e) {
+              var url = e.detail && e.detail.url;
+              if (url) window.open(url, '_blank', 'noopener');
+            });
+          }
+        </script>
+      </div>
+      {% endif %}
+
+      {# ── Warranty & Returns — always available on a finalized invoice ── #}
+      <div>
+        <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Warranty &amp; Returns</p>
+        <div class="flex flex-wrap items-center gap-3">
+          <button type="button"
+                  hx-get="/warranty/new?invoice_id={{ invoice.id }}"
+                  hx-target="#create-slide-content"
+                  @click="createSlideOpen = true; createSlideTitle = 'New Warranty Claim'"
+                  class="btn-secondary">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+            </svg>
+            Start Warranty Claim
+          </button>
+          <button type="button"
+                  hx-get="/returns/new?invoice_id={{ invoice.id }}"
+                  hx-target="#create-slide-content"
+                  @click="createSlideOpen = true; createSlideTitle = 'New Return (RA)'"
+                  class="btn-secondary">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"/>
+            </svg>
+            Start Return
+          </button>
+          <p class="text-xs text-gray-400">Opens pre-filled with this invoice's customer and parts.</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+  {% endif %}
+
+
+  {# ════════════════════════════════════════════════════════════════════════
      TAKE PAYMENT MODAL (opened from header on OPEN/PARTIAL) — §3 Modal standard
      Data-heavy → max-w-2xl. x-data carries the payment-method binding only;
      open/close state lives on the root wrapper (paymentOpen).
   ═══════════════════════════════════════════════════════════════════════════ #}
   {% if invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL] %}
-  <div x-data="{ method: '{{ PaymentMethod.CASH }}' }">
+  <div x-data="{ method: '{{ PaymentMethod.CASH }}', amount: {{ '%.2f'|format(totals.balance_due) }}, balanceDue: {{ '%.2f'|format(totals.balance_due) }} }">
     {# Backdrop #}
     <div x-show="paymentOpen" x-cloak
          @click="paymentOpen = false"
@@ -534,6 +682,7 @@
               <div>
                 <label class="form-label">Amount</label>
                 <input type="number" name="amount" step="0.01" min="0.01" required
+                       x-model.number="amount"
                        value="{{ "%.2f"|format(totals.balance_due) }}"
                        class="form-input"/>
               </div>
@@ -560,6 +709,22 @@
               </div>
             </div>
 
+            {# Over-balance notice (B-1): never silent — surface the applied/credit split #}
+            <div x-show="amount > balanceDue + 0.005" x-cloak
+                 class="flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
+              <svg class="w-4 h-4 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+              </svg>
+              <span>
+                This exceeds the Balance Due by
+                <span class="font-semibold" x-text="'$' + (amount - balanceDue).toFixed(2)"></span>.
+                <span class="font-semibold" x-text="'$' + balanceDue.toFixed(2)"></span>
+                will be applied to this invoice and
+                <span class="font-semibold" x-text="'$' + (amount - balanceDue).toFixed(2)"></span>
+                recorded as <span class="font-semibold">account credit</span> for the customer.
+              </span>
+            </div>
+
             {# Card convenience-fee info note (informational only) #}
             <div x-show="method === '{{ PaymentMethod.CREDIT_CARD }}'" x-cloak
                  class="flex items-start gap-2 rounded-lg bg-blue-50 border border-blue-100 px-3 py-2 text-xs text-blue-700">
@@ -578,7 +743,10 @@
           <div class="px-6 py-4 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
             <button type="button" class="btn-secondary btn-sm"
                     @click="paymentOpen = false">Cancel</button>
-            <button type="submit" class="btn-primary btn-sm">Record Payment</button>
+            <button type="submit" class="btn-primary btn-sm">
+              <span x-show="amount <= balanceDue + 0.005">Record Payment</span>
+              <span x-show="amount > balanceDue + 0.005" x-cloak>Record Payment + Credit</span>
+            </button>
           </div>
         </form>
 
