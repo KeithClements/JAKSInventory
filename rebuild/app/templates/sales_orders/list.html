@@ -270,10 +270,15 @@
           </td>
 
           {# ── §2B Invoice status ─────────────────────────────────────────── #}
+          {# Derive the badge from the SO lifecycle status (the same field the
+             status tabs + counts use) so the column can NEVER contradict the
+             "Invoiced" tab.  Using the line-level qty_invoiced here was the bug:
+             a voided invoice leaves qty_invoiced stale, so the row showed
+             "Invoiced" while the Invoiced tab (status='invoiced') stayed empty. #}
           <td class="px-4 py-4 align-middle hidden lg:table-cell">
-            {% if so.is_fully_invoiced %}
+            {% if so.status == SOStatus.INVOICED %}
             {{ status_chip('bg-green-50 text-green-700', 'bg-green-500', 'Invoiced') }}
-            {% elif so.invoices %}
+            {% elif so.status == SOStatus.PARTIAL %}
             {{ status_chip('bg-amber-50 text-amber-700', 'bg-amber-500', 'Partial') }}
             {% else %}
             <span class="text-gray-300 text-xs">—</span>
