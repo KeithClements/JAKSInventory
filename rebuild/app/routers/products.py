@@ -615,25 +615,12 @@ async def cross_ref_update_status(
         )
 
 
-# ── Enrichment Panel ──────────────────────────────────────────────────────────
-
-@router.get("/{product_id}/enrich-panel", response_class=HTMLResponse)
-def product_enrich_panel(
-    product_id: int, request: Request, source: str = "", db: Session = Depends(get_db)
-):
-    """Load the enrichment slide-over content for a given vendor source (pai/hhp/atl)."""
-    from app.models.scraper import ScraperSource
-    scraper_source = None
-    if source:
-        scraper_source = (
-            db.query(ScraperSource)
-            .filter(ScraperSource.name.ilike(source))
-            .first()
-        )
-    return templates.TemplateResponse(request, "products/_enrich_panel.html", {
-        "product_id": product_id,
-        "source": scraper_source,
-    })
+# ── Enrichment Panel removed ──────────────────────────────────────────────────
+# The per-product vendor-source scrape panel is gone — all scraping/cataloging is
+# external now (PHASE_2_PLAN.md §6 P2-D9). Product enrichment lands via the §7.2
+# CSV enrich-sync (cross_references + product_applications), not a live panel.
+# UI follow-up (UI lane, plan §8P): delete products/_enrich_panel.html + the
+# detail.html enrich trigger.
 
 
 # ── Images ────────────────────────────────────────────────────────────────────

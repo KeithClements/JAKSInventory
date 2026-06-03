@@ -75,15 +75,6 @@ from app.models.warranty import (
     EngineConfig,
 )
 
-# ── Scraper / Enrichment ──────────────────────────────────────────────────────
-from app.models.scraper import (
-    ScraperSource,
-    ScrapeRun,
-    ScrapedItem,
-    ScrapedCrossRef,
-    ScraperFieldMapping,
-)
-
 # ── Credit Memos + Vendor Credits + Returns (R8, R11) ────────────────────────
 from app.models.credit_memo import CreditMemo, CreditMemoLine, CreditMemoAllocation
 from app.models.vendor_credit import VendorCreditMemo, VendorCreditMemoAllocation
@@ -180,12 +171,6 @@ __all_models__ = [
     CommunicationAttachment,
     # Inventory transfers
     InventoryTransfer,
-    # Scraper / Enrichment
-    ScraperSource,
-    ScrapeRun,
-    ScrapedItem,
-    ScrapedCrossRef,
-    ScraperFieldMapping,
     # Supporting
     Shipment,
     DocumentAttachment,

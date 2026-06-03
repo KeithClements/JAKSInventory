@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 def reset_and_seed_demo(db: Session) -> dict:
     """Drop all user-created data and reseed with realistic demo data.
 
-    Preserves: users, settings, scraper_sources, core_locations (startup-seeded).
+    Preserves: users, settings, core_locations (startup-seeded).
     Drops: everything else (customers, vendors, products, POs, quotes, invoices, etc.).
 
     Returns a summary dict of what was created.
