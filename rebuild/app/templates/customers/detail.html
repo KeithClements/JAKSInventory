@@ -213,15 +213,20 @@
         <div x-show="editMode" x-cloak class="card-body">
           <form method="post" action="/customers/{{ customer.id }}" class="space-y-5">
 
-            {# Contact Info #}
+            {# Contact — Company → [Type] → Contact → Phone → Email (§4.10).
+               Address moved below the fold; see the Billing Address section. #}
             <div>
               <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide border-b border-gray-100 pb-2 mb-3">Contact Info</h3>
               <div class="grid grid-cols-2 gap-4">
-                <div>
+                <div class="col-span-2">
                   <label class="form-label">Company Name <span class="text-red-500 normal-case">*</span></label>
                   <input name="company_name" value="{{ customer.company_name }}" required class="form-input" />
                 </div>
-                <div>
+
+                {# Customer Type slots here once P2-D1 (type-driven defaults) ships the
+                   customer_type column + update handler. Deferred: no backend field yet. #}
+
+                <div class="col-span-2">
                   <label class="form-label">Contact Name</label>
                   <input name="contact_name" value="{{ customer.contact_name }}" class="form-input" />
                 </div>
@@ -232,28 +237,6 @@
                 <div>
                   <label class="form-label">Email</label>
                   <input name="email" type="email" value="{{ customer.email }}" class="form-input" />
-                </div>
-                <div class="col-span-2">
-                  <label class="form-label">Address Line 1</label>
-                  <input name="address_line1" value="{{ customer.address_line1 }}" class="form-input" />
-                </div>
-                <div class="col-span-2">
-                  <label class="form-label">Address Line 2</label>
-                  <input name="address_line2" value="{{ customer.address_line2 }}" class="form-input" />
-                </div>
-                <div>
-                  <label class="form-label">City</label>
-                  <input name="city" value="{{ customer.city }}" class="form-input" />
-                </div>
-                <div class="grid grid-cols-2 gap-3">
-                  <div>
-                    <label class="form-label">State</label>
-                    <input name="state" value="{{ customer.state }}" maxlength="2" class="form-input" />
-                  </div>
-                  <div>
-                    <label class="form-label">ZIP</label>
-                    <input name="zip_code" value="{{ customer.zip_code }}" class="form-input" />
-                  </div>
                 </div>
               </div>
             </div>
@@ -273,6 +256,14 @@
                   </select>
                 </div>
                 <div>
+                  <label class="form-label">Credit Limit</label>
+                  <div class="relative">
+                    <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
+                    <input name="credit_limit" type="number" step="100" min="0"
+                           value="{{ customer.credit_limit }}" class="form-input pl-6" />
+                  </div>
+                </div>
+                <div>
                   <label class="form-label">Pricing Tier</label>
                   <select name="pricing_tier" class="form-select">
                     {% for tier in pricing_tiers %}
@@ -281,14 +272,6 @@
                     </option>
                     {% endfor %}
                   </select>
-                </div>
-                <div>
-                  <label class="form-label">Credit Limit</label>
-                  <div class="relative">
-                    <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
-                    <input name="credit_limit" type="number" step="100" min="0"
-                           value="{{ customer.credit_limit }}" class="form-input pl-6" />
-                  </div>
                 </div>
                 <div>
                   <label class="form-label">Standing Discount %</label>
@@ -339,6 +322,35 @@
                     <span class="normal-case font-normal tracking-normal text-gray-400">(not on documents)</span>
                   </label>
                   <textarea name="internal_notes" rows="2" class="form-textarea">{{ customer.internal_notes }}</textarea>
+                </div>
+              </div>
+            </div>
+
+            {# Billing Address — below the fold (§4.10: address often unknown at entry) #}
+            <div>
+              <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide border-b border-gray-100 pb-2 mb-3">Billing Address</h3>
+              <div class="grid grid-cols-2 gap-4">
+                <div class="col-span-2">
+                  <label class="form-label">Address Line 1</label>
+                  <input name="address_line1" value="{{ customer.address_line1 }}" class="form-input" />
+                </div>
+                <div class="col-span-2">
+                  <label class="form-label">Address Line 2</label>
+                  <input name="address_line2" value="{{ customer.address_line2 }}" class="form-input" />
+                </div>
+                <div>
+                  <label class="form-label">City</label>
+                  <input name="city" value="{{ customer.city }}" class="form-input" />
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label class="form-label">State</label>
+                    <input name="state" value="{{ customer.state }}" maxlength="2" class="form-input" />
+                  </div>
+                  <div>
+                    <label class="form-label">ZIP</label>
+                    <input name="zip_code" value="{{ customer.zip_code }}" class="form-input" />
+                  </div>
                 </div>
               </div>
             </div>

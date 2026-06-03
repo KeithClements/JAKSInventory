@@ -90,6 +90,10 @@
                value="{{ prefill.get('company_name', '') }}"
                class="form-input" placeholder="e.g. Mike's Diesel Service" />
       </div>
+
+      {# Customer Type slots here once P2-D1 (type-driven defaults) ships the
+         customer_type column + quick-create handler. Deferred: no backend field yet. #}
+
       <div>
         <label class="form-label">Contact Name</label>
         <input type="text" name="contact_name"
@@ -127,6 +131,16 @@
             </select>
           </div>
           <div>
+            <label class="form-label">Credit Limit</label>
+            <div class="relative">
+              <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
+              <input type="number" name="credit_limit" value="{{ prefill.get('credit_limit', '0') }}" min="0" step="100"
+                     class="form-input pl-6" placeholder="0" />
+            </div>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
             <label class="form-label">Pricing Tier</label>
             {% set _tier = prefill.get('pricing_tier', 'standard') %}
             <select name="pricing_tier" class="form-select">
@@ -135,16 +149,6 @@
               <option value="fleet" {% if _tier == 'fleet' %}selected{% endif %}>Fleet</option>
               <option value="dealer" {% if _tier == 'dealer' %}selected{% endif %}>Dealer</option>
             </select>
-          </div>
-        </div>
-        <div class="grid grid-cols-2 gap-3">
-          <div>
-            <label class="form-label">Credit Limit</label>
-            <div class="relative">
-              <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
-              <input type="number" name="credit_limit" value="{{ prefill.get('credit_limit', '0') }}" min="0" step="100"
-                     class="form-input pl-6" placeholder="0" />
-            </div>
           </div>
           <div>
             <label class="form-label">Discount %</label>
@@ -167,7 +171,14 @@
       </div>
     </div>
 
-    {# ── Billing Address ───────────────────────────────────────────────────── #}
+    {# ── Notes ─────────────────────────────────────────────────────────────── #}
+    <div>
+      <label class="form-label">Notes</label>
+      <textarea name="notes" rows="2" class="form-textarea"
+                placeholder="Anything useful about this customer…">{{ prefill.get('notes', '') }}</textarea>
+    </div>
+
+    {# ── Billing Address — below the fold (§4.10: address often unknown at entry) #}
     <div>
       <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wide border-b border-gray-100 pb-1.5 mb-3">Billing Address</h4>
       <div class="space-y-3">
@@ -238,13 +249,6 @@
         </div>
       </div>
       <p x-show="shipSame" class="text-xs text-gray-400 italic">Shipping same as billing.</p>
-    </div>
-
-    {# ── Notes ─────────────────────────────────────────────────────────────── #}
-    <div>
-      <label class="form-label">Notes</label>
-      <textarea name="notes" rows="2" class="form-textarea"
-                placeholder="Anything useful about this customer…">{{ prefill.get('notes', '') }}</textarea>
     </div>
 
   </div>{# /scrollable body #}
