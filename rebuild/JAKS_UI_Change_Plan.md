@@ -1841,7 +1841,8 @@ focus:ring-brand-400`; section card = `rounded-xl bg-white border border-gray-10
 
 ---
 
-#### 8M. Chart.js Init Pattern — RATIFIED 2026-06-01
+#### 8O. Chart.js Init Pattern — RATIFIED 2026-06-01
+<!-- (renumbered from a duplicate "8M" 2026-06-03; the canonical §8M is Phase-2 Shared Components below) -->
 
 **The rule: `defer` the lib at `base.html`; guard every `new Chart(...)` call with `DOMContentLoaded`.**
 
@@ -2264,6 +2265,26 @@ review usage, punch, don't rebuild).
   the route to pass `credit_status(customer, doc_total)` (prospective_amount = the doc total); Backend seam.
 - §5 SO UI not yet wired — `metric_strip` (P11) + `so_po_status_chip` (P12) are READY; `sales_orders/list.html`
   is dirty-gated, left to UI-Builder. Vendor-catalog OUT of scope @1afd51a — no macros.
+
+---
+
+#### 8P. Product Scraper / Enrichment Panel — REMOVED (out of scope, P2-D9 @1afd51a)
+
+The vendor-catalog integration (PAI / SAMPA / Interstate McBee scrape → enrich) is OUT of Phase-2 scope
+(P2-D9, removed @1afd51a). Its UI — the **product enrichment / scraper panel** — is removed with it. No
+macro, no governance pattern for it; this is a pure deletion.
+
+**Removal checklist (UI-Builder executes; Architect governs the diff as it lands — 2026-06-03 dispatch):**
+- Delete `app/templates/products/_enrich_panel.html` (the Phase-2 placeholder panel — "when the scraper is
+  live this panel will pull pricing / catalog data").
+- `products/detail.html`: remove the **"Enrich from {source}"** trigger (~L10-12, `hx-get …/enrich-panel`)
+  and the now-dead **`@product-cost-synced.window`** listener (~L87). Per §8N the moving-avg `product.cost`
+  no longer mirrors the vendor source, so that event is already stale — see [[vendor-source-cost-sync]].
+- Backend (separate lane): drop the `GET /products/{id}/enrich-panel` route + the `ScraperSource` context.
+
+**Governance criteria (apply at landing):** the removal must leave **no dangling reference** — grep clean for
+`enrich-panel`, `product-cost-synced`, and any orphaned `ScraperSource` / `src_code` / `src_name` template
+var. Pure deletion → no new primitive, no colour, nothing to re-pass once the greps are clean.
 
 ---
 
