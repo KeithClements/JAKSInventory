@@ -143,6 +143,7 @@
 
 {% block content %}
 {% from "macros/linked_docs.html" import linked_strip %}
+{% import "macros/customer_flags.html" as flagmacro %}
 <div class="max-w-6xl space-y-3"
      x-data="{ showVehicle: {{ 'true' if (so.esn or so.engine_manufacturer or so.engine_model) else 'false' }} }">
 
@@ -196,6 +197,7 @@
         <div class="min-w-0">
           <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide block mb-0.5">Customer</span>
           <a href="/customers/{{ so.customer_id }}" class="font-semibold text-brand-700 hover:underline text-sm">{{ so.customer.company_name }}</a>
+          <div class="mt-1">{{ flagmacro.customer_flags(so.customer.flag_keys | default([])) }}</div>
         </div>
 
         {# Created date #}

@@ -31,6 +31,7 @@
 {% from "macros/preview_dock.html" import preview_dock_shell %}
 {% from "macros/chips.html" import status_chip %}
 {% from "macros/empty_state.html" import empty_state %}
+{% import "macros/customer_flags.html" as flagmacro %}
 {{ operational_list_script() }}
 
 {# ── Backend-contract guards ─────────────────────────────────────────────────
@@ -237,8 +238,11 @@
                   {% if c.city %}<span>{{ c.city }}{% if c.state %}, {{ c.state }}{% endif %}</span>{% endif %}
                 </div>
                 {% endif %}
-                {# Account flags — tier / discount / tax-exempt #}
-                {% if (c.pricing_tier and c.pricing_tier != 'standard') or c.discount_pct > 0 or c.is_tax_exempt %}
+                {# P2-D2 flag chips (compact icon chips) — operational warnings + tax-exempt #}
+                {% set _cflags = (customer_flags | default({})).get(c.id, []) %}
+                {% if _cflags %}<div class="mt-1">{{ flagmacro.customer_flags(_cflags, compact=True) }}</div>{% endif %}
+                {# Account pills — tier / discount (tax-exempt now rendered as a flag chip above) #}
+                {% if (c.pricing_tier and c.pricing_tier != 'standard') or c.discount_pct > 0 %}
                 <div class="flex items-center gap-1 mt-1 flex-wrap">
                   {% if c.pricing_tier == 'wholesale' %}
                   <span class="px-1 py-0 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-600 border border-indigo-100">Wholesale</span>
@@ -249,9 +253,6 @@
                   {% endif %}
                   {% if c.discount_pct > 0 %}
                   <span class="px-1 py-0 rounded text-[10px] font-semibold bg-green-50 text-green-600 border border-green-100">{{ "%.0f"|format(c.discount_pct) }}% off</span>
-                  {% endif %}
-                  {% if c.is_tax_exempt %}
-                  <span class="px-1 py-0 rounded text-[10px] font-semibold bg-gray-50 text-gray-500 border border-gray-200">Tax Exempt</span>
                   {% endif %}
                 </div>
                 {% endif %}

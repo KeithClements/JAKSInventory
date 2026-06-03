@@ -71,6 +71,7 @@
 
 {% block content %}
 {% from "macros/linked_docs.html" import linked_strip %}
+{% import "macros/customer_flags.html" as flagmacro %}
 <div class="max-w-6xl space-y-3"
      x-data="{
        showVehicleInfo: {{ 'true' if (invoice.esn or invoice.engine_manufacturer or invoice.engine_model) else 'false' }},
@@ -180,6 +181,7 @@
           <a href="/customers/{{ invoice.customer_id }}" class="font-semibold text-gray-800 link">
             {{ invoice.customer.company_name }}
           </a>
+          {{ flagmacro.customer_flags(invoice.customer.flag_keys | default([])) }}
           {% if editable %}
           <button type="button"
                   @click="changeCustomerOpen = true"

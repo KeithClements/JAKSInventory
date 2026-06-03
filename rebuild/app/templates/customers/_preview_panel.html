@@ -8,6 +8,8 @@
    route passes only `c`.
 ─────────────────────────────────────────────────────────────────────────── #}
 {% from "macros/chips.html" import status_chip %}
+{% import "macros/customer_flags.html" as flagmacro %}
+{% import "macros/intelligence.html" as intel %}
 
 {# Payment-terms chip color map (mirrors list.html / §4 semantics) #}
 {% set terms_chip = {
@@ -24,6 +26,9 @@
 {% set q_count = open_quote_count | default(0) %}
 
 <div class="px-6 py-4">
+  {# P2-D2 flag chips — full-width warning row (operational flags + tax-exempt) #}
+  {% set _pflags = flags | default([]) %}
+  {% if _pflags %}<div class="mb-3">{{ flagmacro.customer_flags(_pflags) }}</div>{% endif %}
   <div class="grid grid-cols-4 gap-6">
 
     {# ── Identity ── #}
@@ -196,4 +201,10 @@
     </div>
 
   </div>{# end grid #}
+
+  {# Customer Intelligence — condensed relationship metrics (§4.4 / P2-Q1) #}
+  <div class="mt-4 pt-4 border-t border-gray-100">
+    <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Relationship</p>
+    {{ intel.customer_intelligence_panel(metrics | default({}), cols=4) }}
+  </div>
 </div>

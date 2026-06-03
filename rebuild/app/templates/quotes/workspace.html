@@ -8,6 +8,7 @@
 
 {% block content %}
 {% from "macros/linked_docs.html" import linked_strip %}
+{% import "macros/customer_flags.html" as flagmacro %}
 
 {% if linked_documents %}
 <div class="mb-3">{{ linked_strip(linked_documents) }}</div>
@@ -26,6 +27,7 @@
       <a href="/customers/{{ quote.customer_id }}" target="_blank" rel="noopener" class="font-semibold link">
         {{ quote.customer.company_name }}
       </a>
+      {{ flagmacro.customer_flags(quote.customer.flag_keys | default([])) }}
     </div>
 
     {# Created #}
