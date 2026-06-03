@@ -181,38 +181,81 @@ async def record_return(
             f"/cores/?error={url_quote('Unexpected error — core return was not recorded.')}",
             status_code=303,
         )
-    # For HOLD or REJECTED outcomes — no credit slip, redirect straight to list
+    # When recorded from the invoice's After-Sale card, the form posts via HTMX with
+    # a `from_invoice` flag: we update that core row IN PLACE (so the invoice stays
+    # open) and pop the slip in a NEW window via an HX-Trigger, instead of navigating
+    # away. The plain cores/list.html flow sends no flag → unchanged redirect.
+    from_invoice = str(form.get("from_invoice") or "").strip()
+    core_obj = db.query(CoreCharge).filter(CoreCharge.id == core_id).first()
+
+    def _inv_fragment(message: str, tone: str, slip_url: str | None = None):
+        """Swap the `#core-item-{id}` row to an inline confirmation; optionally
+        trigger opening the core slip in a new window."""
+        import html as _html
+        import json as _json
+        sku = _html.escape(core_obj.product.sku if (core_obj and core_obj.product) else "")
+        tone_cls = {
+            "green": "border-green-200 bg-green-50/50",
+            "amber": "border-amber-200 bg-amber-50/50",
+            "gray": "border-gray-200 bg-gray-50",
+        }.get(tone, "border-green-200 bg-green-50/50")
+        slip_link = (
+            f'<a href="{slip_url}" target="_blank" rel="noopener" '
+            'class="shrink-0 text-xs font-semibold text-brand-700 underline whitespace-nowrap">Print slip ↗</a>'
+            if slip_url else ""
+        )
+        body = (
+            f'<div id="core-item-{core_id}" class="rounded-lg border px-4 py-3 {tone_cls}">'
+            '<div class="flex items-center justify-between gap-3">'
+            f'<div class="min-w-0"><span class="font-mono text-sm font-bold text-brand-700">{sku}</span>'
+            f'<span class="ml-2 text-xs font-semibold text-gray-700">{_html.escape(message)}</span></div>'
+            f'{slip_link}</div></div>'
+        )
+        headers = {}
+        if slip_url:
+            headers["HX-Trigger"] = _json.dumps({"openCoreSlip": {"url": slip_url}})
+        return HTMLResponse(body, headers=headers)
+
+    # For HOLD or REJECTED outcomes — no credit slip.
     if inspection_outcome == CoreInspectionOutcome.REJECTED:
+        if from_invoice:
+            return _inv_fragment("Core refused — charge closed, no credit.", "gray")
         return RedirectResponse(
             f"/cores/?ok={url_quote('Core refused — charge closed, no credit issued.')}",
             status_code=303,
         )
     if inspection_outcome == CoreInspectionOutcome.HOLD:
+        if from_invoice:
+            return _inv_fragment("Received — held for inspection; credit deferred.", "amber")
         return RedirectResponse(
             f"/cores/?ok={url_quote('Core received and held for inspection. Credit will be issued after review.')}",
             status_code=303,
         )
 
-    # ACCEPTED — create a core slip and redirect to its print page.
+    # ACCEPTED — create (or reuse) a core slip.
     # Idempotent: if a slip was already created for this charge (e.g. a prior partial
     # return already ran this path), reuse it rather than minting a duplicate.
     try:
         from app.services.core_service import CoreService as _CS
-        core_obj = db.query(CoreCharge).filter(CoreCharge.id == core_id).first()
         if core_obj and core_obj.core_slip_id:
-            return RedirectResponse(
-                f"/cores/{core_id}/slip-print?slip_id={core_obj.core_slip_id}",
-                status_code=303,
-            )
-        slip = _CS(db, user_id).create_core_slip(core_id)
-        return RedirectResponse(f"/cores/{core_id}/slip-print?slip_id={slip.id}", status_code=303)
+            slip_url = f"/cores/{core_id}/slip-print?slip_id={core_obj.core_slip_id}"
+        else:
+            slip = _CS(db, user_id).create_core_slip(core_id)
+            slip_url = f"/cores/{core_id}/slip-print?slip_id={slip.id}"
     except Exception:
         db.rollback()
         log.exception("Could not create core slip for core_charge %s", core_id)
+        if from_invoice:
+            return _inv_fragment("Return recorded — account credit applied.", "green")
         return RedirectResponse(
             f"/cores/?ok={url_quote('Core return recorded — account credit applied.')}",
             status_code=303,
         )
+
+    if from_invoice:
+        credit = (getattr(core_obj, "customer_unit_charge", 0) or 0) * qty
+        return _inv_fragment(f"Returned — ${credit:.2f} credited to account.", "green", slip_url=slip_url)
+    return RedirectResponse(slip_url, status_code=303)
 
 
 # ── Complete Inspection (resolve a HOLD) ──────────────────────────────────────
