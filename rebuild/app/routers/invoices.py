@@ -107,11 +107,16 @@ def _workspace_context(db: Session, request: Request, invoice: Invoice) -> dict:
         .all()
     )
 
+    # ── §5.8 Invoice Intelligence panel (P2-D3 — margin gated client-side) ──
+    from app.services.invoice_metrics_service import InvoiceMetricsService
+    invoice_intelligence = InvoiceMetricsService(db).intelligence_for(invoice)
+
     return {
         "invoice": invoice,
         "totals": totals,
         "customers": customers,
         "invoice_cores": invoice_cores,
+        "invoice_intelligence": invoice_intelligence,
         "editable": invoice.status == InvoiceStatus.DRAFT,
         "cc_surcharge_pct": cc_surcharge_pct,
         "InvoiceStatus": InvoiceStatus,
