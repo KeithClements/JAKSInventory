@@ -12,6 +12,7 @@
 {% block content %}
 {% import "macros/customer_flags.html" as flagmacro %}
 {% import "macros/intelligence.html" as intel %}
+{% import "macros/credit_status.html" as creditmacro %}
 <div class="space-y-4"
      x-data="{ tab: '{{ 'account' if not request.query_params.get('tab') else request.query_params.get('tab') }}' }">
 
@@ -72,19 +73,17 @@
     </div>
     {% endif %}
 
-    {# ── Customer Intelligence Panel (§4.4 / P2-Q1) + credit warn (P2-D4 warn-only) ── #}
+    {# ── Credit warn banner (§4.5 / P2-D4 — warn-only, never blocks) ── #}
+    {% if (credit_status | default({})).get('warn') %}
+    <div class="mb-4">{{ creditmacro.credit_warn(credit_status) }}</div>
+    {% endif %}
+
+    {# ── Customer Intelligence Panel (§4.4 / P2-Q1) — credit posture via credit_badge (§4.5) ── #}
     {% set _m = metrics | default({}) %}
     <div class="card mb-4">
       <div class="card-header flex items-center justify-between">
         <h3 class="card-title">Customer Intelligence</h3>
-        {% if _m.get('credit_hold') %}
-        <span class="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold bg-red-100 text-red-700">
-          <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M18.364 5.636L5.636 18.364M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-          On Credit Hold
-        </span>
-        {% elif _m.get('available_credit') is not none and _m.get('available_credit') < 0 %}
-        <span class="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold bg-amber-100 text-amber-700">Over Credit Limit</span>
-        {% endif %}
+        {{ creditmacro.credit_badge(credit_status | default({})) }}
       </div>
       <div class="card-body">
         {{ intel.customer_intelligence_panel(_m) }}

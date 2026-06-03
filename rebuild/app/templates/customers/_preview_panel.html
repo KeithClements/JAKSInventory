@@ -10,6 +10,7 @@
 {% from "macros/chips.html" import status_chip %}
 {% import "macros/customer_flags.html" as flagmacro %}
 {% import "macros/intelligence.html" as intel %}
+{% import "macros/credit_status.html" as creditmacro %}
 
 {# Payment-terms chip color map (mirrors list.html / §4 semantics) #}
 {% set terms_chip = {
@@ -101,6 +102,11 @@
           {% if c.credit_balance and c.credit_balance > 0 %}
           <span class="text-sm font-bold text-brand-700 tabular-nums">${{ "%.2f"|format(c.credit_balance) }}</span>
           {% else %}<span class="text-sm text-gray-400">—</span>{% endif %}
+        </div>
+        {# Credit posture (§4.5) — available credit / over-limit / hold #}
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Credit</span>
+          {{ creditmacro.credit_badge(credit_status | default({})) }}
         </div>
       </div>
     </div>

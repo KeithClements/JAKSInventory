@@ -70,11 +70,7 @@
       <span class="inline-flex items-center text-xs px-2 py-0.5 bg-gray-100 rounded text-gray-600 font-medium">
         {{ cust_payment_terms | upper | replace('_', ' ') }}
       </span>
-      {% if quote.customer.is_tax_exempt %}
-      <span class="inline-flex items-center text-xs px-2 py-0.5 bg-gray-100 rounded text-gray-600 font-medium">
-        Tax Exempt{% if quote.customer.tax_exempt_cert_number %} · {{ quote.customer.tax_exempt_cert_number }}{% endif %}
-      </span>
-      {% endif %}
+      {# Tax-exempt now shown once, as a flag chip beside the customer name (de-duped per §8M governance). #}
       {% if cust_open_balance > 0 %}
       <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-gray-100 rounded text-gray-600">
         Open: <span class="font-bold text-gray-800 ml-1 tabular-nums">${{ '%.2f' % cust_open_balance }}</span>
