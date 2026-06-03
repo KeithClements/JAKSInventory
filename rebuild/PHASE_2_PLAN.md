@@ -33,7 +33,7 @@
 | P2-D6 | **Customer Type** *(R3)* | **Single type, fixed list** | One type per customer: Fleet · Owner-Operator · Repair Shop · Dealer · Municipality · Internal · Other. This is the key that maps to the P2-D1 default profiles. |
 | P2-D7 | **Won/Lost quote tracking** *(R3)* | **Yes — structured reasons** | Mark-Lost prompts a reason (Price · Lead time · Competitor · No longer needed · No response · Other) + optional note → activates `lost_sales_log`; win-rate / lost-$ reporting. |
 | P2-D8 | **Job templates** *(R3)* | **Deferred** | Not in Phase 2 (existing "Save Standard" covers part). |
-| P2-D9 | **Vendor catalog** *(R4)* | **Integrate PAI Info into the ERP** | Reuse the PAI scrape/pricing/availability in product enrichment; add SAMPA / Interstate McBee the same way later. |
+| P2-D9 | **Vendor catalog** *(R4 → REMOVED from ERP scope 2026-06-02)* | **No PAI/HHP/ATL integration in the ERP** | The standalone **PAI Info** tool (PAI catalog + HHP/ATL competitive pricing + OEM cross-refs) stays **fully external** — the ERP neither scrapes nor imports it. The full PAI catalog flows to **Shopify** (separate track); the ERP holds only the parts JAKS actually stocks. No importer, no scrapers, no competitor-pricing field in Phase 2. |
 | P2-D10 | **Truck-Down depth** *(R4)* | **Queue + dashboard + color** | Visibility-first; expedited-PO suggestions + escalation report come later. |
 | P2-D11 | **Vendor contacts** *(R4)* | **Fixed roles** | Sales Rep · Warranty · Returns/RMA · Core Dept · Accounting (+ a primary). |
 | P2-D12 | **Deposit refund** *(R4)* | **Convert to account credit** | Refund/cancel a deposit → customer account credit for the next invoice. |
@@ -152,7 +152,7 @@ On Account tab + condensed in the Preview panel + list columns:
 - **Vendor Lead Time (days):** feeds customer ETA, backorder forecasting, purchasing recs, Truck-Down prioritization.
 - **Typed vendor contacts:** roles — Sales Rep · Warranty · Returns/RMA · Core Dept · Accounting (name/phone/email/department/notes). Extends `vendor_contacts`.
 - **Vendor performance metrics:** Fill Rate % · Avg Lead Time · On-Time % · Return Rate % · Warranty Rate % → vendor scorecards.
-- **Vendor product integration:** PAI / SAMPA / Interstate McBee catalog lookup, pricing, availability, enrichment. *(Coordinate with the existing PAI Info scraper/pricing tool.)*
+- **Vendor catalog integration — REMOVED from ERP scope (2026-06-02).** All PAI/HHP/ATL fetching lives in the standalone **PAI Info** tool (owner adds HHP/ATL competitive pricing + OEM cross-refs to *that* tool); its enriched output feeds **Shopify**, not the JAKS ERP. The ERP does **not** scrape or import vendor catalogs in Phase 2 — no importer, no scrapers, no competitor-pricing field. *(If an in-ERP "look up a PAI part / competitor price" reference is ever wanted, revisit later as a small read-only lookup — never a bulk catalog load.)*
 - **Vendor notes by context:** show vendor notes when creating POs, receiving, creating RMAs, processing core returns (e.g., "reference account #12345", "core returns go to Dallas").
 
 ---
@@ -161,6 +161,9 @@ On Account tab + condensed in the Preview panel + list columns:
 
 ### 7.1 Category hierarchy restructure *(P2-Q2)*
 - Move flat categories → **2-level tree** (Category → Subcategory); products attach to the leaf subcategory. Migrate existing categories. Example tree: Engine Parts → Cylinder Heads / Inframe Kits / Bearings / Pistons / Liners; Fuel System → Injectors / Fuel Pumps / Transfer Pumps; Cooling → Water Pumps / EGR Coolers / Thermostats; Air & Exhaust → Turbos / Exhaust Manifolds / Charge Air; Suspension → Air Springs / Torque Rods / Bushings; Driveline → Clutches / Yokes / U-Joints.
+
+### 7.2 ~~PAI Info importer~~ — REMOVED from ERP scope (2026-06-02)
+The vendor-catalog importer (and the PAI/HHP/ATL scrapers) are **out of Phase-2 ERP scope** — see §6 (P2-D9). The standalone PAI Info tool stays external and feeds Shopify, not the ERP.
 
 ---
 
@@ -179,7 +182,7 @@ Merges the owner's rankings + technical dependencies. **Foundations first** (the
 9. **Truck-Down workflow · Deposit management · Core batch/inspection.**
 10. **Vendor Intelligence + typed contacts + performance.**
 11. **Category hierarchy restructure.**
-12. **CRM foundation fields** (model only) · **Communications Center** (needs real messaging) · vendor-catalog integration.
+12. **CRM foundation fields** (model only) · **Communications Center** (needs real messaging). *(Vendor-catalog integration removed from ERP scope — §6.)*
 
 ---
 
