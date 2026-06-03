@@ -11,17 +11,8 @@
     Adjust Inventory
   </button>
   {% endif %}
-  <div class="flex items-center gap-2 ml-4">
-    {% for src_name, src_code in [('PAI', 'pai'), ('HHP', 'hhp'), ('ATL', 'atl')] %}
-    <button type="button"
-            hx-get="/products/{{ product.id }}/enrich-panel?source={{ src_code }}"
-            hx-target="#create-slide-content"
-            @click="createSlideTitle = 'Enrich from {{ src_name }}'; createSlideOpen = true"
-            class="btn-secondary btn-sm">
-      ⟳ {{ src_name }}
-    </button>
-    {% endfor %}
-  </div>
+  {# Scraper enrichment (PAI/HHP/ATL) removed — P2-D9 / §8P: vendor-catalog
+     integration is out of ERP scope. Backend drops the /enrich-panel route. #}
 {% endblock %}
 
 {% block content %}

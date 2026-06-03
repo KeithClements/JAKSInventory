@@ -23,6 +23,8 @@
 {% from "macros/chips.html"         import status_chip %}
 {% from "macros/empty_state.html"   import empty_state %}
 {% from "macros/preview_dock.html"  import preview_dock_shell %}
+{% from "macros/metric_strip.html"  import metric_strip %}
+{% from "macros/so_status.html"     import so_po_status_chip %}
 {{ operational_list_script() }}
 
 {# ── Backend-contract guard: tab param arrives once backend adds counts ───────
@@ -71,6 +73,23 @@
   class="space-y-4 pb-52"
   x-data="operationalListData('so-preview-body', '/sales-orders/preview/', [{% for so in orders %}{{ so.id }}{% if not loop.last %},{% endif %}{% endfor %}])"
 >
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   §5.1 SO DASHBOARD METRIC STRIP — KPI tiles fed by so_metrics
+   (SalesOrderMetricsService.dashboard_metrics(); SO_DASHBOARD_KEYS)
+══════════════════════════════════════════════════════════════════════════════ #}
+{% set _sm = so_metrics | default({}) %}
+{% set so_tiles = [
+  {'value': _sm.get('open_count', 0),                                        'label': 'Open Orders',         'tone': 'blue'},
+  {'value': '$' ~ '%.0f'|format(_sm.get('open_so_value') or 0),              'label': 'Open SO Value',       'tone': ('brand'  if (_sm.get('open_so_value')      or 0) > 0 else 'gray')},
+  {'value': '$' ~ '%.0f'|format(_sm.get('backordered_value') or 0),          'label': 'Backordered',         'tone': ('amber'  if (_sm.get('backordered_value')  or 0) > 0 else 'gray')},
+  {'value': _sm.get('waiting_on_inventory', 0),                              'label': 'Waiting on Inventory','tone': 'orange'},
+  {'value': _sm.get('ready_to_ship', 0),                                     'label': 'Ready to Ship',       'tone': 'green'},
+  {'value': _sm.get('on_hold', 0),                                           'label': 'On Hold',             'tone': 'red', 'href': '?tab=hold'},
+  {'value': _sm.get('fulfilled_today', 0),                                   'label': 'Fulfilled Today',     'tone': 'green'},
+  {'value': '$' ~ '%.0f'|format(_sm.get('open_core_liability') or 0),        'label': 'Open Core Liability', 'tone': ('purple' if (_sm.get('open_core_liability') or 0) > 0 else 'gray')},
+] %}
+{{ metric_strip(so_tiles, cols=4) }}
 
 {# ══════════════════════════════════════════════════════════════════════════════
    TOOLBAR — tabs + search
@@ -217,7 +236,9 @@
                 {{ so.lines | length }} line{{ 's' if so.lines | length != 1 }}
               </span>
               {% if so.has_backorder %}
-              <span class="inline-block px-1 py-0 rounded text-[10px] font-semibold bg-amber-50 text-amber-600 border border-amber-100">B/O</span>
+              {# §5.2 backorder/ETA chip — earliest ETA across backordered lines #}
+              {% set _bo_etas = so.lines | selectattr('is_backordered') | map(attribute='eta_date') | reject('none') | list %}
+              {{ so_po_status_chip({'status': 'backorder', 'eta_date': (_bo_etas | min if _bo_etas else None)}) }}
               {% endif %}
             </div>
           </td>
