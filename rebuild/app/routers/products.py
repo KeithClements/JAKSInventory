@@ -221,10 +221,14 @@ async def product_quick_create(request: Request, db: Session = Depends(get_db), 
     sku_suffix = str(form.get("sku_suffix", "")).strip().upper()
     title = str(form.get("title", "")).strip()
     if not sku_suffix or not title:
-        return HTMLResponse(
-            '<p class="text-sm text-red-600 font-medium px-5 py-3">SKU and title are required.</p>',
-            status_code=422,
-        )
+        # D-6 — re-render the panel at 200 so HTMX swaps it. A bare <p> at 422 is
+        # not swapped by HTMX → the user only sees the generic "Could not load the
+        # form (422)" fallback and loses their input. `error` + `form_data` feed
+        # UI-Builder's {% if error %} banner + value repopulation in the template.
+        return templates.TemplateResponse(request, "products/_quick_create.html", {
+            "error": "SKU and title are required.",
+            "form_data": dict(form),
+        })
     sku = f"JAKS-{sku_suffix}"
     svc = _svc(db, user_id)
     # O5 — when the quick-create form leaves markup blank, inherit the configured
@@ -248,10 +252,13 @@ async def product_quick_create(request: Request, db: Session = Depends(get_db), 
             "customer_core_charge": float(form.get("customer_core_charge") or 0),
         })
     except ValueError as exc:
-        return HTMLResponse(
-            f'<p class="text-sm text-red-600 font-medium px-5 py-3">{exc}</p>',
-            status_code=422,
-        )
+        # D-6 — same: re-render at 200 with the real validation message so HTMX
+        # swaps the panel in place and keeps the user's entered values, instead of
+        # the generic 422 fallback. UI-Builder renders error/form_data.
+        return templates.TemplateResponse(request, "products/_quick_create.html", {
+            "error": str(exc),
+            "form_data": dict(form),
+        })
     db.commit()
     sell = _pricing.sell_price_for(product)
     _detail = html.escape(json.dumps({
