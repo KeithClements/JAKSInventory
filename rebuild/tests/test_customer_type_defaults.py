@@ -153,3 +153,43 @@ def test_type_defaults_json_endpoint_unknown_type(client):
     r = client.get("/customers/type-defaults/bogus")
     assert r.status_code == 200
     assert r.json()["customer_type"] == CustomerType.OTHER
+
+
+# ── Create-path contract seams (flagged by UI-Builder) ────────────────────────
+
+def test_create_binds_card_surcharge(client, db):
+    r = client.post("/customers/new",
+                    data={"company_name": "Surcharge New Co", "card_surcharge_pct": "4.5"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    c = db.query(Customer).filter(Customer.company_name == "Surcharge New Co").first()
+    assert c is not None and c.card_surcharge_pct == 4.5
+
+
+def test_create_blank_surcharge_is_null(client, db):
+    r = client.post("/customers/new", data={"company_name": "No Surcharge Co"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    c = db.query(Customer).filter(Customer.company_name == "No Surcharge Co").first()
+    assert c is not None and c.card_surcharge_pct is None
+
+
+def test_create_persists_customer_type(client, db):
+    r = client.post("/customers/new",
+                    data={"company_name": "Typed Co", "customer_type": CustomerType.DEALER.value},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    c = db.query(Customer).filter(Customer.company_name == "Typed Co").first()
+    assert c is not None and c.customer_type == CustomerType.DEALER
+
+
+def test_dup_rerender_keeps_form_context(client, db):
+    # Existing customer → re-POST same name w/o confirm → dup-warning re-render.
+    # Must return the form (200) with the shared context intact (no crash; the
+    # company echoes back via prefill). The shared _new_customer_ctx helper
+    # guarantees the Customer Type select + type_defaults survive this path.
+    db.add(Customer(company_name="Dup Rerender Co")); db.commit()
+    r = client.post("/customers/new", data={"company_name": "Dup Rerender Co"},
+                    follow_redirects=False)
+    assert r.status_code == 200          # re-render, not the 303 success redirect
+    assert "Dup Rerender Co" in r.text

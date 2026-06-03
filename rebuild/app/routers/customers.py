@@ -474,22 +474,25 @@ def customer_preview_panel(
 
 # ── New ───────────────────────────────────────────────────────────────────────
 
+def _new_customer_ctx(db: Session) -> dict:
+    """Shared context for the new-customer form (GET and the dup-warning
+    re-render both need it, or the Customer Type select + type-defaults pre-fill
+    JSON go missing on the dup path)."""
+    return {
+        "payment_terms": list(PaymentTerms),
+        "pricing_tiers": list(PricingTier),
+        # P2-D1/D6 — Customer Type + type-driven default profiles. The UI picks
+        # a type, then pre-fills the form from `type_defaults[<type>]` client-side.
+        "customer_types": list(CustomerType),
+        "customer_type_labels": CUSTOMER_TYPE_LABELS,
+        "customer_flag_labels": CUSTOMER_FLAG_LABELS,
+        "type_defaults": CustomerService(db).all_type_defaults(),
+    }
+
+
 @router.get("/new", response_class=HTMLResponse)
 def customer_new(request: Request, db: Session = Depends(get_db)):
-    return templates.TemplateResponse(
-        request,
-        "customers/new.html",
-        {
-            "payment_terms": list(PaymentTerms),
-            "pricing_tiers": list(PricingTier),
-            # P2-D1/D6 — Customer Type + type-driven default profiles. The UI picks
-            # a type, then pre-fills the form from `type_defaults[<type>]` client-side.
-            "customer_types": list(CustomerType),
-            "customer_type_labels": CUSTOMER_TYPE_LABELS,
-            "customer_flag_labels": CUSTOMER_FLAG_LABELS,
-            "type_defaults": CustomerService(db).all_type_defaults(),
-        },
-    )
+    return templates.TemplateResponse(request, "customers/new.html", _new_customer_ctx(db))
 
 
 @router.get("/type-defaults/{customer_type}")
@@ -514,16 +517,19 @@ async def customer_create(request: Request, db: Session = Depends(get_db)):
                 request,
                 "customers/new.html",
                 {
-                    "payment_terms": list(PaymentTerms),
+                    **_new_customer_ctx(db),
                     "dup_matches": dup_matches,
                     "prefill": {k: str(v) for k, v in form.items()},
                 },
             )
 
+    # blank → NULL (use system default); explicit value (incl. 0) overrides — mirrors update
+    _cs = str(form.get("card_surcharge_pct", "")).strip()
     c = Customer(
         company_name=str(form.get("company_name", "")).strip(),
         contact_name=str(form.get("contact_name", "")).strip(),
         customer_type=_form_customer_type(form),
+        card_surcharge_pct=float(_cs) if _cs else None,
         phone=str(form.get("phone", "")).strip(),
         email=str(form.get("email", "")).strip(),
         address_line1=str(form.get("address_line1", "")).strip(),
