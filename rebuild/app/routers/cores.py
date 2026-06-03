@@ -27,6 +27,7 @@ from app.constants import CoreDirection, CoreDenialResolution, CoreInspectionOut
 from app.deps import get_current_user_id, get_db
 from app.models.core import CoreCharge, CoreSlip, VendorCoreReturn
 from app.models.invoice import Invoice
+from app.services.core_metrics_service import CoreMetricsService
 from app.services.document_render import (
     customer_address_lines,
     get_company_dict,
@@ -117,14 +118,11 @@ def cores_list(request: Request, q: str = "", db: Session = Depends(get_db)):
                     "overdue": stage == "awaiting_return" and bool(getattr(c, "is_overdue", False)),
                 })
 
-    # Metrics count the FULL stage lists (real DB state), independent of the search filter.
-    metrics = {
-        "awaiting_return":    len(awaiting_return),
-        "overdue":            sum(1 for c in awaiting_return if getattr(c, "is_overdue", False)),
-        "pending_inspection": len(pending_inspection),
-        "ready_to_ship":      len(pending_vendor_ship),
-        "awaiting_vendor":    len(awaiting_vendor),
-    }
+    # §5.4 Core Dashboard metrics — full DB state (independent of the search
+    # filter). CoreMetricsService reproduces these count tiles AND adds the dollar
+    # figures (outstanding_core_liability, core_credits_issued, vendor_recoveries,
+    # aging_value) for the dashboard strip.
+    metrics = CoreMetricsService(db).dashboard_metrics()
 
     return templates.TemplateResponse(
         request,
