@@ -236,3 +236,46 @@ def test_credit_warn_only_renders_on_warn(jenv):
                    cs={"warn": True, "on_hold": False, "over_limit": True,
                        "message": "This order exceeds available credit by $250.00."})
     assert "$250.00" in over and "bg-amber-50 border border-amber-200" in over
+
+
+# ===========================================================================
+# metric_strip — Primitive 11 (list-header KPI tiles, §2B / §5.1)
+# ===========================================================================
+
+IMPORT_STRIP = "{% from 'macros/metric_strip.html' import metric_strip, metric_tile %}"
+
+
+def test_metric_strip_renders_tiles(jenv):
+    tiles = [
+        {"value": "$4,320.00", "label": "Open SO Value", "tone": "brand"},
+        {"value": 5, "label": "Backordered", "tone": "amber", "sub": "2 overdue", "alert": True},
+        {"value": 0, "label": "On Hold", "tone": "red"},
+    ]
+    html = _render(jenv, IMPORT_STRIP + "{{ metric_strip(tiles) }}", tiles=tiles)
+    assert "Open SO Value" in html and "$4,320.00" in html
+    assert "text-2xl" in html                       # KPI big-number treatment
+    assert "bg-amber-50" in html and "text-amber-600" in html   # toned tile
+    assert "ring-1 ring-red-100" in html            # alert ring
+    assert "2 overdue" in html                      # sub-count
+    assert "text-gray-400" in html                  # the 0-value tile auto-mutes
+    assert 'class="grid grid-cols-2 md:grid-cols-4 gap-3"' in html
+
+
+def test_metric_strip_tile_href_makes_it_a_link(jenv):
+    tiles = [{"value": 3, "label": "Ready to Ship", "tone": "green",
+              "href": "/sales-orders/?tab=ready"}]
+    html = _render(jenv, IMPORT_STRIP + "{{ metric_strip(tiles) }}", tiles=tiles)
+    assert '<a href="/sales-orders/?tab=ready"' in html
+
+
+def test_metric_strip_empty_renders_nothing(jenv):
+    for expr in ("metric_strip([])", "metric_strip(none)", "metric_strip()"):
+        html = _render(jenv, IMPORT_STRIP + "{{ %s }}" % expr)
+        assert html.strip() == ""
+
+
+def test_metric_strip_cols_variants_use_compiled_classes(jenv):
+    t = [{"value": 1, "label": "X", "tone": "blue"}]
+    assert "md:grid-cols-3" in _render(jenv, IMPORT_STRIP + "{{ metric_strip(t, cols=3) }}", t=t)
+    assert "md:grid-cols-5" in _render(jenv, IMPORT_STRIP + "{{ metric_strip(t, cols=5) }}", t=t)
+    assert "md:grid-cols-4" in _render(jenv, IMPORT_STRIP + "{{ metric_strip(t, cols=4) }}", t=t)

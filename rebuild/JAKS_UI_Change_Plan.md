@@ -1302,6 +1302,7 @@ for a net-new cross-cutting feature the risk is the inverse — N divergent per-
 - **Primitive 8 — `customer_flags(flags, compact=False)`** — `macros/customer_flags.html`. Customer flag chips (P2-D2). Ratified §8M.
 - **Primitive 9 — `intelligence_panel(metrics, cols=4)`** — `macros/intelligence.html`. Metric-grid layout + `customer_intelligence_panel` / `invoice_intelligence_panel` wrappers (P2-Q1 / §5.8). Ratified §8M.
 - **Primitive 10 — `credit_badge(cs)` / `credit_warn(cs)`** — `macros/credit_status.html`. Credit posture badge + non-blocking warn banner from `CustomerService.credit_status` (P2-D4/D5 / §4.5). Ratified §8M.
+- **Primitive 11 — `metric_strip(tiles, cols=4)`** — `macros/metric_strip.html`. List-header KPI-tile strip (icon + big number + label), extracted from the cores/warranty list headers (§2B / §5.1 SO dashboard). Ratified §8M.
 
 ---
 
@@ -2169,16 +2170,28 @@ template rework. No caller introduces new schema (§2B).
 - **Backend contract — SHIPPED @d28eaa3:** `CustomerService.credit_status` / `would_exceed_credit`. On a
   workspace pass the doc total as `prospective_amount` so the message reads "exceeds available credit by $X".
 
+**Component 5 — Metric Strip (Primitive 11 · §2B / §5.1, built 2026-06-03).**
+- **File / macros:** `app/templates/macros/metric_strip.html` → `metric_strip(tiles, cols=4)` (list-header
+  KPI-tile strip) + `metric_tile(t)`.
+- **Contract:** `tiles` = list of `{value, label, icon?, tone?, sub?, href?, alert?}`. Big-number KPI tiles
+  (icon box + `text-2xl` value + uppercase label) in a responsive grid. `href` → tile becomes a filter link;
+  `alert` → red ring; a numeric-0 value auto-mutes. Empty-safe. §4-permitted tones only (verified compiled).
+- **Why a new primitive (not `intelligence_panel`):** distinct visual — `intelligence_panel` is a compact
+  label/value grid for a record panel; this is the icon + big-number dashboard strip. Extracted at the §7
+  3-screen gate from the EXISTING `cores/list.html` + `warranty/list.html` strips (the §5.1 SO dashboard is
+  the 3rd). Those two should port to the macro when convenient (UI-Builder); new dashboards use it directly.
+
 **Rollout order (UI-Builder) — tracks `PHASE_2_PLAN.md` §8 build order:**
-1. **Customer Flags** first (highest owner priority, P2-D2). Surfaces: Customer list (compact), customer
-   `_preview_panel`, customer `detail` (Account header), then Quote / SO / Invoice workspace customer
-   headers. Each call site: `customer_flags(customer.flag_keys | default([]) [, compact=True])`.
-2. **Customer Intelligence Panel** (P2-Q1) — Account tab on `customers/detail.html`, condensed in
-   `customers/_preview_panel.html`. Depends on Backend `CustomerMetricsService`; renders zeros until then.
-3. **Credit Status** (P2-D4/D5, §4.5) — `credit_badge` on customer list / preview / header + SO & Invoice
-   headers; `credit_warn` on the Quote / SO / Invoice workspaces (pass the doc total as `prospective_amount`).
-4. **Margin consumers** alongside the Invoice Intelligence Panel (§5.8) + quote/invoice margin columns —
-   wrap each margin figure in `x-show="showMargin"`. The toggle itself is already live.
+1. **Customer Flags** — ✅ WIRED @406d322 + governance PASS 2026-06-03 (customer list compact / preview /
+   detail + Quote/SO/Invoice workspace headers; correct `flagmacro.customer_flags(… | default([]))`).
+2. **Customer Intelligence Panel** — ✅ WIRED @406d322 (customer `detail` Account header + `_preview_panel`).
+3. **Credit Status** — ⛔ NOT DONE. `credit_badge`/`credit_warn` are called nowhere; `customers/detail.html`
+   hand-rolls a credit badge instead (punch #1). Next: `credit_badge` on customer surfaces + SO/Invoice
+   headers, `credit_warn` on Quote/SO/Invoice workspaces (router must pass `credit_status`).
+4. **SO Dashboard metric strip** (§5.1) — macro READY (`metric_strip`); SO-list wiring is the §5 wave.
+5. **Invoice Intelligence Panel** (§5.8) — ✅ WIRED @b17abd8 + governance PASS 2026-06-03
+   (`invoices/workspace.html`; Profit/Margin gated by the live `showMargin` toggle).
+6. **Margin consumers** — wrap each margin figure in `x-show="showMargin"` (the toggle is already live).
 
 **Governance ruling (Architect, 2026-06-02): ✅ PASS.**
 - **Pattern:** PASS. Net-new cross-cutting primitives authored as the contract before the 3-screen gate,
@@ -2197,6 +2210,31 @@ template rework. No caller introduces new schema (§2B).
   metric grid inline. Verify correct usage (call site + `| default([])` seam), not rebuilds.
 - **Do NOT re-pass or rebuild the macros.** Backend contracts are live, so each surface populates the moment
   UI-Builder wires the call site — no further macro changes required.
+
+**Governance pass — 406d322 + b17abd8 rollout (Architect, 2026-06-03).** Reviewed the wired flag chips +
+customer/invoice intelligence panels across the customer/quote/SO/invoice surfaces (jaks-ui-governance:
+review usage, punch, don't rebuild).
+- **Flag chips (P2-D2): ✅ PASS.** All 6 surfaces call `flagmacro.customer_flags(… | default([]))` via the
+  namespaced import (avoids the `customer_flags` context-var ↔ macro-name collision) — compact on the list,
+  full elsewhere. `customers/list.html` correctly DROPPED its old tax-exempt pill in favour of the chip.
+- **Customer Intelligence Panel (P2-Q1): ✅ PASS.** `intel.customer_intelligence_panel(…)` on detail + preview.
+- **Invoice Intelligence Panel (§5.8 / P2-D3): ✅ PASS** (wired @b17abd8).
+  `intel.invoice_intelligence_panel(invoice_intelligence | default({}))` on `invoices/workspace.html`;
+  Profit/Margin correctly gated by `showMargin`. Minor (non-blocking): the wrapper uses raw
+  `bg-white rounded-xl border…` utilities rather than the `.card` class — cosmetic only.
+- **Punch list (handed to UI-Builder — screen files, not Architect-owned):**
+  1. `customers/detail.html` ~L80-87 — **hand-rolled credit badge** (`On Credit Hold` / `Over Credit Limit`)
+     built inline from `_m`: a renderer-discipline violation AND redundant with the `credit_hold` flag chip +
+     the panel's Available-Credit tone. Fix: remove it (redundant), or replace with
+     `credit.credit_badge(credit_status)` (router must pass a `credit_status` dict).
+  2. `quotes/workspace.html` ~L73-77 — **redundant "Tax Exempt" pill** duplicates the flag chip at L30
+     (tax_exempt is in `flag_keys`). Remove for parity with `customers/list.html`; surface the cert # in a
+     non-duplicative spot if still wanted. (Quote-workspace only — SO/Invoice headers are clean.)
+  3. **Credit-status not delivered.** Despite 406d322's message ("…credit warn"), `credit_badge`/`credit_warn`
+     are called nowhere; no file imports `credit_status.html`. The §4.5 credit-warn on Quote/SO/Invoice
+     workspaces is still TODO (rollout step 3).
+- **Verdict:** flag-chip + intelligence-panel rollout **PASS** (usage correct — no rebuilds). Credit-status
+  rollout **INCOMPLETE** + 1 divergence to reconcile. Punches 1-2 are non-blocking; do not hold the passed work.
 
 ---
 
