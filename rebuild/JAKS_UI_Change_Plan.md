@@ -2203,9 +2203,10 @@ template rework. No caller introduces new schema (§2B).
 3. **Credit Status** — 🟡 PARTIAL. ✅ `credit_badge` + `credit_warn` on customer `detail` + `_preview_panel`
    @505fc4b (governance PASS 2026-06-03). ⏳ Pending: `credit_warn` on Quote/SO/Invoice workspaces (route must
    pass `credit_status(customer, doc_total)` — Backend seam).
-4. **SO §5 wave** (Backend @aceae25 SHIPPED) — both macros READY for UI-Builder to wire: (a) `metric_strip`
-   for the §5.1 dashboard strip (feed `SalesOrderMetricsService.dashboard_metrics()` → `SO_DASHBOARD_KEYS`);
-   (b) `so_po_status_chip` for the §5.2/§5.10 backorder/ETA status (feed `po_link_status`/`po_link_map`).
+4. **SO §5 wave** — 🟡 IN PROGRESS. Backend @aceae25 SHIPPED; `sales_orders/list.html` now UNBLOCKED (badge
+   fix @9467046, governance PASS). Both macros READY to wire: (a) `metric_strip` for the §5.1 dashboard strip
+   (feed `dashboard_metrics()` → `SO_DASHBOARD_KEYS`); (b) `so_po_status_chip` for the §5.2/§5.10 backorder/ETA
+   status (feed `po_link_status`/`po_link_map`). Strip + chip wiring not yet landed.
 5. **Invoice Intelligence Panel** (§5.8) — ✅ WIRED @b17abd8 + governance PASS 2026-06-03
    (`invoices/workspace.html`; Profit/Margin gated by the live `showMargin` toggle).
 6. **Margin consumers** — wrap each margin figure in `x-show="showMargin"` (the toggle is already live).
@@ -2264,7 +2265,18 @@ review usage, punch, don't rebuild).
 - ⏳ **STILL OPEN (punch #3 remainder):** `credit_warn` on the SO / Invoice / quote WORKSPACES (§4.5) — needs
   the route to pass `credit_status(customer, doc_total)` (prospective_amount = the doc total); Backend seam.
 - §5 SO UI not yet wired — `metric_strip` (P11) + `so_po_status_chip` (P12) are READY; `sales_orders/list.html`
-  is dirty-gated, left to UI-Builder. Vendor-catalog OUT of scope @1afd51a — no macros.
+  is now UNBLOCKED (@9467046, below), left to UI-Builder. Vendor-catalog OUT of scope @1afd51a — no macros.
+
+**Governance pass — 9467046 + 9e7a364 (2026-06-03, cont.).**
+- ✅ **SO list badge @9467046: PASS** — the Invoiced/Partial column now derives from `so.status` (==
+  `SOStatus.INVOICED` / `PARTIAL`) via the canonical `status_chip` macro (green / amber, §4), matching the
+  tabs + counts so the column can't contradict the "Invoiced" tab (fixes the stale-`qty_invoiced`-after-void
+  bug). Correct macro usage; unblocks the §5.1 strip wiring.
+- 🟡 **D-6 @9e7a364: ROUTE HALF only — TEMPLATE HALF still TODO.** `products.py` quick-create now re-renders
+  `_quick_create.html` at 200 with `error` + `form_data` (HTMX swaps the panel instead of the generic 422
+  fallback). The template does **not** yet consume them, so a validation error currently swaps in an EMPTY
+  panel with no message (user input lost). UI-Builder must add an `{% if error %}` banner (standard
+  `bg-red-50 border-red-200 text-red-700` alert) + repopulate inputs from `form_data`. Govern that half on landing.
 
 ---
 
