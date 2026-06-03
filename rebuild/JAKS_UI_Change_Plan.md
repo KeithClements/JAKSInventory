@@ -1301,6 +1301,7 @@ for a net-new cross-cutting feature the risk is the inverse — N divergent per-
 - **Primitive 7 — `linked_strip(links)`** — `macros/linked_docs.html`. Workspace cross-doc nav. Ratified §8K (gate met: 4 workspaces).
 - **Primitive 8 — `customer_flags(flags, compact=False)`** — `macros/customer_flags.html`. Customer flag chips (P2-D2). Ratified §8M.
 - **Primitive 9 — `intelligence_panel(metrics, cols=4)`** — `macros/intelligence.html`. Metric-grid layout + `customer_intelligence_panel` / `invoice_intelligence_panel` wrappers (P2-Q1 / §5.8). Ratified §8M.
+- **Primitive 10 — `credit_badge(cs)` / `credit_warn(cs)`** — `macros/credit_status.html`. Credit posture badge + non-blocking warn banner from `CustomerService.credit_status` (P2-D4/D5 / §4.5). Ratified §8M.
 
 ---
 
@@ -2101,7 +2102,7 @@ pass — **pending Architect governance sign-off** (Builder does not self-mark c
 
 ---
 
-#### 8M. Phase-2 Shared Components — flags · margin toggle · intelligence panel — BUILT + RATIFIED 2026-06-02
+#### 8M. Phase-2 Shared Components — flags · margin toggle · intelligence panel · credit status — BUILT + RATIFIED 2026-06-02
 
 The first wave of Phase 2 (`PHASE_2_PLAN.md` §8 build order) needs three cross-cutting UI primitives
 that recur on many screens. Per the §8J/§8K precedent, the Architect authors these as the canonical
@@ -2120,13 +2121,17 @@ template rework. No caller introduces new schema (§2B).
 - **Contract:** `flags` is a list of flag KEY strings. The macro NEVER reads customer columns — it maps
   keys → chip via the taxonomy registry (single source of truth in the file). Unknown keys render a
   neutral gray chip with the raw key in the `title` (never a 500, never silently dropped).
-- **Taxonomy (keys → §4 colour):** `requires_po` (amber), `credit_hold` (red), `do_not_contact` (red),
-  `tax_exempt` (blue), `call_first` (blue), `text_preferred` (blue), `warranty_escalation` (purple).
-  All §4-permitted families, reusing the §5 chip tone classes. Add a flag = add a key here + record it
-  in this section; a NEW colour family needs Architect approval.
+- **Taxonomy — KEYS are canonical in `app/constants.py::CustomerFlag` (Backend); the macro mirrors them.**
+  6 keys → §4 colour: `requires_po` (amber), `credit_hold` (red), `tax_exempt` (blue), `call_first` (blue),
+  `text_preferred` (blue), `warranty_escalation` (purple). Labels match `constants.CUSTOMER_FLAG_LABELS`
+  (reconciled 2026-06-02: macro fixed `Warranty Watch`→`Warranty Escalation` and dropped the speculative
+  `do_not_contact` — it is in neither §4.3 nor the enum). Chip colour/icon/label is canonical IN the macro.
+  Add a flag = add to `CustomerFlag` (Backend) + the macro registry + this section; new colour → Architect.
 - **Compact mode** = icon-only (label → `aria-label` + `title`) for dense list rows.
-- **Backend contract (single derivation point):** `Customer.flag_keys -> list[str]` (P2-D2) returns the
-  active keys. Until it exists, callers pass `customer.flag_keys | default([])` → renders nothing.
+- **Backend contract — SHIPPED @ca58c81 (foundations @d28eaa3):** `Customer.flag_keys -> list[str]`
+  (delegated by `CustomerService.flags_for`) is the single derivation point. `customer_flags(...)` is the
+  ONLY sanctioned chip renderer — the router also passes a `customer_flag_labels` dict, but do **not**
+  hand-roll label-only pills from it (no colour/icon = divergence). Pass `customer.flag_keys | default([])`.
 
 **Component 2 — Margin Show/Hide Toggle (P2-D3).**
 - **Where:** `base.html`. Root `<body>` x-data gains `showMargin` (persisted to `localStorage`, **OFF by
@@ -2150,6 +2155,19 @@ template rework. No caller introduces new schema (§2B).
   `outstanding_core_credits`; dates — `last_quote_date`, `last_invoice_date`, `last_payment_date`; bool —
   `credit_hold`. Invoice panel (§5.8) keys: `profit`, `margin_pct`, `core_liability`, `warranty_exposure`,
   `customer_lifetime_sales`. One definition per P2-Q1 so list / preview / detail / panel all agree.
+  **SHIPPED:** `CustomerMetricsService` @ca58c81 (METRIC_KEYS include the UI aliases `avg_order_value` /
+  `open_ar_balance` / `credit_hold`) + `InvoiceMetricsService` @c2487d9 (wired in `invoices.py
+  _workspace_context`). Both built to this contract — **do not rename keys.**
+
+**Component 4 — Credit Status (Primitive 10 · P2-D4/D5 / §4.5).**
+- **File / macros:** `app/templates/macros/credit_status.html` → `credit_badge(cs, compact=False)` (glance
+  posture for list / preview / header) + `credit_warn(cs)` (non-blocking warn banner for Quote/SO/Invoice).
+- **Contract:** both consume `CustomerService.credit_status(customer, prospective_amount=0.0)` — keys
+  `on_hold` · `over_limit` · `available_credit` (None = no limit) · `warn` · `message`. WARN-ONLY, never
+  blocks (P2-D4). `credit_warn` renders nothing unless `warn`; both empty-safe (`cs=None`). Colours: red
+  (hold), amber (over/warn), green (available), gray (no limit) — all §4-permitted.
+- **Backend contract — SHIPPED @d28eaa3:** `CustomerService.credit_status` / `would_exceed_credit`. On a
+  workspace pass the doc total as `prospective_amount` so the message reads "exceeds available credit by $X".
 
 **Rollout order (UI-Builder) — tracks `PHASE_2_PLAN.md` §8 build order:**
 1. **Customer Flags** first (highest owner priority, P2-D2). Surfaces: Customer list (compact), customer
@@ -2157,20 +2175,28 @@ template rework. No caller introduces new schema (§2B).
    headers. Each call site: `customer_flags(customer.flag_keys | default([]) [, compact=True])`.
 2. **Customer Intelligence Panel** (P2-Q1) — Account tab on `customers/detail.html`, condensed in
    `customers/_preview_panel.html`. Depends on Backend `CustomerMetricsService`; renders zeros until then.
-3. **Margin consumers** alongside the Invoice Intelligence Panel (§5.8) + quote/invoice margin columns —
+3. **Credit Status** (P2-D4/D5, §4.5) — `credit_badge` on customer list / preview / header + SO & Invoice
+   headers; `credit_warn` on the Quote / SO / Invoice workspaces (pass the doc total as `prospective_amount`).
+4. **Margin consumers** alongside the Invoice Intelligence Panel (§5.8) + quote/invoice margin columns —
    wrap each margin figure in `x-show="showMargin"`. The toggle itself is already live.
 
 **Governance ruling (Architect, 2026-06-02): ✅ PASS.**
 - **Pattern:** PASS. Net-new cross-cutting primitives authored as the contract before the 3-screen gate,
   per the §8J/§8K precedent. No new CSS class; no new colour family (all §4-permitted, verified compiled
   in `app/static/css/app.css`).
-- **Safety condition (MET):** all three render against empty/missing data without erroring — verified by
-  `tests/test_phase2_ui_macros.py` (10 tests: known/compact/empty/unknown flags; money/date/credit-hold/
-  empty metrics; the margin-gating count; `base.html` toggle through the real app stack).
-- **Schema:** none added (§2B). Backend owns the two data contracts above; the view layer holds no
-  business logic (which flags are active / how metrics are computed live in Python).
-- **Do NOT re-pass or rebuild.** When Backend lands `Customer.flag_keys` + `CustomerMetricsService`, the
-  surfaces populate with zero template changes.
+- **Safety condition (MET):** all FOUR macro families render against empty/missing data without erroring —
+  verified by `tests/test_phase2_ui_macros.py` (14 tests: known/compact/empty/unknown flags; the
+  canonical-`CustomerFlag` drift guard; StrEnum-member input; money/date/credit-hold/empty metrics; the
+  margin-gating count; credit badge states + warn-only banner; `base.html` toggle through the real app stack).
+- **Schema:** none added (§2B). Backend owns the data contracts (all SHIPPED: `Customer.flag_keys` @ca58c81,
+  `CustomerMetricsService` @ca58c81, `InvoiceMetricsService` @c2487d9, `CustomerService.credit_status`
+  @d28eaa3); the view layer holds no business logic.
+- **Renderer discipline (the check applied to each render as it lands):** `customer_flags()` /
+  `credit_badge()` / `credit_warn()` / the `*_intelligence_panel` wrappers are the ONLY sanctioned renderers
+  for their data. UI-Builder must CALL them — not hand-roll chips from `customer_flag_labels`, not rebuild a
+  metric grid inline. Verify correct usage (call site + `| default([])` seam), not rebuilds.
+- **Do NOT re-pass or rebuild the macros.** Backend contracts are live, so each surface populates the moment
+  UI-Builder wires the call site — no further macro changes required.
 
 ---
 

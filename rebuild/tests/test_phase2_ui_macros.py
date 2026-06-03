@@ -56,8 +56,8 @@ IMPORT_FLAGS = "{% from 'macros/customer_flags.html' import customer_flags, cust
 
 def test_customer_flags_renders_known_keys_with_labels_and_colours(jenv):
     html = _render(jenv, IMPORT_FLAGS + "{{ customer_flags(['requires_po','credit_hold','tax_exempt','warranty_escalation']) }}")
-    # Labels present
-    for label in ("Requires PO #", "Credit Hold", "Tax Exempt", "Warranty Watch"):
+    # Labels present — must match constants.CUSTOMER_FLAG_LABELS exactly (no drift)
+    for label in ("Requires PO #", "Credit Hold", "Tax Exempt", "Warranty Escalation"):
         assert label in html, f"missing flag label: {label}"
     # §4-permitted colour families, mapped per taxonomy
     assert "bg-amber-100 text-amber-700" in html      # requires_po → warning
@@ -167,3 +167,72 @@ def test_base_html_renders_margin_toggle_through_app():
         assert "toggleMargin()" in body            # header control wired
         assert "showMargin:" in body               # root x-data state declared
         assert "localStorage.setItem('showMargin'" in body  # persistence
+
+
+# ===========================================================================
+# Taxonomy drift guard — the macro must know every canonical CustomerFlag
+# ===========================================================================
+
+def test_customer_flags_macro_covers_every_canonical_flag(jenv):
+    """Every value in constants.CustomerFlag must render as a real chip (not the
+    gray 'unregistered' fallback), so the macro registry can't silently drift from
+    the Backend-owned enum."""
+    from app.constants import CustomerFlag
+    for flag in CustomerFlag:
+        html = _render(jenv, IMPORT_FLAGS + "{{ customer_flag('%s') }}" % flag.value)
+        assert "Unregistered flag" not in html, f"macro is missing canonical flag {flag.value!r}"
+
+
+def test_customer_flag_accepts_strenum_member(jenv):
+    """flags_for() yields CustomerFlag members; the macro must handle them (StrEnum
+    hashes/compares as its str value) identically to raw key strings."""
+    from app.constants import CustomerFlag
+    html = _render(jenv, IMPORT_FLAGS + "{{ customer_flags(flags) }}",
+                   flags=[CustomerFlag.REQUIRES_PO, CustomerFlag.CREDIT_HOLD])
+    assert "Requires PO #" in html and "Credit Hold" in html
+    assert "Unregistered flag" not in html
+
+
+# ===========================================================================
+# credit_status — Primitive 10 (P2-D4 / §4.5)
+# ===========================================================================
+
+IMPORT_CREDIT = "{% from 'macros/credit_status.html' import credit_badge, credit_warn %}"
+
+
+def test_credit_badge_states(jenv):
+    hold = _render(jenv, IMPORT_CREDIT + "{{ credit_badge(cs) }}",
+                   cs={"on_hold": True, "over_limit": False, "available_credit": 500.0,
+                       "warn": True, "message": "Customer is on Credit Hold."})
+    assert "Credit Hold" in hold and "bg-red-100 text-red-700" in hold
+
+    over = _render(jenv, IMPORT_CREDIT + "{{ credit_badge(cs) }}",
+                   cs={"on_hold": False, "over_limit": True, "available_credit": -50.0,
+                       "warn": True, "message": "This order exceeds available credit."})
+    assert "Over Limit" in over and "bg-amber-100 text-amber-700" in over
+
+    ok = _render(jenv, IMPORT_CREDIT + "{{ credit_badge(cs) }}",
+                 cs={"on_hold": False, "over_limit": False, "available_credit": 1500.0, "warn": False})
+    assert "$1500.00 credit" in ok and "bg-green-50 text-green-700" in ok
+
+    nolimit = _render(jenv, IMPORT_CREDIT + "{{ credit_badge(cs) }}",
+                      cs={"on_hold": False, "over_limit": False, "available_credit": None, "warn": False})
+    assert "No Limit" in nolimit and "bg-gray-100 text-gray-600" in nolimit
+
+
+def test_credit_warn_only_renders_on_warn(jenv):
+    none = _render(jenv, IMPORT_CREDIT + "{{ credit_warn(cs) }}",
+                   cs={"warn": False, "message": ""})
+    assert none.strip() == ""
+
+    empty = _render(jenv, IMPORT_CREDIT + "{{ credit_warn() }}")
+    assert empty.strip() == ""
+
+    hold = _render(jenv, IMPORT_CREDIT + "{{ credit_warn(cs) }}",
+                   cs={"warn": True, "on_hold": True, "message": "Customer is on Credit Hold."})
+    assert "Customer is on Credit Hold." in hold and "bg-red-50 border border-red-200" in hold
+
+    over = _render(jenv, IMPORT_CREDIT + "{{ credit_warn(cs) }}",
+                   cs={"warn": True, "on_hold": False, "over_limit": True,
+                       "message": "This order exceeds available credit by $250.00."})
+    assert "$250.00" in over and "bg-amber-50 border border-amber-200" in over
