@@ -1,0 +1,56 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   SO ↔ PO Status Chip — Phase-2 Primitive 12  (§5.2 backorder / §5.10 SO↔PO link)
+   Governance: JAKS_UI_Change_Plan.md §8M
+
+   so_po_status_chip(rollup, href=None, show_detail=True)
+
+   Renders the customer-facing backorder / on-order / ETA chip for a SO line.
+   `rollup` is the dict from Backend's
+   `SalesOrderMetricsService.po_link_status(line)` / `po_link_map(so)[line_id]`:
+     { status, label, po_id, po_number, qty_ordered, qty_received, eta_date }
+   status ∈ draft · ordered · partial · received · cancelled  (§5.10), PLUS the
+   non-linked / reserved cases the SO line surfaces — pass a synthetic rollup:
+     {'status': 'backorder'}                       (is_backordered, no PO yet)
+     {'status': 'ready', 'po_number': …, 'po_id': …}  (reserved_stock — earmarked)
+
+   This is the ONE backorder/ETA chip for the §5 SO UI (line grid · SO list ·
+   dashboard · ready-to-ship queue) so the lifecycle reads identically everywhere.
+   It REPLACES the per-screen copies: the PO.status-keyed chip in
+   `sales_orders/_lines_section.html` and the bare "Backorder" span in
+   `sales_orders/detail.html` should port to this (UI-Builder).
+
+   PURE PRESENTATION: the macro owns COLOUR per status; the LABEL comes from
+   Backend's rollup (`UI may relabel` — `rollup.label` wins, macro default else).
+   All colours §4-permitted (amber=waiting, blue=in-flight, green=here, gray=void).
+   Empty-safe: rollup None / no status → renders nothing. show_detail=False drops
+   the PO # / ETA suffix for dense list rows (just the coloured status label).
+═════════════════════════════════════════════════════════════════════════════ #}
+
+{% macro so_po_status_chip(rollup=None, href=None, show_detail=True) %}
+{%- set r = rollup or {} -%}
+{%- set status = r.get('status') -%}
+{%- if status -%}
+{%- set MAP = {
+  'backorder': ('bg-amber-50 text-amber-600', 'Backorder'),
+  'draft':     ('bg-amber-50 text-amber-600', 'PO Draft'),
+  'ordered':   ('bg-blue-50 text-blue-700',   'Ordered'),
+  'partial':   ('bg-blue-50 text-blue-700',   'Partially Received'),
+  'received':  ('bg-green-50 text-green-700', 'Received'),
+  'ready':     ('bg-green-50 text-green-700', 'Ready'),
+  'cancelled': ('bg-gray-100 text-gray-600',  'PO Cancelled'),
+} -%}
+{%- set m = MAP.get(status, ('bg-gray-100 text-gray-600', status | replace('_', ' ') | title)) -%}
+{%- set label = r.get('label') or m[1] -%}
+{%- set po_no = r.get('po_number') -%}
+{%- set eta = r.get('eta_date') -%}
+{%- set link = href or (('/purchase-orders/' ~ r.get('po_id')) if r.get('po_id') else none) -%}
+{%- set show_eta = show_detail and eta and status in ['backorder', 'draft', 'ordered', 'partial'] -%}
+{%- set body -%}{{ label }}{% if show_detail and po_no %} · {{ po_no }}{% endif %}{% if show_eta %} · ETA {{ eta.strftime('%b %d') }}{% endif %}{%- endset -%}
+{%- if link -%}
+<a href="{{ link }}" title="{{ label }}{% if show_detail and po_no %} · PO {{ po_no }}{% endif %}"
+   class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium hover:opacity-80 transition-opacity {{ m[0] }}">{{ body }} →</a>
+{%- else -%}
+<span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium {{ m[0] }}">{{ body }}</span>
+{%- endif -%}
+{%- endif -%}
+{% endmacro %}

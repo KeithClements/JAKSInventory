@@ -279,3 +279,51 @@ def test_metric_strip_cols_variants_use_compiled_classes(jenv):
     assert "md:grid-cols-3" in _render(jenv, IMPORT_STRIP + "{{ metric_strip(t, cols=3) }}", t=t)
     assert "md:grid-cols-5" in _render(jenv, IMPORT_STRIP + "{{ metric_strip(t, cols=5) }}", t=t)
     assert "md:grid-cols-4" in _render(jenv, IMPORT_STRIP + "{{ metric_strip(t, cols=4) }}", t=t)
+
+
+# ===========================================================================
+# so_po_status_chip — Primitive 12 (§5.2 backorder / §5.10 SO↔PO link)
+# ===========================================================================
+
+IMPORT_SO = "{% from 'macros/so_status.html' import so_po_status_chip %}"
+
+
+def test_so_chip_renders_backend_rollup_with_link_and_eta(jenv):
+    # Shape from SalesOrderMetricsService.po_link_status()
+    r = {"status": "ordered", "label": "Ordered", "po_id": 7, "po_number": "PO-2026-0007",
+         "eta_date": datetime.date(2026, 6, 9)}
+    html = _render(jenv, IMPORT_SO + "{{ so_po_status_chip(r) }}", r=r)
+    assert "bg-blue-50 text-blue-700" in html          # in-flight tone
+    assert "Ordered" in html and "PO-2026-0007" in html
+    assert "ETA Jun 09" in html
+    assert '<a href="/purchase-orders/7"' in html      # links to the PO
+
+
+def test_so_chip_backorder_and_ready_synthetic_states(jenv):
+    bo = _render(jenv, IMPORT_SO + "{{ so_po_status_chip({'status': 'backorder'}) }}")
+    assert "Backorder" in bo and "bg-amber-50 text-amber-600" in bo
+    assert "<a" not in bo                               # no PO → span, not link
+    ready = _render(jenv, IMPORT_SO + "{{ so_po_status_chip({'status': 'ready', 'po_id': 3, 'po_number': 'PO-3'}) }}")
+    assert "Ready" in ready and "bg-green-50 text-green-700" in ready
+
+
+def test_so_chip_received_has_no_eta_and_cancelled_is_gray(jenv):
+    rec = _render(jenv, IMPORT_SO + "{{ so_po_status_chip(r) }}",
+                  r={"status": "received", "label": "Received", "eta_date": datetime.date(2026, 6, 9)})
+    assert "Received" in rec and "ETA" not in rec      # arrived → no ETA
+    can = _render(jenv, IMPORT_SO + "{{ so_po_status_chip(r) }}",
+                  r={"status": "cancelled", "label": "PO Cancelled"})
+    assert "PO Cancelled" in can and "bg-gray-100 text-gray-600" in can
+
+
+def test_so_chip_show_detail_false_drops_po_and_eta(jenv):
+    r = {"status": "ordered", "label": "Ordered", "po_id": 7, "po_number": "PO-7",
+         "eta_date": datetime.date(2026, 6, 9)}
+    html = _render(jenv, IMPORT_SO + "{{ so_po_status_chip(r, show_detail=False) }}", r=r)
+    assert "Ordered" in html
+    assert "PO-7" not in html and "ETA" not in html    # compact: label only
+
+
+def test_so_chip_empty_is_safe(jenv):
+    for expr in ("so_po_status_chip(none)", "so_po_status_chip({})", "so_po_status_chip()"):
+        assert _render(jenv, IMPORT_SO + "{{ %s }}" % expr).strip() == ""
