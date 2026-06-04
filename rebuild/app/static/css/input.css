@@ -223,6 +223,19 @@
   /* ── Section heading ─────────────────────────────────────────────────── */
   .section-title { @apply text-xs font-semibold text-gray-600 uppercase tracking-widest mb-3; }
 
+  /* ── Sticky table header (long lists; pairs with the sortable_th macro) ───
+     Add `.sticky-thead` to a <thead>: all its <th> stick to the top of the
+     scroll container while the body scrolls. Needs an opaque header bg (gray-50
+     here) so rows scroll cleanly underneath. Does NOT touch the colored left-edge
+     row stripes (§2/§4 border-l-4 — a LOCKED operational feature). Define-once;
+     activates on the next `npm run build:css`. */
+  .sticky-thead th {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: #f9fafb; /* gray-50 — matches the §2 list header */
+  }
+
 }
 
 /* ── Sidebar collapse (§layout — CSS only, no @apply) ────────────────────── */

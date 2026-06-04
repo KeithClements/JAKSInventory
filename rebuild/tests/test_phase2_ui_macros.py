@@ -369,3 +369,39 @@ def test_migrated_print_templates_include_shared_branding(jenv):
         assert 'include "documents/_footer.html"' in src, f"{tpl} must include shared footer"
         assert '<div class="co-name">{{ company.name' not in src, f"{tpl} still has an inline header copy"
         jenv.get_template(tpl)                           # compiles (include refs + syntax valid)
+
+
+# ===========================================================================
+# sortable_th — Primitive 13 (clickable sort column header, §2 lists)
+# ===========================================================================
+
+IMPORT_SORTH = "{% from 'macros/sortable.html' import sortable_th %}"
+
+
+def test_sortable_th_active_asc_shows_up_arrow_and_toggles_to_desc(jenv):
+    # href separators render as &amp; under autoescape — assert the param fragments
+    html = _render(jenv, IMPORT_SORTH + "{{ sortable_th('SKU', 'sku', sort='sku', dir='asc') }}")
+    assert "SKU" in html
+    assert "?sort=sku" in html and "dir=desc" in html  # clicking an asc column flips to desc
+    assert "text-brand-600" in html                    # active arrow is branded
+    assert "M5 15l7-7 7 7" in html                      # chevron-up (asc)
+
+
+def test_sortable_th_active_desc_shows_down_arrow_and_toggles_to_asc(jenv):
+    html = _render(jenv, IMPORT_SORTH + "{{ sortable_th('SKU', 'sku', sort='sku', dir='desc') }}")
+    assert "dir=asc" in html                            # desc → back to asc
+    assert "M19 9l-7 7-7-7" in html                     # chevron-down (desc)
+
+
+def test_sortable_th_inactive_is_neutral_and_links_asc(jenv):
+    html = _render(jenv, IMPORT_SORTH + "{{ sortable_th('Vendor', 'vendor', sort='sku', dir='asc') }}")
+    assert "?sort=vendor" in html and "dir=asc" in html  # inactive column → asc
+    assert "text-gray-300" in html                      # faint neutral indicator
+    assert "text-brand-600" not in html                 # not the active column
+
+
+def test_sortable_th_preserves_qs_and_align(jenv):
+    html = _render(jenv, IMPORT_SORTH + "{{ sortable_th('Total', 'total', sort='total', dir='asc', qs='&tab=open&q=acme', align='right') }}")
+    for frag in ("sort=total", "dir=desc", "tab=open", "q=acme"):   # other params preserved
+        assert frag in html
+    assert "text-right" in html

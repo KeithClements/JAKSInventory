@@ -161,7 +161,7 @@ Every major list screen must include these elements:
 2. **Search field** — icon-prefixed input, left-aligned, preserves other query params on submit
 3. **Filter tabs with counts** — pill-style nav (`bg-brand-700` active, `bg-gray-100` container), tab counts always reflect full unfiltered dataset
 4. **Operational grid/table** — `divide-y divide-gray-100` rows, explicit Tailwind padding (not `tbl-td`), `overflow-x-auto` wrapper
-5. **Left-edge status stripe** — `border-l-4` on first cell: red = critical/out-of-stock, amber = warning/low/overdue, blue = informational/on-order, transparent = normal
+5. **Left-edge status stripe** — `border-l-4` on first cell: red = critical/out-of-stock, amber = warning/low/overdue, blue = informational/on-order, transparent = normal. **🔒 LOCKED operational feature (§8Q): no future redesign / "modernization" may remove these colored row stripes or their color semantics.**
 6. **Always-visible status chips** — never hover-to-reveal, inline dot + label format
 7. **Clear hover state** — `hover:bg-gray-50/80 transition-colors` on every row
 8. **Selected row state** — `ring-inset ring-1 ring-brand-300 bg-brand-50/40` when preview is open or row is active
@@ -1304,6 +1304,7 @@ for a net-new cross-cutting feature the risk is the inverse — N divergent per-
 - **Primitive 10 — `credit_badge(cs)` / `credit_warn(cs)`** — `macros/credit_status.html`. Credit posture badge + non-blocking warn banner from `CustomerService.credit_status` (P2-D4/D5 / §4.5). Ratified §8M.
 - **Primitive 11 — `metric_strip(tiles, cols=4)`** — `macros/metric_strip.html`. List-header KPI-tile strip (icon + big number + label), extracted from the cores/warranty list headers (§2B / §5.1 SO dashboard). Ratified §8M.
 - **Primitive 12 — `so_po_status_chip(rollup)`** — `macros/so_status.html`. Backorder / on-order / ETA chip off the §5.10 SO↔PO rollup (`SalesOrderMetricsService.po_link_status`). Ratified §8M.
+- **Primitive 13 — `sortable_th(label, key, sort, dir, qs)`** — `macros/sortable.html`. Clickable sort column header (▲/▼ arrow; toggles `?sort=&dir=`; preserves other query params; route reads `sort`+`dir`). Pairs with `.sticky-thead`. Ratified §8Q.
 
 ---
 
@@ -2329,6 +2330,46 @@ macro, no governance pattern for it; this is a pure deletion.
 **Governance criteria (apply at landing):** the removal must leave **no dangling reference** — grep clean for
 `enrich-panel`, `product-cost-synced`, and any orphaned `ScraperSource` / `src_code` / `src_name` template
 var. Pure deletion → no new primitive, no colour, nothing to re-pass once the greps are clean.
+
+---
+
+#### 8Q. List Standards Wave — Save standard · sortable_th · sticky-thead · row-stripe LOCK (2026-06-03)
+
+Targeted standards pass on the operational lists + forms (Architect-owned: macros / CSS / plan).
+
+**(1) Save standard — DECIDED (records the rule so it stops drifting).** Two patterns, chosen by surface type:
+- **Autosave line-item workspaces (Quote / SO / Invoice / PO)** → **Save Standard v2**: silent debounced
+  autosave + a **sticky bottom dirty-state save bar** (honest clean/dirty/saving/error pill + manual Save).
+  Quote has it (`quotes/workspace.html`); Invoice/SO/PO autosave but currently surface NO honest save feedback.
+  **Recommendation: roll the Save Standard v2 sticky bar out to SO/Invoice/PO** — same component, driven by each
+  workspace's autosave events. Quote is **not** special; the bar is the standard for autosave docs.
+- **Submit forms (create / edit: customers, products, vendors, …)** → the **bottom button bar** (explicit
+  Save Changes / Create). Not autosave → the dirty-state sticky bar doesn't apply; keep the bottom button
+  (per §8C the customer-detail edit footer already follows this).
+- **Rule:** autosave surface → sticky dirty-state bar; submit surface → bottom button. No third pattern.
+
+**(2) `sortable_th(label, key, sort, dir, qs, align)` — Primitive 13** (`macros/sortable.html`). Clickable
+column header: links `?sort={key}&dir={asc|desc}` (toggles direction on the active column), preserves other
+query params via `qs`, shows ▲/▼ on the active column + a faint ↕ otherwise. **Route contract:** the list route
+reads `sort` + `dir` and passes them back. Reuse across all four operational lists for identical sort UX. The
+href is built as one expression so autoescape renders separators as `&amp;` uniformly (injection-safe — `qs`
+is never `|safe`). Tests in `tests/test_phase2_ui_macros.py`.
+
+**(3) Sticky-thead — define-once CSS** (`.sticky-thead` in `app/static/css/input.css`, @layer components):
+apply `.sticky-thead` to a `<thead>` and all its `<th>` stick to the top while the body scrolls (opaque gray-50
+bg so rows pass cleanly underneath). Pairs with `sortable_th`. **Activates on the next `npm run build:css`** —
+`app.css` was dirty (another lane mid-build) so it was NOT hand-edited; the rule lives in the `input.css` source
+and compiles on the next build (§8L precedent).
+
+**(4) 🔒 Row-stripe CONSTRAINT — LOCKED.** The colored left-edge row stripes (`border-l-4` on the first `<td>`,
+§2/§2A/§2C/§4 color semantics) are a **locked operational feature** — they encode at-a-glance urgency
+(red=critical/overdue · amber=warning · blue=info · transparent=normal) that counter staff rely on. **No future
+redesign, "modernization", or density pass may remove them or their color semantics.** Any restyle must preserve
+the stripe. (Carried from the prior wave's directive; also marked inline at §2.)
+
+**Scope of this wave:** Architect delivered the macro + CSS + the recorded decisions/constraint. **UI-Builder
+implements:** adopt `sortable_th` + `.sticky-thead` on the four lists (routes add `sort`/`dir`), and roll the
+Save Standard v2 sticky bar onto SO/Invoice/PO. Govern each as it lands.
 
 ---
 
