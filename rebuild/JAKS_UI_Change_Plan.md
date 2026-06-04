@@ -2203,13 +2203,18 @@ template rework. No caller introduces new schema (§2B).
 3. **Credit Status** — 🟡 PARTIAL. ✅ `credit_badge` + `credit_warn` on customer `detail` + `_preview_panel`
    @505fc4b (governance PASS 2026-06-03). ⏳ Pending: `credit_warn` on Quote/SO/Invoice workspaces (route must
    pass `credit_status(customer, doc_total)` — Backend seam).
-4. **SO §5 wave** — 🟡 IN PROGRESS. Backend @aceae25 SHIPPED; `sales_orders/list.html` now UNBLOCKED (badge
-   fix @9467046, governance PASS). Both macros READY to wire: (a) `metric_strip` for the §5.1 dashboard strip
-   (feed `dashboard_metrics()` → `SO_DASHBOARD_KEYS`); (b) `so_po_status_chip` for the §5.2/§5.10 backorder/ETA
-   status (feed `po_link_status`/`po_link_map`). Strip + chip wiring not yet landed.
+4. **SO §5 wave** — ✅ WIRED @f32c41a + governance PASS 2026-06-03. `metric_strip(so_tiles, cols=4)` on
+   `sales_orders/list.html` (8 tiles from `dashboard_metrics()` → `SO_DASHBOARD_KEYS`, §4 tones, On-Hold `href`
+   filter) + per-row `so_po_status_chip` (backorder synthetic + earliest ETA, gated on `so.has_backorder`).
 5. **Invoice Intelligence Panel** (§5.8) — ✅ WIRED @b17abd8 + governance PASS 2026-06-03
    (`invoices/workspace.html`; Profit/Margin gated by the live `showMargin` toggle).
 6. **Margin consumers** — wrap each margin figure in `x-show="showMargin"` (the toggle is already live).
+7. **§7.2 Enrich-from-CSV** — ✅ WIRED @b2093cd + governance PASS 2026-06-03 (`products/list.html` Alpine
+   `fetch` → `POST /products/enrich-sync` JSON summary; correct JSON-endpoint pattern, §4 colors, no footgun).
+8. **§5.12 PDF branding** — 🟡 IN PROGRESS (this turn): shared `documents/_company_header.html` (logo + text
+   fallback) + `_footer.html` (configurable `footer_text`) + `.co-logo` print CSS, consuming the LIVE
+   `get_company_dict()`. invoices/ + quotes/ print migrated onto the shared partials → all 6 print docs now
+   share ONE branded definition. Next: Settings UI for logo upload / footer text is Backend/Admin's.
 
 **Governance ruling (Architect, 2026-06-02): ✅ PASS.**
 - **Pattern:** PASS. Net-new cross-cutting primitives authored as the contract before the 3-screen gate,
@@ -2277,6 +2282,33 @@ review usage, punch, don't rebuild).
   fallback). The template does **not** yet consume them, so a validation error currently swaps in an EMPTY
   panel with no message (user input lost). UI-Builder must add an `{% if error %}` banner (standard
   `bg-red-50 border-red-200 text-red-700` alert) + repopulate inputs from `form_data`. Govern that half on landing.
+
+**Governance pass — f32c41a + b2093cd + §5.12 (2026-06-03, cont. 3): ✅ PASS.** Synced to @370820b. Build-order
+items 1–6 done; §7.2 enrichment landed; PDF branding in progress.
+- ✅ **SO §5 strip + chip @f32c41a** — `metric_strip(so_tiles, cols=4)` (8 `SO_DASHBOARD_KEYS` tiles, §4 tones,
+  On-Hold `href` filter) + per-row `so_po_status_chip` (backorder + earliest ETA, gated on `so.has_backorder`).
+  Both imported via `{% from … %}`; correct macro usage.
+- ✅ **D-6 template half @f32c41a** — `_quick_create.html` now renders the `{% if error %}` banner (the standard
+  `bg-red-50 border-red-200 text-red-700` alert) + `fd.get(...)` field repopulation. Completes D-6 (route half
+  @9e7a364) — the earlier "empty panel" gap is closed.
+- ✅ **Scraper UI removed @f32c41a** — `_enrich_panel.html` deleted; `products/detail.html` trigger gone (now a
+  §8P comment); grep-clean (no live `enrich-panel` / `product-cost-synced` / `ScraperSource` refs). Matches §8P.
+- ✅ **§7.2 Enrich-from-CSV UI @b2093cd** — `products/list.html` Alpine `fetch` → `POST /products/enrich-sync`
+  (JSON) with error / success / busy states. Correct JSON-endpoint pattern (not a naive hx-get), §4 colors, no
+  tojson-in-attr footgun, "matches by SKU — never creates" guard. PASS.
+- 🟡 **Core Dashboard strip (§5.4): NOT landed** — only the Backend metrics service @03b167b; no UI strip yet.
+  When built it should use `metric_strip` (Primitive 11). Nothing to confirm this turn.
+- ⏳ **credit_warn on SO/Invoice workspaces:** Backend `credit_status` seam SHIPPED @fb05e08 → UI wiring now
+  UNBLOCKED (still pending UI-Builder; `credit_warn` currently only on customer detail/preview).
+- ✅ **§5.12 PDF branding (Architect, this turn):** the shared print branding partials now own the §5.12 logo +
+  footer — `documents/_company_header.html` (logo `<img class="co-logo">` when `logo_url` + `show_logo`, else the
+  text company name) + `_footer.html` (configurable `footer_text`, `white-space:pre-line`, default fallback) +
+  `.co-logo` in `documents/_styles.html`. Consumes the LIVE `get_company_dict()` (logo_url / show_logo /
+  footer_text — empty-safe). **invoices/ + quotes/ print migrated** off their inline header/footer onto the
+  shared includes (the 4 other print docs already included them) → ALL 6 print templates share one definition.
+  Verified: `tests/test_phase2_ui_macros.py` (logo / suppressed / no-logo fallback / footer_text + the migrated
+  templates compile) + the B-1 invoice-print render guards stay green. **OPEN (Backend/Admin):** the Settings
+  UI to upload the logo + edit footer text (`company_logo_path` / `document_footer_text` settings already exist).
 
 ---
 

@@ -1,12 +1,19 @@
-{# Company header — left side of doc-header.
-   Required vars:
-     company.name   (str) — company name (e.g. "JAKS Parts")
-     company.address(str, optional) — multi-line OK
-     company.phone  (str, optional)
-     company.email  (str, optional)
+{# Company header — left side of doc-header.  §5.12 branding (P2-Q4).
+   When a logo is uploaded AND not suppressed, render the logo image; otherwise
+   fall back to the text company name (no-logo = today's behavior, no regression).
+   ONE definition — included by every print template; do not inline a copy.
+   Vars (from app.services.document_render.get_company_dict):
+     company.name      (str)            — fallback brand text / logo alt
+     company.logo_url  (str | None)     — /static/… when set, else None
+     company.show_logo (bool, optional) — owner can suppress the logo without deleting it
+     company.address / company.phone / company.email (str, optional)
 #}
 <div>
+  {% if company.logo_url and (company.show_logo | default(true)) %}
+  <img src="{{ company.logo_url }}" alt="{{ company.name or 'Company' }}" class="co-logo">
+  {% else %}
   <div class="co-name">{{ company.name or "JAKS Parts" }}</div>
+  {% endif %}
   <div class="co-info">
     {% if company.address %}{{ company.address }}<br>{% endif %}
     {% if company.phone %}Tel:&nbsp;{{ company.phone }}{% if company.email %}&nbsp;&nbsp;·&nbsp;&nbsp;{% endif %}{% endif %}

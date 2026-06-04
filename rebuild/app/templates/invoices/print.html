@@ -59,6 +59,7 @@
       letter-spacing: -0.5px;
       line-height: 1.05;
     }
+    .co-logo { max-height: 56px; max-width: 240px; width: auto; display: block; margin-bottom: 6px; }  /* §5.12 — mirrors documents/_styles.html */
     .co-info {
       margin-top: 5px;
       font-size: 8.5pt;
@@ -253,14 +254,8 @@
 
   {# ── Header: company left | doc info right ──────────────────────────────── #}
   <div class="doc-header">
-    <div>
-      <div class="co-name">{{ company.name or "JAKS Parts" }}</div>
-      <div class="co-info">
-        {% if company.address %}{{ company.address }}<br>{% endif %}
-        {% if company.phone %}Tel:&nbsp;{{ company.phone }}{% if company.email %}&nbsp;&nbsp;·&nbsp;&nbsp;{% endif %}{% endif %}
-        {% if company.email %}{{ company.email }}{% endif %}
-      </div>
-    </div>
+    {# §5.12 branded company header — one shared definition (documents/_company_header.html) #}
+    {% include "documents/_company_header.html" %}
     <div class="doc-right">
       <div class="doc-label">Invoice</div>
       <div class="doc-number">{{ invoice.invoice_number }}</div>
@@ -451,13 +446,8 @@
   </p>
   {% endif %}
 
-  {# ── Footer ──────────────────────────────────────────────────────────────── #}
-  <div class="doc-footer">
-    Thank you for your business
-    {% if company.name %} &nbsp;·&nbsp; {{ company.name }}{% endif %}
-    {% if company.phone %} &nbsp;·&nbsp; {{ company.phone }}{% endif %}
-    {% if company.email %} &nbsp;·&nbsp; {{ company.email }}{% endif %}
-  </div>
+  {# ── Footer — §5.12 shared definition (configurable footer_text) ───────────── #}
+  {% include "documents/_footer.html" %}
 
 </div>{# /page-shell #}
 <script>

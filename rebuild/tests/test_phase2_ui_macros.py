@@ -327,3 +327,45 @@ def test_so_chip_show_detail_false_drops_po_and_eta(jenv):
 def test_so_chip_empty_is_safe(jenv):
     for expr in ("so_po_status_chip(none)", "so_po_status_chip({})", "so_po_status_chip()"):
         assert _render(jenv, IMPORT_SO + "{{ %s }}" % expr).strip() == ""
+
+
+# ===========================================================================
+# §5.12 print branding — shared documents/_company_header.html + _footer.html
+# (one definition, included by every print template; consumes get_company_dict())
+# ===========================================================================
+
+def test_company_header_renders_logo_when_set(jenv):
+    html = jenv.get_template("documents/_company_header.html").render(
+        company={"name": "JAKS Parts", "logo_url": "/static/uploads/logo.png", "show_logo": True})
+    assert '<img src="/static/uploads/logo.png"' in html and 'class="co-logo"' in html
+    assert '<div class="co-name">' not in html          # logo replaces the text name
+
+
+def test_company_header_text_fallback(jenv):
+    # (a) no logo_url, (b) logo present but suppressed, (c) bare dict (no branding keys)
+    h1 = jenv.get_template("documents/_company_header.html").render(company={"name": "JAKS Parts", "logo_url": None})
+    h2 = jenv.get_template("documents/_company_header.html").render(
+        company={"name": "JAKS Parts", "logo_url": "/static/x.png", "show_logo": False})
+    h3 = jenv.get_template("documents/_company_header.html").render(company={"name": "JAKS Parts"})
+    for h in (h1, h2, h3):
+        assert '<div class="co-name">JAKS Parts</div>' in h and "<img" not in h
+
+
+def test_footer_configurable_text_and_fallback(jenv):
+    branded = jenv.get_template("documents/_footer.html").render(
+        company={"name": "JAKS Parts", "footer_text": "All sales final.\nReturns within 30 days."})
+    assert "All sales final." in branded and "Returns within 30 days." in branded
+    assert "white-space:pre-line" in branded            # multi-line preserved without |safe
+    default = jenv.get_template("documents/_footer.html").render(company={"name": "JAKS Parts", "phone": "555-1212"})
+    assert "Thank you for your business" in default and "JAKS Parts" in default
+
+
+def test_migrated_print_templates_include_shared_branding(jenv):
+    """invoices/ + quotes/ print.html now pull the shared header/footer (not inline copies)."""
+    import pathlib
+    for tpl in ("invoices/print.html", "quotes/print.html"):
+        src = pathlib.Path("app/templates", tpl).read_text(encoding="utf-8")
+        assert 'include "documents/_company_header.html"' in src, f"{tpl} must include shared header"
+        assert 'include "documents/_footer.html"' in src, f"{tpl} must include shared footer"
+        assert '<div class="co-name">{{ company.name' not in src, f"{tpl} still has an inline header copy"
+        jenv.get_template(tpl)                           # compiles (include refs + syntax valid)
