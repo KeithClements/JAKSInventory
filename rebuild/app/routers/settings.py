@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request, Form
+import uuid
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, Request, Form, File, UploadFile, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
-from app.deps import get_db
+from app.deps import get_db, require_admin
 from app.models.setting import Setting
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -148,6 +151,11 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     "backup_on_startup":           ("true",    "Run a backup automatically on startup"),
     "backup_min_interval_hours":   ("12",      "Min hours between automatic startup backups"),
     "backup_last_run":             ("",        "Last successful backup (ISO timestamp)"),
+
+    # §5.12 — PDF / document branding (logo set via POST /settings/logo upload)
+    "company_logo_path":           ("",        "Company logo path under static/ (set via upload)"),
+    "document_footer_text":        ("",        "Footer text on Quote/SO/Invoice PDFs (terms / return policy / thank-you)"),
+    "document_show_logo":          ("true",    "Show the company logo on document headers"),
 }
 
 VISIBLE_KEYS = [
@@ -163,6 +171,8 @@ VISIBLE_KEYS = [
     "qbo_client_id", "qbo_client_secret",
     "shopify_store_url", "shopify_api_key", "shopify_api_secret",
     "taxjar_api_key",
+    # §5.12 — document branding (logo itself is set via POST /settings/logo)
+    "document_footer_text", "document_show_logo",
 ]
 
 
@@ -210,3 +220,46 @@ async def save_settings(request: Request, db: Session = Depends(get_db)):
             db.add(Setting(key=key, value=val, label=label))
     db.commit()
     return RedirectResponse("/settings/?saved=1", status_code=303)
+
+
+# ── §5.12 — Company logo upload (admin-only) ──────────────────────────────────
+_ALLOWED_LOGO_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+_MAX_LOGO_BYTES = 2 * 1024 * 1024  # 2 MB
+_UPLOAD_DIR = Path(__file__).resolve().parent.parent / "static" / "uploads"
+
+
+@router.post("/logo")
+async def upload_logo(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _admin=Depends(require_admin),
+):
+    """§5.12 — store an uploaded company logo under static/uploads/ and point
+    company_logo_path at it (relative to static/). Admin-only. Rejects
+    non-images (by extension AND declared content-type) and oversize files with
+    HTTP 400. Never touches money/totals. On success redirects back to settings.
+    """
+    ext = Path(file.filename or "").suffix.lower()
+    content_type = (file.content_type or "").lower()
+    if ext not in _ALLOWED_LOGO_EXT or not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Logo must be an image (png/jpg/gif/webp).")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file.")
+    if len(data) > _MAX_LOGO_BYTES:
+        raise HTTPException(status_code=400, detail="Logo exceeds the 2 MB size limit.")
+
+    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    safe_name = f"company_logo_{uuid.uuid4().hex}{ext}"
+    (_UPLOAD_DIR / safe_name).write_bytes(data)
+
+    rel_path = f"uploads/{safe_name}"   # relative to static/ → /static/uploads/...
+    row = db.query(Setting).filter(Setting.key == "company_logo_path").first()
+    if row:
+        row.value = rel_path
+    else:
+        db.add(Setting(key="company_logo_path", value=rel_path,
+                       label=DEFAULTS["company_logo_path"][1]))
+    db.commit()
+    return RedirectResponse("/settings/?logo_saved=1", status_code=303)

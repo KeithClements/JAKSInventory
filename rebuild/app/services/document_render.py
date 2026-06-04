@@ -34,13 +34,27 @@ from app.settings_utils import get_setting_value_db
 
 # ── Company settings dict ─────────────────────────────────────────────────────
 
-def get_company_dict(db: Session) -> dict[str, str]:
-    """Standard company block used across every document template."""
+def get_company_dict(db: Session) -> dict[str, Any]:
+    """Standard company block used across every document template.
+
+    §5.12 branding fields are EMPTY-SAFE: when no logo is set, ``logo_url`` is
+    ``None`` so templates fall back to the text header (today's behavior — no
+    regression). ``company_logo_path`` is stored relative to ``static/`` (e.g.
+    ``uploads/logo_xyz.png``) by the upload route; it resolves to a ``/static``
+    URL here. ``show_logo`` lets the owner suppress the logo without deleting it.
+    """
+    logo_path = (get_setting_value_db(db, "company_logo_path", "") or "").strip()
+    show_logo = (get_setting_value_db(db, "document_show_logo", "true") or "true").strip().lower() == "true"
+    logo_url = f"/static/{logo_path.lstrip('/')}" if logo_path else None
     return {
-        "name":    get_setting_value_db(db, "company_name",    "JAKS Parts"),
-        "address": get_setting_value_db(db, "company_address", ""),
-        "phone":   get_setting_value_db(db, "company_phone",   ""),
-        "email":   get_setting_value_db(db, "company_email",   ""),
+        "name":        get_setting_value_db(db, "company_name",    "JAKS Parts"),
+        "address":     get_setting_value_db(db, "company_address", ""),
+        "phone":       get_setting_value_db(db, "company_phone",   ""),
+        "email":       get_setting_value_db(db, "company_email",   ""),
+        # §5.12 branding
+        "logo_url":    logo_url,
+        "show_logo":   show_logo,
+        "footer_text": get_setting_value_db(db, "document_footer_text", ""),
     }
 
 
