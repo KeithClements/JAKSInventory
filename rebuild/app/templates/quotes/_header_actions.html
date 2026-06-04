@@ -98,8 +98,11 @@
 
   {% endif %}
 
-  {# Overflow: convert, mark lost, PDF, print #}
-  {% if quote.status in (QuoteStatus.DRAFT, QuoteStatus.SENT, QuoteStatus.DECLINED, QuoteStatus.EXPIRED) %}
+  {# Print / Save PDF — first-class on every status (promoted out of the More menu) #}
+  <a href="/quotes/{{ quote.id }}/print?auto=1" target="_blank" rel="noopener" class="btn-secondary btn-sm">Print / PDF</a>
+
+  {# Overflow: convert + mark lost (DRAFT / SENT only — others have no overflow items) #}
+  {% if quote.status in (QuoteStatus.DRAFT, QuoteStatus.SENT) %}
   <div class="relative inline-block">
     <button type="button" @click="moreOpen = !moreOpen" class="btn-secondary btn-sm">
       More ▾
@@ -107,7 +110,6 @@
     <div x-show="moreOpen" x-cloak @click.away="moreOpen = false"
          class="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 py-1 min-w-[11rem]">
 
-      {% if quote.status in (QuoteStatus.DRAFT, QuoteStatus.SENT) %}
       <form action="/quotes/{{ quote.id }}/convert-to-invoice" method="post"
             onsubmit="return confirm('Convert{% if quote.status == QuoteStatus.DRAFT %} this quote directly {% endif %}to an invoice?')">
         <button type="submit" @click="moreOpen = false"
@@ -115,7 +117,6 @@
           → Invoice
         </button>
       </form>
-      {% endif %}
 
       {% if quote.status == QuoteStatus.SENT %}
       <button type="button" @click="moreOpen = false; showLost = true"
@@ -123,13 +124,8 @@
         Mark Lost…
       </button>
       {% endif %}
-
-      <a href="/quotes/{{ quote.id }}/print?auto=1" target="_blank" rel="noopener" @click="moreOpen = false"
-         class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Print / Save PDF</a>
     </div>
   </div>
-  {% else %}
-  <a href="/quotes/{{ quote.id }}/print?auto=1" target="_blank" rel="noopener" class="btn-secondary btn-sm">Print / PDF</a>
   {% endif %}
 
   {# Mark Lost popover (sent only) #}

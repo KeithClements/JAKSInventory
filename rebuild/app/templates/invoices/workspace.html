@@ -300,22 +300,17 @@
           {% endif %}
         </div>
 
-        {# Vehicle/Engine toggle #}
-        <button type="button" @click="showVehicleInfo = !showVehicleInfo"
-                class="text-xs text-brand-700 hover:text-brand-600 font-medium shrink-0 flex items-center gap-1">
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"
-               :class="showVehicleInfo ? 'rotate-90' : ''" style="transition: transform 0.15s">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-          </svg>
+        {# Vehicle/Engine — shown inline (always visible); toggle removed per UI wave #}
+        <span class="text-xs text-gray-400 font-semibold uppercase tracking-wide shrink-0 flex items-center gap-1.5">
           Vehicle / Engine Info
           {% if invoice.esn or invoice.engine_manufacturer or invoice.engine_model %}
           <span class="badge-brand">filled</span>
           {% endif %}
-        </button>
+        </span>
       </div>
 
-      {# Row 2 — Vehicle/Engine Info (expandable) #}
-      <div x-show="showVehicleInfo" x-cloak class="mt-3 pt-3 border-t border-gray-100">
+      {# Row 2 — Vehicle/Engine Info (inline; year/make · engine · ESN always visible) #}
+      <div class="mt-3 pt-3 border-t border-gray-100">
         <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
           <div>
             <label class="form-label">ESN</label>
