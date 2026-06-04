@@ -307,7 +307,8 @@
             {% if p.brand and p.brand != p.manufacturer %}
             <p class="text-xs text-gray-400 mt-0.5 truncate">{{ p.brand }}</p>
             {% elif p.category %}
-            <p class="text-xs text-gray-400 mt-0.5 truncate">{{ p.category.name }}</p>
+            {# #7 — full category path (parent → subcategory), not just the leaf name #}
+            <p class="text-xs text-gray-400 mt-0.5 truncate" title="{{ p.category.full_path }}">{{ p.category.full_path }}</p>
             {% elif p.engine_manufacturer %}
             <p class="text-xs text-gray-400 mt-0.5 truncate">{{ p.engine_manufacturer }}{% if p.engine_model %} · {{ p.engine_model }}{% endif %}</p>
             {% endif %}
