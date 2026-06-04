@@ -175,6 +175,9 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
 
     # ── Phase 2 §5.2 — SO line ETA (backorder / on-PO arrival estimate) ──────
     ("so_lines", "eta_date", "DATE NULL"),
+
+    # ── Phase 2 #5 — customer account number (external/legacy AR code) ───────
+    ("customers", "account_number", "VARCHAR(50) NOT NULL DEFAULT ''"),
 ]
 
 

@@ -21,13 +21,45 @@ from sqlalchemy import func
 from app.constants import AuditAction, CrossRefType, EntityType, InventoryTxnType, ProductStatus
 from app.models.inventory import InventoryTransaction
 from app.models.product import (
-    CrossReference, Product, ProductCostHistory, ProductImage, ProductVendorSource,
+    CrossReference, Product, ProductCategory, ProductCostHistory, ProductImage,
+    ProductVendorSource,
 )
 from app.models.vendor import Vendor
 from app.services.base import BaseService
 
 
 class ProductService(BaseService):
+
+    # ── Category tree (#7 — picker) ───────────────────────────────────────────
+
+    def category_tree(self) -> list[dict]:
+        """Active product categories as a nested tree (parent → children) for the
+        category/subcategory picker. parent_id already exists on ProductCategory —
+        no schema change. Each node: {id, name, level, full_path, children:[...]}.
+        Children are sorted by name; orphans (parent inactive/missing) surface at
+        the top level so nothing is hidden."""
+        cats = (
+            self.db.query(ProductCategory)
+            .filter(ProductCategory.is_active == True)  # noqa: E712
+            .all()
+        )
+        present = {c.id for c in cats}
+        by_parent: dict[int | None, list] = {}
+        for c in cats:
+            root_key = c.parent_id if c.parent_id in present else None
+            by_parent.setdefault(root_key, []).append(c)
+
+        def build(parent_id):
+            nodes = sorted(by_parent.get(parent_id, []), key=lambda c: (c.name or "").lower())
+            return [{
+                "id": c.id,
+                "name": c.name,
+                "level": c.level,
+                "full_path": c.full_path,
+                "children": build(c.id),
+            } for c in nodes]
+
+        return build(None)
 
     # ── Product CRUD ──────────────────────────────────────────────────────────
 

@@ -182,6 +182,7 @@ def product_new(request: Request, db: Session = Depends(get_db)):
     return templates.TemplateResponse(request, "products/new.html", {
         "vendors": _vendors(db),
         "categories": _categories(db),
+        "category_tree": ProductService(db).category_tree(),  # #7 nested picker
         "manufacturers": MANUFACTURERS,
         "default_markup": default_markup,
     })
@@ -434,6 +435,7 @@ def product_detail(
         "product": p,
         "vendors": _vendors(db),
         "categories": _categories(db),
+        "category_tree": ProductService(db).category_tree(),  # #7 nested picker
         "manufacturers": MANUFACTURERS,
         "cross_ref_types": list(CrossRefType),
         "suggested_sell_types": list(SuggestedSellType),

@@ -190,6 +190,43 @@ class CRMService(BaseService):
         items.sort(key=lambda x: x["when"], reverse=True)
         return items[:limit]
 
+    def get_unified_timeline(self, customer_id: int, limit: int = 100) -> list[dict]:
+        """Full chronological feed for a customer, newest first: the manual
+        activities + system communications (via get_timeline) PLUS the customer's
+        quotes, sales orders, invoices, and payments as entries
+        (kind='quote'|'so'|'invoice'|'payment'). Each document entry carries:
+        kind, id, when, label (number), status, amount, note. Read-only."""
+        self._get_customer_or_404(customer_id)
+        from app.models.quote import Quote, SalesOrder
+
+        items = self.get_timeline(customer_id, limit=limit)  # activities + comms
+
+        for qte in (self.db.query(Quote).filter(Quote.customer_id == customer_id)
+                    .order_by(Quote.created_at.desc()).limit(limit).all()):
+            items.append({"kind": "quote", "id": qte.id, "when": qte.created_at,
+                          "label": qte.quote_number, "status": qte.status,
+                          "amount": qte.subtotal, "note": qte.quote_number})
+        for so in (self.db.query(SalesOrder).filter(SalesOrder.customer_id == customer_id)
+                   .order_by(SalesOrder.created_at.desc()).limit(limit).all()):
+            items.append({"kind": "so", "id": so.id, "when": so.created_at,
+                          "label": so.so_number, "status": so.status,
+                          "amount": so.subtotal, "note": so.so_number})
+        for inv in (self.db.query(Invoice).filter(Invoice.customer_id == customer_id)
+                    .order_by(Invoice.created_at.desc()).limit(limit).all()):
+            items.append({"kind": "invoice", "id": inv.id, "when": inv.created_at,
+                          "label": inv.invoice_number, "status": inv.status,
+                          "amount": inv.total, "note": inv.invoice_number})
+        for p in (self.db.query(Payment).filter(Payment.customer_id == customer_id)
+                  .order_by(Payment.payment_date.desc()).limit(limit).all()):
+            label = (f"Check #{p.check_number}" if p.check_number
+                     else (p.payment_method or "payment").replace("_", " ").title())
+            items.append({"kind": "payment", "id": p.id, "when": p.payment_date,
+                          "label": label, "status": p.status,
+                          "amount": p.amount_received, "note": p.notes or label})
+
+        items.sort(key=lambda x: x.get("when") or datetime.min, reverse=True)
+        return items[:limit]
+
     def activities_for_entity(
         self,
         entity_type: str,

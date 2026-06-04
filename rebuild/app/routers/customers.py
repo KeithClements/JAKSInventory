@@ -6,6 +6,7 @@ import csv
 import json
 import logging
 import re
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -113,6 +114,8 @@ def customer_list(
     request: Request,
     q: str = "",
     tab: str = "all",
+    sort: str = "company_name",
+    direction: str = "asc",
     db: Session = Depends(get_db),
 ):
     # Normalise unknown tab slugs
@@ -186,13 +189,23 @@ def customer_list(
                 (c.company_name and q_lower in c.company_name.lower())
                 or (c.contact_name and q_lower in c.contact_name.lower())
                 or (c.email and q_lower in c.email.lower())
+                or (c.account_number and q_lower in c.account_number.lower())  # #5
                 or (q_digits and c.phone and q_digits in _digits(c.phone))
             )
         ]
     else:
         customers = base_pool
 
-    customers = sorted(customers, key=lambda c: c.company_name or "")
+    # ── Sort (#4 — whitelisted keys, asc/desc; mirrors products.py) ───────────
+    _CUST_SORT_KEYS = {
+        "company_name":   lambda c: (c.company_name or "").lower(),
+        "account_number": lambda c: (c.account_number or "").lower(),
+        "contact_name":   lambda c: (c.contact_name or "").lower(),
+        "created":        lambda c: c.created_at or datetime.min,
+    }
+    sort = sort if sort in _CUST_SORT_KEYS else "company_name"
+    direction = "desc" if str(direction).lower() == "desc" else "asc"
+    customers = sorted(customers, key=_CUST_SORT_KEYS[sort], reverse=(direction == "desc"))
 
     # ── Per-customer activity counts (for the rows we're actually showing) ────
     customer_ids = [c.id for c in customers]
@@ -336,6 +349,8 @@ def customer_list(
             "customers": customers,
             "q": q,
             "tab": tab,
+            "sort": sort,
+            "direction": direction,
             "counts": counts,
             "tabs": _CUST_TABS,
             "open_invoice_counts": open_invoice_counts,
@@ -529,6 +544,7 @@ async def customer_create(request: Request, db: Session = Depends(get_db)):
         company_name=str(form.get("company_name", "")).strip(),
         contact_name=str(form.get("contact_name", "")).strip(),
         customer_type=_form_customer_type(form),
+        account_number=str(form.get("account_number", "")).strip(),
         card_surcharge_pct=float(_cs) if _cs else None,
         phone=str(form.get("phone", "")).strip(),
         email=str(form.get("email", "")).strip(),
@@ -1232,6 +1248,7 @@ async def customer_update(
     form = await request.form()
     c.company_name = str(form.get("company_name", "")).strip()
     c.contact_name = str(form.get("contact_name", "")).strip()
+    c.account_number = str(form.get("account_number", "")).strip()
     c.phone = str(form.get("phone", "")).strip()
     c.email = str(form.get("email", "")).strip()
     c.address_line1 = str(form.get("address_line1", "")).strip()

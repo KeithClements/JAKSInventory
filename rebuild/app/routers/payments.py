@@ -160,8 +160,11 @@ def payment_list(
     tab: str = "",
     status: str = "",
     q: str = "",
+    sort: str = "date",
+    direction: str = "desc",
     db: Session = Depends(get_db),
 ):
+    from app.utils import apply_sort
     # ── Unfiltered tab counts ─────────────────────────────────────────────
     _raw: dict = dict(
         db.query(Payment.status, func.count(Payment.id))
@@ -192,7 +195,15 @@ def payment_list(
                 Payment.check_number.ilike(f"%{q}%"),
             )
         )
-    payments = query.order_by(Payment.payment_date.desc()).limit(300).all()
+    # Sort (#4 — whitelisted keys, asc/desc).
+    _P_SORT = {
+        "date":     Payment.payment_date,
+        "amount":   Payment.amount_received,
+        "customer": Customer.company_name,
+        "method":   Payment.payment_method,
+    }
+    query, sort, direction = apply_sort(query, _P_SORT, sort, direction, default="date")
+    payments = query.limit(300).all()
 
     # ── Bulk §2B: invoice numbers per payment (fixes N+1 on alloc.invoice) ─
     from collections import defaultdict
@@ -222,6 +233,8 @@ def payment_list(
             "status_filter":     active_tab,  # back-compat alias
             "counts":            counts,
             "q":                 q,
+            "sort":              sort,
+            "direction":         direction,
             "PaymentStatus":     PaymentStatus,
             "PaymentMethod":     PaymentMethod,
             "invoice_nums_map":  dict(invoice_nums_map),

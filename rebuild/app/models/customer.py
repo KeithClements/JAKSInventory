@@ -24,6 +24,8 @@ class Customer(Base):
     customer_type: Mapped[str] = mapped_column(
         String(30), nullable=False, default=CustomerType.OTHER
     )
+    # Human/external account number (e.g. legacy AR code). Free text, not unique.
+    account_number: Mapped[str] = mapped_column(String(50), nullable=False, default="")
 
     # ── Primary contact (quick access; full list → customer_contacts) ─────────
     phone: Mapped[str] = mapped_column(String(50), nullable=False, default="")

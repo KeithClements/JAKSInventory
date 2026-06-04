@@ -77,9 +77,12 @@ async def list_quotes(
     q: str = "",
     follow_up: str = "",
     customer_id: int = 0,
+    sort: str = "created",
+    direction: str = "desc",
     db: Session = Depends(get_db),
 ):
     from datetime import datetime, date as date_type
+    from app.utils import apply_sort
 
     now = datetime.utcnow()
     today = date_type.today()
@@ -132,7 +135,15 @@ async def list_quotes(
                 Customer.company_name.ilike(f"%{q}%"),
             )
         )
-    quotes = query.order_by(Quote.created_at.desc()).limit(150).all()
+    # Sort (#4 — whitelisted keys, asc/desc).
+    _Q_SORT = {
+        "created":  Quote.created_at,
+        "number":   Quote.quote_number,
+        "customer": Customer.company_name,
+        "valid_until": Quote.valid_until,
+    }
+    query, sort, direction = apply_sort(query, _Q_SORT, sort, direction, default="created")
+    quotes = query.limit(150).all()
 
     # ── Bulk AR aggregate for visible customer set (no N+1) ───────────────
     from collections import defaultdict
@@ -181,6 +192,8 @@ async def list_quotes(
             "follow_up_filter": follow_up,
             "customer_id": customer_id,
             "q": q,
+            "sort": sort,
+            "direction": direction,
             "QuoteStatus": QuoteStatus,
             "customers": customers,
             "now": now,

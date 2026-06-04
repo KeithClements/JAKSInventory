@@ -234,11 +234,14 @@ def invoice_list(
     request: Request,
     tab: str = "all",
     q: str = "",
+    sort: str = "created",
+    direction: str = "desc",
     # `status` kept for backward-compat with old links (?status=open).
     status: str = "",
     db: Session = Depends(get_db),
 ):
     from sqlalchemy import or_, func
+    from app.utils import apply_sort
 
     # Backward-compat: ?status=open → ?tab=open, etc.
     if status and tab == "all":
@@ -338,6 +341,7 @@ def invoice_list(
             or_(
                 Invoice.invoice_number.ilike(like),
                 Customer.company_name.ilike(like),
+                Customer.account_number.ilike(like),   # #5
                 Customer.phone.ilike(like),
                 Invoice.customer_po_number.ilike(like),
                 Invoice.esn.ilike(like),            # ESN already matched — kept
@@ -345,7 +349,15 @@ def invoice_list(
                 Invoice.id.in_(serial_match),
             )
         )
-    invoices = query.order_by(Invoice.created_at.desc()).limit(200).all()
+    # Sort (#4 — whitelisted keys, asc/desc).
+    _INV_SORT = {
+        "created": Invoice.created_at,
+        "number":  Invoice.invoice_number,
+        "due":     Invoice.due_date,
+        "customer": Customer.company_name,
+    }
+    query, sort, direction = apply_sort(query, _INV_SORT, sort, direction, default="created")
+    invoices = query.limit(200).all()
     return templates.TemplateResponse(
         request,
         "invoices/list.html",
@@ -354,6 +366,8 @@ def invoice_list(
             "tabs": INV_LIST_TABS,
             "tab": tab,
             "q": q,
+            "sort": sort,
+            "direction": direction,
             "counts": counts,
             "InvoiceStatus": InvoiceStatus,
             "now": now,

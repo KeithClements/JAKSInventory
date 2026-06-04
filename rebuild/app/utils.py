@@ -71,6 +71,20 @@ def calc_sell_price(cost: float, markup_pct: float) -> float:
     return round(cost * (1 + markup_pct / 100), 2)
 
 
+def apply_sort(query, allowed: dict, sort: str, direction: str = "asc", default: str | None = None):
+    """Whitelisted, injection-safe ORDER BY for list view-functions (mirrors the
+    products.py sort pattern). ``allowed`` maps a sort-key string → a SQLAlchemy
+    column. An unknown ``sort`` normalizes to ``default`` (or the first key); an
+    unknown ``direction`` normalizes to 'asc'. Returns
+    ``(query, sort_key, direction)`` so the view can echo the normalized values
+    back to the template.
+    """
+    key = sort if sort in allowed else (default if default in allowed else next(iter(allowed)))
+    direction = "desc" if str(direction).lower() == "desc" else "asc"
+    col = allowed[key]
+    return query.order_by(col.desc() if direction == "desc" else col.asc()), key, direction
+
+
 def normalize_part(s: str) -> str:
     """
     Fold a part / OEM / cross-reference number for matching: strip every
