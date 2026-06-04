@@ -400,6 +400,22 @@ def product_export_csv(
     )
 
 
+# ── §7.2 Enrichment sync (external catalog CSV → enrich existing products) ─────
+# Registered BEFORE /{product_id} so the literal path isn't captured by the
+# dynamic int route. Enrich-only: matches jaks_sku→sku, never creates products,
+# never touches cost/sell. Returns a JSON summary.
+
+@router.post("/enrich-sync")
+async def product_enrich_sync(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    from app.services.enrichment_service import ProductEnrichmentService
+    raw = await file.read()
+    text = raw.decode("utf-8-sig", errors="replace")
+    return ProductEnrichmentService(db).enrich_from_csv_text(text)
+
+
 # ── Detail / Update / Deactivate / Reactivate ─────────────────────────────────
 
 @router.get("/{product_id}", response_class=HTMLResponse)

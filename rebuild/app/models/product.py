@@ -169,6 +169,9 @@ class Product(Base):
         back_populates="product",
         cascade="all, delete-orphan",
     )
+    applications: Mapped[list[ProductApplication]] = relationship(
+        "ProductApplication", back_populates="product", cascade="all, delete-orphan"
+    )
     cost_history: Mapped[list[ProductCostHistory]] = relationship(
         "ProductCostHistory", back_populates="product"
     )
@@ -318,6 +321,34 @@ class CrossReference(Base):
     replacement_product: Mapped[Product | None] = relationship(
         "Product", foreign_keys=[replacement_product_id]
     )
+
+
+class ProductApplication(Base):
+    """§7.2 — engine application: which engine make/model (+ CPL, optional ESN
+    range) a product fits. ENRICHED from the owner's external catalog CSV; never
+    authored in the ERP. Dedup grain = (product_id, engine_make, engine_model,
+    cpl) — the locked 'make/model + CPL' level. esn_range is nullable (CPL-level
+    apps often have no specific ESN window)."""
+    __tablename__ = "product_applications"
+    __table_args__ = (
+        Index("ix_product_applications_product_id", "product_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    engine_make: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    engine_model: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    cpl: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    # ESN nullable — many CPL-level applications have no specific serial window.
+    esn_range: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    source: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    product: Mapped[Product] = relationship("Product", back_populates="applications")
 
 
 class ProductCostHistory(Base):
