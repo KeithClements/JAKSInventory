@@ -116,13 +116,13 @@ def test_lists_accept_sort_params(client, path):
     assert client.get(f"{path}?sort=bogus&direction=desc").status_code == 200
 
 
-def test_customer_sort_direction_orders_rows(client, db):
-    a = _cust(db, company_name="AAA Sort Co")
-    z = _cust(db, company_name="ZZZ Sort Co")
-    asc = client.get("/customers/?q=Sort Co&sort=company_name&direction=asc").text
-    desc = client.get("/customers/?q=Sort Co&sort=company_name&direction=desc").text
-    assert asc.index(a.company_name) < asc.index(z.company_name)
-    assert desc.index(z.company_name) < desc.index(a.company_name)
+# Row-order + direction for ALL four lists (customers/invoices/quotes/payments)
+# is asserted ROBUSTLY in tests/test_list_sort_ordering.py — function-scoped
+# engine + row-id extraction, mirroring test_product_list_sort. The prior
+# html.index()-under-a-module-engine assertion here flaked in the full suite
+# (conftest cross-module engine-repoint hazard, "failing set shifts run-to-run");
+# the customer-sort feature itself is correct (customers.py applies reverse=desc).
+# Removed and superseded, not chased.
 
 
 # ── #7 category tree ───────────────────────────────────────────────────────────
