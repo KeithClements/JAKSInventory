@@ -1304,7 +1304,7 @@ for a net-new cross-cutting feature the risk is the inverse — N divergent per-
 - **Primitive 10 — `credit_badge(cs)` / `credit_warn(cs)`** — `macros/credit_status.html`. Credit posture badge + non-blocking warn banner from `CustomerService.credit_status` (P2-D4/D5 / §4.5). Ratified §8M.
 - **Primitive 11 — `metric_strip(tiles, cols=4)`** — `macros/metric_strip.html`. List-header KPI-tile strip (icon + big number + label), extracted from the cores/warranty list headers (§2B / §5.1 SO dashboard). Ratified §8M.
 - **Primitive 12 — `so_po_status_chip(rollup)`** — `macros/so_status.html`. Backorder / on-order / ETA chip off the §5.10 SO↔PO rollup (`SalesOrderMetricsService.po_link_status`). Ratified §8M.
-- **Primitive 13 — `sortable_th(label, key, sort, dir, qs)`** — `macros/sortable.html`. Clickable sort column header (▲/▼ arrow; toggles `?sort=&dir=`; preserves other query params; route reads `sort`+`dir`). Pairs with `.sticky-thead`. Ratified §8Q.
+- **Primitive 13 — `sortable_th(label, key, sort, direction, qs)`** — `macros/sortable.html`. Clickable sort column header (▲/▼ arrow; toggles `?sort=&direction=`; preserves other query params). Route reads `sort`+`direction` via `app.utils.apply_sort` (@3cb1a86). Pairs with `.sticky-thead`. Ratified §8Q.
 
 ---
 
@@ -2348,12 +2348,17 @@ Targeted standards pass on the operational lists + forms (Architect-owned: macro
   (per §8C the customer-detail edit footer already follows this).
 - **Rule:** autosave surface → sticky dirty-state bar; submit surface → bottom button. No third pattern.
 
-**(2) `sortable_th(label, key, sort, dir, qs, align)` — Primitive 13** (`macros/sortable.html`). Clickable
-column header: links `?sort={key}&dir={asc|desc}` (toggles direction on the active column), preserves other
-query params via `qs`, shows ▲/▼ on the active column + a faint ↕ otherwise. **Route contract:** the list route
-reads `sort` + `dir` and passes them back. Reuse across all four operational lists for identical sort UX. The
-href is built as one expression so autoescape renders separators as `&amp;` uniformly (injection-safe — `qs`
-is never `|safe`). Tests in `tests/test_phase2_ui_macros.py`.
+**(2) `sortable_th(label, key, sort, direction, qs, align)` — Primitive 13** (`macros/sortable.html`). Clickable
+column header: links `?sort={key}&direction={asc|desc}` (toggles direction on the active column), preserves other
+query params via `qs`, shows ▲/▼ on the active column + a faint ↕ otherwise. **Route contract (aligned to the
+shipped Backend seam `app.utils.apply_sort` @3cb1a86):** the list route reads `sort` + **`direction`** (param
+name is `direction`, NOT `dir` — invoices/quotes/payments/customers all use it), calls `apply_sort(query,
+allowed, sort, direction, default=…)`, and echoes the normalized `sort`/`direction` back. Reuse across the four
+operational lists for identical sort UX. The href is built as one expression so autoescape renders separators as
+`&amp;` uniformly (injection-safe — `qs` is never `|safe`). Tests in `tests/test_phase2_ui_macros.py`.
+**Note:** the macro originally emitted `dir`; reconciled to `direction` @ (this commit) when Backend's
+apply_sort landed @3cb1a86 — macro was unadopted, so it conformed to the shipped routes. Not yet adopted on any
+list (UI-Builder: add `{{ sortable_th(...) }}` to the four list theads).
 
 **(3) Sticky-thead — define-once CSS** (`.sticky-thead` in `app/static/css/input.css`, @layer components):
 apply `.sticky-thead` to a `<thead>` and all its `<th>` stick to the top while the body scrolls (opaque gray-50
