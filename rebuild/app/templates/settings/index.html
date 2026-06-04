@@ -38,17 +38,40 @@
   </div>
 
   <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
-    <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">QuickBooks Online</h2>
-    <p class="text-xs text-gray-400">OAuth flow coming in Phase 2. Enter credentials manually for now.</p>
+    <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">QuickBooks Online — Credentials</h2>
     {% for s in settings %}
     {% if s.key in ['qbo_client_id','qbo_client_secret'] %}
     <div>
       <label class="block text-xs font-medium text-gray-600 mb-1">{{ s.label }}</label>
-      <input name="{{ s.key }}" value="{{ s.value }}" type="password"
+      <input name="{{ s.key }}" value="{{ s.value }}" type="password" autocomplete="off"
         class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
     </div>
+    {% elif s.key == 'qbo_environment' %}
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">Environment</label>
+      <select name="qbo_environment"
+        class="w-48 rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">
+        <option value="sandbox" {% if s.value == 'sandbox' %}selected{% endif %}>Sandbox</option>
+        <option value="production" {% if s.value == 'production' %}selected{% endif %}>Production</option>
+      </select>
+    </div>
+    {% elif s.key == 'qbo_redirect_uri' %}
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">Redirect URI
+        <span class="text-gray-400 font-normal">— register this EXACT value in your Intuit app</span></label>
+      <input name="qbo_redirect_uri" value="{{ s.value }}"
+        class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+    </div>
+    {% elif s.key == 'qbo_push_tax' %}
+    <label class="flex items-center gap-2 text-sm text-gray-600">
+      <input type="checkbox" name="qbo_push_tax" value="true" {% if s.value == 'true' %}checked{% endif %}
+        class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+      Send JAKS-computed tax to QBO
+      <span class="text-gray-400">(uncheck if QBO uses Automated Sales Tax)</span>
+    </label>
     {% endif %}
     {% endfor %}
+    <p class="text-xs text-gray-400">Save credentials first, then use <b>Connect to QuickBooks</b> below. Changed the environment or redirect URI? Save, then reconnect.</p>
   </div>
 
   <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
@@ -80,4 +103,63 @@
 
   <button type="submit" class="rounded-lg bg-brand-700 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-600 transition-colors">Save Settings</button>
 </form>
+
+{# ── Phase 1B — QuickBooks connection (separate actions, outside the settings form) ── #}
+<div class="max-w-2xl mt-6 space-y-3">
+  {% if flash and flash.error %}
+  <div class="rounded-lg bg-red-50 border border-red-200 text-red-700 px-4 py-2 text-sm">{{ flash.error }}</div>
+  {% endif %}
+  {% if flash and flash.qbo_connected %}
+  <div class="rounded-lg bg-green-50 border border-green-200 text-green-700 px-4 py-2 text-sm">QuickBooks connected.</div>
+  {% endif %}
+  {% if flash and flash.qbo_disconnected %}
+  <div class="rounded-lg bg-gray-50 border border-gray-200 text-gray-600 px-4 py-2 text-sm">QuickBooks disconnected.</div>
+  {% endif %}
+  {% if flash and flash.qbo_msg %}
+  <div class="rounded-lg bg-green-50 border border-green-200 text-green-700 px-4 py-2 text-sm">{{ flash.qbo_msg }}</div>
+  {% endif %}
+
+  <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+    <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">QuickBooks Connection</h2>
+    <div class="flex items-center gap-3">
+      {% if qbo and qbo.connected %}
+        <span class="inline-flex items-center gap-1.5 rounded-full bg-green-100 text-green-800 px-2.5 py-0.5 text-xs font-medium">
+          <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>Connected</span>
+        <span class="text-xs text-gray-500">{{ qbo.environment }} · realm {{ qbo.realm_id }}</span>
+      {% else %}
+        <span class="inline-flex items-center gap-1.5 rounded-full bg-gray-100 text-gray-600 px-2.5 py-0.5 text-xs font-medium">
+          <span class="w-1.5 h-1.5 rounded-full bg-gray-400"></span>Not connected</span>
+      {% endif %}
+    </div>
+
+    {% if qbo and qbo.connected %}
+    <div class="flex flex-wrap gap-4 text-xs text-gray-500">
+      <span>Synced: <b class="text-gray-700">{{ qbo.synced }}</b></span>
+      <span>Pending: <b class="text-gray-700">{{ qbo.pending }}</b></span>
+      <span>Errors: <b class="{% if qbo.error %}text-red-600{% else %}text-gray-700{% endif %}">{{ qbo.error }}</b></span>
+    </div>
+    {% endif %}
+
+    <div class="flex items-center gap-2 pt-1">
+      {% if qbo and qbo.connected %}
+        <form method="post" action="/qbo/setup-items">
+          <button class="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors">Set up QBO items</button>
+        </form>
+        <form method="post" action="/qbo/disconnect">
+          <button class="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors">Disconnect</button>
+        </form>
+      {% elif qbo and qbo.has_credentials %}
+        <a href="/qbo/connect" class="rounded-lg bg-brand-700 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-600 transition-colors">Connect to QuickBooks</a>
+      {% else %}
+        <span class="text-xs text-gray-400">Enter your Client ID + Secret above and Save before connecting.</span>
+      {% endif %}
+    </div>
+
+    <p class="text-xs text-gray-400 border-t border-gray-100 pt-3">
+      After connecting, click <b>Set up QBO items</b> once — it creates the generic income items
+      (Parts Sales, Core Charge, Freight &amp; Delivery, Fees &amp; Other, Adjustments) the push maps to.
+      Then push an invoice from its workspace.
+    </p>
+  </div>
+</div>
 {% endblock %}

@@ -87,7 +87,11 @@ def qbo_push_invoice(
 ):
     result = QBOSyncService(db).push_invoice(invoice_id)
     if result.get("ok"):
-        return RedirectResponse(f"/invoices/{invoice_id}?qbo_ok=1", status_code=303)
+        if result.get("skipped"):
+            msg = "Invoice is already synced to QuickBooks."
+        else:
+            msg = f"Invoice pushed to QuickBooks (id {result.get('qbo_id', '')})."
+        return RedirectResponse(f"/invoices/{invoice_id}?ok={url_quote(msg)}", status_code=303)
     return RedirectResponse(
         f"/invoices/{invoice_id}?error={url_quote('QBO push failed: ' + result.get('error', ''))}",
         status_code=303,

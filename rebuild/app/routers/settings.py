@@ -176,7 +176,8 @@ VISIBLE_KEYS = [
     "default_core_return_days", "default_restock_fee_percent",
     "business_close_time",
     # Integrations
-    "qbo_client_id", "qbo_client_secret",
+    "qbo_client_id", "qbo_client_secret", "qbo_environment", "qbo_redirect_uri",
+    "qbo_push_tax",
     "shopify_store_url", "shopify_api_key", "shopify_api_secret",
     "taxjar_api_key",
     # §5.12 — document branding (logo itself is set via POST /settings/logo)
@@ -212,7 +213,21 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
         {"key": k, "label": DEFAULTS[k][1], "value": rows.get(k, DEFAULTS[k][0])}
         for k in VISIBLE_KEYS
     ]
-    return templates.TemplateResponse(request, "settings/index.html", {"settings": settings})
+    # Phase 1B — live QBO connection status + flash messages for the QBO card.
+    from app.services.qbo_service import QBOSyncService
+    qbo = QBOSyncService(db).connection_summary()
+    qp = request.query_params
+    flash = {
+        "error": qp.get("error", ""),
+        "qbo_connected": qp.get("qbo_connected", ""),
+        "qbo_disconnected": qp.get("qbo_disconnected", ""),
+        "qbo_msg": qp.get("qbo_msg", ""),
+        "saved": qp.get("saved", ""),
+    }
+    return templates.TemplateResponse(
+        request, "settings/index.html",
+        {"settings": settings, "qbo": qbo, "flash": flash},
+    )
 
 
 @router.post("/", response_class=RedirectResponse)
