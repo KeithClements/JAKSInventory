@@ -50,12 +50,20 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     # ── Business hours (used for EOD invoice lock) ─────────────────────────────
     "business_close_time":         ("17:00",   "Business Close Time (HH:MM, 24h)"),
 
-    # ── QBO integration ───────────────────────────────────────────────────────
+    # ── QBO integration (Phase 1B) ────────────────────────────────────────────
     "qbo_client_id":               ("",        "QBO Client ID"),
     "qbo_client_secret":           ("",        "QBO Client Secret"),
     "qbo_realm_id":                ("",        "QBO Realm ID"),
     "qbo_access_token":            ("",        "QBO Access Token"),
     "qbo_refresh_token":           ("",        "QBO Refresh Token"),
+    "qbo_environment":             ("sandbox", "QBO environment: sandbox | production"),
+    "qbo_redirect_uri":            ("http://localhost:8000/qbo/callback",
+                                    "OAuth redirect URI (register this EXACT value in your Intuit app)"),
+    "qbo_token_expires_at":        ("",        "QBO access token expiry (ISO, managed automatically)"),
+    "qbo_connected_at":            ("",        "QBO connected at (ISO, managed automatically)"),
+    "qbo_oauth_state":             ("",        "QBO OAuth CSRF state (transient)"),
+    "qbo_item_map":                ("",        "Optional JSON override: line_type → QBO income item name"),
+    "qbo_push_tax":                ("true",    "Send JAKS-computed tax to QBO (off if QBO uses Automated Sales Tax)"),
 
     # ── Shopify integration ───────────────────────────────────────────────────
     "shopify_store_url":           ("",        "Shopify Store URL"),

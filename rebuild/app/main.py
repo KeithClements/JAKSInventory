@@ -39,6 +39,7 @@ from app.routers import backup as backup_router
 from app.routers import auth as auth_router
 from app.routers import activities as activities_router
 from app.routers import demo as demo_router
+from app.routers import qbo as qbo_router
 
 log = logging.getLogger(__name__)
 
@@ -325,3 +326,4 @@ app.include_router(backup_router.router)
 app.include_router(auth_router.router)
 app.include_router(activities_router.router)
 app.include_router(demo_router.router)
+app.include_router(qbo_router.router)
