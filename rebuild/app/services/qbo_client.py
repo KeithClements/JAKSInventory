@@ -106,6 +106,7 @@ def authorize_url(db: Session) -> str:
         )
     state = secrets.token_urlsafe(24)
     set_setting_value_db(db, "qbo_oauth_state", state, "QBO OAuth CSRF state (transient)")
+    db.commit()  # MUST persist: the callback runs in a separate request/session
     params = httpx.QueryParams(
         {
             "client_id": cfg.client_id,
@@ -164,6 +165,7 @@ def exchange_code(db: Session, code: str, realm_id: str, state: str) -> None:
         db, "qbo_connected_at",
         datetime.utcnow().isoformat(timespec="seconds"), "QBO connected at (ISO)",
     )
+    db.commit()
 
 
 def refresh_access_token(db: Session) -> QBOConfig:
@@ -184,6 +186,7 @@ def refresh_access_token(db: Session) -> QBOConfig:
     if resp.status_code != 200:
         raise QBOError(f"Token refresh failed ({resp.status_code}): {resp.text[:300]}")
     _store_tokens(db, resp.json())
+    db.commit()
     return load_config(db)
 
 
@@ -208,6 +211,7 @@ def disconnect(db: Session) -> None:
     for k in ("qbo_access_token", "qbo_refresh_token", "qbo_token_expires_at",
               "qbo_connected_at"):
         set_setting_value_db(db, k, "")
+    db.commit()
 
 
 # ── REST client ───────────────────────────────────────────────────────────────

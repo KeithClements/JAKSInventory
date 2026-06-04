@@ -374,6 +374,26 @@ def test_authorize_url_and_state(db, monkeypatch):
     assert state and f"state={state}" in url
 
 
+def test_oauth_state_persists_across_requests(client):
+    # Reproduces the real connect→callback boundary: the CSRF state written
+    # during GET /qbo/connect MUST be committed, because the callback reads it
+    # in a NEW request/session. A single shared session hides a missing commit
+    # (that was the live "state mismatch" bug). Here we close s1 — which rolls
+    # back anything uncommitted — then read from a fresh session.
+    s1 = _appdb.SessionLocal()
+    _connect(s1)
+    qc.authorize_url(s1)
+    state = get_setting_value_db(s1, "qbo_oauth_state")
+    s1.close()
+    s2 = _appdb.SessionLocal()
+    try:
+        assert state, "no state was generated"
+        assert get_setting_value_db(s2, "qbo_oauth_state") == state, \
+            "OAuth state was not committed — callback would see a mismatch"
+    finally:
+        s2.close()
+
+
 def test_exchange_code_stores_tokens(db, monkeypatch):
     fake = _install(monkeypatch, FakeQBO())
     set_setting_value_db(db, "qbo_client_id", "CID")
