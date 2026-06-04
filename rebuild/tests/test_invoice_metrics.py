@@ -162,4 +162,9 @@ def test_empty_invoice_is_zero(db):
 def test_missing_invoice_returns_zero_dict(db):
     m = InvoiceMetricsService(db).intelligence_for(999999)
     assert set(m.keys()) == set(INVOICE_METRIC_KEYS)
-    assert all(v == 0.0 for v in m.values())
+    # last_purchase is a date|None (None when empty); count keys are ints
+    assert m["last_purchase"] is None
+    assert m["outstanding_cores"] == 0 and m["open_warranty_claims"] == 0
+    money_keys = set(INVOICE_METRIC_KEYS) - {
+        "last_purchase", "outstanding_cores", "open_warranty_claims"}
+    assert all(m[k] == 0.0 for k in money_keys)

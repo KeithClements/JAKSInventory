@@ -117,6 +117,21 @@ class QBOSyncService:
                 self.db.rollback()
             return {"ok": False, "error": msg}
 
+    def unsynced_invoice_ids(self) -> list[int]:
+        """IDs of finalized invoices not yet synced to QBO (qbo_sync_status !=
+        'synced'). Used by the bulk-push 'all unsynced' mode."""
+        return [
+            iid for (iid,) in (
+                self.db.query(Invoice.id)
+                .filter(
+                    Invoice.status.in_(_PUSHABLE_STATUSES),
+                    Invoice.qbo_sync_status != QBOSyncStatus.SYNCED,
+                )
+                .order_by(Invoice.id)
+                .all()
+            )
+        ]
+
     # ── helpers ───────────────────────────────────────────────────────────────
     def _resolve_items(self, client: QBOClient) -> dict[str, str]:
         """Return {item_name: qbo_item_id} for every generic item we map to.

@@ -23,11 +23,11 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
-from app.constants import InvoiceStatus, LineType, PaymentMethod
+from app.constants import InvoiceStatus, LineType, PaymentMethod, QBOSyncStatus
 from app.deps import get_current_user_id, get_db
 from app.models.customer import Customer
 from app.models.invoice import Invoice, InvoiceLine
-from app.models.product import Product
+from app.models.product import Product, CrossReference, ProductSerialNumber
 from app.settings_utils import get_setting_value_db
 
 log = logging.getLogger(__name__)
@@ -70,6 +70,32 @@ def _require_draft(db: Session, invoice_id: int) -> Invoice | HTMLResponse:
     return inv
 
 
+def _build_invoice_panel_metrics(m: dict) -> list[dict]:
+    """Descriptor list for the generic intelligence_panel() macro (pre-formatted
+    `value` strings, optional tone/hint/margin). Order per §5.8 v2: Lifetime
+    Sales, Open AR, Last Purchase, Outstanding Cores, Open Warranty Claims, then
+    Profit/Margin (margin=True → gated behind the showMargin toggle)."""
+    def _money(v) -> str:
+        return "$" + format(float(v or 0), ",.2f")
+    lp = m.get("last_purchase")
+    return [
+        {"label": "Lifetime Sales", "value": _money(m.get("customer_lifetime_sales")),
+         "hint": "Net invoiced, less returns/credits"},
+        {"label": "Open AR", "value": _money(m.get("open_ar")),
+         "tone": ("warn" if (m.get("open_ar") or 0) > 0 else "muted")},
+        {"label": "Last Purchase",
+         "value": (lp.strftime("%b %d, %Y") if lp else "—"), "tone": "muted"},
+        {"label": "Outstanding Cores", "value": str(m.get("outstanding_cores") or 0),
+         "tone": ("warn" if (m.get("outstanding_cores") or 0) else "muted")},
+        {"label": "Open Warranty Claims", "value": str(m.get("open_warranty_claims") or 0),
+         "tone": ("warn" if (m.get("open_warranty_claims") or 0) else "muted")},
+        {"label": "Profit", "value": _money(m.get("profit")),
+         "tone": ("good" if (m.get("profit") or 0) >= 0 else "bad"), "margin": True},
+        {"label": "Margin", "value": format(float(m.get("margin_pct") or 0), ".1f") + "%",
+         "tone": ("good" if (m.get("margin_pct") or 0) >= 0 else "bad"), "margin": True},
+    ]
+
+
 def _workspace_context(db: Session, request: Request, invoice: Invoice) -> dict:
     """Build the full context dict the workspace template expects."""
     from app.services.invoice_service import InvoiceService
@@ -110,6 +136,12 @@ def _workspace_context(db: Session, request: Request, invoice: Invoice) -> dict:
     # ── §5.8 Invoice Intelligence panel (P2-D3 — margin gated client-side) ──
     from app.services.invoice_metrics_service import InvoiceMetricsService
     invoice_intelligence = InvoiceMetricsService(db).intelligence_for(invoice)
+    # Descriptor list for the generic intelligence_panel() macro: customer-
+    # relationship context while invoicing. Profit/Margin carry margin=True so the
+    # macro keeps them behind the per-user showMargin toggle (P2-D3). UI lane wires
+    # intelligence_panel(invoice_panel_metrics); the invoice_intelligence dict
+    # stays for the current invoice_intelligence_panel() call (no regression).
+    invoice_panel_metrics = _build_invoice_panel_metrics(invoice_intelligence)
 
     # ── §4.5 credit warn (WARN-ONLY) — same contract as customer detail ──────
     # A DRAFT invoice isn't in open AR yet, so its total is the prospective charge;
@@ -127,6 +159,7 @@ def _workspace_context(db: Session, request: Request, invoice: Invoice) -> dict:
         "customers": customers,
         "invoice_cores": invoice_cores,
         "invoice_intelligence": invoice_intelligence,
+        "invoice_panel_metrics": invoice_panel_metrics,
         "credit_status": credit_status,
         "editable": invoice.status == InvoiceStatus.DRAFT,
         "cc_surcharge_pct": cc_surcharge_pct,
@@ -178,7 +211,15 @@ INV_LIST_TABS: list[tuple[str, str]] = [
     ("overdue", "Overdue"),
     ("paid",    "Paid"),
     ("void",    "Void"),
+    # QBO-dimension tabs (orthogonal to the status tabs above)
+    ("not_synced",          "Not Synced"),
+    ("sync_failed",         "Sync Failed"),
+    ("modified_since_sync", "Modified"),
 ]
+
+# QBO filter tabs are NOT status groups — they filter on the QBO sync columns.
+_FINALIZED_STATUSES = [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL, InvoiceStatus.PAID]
+_QBO_TAB_SLUGS = ("not_synced", "sync_failed", "modified_since_sync")
 
 
 # ── List ──────────────────────────────────────────────────────────────────────
@@ -225,6 +266,24 @@ def invoice_list(
     def _group_count(slug: str) -> int:
         return sum(raw_counts.get(s, 0) for s in INV_TAB_GROUPS.get(slug, []))
 
+    # QBO-dimension counts (unfiltered, like the status counts above).
+    not_synced_count = (
+        db.query(func.count(Invoice.id))
+          .filter(Invoice.status.in_(_FINALIZED_STATUSES), Invoice.qbo_invoice_id.is_(None))
+          .scalar()
+    ) or 0
+    sync_failed_count = (
+        db.query(func.count(Invoice.id))
+          .filter(Invoice.qbo_sync_status == QBOSyncStatus.ERROR)
+          .scalar()
+    ) or 0
+    modified_since_sync_count = (
+        db.query(func.count(Invoice.id))
+          .filter(Invoice.qbo_last_synced_at.isnot(None),
+                  Invoice.updated_at > Invoice.qbo_last_synced_at)
+          .scalar()
+    ) or 0
+
     counts = {
         "all":     _group_count("all"),
         "draft":   _group_count("draft"),
@@ -233,6 +292,10 @@ def invoice_list(
         "overdue": overdue_count,
         "paid":    _group_count("paid"),
         "void":    _group_count("void"),
+        # QBO dimension
+        "not_synced":          not_synced_count,
+        "sync_failed":         sync_failed_count,
+        "modified_since_sync": modified_since_sync_count,
     }
 
     # Filtered query
@@ -242,18 +305,44 @@ def invoice_list(
         .join(Customer)
         .options(joinedload(Invoice.customer))
     )
-    statuses = INV_TAB_GROUPS.get(tab, INV_TAB_GROUPS["all"])
-    query = query.filter(Invoice.status.in_(statuses))
-    if tab == "overdue":
-        query = query.filter(Invoice.due_date.isnot(None), Invoice.due_date < now)
+    if tab in _QBO_TAB_SLUGS:
+        if tab == "not_synced":
+            query = query.filter(Invoice.status.in_(_FINALIZED_STATUSES),
+                                 Invoice.qbo_invoice_id.is_(None))
+        elif tab == "sync_failed":
+            query = query.filter(Invoice.qbo_sync_status == QBOSyncStatus.ERROR)
+        else:  # modified_since_sync
+            query = query.filter(Invoice.qbo_last_synced_at.isnot(None),
+                                 Invoice.updated_at > Invoice.qbo_last_synced_at)
+    else:
+        statuses = INV_TAB_GROUPS.get(tab, INV_TAB_GROUPS["all"])
+        query = query.filter(Invoice.status.in_(statuses))
+        if tab == "overdue":
+            query = query.filter(Invoice.due_date.isnot(None), Invoice.due_date < now)
     if q:
         like = f"%{q.strip()}%"
+        # Line-based matches via id-subqueries (no row duplication): product SKU /
+        # cross-ref number on any line, and sold-serial on any line.
+        line_match = (
+            db.query(InvoiceLine.invoice_id)
+            .join(Product, InvoiceLine.product_id == Product.id)
+            .outerjoin(CrossReference, CrossReference.product_id == Product.id)
+            .filter(or_(Product.sku.ilike(like), CrossReference.ref_number.ilike(like)))
+        )
+        serial_match = (
+            db.query(InvoiceLine.invoice_id)
+            .join(ProductSerialNumber, ProductSerialNumber.invoice_line_id == InvoiceLine.id)
+            .filter(ProductSerialNumber.serial_number.ilike(like))
+        )
         query = query.filter(
             or_(
                 Invoice.invoice_number.ilike(like),
                 Customer.company_name.ilike(like),
+                Customer.phone.ilike(like),
                 Invoice.customer_po_number.ilike(like),
-                Invoice.esn.ilike(like),
+                Invoice.esn.ilike(like),            # ESN already matched — kept
+                Invoice.id.in_(line_match),
+                Invoice.id.in_(serial_match),
             )
         )
     invoices = query.order_by(Invoice.created_at.desc()).limit(200).all()

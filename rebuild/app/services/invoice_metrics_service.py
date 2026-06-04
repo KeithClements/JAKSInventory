@@ -28,8 +28,10 @@ Definitions:
 """
 from __future__ import annotations
 
+from sqlalchemy import func
+
 from app.constants import (
-    PARTS_LINE_TYPES, CoreDirection, CoreStatus, WarrantyStatus,
+    PARTS_LINE_TYPES, CoreDirection, CoreStatus, WarrantyStatus, InvoiceStatus,
 )
 from app.models.invoice import Invoice, InvoiceLine
 from app.models.core import CoreCharge
@@ -41,6 +43,8 @@ from app.services.customer_metrics_service import CustomerMetricsService
 INVOICE_METRIC_KEYS = (
     "profit", "margin_pct", "core_liability", "warranty_exposure",
     "customer_lifetime_sales",
+    # customer-relationship context shown while invoicing
+    "open_ar", "last_purchase", "outstanding_cores", "open_warranty_claims",
 )
 
 # Warranty claim statuses that are resolved — no further exposure.
@@ -63,15 +67,30 @@ class InvoiceMetricsService(BaseService):
             else self.db.query(Invoice).filter(Invoice.id == int(invoice)).first()
         )
         if invc is None:
-            return {k: 0.0 for k in INVOICE_METRIC_KEYS}
+            return self._empty()
 
         profit, margin_pct = self._profit_and_margin(invc)
+        cust_id = invc.customer_id
         return {
             "profit": profit,
             "margin_pct": margin_pct,
             "core_liability": self._core_liability(invc),
             "warranty_exposure": self._warranty_exposure(invc),
             "customer_lifetime_sales": self._customer_lifetime(invc),
+            # customer-relationship context (per the customer, not just this invoice)
+            "open_ar": self._open_ar(cust_id),
+            "last_purchase": self._last_purchase(cust_id),
+            "outstanding_cores": self._outstanding_cores(cust_id),
+            "open_warranty_claims": self._open_warranty_claims(cust_id),
+        }
+
+    @staticmethod
+    def _empty() -> dict:
+        return {
+            "profit": 0.0, "margin_pct": 0.0, "core_liability": 0.0,
+            "warranty_exposure": 0.0, "customer_lifetime_sales": 0.0,
+            "open_ar": 0.0, "last_purchase": None,
+            "outstanding_cores": 0, "open_warranty_claims": 0,
         }
 
     # ── Internals ─────────────────────────────────────────────────────────────
@@ -120,3 +139,52 @@ class InvoiceMetricsService(BaseService):
         if not invc.customer_id:
             return 0.0
         return CustomerMetricsService(self.db).metrics_for(invc.customer_id)["lifetime_sales"]
+
+    # ── Customer-relationship context (by the invoice's customer) ─────────────
+
+    def _open_ar(self, customer_id: int | None) -> float:
+        """The customer's total open invoice balance (single P2-Q1 definition)."""
+        if not customer_id:
+            return 0.0
+        return round(CustomerMetricsService(self.db).open_ar(customer_id), 2)
+
+    def _last_purchase(self, customer_id: int | None):
+        """Date of the customer's most recent FINALIZED invoice (DRAFT/VOID
+        excluded), or None."""
+        if not customer_id:
+            return None
+        return (
+            self.db.query(func.max(Invoice.created_at))
+            .filter(
+                Invoice.customer_id == customer_id,
+                Invoice.status.notin_([InvoiceStatus.DRAFT, InvoiceStatus.VOID]),
+            )
+            .scalar()
+        )
+
+    def _outstanding_cores(self, customer_id: int | None) -> int:
+        """COUNT of the customer's open (owed-back) cores."""
+        if not customer_id:
+            return 0
+        return (
+            self.db.query(func.count(CoreCharge.id))
+            .filter(
+                CoreCharge.customer_id == customer_id,
+                CoreCharge.direction == CoreDirection.CUSTOMER_OWES_RETURN,
+                CoreCharge.status.in_([CoreStatus.OPEN, CoreStatus.PARTIAL]),
+            )
+            .scalar()
+        ) or 0
+
+    def _open_warranty_claims(self, customer_id: int | None) -> int:
+        """COUNT of the customer's non-terminal warranty claims."""
+        if not customer_id:
+            return 0
+        return (
+            self.db.query(func.count(WarrantyClaim.id))
+            .filter(
+                WarrantyClaim.customer_id == customer_id,
+                WarrantyClaim.status.notin_(_WARRANTY_TERMINAL),
+            )
+            .scalar()
+        ) or 0

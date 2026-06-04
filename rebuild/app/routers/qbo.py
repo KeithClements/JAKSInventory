@@ -98,6 +98,73 @@ def qbo_push_invoice(
     )
 
 
+_ALL_UNSYNCED_MODES = {"all_unsynced", "all", "unsynced"}
+
+
+async def _parse_batch_request(request: Request) -> tuple[list[int], str | None]:
+    """Read invoice_ids + mode from a JSON body or a form post (tolerant of both)."""
+    mode = None
+    raw_ids: list = []
+    if "application/json" in (request.headers.get("content-type", "") or ""):
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if isinstance(body, dict):
+            mode = body.get("mode")
+            raw_ids = body.get("invoice_ids") or body.get("ids") or []
+        if not isinstance(raw_ids, list):
+            raw_ids = []
+    else:
+        form = await request.form()
+        mode = form.get("mode")
+        raw_ids = form.getlist("invoice_ids") or form.getlist("ids")
+        if not raw_ids and form.get("invoice_ids"):
+            raw_ids = str(form.get("invoice_ids")).split(",")
+    ids = [int(str(x).strip()) for x in raw_ids if str(x).strip().isdigit()]
+    return ids, (str(mode).strip().lower() if mode else None)
+
+
+@router.post("/invoices/push-batch")
+async def qbo_push_batch(
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Bulk-push invoices to QBO. Accepts a list of invoice IDs (JSON
+    ``{"invoice_ids":[...]}`` or form ``invoice_ids``) OR ``mode=all_unsynced``
+    (every finalized invoice with qbo_sync_status != 'synced').
+
+    Each invoice is pushed INDEPENDENTLY via the existing
+    QBOSyncService.push_invoice (which commits / marks per invoice) — there is no
+    shared transaction, so one failure never rolls back the others. Returns
+    per-invoice results: {id, ok, qbo_id|error}."""
+    svc = QBOSyncService(db)
+    ids, mode = await _parse_batch_request(request)
+    if mode in _ALL_UNSYNCED_MODES:
+        ids = svc.unsynced_invoice_ids()
+
+    results = []
+    for iid in ids:
+        r = svc.push_invoice(iid)
+        ok = bool(r.get("ok"))
+        entry = {"id": iid, "ok": ok}
+        if ok:
+            entry["qbo_id"] = r.get("qbo_id", "")
+            if r.get("skipped"):
+                entry["skipped"] = r["skipped"]
+        else:
+            entry["error"] = r.get("error", "")
+        results.append(entry)
+
+    return JSONResponse({
+        "count": len(results),
+        "pushed": sum(1 for e in results if e["ok"] and not e.get("skipped")),
+        "failed": sum(1 for e in results if not e["ok"]),
+        "results": results,
+    })
+
+
 @router.get("/status")
 def qbo_status(db: Session = Depends(get_db), _admin=Depends(require_admin)):
     """JSON connection + sync-count summary (debug / settings panel)."""
