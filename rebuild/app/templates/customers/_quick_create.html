@@ -90,6 +90,12 @@
                value="{{ prefill.get('company_name', '') }}"
                class="form-input" placeholder="e.g. Mike's Diesel Service" />
       </div>
+      <div>
+        <label class="form-label">Account #</label>
+        <input type="text" name="account_number"
+               value="{{ prefill.get('account_number', '') }}"
+               class="form-input" placeholder="Optional account #" />
+      </div>
 
       {# Customer Type slots here once P2-D1 (type-driven defaults) ships the
          customer_type column + quick-create handler. Deferred: no backend field yet. #}

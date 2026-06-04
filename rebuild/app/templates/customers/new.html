@@ -61,6 +61,14 @@
         class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
     </div>
 
+    {# Account # (#5) — internal customer/account number #}
+    <div>
+      <label class="block text-xs font-medium text-gray-500 mb-1">Account #</label>
+      <input name="account_number" value="{{ prefill.get('account_number', '') }}"
+        placeholder="Optional — your internal account number"
+        class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+    </div>
+
     {# ── Customer Type (§3 / P2-D1) — pre-fills the fields below from type_defaults ── #}
     <div>
       <label class="block text-xs font-medium text-gray-500 mb-1">Customer Type</label>

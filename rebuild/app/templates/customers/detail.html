@@ -126,6 +126,7 @@
                 {% if customer.contact_name %}
                 <p class="text-sm text-gray-500 mt-0.5">{{ customer.contact_name }}</p>
                 {% endif %}
+                {% if customer.account_number %}<p class="text-xs text-gray-400 mt-0.5 font-mono">Acct #{{ customer.account_number }}</p>{% endif %}
                 {# P2-D2 flag chips — operational warnings (Requires PO, Credit Hold, …) + tax-exempt #}
                 {% set _flags = flags | default([]) %}
                 {% if _flags %}<div class="mt-2">{{ flagmacro.customer_flags(_flags) }}</div>{% endif %}
@@ -241,6 +242,10 @@
                 <div class="col-span-2">
                   <label class="form-label">Company Name <span class="text-red-500 normal-case">*</span></label>
                   <input name="company_name" value="{{ customer.company_name }}" required class="form-input" />
+                </div>
+                <div class="col-span-2">
+                  <label class="form-label">Account #</label>
+                  <input name="account_number" value="{{ customer.account_number or '' }}" class="form-input" placeholder="Internal account number" />
                 </div>
 
                 {# Customer Type slots here once P2-D1 (type-driven defaults) ships the
