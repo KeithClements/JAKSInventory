@@ -22,6 +22,8 @@
 <div
   class="space-y-4 pb-52"
   x-data="operationalListData('product-preview-body', '/products/preview/', [{% for p in products %}{{ p.id }}{% if not loop.last %},{% endif %}{% endfor %}])"
+  {# #5 — F2 jumps to Add Product #}
+  @keydown.window="if ($event.key === 'F2') { $event.preventDefault(); window.location.href = '/products/new'; }"
 >
 
 {# ══════════════════════════════════════════════════════════════════════════════
@@ -326,7 +328,7 @@
 
           {# Margin % #}
           <td class="px-4 py-4 align-middle text-right">
-            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold border {{ margin_badge }} tabular-nums">
+            <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-sm font-bold border {{ margin_badge }} tabular-nums">
               {{ "%.0f"|format(margin_pct) }}%
             </span>
           </td>
