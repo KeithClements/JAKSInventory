@@ -67,12 +67,88 @@
 
     {# ═══ PRICING TAB ═══ #}
     <div x-show="tab === 'pricing'" x-cloak class="space-y-6">
+
+      {# Cost-bracket markup grid — read-only preview via GET /settings/pricing/preview
+         (Backend @02154c1, returns tiers + impact as JSON → rendered client-side).
+         Editing the tiers + the Activate toggle are still pending Backend save seams. #}
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4"
+           x-data="{
+             loading: false, loaded: false, error: null,
+             tiers: [], affected: 0, moved: 0, sample: [],
+             async preview() {
+               this.loading = true; this.error = null;
+               try {
+                 const r = await fetch('/settings/pricing/preview');
+                 if (!r.ok) { this.error = 'Preview failed (HTTP ' + r.status + '). Pricing preview is admin-only.'; }
+                 else { const d = await r.json(); this.tiers = d.tiers; this.affected = d.affected_count; this.moved = d.moved_count; this.sample = d.sample; this.loaded = true; }
+               } catch (e) { this.error = 'Error: ' + e; }
+               finally { this.loading = false; }
+             }
+           }">
+        <div class="flex items-center justify-between border-b border-gray-100 pb-3">
+          <h2 class="text-sm font-semibold text-gray-700">Cost-bracket Markup Grid</h2>
+          <button type="button" @click="preview()" :disabled="loading"
+                  class="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 transition-colors">
+            <span x-show="!loading">Preview impact</span>
+            <span x-show="loading" x-cloak>Loading…</span>
+          </button>
+        </div>
+        <p class="text-xs text-gray-400">Cost-bracket tiers re-price products that use the flat default. This is a read-only dry run — nothing changes. Editing the tiers and the “Activate grid” toggle are pending Backend save routes (see note).</p>
+
+        <div x-show="error" x-cloak class="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700" x-text="error"></div>
+
+        <template x-if="loaded">
+          <div class="space-y-4">
+            {# Tiers #}
+            <div>
+              <p class="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1">Cost brackets</p>
+              <table class="w-full text-sm">
+                <thead><tr class="text-[11px] text-gray-400 uppercase"><th class="text-left py-1 font-medium">Min Cost</th><th class="text-left font-medium">Max Cost</th><th class="text-right font-medium">Markup %</th></tr></thead>
+                <tbody>
+                  <template x-for="t in tiers" :key="t.id">
+                    <tr class="border-t border-gray-50">
+                      <td class="py-1 tabular-nums" x-text="'$' + t.min_cost.toFixed(2)"></td>
+                      <td class="tabular-nums" x-text="t.max_cost === null ? 'and up' : '$' + t.max_cost.toFixed(2)"></td>
+                      <td class="text-right tabular-nums font-medium" x-text="t.markup_pct.toFixed(1) + '%'"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+            {# Impact #}
+            <div class="flex flex-wrap gap-6 text-sm border-t border-gray-100 pt-3">
+              <div><span class="text-gray-500">Products affected:</span> <b class="tabular-nums" x-text="affected"></b></div>
+              <div><span class="text-gray-500">Price would change:</span> <b class="text-amber-600 tabular-nums" x-text="moved"></b></div>
+            </div>
+            {# Before / after sample #}
+            <template x-if="sample.length">
+              <div>
+                <p class="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1">Sample — before → after (max 25)</p>
+                <div class="overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead><tr class="text-[11px] text-gray-400 uppercase"><th class="text-left py-1 font-medium">SKU</th><th class="text-right font-medium">Cost</th><th class="text-right font-medium">Old</th><th class="text-right font-medium">New</th><th class="text-right font-medium">Δ</th></tr></thead>
+                    <tbody>
+                      <template x-for="row in sample" :key="row.sku">
+                        <tr class="border-t border-gray-50">
+                          <td class="py-1 font-mono text-xs" x-text="row.sku"></td>
+                          <td class="text-right tabular-nums" x-text="'$' + row.cost.toFixed(2)"></td>
+                          <td class="text-right tabular-nums text-gray-500" x-text="'$' + row.old_sell.toFixed(2)"></td>
+                          <td class="text-right tabular-nums font-medium" x-text="'$' + row.new_sell.toFixed(2)"></td>
+                          <td class="text-right tabular-nums" :class="row.delta >= 0 ? 'text-green-600' : 'text-red-600'" x-text="(row.delta >= 0 ? '+$' : '-$') + Math.abs(row.delta).toFixed(2)"></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+
+      {# Flat fallback — the live pricing when the grid is inactive (kept per §8R) #}
       <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
-        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Pricing Defaults</h2>
-        {# Cost-bracket markup grid + Preview impact + Activate toggle are pending the
-           Backend seams (route must pass markup_tiers rows + add /settings/pricing/preview
-           + include markup_tiers_active in VISIBLE_KEYS). Until then the flat default +
-           CC surcharge below ARE the live fallback. #}
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Flat Defaults <span class="text-xs text-gray-400 font-normal ml-1">(fallback — live when the grid is off)</span></h2>
         {% for s in settings %}
         {% if s.key in ['default_markup_pct','cc_surcharge_pct'] %}
         <div>
