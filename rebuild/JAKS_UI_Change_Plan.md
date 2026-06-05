@@ -2480,12 +2480,42 @@ don't match their business. Therefore:
 </div>
 ```
 
-**Governance criteria (apply when UI-Builder lands this):**
-- [ ] Tab uses `.tab-bar`/`.tab-active`/`.tab-inactive` with Alpine `x-data` — no custom tab markup.
-- [ ] Pricing grid is an HTML `<table>` with `<select>`/`<input>` cells (not hardcoded in Python).
-- [ ] DARK state: grid + save button disabled when `active == false`, with the explanatory notice.
-- [ ] No new CSS classes invented (uses existing `.form-input`, `.form-select`, `.form-checkbox`, `.form-label`).
-- [ ] `filter_tabs` macro is NOT used for Settings tabs.
+**Governance pass — @845d92f (2026-06-03): ✅ PARTIAL PASS (tab pattern PASS; pricing grid PENDING).**
+
+Tabbed Settings page landed in `845d92f` (`settings/index.html`, 235 insertions). Governance result:
+
+- ✅ **Tab pattern: PASS.** Uses `.tab-bar`/`.tab-active`/`.tab-inactive` with Alpine `x-data="{tab:'company'}`
+  and `@click="tab = 'X'"` — exactly the pattern specified. Six tabs: Company / Pricing / QuickBooks /
+  Shopify / Tax / System. Template comment explicitly cites "reuses the customers/detail.html tab-bar
+  pattern." `filter_tabs` macro NOT used. No custom tab markup.
+- ✅ **Shared form + single Save: CORRECT.** All tab panels use `x-show` (inputs stay in DOM), so a single
+  `<button type="submit">Save Settings</button>` outside all tab panels correctly posts every field. A per-tab
+  save button would cause incomplete submits. My §8R spec said "each tab has its own Save" — that was wrong
+  for a shared-form layout; the builder's single-save approach is the right call. `filter_tabs` routing would
+  have required per-tab routes; the shared-form avoids that complexity. **Ruling updated: single save button
+  is the approved pattern for the shared-form settings layout.**
+- ✅ **Documents in Company tab (not Documents tab): non-blocking.** The builder grouped footer/terms/logo
+  into the Company tab (they are company-identity fields). §8R proposed a separate "Documents" tab — that
+  grouping was a suggestion, not a constraint. Staying under Company is fine.
+- ✅ **Logo upload as a separate `<form enctype="multipart/form-data">` outside the main form: CORRECT.**
+  (File inputs can't be nested in the main form without `enctype` change; the builder correctly isolated it.)
+- ⏳ **Pricing grid: PENDING — Backend seam not yet provided.** The Pricing tab currently shows only
+  `default_markup_pct` / `cc_surcharge_pct` with a comment: *"Cost-bracket markup grid + Preview impact +
+  Activate toggle are pending the Backend seams (route must pass markup_tiers rows…)"*. This is the
+  right approach — placeholder now, grid when the route passes `type_defaults`. The DARK-constraint spec
+  (§8R Decision 2) still applies when that grid lands:
+  - Grid must use existing `.form-input` / `.form-select` / `.form-checkbox` — no new CSS.
+  - `customer_type_defaults_enabled` toggle → `opacity-50 pointer-events-none` on the grid when inactive.
+  - A `<table>` with one `<tr>` per `CustomerType`, not a code-only list.
+
+**Governance checklist (updated — ✅ = passed; ⏳ = pending):**
+- ✅ Tab uses `.tab-bar`/`.tab-active`/`.tab-inactive` with Alpine `x-data` — no custom tab markup.
+- ✅ `filter_tabs` macro is NOT used for Settings tabs.
+- ✅ Single Save button (outside all tab panels) — the approved pattern for the shared-form layout.
+- ✅ Logo upload isolated in its own `<form enctype="multipart/form-data">`.
+- ⏳ Pricing grid is an HTML `<table>` with `<select>`/`<input>` cells — pending Backend `type_defaults` seam.
+- ⏳ DARK state: grid + inputs disabled until `customer_type_defaults_enabled` toggle is on.
+- ⏳ Grid uses existing form CSS classes (`.form-input`, `.form-select`, `.form-checkbox`), no new classes.
 
 ---
 
