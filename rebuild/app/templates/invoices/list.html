@@ -12,6 +12,11 @@
     </svg>
     New Invoice
   </button>
+  <button type="button"
+          onclick="jaksQboBatch({mode:'all_unsynced'}, 'Sync all unsynced finalized invoices to QuickBooks?')"
+          class="btn-secondary btn-sm" title="Push every finalized invoice not yet in QuickBooks">
+    Sync All Unsynced
+  </button>
 {% endblock %}
 
 {% block content %}
@@ -20,8 +25,12 @@
 {% from "macros/filter_tabs.html" import filter_tabs %}
 {% from "macros/bulk_toolbar.html" import bulk_toolbar %}
 {% from "macros/preview_dock.html" import preview_dock_shell %}
-{% from "macros/chips.html" import status_chip %}
+{% from "macros/chips.html" import status_chip, qbo_status_chip, status_stack %}
+{% from "macros/sortable.html" import sortable_th %}
 {{ operational_list_script() }}
+
+{# Preserve the active tab + search when a sortable column header is clicked. #}
+{% set _sqs = '&tab=' ~ tab ~ ('&q=' ~ (q | urlencode) if q else '') %}
 
 {# Status chip color map (JAKS_UI_Change_Plan.md Invoice List brief) #}
 {% set chip_map = {
@@ -78,6 +87,11 @@
    BULK ACTION BAR — §7 Primitive 4
 ══════════════════════════════════════════════════════════════════════════════ #}
 {% call bulk_toolbar() %}
+  <button type="button"
+          @click="jaksQboBatch({invoice_ids: Object.keys(selected).filter(function(i){return selected[i];}).map(Number)})"
+          class="text-xs font-medium text-brand-700 hover:text-brand-900 transition-colors">
+    Sync Selected to QBO
+  </button>
   <button class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">
     Export CSV
   </button>
@@ -91,8 +105,8 @@
   <div class="overflow-x-auto">
     <table class="w-full min-w-[980px]">
 
-      {# ── Table head ── #}
-      <thead>
+      {# ── Table head (sticky on scroll; child th's get the bg so rows don't show through) ── #}
+      <thead class="sticky top-0 z-20 [&_th]:bg-gray-50">
         <tr class="bg-gray-50 border-b border-gray-200">
           {# Select all #}
           <th class="w-10 px-4 py-3 text-center">
@@ -102,12 +116,8 @@
                    aria-label="Select all invoices"
                    class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
           </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Invoice #
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Customer
-          </th>
+          {{ sortable_th('Invoice #', 'number', sort, direction, qs=_sqs) }}
+          {{ sortable_th('Customer', 'customer', sort, direction, qs=_sqs) }}
           <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
             PO # / ESN
           </th>
@@ -121,8 +131,9 @@
             Status
           </th>
           <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Due Date
+            QBO
           </th>
+          {{ sortable_th('Due Date', 'due', sort, direction, qs=_sqs) }}
           <th class="px-4 py-3 w-12"></th>
         </tr>
       </thead>
@@ -175,10 +186,7 @@
               <a href="/invoices/{{ inv.id }}"
                  class="font-mono text-sm font-bold text-brand-700 hover:text-brand-900 hover:underline leading-none"
                  @click.stop>{{ inv.invoice_number }}</a>
-              {% if inv.is_locked and inv.status not in [InvoiceStatus.PAID, InvoiceStatus.VOID] %}
-              <span class="px-1 py-0 rounded text-[10px] font-semibold bg-amber-50 text-amber-600 border border-amber-100"
-                    title="Locked{% if inv.lock_reason %} — {{ inv.lock_reason | replace('_', ' ') | title }}{% endif %}">Locked</span>
-              {% endif %}
+              {{ status_stack(inv) }}
             </div>
             {# Source document sub-line #}
             {% if inv.sales_order_id %}
@@ -226,6 +234,11 @@
           {# Status chip — §7 Primitive 3 #}
           <td class="px-4 py-4 align-middle">
             {{ status_chip(chip_cls, chip_dot, inv.status | title) }}
+          </td>
+
+          {# QBO sync state — Phase 1B #}
+          <td class="px-4 py-4 align-middle">
+            {{ qbo_status_chip(inv.qbo_sync_status, inv.id) }}
           </td>
 
           {# Due Date #}
@@ -327,4 +340,28 @@
 {{ preview_dock_shell('Invoice Preview', 'invoice-preview-body') }}
 
 </div>{# end x-data wrapper #}
+
+<script>
+  // Bulk QBO push — POSTs to /qbo/invoices/push-batch, which loops the per-invoice
+  // push server-side (each invoice independent: one failure never blocks the rest).
+  function jaksQboBatch(body, confirmMsg) {
+    if (body.invoice_ids && body.invoice_ids.length === 0) {
+      alert('Select at least one invoice first.');
+      return;
+    }
+    if (confirmMsg && !confirm(confirmMsg)) return;
+    fetch('/qbo/invoices/push-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        alert(d.pushed + ' synced, ' + d.failed + ' failed' +
+              (d.failed ? ' — see the Sync Failed tab.' : '.'));
+        location.reload();
+      })
+      .catch(function () { alert('QBO sync request failed.'); });
+  }
+</script>
 {% endblock %}
