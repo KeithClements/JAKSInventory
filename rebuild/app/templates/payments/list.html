@@ -12,6 +12,8 @@
 {% from "macros/filter_tabs.html"   import filter_tabs %}
 {% from "macros/bulk_toolbar.html"  import bulk_toolbar %}
 {% from "macros/chips.html"         import status_chip %}
+{% from "macros/sortable.html"      import sortable_th %}
+{% set _sqs = '&tab=' ~ active_tab ~ ('&q=' ~ (q | urlencode) if q else '') %}
 {% from "macros/empty_state.html"   import empty_state %}
 {% from "macros/preview_dock.html"  import preview_dock_shell %}
 {{ operational_list_script() }}
@@ -110,7 +112,7 @@
     <table class="w-full min-w-[980px]">
 
       {# ── Table head ── #}
-      <thead>
+      <thead class="sticky top-0 z-20 [&_th]:bg-gray-50">
         <tr class="bg-gray-50 border-b border-gray-200">
           <th class="w-10 px-4 py-3 text-center">
             <input type="checkbox"
@@ -119,18 +121,12 @@
                    aria-label="Select all payments"
                    class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
           </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Payment / Date
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Customer
-          </th>
+          {{ sortable_th('Payment / Date', 'date', sort, direction, qs=_sqs) }}
+          {{ sortable_th('Customer', 'customer', sort, direction, qs=_sqs) }}
           <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide hidden md:table-cell">
             Method
           </th>
-          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Amount
-          </th>
+          {{ sortable_th('Amount', 'amount', sort, direction, qs=_sqs, align='right') }}
           <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide hidden lg:table-cell">
             Applied To
           </th>

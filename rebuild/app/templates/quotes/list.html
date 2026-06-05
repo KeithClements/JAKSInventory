@@ -17,6 +17,8 @@
 {% from "macros/preview_dock.html" import preview_dock_shell %}
 {% from "macros/empty_state.html" import empty_state %}
 {% from "macros/filter_tabs.html" import filter_tabs %}
+{% from "macros/sortable.html" import sortable_th %}
+{% set _sqs = '&status=' ~ status_filter ~ ('&q=' ~ (q | urlencode) if q else '') %}
 {% from "macros/bulk_toolbar.html" import bulk_toolbar %}
 {% from "macros/chips.html" import status_chip %}
 {{ operational_list_script() }}
@@ -295,7 +297,7 @@ function trapFocus(e, container) {
 <div class="card overflow-hidden">
   <div class="overflow-x-auto">
     <table class="w-full min-w-[1040px]">
-      <thead>
+      <thead class="sticky top-0 z-20 [&_th]:bg-gray-50">
         <tr class="bg-gray-50 border-b border-gray-200">
           {# Select all — checkbox cell carries the health stripe #}
           <th class="w-10 px-4 py-3 text-center">
@@ -305,8 +307,8 @@ function trapFocus(e, container) {
                    aria-label="Select all quotes"
                    class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
           </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Quote</th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Customer</th>
+          {{ sortable_th('Quote', 'number', sort, direction, qs=_sqs) }}
+          {{ sortable_th('Customer', 'customer', sort, direction, qs=_sqs) }}
           <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Total / Margin</th>
           <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
           <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide hidden md:table-cell">Follow-up</th>
