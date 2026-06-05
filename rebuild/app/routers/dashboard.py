@@ -9,14 +9,14 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import extract, func
 from sqlalchemy.orm import Session, joinedload
 
-from app.constants import CoreDirection, CoreStatus, InvoiceStatus, POStatus, QuoteOutcome, QuoteStatus, SOStatus
+from app.constants import CoreDirection, CoreStatus, InvoiceStatus, POStatus, QuoteOutcome, QuoteStatus, SOStatus, QuoteFollowupStatus
 from app.deps import get_db
 from app.models.invoice import Invoice, InvoiceLine, Payment
 from app.models.quote import Quote, QuoteLine, SalesOrder
 from app.models.purchase_order import PurchaseOrder
 from app.models.core import CoreCharge
 from app.models.product import Product
-from app.models.customer import CustomerCallLog
+from app.models.customer import Customer, CustomerCallLog
 from app.services.report_service import ReportService
 
 router = APIRouter(tags=["dashboard"])
@@ -174,6 +174,60 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         monthly_labels.append(calendar.month_abbr[m])
         monthly_totals.append(round(float(total), 2))
 
+    # Top 5 customers by lifetime sales (open invoiced + paid, net of credits).
+    # We approximate here as sum of non-void invoice totals — the full P2-Q1
+    # net-of-credits figure is on CustomerMetricsService for per-customer views.
+    _top_raw = (
+        db.query(
+            Invoice.customer_id,
+            func.sum(
+                InvoiceLine.unit_price * InvoiceLine.qty
+                * (1 - InvoiceLine.discount_pct / 100)
+            ).label("total"),
+        )
+        .join(InvoiceLine, InvoiceLine.invoice_id == Invoice.id)
+        .filter(Invoice.status.notin_([InvoiceStatus.VOID]))
+        .group_by(Invoice.customer_id)
+        .order_by(func.sum(
+            InvoiceLine.unit_price * InvoiceLine.qty
+            * (1 - InvoiceLine.discount_pct / 100)
+        ).desc())
+        .limit(5)
+        .all()
+    )
+    _cust_map = {
+        c.id: c for c in (
+            db.query(Customer)
+            .filter(Customer.id.in_([r.customer_id for r in _top_raw]))
+            .all()
+        )
+    }
+    top_customers = [
+        {
+            "customer": _cust_map.get(r.customer_id),
+            "lifetime_sales": round(float(r.total or 0), 2),
+        }
+        for r in _top_raw
+        if _cust_map.get(r.customer_id)
+    ]
+
+    # Open quote follow-ups grouped by follow_up_status (the existing taxonomy).
+    _followup_raw = (
+        db.query(Quote.follow_up_status, func.count(Quote.id))
+        .filter(
+            Quote.outcome == QuoteOutcome.PENDING,
+            Quote.status.notin_([QuoteStatus.CONVERTED, QuoteStatus.DECLINED]),
+            Quote.follow_up_status.isnot(None),
+        )
+        .group_by(Quote.follow_up_status)
+        .all()
+    )
+    open_followups = {
+        str(status or ""): int(count)
+        for status, count in _followup_raw
+    }
+    open_followups_total = sum(open_followups.values())
+
     return templates.TemplateResponse(request, "dashboard.html", {
         "today_payments": today_payments,
         "ar_balance": ar_balance,
@@ -187,6 +241,9 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         "recent_calls": recent_calls,
         "overdue_followups": overdue_followups,
         "research_queue": research_queue,
+        "top_customers": top_customers,          # Seam 4
+        "open_followups": open_followups,         # Seam 4 — dict {status: count}
+        "open_followups_total": open_followups_total,
         "today": today,
         "monthly_labels_json": json.dumps(monthly_labels),
         "monthly_totals_json": json.dumps(monthly_totals),

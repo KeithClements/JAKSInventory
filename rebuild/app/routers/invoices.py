@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.constants import InvoiceStatus, LineType, PaymentMethod, QBOSyncStatus
 from app.deps import get_current_user_id, get_db
-from app.services.document_render import get_company_dict
+from app.services.document_render import get_company_dict, get_prepared_by
 from app.models.customer import Customer
 from app.models.invoice import Invoice, InvoiceLine
 from app.models.product import Product, CrossReference, ProductSerialNumber
@@ -803,7 +803,8 @@ async def invoice_finalise(
 # ── Print / PDF (unchanged) ───────────────────────────────────────────────────
 
 @router.get("/{invoice_id}/print", response_class=HTMLResponse)
-def invoice_print(invoice_id: int, request: Request, db: Session = Depends(get_db)):
+def invoice_print(invoice_id: int, request: Request, db: Session = Depends(get_db),
+                  user_id: int = Depends(get_current_user_id)):
     inv = _get_invoice_or_redirect(db, invoice_id)
     if isinstance(inv, RedirectResponse):
         return inv
@@ -832,11 +833,13 @@ def invoice_print(invoice_id: int, request: Request, db: Session = Depends(get_d
         "customer_addr_lines": addr_lines,
         "discount_amount": discount_amount,
         "company": company,
+        "prepared_by": get_prepared_by(db, user_id),
     })
 
 
 @router.get("/{invoice_id}/pdf")
-def invoice_pdf(invoice_id: int, request: Request, db: Session = Depends(get_db)):
+def invoice_pdf(invoice_id: int, request: Request, db: Session = Depends(get_db),
+                user_id: int = Depends(get_current_user_id)):
     """Server-side PDF via WeasyPrint. Falls back to print view if libs missing."""
     from fastapi.responses import Response as FastAPIResponse
 
@@ -869,6 +872,7 @@ def invoice_pdf(invoice_id: int, request: Request, db: Session = Depends(get_db)
         customer_addr_lines=addr_lines,
         discount_amount=discount_amount,
         company=company,
+        prepared_by=get_prepared_by(db, user_id),
     )
     try:
         from weasyprint import HTML

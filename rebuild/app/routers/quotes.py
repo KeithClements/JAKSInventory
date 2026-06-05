@@ -27,7 +27,7 @@ from app.constants import (
     LostReason, LOST_REASON_LABELS,
 )
 from app.deps import get_current_user_id, get_db
-from app.services.document_render import get_company_dict
+from app.services.document_render import get_company_dict, get_prepared_by
 from app.models.customer import Customer
 from app.models.quote import Quote
 from app.services.quote_service import QuoteService
@@ -330,6 +330,27 @@ async def quote_preview_panel(
 
 # ── Workspace ─────────────────────────────────────────────────────────────────
 
+def _quote_customer_ctx(db, quote) -> dict:
+    """Seam 3 — customer relationship context for the quote workspace.
+    Pulls outstanding_cores, last_purchase, and lifetime_sales from the
+    existing metrics services so the workspace sidebar can show them."""
+    from app.services.customer_metrics_service import CustomerMetricsService
+    from app.services.invoice_metrics_service import InvoiceMetricsService
+    cid = quote.customer_id
+    if not cid:
+        return {"cust_outstanding_cores": 0,
+                "cust_last_purchase": None,
+                "cust_lifetime_sales": 0.0}
+    m = CustomerMetricsService(db).metrics_for(cid)
+    # Use the InvoiceMetricsService helper for last_purchase and lifetime
+    # (it already does this per-customer keyed on any invoice).
+    return {
+        "cust_outstanding_cores": m.get("outstanding_cores", 0),
+        "cust_last_purchase": m.get("last_purchase"),
+        "cust_lifetime_sales": m.get("lifetime_sales", 0.0),
+    }
+
+
 @router.get("/{quote_id}", response_class=HTMLResponse)
 async def workspace(
     quote_id: int,
@@ -366,6 +387,8 @@ async def workspace(
             # P2-D7 — structured Mark-Lost reason picker (UI wires the dropdown).
             "lost_reasons": list(LostReason),
             "lost_reason_labels": LOST_REASON_LABELS,
+            # Seam 3 — customer relationship context while quoting
+            **_quote_customer_ctx(db, quote),
             **_totals_ctx(quote),
         },
     )
@@ -378,6 +401,7 @@ async def print_quote(
     quote_id: int,
     request: Request,
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     """
     Standalone print-ready HTML page for a quote.
@@ -428,6 +452,7 @@ async def print_quote(
             "subtotal":            subtotal,
             "discount_amount":     discount_amount,
             "company":             company,
+            "prepared_by":         get_prepared_by(db, user_id),
         },
     )
 
@@ -437,6 +462,7 @@ async def quote_pdf(
     quote_id: int,
     request: Request,
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     """
     Server-side PDF generation via WeasyPrint.
@@ -484,6 +510,7 @@ async def quote_pdf(
         subtotal=subtotal,
         discount_amount=discount_amount,
         company=company,
+        prepared_by=get_prepared_by(db, user_id),
     )
 
     try:

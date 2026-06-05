@@ -18,7 +18,7 @@ from app.constants import (
     AddressType, CallOutcome, CallType,
     CommunicationChannel, CommunicationDirection,
     CoreStatus, PaymentTerms, PricingTier, QuoteStatus, SOStatus,
-    CustomerType, CustomerFlag, CUSTOMER_TYPE_LABELS, CUSTOMER_FLAG_LABELS,
+    CustomerType, CustomerStatus, CustomerFlag, CUSTOMER_TYPE_LABELS, CUSTOMER_FLAG_LABELS,
 )
 from app.deps import get_db, get_current_user_id
 from app.models.communication import Communication
@@ -55,6 +55,14 @@ def _form_customer_type(form) -> str:
         return CustomerType(str(form.get("customer_type", "")))
     except ValueError:
         return CustomerType.OTHER
+
+
+def _form_customer_status(form) -> str:
+    """Read + validate the customer_status form field, defaulting to ACTIVE."""
+    try:
+        return CustomerStatus(str(form.get("customer_status", "")))
+    except ValueError:
+        return CustomerStatus.ACTIVE
 
 
 def _find_duplicate_customers(
@@ -465,6 +473,15 @@ def customer_preview_panel(
         or 0
     )
 
+    # last_contact — most recent CustomerCallLog.logged_at for this customer.
+    # Used by the preview dock to surface "last contacted X ago".
+    _last_contact_raw = (
+        db.query(func.max(CustomerCallLog.logged_at))
+        .filter(CustomerCallLog.customer_id == customer_id)
+        .scalar()
+    )
+    last_contact = _last_contact_raw  # datetime | None
+
     _csvc = CustomerService(db)
     return templates.TemplateResponse(
         request,
@@ -474,6 +491,7 @@ def customer_preview_panel(
             "open_invoice_count": open_invoice_count,
             "open_quote_count": open_quote_count,
             "last_sale": last_sale,
+            "last_contact": last_contact,  # Seam 2 — for the dynamic preview dock
             "balance_due": balance_due,
             "open_so_count": open_so_count,
             "outstanding_core_count": outstanding_core_count,
@@ -544,6 +562,7 @@ async def customer_create(request: Request, db: Session = Depends(get_db)):
         company_name=str(form.get("company_name", "")).strip(),
         contact_name=str(form.get("contact_name", "")).strip(),
         customer_type=_form_customer_type(form),
+        customer_status=_form_customer_status(form),
         account_number=str(form.get("account_number", "")).strip(),
         card_surcharge_pct=float(_cs) if _cs else None,
         phone=str(form.get("phone", "")).strip(),
@@ -1273,6 +1292,8 @@ async def customer_update(
     # must not silently reset an existing customer's type to OTHER).
     if "customer_type" in form:
         c.customer_type = _form_customer_type(form)
+    if "customer_status" in form:
+        c.customer_status = _form_customer_status(form)
     # P2-D2 — only rewrite flags when the chip editor submitted them (hidden
     # flags_submitted marker), else a save from a form without the editor would
     # wipe the flags. set_stored_flags leaves tax-exempt / contact-method alone.

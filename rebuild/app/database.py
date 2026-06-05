@@ -182,7 +182,19 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     # ── Pricing grid — MarkupTier is a brand-new table (create_all handles it).
     # No ALTER needed; markup_tiers_active + company_website are seeded as
     # Setting rows at startup (see seed_settings in settings.py).
+
+    # ── Customer lifecycle status (4-state enum, owner-locked) ───────────────
+    # Default 'active' for new rows; backfill below maps is_active=0 → 'inactive'.
+    ("customers", "customer_status", "VARCHAR(20) NOT NULL DEFAULT 'active'"),
 ]
+
+
+def _backfill_customer_status(conn) -> None:
+    """Set customer_status='inactive' where is_active=0 (backfill after ALTER)."""
+    conn.execute(text(
+        "UPDATE customers SET customer_status='inactive' WHERE is_active=0"
+        " AND customer_status='active'"
+    ))
 
 
 def _apply_inline_migrations() -> None:
@@ -190,6 +202,7 @@ def _apply_inline_migrations() -> None:
     existing databases. New databases pick everything up from create_all()."""
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
+    _customer_status_added = False
     with engine.begin() as conn:
         for table, column, sql_def in _PENDING_COLUMN_ADDITIONS:
             if table not in existing_tables:
@@ -199,6 +212,12 @@ def _apply_inline_migrations() -> None:
                 continue
             conn.execute(text(f'ALTER TABLE {table} ADD COLUMN {column} {sql_def}'))
             log.info("Added column %s.%s", table, column)
+            if table == "customers" and column == "customer_status":
+                _customer_status_added = True
+    # Backfill customer_status for deactivated rows (runs once, after the ALTER)
+    if _customer_status_added:
+        with engine.begin() as conn:
+            _backfill_customer_status(conn)
 
 
 def init_db() -> None:

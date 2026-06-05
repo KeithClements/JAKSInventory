@@ -35,6 +35,7 @@ from app.deps import get_current_user_id, get_db
 from app.models.customer import Customer, CustomerAddress
 from app.models.product import Product
 from app.models.quote import SalesOrder, SOLine
+from app.services.document_render import get_prepared_by  # noqa: F401 (used below)
 from app.services.document_render import (
     customer_address_lines,
     get_company_dict,
@@ -597,20 +598,24 @@ def _so_print_context(so: SalesOrder, db: Session) -> dict:
 
 
 @router.get("/{so_id}/print", response_class=HTMLResponse)
-def so_print(so_id: int, request: Request, db: Session = Depends(get_db)):
+def so_print(so_id: int, request: Request, db: Session = Depends(get_db),
+             user_id: int = Depends(get_current_user_id)):
     so = db.query(SalesOrder).filter(SalesOrder.id == so_id).first()
     if so is None:
         return RedirectResponse("/sales-orders/", status_code=303)
     ctx = _so_print_context(so, db)
+    ctx["prepared_by"] = get_prepared_by(db, user_id)
     return templates.TemplateResponse(request, "sales_orders/print.html", ctx)
 
 
 @router.get("/{so_id}/pdf")
-def so_pdf(so_id: int, request: Request, db: Session = Depends(get_db)):
+def so_pdf(so_id: int, request: Request, db: Session = Depends(get_db),
+           user_id: int = Depends(get_current_user_id)):
     so = db.query(SalesOrder).filter(SalesOrder.id == so_id).first()
     if so is None:
         return RedirectResponse("/sales-orders/", status_code=303)
     ctx = _so_print_context(so, db)
+    ctx["prepared_by"] = get_prepared_by(db, user_id)
     return render_pdf_or_fallback(
         request=request,
         templates=templates,

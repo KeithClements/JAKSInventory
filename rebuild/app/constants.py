@@ -103,6 +103,16 @@ class VendorProgramType(StrEnum):
 
 # ─── Customers ────────────────────────────────────────────────────────────────
 
+class CustomerStatus(StrEnum):
+    """Owner-locked 4-state customer lifecycle status (separate from is_active).
+    active = normal · inactive = deactivated · on_hold = work paused (no block) ·
+    credit_hold = account frozen (mirrors the Credit-Hold flag for the status row)."""
+    ACTIVE      = "active"
+    INACTIVE    = "inactive"
+    ON_HOLD     = "on_hold"
+    CREDIT_HOLD = "credit_hold"
+
+
 class PaymentTerms(StrEnum):
     COD    = "cod"
     NET_30 = "net_30"

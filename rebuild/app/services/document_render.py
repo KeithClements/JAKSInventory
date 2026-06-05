@@ -46,6 +46,16 @@ def format_phone(raw: str) -> str:
     return (raw or "").strip()
 
 
+def get_prepared_by(db: Session, user_id: int | None) -> str:
+    """Resolve the current user's display name for print headers ('Prepared by').
+    Returns a non-empty string — falls back to 'JAKS' when user is unknown."""
+    if user_id is None:
+        return "JAKS"
+    from app.models.user import User
+    user = db.query(User).filter(User.id == user_id).first()
+    return (user.name or "").strip() or "JAKS"
+
+
 def get_company_dict(db: Session) -> dict[str, Any]:
     """Standard company block used across every document template.
 

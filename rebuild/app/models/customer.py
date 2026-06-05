@@ -6,7 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 from app.constants import (
     PaymentTerms, DeliveryType, AddressType, ActivityType, CallType, CallOutcome,
-    PreferredContactMethod, SMSConsentMethod, CustomerType,
+    PreferredContactMethod, SMSConsentMethod, CustomerType, CustomerStatus,
     CustomerFlag, CUSTOMER_STORED_FLAGS,
 )
 
@@ -17,6 +17,14 @@ class Customer(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     company_name: Mapped[str] = mapped_column(String(200), nullable=False)
     contact_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+
+    # ── Lifecycle status (owner-locked 4-state) ──────────────────────────────
+    # Separate from is_active for richer filtering. Backfill: is_active==False →
+    # 'inactive'; existing active rows → 'active'. credit_hold mirrors the flag
+    # but lives here for query-able status-row display.
+    customer_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=CustomerStatus.ACTIVE
+    )
 
     # ── Classification (P2-D6) ────────────────────────────────────────────────
     # Single customer type from a fixed list; the key that maps to type-driven
