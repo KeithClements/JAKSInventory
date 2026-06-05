@@ -163,6 +163,8 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     # §5.12 — PDF / document branding (logo set via POST /settings/logo upload)
     "company_logo_path":           ("",        "Company logo path under static/ (set via upload)"),
     "document_footer_text":        ("",        "Footer text on Quote/SO/Invoice PDFs (terms / return policy / thank-you)"),
+    "document_terms_text":         ("Core charges are refundable upon return of the old core.\nFreight is additional unless noted.\nQuotes are valid for 30 days from the date above.",
+                                    "Terms & conditions printed near the bottom of Quote/SO/Invoice PDFs"),
     "document_show_logo":          ("true",    "Show the company logo on document headers"),
 }
 
@@ -181,7 +183,7 @@ VISIBLE_KEYS = [
     "shopify_store_url", "shopify_api_key", "shopify_api_secret",
     "taxjar_api_key",
     # §5.12 — document branding (logo itself is set via POST /settings/logo)
-    "document_footer_text", "document_show_logo",
+    "document_footer_text", "document_terms_text", "document_show_logo",
 ]
 
 

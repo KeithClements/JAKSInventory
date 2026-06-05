@@ -75,6 +75,26 @@
   </div>
 
   <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+    <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Documents &amp; PDFs</h2>
+    {% for s in settings %}
+    {% if s.key in ['document_footer_text','document_terms_text'] %}
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">{{ s.label }}</label>
+      <textarea name="{{ s.key }}" rows="3"
+        class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">{{ s.value }}</textarea>
+    </div>
+    {% elif s.key == 'document_show_logo' %}
+    <label class="flex items-center gap-2 text-sm text-gray-600">
+      <input type="checkbox" name="document_show_logo" value="true" {% if s.value == 'true' %}checked{% endif %}
+        class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+      Show the company logo on document headers
+    </label>
+    {% endif %}
+    {% endfor %}
+    <p class="text-xs text-gray-400">These print on quotes, sales orders &amp; invoices. Terms appear near the bottom; the logo is uploaded below.</p>
+  </div>
+
+  <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
     <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Shopify</h2>
     {% for s in settings %}
     {% if s.key in ['shopify_store_url','shopify_api_key','shopify_api_secret'] %}

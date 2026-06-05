@@ -34,6 +34,18 @@ from app.settings_utils import get_setting_value_db
 
 # ── Company settings dict ─────────────────────────────────────────────────────
 
+def format_phone(raw: str) -> str:
+    """Format a US 10-digit phone as ``(XXX) XXX-XXXX`` (handles a leading 1).
+    Passes anything that isn't 10/11 digits through unchanged, so international
+    or already-formatted numbers are never mangled."""
+    digits = "".join(ch for ch in (raw or "") if ch.isdigit())
+    if len(digits) == 11 and digits[0] == "1":
+        digits = digits[1:]
+    if len(digits) == 10:
+        return f"({digits[0:3]}) {digits[3:6]}-{digits[6:]}"
+    return (raw or "").strip()
+
+
 def get_company_dict(db: Session) -> dict[str, Any]:
     """Standard company block used across every document template.
 
@@ -49,12 +61,13 @@ def get_company_dict(db: Session) -> dict[str, Any]:
     return {
         "name":        get_setting_value_db(db, "company_name",    "JAKS Parts"),
         "address":     get_setting_value_db(db, "company_address", ""),
-        "phone":       get_setting_value_db(db, "company_phone",   ""),
+        "phone":       format_phone(get_setting_value_db(db, "company_phone", "")),
         "email":       get_setting_value_db(db, "company_email",   ""),
         # §5.12 branding
         "logo_url":    logo_url,
         "show_logo":   show_logo,
         "footer_text": get_setting_value_db(db, "document_footer_text", ""),
+        "terms_text":  get_setting_value_db(db, "document_terms_text", ""),
     }
 
 

@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.constants import InvoiceStatus, LineType, PaymentMethod, QBOSyncStatus
 from app.deps import get_current_user_id, get_db
+from app.services.document_render import get_company_dict
 from app.models.customer import Customer
 from app.models.invoice import Invoice, InvoiceLine
 from app.models.product import Product, CrossReference, ProductSerialNumber
@@ -824,12 +825,7 @@ def invoice_print(invoice_id: int, request: Request, db: Session = Depends(get_d
     # with the List total, the Preview panel, and the workspace totals panel.
     discount_amount = inv.discount_amount
 
-    company = {
-        "name":    get_setting_value_db(db, "company_name",    "JAKS Parts"),
-        "address": get_setting_value_db(db, "company_address", ""),
-        "phone":   get_setting_value_db(db, "company_phone",   ""),
-        "email":   get_setting_value_db(db, "company_email",   ""),
-    }
+    company = get_company_dict(db)
 
     return templates.TemplateResponse(request, "invoices/print.html", {
         "invoice": inv,
@@ -865,12 +861,7 @@ def invoice_pdf(invoice_id: int, request: Request, db: Session = Depends(get_db)
     # with the List total, the Preview panel, and the workspace totals panel.
     discount_amount = inv.discount_amount
 
-    company = {
-        "name":    get_setting_value_db(db, "company_name",    "JAKS Parts"),
-        "address": get_setting_value_db(db, "company_address", ""),
-        "phone":   get_setting_value_db(db, "company_phone",   ""),
-        "email":   get_setting_value_db(db, "company_email",   ""),
-    }
+    company = get_company_dict(db)
 
     html_str = templates.env.get_template("invoices/print.html").render(
         request=request,

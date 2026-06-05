@@ -7,6 +7,13 @@
      footer_message      (str, optional) — short tagline default
      disclaimer          (str, optional) — small print above the footer
 #}
+{# Terms & Conditions — configurable (document_terms_text) — prints near the bottom
+   of every document. pre-line preserves the per-line breaks WITHOUT |safe. #}
+{% if company.terms_text %}
+<div class="doc-terms" style="margin-top:16px;padding-top:8px;border-top:1px solid #e5e7eb;font-size:8.5pt;color:#555;line-height:1.5;white-space:pre-line;">
+  <strong style="color:#333;">Terms &amp; Conditions:</strong><br>{{ company.terms_text }}
+</div>
+{% endif %}
 {% if disclaimer %}
 <p style="margin-top:14px;font-size:8pt;color:#aaa;font-style:italic;">{{ disclaimer }}</p>
 {% endif %}
