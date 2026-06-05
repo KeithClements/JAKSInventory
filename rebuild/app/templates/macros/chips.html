@@ -8,6 +8,44 @@
 
 
 {# ═══════════════════════════════════════════════════════════════════════════
+   customer_status_chip(status, compact=False)  — §8S / P2-D2 customer status
+   Self-coloring chip that owns the colour + label for the 4 customer lifecycle
+   states. PURE PRESENTATION — callers pass a string key; chip computes everything.
+
+   status ∈ 'active' | 'inactive' | 'on_hold' | 'credit_hold'
+     active      → ● green   "Active"
+     inactive    → ● gray    "Inactive"
+     on_hold     → ● amber   "On Hold"   (temporary business hold)
+     credit_hold → ● red     "Credit Hold" (P2-D5 — manual credit-hold flag)
+     unknown     → ● gray    the raw value (defensive, never a 500)
+
+   All colours §4-permitted. compact=True → dot only (no text label) for list
+   rows where space is tight; title tooltip still carries the full label.
+
+   Call: {{ customer_status_chip(c.status) }}
+   Derive status in the route or template:
+     'credit_hold' if CustomerFlag.CREDIT_HOLD in c.flag_keys
+     'on_hold'     if c.is_on_hold (future field)
+     'inactive'    if not c.is_active
+     'active'      otherwise
+═════════════════════════════════════════════════════════════════════════════ #}
+{% macro customer_status_chip(status, compact=False) -%}
+{%- set MAP = {
+  'active':      ('bg-green-50 text-green-700',  'bg-green-500',  'Active'),
+  'inactive':    ('bg-gray-100 text-gray-500',   'bg-gray-400',   'Inactive'),
+  'on_hold':     ('bg-amber-50 text-amber-700',  'bg-amber-500',  'On Hold'),
+  'credit_hold': ('bg-red-50 text-red-700',      'bg-red-500',    'Credit Hold'),
+} -%}
+{%- set m = MAP.get(status, ('bg-gray-100 text-gray-500', 'bg-gray-400', status | replace('_',' ') | title)) -%}
+<span class="inline-flex items-center gap-1.5 {{ 'px-1.5 py-0.5' if compact else 'px-2 py-1' }} rounded-lg text-xs font-semibold {{ m[0] }}"
+      title="{{ m[2] }}">
+  <span class="w-1.5 h-1.5 rounded-full {{ m[1] }} shrink-0"></span>
+  {%- if not compact %}<span>{{ m[2] }}</span>{% endif -%}
+</span>
+{%- endmacro %}
+
+
+{# ═══════════════════════════════════════════════════════════════════════════
    qbo_status_chip(status, invoice_id=None, compact=False)  — Phase-1B QBO
    JAKS_UI_Change_Plan.md §8M (ratified as part of the invoice-list/workspace wave).
 

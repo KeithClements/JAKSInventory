@@ -379,7 +379,7 @@ def test_migrated_print_templates_include_shared_branding(jenv):
 # QBO macros — qbo_status_chip + status_stack + actions_dropdown
 # ===========================================================================
 
-IMPORT_CHIPS2 = "{% from 'macros/chips.html' import qbo_status_chip, status_stack %}"
+IMPORT_CHIPS2 = "{% from 'macros/chips.html' import qbo_status_chip, status_stack, customer_status_chip %}"
 IMPORT_ACTIONS = "{% from 'macros/invoice.html' import actions_dropdown %}"
 
 
@@ -401,6 +401,33 @@ def _inv(overrides=None):
 
 
 # -- qbo_status_chip ----------------------------------------------------------
+
+# -- customer_status_chip -----------------------------------------------------
+
+def test_customer_status_chip_four_states(jenv):
+    for status, expected_color, expected_label in [
+        ('active',      'bg-green-50 text-green-700', 'Active'),
+        ('inactive',    'bg-gray-100 text-gray-500',  'Inactive'),
+        ('on_hold',     'bg-amber-50 text-amber-700', 'On Hold'),
+        ('credit_hold', 'bg-red-50 text-red-700',     'Credit Hold'),
+    ]:
+        h = _render(jenv, IMPORT_CHIPS2 + "{{ customer_status_chip(s) }}", s=status)
+        assert expected_color in h, f"{status}: expected color {expected_color}"
+        assert expected_label in h, f"{status}: expected label {expected_label}"
+
+
+def test_customer_status_chip_compact_shows_dot_only(jenv):
+    h = _render(jenv, IMPORT_CHIPS2 + "{{ customer_status_chip('active', compact=True) }}")
+    assert "<span>Active</span>" not in h      # label suppressed in compact mode
+    assert "bg-green-500" in h                  # dot still rendered
+    assert 'title="Active"' in h                # tooltip present for accessibility
+
+
+def test_customer_status_chip_unknown_is_defensive(jenv):
+    h = _render(jenv, IMPORT_CHIPS2 + "{{ customer_status_chip('weird_status') }}")
+    assert "bg-gray-100 text-gray-500" in h    # gray fallback
+    assert "Weird Status" in h                  # humanised key
+
 
 def test_qbo_chip_synced(jenv):
     h = _render(jenv, IMPORT_CHIPS2 + "{{ qbo_status_chip('synced') }}")

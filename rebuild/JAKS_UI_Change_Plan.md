@@ -2519,6 +2519,103 @@ Tabbed Settings page landed in `845d92f` (`settings/index.html`, 235 insertions)
 
 ---
 
+#### 8S. Dashboard widget layout · F2 shortcut · customer_status_chip · Quote §8B header (2026-06-03)
+
+##### 8S-1. `customer_status_chip(status, compact=False)` — Primitive 17
+
+Added to `macros/chips.html`. Self-coloring chip for the 4 customer lifecycle states — callers pass a string
+key, the macro owns all colour + label. All §4-permitted colours.
+
+| status | colour | label |
+|---|---|---|
+| `active` | green | Active |
+| `inactive` | gray | Inactive |
+| `on_hold` | amber | On Hold (temporary business hold) |
+| `credit_hold` | red | Credit Hold (P2-D5 — manual CREDIT_HOLD flag) |
+| unknown | gray | humanised raw value (defensive, never a 500) |
+
+`compact=True` → dot only (no text label) for dense list rows; `title` tooltip still carries the full label.
+Derive status in the route or template: credit_hold if `CustomerFlag.CREDIT_HOLD in c.flag_keys`; inactive if
+`not c.is_active`; active otherwise. **Not yet wired on the customer list/detail/preview** — UI-Builder adopts.
+
+**Primitive 17** — added to the §7 backlog alongside 8–16. Tests in `tests/test_phase2_ui_macros.py`
+(4 tests: all states, compact, unknown defensive).
+
+##### 8S-2. F2 = "Quick-Add Product" — global counter shortcut in `base.html`
+
+**Decision:** the F2 keyboard shortcut is a **`<body>` keydown handler in `base.html`** (counter-wide) —
+NOT a per-screen binding added to each list or workspace. Rationale: the product quick-create is the single
+most frequent mid-flow action at the counter (adding a part while on a quote/SO/invoice without losing context).
+A global binding works everywhere without per-screen wiring.
+
+**Implementation (already live in `base.html`):**
+```js
+@keydown.f2.window="
+  if (!$event.target.matches('input,textarea,select,[contenteditable]')
+      && !$event.ctrlKey && !$event.metaKey && !$event.altKey) {
+    $event.preventDefault();
+    htmx.ajax('GET', '/products/quick-create-form', {target: '#create-slide-content', swap: 'innerHTML'});
+    $dispatch('open-create-slide', {title: 'Quick-Add Product'});
+  }
+"
+```
+
+The input-field guard (`!$event.target.matches(...)`) prevents F2 firing when the user is typing in a search
+box or form. No hidden trigger button needed — `htmx.ajax()` + `$dispatch('open-create-slide')` loads the
+form into the global slide-over directly. `$dispatch` triggers the `@open-create-slide.window` listener on
+`<body>` (same pattern as all other slide-over opens). **Existing shortcuts**: Ctrl+K = global search (unchanged).
+
+##### 8S-3. Dashboard widget layout — governance pass
+
+**Dashboard (`app/templates/dashboard.html`) — ✅ PASS with one noted gap.**
+
+- ✅ **Chart shrink (height=90):** `<canvas height="90">` with `maintainAspectRatio: true` produces a compact
+  bar chart (~half height of a full panel). Appropriate for a dashboard summary card — users click "Full report →"
+  for detail. Correct per §2B ("Do not add new schema / analytics — use existing data cheaply").
+- ✅ **KPI strip (7 tiles):** `grid-cols-2 sm:grid-cols-4 xl:grid-cols-7` with `.stat-card-*` inset-border
+  variants (green/brand/red/amber/blue). §4 color semantics correct (green=cash, red=overdue, amber=pending,
+  blue=active orders). All tiles link to relevant reports.
+- ✅ **Side panel (1/3 col):** Follow-Ups Due + Inventory Alerts + Recent Activity — correct `.card`,
+  `.card-header`, `.card-title`, `.divide-y`, `hover:bg-stone-50/70` hover states. Follow-Ups uses days-late
+  urgency colouring (red ≥2d, amber 1d, gray=today) — good §2B information density.
+- ✅ **Main panel (2/3 col):** Recent Invoices uses `.tbl`/`.tbl-row` classes — permitted for a dashboard
+  widget (not an L2 operational list screen, so the tbl-* ban does not apply here).
+- ⚠️ **Top Customers widget NOT YET LANDED.** The dispatch describes "graph shrunk ~50% + Top Customers +
+  Open Follow-Ups side panel" — Follow-Ups and the shrunk graph are present, but there is no Top Customers
+  widget. When built, it should live in the right sidebar (follow the existing card pattern: `.card`,
+  `.card-header`, list of customers ranked by YTD revenue via `CustomerMetricsService`). Non-blocking — the
+  gap is a missing widget, not a governance issue.
+- ✅ **Row stripes constraint respected:** no `border-l-4` stripes are present on the dashboard widget tables
+  (stripes belong only on operational list screens, not dashboard cards). Correct.
+
+##### 8S-4. Quote workspace §8B action header — ✅ PASS (2 non-blocking punches)
+
+**Quote workspace (`quotes/_header_actions.html`) — ✅ PASS overall; two non-blocking punches.**
+
+The quote workspace action header was extracted into `quotes/_header_actions.html` (included in `{% block
+header_actions %}`) — good pattern, keeps workspace.html clean. The §8B Workspace Action-Header Standard:
+
+- ✅ **Always visible:** rendered inside base.html's `sticky top-0` header — never hidden by scroll.
+- ✅ **Status badge:** `badge-*` chip shown on every status.
+- ✅ **Primary CTA per status:** Send (DRAFT) / → Sales Order ▾ (DRAFT+SENT) / Reactivate (DECLINED/EXPIRED).
+- ✅ **Overflow "More ▾"** for secondary actions (→ Invoice, Mark Lost) — correct disclosure pattern.
+- ✅ **Print/PDF first-class** (promoted from overflow per the 2026-06-02 "Quote Print/PDF→first-class"
+  ruling in memory).
+- ✅ **Mark Lost popover** — uses a custom overlay (not `window.confirm()`). ✅
+- ✅ **Convert to SO** uses a disclosure dropdown — not a native confirm. ✅
+
+**Punches (non-blocking — UI-Builder):**
+1. **`target="_blank"` on `← All quotes`** (`line 150`): the back link opens a new tab. Back links navigate in
+   the SAME tab — remove `target="_blank" rel="noopener"` from that `<a>`.
+2. **`← All quotes` is LAST in the flex row** (rightmost). §8B Zone 1 (back link) should be the leftmost
+   action. Move the `<a>` to the beginning of the outer `<div>`. As the only `hidden lg:inline` element it won't
+   crowd small screens but will read correctly on desktop.
+3. **`window.confirm()` on "→ Invoice" convert** (`onsubmit="return confirm(...)"`): native browser dialog.
+   The `confirm_modal` macro (`macros/confirm_modal.html`) is the project standard (§3). Replace with the
+   macro's `jakConfirm({…})` pattern.
+
+---
+
 ### 9. Functional Gate — Definition of Done
 
 **Ratified 2026-05-30.**

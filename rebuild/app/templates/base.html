@@ -352,6 +352,13 @@
   }"
   @keydown.window="if ((event.ctrlKey || event.metaKey) && event.key === 'k') { event.preventDefault(); cmdKOpen = true; }"
   @keydown.escape.window="logCallOpen = false; if (createSlideOpen) closeCreateSlide(); sidebarOpen = false; cmdKOpen = false; notifOpen = false"
+  @keydown.f2.window="
+    if (!$event.target.matches('input,textarea,select,[contenteditable]') && !$event.ctrlKey && !$event.metaKey && !$event.altKey) {
+      $event.preventDefault();
+      htmx.ajax('GET', '/products/quick-create-form', {target: '#create-slide-content', swap: 'innerHTML'});
+      $dispatch('open-create-slide', {title: 'Quick-Add Product'});
+    }
+  "
   @open-create-slide.window="
     createSlideOpen = true;
     createSlideDirty = false;
