@@ -1305,6 +1305,9 @@ for a net-new cross-cutting feature the risk is the inverse — N divergent per-
 - **Primitive 11 — `metric_strip(tiles, cols=4)`** — `macros/metric_strip.html`. List-header KPI-tile strip (icon + big number + label), extracted from the cores/warranty list headers (§2B / §5.1 SO dashboard). Ratified §8M.
 - **Primitive 12 — `so_po_status_chip(rollup)`** — `macros/so_status.html`. Backorder / on-order / ETA chip off the §5.10 SO↔PO rollup (`SalesOrderMetricsService.po_link_status`). Ratified §8M.
 - **Primitive 13 — `sortable_th(label, key, sort, direction, qs)`** — `macros/sortable.html`. Clickable sort column header (▲/▼ arrow; toggles `?sort=&direction=`; preserves other query params). Route reads `sort`+`direction` via `app.utils.apply_sort` (@3cb1a86). Pairs with `.sticky-thead`. Ratified §8Q.
+- **Primitive 14 — `qbo_status_chip(status, invoice_id, compact)`** — `macros/chips.html`. QBO sync state chip (synced ✓ green / pending ⟳ blue / error ✗ red / not-sent — gray). Replaces the broken draft (which used invoice_id for synced detection). Ratified @fa34746.
+- **Primitive 15 — `status_stack(invoice)`** — `macros/chips.html`. Stacked Posted/Paid/QBO badges replacing the lone "Locked" badge in the invoice list; lock-reason tooltip from InvoiceLockReason. Calls qbo_status_chip compact. Ratified @fa34746.
+- **Primitive 16 — `actions_dropdown(invoice, editable)`** — `macros/invoice.html`. Governed "Actions ▾" menu for the invoice workspace header. Void lives HERE (not a loose btn-danger). Slots: Print/PDF, Take Payment, Warranty/RA, Push/Re-Sync QBO, Void (guarded). Uses ctx-item/dropdown_scale. Ratified @fa34746.
 
 ---
 
