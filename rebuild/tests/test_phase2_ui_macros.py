@@ -375,6 +375,165 @@ def test_migrated_print_templates_include_shared_branding(jenv):
 # sortable_th — Primitive 13 (clickable sort column header, §2 lists)
 # ===========================================================================
 
+# ===========================================================================
+# QBO macros — qbo_status_chip + status_stack + actions_dropdown
+# ===========================================================================
+
+IMPORT_CHIPS2 = "{% from 'macros/chips.html' import qbo_status_chip, status_stack %}"
+IMPORT_ACTIONS = "{% from 'macros/invoice.html' import actions_dropdown %}"
+
+
+def _inv(overrides=None):
+    """Minimal invoice-like object for macro rendering tests."""
+    class Inv:
+        id = 42
+        status = 'open'
+        amount_paid = 0.0
+        is_locked = True
+        lock_reason = 'finalized'
+        qbo_sync_status = None
+        qbo_invoice_id = None
+        qbo_sync_error = None
+    o = Inv()
+    for k, v in (overrides or {}).items():
+        setattr(o, k, v)
+    return o
+
+
+# -- qbo_status_chip ----------------------------------------------------------
+
+def test_qbo_chip_synced(jenv):
+    h = _render(jenv, IMPORT_CHIPS2 + "{{ qbo_status_chip('synced') }}")
+    assert "bg-green-50 text-green-700" in h and "Synced" in h
+    # checkmark SVG path
+    assert "M5 13l4 4L19 7" in h
+
+
+def test_qbo_chip_pending(jenv):
+    h = _render(jenv, IMPORT_CHIPS2 + "{{ qbo_status_chip('pending') }}")
+    assert "bg-blue-50 text-blue-700" in h and "Pending" in h
+
+
+def test_qbo_chip_error(jenv):
+    h = _render(jenv, IMPORT_CHIPS2 + "{{ qbo_status_chip('error', invoice_id=99) }}")
+    assert "bg-red-50 text-red-700" in h and "Failed" in h
+    assert "inv #99" in h                            # invoice_id surfaced in tooltip
+    assert "<form" not in h and "type=\"submit\"" not in h  # chip is read-only, no form
+
+
+def test_qbo_chip_not_sent(jenv):
+    for s in ('', None, 'skipped'):
+        h = _render(jenv, IMPORT_CHIPS2 + "{{ qbo_status_chip(s) }}", s=s)
+        assert "bg-green-50" not in h and "bg-blue-50" not in h and "bg-red-50" not in h
+
+
+def test_qbo_chip_compact_hides_label(jenv):
+    h = _render(jenv, IMPORT_CHIPS2 + "{{ qbo_status_chip('synced', compact=True) }}")
+    assert "<span>Synced</span>" not in h            # label hidden in compact mode
+    assert "M5 13l4 4L19 7" in h                     # icon still present
+
+
+# -- status_stack -------------------------------------------------------------
+
+def test_status_stack_open_locked_shows_posted(jenv):
+    h = _render(jenv, IMPORT_CHIPS2 + "{{ status_stack(inv) }}", inv=_inv())
+    assert "Posted" in h
+    # lock tooltip uses human label
+    assert "finalized" not in h.lower() or "Locked when finalized" in h
+
+
+def test_status_stack_paid_shows_paid_badge(jenv):
+    h = _render(jenv, IMPORT_CHIPS2 + "{{ status_stack(inv) }}",
+                inv=_inv({"status": "paid", "lock_reason": "paid"}))
+    assert "Posted" in h and "Paid" in h
+
+
+def test_status_stack_qbo_synced_shows_compact_chip(jenv):
+    h = _render(jenv, IMPORT_CHIPS2 + "{{ status_stack(inv) }}",
+                inv=_inv({"qbo_sync_status": "synced", "qbo_invoice_id": "QB-1"}))
+    assert "bg-green-50 text-green-700" in h         # QBO synced chip present
+    assert "<span>Synced</span>" not in h             # compact mode (no text label span)
+
+
+def test_status_stack_void_hides_qbo(jenv):
+    h = _render(jenv, IMPORT_CHIPS2 + "{{ status_stack(inv) }}",
+                inv=_inv({"status": "void", "lock_reason": "voided", "qbo_sync_status": "synced"}))
+    assert "QBO" not in h or "Synced" not in h       # QBO chip suppressed for void
+
+
+def test_status_stack_draft_renders_nothing(jenv):
+    h = _render(jenv, IMPORT_CHIPS2 + "{{ status_stack(inv) }}",
+                inv=_inv({"status": "draft", "is_locked": False}))
+    assert h.strip() == ""
+
+
+# -- actions_dropdown ---------------------------------------------------------
+
+def test_actions_dropdown_editable_renders_nothing(jenv):
+    """DRAFT invoices: dropdown is silent; Save Draft + Finalize are the primary actions."""
+    h = _render(jenv, IMPORT_ACTIONS + "{{ actions_dropdown(inv, editable=True) }}",
+                inv=_inv({"status": "draft"}))
+    assert "Actions" not in h
+
+
+def test_actions_dropdown_always_has_print_and_pdf(jenv):
+    h = _render(jenv, IMPORT_ACTIONS + "{{ actions_dropdown(inv) }}", inv=_inv())
+    assert "/invoices/42/print" in h and "/invoices/42/pdf" in h
+    assert "Actions" in h
+
+
+def test_actions_dropdown_take_payment_only_open_partial(jenv):
+    open_h = _render(jenv, IMPORT_ACTIONS + "{{ actions_dropdown(inv) }}",
+                     inv=_inv({"status": "open"}))
+    paid_h = _render(jenv, IMPORT_ACTIONS + "{{ actions_dropdown(inv) }}",
+                     inv=_inv({"status": "paid", "amount_paid": 500.0}))
+    assert "Take Payment" in open_h
+    assert "Take Payment" not in paid_h
+
+
+def test_actions_dropdown_warranty_ra_hidden_for_void(jenv):
+    void_h = _render(jenv, IMPORT_ACTIONS + "{{ actions_dropdown(inv) }}",
+                     inv=_inv({"status": "void"}))
+    assert "Warranty" not in void_h and "Return (RA)" not in void_h
+
+
+def test_actions_dropdown_qbo_push_label(jenv):
+    not_pushed = _render(jenv, IMPORT_ACTIONS + "{{ actions_dropdown(inv) }}",
+                         inv=_inv({"qbo_invoice_id": None, "qbo_sync_status": None}))
+    pushed = _render(jenv, IMPORT_ACTIONS + "{{ actions_dropdown(inv) }}",
+                     inv=_inv({"qbo_invoice_id": "QB-99", "qbo_sync_status": "synced"}))
+    retry = _render(jenv, IMPORT_ACTIONS + "{{ actions_dropdown(inv) }}",
+                    inv=_inv({"qbo_invoice_id": None, "qbo_sync_status": "error"}))
+    assert "Push to QBO" in not_pushed
+    assert "Re-Sync QBO" in pushed
+    assert "Re-Sync QBO" in retry
+
+
+def test_actions_dropdown_void_in_menu_not_loose_button(jenv):
+    """Void lives inside the dropdown, not as a standalone btn-danger in the header."""
+    # With no payments — Void is a danger item in the menu
+    h_no_pay = _render(jenv, IMPORT_ACTIONS + "{{ actions_dropdown(inv) }}",
+                       inv=_inv({"status": "open", "amount_paid": 0.0}))
+    assert "ctx-item-danger" in h_no_pay
+    assert "$dispatch('open-void')" in h_no_pay
+    # No loose btn-danger Void button outside the dropdown
+    assert "btn-danger" not in h_no_pay
+
+
+def test_actions_dropdown_void_disabled_when_payments_exist(jenv):
+    h = _render(jenv, IMPORT_ACTIONS + "{{ actions_dropdown(inv) }}",
+                inv=_inv({"status": "open", "amount_paid": 250.0}))
+    assert "cursor-not-allowed" in h          # disabled void
+    assert "ctx-item-danger" not in h         # NOT the danger item (enabled)
+
+
+def test_actions_dropdown_void_disabled_for_paid(jenv):
+    h = _render(jenv, IMPORT_ACTIONS + "{{ actions_dropdown(inv) }}",
+                inv=_inv({"status": "paid", "amount_paid": 1000.0}))
+    assert "cursor-not-allowed" in h
+    assert "$dispatch('open-void')" not in h  # enabled Void dispatch not present
+
+
 IMPORT_SORTH = "{% from 'macros/sortable.html' import sortable_th %}"
 
 

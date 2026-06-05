@@ -5,3 +5,125 @@
    {% set %} color map (one map per screen, per the plan).
 ═════════════════════════════════════════════════════════════════════════════ #}
 {% macro status_chip(bg_cls, dot_cls, label) %}<span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold {{ bg_cls }}"><span class="w-1.5 h-1.5 rounded-full {{ dot_cls }} shrink-0"></span>{{ label }}</span>{% endmacro %}
+
+
+{# ═══════════════════════════════════════════════════════════════════════════
+   qbo_status_chip(status, invoice_id=None, compact=False)  — Phase-1B QBO
+   JAKS_UI_Change_Plan.md §8M (ratified as part of the invoice-list/workspace wave).
+
+   Renders the QuickBooks Online sync-state chip for an Invoice or Payment.
+   PURE PRESENTATION — this macro owns colour + icon per state. No caller may
+   hand-roll a QBO status chip.
+
+   `status`     → QBOSyncStatus string value (or None / "" for "not sent yet"):
+                    synced  → ✓ green   "Synced"
+                    pending → ⟳ blue    "Pending"
+                    error   → ✗ red     "Failed"
+                    skipped → — gray    "Skipped"
+                    None/""  → — gray    "Not sent"
+
+   `invoice_id` → (optional) The invoice's PK — surfaced in the tooltip so staff
+                  can identify which record to Re-Sync. Does NOT embed a form;
+                  use actions_dropdown (macros/invoice.html) for the push action.
+
+   `compact`    → When True, renders icon only (no text label) for dense contexts
+                  such as status_stack. title tooltip still carries the full label.
+
+   NOTE: the previous implementation used `invoice_id` being set as the "synced"
+   indicator — that was wrong. The canonical sync state is the `status` field
+   (QBOSyncMixin.qbo_sync_status). This version is the correct, plan-ratified one.
+═════════════════════════════════════════════════════════════════════════════ #}
+{% macro qbo_status_chip(status, invoice_id=None, compact=False) -%}
+{%- set _id_note = (' · inv #' ~ invoice_id) if invoice_id else '' -%}
+{%- if status == 'synced' -%}
+<span class="inline-flex items-center gap-1 {{ 'px-1 py-0' if compact else 'px-2 py-0.5' }} rounded text-xs font-semibold bg-green-50 text-green-700 border border-green-200/70"
+      title="Synced to QuickBooks{{ _id_note }}">
+  <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+  </svg>
+  {%- if not compact %}<span>Synced</span>{% endif -%}
+</span>
+{%- elif status == 'pending' -%}
+<span class="inline-flex items-center gap-1 {{ 'px-1 py-0' if compact else 'px-2 py-0.5' }} rounded text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200/70"
+      title="QBO sync queued / in progress{{ _id_note }}">
+  <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+  </svg>
+  {%- if not compact %}<span>Pending</span>{% endif -%}
+</span>
+{%- elif status == 'error' -%}
+<span class="inline-flex items-center gap-1 {{ 'px-1 py-0' if compact else 'px-2 py-0.5' }} rounded text-xs font-semibold bg-red-50 text-red-700 border border-red-200/70"
+      title="QBO sync failed — use Re-Sync QBO to retry{{ _id_note }}">
+  <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+  </svg>
+  {%- if not compact %}<span>Failed</span>{% endif -%}
+</span>
+{%- elif status == 'skipped' -%}
+<span class="inline-flex items-center gap-1 {{ 'px-1 py-0' if compact else 'px-2 py-0.5' }} rounded text-xs font-medium bg-gray-100 text-gray-400"
+      title="QBO sync skipped{{ _id_note }}">
+  <span class="w-1.5 h-1.5 rounded-full bg-gray-300 shrink-0"></span>
+  {%- if not compact %}<span>Skipped</span>{% endif -%}
+</span>
+{%- else -%}
+{# None / "" / unknown → "Not sent" #}
+<span class="inline-flex items-center gap-1 {{ 'px-1 py-0' if compact else 'px-2 py-0.5' }} rounded text-xs font-medium text-gray-400"
+      title="{{ 'Not yet sent to QBO' ~ _id_note }}">
+  <span class="w-1.5 h-1.5 rounded-full bg-gray-300 shrink-0"></span>
+  {%- if not compact %}<span>Not sent</span>{% endif -%}
+</span>
+{%- endif -%}
+{% endmacro %}
+
+
+{# ═══════════════════════════════════════════════════════════════════════════
+   status_stack(invoice)  — stacked Posted / Paid / QBO badges
+   Replaces the lone "Locked" amber badge (invoice list line 178) with a
+   richer, at-a-glance state strip: Posted (with lock-reason tooltip) · Paid ·
+   QBO chip (via qbo_status_chip compact). Empty on DRAFT.
+
+   `invoice` must expose:
+     .is_locked       bool
+     .lock_reason     str | None   (InvoiceLockReason value)
+     .status          str          (InvoiceStatus value)
+     .qbo_sync_status str | None   (QBOSyncStatus value)
+     .id              int          (for qbo chip invoice_id tooltip)
+
+   PURE PRESENTATION — owns badge colours + lock-reason humanisation.
+   Call: {{ status_stack(inv) }} in the invoice # cell, replacing the current
+   {% if inv.is_locked ... %}<span>Locked</span>{% endif %} block.
+═════════════════════════════════════════════════════════════════════════════ #}
+{% macro status_stack(invoice) -%}
+{%- from "macros/chips.html" import qbo_status_chip -%}
+{%- set _lock_labels = {
+  'end_of_day': 'End-of-day auto-lock',
+  'qbo_sync':   'Locked for QBO sync',
+  'qbo_pushed': 'Locked — pushed to QBO',
+  'paid':        'Locked when paid',
+  'manual':      'Manually locked',
+  'finalized':   'Locked when finalized',
+  'voided':      'Locked (voided)',
+} -%}
+{%- set _lock_tip = _lock_labels.get(invoice.lock_reason or '', 'Locked') -%}
+{%- set _is_posted = invoice.status not in ('draft',) -%}
+{%- set _is_paid   = invoice.status == 'paid' -%}
+{%- set _show_qbo  = invoice.status not in ('draft', 'void') -%}
+{%- if _is_posted or _is_paid or _show_qbo -%}
+<span class="inline-flex flex-wrap items-center gap-1">
+  {# Posted badge — finalized (non-DRAFT); tooltip carries the lock reason #}
+  {%- if _is_posted -%}
+  <span class="px-1 py-0 rounded text-[10px] font-semibold bg-gray-100 text-gray-600 border border-gray-200/80"
+        title="{{ 'Posted &amp; locked — ' ~ _lock_tip if invoice.is_locked else 'Posted' }}">Posted</span>
+  {%- endif -%}
+  {# Paid badge #}
+  {%- if _is_paid -%}
+  <span class="px-1 py-0 rounded text-[10px] font-semibold bg-green-50 text-green-700 border border-green-200/60"
+        title="Paid in full">Paid</span>
+  {%- endif -%}
+  {# QBO sync chip — compact (icon only) to keep the stack tight #}
+  {%- if _show_qbo -%}
+  {{- qbo_status_chip(invoice.qbo_sync_status or '', invoice.id, compact=True) -}}
+  {%- endif -%}
+</span>
+{%- endif -%}
+{%- endmacro %}
