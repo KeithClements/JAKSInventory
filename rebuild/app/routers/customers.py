@@ -1229,6 +1229,8 @@ def customer_detail(
             "flags": svc.flags_for(c),                       # §4.3 chips (merged view)
             "metrics": CustomerMetricsService(db).metrics_for(c),  # §4.4 live panel
             "credit_status": svc.credit_status(c),           # §4.5 warn-only
+            # §4.6 / #8 unified timeline — unblocks _timeline.html
+            "timeline": CRMService(db).get_unified_timeline(customer_id),
         },
     )
 
