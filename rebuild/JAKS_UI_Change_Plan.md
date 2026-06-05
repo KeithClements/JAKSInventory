@@ -2381,6 +2381,114 @@ Save Standard v2 sticky bar onto SO/Invoice/PO. Govern each as it lands.
 
 ---
 
+#### 8R. Settings — Tabbed Layout + Editable Pricing Grid (Architect ruling, 2026-06-03)
+
+**Context.** `app/templates/settings/index.html` is currently a flat, scrolling single-column form (Company /
+Pricing Defaults / QBO / Documents / Shopify / TaxJar cards). As the Settings page grows (pricing-tier
+defaults, logo upload, document branding, future integrations) the flat layout becomes unworkable. The
+Architect rules here on the tab pattern and the pricing-grid component so UI-Builder implements them
+correctly without re-work.
+
+**Decision 1 — Tab pattern for Settings.**
+Use the **`.tab-bar` / `.tab-active` / `.tab-inactive` Alpine-toggle pattern** (the same as
+`app/templates/customers/detail.html` lines 20-55) — **not** the `filter_tabs` macro (Primitive 1).
+
+Rationale:
+- `filter_tabs` is for **list filtering** (product/invoice/quote/SO tabs): it links `?tab=…` server-side
+  query params and expects a route to handle them. Settings is a **form-navigation** screen with no
+  per-tab route changes needed — pure client-side section switching.
+- The `.tab-bar` / `.tab-active` / `.tab-inactive` CSS classes (already in `input.css`, defined under "Legacy
+  underline-style tabs — permitted for screens not yet on the pill-tab") are exactly this: section toggles
+  driven by Alpine `x-data` with a `tab` variable and `@click="tab = 'company'"` switches.
+- A Settings page is a workspace, not a list — the workspace tab pattern is correct.
+
+**Implementation (UI-Builder):**
+```
+<div x-data="{ tab: 'company' }">
+  <div class="tab-bar">
+    <button class="tab" :class="tab === 'company'      ? 'tab-active' : 'tab-inactive'" @click="tab = 'company'">Company</button>
+    <button class="tab" :class="tab === 'pricing'      ? 'tab-active' : 'tab-inactive'" @click="tab = 'pricing'">Pricing</button>
+    <button class="tab" :class="tab === 'documents'    ? 'tab-active' : 'tab-inactive'" @click="tab = 'documents'">Documents</button>
+    <button class="tab" :class="tab === 'integrations' ? 'tab-active' : 'tab-inactive'" @click="tab = 'integrations'">Integrations</button>
+  </div>
+  <div x-show="tab === 'company'" x-cloak> … </div>
+  <div x-show="tab === 'pricing'" x-cloak> … </div>
+  …
+</div>
+```
+
+**Tab contents (minimum slot assignment):**
+| Tab | Contents |
+|---|---|
+| **Company** | company_name, company_address, company_phone, company_email, invoice_notes |
+| **Pricing** | default_markup_pct, cc_surcharge_pct · Customer Type Defaults grid (see Decision 2) |
+| **Documents** | document_footer_text, document_terms_text, document_show_logo · logo upload |
+| **Integrations** | QBO credentials (client_id, secret, env, redirect_uri, push_tax) + Connect card · TaxJar · Shopify |
+
+The save button belongs at the **bottom of each tab panel** (not a single bottom-of-page button for all tabs
+— the user shouldn't have to see unrelated fields to understand what they're saving). The QBO Connect card
+stays outside the form (as currently — POST /qbo/connect is a separate action).
+
+**Decision 2 — Pricing tiers are an editable grid, not code.**
+The customer type defaults (P2-D1 / §4.1) currently live in the `customer_type_defaults` table
+(`CustomerTypeDefault` model) read by `CustomerService.resolve_defaults()`. Previously these were only
+settable via the admin or initial seed. The Settings → Pricing tab must expose them as an **editable HTML
+grid** so the owner can maintain them without touching code.
+
+**Grid shape** (1 row per `CustomerType`, 1 column per editable default):
+
+| Type | Terms | Pricing Tier | Disc % | Credit Limit | Tax Exempt | Surcharge % |
+|---|---|---|---|---|---|---|
+| Fleet | `<select>` | `<select>` | `<input number>` | `<input number>` | `<checkbox>` | `<input number>` |
+| Owner-Operator | … | … | … | … | … | … |
+| Repair Shop | … | … | … | … | … | … |
+| Dealer | … | … | … | … | … | … |
+| Municipality | … | … | … | … | … | … |
+| Internal | … | … | … | … | … | … |
+| Other *(global fallback)* | … | … | … | … | … | … |
+
+Route contract: `GET /settings/` passes `type_defaults` (list of `CustomerTypeDefault` rows, one per type,
+keyed by `customer_type`); `POST /settings/` saves them alongside the other settings. The route must ensure
+a row exists for every `CustomerType` (create missing rows on save — `CustomerService.resolve_defaults()`
+already falls back to in-code defaults when a row is absent, so missing rows are safe before save).
+
+**🔒 DARK constraint — pricing grid stays read-only until the owner activates it.**
+The type-driven defaults are a non-trivial feature: they pre-fill the new-customer form for every future
+customer. An owner who hasn't reviewed the grid values yet shouldn't accidentally activate defaults that
+don't match their business. Therefore:
+
+- The grid renders in a **visually dimmed, `disabled` / `pointer-events-none` state** by default.
+- A clear header toggle/switch ("Enable type-driven defaults") activates the inputs and enables the save
+  path. The toggle persists as a setting (`customer_type_defaults_enabled` — add to DEFAULTS in
+  `settings.py`).
+- When DARK: the grid is visible (so the owner can preview the defaults), but all inputs are `disabled`
+  and the form section's save button is also disabled. A notice explains: *"Review and adjust defaults
+  above, then enable to make them active."*
+- When ACTIVE: inputs are live, the save button is active, and new-customer form auto-fill is ON.
+
+**Alpine implementation sketch:**
+```html
+<div x-data="{ active: {{ 'true' if type_defaults_enabled else 'false' }} }">
+  <label class="flex items-center gap-2">
+    <input type="checkbox" name="customer_type_defaults_enabled" x-model="active" …>
+    Enable type-driven customer defaults
+  </label>
+  <div :class="active ? '' : 'opacity-50 pointer-events-none select-none'">
+    <!-- the grid table -->
+  </div>
+  <button type="submit" :disabled="!active">Save Pricing Defaults</button>
+</div>
+```
+
+**Governance criteria (apply when UI-Builder lands this):**
+- [ ] Tab uses `.tab-bar`/`.tab-active`/`.tab-inactive` with Alpine `x-data` — no custom tab markup.
+- [ ] Pricing grid is an HTML `<table>` with `<select>`/`<input>` cells (not hardcoded in Python).
+- [ ] DARK state: grid + save button disabled when `active == false`, with the explanatory notice.
+- [ ] No new CSS classes invented (uses existing `.form-input`, `.form-select`, `.form-checkbox`, `.form-label`).
+- [ ] `filter_tabs` macro is NOT used for Settings tabs.
+
+---
+
 ### 9. Functional Gate — Definition of Done
 
 **Ratified 2026-05-30.**
