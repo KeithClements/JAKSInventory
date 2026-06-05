@@ -36,6 +36,13 @@
       <span class="ml-1 badge-blue">{{ open_quotes|length }}</span>
       {% endif %}
     </button>
+    <button type="button" @click="tab = 'timeline'"
+            :class="tab === 'timeline' ? 'tab-active' : 'tab-inactive'">
+      Timeline
+      {% if timeline %}
+      <span class="ml-1 badge-gray">{{ timeline|length }}</span>
+      {% endif %}
+    </button>
     <button type="button" @click="tab = 'calllog'"
             :class="tab === 'calllog' ? 'tab-active' : 'tab-inactive'">
       Call Log
@@ -46,6 +53,21 @@
     <a href="/customers/{{ customer.id }}/communications" class="tab-inactive">
       Communications
     </a>
+  </div>
+
+  {# ═══════════════════════════════════════════════════════════════════════ #}
+  {# TIMELINE TAB (#8 — unified activity feed: calls, quotes, SOs, invoices,  #}
+  {# payments). Backend: CRMService.get_unified_timeline → ctx `timeline`.    #}
+  {# ═══════════════════════════════════════════════════════════════════════ #}
+  <div x-show="tab === 'timeline'" x-cloak>
+    <div class="card overflow-hidden">
+      <div class="px-6 py-3 border-b border-gray-100 bg-gray-50/60">
+        <h3 class="text-sm font-semibold text-gray-700">Activity Timeline</h3>
+        <p class="text-xs text-gray-400">Calls, quotes, orders, invoices &amp; payments — newest first.</p>
+      </div>
+      {% set items = timeline %}
+      {% include "customers/_timeline.html" %}
+    </div>
   </div>
 
   {# ═══════════════════════════════════════════════════════════════════════ #}

@@ -93,9 +93,15 @@ def _badge_count(html: str) -> int:
 
 
 def _panel_quote_ids(html: str) -> set[int]:
-    """Quote ids whose detail link (/quotes/<id>) is rendered. With no
-    communications seeded, these are exactly the quotes-panel rows."""
-    return {int(x) for x in re.findall(r"/quotes/(\d+)\b", html)}
+    """Quote ids whose detail link (/quotes/<id>) is rendered INSIDE THE QUOTES
+    TAB PANEL. Scoped to that panel on purpose: the unified activity Timeline tab
+    (#8) also links every quote chronologically (including terminal ones), so a
+    whole-page scan would conflate the two. The badge invariant is strictly about
+    the quotes panel, so that's what we measure."""
+    m = re.search("x-show=\"tab === 'quotes'\"(.*?)(?:x-show=\"tab ===|\\Z)",
+                  html, re.DOTALL)
+    scope = m.group(1) if m else html
+    return {int(x) for x in re.findall(r"/quotes/(\d+)\b", scope)}
 
 
 # ── 1. Badge number == the open-quote rows the panel shows ────────────────────
