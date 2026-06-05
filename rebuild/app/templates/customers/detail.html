@@ -153,6 +153,14 @@
                 {% set _flags = flags | default([]) %}
                 {% if _flags %}<div class="mt-2">{{ flagmacro.customer_flags(_flags) }}</div>{% endif %}
                 <div class="flex flex-wrap gap-1.5 mt-2">
+                  {# Customer lifecycle status (on_hold / credit_hold / inactive) #}
+                  {% if customer.customer_status == 'on_hold' %}
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-700">On Hold</span>
+                  {% elif customer.customer_status == 'credit_hold' %}
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-700">Credit Hold</span>
+                  {% elif customer.customer_status == 'inactive' %}
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">Inactive</span>
+                  {% endif %}
                   {% if customer.payment_terms == 'cod' %}
                   <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-orange-100 text-orange-700">COD</span>
                   {% elif customer.payment_terms == 'net_30' %}
@@ -292,6 +300,15 @@
             <div>
               <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide border-b border-gray-100 pb-2 mb-3">Terms &amp; Pricing</h3>
               <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="form-label">Customer Status</label>
+                  <select name="customer_status" class="form-select">
+                    <option value="active"      {% if customer.customer_status == 'active' %}selected{% endif %}>Active</option>
+                    <option value="on_hold"     {% if customer.customer_status == 'on_hold' %}selected{% endif %}>On Hold</option>
+                    <option value="credit_hold" {% if customer.customer_status == 'credit_hold' %}selected{% endif %}>Credit Hold</option>
+                    <option value="inactive"    {% if customer.customer_status == 'inactive' %}selected{% endif %}>Inactive</option>
+                  </select>
+                </div>
                 <div>
                   <label class="form-label">Payment Terms</label>
                   <select name="payment_terms" class="form-select">

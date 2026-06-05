@@ -241,6 +241,12 @@
                   {% if c.city %}<span>{{ c.city }}{% if c.state %}, {{ c.state }}{% endif %}</span>{% endif %}
                 </div>
                 {% endif %}
+                {# Customer lifecycle status chip — on_hold / credit_hold / inactive (active = no chip) #}
+                {% if c.customer_status and c.customer_status != 'active' %}
+                {% set _scmap = {'on_hold':('bg-amber-50 text-amber-700','bg-amber-500','On Hold'),'credit_hold':('bg-red-50 text-red-700','bg-red-500','Credit Hold'),'inactive':('bg-gray-100 text-gray-600','bg-gray-400','Inactive')} %}
+                {% set _sc = _scmap.get(c.customer_status) %}
+                {% if _sc %}<div class="mt-1">{{ status_chip(_sc[0], _sc[1], _sc[2]) }}</div>{% endif %}
+                {% endif %}
                 {# P2-D2 flag chips (compact icon chips) — operational warnings + tax-exempt #}
                 {% set _cflags = (customer_flags | default({})).get(c.id, []) %}
                 {% if _cflags %}<div class="mt-1">{{ flagmacro.customer_flags(_cflags, compact=True) }}</div>{% endif %}
