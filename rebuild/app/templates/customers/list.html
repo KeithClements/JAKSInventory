@@ -231,6 +231,9 @@
                 <a href="/customers/{{ c.id }}"
                    class="text-sm font-semibold text-gray-900 hover:text-brand-700 hover:underline transition-colors leading-tight block truncate"
                    @click.stop>{{ c.company_name }}</a>
+                {% if c.account_number %}
+                <div class="text-[11px] font-mono text-gray-400 leading-none mt-0.5">Acct #{{ c.account_number }}</div>
+                {% endif %}
                 {% if c.contact_name or c.city %}
                 <div class="flex flex-wrap items-center gap-x-1.5 mt-0.5 text-xs text-gray-400">
                   {% if c.contact_name %}<span>{{ c.contact_name }}</span>{% endif %}

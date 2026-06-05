@@ -14,10 +14,17 @@
 {% import "macros/intelligence.html" as intel %}
 {% import "macros/credit_status.html" as creditmacro %}
 <div class="space-y-4"
-     x-data="{ tab: '{{ 'account' if not request.query_params.get('tab') else request.query_params.get('tab') }}' }">
+     x-data="{ tab: '{{ 'timeline' if not request.query_params.get('tab') else request.query_params.get('tab') }}' }">
 
   {# ── Tab bar ── #}
   <div class="tab-bar">
+    <button type="button" @click="tab = 'timeline'"
+            :class="tab === 'timeline' ? 'tab-active' : 'tab-inactive'">
+      Timeline
+      {% if timeline %}
+      <span class="ml-1 badge-gray">{{ timeline|length }}</span>
+      {% endif %}
+    </button>
     <button type="button" @click="tab = 'account'"
             :class="tab === 'account' ? 'tab-active' : 'tab-inactive'">
       Account
@@ -34,13 +41,6 @@
       Quotes
       {% if open_quotes %}
       <span class="ml-1 badge-blue">{{ open_quotes|length }}</span>
-      {% endif %}
-    </button>
-    <button type="button" @click="tab = 'timeline'"
-            :class="tab === 'timeline' ? 'tab-active' : 'tab-inactive'">
-      Timeline
-      {% if timeline %}
-      <span class="ml-1 badge-gray">{{ timeline|length }}</span>
       {% endif %}
     </button>
     <button type="button" @click="tab = 'calllog'"
