@@ -166,11 +166,17 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     "document_terms_text":         ("Core charges are refundable upon return of the old core.\nFreight is additional unless noted.\nQuotes are valid for 30 days from the date above.",
                                     "Terms & conditions printed near the bottom of Quote/SO/Invoice PDFs"),
     "document_show_logo":          ("true",    "Show the company logo on document headers"),
+
+    # Company info extras
+    "company_website":             ("",        "Company website URL"),
+
+    # Pricing grid — defaults FALSE so nothing re-prices until owner flips after preview
+    "markup_tiers_active":         ("false",   "Use cost-bracket markup grid instead of flat default"),
 }
 
 VISIBLE_KEYS = [
     # Company info
-    "company_name", "company_address", "company_phone", "company_email",
+    "company_name", "company_address", "company_phone", "company_email", "company_website",
     "invoice_notes",
     # Pricing
     "cc_surcharge_pct", "default_markup_pct", "default_fuel_service_charge",
@@ -206,6 +212,29 @@ def seed_settings(db: Session) -> None:
 # Delegated to app.settings_utils — re-exported here so existing router
 # call-sites continue to work without change.
 from app.settings_utils import bump_counter, get_setting_value  # noqa: E402
+
+
+# ── Pricing grid seed (idempotent) ─────────────────────────────────────────────
+# Four cost-bracket tiers that match the owner's existing pricing intuition.
+# Only inserts when the table is EMPTY so a hand-curated grid is never overwritten.
+_DEFAULT_TIERS = [
+    # (min_cost, max_cost, markup_pct, sort_order)
+    (0.0,   15.0,  40.0,  1),   # under $15   → 40 %
+    (15.0,  40.0,  35.0,  2),   # $15 – $40   → 35 %
+    (40.0,  75.0,  32.5,  3),   # $40 – $75   → 32.5 %
+    (75.0,  None,  30.0,  4),   # $75+         → 30 % (open-ended)
+]
+
+
+def seed_markup_tiers(db: Session) -> None:
+    """Insert the default markup-tier grid if the table is empty (idempotent).
+    Skips if ANY tier already exists — preserves a hand-edited grid."""
+    from app.models.pricing import MarkupTier
+    if db.query(MarkupTier.id).first() is not None:
+        return
+    for min_c, max_c, pct, order in _DEFAULT_TIERS:
+        db.add(MarkupTier(min_cost=min_c, max_cost=max_c, markup_pct=pct, sort_order=order))
+    db.commit()
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -251,6 +280,86 @@ async def save_settings(request: Request, db: Session = Depends(get_db)):
 _ALLOWED_LOGO_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _MAX_LOGO_BYTES = 2 * 1024 * 1024  # 2 MB
 _UPLOAD_DIR = Path(__file__).resolve().parent.parent / "static" / "uploads"
+
+_PREVIEW_SAMPLE_LIMIT = 25   # max rows returned in sample
+
+
+@router.get("/pricing/preview")
+def pricing_grid_preview(db: Session = Depends(get_db), _admin=Depends(require_admin)):
+    """§ Pricing grid dry run — reads every product WITHOUT an explicit markup_pct
+    (i.e. products that would be affected if markup_tiers_active were flipped on)
+    and computes their current sell price vs the grid sell price.
+
+    Returns:
+        {
+          "tiers": [...],            # current MarkupTier rows for reference
+          "affected_count": int,     # products without an explicit markup
+          "moved_count": int,        # those that would get a different price
+          "sample": [               # up to 25 rows where old_sell != new_sell
+            {sku, cost, old_sell, new_sell, delta, markup_old, markup_new}
+          ]
+        }
+    Read-only — changes nothing regardless of markup_tiers_active flag state.
+    """
+    from app.models.product import Product
+    from app.models.pricing import MarkupTier
+    from app.services.pricing_service import PricingService
+    from app.utils import calc_sell_price
+
+    svc = PricingService(db)
+    flat_default = svc.default_markup_pct()
+    tiers = (
+        db.query(MarkupTier)
+        .filter(MarkupTier.is_active == True)   # noqa: E712
+        .order_by(MarkupTier.sort_order, MarkupTier.min_cost)
+        .all()
+    )
+    tier_dicts = [
+        {"id": t.id, "min_cost": t.min_cost, "max_cost": t.max_cost,
+         "markup_pct": t.markup_pct, "sort_order": t.sort_order}
+        for t in tiers
+    ]
+
+    # Products without a per-product markup (the ones tiers would affect)
+    candidates = (
+        db.query(Product)
+        .filter(Product.is_active == True, Product.markup_pct.is_(None))  # noqa: E712
+        .all()
+    )
+
+    sample, moved_count = [], 0
+    for p in candidates:
+        cost = p.cost or 0.0
+        # Current sell: flat default (since markup_pct is None)
+        old_markup = flat_default
+        old_sell = p.price_override if (p.price_override and p.price_override > 0) \
+            else calc_sell_price(cost, old_markup)
+        # Grid sell
+        new_markup = svc.resolve_markup_pct_for_cost(cost)
+        new_sell = p.price_override if (p.price_override and p.price_override > 0) \
+            else calc_sell_price(cost, new_markup)
+
+        delta = round(new_sell - old_sell, 2)
+        if delta != 0.0:
+            moved_count += 1
+            if len(sample) < _PREVIEW_SAMPLE_LIMIT:
+                sample.append({
+                    "sku": p.sku,
+                    "cost": round(cost, 2),
+                    "old_sell": round(old_sell, 2),
+                    "new_sell": round(new_sell, 2),
+                    "delta": delta,
+                    "markup_old": round(old_markup, 2),
+                    "markup_new": round(new_markup, 2),
+                })
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse({
+        "tiers": tier_dicts,
+        "affected_count": len(candidates),
+        "moved_count": moved_count,
+        "sample": sample,
+    })
 
 
 @router.post("/logo")

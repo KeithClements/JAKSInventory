@@ -17,6 +17,7 @@ Key rules (from schema interview):
 from __future__ import annotations
 
 from app.models.product import Product, ProductVendorSource
+from app.models.pricing import MarkupTier
 from app.services.base import BaseService
 from app.settings_utils import get_setting_value_db
 from app.utils import calc_sell_price, calc_margin_pct
@@ -45,14 +46,37 @@ class PricingService(BaseService):
         except (TypeError, ValueError):
             return _HARD_FALLBACK_MARKUP
 
+    def markup_tiers_active(self) -> bool:
+        """True when the cost-bracket pricing grid is enabled (markup_tiers_active
+        setting = 'true'). Defaults FALSE — no re-pricing until owner flips it."""
+        raw = get_setting_value_db(self.db, "markup_tiers_active", "false") or "false"
+        return raw.strip().lower() == "true"
+
+    def resolve_markup_pct_for_cost(self, cost: float) -> float:
+        """Look up the tiered markup % for a COGS value from the active MarkupTier
+        rows (ordered by min_cost asc so the first match wins). Falls back to
+        default_markup_pct if no tier matches (e.g. table is empty)."""
+        tiers = (
+            self.db.query(MarkupTier)
+            .filter(MarkupTier.is_active == True)  # noqa: E712
+            .order_by(MarkupTier.sort_order, MarkupTier.min_cost)
+            .all()
+        )
+        for tier in tiers:
+            if tier.matches(cost):
+                return tier.markup_pct
+        return self.default_markup_pct()
+
     def resolve_markup_pct(self, product: Product) -> float:
-        """The effective markup % for a product: its OWN markup_pct when set
-        (0% is a valid, deliberate value → sell at cost), else the configured
-        default_markup_pct setting. This is the single source of truth — callers
-        must NOT re-implement `product.markup_pct or 30.0` (that literal both
-        hard-codes the default AND wrongly treats a real 0% as unset)."""
+        """The effective markup % for a product. Precedence (single source of truth):
+          1. product.markup_pct — always wins when set (even 0 %).
+          2. (IF markup_tiers_active) tiered-by-cost from MarkupTier table.
+          3. Flat default_markup_pct setting.
+        Callers must NOT fork this formula or re-implement the fallback literal."""
         if product.markup_pct is not None:
             return product.markup_pct
+        if self.markup_tiers_active():
+            return self.resolve_markup_pct_for_cost(product.cost or 0.0)
         return self.default_markup_pct()
 
     def sell_price_for(self, product: Product) -> float:
