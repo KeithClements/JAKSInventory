@@ -70,7 +70,7 @@
           x-data="{ _dirty: false }"
           @change="_dirty = true"
           @input="_dirty = true"
-          class="max-w-3xl space-y-4">
+          class="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
 
       {# Identity card #}
       <div class="card">
@@ -118,6 +118,27 @@
             <label class="form-label">Description</label>
             <textarea name="description" rows="3" class="form-textarea">{{ product.description }}</textarea>
           </div>
+        </div>
+      </div>
+
+      {# Photos card — read-only thumbnails (manage on the Images tab) #}
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">Photos <span class="text-xs font-normal text-gray-400">{{ product.images|length }}</span></h2>
+          <button type="button" @click="tab='images'" class="text-xs text-brand-700 hover:underline">Manage →</button>
+        </div>
+        <div class="card-body">
+          {% if product.images %}
+          <div class="grid grid-cols-3 gap-2">
+            {% for im in product.images[:6] %}
+            <img src="{{ im.url }}" alt="{{ im.alt_text or product.title }}" loading="lazy"
+                 class="w-full h-24 object-cover rounded-lg border border-gray-100 bg-gray-50{% if im.is_primary %} ring-2 ring-brand-400{% endif %}" />
+            {% endfor %}
+          </div>
+          {% if product.images|length > 6 %}<p class="mt-2 text-xs text-gray-400">+{{ product.images|length - 6 }} more on the Images tab</p>{% endif %}
+          {% else %}
+          <p class="text-sm text-gray-400 italic">No images yet.</p>
+          {% endif %}
         </div>
       </div>
 
@@ -359,7 +380,7 @@
       </div>
 
       {# Actions — Archive uses deactivate-form defined above to avoid form nesting #}
-      <div class="flex items-center gap-3">
+      <div class="flex items-center gap-3 xl:col-span-2">
         <button type="submit" class="btn-primary">Save Changes</button>
         <a href="/products/" class="btn-secondary">Cancel</a>
         {# Save indicator — shows dirty state / clean state (mirrors §8C Quote workspace pattern) #}

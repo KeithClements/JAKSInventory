@@ -7,8 +7,9 @@
      class="relative group rounded-xl border border-gray-100 overflow-hidden bg-gray-50 shadow-sm">
 
   {# Image #}
-  <img src="/static/{{ image.file_path }}"
+  <img src="{{ image.url }}"
        alt="{{ image.alt_text or 'Product image' }}"
+       loading="lazy"
        class="w-full h-40 object-cover" />
 
   {# Primary badge #}

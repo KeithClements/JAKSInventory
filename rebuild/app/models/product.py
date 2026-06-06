@@ -332,6 +332,14 @@ class ProductImage(Base):
 
     product: Mapped[Product] = relationship("Product", back_populates="images")
 
+    @property
+    def url(self) -> str:
+        """Render-ready <img src>. Imported images store a full external URL
+        (e.g. the PAI CDN) and pass through as-is; locally-uploaded files are
+        served from /static/. Fixes the '/static/https://…' broken-src bug."""
+        fp = self.file_path or ""
+        return fp if fp.startswith(("http://", "https://")) else "/static/" + fp
+
 
 class CrossReference(Base):
     """OEM numbers, competitor part numbers, and vendor alternative numbers."""
