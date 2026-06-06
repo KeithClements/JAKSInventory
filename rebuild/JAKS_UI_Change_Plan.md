@@ -2613,6 +2613,151 @@ header_actions %}`) — good pattern, keeps workspace.html clean. The §8B Works
 3. **`window.confirm()` on "→ Invoice" convert** (`onsubmit="return confirm(...)"`): native browser dialog.
    The `confirm_modal` macro (`macros/confirm_modal.html`) is the project standard (§3). Replace with the
    macro's `jakConfirm({…})` pattern.
+*Note:* As of rebase `9f50216` the quote workspace context now also carries `cust_outstanding_cores`,
+`cust_last_purchase`, `cust_lifetime_sales` (Seam 3) and `prepared_by`. These feed the workspace sidebar
+and the print template respectively — they do NOT go in the header actions strip (too verbose for the sticky
+header). Punches 1-3 above are still OPEN (the header file is unchanged at `9f50216`).
+
+---
+
+#### 8T. Dashboard rLayout · Quote §8B update · Prepared-by placement (2026-06-03)
+
+##### 8T-1. Dashboard widget rLayout — Forward spec (backend seams LIVE @9f50216)
+
+The backend now passes `top_customers` (list of `{customer, lifetime_sales}`, top-5 by non-void invoice total)
+and `open_followups` (dict `{status: count}`) + `open_followups_total` to the dashboard template context.
+
+**New two-column chart row replacing the current full-width chart (UI-Builder builds):**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  [KPI tiles strip — unchanged, full width]                                  │
+├────────────────────────────────────────┬────────────────────────────────────┤
+│  Revenue chart (lg:col-span-2)         │  Right panel (lg:col-span-1)        │
+│  canvas height=90, full-width on       │  ┌─────────────────────────────┐   │
+│  mobile (lg: 2/3 width)                │  │ Top Customers (card)        │   │
+│  Chart card unchanged.                 │  │ — rank 1..5, name + $$ YTD  │   │
+│                                        │  │ each row → customer detail  │   │
+│                                        │  ├─────────────────────────────┤   │
+│                                        │  │ Open Follow-Ups (card)      │   │
+│                                        │  │ — total count + status chips│   │
+│                                        │  │ → /quotes/?follow_up=due    │   │
+│                                        │  └─────────────────────────────┘   │
+├────────────────────────────────────────────────────────────────────────────-┤
+│  [Existing lg:grid-cols-3 row: Recent Invoices (2/3) + sidebar (1/3)]      │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Top Customers card spec** — `top_customers` context var:
+- A `<ul>` with `divide-y divide-gray-100` inside a `.card`, header "Top Customers" with "All →" link to
+  `/customers/` sorted by lifetime sales.
+- Each `<li class="px-5 py-3 flex items-center gap-3 hover:bg-stone-50/70 cursor-pointer">`
+  → row shows: rank pill (1-5, tiny gray badge), customer name (truncated), lifetime sales (`$X,XXX` right-aligned).
+  Click navigates to `/customers/{id}`.
+- Use `'%.0f'|format(tc.lifetime_sales)` with `$` prefix — no decimals needed at dashboard level.
+- Empty state: "No invoice data yet" (use the standard `empty_state` pattern).
+- **No new CSS class.** `.card`, `.card-header`, `.card-title`, `divide-y`, standard list.
+
+**Open Follow-Ups card spec** — `open_followups` (dict `{status: count}`) + `open_followups_total`:
+- A compact `.card` below Top Customers in the same right column.
+- Header "Follow-Ups" + `open_followups_total` count + "View →" → `/quotes/?follow_up=due`.
+- Show each status as a badge + count: `badge-amber "Follow Up: N"`, `badge-gray "Pending: N"`, etc.
+  Use the existing `fu_badges` / `fu_labels` map pattern from the dashboard's existing Follow-Ups card.
+- If `open_followups_total == 0`: green "All caught up ✓" state.
+
+**Layout implementation:**
+```html
+{# Replace the standalone full-width chart card with this 2-col row #}
+<div class="grid grid-cols-1 gap-4 lg:grid-cols-3 mb-5">
+  <div class="lg:col-span-2">
+    {# ── existing Revenue chart card (move here, no change to its content) ── #}
+  </div>
+  <div class="flex flex-col gap-4">
+    {# ── Top Customers card ── #}
+    {# ── Open Follow-Ups card ── #}
+  </div>
+</div>
+{# ── THEN the existing lg:grid-cols-3 row (Recent Invoices / sidebar) below ── #}
+```
+
+**Governance criteria (apply when UI-Builder lands this):**
+- [ ] Chart card is MOVED into the 2/3 left column — no markup change inside it.
+- [ ] Top Customers uses `top_customers` context var (not a new query); row click → `/customers/{id}`.
+- [ ] Follow-Ups uses `open_followups` + `open_followups_total` (not re-querying quotes).
+- [ ] No new CSS classes. Existing `div.card`, `ul.divide-y`, `hover:bg-stone-50/70`, standard badge palette.
+- [ ] Border-l-4 row stripes only if overdue-context applies — the dashboard widget lists do NOT use them
+  (the stripe lock applies to operational list screens, not dashboard cards). Correct existing behavior.
+
+##### 8T-2. Quote workspace §8B — customer context strip update
+
+The §8S-4 governance pass (PASS with 3 punches) still stands. Additionally, Seam 3 (`@9f50216`) now
+provides the workspace with `cust_outstanding_cores`, `cust_last_purchase`, `cust_lifetime_sales`. These
+belong in the workspace's **existing customer context strip** (the info row at lines ~74-103 that shows
+`cust_open_balance`, `cust_overdue_balance`, `cust_credit_balance`, `cust_last_payment_date`).
+
+**Where to add the new chips (in the same row, after the existing balance chips):**
+```html
+{% if cust_outstanding_cores %}
+<span class="text-xs text-orange-600 font-medium">
+  Cores: {{ cust_outstanding_cores }} open
+</span>
+{% endif %}
+{% if cust_last_purchase %}
+<span class="text-xs text-gray-400">
+  Last sale: {{ cust_last_purchase.strftime('%b %d') }}
+</span>
+{% endif %}
+```
+`cust_lifetime_sales` is available but optional at this surface — only surface it if screen width allows
+(hidden on sm, visible lg+). This is a §2B intelligence-density addition, not the full intelligence panel
+(that lives on customers/detail.html). **No new CSS classes.**
+
+The 3 punches from §8S-4 remain OPEN for UI-Builder:
+1. Remove `target="_blank"` from `← All quotes`.
+2. Move `← All quotes` to leftmost position (§8B Zone 1).
+3. Replace `window.confirm()` with `jakConfirm()`.
+
+##### 8T-3. Prepared-by placement — DECIDED: under the doc number in `doc-right`
+
+**Decision: "Prepared by" goes in the `doc-right` block (print header, right side), below the doc date/terms
+line — NOT in the document footer.**
+
+Rationale:
+- The doc-right block (`<div class="doc-right">`) already carries the document's metadata:
+  `doc-label` (Invoice / Proposal), `doc-number` (INV-2026-xxxx / Q-2026-xxxx), and `doc-dates`.
+  "Prepared by" is metadata about THIS document's creation — it belongs with the other doc-identity fields,
+  not buried in the footer alongside terms/thank-you copy.
+- Customers read the right side of the header first (that's where they look for the doc number/date).
+  Seeing the preparer's name there associates the document with a specific person immediately.
+- A footer placement competes with footer_text (terms/return policy) and would be easy to overlook. It's
+  also less professional than a header placement.
+- The footer is for legal/commercial terms and thank-you copy. The preparer is operational identity.
+
+**Implementation (UI-Builder adds to `invoices/print.html` + `quotes/print.html` in `doc-right`):**
+```html
+<div class="doc-right">
+  <div class="doc-label">Invoice</div>          {# or "Proposal / Quotation" #}
+  <div class="doc-number">{{ inv.invoice_number }}</div>
+  <div class="doc-dates">
+    <strong>Date:</strong> …<br>
+    <strong>Due:</strong> …<br>
+    <strong>Terms:</strong> …
+  </div>
+  {% if prepared_by %}
+  <div class="doc-dates" style="margin-top:6px;border-top:1px solid #eee;padding-top:4px;">
+    <strong>Prepared by:</strong> {{ prepared_by }}
+  </div>
+  {% endif %}
+</div>
+```
+The `doc-dates` class re-use (small font, right-aligned, muted color) is intentional — it keeps the preparer
+typographically consistent with the other doc-right metadata without a new class. The divider (`border-top`)
+visually separates it from the date block. `prepared_by` is provided by `get_prepared_by(db, user_id)`
+(added to all document routes in `@9f50216`); it falls back to `"JAKS"` when user is unknown.
+
+**Sales Orders + POs + Returns + Warranty print templates** should receive the same treatment consistently —
+add `prepared_by` to their route contexts (it may already be added; verify each) and include the same
+`{% if prepared_by %}` block in their `doc-right`.
 
 ---
 
