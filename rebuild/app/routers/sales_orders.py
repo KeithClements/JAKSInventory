@@ -111,9 +111,12 @@ async def list_sales_orders(
     if active_tab:
         query = query.filter(SalesOrder.status == active_tab)
     if q:
+        _qd = q.replace("-", "").replace(" ", "")
         query = query.filter(
             or_(
                 SalesOrder.so_number.ilike(f"%{q}%"),
+                # de-dash so "so20260001" still finds "SO-2026-0001"
+                func.replace(func.replace(SalesOrder.so_number, "-", ""), " ", "").ilike(f"%{_qd}%"),
                 Customer.company_name.ilike(f"%{q}%"),
                 SalesOrder.customer_po_number.ilike(f"%{q}%"),
                 SalesOrder.esn.ilike(f"%{q}%"),

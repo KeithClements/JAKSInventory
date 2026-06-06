@@ -228,7 +228,21 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     }
     open_followups_total = sum(open_followups.values())
 
+    # Security nudge — surface a still-default admin password in the UI, not just
+    # the server log (the log warning is easy to miss). Auto-clears once changed.
+    admin_pw_default = False
+    try:
+        import app.database as _appdb_pw
+        if ":memory:" not in str(_appdb_pw.engine.url):
+            from app.models.user import User as _PwUser
+            from app.auth import verify_password as _pw_verify
+            _adm = db.query(_PwUser).filter(_PwUser.username == "admin").first()
+            admin_pw_default = bool(_adm and _pw_verify("admin", _adm.password_hash))
+    except Exception:
+        admin_pw_default = False
+
     return templates.TemplateResponse(request, "dashboard.html", {
+        "admin_pw_default": admin_pw_default,
         "today_payments": today_payments,
         "ar_balance": ar_balance,
         "overdue_count": overdue_count,

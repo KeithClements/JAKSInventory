@@ -58,7 +58,7 @@ def backup_status(db: Session = Depends(get_db)):
 
 
 @router.post("/run")
-def backup_run(db: Session = Depends(get_db)):
+def backup_run(db: Session = Depends(get_db), _admin=Depends(require_admin)):
     """Create a backup now, prune to retention, and record last-run."""
     try:
         path = backup_service.create_backup()

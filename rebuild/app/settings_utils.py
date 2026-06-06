@@ -87,5 +87,9 @@ def bump_counter(db: Session, key: str, prefix: str, year: int) -> str:
         row.value = str(n + 1)
     else:
         db.add(Setting(key=key, value=str(n + 1), label=""))
-    db.commit()
+    # Flush (not commit) so the counter increment participates in the CALLER's
+    # transaction. If the caller rolls back after allocating a number, the increment
+    # rolls back too — no silent document-number gaps ("invoice numbers are sacred").
+    # Every caller inserts its document and commits once, covering this increment.
+    db.flush()
     return formatted

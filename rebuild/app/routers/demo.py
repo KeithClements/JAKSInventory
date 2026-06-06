@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+
+from app.deps import require_admin
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +63,7 @@ _CONFIRM_PAGE = """<!doctype html>
 
 
 @router.get("", response_class=HTMLResponse)
-def demo_reset_form(request: Request, done: str = "", error: str = ""):
+def demo_reset_form(request: Request, done: str = "", error: str = "", _admin=Depends(require_admin)):
     msg = ""
     if done:
         msg = f'<div class="bg-green-50 border border-green-200 text-green-700 text-sm rounded-md px-3 py-2 mb-4">Demo data reseeded successfully. <a href="/" class="underline">Go to dashboard →</a></div>'
@@ -71,8 +73,10 @@ def demo_reset_form(request: Request, done: str = "", error: str = ""):
 
 
 @router.post("/reset")
-async def demo_reset(request: Request):
-    """Wipe and reseed demo data. Requires the confirm checkbox."""
+async def demo_reset(request: Request, _admin=Depends(require_admin)):
+    """Wipe and reseed demo data. Requires the confirm checkbox. ADMIN-only —
+    this destroys all business data, so a non-admin (e.g. bookkeeping) or a
+    forged request must never reach it."""
     from app.database import SessionLocal
     from app.seeds_demo import reset_and_seed_demo
 

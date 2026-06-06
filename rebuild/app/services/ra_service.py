@@ -241,6 +241,12 @@ class RAService(BaseService):
         old_status = ra.status
         cm_id: int | None = None
 
+        # Idempotency guard — if a credit memo already exists for this RA (a prior
+        # close_ra committed the CM but may have crashed before flipping status to
+        # CLOSED), reuse it instead of issuing a second. Prevents double-credit.
+        from app.models.credit_memo import CreditMemo as _CMGuard
+        _existing_cm = self.db.query(_CMGuard).filter(_CMGuard.ra_id == ra.id).first()
+
         # R8 — issue credit memo for the accepted return value.
         # auto_close_to_credit=True moves the unapplied balance to credit_balance
         # via CreditMemoService.close_credit_memo → CRMService.add_credit.
@@ -267,7 +273,9 @@ class RAService(BaseService):
                         fee_per_unit = ra_line.restocking_fee / qty
                         ln_data["unit_price"] = max(0.0, ln_data["unit_price"] - fee_per_unit)
 
-            if cm_lines:
+            if _existing_cm is not None:
+                cm_id = _existing_cm.id  # already credited on a prior attempt — do not duplicate
+            elif cm_lines:
                 cm = CreditMemoService(self.db, self.current_user_id).create_credit_memo(
                     customer_id=ra.customer_id,
                     trigger_type=CreditMemoTrigger.ACCEPTED_RA,

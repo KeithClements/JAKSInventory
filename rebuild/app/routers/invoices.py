@@ -341,6 +341,9 @@ def invoice_list(
         query = query.filter(
             or_(
                 Invoice.invoice_number.ilike(like),
+                # de-dash so "inv20260021" still finds "INV-2026-0021"
+                func.replace(func.replace(Invoice.invoice_number, "-", ""), " ", "").ilike(
+                    "%" + q.replace("-", "").replace(" ", "") + "%"),
                 Customer.company_name.ilike(like),
                 Customer.account_number.ilike(like),   # #5
                 Customer.phone.ilike(like),

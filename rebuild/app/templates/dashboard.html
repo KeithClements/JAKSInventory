@@ -24,6 +24,16 @@
 
 {% block content %}
 
+{% if admin_pw_default %}
+<div class="mb-4 flex items-center gap-2 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-800">
+  <svg class="w-5 h-5 shrink-0 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3L13.74 5a2 2 0 00-3.48 0L3.19 16a2 2 0 001.74 3z"/>
+  </svg>
+  <span><strong>Security:</strong> the admin account is still using the default password. Change it at
+    <a href="/account" class="font-semibold underline hover:text-red-900">Account settings</a> before going live with real data.</span>
+</div>
+{% endif %}
+
 {# ── KPI row ─────────────────────────────────────────────────────────────── #}
 <div class="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7 mb-5">
 

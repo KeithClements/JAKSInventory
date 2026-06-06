@@ -338,16 +338,18 @@ def product_export_csv(
     Stream the current filtered product list as a CSV download.
     Respects the same tab/q filters as the list view so "export what I see" works.
     """
-    base = db.query(Product)
-
-    if tab == "zero_stock":
-        base = base.filter(Product.is_active == True, Product.qty_on_hand == 0)  # noqa: E712
+    # Mirror the list view's tab slugs so "export what I see" matches exactly.
+    base = db.query(Product).filter(Product.is_active == True)  # noqa: E712
+    if tab == "low_stock":
+        base = base.filter(
+            Product.reorder_point > 0,
+            Product.qty_on_hand > 0,
+            Product.qty_on_hand <= Product.reorder_point,
+        )
+    elif tab == "out_of_stock":
+        base = base.filter(Product.qty_on_hand == 0)
     elif tab == "special_order":
-        base = base.filter(Product.is_active == True, Product.special_order_only == True)  # noqa: E712
-    elif tab == "inactive":
-        base = base.filter(Product.is_active == False)  # noqa: E712
-    else:
-        base = base.filter(Product.is_active == True)  # noqa: E712
+        base = base.filter(Product.special_order_only == True)  # noqa: E712
 
     if q:
         from sqlalchemy import or_

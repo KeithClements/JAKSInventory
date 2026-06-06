@@ -130,9 +130,12 @@ async def list_quotes(
     elif active_tab:
         query = query.filter(Quote.status == active_tab)
     if q:
+        _qd = q.replace("-", "").replace(" ", "")
         query = query.filter(
             or_(
                 Quote.quote_number.ilike(f"%{q}%"),
+                # de-dash so "q2026" / "20260001" still finds "Q-2026-0001"
+                func.replace(func.replace(Quote.quote_number, "-", ""), " ", "").ilike(f"%{_qd}%"),
                 Customer.company_name.ilike(f"%{q}%"),
             )
         )

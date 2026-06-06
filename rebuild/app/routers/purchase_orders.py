@@ -148,8 +148,12 @@ def po_list(
         query = query.filter(PurchaseOrder.status.in_(statuses))
     if q:
         like = f"%{q.strip()}%"
+        _qd = q.replace("-", "").replace(" ", "")
+        _po_dedash = func.replace(func.replace(PurchaseOrder.po_number, "-", ""), " ", "")
         query = query.outerjoin(Vendor, PurchaseOrder.vendor_id == Vendor.id).filter(
             PurchaseOrder.po_number.ilike(like)
+            # de-dash so "po20260001" still finds "PO-2026-0001"
+            | _po_dedash.ilike(f"%{_qd}%")
             | PurchaseOrder.vendor_confirmation_number.ilike(like)
             | Vendor.name.ilike(like)
         )

@@ -29,7 +29,7 @@
         <input type="hidden" name="select_customer" value="1" />
         <div class="flex-1">
           <label class="form-label">Select customer</label>
-          <select name="customer_id" class="form-select"
+          <select name="customer_id" class="form-select" autofocus
                   onchange="this.form.submit()">
             <option value="">— choose a customer —</option>
             {% for c in customers %}

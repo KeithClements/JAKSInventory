@@ -262,7 +262,7 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/", response_class=RedirectResponse)
-async def save_settings(request: Request, db: Session = Depends(get_db)):
+async def save_settings(request: Request, db: Session = Depends(get_db), _admin=Depends(require_admin)):
     form = await request.form()
     for key in VISIBLE_KEYS:
         val = form.get(key, "")

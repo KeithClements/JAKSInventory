@@ -197,3 +197,47 @@ def test_ra_print_and_pdf_render(client, db):
     )
     assert client.get(f"/returns/{ra.id}/print").status_code == 200
     assert client.get(f"/returns/{ra.id}/pdf").status_code == 200
+
+
+# ===========================================================================
+# §5.1.e — double-credit guard (regression): re-closing an RA must never issue
+# a second credit memo. Covers the non-atomic window where the credit memo
+# commits but the RA status flip to CLOSED does not (process crash between
+# the two commits in close_ra).
+# ===========================================================================
+
+def test_close_ra_idempotent_no_double_credit(db):
+    from app.constants import RAStatus, ReturnDisposition
+    from app.models.credit_memo import CreditMemo
+    from app.services.ra_service import RAService
+
+    cust = _customer(db); prod = _product(db, qty_on_hand=0)
+    start_balance = cust.credit_balance
+    svc = RAService(db, None)
+    ra = svc.create_ra(
+        customer_id=cust.id, reason="Defective",
+        lines=[{"product_id": prod.id, "description": "RA Part", "qty": 2,
+                "unit_price": 50.0, "restocking_fee": 0.0,
+                "disposition": ReturnDisposition.RETURN_TO_STOCK}],
+    )
+    svc.approve_ra(ra.id)
+    svc.receive_goods(ra.id, line_updates=[{
+        "line_id": ra.lines[0].id, "disposition": ReturnDisposition.RETURN_TO_STOCK,
+        "qty_returned_to_stock": 2}])
+    svc.close_ra(ra.id)
+
+    db.refresh(cust)
+    credited_once = cust.credit_balance
+    assert credited_once == start_balance + 100.0
+
+    # Simulate the partial-failure window: CM committed, status flip lost.
+    ra_row = svc._get_or_404(ra.id)
+    ra_row.status = RAStatus.RECEIVED
+    db.commit()
+
+    # Re-close must reuse the existing CM — no second credit, no balance change.
+    svc.close_ra(ra.id)
+    db.refresh(cust)
+    assert cust.credit_balance == credited_once, "re-closing the RA double-credited the customer"
+    cms = db.query(CreditMemo).filter(CreditMemo.ra_id == ra.id).all()
+    assert len(cms) == 1, f"expected exactly one credit memo for the RA, got {len(cms)}"

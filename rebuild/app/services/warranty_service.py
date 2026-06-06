@@ -234,6 +234,16 @@ class WarrantyService(BaseService):
                 f"Claim {claim.claim_number} has no credit amount to apply"
             )
 
+        # Idempotency guard — if a credit memo already exists for this claim (a prior
+        # credit_customer committed the CM but may have crashed before flipping the
+        # claim status), do NOT issue a second one. Prevents double-credit on retry.
+        from app.models.credit_memo import CreditMemo as _CMGuard
+        if self.db.query(_CMGuard).filter(_CMGuard.warranty_claim_id == claim.id).first():
+            claim.status = WarrantyStatus.CUSTOMER_CREDITED
+            claim.resolution_type = WarrantyResolution.CREDIT
+            self.db.commit()
+            return
+
         # R8 — issue credit memo for the warranty amount; auto-close pushes to credit balance.
         cm = CreditMemoService(self.db, self.current_user_id).create_credit_memo(
             customer_id=claim.customer_id,

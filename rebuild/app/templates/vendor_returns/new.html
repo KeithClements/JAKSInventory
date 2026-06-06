@@ -26,7 +26,7 @@
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="form-label">Vendor <span class="text-red-500">*</span></label>
-          <select name="vendor_id" required class="form-select">
+          <select name="vendor_id" required class="form-select" autofocus>
             <option value="">— Select Vendor —</option>
             {% for v in vendors %}
             <option value="{{ v.id }}">{{ v.name }}</option>
