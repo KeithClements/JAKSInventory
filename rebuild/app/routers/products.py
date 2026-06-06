@@ -70,6 +70,7 @@ def product_list(
     q: str = "",
     tab: str = "all",
     sort: str = "sku",
+    page: int = 1,
     db: Session = Depends(get_db),
 ):
     base = db.query(Product).filter(Product.is_active == True)  # noqa: E712
@@ -106,32 +107,43 @@ def product_list(
 
     from app.models.product import ProductCategory
 
-    products = (
-        query.options(
-            # Eager-load so the category sub-line and vendor sort don't N+1.
-            joinedload(Product.category).joinedload(ProductCategory.parent),
-            joinedload(Product.vendor_sources).joinedload(ProductVendorSource.vendor),
-        )
-        .order_by(Product.sku)
-        .all()
+    # ── Pagination — the catalog can be 10k+ rows; never render the whole set ──
+    PAGE_SIZE = 100
+    total = query.count()
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(1, min(page, total_pages))
+    offset = (page - 1) * PAGE_SIZE
+
+    q_eager = query.options(
+        # Eager-load so the category sub-line and vendor sort don't N+1.
+        joinedload(Product.category).joinedload(ProductCategory.parent),
+        joinedload(Product.vendor_sources).joinedload(ProductVendorSource.vendor),
     )
 
-    # Sort: SKU (default) · Vendor · Category. Done in Python so the
-    # self-referential category full_path (Major Group → Category → Sub-category)
-    # can drive a hierarchical order; products with no value sort last.
+    # Sort: SKU (default) · Vendor · Category. SKU pages in SQL (fast common path).
+    # Vendor/Category use the self-referential full_path so they sort in Python over
+    # the matched set, then slice the page.
     if sort == "vendor":
+        products = q_eager.order_by(Product.sku).all()
         def _vendor_key(p):
             pvs = p.preferred_vendor_source
             name = pvs.vendor.name if pvs and pvs.vendor else ""
             return (name == "", name.lower(), p.sku.lower())
         products.sort(key=_vendor_key)
+        products = products[offset:offset + PAGE_SIZE]
     elif sort == "category":
+        products = q_eager.order_by(Product.sku).all()
         def _category_key(p):
             path = p.category.full_path if p.category else ""
             return (path == "", path.lower(), p.sku.lower())
         products.sort(key=_category_key)
+        products = products[offset:offset + PAGE_SIZE]
     else:
         sort = "sku"  # normalize unknown values back to the default
+        products = q_eager.order_by(Product.sku).limit(PAGE_SIZE).offset(offset).all()
+
+    page_start = (offset + 1) if total else 0
+    page_end = min(offset + PAGE_SIZE, total)
 
     # Tab counts (always based on full active set, ignoring current tab/search)
     counts = {
@@ -155,6 +167,12 @@ def product_list(
         "tab": tab,
         "sort": sort,
         "counts": counts,
+        "page": page,
+        "total_pages": total_pages,
+        "total": total,
+        "page_start": page_start,
+        "page_end": page_end,
+        "page_size": PAGE_SIZE,
     })
 
 
