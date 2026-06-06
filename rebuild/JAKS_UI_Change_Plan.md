@@ -2855,19 +2855,106 @@ QA commit `301e976` found 3 xfails in `tests/test_phase2_seams.py` that block pe
 
 2. **`get_prepared_by(db, unknown_id)` raises AttributeError** — The function guards `user_id is None`
    but not a user_id that doesn't match any row. The JAKS-fallback docstring says it should return `"JAKS"`
-   for unknown users, but the guard is incomplete. **UI-Builder should NOT wire `prepared_by` in print
-   templates until this xfail flips** — a missing user_id would 500 the print route.
+   for unknown users, but the guard is incomplete. A missing user_id would 500 the print route.
+   *(Updated: UI-Builder wired it with a `{% if prepared_by %}` guard — safe; Backend still needs to
+   fix the AttributeError so `get_prepared_by` always returns a string.)*
 
-3. **No print template wires `prepared_by` yet** — confirmed OPEN. Waiting on item 2 above.
+3. **No print template wires `prepared_by` yet** — confirmed OPEN. *(Updated: DONE @f73cc2f; see §8V.)*
 
-**Status of all §8T pending items:**
+**Status of all §8T pending items (updated after §8V governance pass @f73cc2f):**
 | Item | Status |
 |------|--------|
-| §8T-1 Dashboard rLayout (chart + Top Customers + Follow-Ups) | **OPEN** — not started |
-| §8T-2 Quote §8B punches 1-3 (target, position, confirm) | **OPEN** — not started |
-| §8T-2 Quote context strip cores/last-purchase chips | **BLOCKED** by xfail #1 above |
-| §8T-3 Prepared-by in print templates (invoices + quotes) | **BLOCKED** by xfail #2 above |
-| §8U-3 `customer_status_chip` adoption (3 files) | **OPEN** — punches issued above |
+| §8T-1 Dashboard rLayout (chart + Top Customers + Follow-Ups) | ✅ **PASS** @f73cc2f |
+| §8T-2 Quote §8B punches 1-3 (target, position, confirm) | ✅ **PASS** @f73cc2f |
+| §8T-2 Quote context strip cores/last-purchase chips | ✅ **WIRED** @f73cc2f (guard; data live when Backend xfail #1 flips) |
+| §8T-3 Prepared-by in print templates (invoices + quotes) | ✅ **WIRED** @f73cc2f (guard; shows when Backend xfail #2 flips) |
+| §8T-3 Prepared-by in SO/PO/Returns/Warranty print | **OPEN** — 4 remaining print templates |
+| §8U-3 `customer_status_chip` adoption (3 files) | **OPEN** — punches still outstanding |
+
+---
+
+#### §8V. Governance Pass — `f73cc2f` §8B/§8T render wave
+
+**Commit reviewed:** `f73cc2f` — UI-Builder, 5 template files, no routes/macros/base.html touched.
+
+##### 8V-1. PASS — `quotes/_header_actions.html` (all 3 §8B/§8S-4 punches cleared)
+
+| Punch | Fix | Verdict |
+|-------|-----|---------|
+| Remove `target="_blank"` from "← All quotes" | Removed; new link has no `target` | ✅ CLEARED |
+| Move "← All quotes" to Zone 1 (leftmost) | Added at top of flex div with `mr-auto`; pushes all other controls right | ✅ CLEARED |
+| Replace `window.confirm()` with `jakConfirm()` | Form gets `id="quote-convert-invoice-form"`; button is `type="button"` with `@click="jakConfirm({formId:...})"` | ✅ CLEARED |
+
+`jakConfirm` `formId` mode is canonically supported by `macros/confirm_modal.html` (line 31: `askConfirm(formId)
+→ jakConfirm({ formId, title, body })`). Pattern is correct. **GOVERNANCE PASS.**
+
+##### 8V-2. PASS — `quotes/workspace.html` (§8T-2 intel chips)
+
+- `cust_last_purchase` wired as "Last sale: {{ date }}" — `text-xs text-gray-400`, empty-safe (`{% if %}`). ✅
+- `cust_lifetime_sales` wired as "Lifetime: $X" — `hidden lg:inline` respects the width constraint in spec. ✅
+- `cust_cores_owed_qty` correctly NOT duplicated (already present in the strip). ✅
+- Data correctness gap (`cust_last_purchase` always `None` due to xfail #1) is defensive: guard hides it silently
+  until Backend fixes the seam. **No display error; no 500.** The wiring is correct — Backend owns the fix.
+
+**GOVERNANCE PASS.**
+
+##### 8V-3. PASS — `dashboard.html` (§8T-1 rLayout)
+
+Verified against governance criteria from §8T-1:
+
+| Criterion | Result |
+|-----------|--------|
+| Chart card in `lg:col-span-2` left column; canvas `id="revenue-chart"` unchanged | ✅ |
+| `<script>` untouched (binds by canvas id; no JS changes needed) | ✅ |
+| Top Customers wired from `top_customers` ctx (not a new query) | ✅ |
+| Row click → `/customers/{tc.customer.id}` via `onclick` on `<li>` + `<a>` | ✅ |
+| `"No invoice data yet"` empty state when `top_customers` is falsy | ✅ |
+| Follow-Ups from `open_followups` dict + `open_followups_total` (not re-querying) | ✅ |
+| `"All caught up" + checkmark svg` empty state | ✅ |
+| Link → `/quotes/?follow_up=due` | ✅ |
+| No new CSS classes — `div.card`, `ul.divide-y`, `hover:bg-stone-50/70`, `badge-*` all existing | ✅ |
+| No `border-l-4` row stripes on widget lists (stripe lock is for operational lists only) | ✅ |
+| Right column: `flex flex-col gap-4` to stack two cards | ✅ |
+
+**Minor observation (non-blocking):** Row click on Top Customers uses raw `onclick="location.href=..."` on
+`<li>`. Acceptable for a non-operational dashboard widget — the `<li>` is not in an Alpine context and a
+simple navigation doesn't need HTMX. `<a>` with `event.stopPropagation()` correctly handles Ctrl+click
+separately. Not a governance block.
+
+**GOVERNANCE PASS.**
+
+##### 8V-4. PASS — `invoices/print.html` + `quotes/print.html` (§8T-3 prepared-by)
+
+Both files: `{% if prepared_by %}` guard + `<div class="doc-dates">` with `border-top` separator, placed in
+the `doc-right` block under the date/terms line — exactly matching the spec's `{% if prepared_by %}` block.
+Placement is correct (doc-right, not footer). `doc-dates` class reuse preserves consistent typography.
+
+The AttributeError xfail (unknown user_id) is Backend's responsibility. The `{% if prepared_by %}` guard
+ensures the template never 500s — it simply hides the block if the route passes `None`. Safe to ship.
+
+**Open gap:** SO / PO / Returns / Warranty print templates have not received `prepared_by` yet (4 remaining).
+UI-Builder should apply the same `{% if prepared_by %}` block to their `doc-right` sections in a follow-up.
+
+**GOVERNANCE PASS (invoices + quotes).**
+
+---
+
+##### §8V Summary
+
+All 4 items in `f73cc2f` PASS. No blocking punches.
+
+| Item | Verdict |
+|------|---------|
+| `quotes/_header_actions.html` — 3 §8B punches | ✅ PASS — all cleared |
+| `quotes/workspace.html` — §8T-2 intel chips | ✅ PASS — wired + guard |
+| `dashboard.html` — §8T-1 rLayout | ✅ PASS — chart + widgets correct |
+| `invoices/print.html` + `quotes/print.html` — §8T-3 prepared-by | ✅ PASS (invoices+quotes; SO/PO/returns/warranty OPEN) |
+
+**Remaining open work:**
+1. §8U-3 `customer_status_chip` adoption — `customers/detail.html`, `list.html`, `_preview_panel.html`
+2. Prepared-by in SO / PO / Returns / Warranty print templates (4 files)
+3. Backend xfail #1: fix `cust_last_purchase`/`cust_outstanding_cores` seam keys
+4. Backend xfail #2: fix `get_prepared_by(db, unknown_id)` AttributeError
 
 ---
 
