@@ -733,12 +733,20 @@
       {# ── INVENTORY ───────────────────────────────────────────────── #}
       <p class="nav-section">Inventory</p>
 
-      <a href="/products/" class="nav-link {% if '/products' in request.url.path %}active{% endif %}">
+      <a href="/products/" class="nav-link {% if '/products' in request.url.path and '/products/import' not in request.url.path %}active{% endif %}">
         <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
                 d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10"/>
         </svg>
         Products
+      </a>
+
+      <a href="/products/import" class="nav-link {% if '/products/import' in request.url.path %}active{% endif %}">
+        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
+        </svg>
+        Import Products
       </a>
 
       {# ── CORES ───────────────────────────────────────────────────── #}
