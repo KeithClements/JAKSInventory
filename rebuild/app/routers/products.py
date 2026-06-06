@@ -16,7 +16,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.constants import CrossRefType, SuggestedSellType
-from app.deps import get_db, get_current_user_id
+from app.deps import get_db, get_current_user_id, require_admin
 from app.models.product import (
     CrossReference, Product, ProductImage, ProductVendorSource, SuggestedSell,
 )
@@ -417,6 +417,40 @@ async def product_enrich_sync(
     raw = await file.read()
     text = raw.decode("utf-8-sig", errors="replace")
     return ProductEnrichmentService(db).enrich_from_csv_text(text)
+
+
+# ── Product Importer (Full Import + Pricing Update) — admin-gated ──────────────
+# Two modes, both dry-run-first. Full creates products from the PAI scraper's
+# Shopify export; Pricing Update only updates PAI vendor_cost (+ cost history) or
+# competitor_prices (+ history). Registered BEFORE /{product_id}.
+
+@router.get("/import", response_class=HTMLResponse)
+def product_import_page(request: Request, _admin=Depends(require_admin)):
+    return templates.TemplateResponse(request, "products/import.html", {})
+
+
+@router.post("/import-run")
+async def product_import_run(
+    file: UploadFile = File(...),
+    mode: str = Form("full"),                # full | pricing
+    source_type: str = Form("pai_cost"),     # pricing: pai_cost | competitor
+    dry_run: bool = Form(True),
+    import_images: bool = Form(True),
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+    _admin=Depends(require_admin),
+):
+    from app.services.product_import_service import ProductImportService
+    raw = await file.read()
+    text = raw.decode("utf-8-sig", errors="replace")
+    svc = ProductImportService(db, user_id)
+    if mode == "full":
+        return svc.full_import(text, dry_run=dry_run, import_images=import_images)
+    if mode == "pricing" and source_type == "competitor":
+        return svc.pricing_update_competitor(text, dry_run=dry_run)
+    if mode == "pricing":
+        return svc.pricing_update_pai_cost(text, dry_run=dry_run)
+    return {"error": f"unknown mode {mode!r}"}
 
 
 # ── Detail / Update / Deactivate / Reactivate ─────────────────────────────────

@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}Import Products — JAKS Inventory{% endblock %}
+{% block heading %}Import Products{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl space-y-4" x-data="productImport()">
+
+  {# ── Mode + file ─────────────────────────────────────────────────────────── #}
+  <div class="card">
+    <div class="card-header"><h2 class="card-title">Catalog Importer</h2></div>
+    <div class="card-body space-y-5">
+
+      {# Mode #}
+      <div>
+        <label class="form-label">Mode</label>
+        <div class="flex flex-col sm:flex-row gap-3">
+          <label class="flex-1 flex items-start gap-2.5 rounded-lg border px-3 py-2.5 cursor-pointer"
+                 :class="mode==='full' ? 'border-brand-400 bg-brand-50' : 'border-gray-200'">
+            <input type="radio" name="mode" value="full" x-model="mode" class="form-checkbox mt-0.5"/>
+            <span>
+              <span class="block text-sm font-semibold text-gray-800">Full Product Import</span>
+              <span class="block text-xs text-gray-500">Create new products from the PAI scraper (Shopify export). Skips SKUs that already exist.</span>
+            </span>
+          </label>
+          <label class="flex-1 flex items-start gap-2.5 rounded-lg border px-3 py-2.5 cursor-pointer"
+                 :class="mode==='pricing' ? 'border-brand-400 bg-brand-50' : 'border-gray-200'">
+            <input type="radio" name="mode" value="pricing" x-model="mode" class="form-checkbox mt-0.5"/>
+            <span>
+              <span class="block text-sm font-semibold text-gray-800">Pricing Update</span>
+              <span class="block text-xs text-gray-500">Update existing products only — PAI cost or competitor prices. Never creates products.</span>
+            </span>
+          </label>
+        </div>
+      </div>
+
+      {# Pricing source (only for pricing mode) #}
+      <div x-show="mode==='pricing'" x-cloak>
+        <label class="form-label">Pricing source</label>
+        <div class="flex gap-4">
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="radio" name="source_type" value="pai_cost" x-model="sourceType" class="form-checkbox"/>
+            <span class="text-sm text-gray-700">PAI cost → vendor_cost (+ cost history)</span>
+          </label>
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="radio" name="source_type" value="competitor" x-model="sourceType" class="form-checkbox"/>
+            <span class="text-sm text-gray-700">Competitor prices (+ price history)</span>
+          </label>
+        </div>
+      </div>
+
+      {# Images (only for full import) #}
+      <div x-show="mode==='full'" x-cloak>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" x-model="importImages" class="form-checkbox"/>
+          <span class="text-sm text-gray-700">Import product image URLs</span>
+        </label>
+      </div>
+
+      {# File #}
+      <div>
+        <label class="form-label">CSV file</label>
+        <input type="file" x-ref="file" accept=".csv,text/csv" required
+               class="text-sm text-gray-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-brand-50 file:text-brand-700 hover:file:bg-brand-100 file:cursor-pointer"/>
+      </div>
+
+      {# Actions #}
+      <div class="flex items-center gap-3 pt-1">
+        <button type="button" @click="run(true)" :disabled="busy" class="btn-secondary">
+          <span x-show="!busy">Dry-run preview</span>
+          <span x-show="busy" x-cloak>Working…</span>
+        </button>
+        <button type="button" @click="confirming=true" :disabled="busy || !result || lastDryRun===false"
+                class="btn-primary" x-show="!confirming"
+                title="Run a dry-run preview first, then commit">
+          Commit import
+        </button>
+        <template x-if="confirming">
+          <span class="flex items-center gap-2">
+            <span class="text-sm text-red-700 font-medium">Write to the database?</span>
+            <button type="button" @click="confirming=false; run(false)" class="btn-danger btn-sm">Yes, commit</button>
+            <button type="button" @click="confirming=false" class="btn-secondary btn-sm">Cancel</button>
+          </span>
+        </template>
+        <span class="text-xs text-gray-400">Preview first — Commit is enabled after a dry-run.</span>
+      </div>
+    </div>
+  </div>
+
+  {# ── Errors ──────────────────────────────────────────────────────────────── #}
+  <div x-show="error" x-cloak class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700" x-text="error"></div>
+
+  {# ── Results ─────────────────────────────────────────────────────────────── #}
+  <template x-if="result">
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title">
+          <span x-text="result.dry_run ? 'Dry-run preview' : 'Import committed'"></span>
+          <span class="text-xs font-normal text-gray-500" x-text="'· ' + (result.mode || '') + (result.source ? ' / ' + result.source : '')"></span>
+        </h3>
+        <span class="badge" :class="result.dry_run ? 'badge-amber' : 'badge-green'"
+              x-text="result.dry_run ? 'NOTHING WRITTEN' : 'WRITTEN'"></span>
+      </div>
+      <div class="card-body">
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-2">
+          <template x-for="[k,v] in Object.entries(result).filter(e => e[0] !== 'sample')" :key="k">
+            <div class="flex items-center justify-between border-b border-gray-50 py-1">
+              <span class="text-xs text-gray-500" x-text="k.replace(/_/g,' ')"></span>
+              <span class="text-sm font-semibold text-gray-900 tabular-nums" x-text="String(v)"></span>
+            </div>
+          </template>
+        </div>
+        <template x-if="result.sample && result.sample.length">
+          <div class="mt-4">
+            <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Sample</p>
+            <pre class="text-xs bg-gray-50 rounded-lg p-3 overflow-x-auto" x-text="JSON.stringify(result.sample, null, 2)"></pre>
+          </div>
+        </template>
+      </div>
+    </div>
+  </template>
+</div>
+
+<script>
+function productImport() {
+  return {
+    mode: 'full', sourceType: 'pai_cost', importImages: true,
+    busy: false, result: null, error: null, lastDryRun: true, confirming: false,
+    async run(dryRun) {
+      const fileEl = this.$refs.file;
+      if (!fileEl || !fileEl.files.length) { this.error = 'Choose a CSV file first.'; return; }
+      this.busy = true; this.error = null; this.result = null; this.lastDryRun = dryRun;
+      const fd = new FormData();
+      fd.append('file', fileEl.files[0]);
+      fd.append('mode', this.mode);
+      fd.append('source_type', this.sourceType);
+      fd.append('dry_run', dryRun ? 'true' : 'false');
+      fd.append('import_images', this.importImages ? 'true' : 'false');
+      try {
+        const resp = await fetch('/products/import-run', { method: 'POST', body: fd });
+        if (!resp.ok) { this.error = 'Import failed (HTTP ' + resp.status + ').'; }
+        else { this.result = await resp.json(); }
+      } catch (e) { this.error = 'Upload error: ' + e; }
+      finally { this.busy = false; }
+    }
+  };
+}
+</script>
+{% endblock %}
