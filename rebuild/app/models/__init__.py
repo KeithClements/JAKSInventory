@@ -31,6 +31,7 @@ from app.models.product import (
     ProductKit,
     ProductKitLine,
 )
+from app.models.competitor import CompetitorPrice, CompetitorPriceHistory
 
 # ── Inventory ─────────────────────────────────────────────────────────────────
 from app.models.inventory import InventoryLocation, InventoryTransaction
@@ -122,6 +123,8 @@ __all_models__ = [
     ProductSerialNumber,
     ProductKit,
     ProductKitLine,
+    CompetitorPrice,
+    CompetitorPriceHistory,
     # Inventory
     InventoryLocation,
     InventoryTransaction,

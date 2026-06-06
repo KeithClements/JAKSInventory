@@ -186,6 +186,34 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     # ── Customer lifecycle status (4-state enum, owner-locked) ───────────────
     # Default 'active' for new rows; backfill below maps is_active=0 → 'inactive'.
     ("customers", "customer_status", "VARCHAR(20) NOT NULL DEFAULT 'active'"),
+
+    # ── Phase 2 — Product schema v2 (PAI scraper import + market pricing) ─────
+    # competitor_prices / competitor_price_history are NEW tables → create_all()
+    # makes them; only these new `products` columns need an ALTER backfill.
+    # Rule: vendor_cost stays on ProductVendorSource; cost stays moving-avg;
+    # margin is computed, never stored. (See Product schema-v2 interview.)
+    ("products", "manufacturer_part_number", "TEXT NOT NULL DEFAULT ''"),
+    ("products", "product_family",           "TEXT NOT NULL DEFAULT ''"),
+    ("products", "engine_family",            "TEXT NOT NULL DEFAULT ''"),
+    ("products", "truck_make",               "TEXT NOT NULL DEFAULT ''"),
+    ("products", "application_notes",        "TEXT NOT NULL DEFAULT ''"),
+    ("products", "country_of_origin",        "TEXT NOT NULL DEFAULT ''"),
+    ("products", "is_imported",              "BOOLEAN NOT NULL DEFAULT 0"),
+    ("products", "is_house_brand",           "BOOLEAN NOT NULL DEFAULT 0"),
+    ("products", "is_performance_part",      "BOOLEAN NOT NULL DEFAULT 0"),
+    ("products", "dimensions",               "TEXT NOT NULL DEFAULT ''"),
+    ("products", "list_price",               "REAL NULL"),
+    ("products", "map_price",                "REAL NULL"),
+    ("products", "compare_at_price",         "REAL NULL"),
+    ("products", "price_last_checked_at",    "DATETIME NULL"),
+    ("products", "price_changed_at",         "DATETIME NULL"),
+    ("products", "shopify_status",           "TEXT NOT NULL DEFAULT ''"),
+    ("products", "seo_title",                "TEXT NOT NULL DEFAULT ''"),
+    ("products", "seo_description",          "TEXT NOT NULL DEFAULT ''"),
+    ("products", "search_keywords",          "TEXT NOT NULL DEFAULT ''"),
+    ("products", "last_enriched_at",         "DATETIME NULL"),
+    ("products", "enrichment_source",        "TEXT NOT NULL DEFAULT ''"),
+    ("products", "needs_review",             "BOOLEAN NOT NULL DEFAULT 0"),
 ]
 
 

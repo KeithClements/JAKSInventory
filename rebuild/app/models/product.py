@@ -143,6 +143,36 @@ class Product(Base):
     jaks_warranty_months: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     warranty_percentage: Mapped[float] = mapped_column(Float, nullable=False, default=10.0)
 
+    # ── Phase 2 — extended classification (PAI scraper import / enrichment) ─────
+    manufacturer_part_number: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    product_family: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    engine_family: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    truck_make: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    application_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    country_of_origin: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    is_imported: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_house_brand: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_performance_part: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    dimensions: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+
+    # ── Phase 2 — market pricing references ─────────────────────────────────────
+    # price_override (above) = OUR sell price; cost/last_cost = moving-avg COGS;
+    # vendor_cost lives on ProductVendorSource. These are market-facing refs only:
+    list_price: Mapped[float | None] = mapped_column(Float, nullable=True)         # MSRP / catalog list
+    map_price: Mapped[float | None] = mapped_column(Float, nullable=True)          # minimum advertised price
+    compare_at_price: Mapped[float | None] = mapped_column(Float, nullable=True)   # Shopify display "was" price
+    price_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    price_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # ── Phase 2 — channel / SEO / enrichment provenance ─────────────────────────
+    shopify_status: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    seo_title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    seo_description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    search_keywords: Mapped[str] = mapped_column(Text, nullable=False, default="")  # scraper Tags
+    last_enriched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    enrichment_source: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    needs_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -197,6 +227,10 @@ class Product(Base):
         cascade="all, delete-orphan",
         order_by="SuggestedSell.sort_order",
     )
+    # Phase 2 — competitor market prices (NEVER cost; pure market intelligence)
+    competitor_prices: Mapped[list["CompetitorPrice"]] = relationship(
+        "CompetitorPrice", back_populates="product", cascade="all, delete-orphan",
+    )
 
     # ── Computed properties ───────────────────────────────────────────────────
     @property
@@ -216,6 +250,18 @@ class Product(Base):
             return self.price_override
         markup = self.markup_pct if self.markup_pct is not None else 30.0
         return round(self.cost * (1 + markup / 100), 2)
+
+    @property
+    def margin_percent(self) -> float | None:
+        """Computed gross margin % on the current sell price vs moving-avg cost.
+        NOT stored (ruling: margin changes whenever cost or price changes; freeze
+        only on quote/invoice lines). Returns None when there is no sell price.
+        Reads ~100% for freshly-imported parts until the first PO receipt sets a
+        real moving-avg cost — expected, not a defect."""
+        sell = self.selling_price
+        if not sell or sell <= 0:
+            return None
+        return round((sell - self.cost) / sell * 100, 1)
 
     @property
     def qty_available(self) -> int:
