@@ -211,103 +211,47 @@ All 13 services in `/app/services/`:
 
 ## 9. Build Status — What Is NOT YET BUILT ❌
 
-> **🟢 STRATEGIC REVIEW — 2026-05-31 (status-refresher). BOTH CORE SPINES PROVEN GREEN.**
-> Verified against the test suite (**477 passing**, non-visual) — not self-reports:
-> - **Quote→SO→Invoice→Payment** and **PO→Receive→Inventory** both pass **end-to-end** in
->   `tests/test_e2e_flows.py` (in-stock sale→paid; OOS→SO→deposit→linked-PO-receive→partial invoice;
->   PO receive + moving-avg cost). One-click line-add (§8H shared adder) is live in all 4 workspaces.
-> - **Cores / Returns / Warranty / Vendor-Returns / Reports** now functionally tested — 52 behaviour
->   tests (`9d0ced2`), all passing.
-> - **O3** automatic SQLite backup/restore shipped (`619a156`). Warranty Queue **#15** QB2 shipped (`e93cef9`).
+> **✅ 2026-06-04 — QBO Phase-1B BUILT + the Phase-2 UI wave largely shipped. The "gated"/"scaffold-only" notes below are SUPERSEDED for QBO.**
+> Ground-truthed against the live tree (`backend/workflow-series-3` @ `9f50216`, fast-forward-merged into local `main`): **966 tests pass**, only the 6 known cosmetic reds.
+> - **QBO (Phase 1B) is BUILT — no longer gated.** Hand-rolled OAuth2 (connect/callback/refresh/disconnect) + REST client (httpx, no new deps); **accounting-summary invoice push** (each line-type → a generic income item; cc_surcharge + tax excluded; customer resolve/create; one-time item setup); **bulk push** (Sync Selected / Sync All Unsynced via `/qbo/invoices/push-batch`); Settings "Connect to QuickBooks" card; invoice-list **QBO status column + filter tabs**; workspace Push button. Push is best-effort and **NEVER touches the money path** (success→`mark_synced`/lock, fail→`mark_sync_failed`). **Owner connected the live sandbox and pushed test invoices successfully.** Commits `3873e0e`/`e636760`/`e09a5c9` + the UI wave. *Still deferred within 1B:* payments / vendor-bills / credit-memos push; token-at-rest encryption (Fernet); AST-tax reconciliation (kill-switch = `qbo_push_tax`).
+> - **Phase-2 UI wave shipped:** §7.2 **enrichment sync** (`ProductApplication` + `POST /products/enrich-sync`, `370820b`); invoice-list QBO column + bulk sync + **sortable/sticky headers**; **unified customer Timeline tab**; sortable+sticky on customers/quotes/payments; **PDF branding** (formatted phone + Terms + one shared company dict across every print, `d8f33fa`); customer **Acct # + 4-state Status + Timeline-first tabs**; dynamic customer preview dock; **products F2 shortcut + prominent margin**; cost-bracket **pricing grid**; tabbed Settings; quotes-list Open/Print/Email + follow-up colors. Remaining UI consumes (Backend seams already in @`9f50216`): quote-workspace always-visible actions + intelligence render, dashboard Top-Customers/Follow-Ups widgets, Prepared-By print render.
+> - The **§9.1 "QBO gated" row** and the **§16 "scaffold only" / "Integrations D+" grades** below are HISTORY — corrected in place.
 >
-> **Remaining for Phase-1A go-live — RECONCILED 2026-05-31 (PM, external-review ground-truth).**
-> Most of the earlier (a)–(e) list has since LANDED. Verified this pass against code + targeted tests:
-> - ~~(a) Cores BUG-2/BUG-4~~ ✅ **DONE** `e119c19` — `tests/test_cores_lifecycle.py` 16 green
->   (`credit_issued_at` idempotency stamp + skip location-movement when `location_id is None`).
-> - ~~(c) O3 restore acceptance~~ ✅ **DONE** — `tests/test_backup_restore.py` green (`619a156`).
-> - ~~(d) `…/_/product-search` route cleanup~~ ✅ **DONE** `331a872` (4 endpoints deleted, 224 routes).
-> - ~~(e) O4 vendor contacts~~ ✅ `c17f2b6` · ~~O5 markup→settings~~ ✅ `7f69572`. Search dash/case
->   normalization ✅ live + tested (`normalize_part`, `tests/test_line_item_builder.py` 16 green).
->
-> **⚡ SINCE THE PM BANNER (2026-05-31, late status-refresher — 545 non-visual tests green):** two of the
-> items below have LANDED — **(2) cost-variance** ✅ `c36769c`+`c5b49ac` (3-way match now flags DISCREPANCY
-> on unit-cost variance, qty-only gate closed, QA-guarded); **(3) O2-enforce** ✅ `07f7747`+`c4f10f9`
-> (auth middleware: unauthenticated production requests → `/login`, HTMX gets `HX-Redirect`). Also landed:
-> void-balance fix `52a9fdd`, the schema-drift CI gate, quote-flow cluster Bugs 1/3/5/6/8 (`e93048d`/`d9ee57d`),
-> Save Standard v2 (`59e7fa5`), Cores #16 (`c6468af`) + Returns #17 (`6416a9d`). **NEW cosmetic bug:** quote PDF
-> never prints part #s — `quotes/print.html:327/413/458` reference `line.product.part_number` (does not exist;
-> the real attr is `ProductVendorSource.vendor_part_number`), so the `{% if %}` is always falsy. Non-blocking.
-> **Net: the only true remaining go-live gate is (1) the owner's hand-run §8 acceptance.** Code-side, 1A is
-> essentially complete; (5) O6 surcharge is in-flight, Activity Log (contract `dd28051`) + beta sandbox are fast-follow.
->
-> **What ACTUALLY remains for 1A go-live (priority order):**
-> - **(1) OWNER END-TO-END ACCEPTANCE of both spines — the real gate.** Code + `tests/test_e2e_flows.py`
->   are green, but Keith has **never personally run** the §8 cross-workflow rows (sale→paid; OOS→SO→
->   receive→invoice; core→credit) on a fresh build — the owner test sheet's §8 is entirely unmarked.
->   This is a *confidence* gate, not a code gap. Schedule a guided owner pass.
-> - **(2) Vendor-bill COST-ONLY mismatch auto-approves — money-correctness bug (Backend).** A bill with
->   exact qty but wrong unit cost (e.g. 10@$110 vs 10 received @$100) sets `status=APPROVED` and queues
->   QBO PENDING; only qty variance is flagged. `po_service.py:632-633` + model `has_discrepancy`
->   (`purchase_order.py:269-272`) test only `qty_billed > qty_received`, never `unit_cost`. The cost
->   variance IS computed (`compute_match_line` cost_variance flag) but is not a hard approval gate. Unguarded by tests.
-> - **(3) O2 login — ENFORCE (owner ruled 2026-05-31).** Mechanism shipped (`90245d0`: pbkdf2 + signed
->   cookie, `/login`,`/logout`) but today opt-in: `deps.py:20` `DEFAULT_USER_ID=1`, `deps.py:23-34`
->   silently falls back to user 1, no guard. **Backend ticket:** add a global session dependency /
->   middleware so production routes redirect to `/login` when there's no valid session, and make the
->   `deps.py` fallback raise/redirect instead of defaulting to user 1 (keep a test/dev bypass). +QA test.
-> - **(4) Owner-flagged data/money bugs to confirm + fix:** Customer CSV/Excel import drops phone+email
->   (`§1.2h` — data integrity); card surcharge can't be un-selected once chosen (`§1.9e` — money-path UX).
->   Re-confirm B5 vendor-reactivate / B6 products-bulk landed cleanly (`82f7495`).
-> - **(5)** O6 customer card-surcharge default+override (Backend, money path, needs migration);
->   Cores Queue **#16** / Returns Queue **#17** (UI-Builder, copy `receiving_queue.html`).
->
-> **Cosmetic / NOT go-live blockers** (confirmed this pass — do NOT jump the queue): UI-lint gate red is
-> **5 cosmetic failures / 167 pass** (628 `tbl-*`, 54 inline x-transition, color+stripe allowlist — the
-> lint module's own docstring says "report only"); `tbl-*` still defined in `base.html:133` (~28 screens
-> still L1); login page uses CDN Tailwind in `auth.py:44` (trivial fix: link local `/static/css/app.css`).
-> The **"repo mojibake" claim is REFUTED** — a raw-byte scan found zero; the bytes are valid UTF-8 (§ /
-> em-dash), i.e. a local terminal codepage display issue, not repo corruption. Visual-regression pixel
-> diffs remain known-unstable (mutable-DB), **not** workflow failures.
+> *The 2026-06-02 banner below is retained as the prior milestone (Phase 1A sign-off).*
 
-> **🔴 OWNER FUNCTIONAL TEST RECONCILIATION — 2026-05-30 (supersedes the 05-29 "support mode" claim below).**
+> **✅ PHASE 1A SIGNED OFF — 2026-06-02 (status-refresher). The 05-31 banners below are HISTORY.**
+> Ground-truthed against the live tree, not self-reports: **801 tests pass** (only 6 non-functional
+> reds — 5 cosmetic `test_ui_lint` + 1 brittle `test_template_renders` W-4, do-not-chase). **Both
+> spines are owner-proven:** Keith hand-ran Suite B (sale→paid · OOS→SO→receive→invoice · core→credit)
+> and the 11-row Suite D money pass — all green. Signed off in `PHASE_1_TEST_PLAN.md` §13.
+> - **All 05-31 "remaining go-live gates" are CLOSED:** O2 attribution (`customers.py` no longer
+>   hardcodes user 1) + enforce; bookkeeper user seeded; backup restore **admin-gated**; cost-variance
+>   3-way gate (`bd65c69`); CSRF = SameSite-Lax + written waiver; `/account` password change + default-pw warning.
+> - **`tests/test_payments.py` (15)** closed the D-5 automated-net gap; quote-badge EXPIRED bug fixed (`0549b35`).
+> - **The program is now in PHASE 2 (active build)** — see `PHASE_2_PLAN.md` (12 decisions locked 2026-06-02).
+>   Shipped: customer flags / type-defaults / metrics / credit-warn, invoice-intelligence panel, SO dashboard
+>   metrics, lost-sales. In flight: SO metric-strip render, scraper-code removal, §5.4 core dashboard,
+>   `credit_status` SO/invoice seam. Vendor-catalog integration **removed from ERP scope** (P2-D9 — the
+>   standalone PAI Info tool feeds Shopify; a narrow enrichment-sync of cross-refs + CPL/ESN onto existing
+>   products is the only catalog item left). **§10's queue below is Phase-1-era — Phase 2's queue is `PHASE_2_PLAN.md §8`.** QBO (Phase 1B) was gated as of 06-02 — **now BUILT 06-04 (see the banner above).**
 >
-> **✅ UPDATE (same day, later):** all three blockers below are **FIXED + regression-guarded** —
-> `3a700fd` (B1/B2 core-loop unblock) · `634d056` (B3 invoice search) · `e1d632d` (QA regression
-> gate: real-query SO product-search + linked-PO receive with full inventory-ledger assertions; 115
-> tests green). B5/B6 (vendor reactivate, products bulk-status/export) also landed (`82f7495`).
-> B4 (quote customer pre-fill) + search dash-normalization are implemented but **uncommitted** in the
-> working tree as of this writing. The text below is retained as the root-cause record / lesson.
-> Keith ran a screen-by-screen functional test (`Testing Feedback/TESTING_FEEDBACK5.30.26.docx`).
-> It surfaced **two LIVE core-loop blockers that the 125 passing tests did NOT catch**, both
-> introduced by recent "support-mode" commits:
-> - **Sales Order add-line is dead** — `app/routers/sales_orders.py:281,382` reference `Product.name`,
->   a phantom attribute (model has `title`/`description`). Every product search 500s → no line can
->   be added. Regression from commit `b097ddd`.
-> - **PO Receive is dead** — `app/services/po_service.py:448` uses `SOLineStatus` but commit `fa73f57`
->   dropped it from the import block (lines 20-23) → `NameError` on any receive of an SO-linked PO
->   line, swallowed by a bare `except` into "receipt was not recorded." Tests pass because no test
->   creates SO-linked PO lines. This **refutes** the 05-29 §8G claim that "can't receive" was only a
->   discoverability issue — it is a hard crash.
-> - **Invoice add-line** was the same class of bug (`suggested_sell_price` phantom in
->   `invoices/_search_results.html`); fix is in the working copy, **uncommitted**.
->
-> **Effect on status:** Backend is **NOT in clean support mode** — it has two live regressions from
-> its own commits. The "Quote/Returns won't open" report was a real HTTP 500 (old Starlette
-> `TemplateResponse` API) **already fixed in this branch by `b514196`** — owner tested a pre-pull
-> build; needs re-pull + re-test, not new work. Same for invoice "change customer" (cosmetic fix
-> already in `bcda974`). The whole CORES / RETURNS / WARRANTY / REPORTS / cross-workflow E2E section
-> is **entirely unverified** (owner marked "need to test"). **Action queue + lane tickets:
-> see the 2026-05-30 status-refresher output.** Do not trust "complete" below until owner re-test
-> on a fresh pull confirms the business task end-to-end.
+> *Everything below this line is historical record (2026-05-29 → 06-02) — kept for context; not a to-do list.*
 
-> **⚠️ RECONCILED 2026-05-29 against the actual codebase (service + router + template audit).**
-> The previous version of this section was badly stale: it listed PO receive, 3-way match,
-> SO→Invoice, invoice finalize/lock/void, core lifecycle, warranty/RA state machines, payment
-> reversal/NSF, credit memos, quote duplicate/reactivate, the report suite, dashboard widgets,
-> and most document PDFs as "stub" / "not built." **All of those are now implemented and routed.**
-> Backend Workflow Series 1–5 landed them (125 tests passing); backend is in **support mode**.
-> **Do not use the old text as a to-do list — trust the code.** The genuine remaining gap is the
-> **UI maturity rollout**, not backend logic.
+> **History — superseded by the ✅ banner above (kept for the record, not a to-do list).** The road to
+> sign-off ran through four status-refresher passes; every gate they tracked has since landed:
+> - **2026-05-29** — reconciled a badly-stale "not built" list: PO receive, 3-way match, SO→Invoice,
+>   finalize/lock/void, core/warranty/RA state machines, payments, credit memos, reports and PDFs were
+>   all already implemented + routed (Workflow Series 1–5, 125 tests). Lesson: trust the code, not old to-do text.
+> - **2026-05-30** — owner screen-by-screen test caught two live core-loop regressions the 125 tests
+>   missed (SO add-line `Product.name` phantom; PO-receive `SOLineStatus` `NameError`). Both fixed +
+>   regression-guarded (`3a700fd` · `e1d632d` · `634d056`); coverage now exercises SO-linked PO lines.
+> - **2026-05-31** — both spines proven green end-to-end (`tests/test_e2e_flows.py`; 477→545 non-visual
+>   tests) and the final 1A gates closed: cost-variance 3-way (`c36769c`), O2-enforce (`07f7747`/`c4f10f9`),
+>   O3 backup (`619a156`), O4/O5/O6, route cleanup (`331a872`), quote-flow + Save-Standard clusters.
+> - **2026-06-02** — the last gate, the owner's hand-run acceptance of both spines, passed → **signed off**.
+>
+> One cosmetic nit logged along the way remains open (non-blocking): the quote PDF doesn't print part #s —
+> `quotes/print.html` references `line.product.part_number` (real attr is `ProductVendorSource.vendor_part_number`).
 
 ### 9.0 — What was on this list and is now DONE ✅ (do not rebuild)
 
@@ -320,13 +264,31 @@ state machine · credit memos + vendor credits · statements · in-app notificat
 duplicate + reactivate · customer import · report suite (9 reports) · dashboard metrics
 (data-connected) · PO / SO / Core-slip / VCR / RA / Warranty print templates + `/pdf` routes.
 
+**Landed since (Phase-1 hardening + Phase-2 foundation, 2026-06-02):** O2 user attribution + login
+enforcement (`07f7747`) · bookkeeper user seed · backup restore admin-gate · `/account` password change
++ default-pw warning · cost-variance 3-way gate (`c36769c`/`bd65c69`) · O6 card surcharge (`d098176`) ·
+After-Sale core-return from invoice (`61eaace`/`ab71243`) · customer flags / type-defaults / metrics /
+credit-warn · invoice-intelligence panel · SO dashboard metrics + PO-rollup · structured lost-sales
+(won/lost reasons) · quote-badge EXPIRED fix (`0549b35`).
+
+**Landed since (QBO 1B + Phase-2 UI wave, 2026-06-03 → 06-04):** **QBO Phase-1B** — OAuth2 +
+REST client + accounting-summary invoice push + bulk sync + Settings/list/workspace UI
+(`3873e0e`/`e636760`/`e09a5c9`, owner-tested vs live sandbox) · **§7.2 enrichment sync** (`370820b`) ·
+invoice-list **QBO status column + bulk push + sortable/sticky headers** · **unified customer Timeline
+tab** · sortable+sticky on customers/quotes/payments · **PDF branding** (formatted phone + Terms + one
+shared company dict across every print, `d8f33fa`) · customer **Acct # + 4-state Status + Timeline-first
+tabs** · dynamic customer preview dock · **products F2 shortcut + prominent margin** · cost-bracket
+**pricing grid** · tabbed Settings · quotes-list Open/Print/Email + follow-up colors. 966 tests green.
+**Remaining UI consumes (Backend seams in @`9f50216`):** quote-workspace always-visible actions +
+intelligence render, dashboard Top-Customers/Follow-Ups widgets, Prepared-By print render.
+
 ### 9.1 — Genuinely not built / deferred (BACKEND)
 
 | Feature | Status | Notes |
 |---|---|---|
-| QBO OAuth + push (invoices, payments, vendor bills, credit memos) | **Deliberately gated** | Standing decision 2026-05-29: do not start until UI rollout + core ops stable. `qbo_*` fields dormant. Backend Phase M. |
-| Vendor availability scrapers (PAI/HHP/ATL) | Stub by design | `vendor_availability_service.py` — all 3 methods `raise NotImplementedError`. Phase 2. |
-| ESN lookup scraper | Stub by design | `esn_lookup_service.py` — `raise NotImplementedError`. Phase 3. |
+| QBO OAuth + **invoice** push | **✅ BUILT 2026-06-04** | OAuth2 + REST client + accounting-summary invoice push + bulk sync + Settings/invoice-list/workspace UI; 17+ tests; owner-tested against the live sandbox. Fails-soft — never touches the money path. **Still deferred within 1B:** payments / vendor-bills / credit-memos push; Fernet token encryption; AST-tax reconcile (`qbo_push_tax` kill-switch). |
+| Vendor availability + ESN scrapers (PAI/HHP/ATL) | **REMOVED from ERP scope (P2-D9, 2026-06-02)** | The ERP never scrapes. `vendor_availability_service.py` / `esn_lookup_service.py` stubs + `scraper.py` models + scraper routes/seed are being deleted (Backend). Live pricing/catalog lives in the standalone PAI Info tool → Shopify. |
+| Product enrichment sync (cross-refs + CPL/ESN) | **✅ BUILT (`370820b`)** | One-way sync from the scraper's CSV export onto stocked products (match `jaks_sku`→`products.sku`; never creates products / touches cost/sell). `ProductApplication` model + `ProductEnrichmentService` + `POST /products/enrich-sync` + UI trigger; 9 tests. Spec: `PHASE_2_PLAN.md` §7.2. |
 | Real email/SMS send | NullProvider only | `MessagingService` logs to `communication_log` (`logged_only`); SMTP/M365/Twilio providers are Phase 2. |
 | Server-side PDF rendering | Falls back to browser print | WeasyPrint v68.1 installed but GTK/Pango missing on Windows → `?auto=1` browser print. Install GTK to enable true PDF (no code change). |
 
@@ -366,23 +328,16 @@ eBay listings · full TaxJar (multi-state) · ESN lookup scraper live · serial-
 
 ## 10. Next Build Queue (Priority Order)
 
-> **⚠️ SUPERSEDED 2026-05-31 — Sprints 1–5 below are the *original* build order and are ALL DONE**
-> (DB recreate, slide-overs, PO receive, Ctrl+K, invoice lock, SO→Invoice, 3-way match, core/RA/warranty
-> state machines) — proven by the 477-test suite + `tests/test_e2e_flows.py`. Kept as history only.
+> **✅ SUPERSEDED 2026-06-02 — this entire Phase-1 queue is DONE.** Sprints 1–5 below (the original
+> build order) and the 05-31 "current" items 1–5 all landed: cost-variance 3-way gate (`c36769c`/`bd65c69`),
+> O2-enforce (`07f7747`), O6 surcharge (`d098176`), Cores #16 / Returns #17 queues, CSV import phone/email
+> fix, and the owner's end-to-end acceptance of both spines — **signed off** (`PHASE_1_TEST_PLAN.md` §13).
+> The only Phase-1 carry-over is the **operational** data-safety cutover (one real backup→restore + set a
+> strong admin pw at `/account`) — not code.
 >
-> **CURRENT priority queue — RECONCILED 2026-05-31 (PM). The prior items 1–4 are now DONE**
-> (Cores BUG-2/4 `e119c19` · O3 acceptance test · route cleanup `331a872` · O4 `c17f2b6` · O5 `7f69572`).
-> Remaining, in dependency order:
-> 1. **Owner end-to-end acceptance pass of both spines** — Owner + QA. Run the §8 cross-workflow rows on a
->    fresh build (sale→paid; OOS→SO→receive→invoice; core→credit). The real go-live gate: code is green,
->    owner confidence is not yet established.
-> 2. **Vendor-bill COST-ONLY mismatch → flag DISCREPANCY (stop auto-approving)** — Backend; money bug.
->    `po_service.py:632-633` + `has_discrepancy` (`purchase_order.py:269-272`) must also test `unit_cost`. +QA guard.
-> 3. **O2 login ENFORCEMENT** — owner ruled ENFORCE (2026-05-31). Backend adds a global session guard
->    (redirect to /login when no valid session; fallback raises instead of defaulting to user 1). +QA test.
-> 4. **Owner-flagged bugs** — CSV import phone+email drop · card-surcharge can't-unselect — Backend/UI; +confirm B5/B6.
-> 5. **O6 customer surcharge default+override** (Backend, needs migration) · **Cores Queue #16 · Returns Queue #17** (UI-Builder).
-> 6. **UI maturity rollout (§9.2)** — the long-tail L1→L2 work; never ahead of items 1–4.
+> **➡️ The live build queue is now `PHASE_2_PLAN.md` §8** (12 decisions locked 2026-06-02; build order
+> starts at Customer Notes+Flags). Everything below this line is Phase-1 history — kept for the record,
+> not a to-do list.
 
 These are ordered by what blocks daily use most directly.
 
@@ -477,7 +432,7 @@ Keith signs off when ALL of these work in real daily use (not test data):
 - [ ] Core return shipment document prints with RMA and tracking
 - [ ] Warranty claim moves through all states; account credit issued on approval
 - [ ] Return authorization generates; credit applied to customer balance
-- [ ] *(Phase 1B — not a 1A go-live blocker)* Wife pushes invoices, payments, vendor bills to QBO with one click
+- [~] *(Phase 1B — not a 1A go-live blocker)* Wife pushes **invoices** to QBO with one click ✅ **built + owner-tested 2026-06-04** (single + bulk); payments / vendor-bills / credit-memos still to build
 - [ ] Dashboard shows: open SOs, follow-up quotes today, overdue invoices, outstanding cores
 - [ ] No data integrity issues in 2 weeks of real daily use
 - [ ] Wife has no open bookkeeping accuracy questions
@@ -572,18 +527,18 @@ Sequences reset annually (Jan 1). `current_sequence_year` in settings detected o
 
 **Standing rule reminder:** Financial integrity rule (header) requires visible error banners — broad `except Exception` → redirect on money routes is a known violation of spirit if not letter.
 
-### 16.1 — Overall GPA: **B−**
+### 16.1 — Overall GPA: **B+** _(2026-06-02 — up from B−; Phase 1A go-live readiness now A, signed off)_
 
 | Lens | Grade | Summary |
 |---|---|---|
 | Backend / workflows | **A−** | Core ERP paths built, routed, and tested |
-| Daily-use proof (owner) | **C** | `TESTING_FEEDBACK.md` still entirely ⬜ |
+| Daily-use proof (owner) | **A−** | Owner-run Suites B+D all green (`PHASE_1_TEST_PLAN.md` §13) |
 | UI consistency / polish | **B−** | Main lists L2; detail/report/dashboard L1 |
-| Security (2-user local LAN) | **C+** | Login enforced; CSRF, roles, attribution gaps |
-| Integrations (QBO, scrapers, email) | **D+** | Deferred by design — not broken |
-| Phase 1A go-live readiness | **C+** | Close; not owner-signed |
+| Security (2-user local LAN) | **B** | Login enforced + O2 attribution done; CSRF = SameSite-Lax + waiver; full RBAC is Phase 2 |
+| Integrations (QBO, scrapers, email) | **B−** _(2026-06-04)_ | QBO Phase-1B invoice push BUILT + owner-tested vs live sandbox; scrapers removed by design; email still Phase 2 |
+| Phase 1A go-live readiness | **A — SIGNED OFF 2026-06-02** | Owner-signed (`PHASE_1_TEST_PLAN.md` §13); both spines proven (Suites B+D); 801 tests green |
 
-**Verdict:** Strong rebuild — not yet certified for unsupervised daily shop use without owner functional test pass + P0/P1 hardening.
+**Verdict (updated 2026-06-02):** **Phase 1A signed off** — both spines proven end-to-end via owner-run Suites B+D + 801 green tests; P0/P1 hardening (O2 attribution+enforce, backup admin-gate, cost-variance gate, CSRF waiver, `/account` pw) complete. Now in active **Phase 2** build (`PHASE_2_PLAN.md`). The lens grades below are the 2026-05-31 snapshot — still fair for UI/integration polish, but readiness and owner-proof have since moved to A.
 
 ### 16.2 — Report card by indicator
 
@@ -677,16 +632,16 @@ Sequences reset annually (Jan 1). `current_sequence_year` in settings detected o
 
 | Strong ✅ | Weak ❌ |
 |---|---|
-| ~330+ tests: E2E, cores, PO match, reports, auth, backup | `TESTING_FEEDBACK.md` entirely ⬜ — no owner sign-off |
+| 966 tests pass (E2E, cores, PO match, reports, auth, backup, payments, QBO, enrichment) | 6 non-functional reds remain (5 cosmetic `ui_lint` + 1 brittle W-4) |
 | `tests/test_e2e_flows.py` (`@pytest.mark.acceptance`) | No full vendor CRUD / settings / dashboard tests |
 | Regression: B1/B2, bill variance, O6 (`test_o6_surcharge.py`), CSV import | Visual regression known unstable |
 | UI lint (`test_ui_lint.py`) — report-only gate | Smoke not CI-gated |
 
-#### Integrations — **D+** *(deferred by design)*
+#### Integrations — **B−** *(2026-06-04 — QBO Phase-1B invoice push built + owner-tested)*
 
 | System | Status |
 |---|---|
-| QBO (Phase 1B) | Scaffold only — `qbo_*` fields, no OAuth/API client |
+| QBO (Phase 1B) | **BUILT 2026-06-04** — OAuth2 + REST client + accounting-summary invoice push + bulk sync + Settings/list/workspace UI; owner-tested vs live sandbox. Payments/vendor-bills/credit-memos + Fernet encryption still deferred within 1B |
 | Email/SMS | `NullMessagingProvider` — logs to `communication_log` only |
 | PAI/HHP/ATL scrapers | `vendor_availability_service.py` → `NotImplementedError` |
 | ESN lookup | `esn_lookup_service.py` → `NotImplementedError` |
@@ -728,7 +683,7 @@ Sequences reset annually (Jan 1). `current_sequence_year` in settings detected o
 12. Replace `window.confirm()` on returns/warranty with Alpine modals
 
 **P3 — After 1A stable**
-13. Phase 1B: QBO OAuth + push
+13. ~~Phase 1B: QBO OAuth + push~~ — ✅ **DONE 2026-06-04** (invoice push built + owner-tested; payments/vendor-bills/credit-memos still within 1B)
 14. Phase 2: scrapers, real email, Shopify, TaxJar
 15. Phase 3: eBay, multi-state tax, ESN live, serial/kit UI
 
@@ -747,22 +702,93 @@ Sequences reset annually (Jan 1). `current_sequence_year` in settings detected o
 ### 16.6 — Go-live readiness snapshot
 
 ```
-                    GO-LIVE (Phase 1A)
-    Backend workflows     ████████░░  ~85%
-    Automated tests       ███████░░░  ~78%
-    Owner acceptance      ██░░░░░░░░  ~15%
-    UI L2/L3 (main paths) ██████░░░░  ~65%
-    Security hardening    ████░░░░░░  ~50%
-    Integrations          █░░░░░░░░░  ~10%
-    §11 checklist signed  ███░░░░░░░  ~35%
+                    GO-LIVE (Phase 1A) — ✅ SIGNED OFF 2026-06-02
+    Backend workflows     ██████████  100%  both spines owner-proven (Suites B+D)
+    Automated tests       ██████████  ~99%  801 pass; only 6 non-functional reds
+    Owner acceptance      ██████████  100%  Keith signed PHASE_1_TEST_PLAN §13
+    Security hardening    █████████░  ~90%  O2 attribution+enforce, backup gate, CSRF waiver, /account
+    UI L2/L3 (main paths) ████████░░  ~80%  Phase-2 chips/panels rolled out; long-tail polish ongoing
+    §11 checklist signed  ██████████  100%  signed (QBO line = 1B, not a 1A gate)
+    Integrations          █████░░░░░  ~55%  QBO Phase-1B invoice push BUILT + owner-tested; email Phase 2
 ```
 
-**Honest assessment:** Backend workflow completeness is high; remaining 1A risk is **product/ops** (owner walkthrough, O2 attribution, security on backup, UI polish on wife-facing surfaces) — estimated **2–4 focused weeks**, not months of new backend.
+**Honest assessment (2026-06-02):** **Phase 1A is signed off** — both revenue/inventory spines complete end-to-end with correct data, owner-validated (Suites B+D). The only pre-real-data cutover items are operational, not code: perform one real backup→restore and set a strong admin password. The program is now in **Phase 2** (`PHASE_2_PLAN.md`) — customer/SO/invoice intelligence is shipping; **no broken core workflow gates it.**
 
 **Related docs:** `JAKS_UI_Change_Plan.md` (UI rollout + §9 functional gate), `TESTING_FEEDBACK.md` (owner test sheet), `BACKEND_IMPLEMENTATION_PLAN.md` (backend letter-phases A–O).
 
 ---
 
+## 17. What's Left to Go-Live — Independent Audit + Remediation (2026-06-05)
+
+> **Reality check on §16.6.** An independent production-readiness audit (multi-agent
+> code sweep, owner-verified at `file:line`) graded the app **68 → 73/100 after same-day
+> fixes — strong engine, NOT deployable as-is.** The §16 "✅ SIGNED OFF / A−" is
+> over-optimistic: the R3 acceptance sheet (`Testing Feedback/TESTING_FEEDBACK_R3_GOLIVE.docx`)
+> has **blank result columns for Cores, Returns, Warranty, Vendor Returns, Reports, and all
+> five end-to-end flows** — they were never owner-tested. The sign-off rests on the two spines
+> (Suites B+D) + automated tests, not the whole app. **This section is the authoritative
+> remaining punch list and supersedes the §16.6 snapshot.**
+
+### 17.1 — Fixed 2026-06-05 ✅ (commit `acf3c34`, branch `backend/workflow-series-3`; 970 tests green)
+
+- **Authorization holes closed:** `/admin/demo/reset`, `POST /settings/`, `/admin/backup/run`
+  now `require_admin` (were reachable by any logged-in user / forged POST → DB wipe / pricing
+  + QBO-token rewrite). `demo.py`, `settings.py`, `backup.py`.
+- **Double-credit closed:** `RAService.close_ra` + `WarrantyService.credit_customer` now guard on
+  an existing credit memo (`credit_memo.ra_id`/`warranty_claim_id`) so a crash between the memo
+  commit and the status flip can't issue a second customer credit. + regression test in
+  `tests/test_returns_ra.py`.
+- **Invoice-number gaps closed:** `bump_counter` now `flush`es instead of `commit`ing, so a
+  rolled-back document rolls back its number ("invoice numbers are sacred"). `settings_utils.py`.
+- **Default-password security banner** on the dashboard (auto-clears once changed).
+- **UX quick wins:** quote keyboard loop restored (`id=line-search-input`), Products Export CSV
+  wired + export tab-slugs aligned to the list, list-search de-dash on quote/SO/PO/invoice numbers,
+  "On Hand"/"Unit Price" headers, autofocus on payment + vendor-return forms, dead-template banners.
+- **WITHDRAWN — customer-discount header seed:** would have *double-discounted* every quote
+  (line builder already applies `customer.discount_pct` per `quote_service.py:118-122`). Not a fix.
+
+### 17.2 — GO-LIVE BLOCKERS still open (close before real production data)
+
+| Item | Sev | Effort | Notes |
+|---|---|---|---|
+| **Owner test pass** — Cores, Returns, Warranty, Vendor Returns, Reports, 5 E2E flows + one backup→restore drill | **High** | M | Never owner-tested. Biggest confidence gap. Fill the R3 sheet with real data. |
+| **CSRF** on all state-changing POSTs | **High** | M | No CSRF anywhere (`main.py:58`). All-or-nothing app-wide pass. Catastrophic routes now admin-gated, so exposure is reduced but not eliminated. |
+| **Tier pricing: fix or kill** | **High** | M | `pricing_tier` is stored + shown but never affects price (`pricing_service.py:82`). Silent mispricing of fleet/dealer accounts. |
+| Encrypt QBO OAuth tokens at rest | Med | M | Plaintext in `data/jaks.db` (`qbo_client.py:133`). **Needs the `cryptography` dependency (not currently installed).** |
+| Force admin password change on first login | Med | S | Dashboard banner (17.1) is the interim; hard redirect-on-login still to do. |
+| `demo-reset` env-guard (refuse on the prod instance) | Low | S | Belt-and-suspenders atop the new admin gate. |
+| Seed bookkeeper (wife) user + set strong admin/bookkeeper passwords | High | S | Operational §11 cutover step. |
+| `products/list.html` export-button wiring | Low | S | Left uncommitted (another lane has the file open); the route half is committed. |
+
+### 17.3 — Counter-readiness (Tier 2 — a real parts counter needs these)
+
+| Feature | Sev | Effort | Notes |
+|---|---|---|---|
+| Counter receipt + pick ticket + packing slip | High | M | Only formal full-page invoice PDFs exist today. |
+| Customer purchase-history + one-click reorder | High | M | History is doc-level, not part-level; no "same as last time". |
+| Daily close / cash-drawer / payment-method summary | High | M | No EOD report; dashboard shows only a single "today's payments" sum. |
+| Seeded CASH/Counter customer + fast cash-sale path | Med | L | `customer_id` is `NOT NULL` on quote/SO/invoice — no anonymous walk-in sale. |
+
+### 17.4 — Polish (Tier 3 — after 1A stable)
+
+| Item | Sev | Effort | Notes |
+|---|---|---|---|
+| Post-sale forms (returns/warranty/payment) repopulate-on-error + typeahead pickers | High | M | Currently wipe all typed data on a bad submit; product picker is a full-catalog `<select>`. |
+| Standardize ~22 native `confirm()`/`alert()` → `jakConfirm`; delete the duplicate PO-workspace modal | Med | M | Migration guide already in `macros/confirm_modal.html`. |
+| Column sort on SO / PO / Vendor lists | Med | S | `sortable_th` macro + `apply_sort` already exist (used by invoices/quotes/payments). |
+| `vendor_returns` list → L2 (last raw `tbl-*` operational list) | Med | M | No search/filter/sort today. |
+| Legacy `.tbl-*` tables (all reports + detail subtables) — migrate or formally un-ban | Med | L | Currently banned by governance but still in use. |
+| Revenue-path friction: quote pre-fill parity (skip the Create-Quote screen), backorder→PO inline vendor picker, "receive all" on the receiving-queue row | Med | S–M | See audit §4 R2/R3/R5. |
+| Alembic migrations (replace inline `ALTER TABLE`); broaden tests (vendor CRUD, settings, dashboard) | Med | M | Durability + coverage. |
+
+### 17.5 — Path to 100
+
+- **73 → ~82 "Deployable":** finish 17.2 (mostly small) + the owner test pass.
+- **82 → ~92 "Counter-ready":** 17.3 features + tier-pricing decision.
+- **92 → 100 "Proven":** 17.4 polish + **two weeks of real daily use with zero data-integrity surprises** (the last points are earned in production, not coded). This is the §11 "no data integrity issues in 2 weeks" gate.
+
+---
+
 *This document is the single source of truth for all JAKS Inventory build decisions.*
 *Update it as decisions change. All other planning documents are superseded.*
-*Last updated: 2026-05-31 — §16 ERP audit report card added.*
+*Last updated: 2026-06-05 — §17 go-live remaining punch list added (independent audit + acf3c34 remediation); supersedes the §16.6 "signed off" snapshot.*

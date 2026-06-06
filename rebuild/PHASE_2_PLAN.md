@@ -33,7 +33,7 @@
 | P2-D6 | **Customer Type** *(R3)* | **Single type, fixed list** | One type per customer: Fleet · Owner-Operator · Repair Shop · Dealer · Municipality · Internal · Other. This is the key that maps to the P2-D1 default profiles. |
 | P2-D7 | **Won/Lost quote tracking** *(R3)* | **Yes — structured reasons** | Mark-Lost prompts a reason (Price · Lead time · Competitor · No longer needed · No response · Other) + optional note → activates `lost_sales_log`; win-rate / lost-$ reporting. |
 | P2-D8 | **Job templates** *(R3)* | **Deferred** | Not in Phase 2 (existing "Save Standard" covers part). |
-| P2-D9 | **Vendor catalog** *(R4 → REMOVED from ERP scope 2026-06-02)* | **No PAI/HHP/ATL integration in the ERP** | The standalone **PAI Info** tool (PAI catalog + HHP/ATL competitive pricing + OEM cross-refs) stays **fully external** — the ERP neither scrapes nor imports it. The full PAI catalog flows to **Shopify** (separate track); the ERP holds only the parts JAKS actually stocks. No importer, no scrapers, no competitor-pricing field in Phase 2. |
+| P2-D9 | **Vendor catalog** *(R4 → refined 2026-06-02)* | **No bulk import/scrape in ERP; a targeted enrichment sync IS in** | **OUT:** live scrapers, bulk PAI catalog import (→ Shopify), competitor-pricing in the ERP. **IN:** a **product enrichment sync** that, for products JAKS **already stocks**, updates their **cross-references + CPL/ESN engine-fitment** from the scraper's export (match on SKU, **never creates products**, never touches cost/sell). New `product_applications` table for CPL/ESN. Spec: §7.2. |
 | P2-D10 | **Truck-Down depth** *(R4)* | **Queue + dashboard + color** | Visibility-first; expedited-PO suggestions + escalation report come later. |
 | P2-D11 | **Vendor contacts** *(R4)* | **Fixed roles** | Sales Rep · Warranty · Returns/RMA · Core Dept · Accounting (+ a primary). |
 | P2-D12 | **Deposit refund** *(R4)* | **Convert to account credit** | Refund/cancel a deposit → customer account credit for the next invoice. |
@@ -152,7 +152,7 @@ On Account tab + condensed in the Preview panel + list columns:
 - **Vendor Lead Time (days):** feeds customer ETA, backorder forecasting, purchasing recs, Truck-Down prioritization.
 - **Typed vendor contacts:** roles — Sales Rep · Warranty · Returns/RMA · Core Dept · Accounting (name/phone/email/department/notes). Extends `vendor_contacts`.
 - **Vendor performance metrics:** Fill Rate % · Avg Lead Time · On-Time % · Return Rate % · Warranty Rate % → vendor scorecards.
-- **Vendor catalog integration — REMOVED from ERP scope (2026-06-02).** All PAI/HHP/ATL fetching lives in the standalone **PAI Info** tool (owner adds HHP/ATL competitive pricing + OEM cross-refs to *that* tool); its enriched output feeds **Shopify**, not the JAKS ERP. The ERP does **not** scrape or import vendor catalogs in Phase 2 — no importer, no scrapers, no competitor-pricing field. *(If an in-ERP "look up a PAI part / competitor price" reference is ever wanted, revisit later as a small read-only lookup — never a bulk catalog load.)*
+- **Vendor catalog — bulk import/scrape OUT; targeted enrichment sync IN (refined 2026-06-02).** No live scrapers, no bulk PAI catalog import (that goes to **Shopify**), no competitor-pricing in the ERP. **But:** a **product enrichment sync** updates products JAKS already stocks with **cross-references + CPL/ESN engine-fitment** from the scraper's export — match on SKU, never creates products, never touches `product.cost`/sell. The standalone PAI Info tool (owner adds HHP/ATL) produces the export. Field/column spec: **§7.2**.
 - **Vendor notes by context:** show vendor notes when creating POs, receiving, creating RMAs, processing core returns (e.g., "reference account #12345", "core returns go to Dallas").
 
 ---
@@ -162,27 +162,73 @@ On Account tab + condensed in the Preview panel + list columns:
 ### 7.1 Category hierarchy restructure *(P2-Q2)*
 - Move flat categories → **2-level tree** (Category → Subcategory); products attach to the leaf subcategory. Migrate existing categories. Example tree: Engine Parts → Cylinder Heads / Inframe Kits / Bearings / Pistons / Liners; Fuel System → Injectors / Fuel Pumps / Transfer Pumps; Cooling → Water Pumps / EGR Coolers / Thermostats; Air & Exhaust → Turbos / Exhaust Manifolds / Charge Air; Suspension → Air Springs / Torque Rods / Bushings; Driveline → Clutches / Yokes / U-Joints.
 
-### 7.2 ~~PAI Info importer~~ — REMOVED from ERP scope (2026-06-02)
-The vendor-catalog importer (and the PAI/HHP/ATL scrapers) are **out of Phase-2 ERP scope** — see §6 (P2-D9). The standalone PAI Info tool stays external and feeds Shopify, not the ERP.
+### 7.2 Product enrichment sync — cross-refs + CPL/ESN *(P2-D9, refined 2026-06-02)*
+
+**Scope:** bulk catalog import + scrapers are OUT (§6). IN: a sync that **enriches products JAKS already stocks** with two kinds of reference data from the scraper's export — matched on SKU, **never creates products**, never touches cost/sell.
+
+**(1) Cross-references → existing `cross_references` table — match the schema exactly.** Stored as **rows** (one per ref): `product_id` · `ref_type` (oem / competitor / supersession) · `ref_number` (the part #) · `brand` (CATERPILLAR/CUMMINS/HHP/ATL…) · `notes` · `status`.
+- **Scraper export column:** `cross_refs` = pipe-delimited `BRAND:NUMBER` (e.g. `CATERPILLAR:204-0712|CUMMINS:3900677|MACK:1AM14`). Sync explodes it into rows. Add a 3rd token `BRAND:NUMBER:TYPE` if the scraper can tell OEM vs competitor; else the sync defaults `ref_type=oem`.
+
+**(2) CPL/ESN engine-fitment → NEW `product_applications` table** (net-new; separate category from cross-refs):
+
+| column | type | notes |
+|---|---|---|
+| `product_id` | FK products | match target |
+| `engine_make` | str | matches ERP `engine_manufacturer` vocab (CATERPILLAR…) |
+| `engine_model` | str | matches ERP `engine_model` (C15, ISX15…) |
+| `cpl` | str, **nullable** | Control Parts List # (CAT), if the scraper can pull it |
+| `esn_range` | str, **nullable** | ESN prefix/range, if available |
+| `notes` | str | |
+
+- **Scraper export column:** `engine_applications` = pipe-delimited `MAKE:MODEL:CPL` (CPL optional per entry), e.g. `CATERPILLAR:C15:0R-1234|CATERPILLAR:C13|CUMMINS:ISX15`.
+
+**Match key:** export `jaks_sku` (e.g. `JAKS-PAI-040049`) → `products.sku`. Keep the raw PAI/vendor part # → `product_vendor_sources.vendor_part_number`.
+
+**Sync rules:** enrich-only (upsert cross-ref + application rows for matched products); **never create products**; never write `product.cost` (moving-avg COGS, `[[vendor-source-cost-sync]]`) or a JAKS-set sell price. Idempotent / re-runnable.
+
+**LOCKED 2026-06-02:** scraper pulls **make/model + CPL number** (no ESN range yet). `engine_applications` = `MAKE:MODEL:CPL` (CPL populated when the part has one). The `esn_range` column stays in the table but unused for now — ready if/when ESN-lookup is added later (Phase 3 `esn_lookups` already exists).
 
 ---
 
 ## 8. Suggested build order
 
-Merges the owner's rankings + technical dependencies. **Foundations first** (they unblock the rest):
+Merges the owner's rankings + technical dependencies. **Foundations first** (they unblock the rest).
+**Status stamped 2026-06-02; updated 2026-06-04 — items 1–8 effectively done, 7.2 enrichment fully shipped (incl. UI). Plus the large 2026-06-04 wave (QBO 1B + owner review) noted below the list.**
 
-1. **Customer Notes + Flags visibility** (P2-D2) — highest owner priority; surfaces everywhere.
-2. **Customer Metrics engine** (P2-Q1) — one service powering Intelligence Panel + list + preview + invoice panel.
-3. **Type-driven Customer Defaults** (P2-D1) — Customer Type + defaults profiles + form re-order.
-4. **Credit visibility + warn** (P2-D4).
-5. **SO ↔ PO linking + Backorder/ETA** (data link exists; surface + extend).
-6. **Core Dashboard + Vendor Core Recovery** (core exposure $).
-7. **Invoice Intelligence Panel** (margin toggle) + **PDF branding (logo/footer)**.
-8. **Activity Timeline auto-capture + Enhanced Call Logging.**
-9. **Truck-Down workflow · Deposit management · Core batch/inspection.**
-10. **Vendor Intelligence + typed contacts + performance.**
-11. **Category hierarchy restructure.**
-12. **CRM foundation fields** (model only) · **Communications Center** (needs real messaging). *(Vendor-catalog integration removed from ERP scope — §6.)*
+1. ✅ **Customer Notes + Flags visibility** (P2-D2) — `505fc4b` (list/detail/preview/workspaces).
+2. ✅ **Customer Metrics engine** (P2-Q1) — `CustomerMetricsService` (net-of-credits).
+3. ✅ **Type-driven Customer Defaults** (P2-D1) — `b17abd8` + form re-order `b4b1885`.
+4. ✅ **Credit visibility + warn** (P2-D4) — `credit_status` seam live on SO + invoice (`fb05e08`).
+5. ✅ **SO ↔ PO linking + Backorder/ETA** — metric strip + `so_po_status_chip` (`f32c41a`).
+6. 🔨 **Core Dashboard + Vendor Core Recovery** — Dashboard metrics shipped (`03b167b`); **Vendor Core Recovery workflow still to build.**
+7. ✅ **Invoice Intelligence Panel** + **PDF branding** — logo/footer (`d3c07cd`) + formatted phone + Terms block + unified company dict across every print (`d8f33fa`).
+8. ✅ **Unified customer Timeline** (`7db2d2e` + `get_unified_timeline` `9f50216`) — Timeline-first tab merging calls/quotes/SOs/invoices/payments. (Deeper auto-capture of system events still to extend.)
+9. ⬜ **Truck-Down workflow · Deposit management · Core batch/inspection.**
+10. ⬜ **Vendor Intelligence + typed contacts + performance.**
+11. ⬜ **Category hierarchy restructure.**
+12. ⬜ **CRM foundation fields** (model only) · **Communications Center** (needs real messaging). *(Vendor-catalog integration removed from ERP scope — §6.)*
+
+**Parallel — §7.2 Product enrichment sync (P2-D9):** ✅ **DONE `370820b`** — `ProductApplication` model + `ProductEnrichmentService` + `POST /products/enrich-sync` (enrich-only, match `jaks_sku`→`sku`; 9 tests) **+ the products-list upload-CSV trigger.** Complete.
+
+---
+
+### 2026-06-04 wave — QBO Phase-1B + owner review (shipped on top of §8)
+
+- **QBO Phase-1B BUILT** (not in the original §8 — owner unblocked it): OAuth2 + REST client +
+  accounting-summary **invoice push** + **bulk sync** (Sync Selected / Sync All Unsynced) + Settings
+  Connect card + invoice-list QBO column/filter tabs + workspace Push button. Owner-tested vs the live
+  sandbox. Fails-soft, never touches the money path. *Within 1B still to build:* payments / vendor-bills /
+  credit-memos push; Fernet token encryption; AST-tax reconcile.
+- **Owner UI review (multi-screen) — shipped:** invoice-list QBO column + bulk sync + sortable/sticky
+  headers · sortable+sticky on customers/quotes/payments · customer **Acct # + 4-state Status +
+  Timeline-first tabs** · dynamic customer preview dock · **products F2 shortcut + prominent margin** ·
+  cost-bracket **pricing grid** · tabbed Settings · quotes-list Open/Print/Email + follow-up colors ·
+  PDF phone/Terms/branding.
+- **Remaining UI consumes (Backend seams in @`9f50216`):** quote-workspace always-visible actions +
+  intelligence render · dashboard Top-Customers / Open-Follow-Ups widgets (+ shrink the graph) ·
+  Prepared-By print render (`get_prepared_by` seam exists). **966 tests green.**
+- **Still genuinely open:** §8 items 6 (Vendor Core Recovery), 9 (Truck-Down / Deposit / Core
+  batch-inspection), 10 (Vendor Intelligence), 11 (Category hierarchy), 12 (CRM fields / Comms Center).
 
 ---
 
