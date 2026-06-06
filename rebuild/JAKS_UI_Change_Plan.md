@@ -2761,6 +2761,116 @@ add `prepared_by` to their route contexts (it may already be added; verify each)
 
 ---
 
+#### §8U. Governance Wave — `acf3c34` quick-wins + `customer_status_chip` adoption punches
+
+**Commits reviewed:** `acf3c34` (Backend/QA go-live hardening + UX quick-wins) and `301e976` (QA xfail
+seam tests). No UI-Builder renders of the §8T pending items have landed yet.
+
+##### 8U-1. PASS — `acf3c34` Dashboard security banner
+
+Backend added a `{% if admin_pw_default %}` warning banner above the KPI strip in `dashboard.html`.
+Correct placement, standard Tailwind classes (`bg-red-50 border-red-200 text-red-800`), inline SVG icon
+(no icon component available). The banner does not conflict with the pending §8T-1 rLayout.
+**GOVERNANCE PASS.** Dashboard rLayout (§8T-1) still OPEN — chart is still full-width.
+
+##### 8U-2. PASS — `acf3c34` Quote workspace column-header terminology rename
+
+Backend changed `QOH` → `On Hand` and `Sell $` → `Unit Price` in `quotes/workspace.html` table header.
+Terminology now matches the other workspace screens. Cosmetic fix only; no Alpine, no route change.
+**GOVERNANCE PASS.**
+
+##### 8U-3. PUNCH — `customer_status_chip` not adopted in 3 customer templates
+
+`customer_status_chip` (Primitive 17, `macros/chips.html`, §8S-1) is the ONLY sanctioned renderer for
+customer lifecycle status (active/inactive/on_hold/credit_hold). Three files hand-roll the chip instead,
+causing style divergence (`rounded-full` on detail vs `rounded-lg` on list via `status_chip`).
+
+**`customers/detail.html`** — hand-rolled 3-way `{% if %}` at lines ~157-163:
+```html
+{# BEFORE — delete these 7 lines: #}
+{% if customer.customer_status == 'on_hold' %}
+<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-700">On Hold</span>
+{% elif customer.customer_status == 'credit_hold' %}
+<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-700">Credit Hold</span>
+{% elif customer.customer_status == 'inactive' %}
+<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">Inactive</span>
+{% endif %}
+
+{# AFTER — chips.html import already absent; add to import block at top: #}
+{% from "macros/chips.html" import customer_status_chip %}
+{# replace the hand-roll with: #}
+{% if customer.customer_status and customer.customer_status != 'active' %}
+{{ customer_status_chip(customer.customer_status) }}
+{% endif %}
+```
+
+**`customers/list.html`** — hand-rolled `_scmap` dict passed to generic `status_chip()` at lines ~245-250:
+```html
+{# BEFORE — delete the _scmap block and status_chip call: #}
+{% if c.customer_status and c.customer_status != 'active' %}
+{% set _scmap = {'on_hold':(...), 'credit_hold':(...), 'inactive':(...)} %}
+{% set _sc = _scmap.get(c.customer_status) %}
+{% if _sc %}<div class="mt-1">{{ status_chip(_sc[0], _sc[1], _sc[2]) }}</div>{% endif %}
+{% endif %}
+
+{# AFTER — add customer_status_chip to the existing chips import at line ~32: #}
+{% from "macros/chips.html" import status_chip, customer_status_chip %}
+{# replace the hand-roll with: #}
+{% if c.customer_status and c.customer_status != 'active' %}
+<div class="mt-1">{{ customer_status_chip(c.customer_status) }}</div>
+{% endif %}
+```
+
+**`customers/_preview_panel.html`** — no `customer_status` rendered at all; payment terms chip rendered
+instead. Add a customer status row to the Account section (after the Terms row):
+```html
+{# AFTER the terms row in the Account section: #}
+{# Add customer_status_chip to the existing chips import at line ~10: #}
+{% from "macros/chips.html" import status_chip, customer_status_chip %}
+{# Add this row after the Terms row: #}
+{% if c.customer_status and c.customer_status != 'active' %}
+<div class="flex items-center justify-between">
+  <span class="text-xs text-gray-500">Status</span>
+  {{ customer_status_chip(c.customer_status, compact=False) }}
+</div>
+{% endif %}
+```
+
+**Governance criteria (apply when UI-Builder submits the fix):**
+- [ ] All 3 files use `customer_status_chip(...)` — zero hand-rolled status badge spans remain.
+- [ ] `customers/detail.html` and `customers/list.html` both guard `!= 'active'` (active = no chip shown).
+- [ ] `customers/_preview_panel.html` adds the Status row only for non-active customers.
+- [ ] No style divergence: all rendered chips match the `customer_status_chip` MAP (rounded-lg, not rounded-full).
+
+##### 8U-4. QA xfail flags — Backend fixes required before UI can complete these items
+
+QA commit `301e976` found 3 xfails in `tests/test_phase2_seams.py` that block pending UI work:
+
+1. **`cust_outstanding_cores` / `cust_last_purchase` wrong keys** — The quote workspace seam
+   (`@9f50216`) reads these from `CustomerMetricsService.metrics_for()`, whose canonical keys are
+   `outstanding_core_credits` and `last_invoice_date`, not the expected `outstanding_cores`/`last_purchase`.
+   The context values are always 0/None. Fix: use `InvoiceMetricsService._outstanding_cores(cid)` and
+   `InvoiceMetricsService._last_purchase(cid)` (or expose via a dedicated seam method). **UI-Builder
+   should NOT wire the `cust_outstanding_cores`/`cust_last_purchase` chips (§8T-2) until this xfail flips.**
+
+2. **`get_prepared_by(db, unknown_id)` raises AttributeError** — The function guards `user_id is None`
+   but not a user_id that doesn't match any row. The JAKS-fallback docstring says it should return `"JAKS"`
+   for unknown users, but the guard is incomplete. **UI-Builder should NOT wire `prepared_by` in print
+   templates until this xfail flips** — a missing user_id would 500 the print route.
+
+3. **No print template wires `prepared_by` yet** — confirmed OPEN. Waiting on item 2 above.
+
+**Status of all §8T pending items:**
+| Item | Status |
+|------|--------|
+| §8T-1 Dashboard rLayout (chart + Top Customers + Follow-Ups) | **OPEN** — not started |
+| §8T-2 Quote §8B punches 1-3 (target, position, confirm) | **OPEN** — not started |
+| §8T-2 Quote context strip cores/last-purchase chips | **BLOCKED** by xfail #1 above |
+| §8T-3 Prepared-by in print templates (invoices + quotes) | **BLOCKED** by xfail #2 above |
+| §8U-3 `customer_status_chip` adoption (3 files) | **OPEN** — punches issued above |
+
+---
+
 ### 9. Functional Gate — Definition of Done
 
 **Ratified 2026-05-30.**
