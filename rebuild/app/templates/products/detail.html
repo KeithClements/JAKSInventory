@@ -156,6 +156,28 @@
             </div>
           </div>
 
+          {# Market price references — importer-populated (read-only here) #}
+          {% if product.list_price or product.map_price or product.compare_at_price or product.cost %}
+          <div class="grid grid-cols-4 gap-4">
+            <div>
+              <label class="form-label">List / MSRP</label>
+              <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm text-gray-700 tabular-nums">{{ "$%.2f"|format(product.list_price) if product.list_price else "—" }}</div>
+            </div>
+            <div>
+              <label class="form-label">MAP</label>
+              <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm text-gray-700 tabular-nums">{{ "$%.2f"|format(product.map_price) if product.map_price else "—" }}</div>
+            </div>
+            <div>
+              <label class="form-label">Compare-At</label>
+              <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm text-gray-700 tabular-nums">{{ "$%.2f"|format(product.compare_at_price) if product.compare_at_price else "—" }}</div>
+            </div>
+            <div x-show="showMargin" x-cloak>
+              <label class="form-label">Margin</label>
+              <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm font-medium tabular-nums text-gray-700">{{ ("%.1f%%"|format(product.margin_percent)) if (product.cost and product.margin_percent is not none) else "— (set on receipt)" }}</div>
+            </div>
+          </div>
+          {% endif %}
+
           {# Core charge toggle #}
           <div x-data="{ hasCore: {{ 'true' if product.has_core else 'false' }} }">
             <label class="flex items-center gap-2 cursor-pointer select-none">
@@ -177,6 +199,42 @@
               </div>
             </div>
           </div>
+        </div>
+      </div>
+
+      {# Competitor prices — read-only market intelligence (populated by the Pricing-Update importer) #}
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">Competitor Prices
+            <span class="text-xs font-normal text-gray-400">market intelligence — not cost</span></h2>
+        </div>
+        <div class="card-body">
+          {% if product.competitor_prices %}
+          <table class="w-full text-sm divide-y divide-gray-100">
+            <thead><tr class="text-xs text-gray-500 uppercase tracking-wide text-left">
+              <th class="py-1.5 pr-3">Competitor</th><th class="py-1.5 pr-3">Their Part #</th>
+              <th class="py-1.5 pr-3 text-right">Price</th><th class="py-1.5 pr-3 text-right">Ship</th>
+              <th class="py-1.5 pr-3">Avail</th><th class="py-1.5 pr-3">Seen</th><th></th>
+            </tr></thead>
+            <tbody class="divide-y divide-gray-50">
+              {% for cp in product.competitor_prices|sort(attribute='price') %}
+              <tr>
+                <td class="py-1.5 pr-3 font-medium text-gray-800">{{ cp.competitor_name }}{% if cp.competitor_brand %} <span class="text-gray-400">({{ cp.competitor_brand }})</span>{% endif %}</td>
+                <td class="py-1.5 pr-3 font-mono text-xs text-gray-600">{{ cp.competitor_part_number or "—" }}</td>
+                <td class="py-1.5 pr-3 text-right tabular-nums">${{ "%.2f"|format(cp.price) }}</td>
+                <td class="py-1.5 pr-3 text-right tabular-nums text-gray-500">{{ "$%.2f"|format(cp.shipping_price) if cp.shipping_price else "—" }}</td>
+                <td class="py-1.5 pr-3 text-xs text-gray-500">{{ cp.availability_status or "—" }}</td>
+                <td class="py-1.5 pr-3 text-xs text-gray-400">{{ cp.seen_at.strftime("%Y-%m-%d") if cp.seen_at else "—" }}</td>
+                <td class="py-1.5 text-right">{% if cp.url %}<a href="{{ cp.url }}" target="_blank" rel="noopener" class="link text-xs">view</a>{% endif %}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          <p class="mt-2 text-xs text-gray-400">Our price <span class="font-medium text-gray-600">${{ "%.2f"|format(product.selling_price) }}</span> · lowest competitor <span class="font-medium text-gray-600">${{ "%.2f"|format(product.competitor_prices|map(attribute='price')|min) }}</span></p>
+          {% else %}
+          <p class="text-sm text-gray-400 italic">No competitor prices yet. Load them via
+            <a href="/products/import" class="link">Import Products → Pricing Update → Competitor</a>.</p>
+          {% endif %}
         </div>
       </div>
 

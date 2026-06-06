@@ -46,6 +46,10 @@
             <span class="text-sm text-gray-700">Competitor prices (+ price history)</span>
           </label>
         </div>
+        <div class="mt-2 text-xs text-gray-500">
+          <p x-show="sourceType==='pai_cost'">Needs a SKU column + a true cost column (<code>pai_cost</code>, <code>vendor_cost</code>, or <code>cost</code>). Updates the PAI vendor_cost and appends cost history. (Note: the Shopify export has no cost column — it's sell price only.)</p>
+          <p x-show="sourceType==='competitor'">Columns: <code>sku</code>, <code>competitor_name</code>, <code>competitor_part_number</code>, <code>competitor_brand</code>, <code>price</code>, <code>shipping_price</code>, <code>core_charge</code>, <code>availability_status</code>, <code>url</code>, <code>source</code>, <code>confidence</code>, <code>notes</code>. Updates competitor_prices + appends price history.</p>
+        </div>
       </div>
 
       {# Images (only for full import) #}
