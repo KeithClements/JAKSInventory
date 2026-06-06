@@ -258,6 +258,11 @@
         <strong>Valid Until:</strong> {{ quote.valid_until.strftime('%B %d, %Y') }}
         {% endif %}
       </div>
+      {% if prepared_by %}
+      <div class="doc-dates" style="margin-top:6px;border-top:1px solid #eee;padding-top:4px;">
+        <strong>Prepared by:</strong> {{ prepared_by }}
+      </div>
+      {% endif %}
     </div>
   </div>
 

@@ -102,6 +102,13 @@
       {% if cust_last_payment_date %}
       <span class="text-xs text-gray-400">Last pmt: {{ cust_last_payment_date.strftime('%b %d') }}</span>
       {% endif %}
+      {# §8T-2 quote intelligence (Seam-3) — cores already shown above via cust_cores_owed_qty #}
+      {% if cust_last_purchase %}
+      <span class="text-xs text-gray-400">Last sale: {{ cust_last_purchase.strftime('%b %d') }}</span>
+      {% endif %}
+      {% if cust_lifetime_sales %}
+      <span class="hidden lg:inline text-xs text-gray-400">Lifetime: ${{ '%.0f' % cust_lifetime_sales }}</span>
+      {% endif %}
       <a href="/customers/{{ quote.customer_id }}" target="_blank" rel="noopener"
          class="inline-flex items-center gap-0.5 text-xs text-brand-600 hover:underline font-medium ml-1">
         Account

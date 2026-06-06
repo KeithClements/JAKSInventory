@@ -11,6 +11,9 @@
 <div class="flex items-center gap-2 flex-wrap justify-end"
      x-data="{ moreOpen: false, showSO: false, showLost: false, reason: '' }">
 
+  {# §8B Zone 1 — back link, leftmost (same-tab nav) #}
+  <a href="/quotes/" class="hidden lg:inline mr-auto text-sm link-subtle">← All quotes</a>
+
   <span class="{{ quote_status_badges.get(quote.status, 'badge-gray') }}">
     {{ quote.status | title }}{% if quote.is_expired and quote.status == 'sent' %} · Expired{% endif %}
   </span>
@@ -110,9 +113,9 @@
     <div x-show="moreOpen" x-cloak @click.away="moreOpen = false"
          class="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 py-1 min-w-[11rem]">
 
-      <form action="/quotes/{{ quote.id }}/convert-to-invoice" method="post"
-            onsubmit="return confirm('Convert{% if quote.status == QuoteStatus.DRAFT %} this quote directly {% endif %}to an invoice?')">
-        <button type="submit" @click="moreOpen = false"
+      <form id="quote-convert-invoice-form" action="/quotes/{{ quote.id }}/convert-to-invoice" method="post">
+        <button type="button"
+                @click="moreOpen = false; jakConfirm({ title: 'Convert to invoice?', body: 'Convert{% if quote.status == QuoteStatus.DRAFT %} this quote directly{% endif %} to an invoice?', cta: 'Convert to Invoice', danger: false, formId: 'quote-convert-invoice-form' })"
                 class="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">
           → Invoice
         </button>
@@ -147,5 +150,4 @@
   </div>
   {% endif %}
 
-  <a href="/quotes/" target="_blank" rel="noopener" class="hidden lg:inline text-sm link-subtle">← All quotes</a>
 </div>
