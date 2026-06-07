@@ -13,6 +13,7 @@ Routes:
 from __future__ import annotations
 
 import logging
+import os
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -22,6 +23,18 @@ from app.deps import require_admin
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/demo", tags=["admin", "demo"])
+
+
+def _is_production() -> bool:
+    """Belt-and-suspenders env check.  The admin gate already stops non-admins;
+    this prevents a production operator from accidentally triggering a DB wipe
+    even when authenticated.  Checks the JAKS_ENV env var first (set by the
+    operator at deploy time); falls back to the jaks_env settings value so a
+    bare development instance that never sets the env var still works."""
+    if os.environ.get("JAKS_ENV", "").strip().lower() == "production":
+        return True
+    from app.settings_utils import get_setting_value
+    return get_setting_value("jaks_env", "sandbox").strip().lower() == "production"
 
 _CONFIRM_PAGE = """<!doctype html>
 <html lang="en">
@@ -64,6 +77,14 @@ _CONFIRM_PAGE = """<!doctype html>
 
 @router.get("", response_class=HTMLResponse)
 def demo_reset_form(request: Request, done: str = "", error: str = "", _admin=Depends(require_admin)):
+    if _is_production():
+        return HTMLResponse(
+            '<html><body style="font-family:sans-serif;padding:2rem">'
+            "<h2>Demo reset is disabled in production.</h2>"
+            '<p><a href="/">← Back to dashboard</a></p>'
+            "</body></html>",
+            status_code=403,
+        )
     msg = ""
     if done:
         msg = f'<div class="bg-green-50 border border-green-200 text-green-700 text-sm rounded-md px-3 py-2 mb-4">Demo data reseeded successfully. <a href="/" class="underline">Go to dashboard →</a></div>'
@@ -74,9 +95,14 @@ def demo_reset_form(request: Request, done: str = "", error: str = "", _admin=De
 
 @router.post("/reset")
 async def demo_reset(request: Request, _admin=Depends(require_admin)):
-    """Wipe and reseed demo data. Requires the confirm checkbox. ADMIN-only —
-    this destroys all business data, so a non-admin (e.g. bookkeeping) or a
-    forged request must never reach it."""
+    """Wipe and reseed demo data. Requires the confirm checkbox. ADMIN-only +
+    sandbox-only — both gates must pass so a production operator cannot
+    accidentally destroy live data even when authenticated as admin."""
+    if _is_production():
+        return HTMLResponse(
+            "Demo reset is disabled in production environments.", status_code=403
+        )
+
     from app.database import SessionLocal
     from app.seeds_demo import reset_and_seed_demo
 

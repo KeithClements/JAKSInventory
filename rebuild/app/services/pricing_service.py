@@ -88,6 +88,34 @@ class PricingService(BaseService):
             return product.price_override
         return calc_sell_price(product.cost, self.resolve_markup_pct(product))
 
+    # ── Customer-tier pricing (P2 — Customer.pricing_tier) ────────────────────
+
+    def tier_discount_pct(self, pricing_tier: str) -> float:
+        """Per-tier discount % applied after the normal sell-price calculation.
+        'standard' always returns 0.0 — no adjustment.  Other tiers read from
+        ``tier_<name>_discount_pct`` settings (default 0.0 = no change until the
+        owner configures them via Settings → Pricing).
+        Valid tiers: standard | wholesale | fleet | dealer."""
+        if not pricing_tier or pricing_tier == "standard":
+            return 0.0
+        raw = get_setting_value_db(self.db, f"tier_{pricing_tier}_discount_pct", "0.0")
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def sell_price_for_tier(self, product: Product, pricing_tier: str | None) -> float | None:
+        """Tier-adjusted sell price for a product.
+        Returns ``None`` when the tier discount is 0 % (standard tier or
+        not yet configured) so callers fall through to ``product.selling_price``
+        unchanged — zero overhead for the common case.
+        When a non-zero discount is configured: sell_price × (1 - discount/100)."""
+        discount = self.tier_discount_pct(pricing_tier or "standard")
+        if discount == 0.0:
+            return None
+        base = self.sell_price_for(product)
+        return round(base * (1 - discount / 100), 2)
+
     def calculate_sell_price(self, cost: float, markup_pct: float) -> float:
         """Return sell price given cost and markup percent."""
         return calc_sell_price(cost, markup_pct)

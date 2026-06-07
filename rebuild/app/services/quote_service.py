@@ -94,6 +94,9 @@ class QuoteService(BaseService):
         quote = self._get_or_404(quote_id)
         sort_order = max((ln.sort_order for ln in quote.lines), default=-1) + 1
 
+        # Fetch customer once — used for both tier pricing and discount default below.
+        customer = self.db.query(Customer).filter(Customer.id == quote.customer_id).first()
+
         unit_cost = float(data.get("unit_cost", 0.0))
         if product_id is not None and unit_cost == 0.0:
             unit_cost = self._preferred_vendor_cost(product_id)
@@ -104,7 +107,15 @@ class QuoteService(BaseService):
         # just product_id + qty yields a complete line (unit_cost resolved above).
         if product_id is not None:
             _product = self.db.query(Product).filter(Product.id == product_id).first()
-            apply_product_line_defaults(_product, merged, include_price=True)
+            # Tier-adjusted price: wholesale/fleet/dealer customers get a configured
+            # discount off the normal sell price; standard customers get None (no-op).
+            _tier_price = None
+            if _product and customer:
+                from app.services.pricing_service import PricingService as _PS
+                _tier_price = _PS(self.db, self.current_user_id).sell_price_for_tier(
+                    _product, customer.pricing_tier
+                )
+            apply_product_line_defaults(_product, merged, include_price=True, tier_price=_tier_price)
         # Optionals AND upgrade-options default to EXCLUDED from the quote total — the
         # customer opts in. (Owner decision 2026-05-31 "A": optional add-ons are quoted
         # separately, not baked into the base total.)
@@ -118,7 +129,6 @@ class QuoteService(BaseService):
             merged["discount_pct"] = 0.0
         elif "discount_pct" not in data:
             # Auto-apply customer default when caller didn't specify
-            customer = self.db.query(Customer).filter(Customer.id == quote.customer_id).first()
             merged["discount_pct"] = float(customer.discount_pct) if customer else 0.0
 
         line = self._add_line_internal(quote_id, merged, sort_order)
@@ -487,8 +497,22 @@ class QuoteService(BaseService):
         # description/price from the caller still wins).
         if product_id is not None:
             from app.models.product import Product
+            from app.models.customer import Customer
             _product = self.db.query(Product).filter(Product.id == product_id).first()
-            apply_product_line_defaults(_product, merged, include_price=True)
+            # Tier pricing: derive customer from parent's quote, same as main add_line.
+            _tier_price = None
+            if _product:
+                _parent_quote = self.db.query(Quote).filter(Quote.id == parent.quote_id).first()
+                _cust = (
+                    self.db.query(Customer).filter(Customer.id == _parent_quote.customer_id).first()
+                    if _parent_quote else None
+                )
+                if _cust:
+                    from app.services.pricing_service import PricingService as _PS
+                    _tier_price = _PS(self.db, self.current_user_id).sell_price_for_tier(
+                        _product, _cust.pricing_tier
+                    )
+            apply_product_line_defaults(_product, merged, include_price=True, tier_price=_tier_price)
 
         line = self._add_line_internal(parent.quote_id, merged, sibling_sort)
         self.db.commit()
@@ -550,8 +574,22 @@ class QuoteService(BaseService):
         # product when the caller didn't supply them; explicit values still win).
         if product_id is not None:
             from app.models.product import Product
+            from app.models.customer import Customer
             _product = self.db.query(Product).filter(Product.id == product_id).first()
-            apply_product_line_defaults(_product, merged, include_price=True)
+            # Tier pricing: derive customer from parent's quote.
+            _tier_price = None
+            if _product:
+                _parent_quote = self.db.query(Quote).filter(Quote.id == parent.quote_id).first()
+                _cust = (
+                    self.db.query(Customer).filter(Customer.id == _parent_quote.customer_id).first()
+                    if _parent_quote else None
+                )
+                if _cust:
+                    from app.services.pricing_service import PricingService as _PS
+                    _tier_price = _PS(self.db, self.current_user_id).sell_price_for_tier(
+                        _product, _cust.pricing_tier
+                    )
+            apply_product_line_defaults(_product, merged, include_price=True, tier_price=_tier_price)
 
         line = self._add_line_internal(parent.quote_id, merged, sibling_sort)
         self.db.commit()

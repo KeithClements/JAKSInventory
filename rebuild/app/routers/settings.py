@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request, Form, File, UploadFile, HTTPException
+from fastapi import APIRouter, Depends, Request, Form, File, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -172,6 +172,13 @@ DEFAULTS: dict[str, tuple[str, str]] = {
 
     # Pricing grid — defaults FALSE so nothing re-prices until owner flips after preview
     "markup_tiers_active":         ("false",   "Use cost-bracket markup grid instead of flat default"),
+
+    # Customer pricing tiers — discount % off normal sell price (0.0 = no change)
+    # Owner sets these once the tier names are meaningful (wholesale/fleet/dealer).
+    # 'standard' is always 0 % and is never read from settings.
+    "tier_wholesale_discount_pct": ("0.0",     "Wholesale tier: discount % off sell price"),
+    "tier_fleet_discount_pct":     ("0.0",     "Fleet tier: discount % off sell price"),
+    "tier_dealer_discount_pct":    ("0.0",     "Dealer tier: discount % off sell price"),
 }
 
 VISIBLE_KEYS = [
@@ -254,6 +261,8 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
         "qbo_disconnected": qp.get("qbo_disconnected", ""),
         "qbo_msg": qp.get("qbo_msg", ""),
         "saved": qp.get("saved", ""),
+        "logo_saved": qp.get("logo_saved", ""),
+        "logo_error": qp.get("logo_error", ""),
     }
     return templates.TemplateResponse(
         request, "settings/index.html",
@@ -278,7 +287,7 @@ async def save_settings(request: Request, db: Session = Depends(get_db), _admin=
 
 # ── §5.12 — Company logo upload (admin-only) ──────────────────────────────────
 _ALLOWED_LOGO_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
-_MAX_LOGO_BYTES = 2 * 1024 * 1024  # 2 MB
+_MAX_LOGO_BYTES = 8 * 1024 * 1024  # 8 MB
 _UPLOAD_DIR = Path(__file__).resolve().parent.parent / "static" / "uploads"
 
 _PREVIEW_SAMPLE_LIMIT = 25   # max rows returned in sample
@@ -370,19 +379,30 @@ async def upload_logo(
 ):
     """§5.12 — store an uploaded company logo under static/uploads/ and point
     company_logo_path at it (relative to static/). Admin-only. Rejects
-    non-images (by extension AND declared content-type) and oversize files with
-    HTTP 400. Never touches money/totals. On success redirects back to settings.
+    non-images (by extension AND declared content-type) and oversize files.
+
+    The upload form is a full-page POST, so validation failures redirect back to
+    the Company tab with a friendly ``?logo_error=`` flash rather than dumping a
+    raw JSON error at the user. Never touches money/totals.
     """
+    from urllib.parse import urlencode
+
+    def _back(msg: str) -> RedirectResponse:
+        return RedirectResponse(f"/settings/?{urlencode({'logo_error': msg})}",
+                                status_code=303)
+
     ext = Path(file.filename or "").suffix.lower()
     content_type = (file.content_type or "").lower()
     if ext not in _ALLOWED_LOGO_EXT or not content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Logo must be an image (png/jpg/gif/webp).")
+        return _back("Logo must be an image file — PNG, JPG, GIF or WebP.")
 
     data = await file.read()
     if not data:
-        raise HTTPException(status_code=400, detail="Empty file.")
+        return _back("That file was empty — please choose an image.")
     if len(data) > _MAX_LOGO_BYTES:
-        raise HTTPException(status_code=400, detail="Logo exceeds the 2 MB size limit.")
+        max_mb = _MAX_LOGO_BYTES // (1024 * 1024)
+        return _back(f"Logo is too large ({len(data) / 1024 / 1024:.1f} MB). "
+                     f"The limit is {max_mb} MB — please use a smaller PNG or JPG.")
 
     _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     safe_name = f"company_logo_{uuid.uuid4().hex}{ext}"

@@ -138,7 +138,18 @@ class SalesOrderService(BaseService):
         # POST of just product_id + qty yields a complete line.
         if product_id is not None:
             _product = self.db.query(Product).filter(Product.id == product_id).first()
-            apply_product_line_defaults(_product, merged, include_price=True)
+            # Tier-adjusted price: wholesale/fleet/dealer customers get a configured
+            # discount off the normal sell price; standard customers get None (no-op).
+            _tier_price = None
+            if _product:
+                from app.models.customer import Customer
+                _cust = self.db.query(Customer).filter(Customer.id == so.customer_id).first()
+                if _cust:
+                    from app.services.pricing_service import PricingService as _PS
+                    _tier_price = _PS(self.db, self.current_user_id).sell_price_for_tier(
+                        _product, _cust.pricing_tier
+                    )
+            apply_product_line_defaults(_product, merged, include_price=True, tier_price=_tier_price)
         line = self._add_line_internal(
             so.id,
             merged,

@@ -230,7 +230,13 @@ def _serialize(v: Any) -> str | None:
 
 # ── Line-item defaults (shared by every add_line) ───────────────────────────────
 
-def apply_product_line_defaults(product, data: dict, *, include_price: bool) -> dict:
+def apply_product_line_defaults(
+    product,
+    data: dict,
+    *,
+    include_price: bool,
+    tier_price: float | None = None,
+) -> dict:
     """
     Backfill line-item fields from a product when the caller didn't supply them.
 
@@ -242,8 +248,13 @@ def apply_product_line_defaults(product, data: dict, *, include_price: bool) -> 
     Only fills blanks/zeros, so an explicit value from the caller always wins:
       - ``description`` ← ``product.title`` (falls back to ``sku``)
       - ``unit_cost``   ← ``product.cost``          when missing or 0
-      - ``unit_price``  ← ``product.selling_price`` (customer docs only;
-                          pass ``include_price=False`` for cost-only docs like POs)
+      - ``unit_price``  ← ``tier_price`` when provided (P2 customer-tier discount)
+                          else ``product.selling_price`` (standard / no-tier path)
+                          (customer docs only; pass ``include_price=False`` for POs)
+
+    ``tier_price``: caller-supplied tier-adjusted price from
+    ``PricingService.sell_price_for_tier()``.  Pass ``None`` for PO lines or when
+    the customer has no tier discount configured — falls back to ``selling_price``.
 
     Cost SOURCE nuances (preferred-vendor cost, the PO's own vendor source cost)
     stay in each service and run BEFORE this helper; this only backfills from the
@@ -270,6 +281,9 @@ def apply_product_line_defaults(product, data: dict, *, include_price: bool) -> 
         except (TypeError, ValueError):
             price = 0.0
         if price == 0.0:
-            data["unit_price"] = product.selling_price
+            # tier_price: caller-supplied tier-adjusted price (wholesale/fleet/dealer
+            # discount via PricingService.sell_price_for_tier).  Falls back to
+            # product.selling_price for standard customers or unconfigured tiers.
+            data["unit_price"] = tier_price if tier_price is not None else product.selling_price
 
     return data

@@ -314,7 +314,17 @@ class InvoiceService(BaseService):
         # POST of just product_id + qty yields a complete line.
         if product_id is not None:
             _product = self.db.query(Product).filter(Product.id == product_id).first()
-            apply_product_line_defaults(_product, merged, include_price=True)
+            # Tier-adjusted price: wholesale/fleet/dealer customers get a configured
+            # discount off the normal sell price; standard customers get None (no-op).
+            _tier_price = None
+            if _product:
+                _cust = self.db.query(Customer).filter(Customer.id == invoice.customer_id).first()
+                if _cust:
+                    from app.services.pricing_service import PricingService as _PS
+                    _tier_price = _PS(self.db, self.current_user_id).sell_price_for_tier(
+                        _product, _cust.pricing_tier
+                    )
+            apply_product_line_defaults(_product, merged, include_price=True, tier_price=_tier_price)
         # NOTE: the invoice-level discount (invoice.discount_pct) is applied exactly
         # ONCE at the invoice level (see Invoice.discount_amount / calculate_totals).
         # It must NOT be copied onto the new line here — doing so double-counted the
