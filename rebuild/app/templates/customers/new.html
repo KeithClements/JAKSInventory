@@ -49,7 +49,7 @@
   {# ── Customer ────────────────────────────────────────────────────────────────
        Field order per PHASE_2_PLAN.md §4.10 (real-usage entry order):
        Company → [Type] → Contact → Phone → Email → Payment Terms → Credit Limit
-       → Pricing Tier → Discount % → Tax Exempt → Notes.  Address moved below the
+       → Discount % → Tax Exempt → Notes.  Address moved below the
        fold (most quotes start before the full address is known). #}
   <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
     <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider border-b border-gray-100 pb-3">Customer</h2>
@@ -100,7 +100,7 @@
       </div>
     </div>
 
-    {# Terms & Pricing — Payment Terms → Credit Limit → Pricing Tier → Discount % → Interest #}
+    {# Terms & Pricing — Payment Terms → Credit Limit → Discount % → Interest #}
     <div class="pt-2">
       <h3 class="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-3">Terms &amp; Pricing</h3>
       <div class="grid grid-cols-2 gap-4">
@@ -121,17 +121,6 @@
               class="rounded-lg border border-gray-200 pl-6 pr-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
           </div>
           <p class="text-xs text-gray-400 mt-0.5">0 = no limit enforced.</p>
-        </div>
-        <div>
-          <label class="block text-xs font-medium text-gray-500 mb-1">Pricing Tier</label>
-          {% set _tier = prefill.get('pricing_tier', 'standard') %}
-          <select name="pricing_tier"
-            class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">
-            <option value="standard"  {% if _tier == 'standard'  %}selected{% endif %}>Standard</option>
-            <option value="wholesale" {% if _tier == 'wholesale' %}selected{% endif %}>Wholesale</option>
-            <option value="fleet"     {% if _tier == 'fleet'     %}selected{% endif %}>Fleet</option>
-            <option value="dealer"    {% if _tier == 'dealer'    %}selected{% endif %}>Dealer</option>
-          </select>
         </div>
         <div>
           <label class="block text-xs font-medium text-gray-500 mb-1">Standing Discount %</label>
@@ -261,7 +250,6 @@
       el.dispatchEvent(new Event('change', { bubbles: true }));
     }
     set('payment_terms', d.payment_terms);
-    set('pricing_tier', d.pricing_tier);
     set('credit_limit', d.credit_limit);
     set('discount_pct', d.discount_pct);
     set('card_surcharge_pct', d.card_surcharge_pct);   // null/blank → system default

@@ -147,16 +147,6 @@
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div>
-            <label class="form-label">Pricing Tier</label>
-            {% set _tier = prefill.get('pricing_tier', 'standard') %}
-            <select name="pricing_tier" class="form-select">
-              <option value="standard" {% if _tier == 'standard' %}selected{% endif %}>Standard</option>
-              <option value="wholesale" {% if _tier == 'wholesale' %}selected{% endif %}>Wholesale</option>
-              <option value="fleet" {% if _tier == 'fleet' %}selected{% endif %}>Fleet</option>
-              <option value="dealer" {% if _tier == 'dealer' %}selected{% endif %}>Dealer</option>
-            </select>
-          </div>
-          <div>
             <label class="form-label">Discount %</label>
             <input type="number" name="discount_pct" value="{{ prefill.get('discount_pct', '0') }}" min="0" max="100" step="0.5"
                    class="form-input" placeholder="0" />

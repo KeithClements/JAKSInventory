@@ -328,16 +328,6 @@
                   </div>
                 </div>
                 <div>
-                  <label class="form-label">Pricing Tier</label>
-                  <select name="pricing_tier" class="form-select">
-                    {% for tier in pricing_tiers %}
-                    <option value="{{ tier }}" {% if customer.pricing_tier == tier %}selected{% endif %}>
-                      {{ tier.title() }}
-                    </option>
-                    {% endfor %}
-                  </select>
-                </div>
-                <div>
                   <label class="form-label">Standing Discount %</label>
                   <input name="discount_pct" type="number" step="0.5" min="0" max="100"
                          value="{{ customer.discount_pct }}" class="form-input" />
