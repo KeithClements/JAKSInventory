@@ -86,6 +86,14 @@ def _csv(header: list[str], rows: list[list]) -> str:
     return buf.getvalue()
 
 
+def _product_by_pai(db, pai_part):
+    """Find an imported product by its PAI part number — product.sku is now the
+    regenerated JAKS scheme SKU, not the old JAKS-PAI-… value."""
+    src = (db.query(ProductVendorSource)
+           .filter(ProductVendorSource.vendor_part_number == pai_part).first())
+    return src.product if src else None
+
+
 @pytest.fixture()
 def db():
     eng = create_engine("sqlite:///:memory:")
@@ -108,8 +116,12 @@ def test_full_import_dry_run_writes_nothing(db):
 
 def test_full_import_creates_products_and_relations(db):
     ProductImportService(db, None).full_import(_shopify_csv(), dry_run=False)
-    p = db.query(Product).filter(Product.sku == "JAKS-PAI-111").first()
+    p = _product_by_pai(db, "111")
     assert p is not None
+    # SKU minted on the JAKS scheme; the raw CSV number is parked on the vendor source
+    assert p.sku.startswith("JAKS-") and p.sku != "JAKS-PAI-111"
+    _s0 = db.query(ProductVendorSource).filter(ProductVendorSource.product_id == p.id).first()
+    assert _s0.vendor_sku == "JAKS-PAI-111"
     # Pricing mapping — the cardinal rule
     assert p.price_override == 10.99          # Variant Price = OUR sell
     assert p.compare_at_price == 19.68        # Compare At = marketing
@@ -150,7 +162,7 @@ def test_pricing_update_pai_cost_updates_source_and_history(db):
 
     summ = svc.pricing_update_pai_cost(cost_csv, dry_run=False)
     assert summ["costs_updated"] == 1
-    p = db.query(Product).filter(Product.sku == "JAKS-PAI-111").first()
+    p = _product_by_pai(db, "111")
     src = db.query(ProductVendorSource).filter(ProductVendorSource.product_id == p.id).first()
     assert src.vendor_cost == 5.50
     assert p.cost == 0.0  # product.cost untouched (moving-avg only)
@@ -200,7 +212,7 @@ def test_pricing_update_competitor_create_then_history(db):
 def test_pricing_update_competitor_never_touches_product(db):
     svc = ProductImportService(db, None)
     svc.full_import(_shopify_csv(), dry_run=False)
-    p = db.query(Product).filter(Product.sku == "JAKS-PAI-111").first()
+    p = _product_by_pai(db, "111")
     before = (p.title, p.category_id, p.price_override, p.compare_at_price,
               db.query(CrossReference).filter(CrossReference.product_id == p.id).count())
     hdr = ["sku", "competitor_name", "price"]

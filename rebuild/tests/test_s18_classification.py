@@ -96,7 +96,7 @@ def test_full_import_applies_classification(db):
     fid = fast.id
 
     ProductImportService(db, None).full_import(_csv_one(), dry_run=False)
-    p = db.query(Product).filter(Product.sku == "JAKS-1").first()
+    p = db.query(Product).first()   # sku is now the regenerated JAKS scheme value (one product imported)
     assert p is not None
     assert p.engine_manufacturer == "Cummins"     # from the CUMMINS application
     assert p.category_id == fid                    # deeper match via "bolt"
@@ -107,7 +107,7 @@ def test_full_import_applies_classification(db):
 def test_full_import_flags_unclassifiable_as_needs_review(db):
     # No keyword rules exist → cannot confidently place deeper → needs_review.
     ProductImportService(db, None).full_import(_csv_one(), dry_run=False)
-    p = db.query(Product).filter(Product.sku == "JAKS-1").first()
+    p = db.query(Product).first()   # sku is now the regenerated JAKS scheme value (one product imported)
     assert p.needs_review is True
     assert p.engine_manufacturer == "Cummins"          # engine make still derived
     # Shopify Type still created/assigned the broad top-level category.

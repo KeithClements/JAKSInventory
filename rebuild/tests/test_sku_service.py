@@ -93,8 +93,14 @@ def _vendor(db, name, code, number):
     return v
 
 
+_TMP_SEQ = [0]
+
+
 def _product(db, cat, engine_model=""):
-    p = Product(sku=f"TMP-{id(object())}", title="x", category=cat,
+    # reliably-unique placeholder sku — id(object()) reuses freed addresses, which
+    # caused flaky UNIQUE(products.sku) collisions in the full suite.
+    _TMP_SEQ[0] += 1
+    p = Product(sku=f"TMP-{_TMP_SEQ[0]}", title="x", category=cat,
                 engine_model=engine_model, is_active=True)
     db.add(p)
     db.flush()
@@ -160,6 +166,45 @@ def test_code_for_category_prefers_explicit_code(db_session):
     svc = SkuService(db)
     assert svc.code_for_category(_cat(db, "Fuel Pumps", code="FP")) == "FP"
     assert svc.code_for_category(None) == "GEN"
+
+
+# ── END-TO-END: scraper import → backfill → scheme SKUs throughout ───────────────
+def _mini_shopify_csv() -> str:
+    import csv as _csv, io as _io
+    header = ["Handle", "Title", "Body (HTML)", "Type", "Tags",
+              "Variant SKU", "Variant Price", "Status"]
+    body1 = ("<p>x</p><p><strong>PAI Part #:</strong> 111</p>"
+             "<p><strong>Applications:</strong></p><ul><li>CUMMINS 855 ENGINES</li></ul>")
+    body2 = "<p>g</p><p><strong>PAI Part #:</strong> 222</p>"
+    buf = _io.StringIO(); w = _csv.writer(buf); w.writerow(header)
+    w.writerow(["jaks-pai-1", "Head Bolt", body1, "ENGINE PARTS", "CUMMINS",
+                "JAKS-PAI-111", "10.99", "active"])
+    w.writerow(["jaks-pai-2", "Gasket", body2, "GASKETS", "",
+                "JAKS-PAI-222", "5.00", "active"])
+    return buf.getvalue()
+
+
+def test_e2e_import_then_backfill_produces_scheme_skus(db_session):
+    """The owner's real flow: scraper Full Import, then run the backfill. Proves the
+    scheme is applied throughout — products end up with vendor-independent SKUs and
+    their old PAI number is parked (still searchable)."""
+    db = db_session
+    from app.services.product_import_service import ProductImportService
+
+    ProductImportService(db, None).full_import(_mini_shopify_csv(), dry_run=False)
+    pai = db.query(Vendor).filter(Vendor.vendor_code == "PAI").first()
+    assert pai.vendor_number == "9"
+    # the importer now mints the JAKS scheme SKU DIRECTLY — no backfill step needed
+    src = db.query(ProductVendorSource).filter_by(vendor_part_number="111").first()
+    p = src.product
+    assert p.sku == "JAKS-855-ENG-90001"                  # engine 855 / ENGINE PARTS / vendor 9
+    assert p.part_seq == 1
+    assert src.vendor_sku == "JAKS-PAI-111"               # old PAI number parked + searchable
+
+    # the standalone backfill is now idempotent on an already-schemed catalog
+    SkuService(db).regenerate_catalog(apply=True)
+    db.refresh(p)
+    assert p.sku == "JAKS-855-ENG-90001"
 
 
 # ── DB: catalog backfill ────────────────────────────────────────────────────────

@@ -35,8 +35,11 @@ import re
 from collections import OrderedDict
 from datetime import datetime
 
+from sqlalchemy import func
+
 from app.constants import CrossRefType, ProductStatus
 from app.services.classification_service import ClassificationService
+from app.services.sku_service import assemble_sku, derive_category_code, engine_code as _engine_code
 from app.models.product import (
     Product, ProductCategory, ProductImage, ProductApplication,
     ProductVendorSource, CrossReference, ProductCostHistory,
@@ -171,9 +174,13 @@ class ProductImportService(BaseService):
         return [p for p in products.values() if p.get("sku")]
 
     # ══ Mode 1: FULL PRODUCT IMPORT ════════════════════════════════════════════
-    def full_import(self, text: str, *, dry_run: bool = True,
-                    import_images: bool = True, limit: int | None = None) -> dict:
-        rows = self.parse_shopify_csv(text)
+    def full_import(self, text: str = "", *, dry_run: bool = True,
+                    import_images: bool = True, limit: int | None = None,
+                    rows: list | None = None) -> dict:
+        # `rows` lets a caller (Phase C apply) feed pre-parsed row dicts directly,
+        # reusing the exact create/idempotency/SKU-mint path without re-serializing
+        # to CSV. Existing callers pass `text` -> rows=None -> parse as before.
+        rows = rows if rows is not None else self.parse_shopify_csv(text)
         if limit:
             rows = rows[:limit]
         summary = {
@@ -186,10 +193,27 @@ class ProductImportService(BaseService):
         if not rows:
             return summary
 
-        existing = {s.strip().lower() for (s,) in self.db.query(Product.sku).all() if s}
+        # Dedup on the PARKED original number: product.sku is now the regenerated
+        # JAKS scheme SKU, so the stable per-part identity is the CSV "Variant SKU"
+        # we park on ProductVendorSource.vendor_sku. (Keying dedup on product.sku
+        # would re-create everything on the next import.)
+        existing = {s.strip().lower() for (s,) in self.db.query(ProductVendorSource.vendor_sku).all() if s}
         cat_cache = {c.name.strip().lower(): c.id for c in self.db.query(ProductCategory).all()}
         pai_id = self._resolve_pai_vendor(dry_run)
+        pai_vendor = self.db.query(Vendor).filter(Vendor.id == pai_id).first() if pai_id else None
+        pai_digit = (pai_vendor.vendor_number or "").strip() if pai_vendor else "9"
         classifier = ClassificationService(self.db)   # §18.6 — rules cache built once
+        # JAKS SKU scheme: mint JAKS-[ENGINE]-[CATEGORY]-[V][NNNN] at import time.
+        # Seed the per-(engine,category) sequence counters from the DB so re-imports
+        # continue the numbering instead of colliding.
+        cat_code_cache: dict[int, str] = {}
+        seq_counters: dict[tuple[str, str], int] = {}
+        for ec, cc, mx in (
+            self.db.query(Product.engine_code, Product.category_code, func.max(Product.part_seq))
+            .filter(Product.part_seq.isnot(None))
+            .group_by(Product.engine_code, Product.category_code).all()
+        ):
+            seq_counters[(ec or "", cc or "")] = mx or 0
         seen: set[str] = set()
         committed = 0
 
@@ -211,6 +235,13 @@ class ProductImportService(BaseService):
                 app_makes=[_split_two(a)[0] for a in p["apps"]],
                 app_models=[_split_two(a)[1] for a in p["apps"]],
             )
+            # JAKS SKU scheme — mint the customer-facing SKU now; the raw CSV SKU is
+            # parked on the vendor source (vendor_sku, below) so it stays searchable.
+            ecode = _engine_code(cls["engine_model"] or "")
+            ccode = self._sku_cat_code(cls["category_id"] or cat_id, p["type"], cat_code_cache)
+            new_seq = seq_counters.get((ecode, ccode), 0) + 1
+            seq_counters[(ecode, ccode)] = new_seq
+            new_sku = assemble_sku(ccode, pai_digit, new_seq, engine_code=ecode)
             if cls["needs_review"]:
                 summary["needs_review"] += 1
             if cls["category_id"] or cls["engine_manufacturer"]:
@@ -238,7 +269,8 @@ class ProductImportService(BaseService):
                 continue
 
             product = Product(
-                sku=sku,
+                sku=new_sku,                                     # JAKS scheme SKU (raw CSV sku parked on the vendor source)
+                engine_code=ecode, category_code=ccode, part_seq=new_seq,
                 title=p["title"][:500],
                 brand=_PAI_VENDOR_CODE,                          # §18.2 — Brand (correct)
                 # §18.2 / A1: do NOT set manufacturer to the vendor name. Manufacturer =
@@ -312,7 +344,7 @@ class ProductImportService(BaseService):
             "skipped_no_product": 0, "skipped_no_pai_source": 0,
             "skipped_no_cost": 0, "costs_updated": 0, "unchanged": 0, "sample": [],
         }
-        sku_to_id = {_norm(s): pid for pid, s in self.db.query(Product.id, Product.sku).all()}
+        sku_to_id = self._sku_to_id_map()
         pai = self.db.query(Vendor).filter(
             (Vendor.vendor_code == _PAI_VENDOR_CODE) | (Vendor.name == _PAI_VENDOR_NAME)
         ).first()
@@ -367,7 +399,7 @@ class ProductImportService(BaseService):
             "skipped_no_product": 0, "created": 0, "updated": 0, "unchanged": 0,
             "history_appended": 0, "sample": [],
         }
-        sku_to_id = {_norm(s): pid for pid, s in self.db.query(Product.id, Product.sku).all()}
+        sku_to_id = self._sku_to_id_map()
         for raw in reader:
             row = {_norm(k): v for k, v in raw.items()}
             sku = _get(row, *_SKU_KEYS)
@@ -444,7 +476,12 @@ class ProductImportService(BaseService):
             return v.id
         if dry_run:
             return None
-        v = Vendor(name=_PAI_VENDOR_NAME, vendor_code=_PAI_VENDOR_CODE, is_active=True)
+        # SKU scheme: give PAI a default 1-digit SKU number ("9") so the
+        # backfill (scripts/backfill_sku_scheme.py) can mint JAKS-…-9NNNN SKUs
+        # right after a fresh import without manual vendor setup. Owner can
+        # change it on the vendor record (Inventory → Vendors → SKU #).
+        v = Vendor(name=_PAI_VENDOR_NAME, vendor_code=_PAI_VENDOR_CODE,
+                   vendor_number="9", is_active=True)
         self.db.add(v)
         self.db.flush()
         return v.id
@@ -465,3 +502,30 @@ class ProductImportService(BaseService):
         self.db.flush()
         cache[key] = cat.id
         return cat.id
+
+    def _sku_cat_code(self, cat_id: int | None, fallback_name: str, cache: dict) -> str:
+        """Category code for the SKU: the node's explicit ``code`` if set, else
+        derived from its name. Falls back to the Shopify Type name when there is no
+        resolved category yet (e.g. dry-run, before categories are created)."""
+        if cat_id is not None:
+            if cat_id not in cache:
+                c = self.db.get(ProductCategory, cat_id)
+                code = (c.code or "").strip().upper() if c else ""
+                cache[cat_id] = code or derive_category_code(c.name if c else fallback_name)
+            return cache[cat_id]
+        return derive_category_code(fallback_name)
+
+    def _sku_to_id_map(self) -> dict:
+        """Map BOTH the JAKS scheme SKU and the parked original number
+        (ProductVendorSource.vendor_sku) → product id, so Pricing-Update CSVs match
+        whether they carry the new SKU or the old JAKS-PAI-… number."""
+        m: dict[str, int] = {}
+        for pid, psku in self.db.query(Product.id, Product.sku).all():
+            if psku:
+                m[_norm(psku)] = pid
+        for prod_id, vsku in self.db.query(
+            ProductVendorSource.product_id, ProductVendorSource.vendor_sku
+        ).all():
+            if vsku:
+                m.setdefault(_norm(vsku), prod_id)
+        return m
