@@ -51,6 +51,7 @@
 
 {% block content %}
 {% from "macros/linked_docs.html" import linked_strip %}
+{% import "macros/motion.html" as motion %}
 <div class="max-w-5xl space-y-4"
      x-data="{
        showNotes: {{ 'true' if (po.notes or po.internal_notes) else 'false' }},
@@ -661,9 +662,7 @@
   <div x-show="confirm.open" x-cloak class="fixed inset-0 z-[60] flex items-center justify-center">
     <div class="fixed inset-0 bg-black/40" @click="confirm.open = false"></div>
     <div class="relative z-[60] w-full max-w-lg mx-4 bg-white rounded-2xl shadow-2xl"
-         x-transition:enter="transition ease-out duration-150"
-         x-transition:enter-start="opacity-0 scale-95"
-         x-transition:enter-end="opacity-100 scale-100">
+         {{ motion.modal_scale() }}>
       <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
         <h3 class="font-semibold text-sm text-gray-900" x-text="confirm.title"></h3>
         <button type="button" @click="confirm.open = false"

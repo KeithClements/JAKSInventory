@@ -1,3 +1,4 @@
+{% import "macros/motion.html" as motion %}
 <tr id="xref-{{ xref.id }}" class="border-b border-gray-100">
 
   {# Type badge #}
@@ -42,9 +43,7 @@
       <div x-show="open"
            @click.outside="open = false"
            x-cloak
-           x-transition:enter="transition ease-out duration-100"
-           x-transition:enter-start="opacity-0 scale-95"
-           x-transition:enter-end="opacity-100 scale-100"
+           {{ motion.dropdown_scale() }}
            class="absolute left-0 top-full mt-1 z-20 min-w-[170px] rounded-lg border border-gray-200 bg-white shadow-lg py-1">
         {% for s_val, s_label, s_color in [
           ('researching',      'Researching',      'text-gray-600'),

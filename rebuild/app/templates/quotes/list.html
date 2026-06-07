@@ -18,6 +18,7 @@
 {% from "macros/empty_state.html" import empty_state %}
 {% from "macros/filter_tabs.html" import filter_tabs %}
 {% from "macros/sortable.html" import sortable_th %}
+{% import "macros/motion.html" as motion %}
 {% set _sqs = '&status=' ~ status_filter ~ ('&q=' ~ (q | urlencode) if q else '') %}
 {% from "macros/bulk_toolbar.html" import bulk_toolbar %}
 {% from "macros/chips.html" import status_chip %}
@@ -79,10 +80,7 @@ function trapFocus(e, container) {
   <div x-show="open" x-cloak @click="open = false"
        aria-hidden="true"
        class="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm"
-       x-transition:enter="transition ease-out duration-150"
-       x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
-       x-transition:leave="transition ease-in duration-100"
-       x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0">
+       {{ motion.backdrop_fade() }}>
   </div>
 
   {# Panel #}
@@ -91,10 +89,7 @@ function trapFocus(e, container) {
        aria-modal="true"
        aria-labelledby="nq-modal-title"
        class="fixed inset-0 z-[60] flex items-center justify-center px-4 pointer-events-none"
-       x-transition:enter="transition ease-out duration-200"
-       x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
-       x-transition:leave="transition ease-in duration-150"
-       x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95">
+       {{ motion.modal_scale() }}>
 
     <form action="/quotes/new" method="post"
           class="bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-lg pointer-events-auto overflow-hidden"

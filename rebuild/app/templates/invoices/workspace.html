@@ -93,6 +93,7 @@
 {% from "macros/linked_docs.html" import linked_strip %}
 {% import "macros/customer_flags.html" as flagmacro %}
 {% import "macros/intelligence.html" as intel %}
+{% import "macros/motion.html" as motion %}
 <div class="max-w-6xl space-y-3"
      x-data="{
        showVehicleInfo: {{ 'true' if (invoice.esn or invoice.engine_manufacturer or invoice.engine_model) else 'false' }},
@@ -392,17 +393,11 @@
   <div x-show="changeCustomerOpen" x-cloak
        @click="changeCustomerOpen = false"
        class="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm"
-       x-transition:enter="transition ease-out duration-150"
-       x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
-       x-transition:leave="transition ease-in duration-100"
-       x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"></div>
+       {{ motion.backdrop_fade() }}></div>
   {# Panel #}
   <div x-show="changeCustomerOpen" x-cloak
        class="fixed inset-0 z-[60] flex items-center justify-center p-4"
-       x-transition:enter="transition ease-out duration-200"
-       x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
-       x-transition:leave="transition ease-in duration-100"
-       x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95">
+       {{ motion.modal_scale() }}>
     <div @click.stop class="w-full max-w-lg rounded-2xl bg-white shadow-2xl overflow-hidden">
       <form method="post" action="/invoices/{{ invoice.id }}/change-customer">
         {# Header #}
@@ -674,17 +669,11 @@
     <div x-show="paymentOpen" x-cloak
          @click="paymentOpen = false"
          class="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm"
-         x-transition:enter="transition ease-out duration-150"
-         x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
-         x-transition:leave="transition ease-in duration-100"
-         x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"></div>
+         {{ motion.backdrop_fade() }}></div>
     {# Panel #}
     <div x-show="paymentOpen" x-cloak
          class="fixed inset-0 z-[60] flex items-center justify-center p-4"
-         x-transition:enter="transition ease-out duration-200"
-         x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
-         x-transition:leave="transition ease-in duration-100"
-         x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95">
+         {{ motion.modal_scale() }}>
       <div @click.stop class="w-full max-w-2xl rounded-2xl bg-white shadow-2xl overflow-hidden">
         {# Header #}
         <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
@@ -817,18 +806,12 @@
          @click="finalizeOpen = false"
          aria-hidden="true"
          class="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm"
-         x-transition:enter="transition ease-out duration-150"
-         x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
-         x-transition:leave="transition ease-in duration-100"
-         x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"></div>
+         {{ motion.backdrop_fade() }}></div>
     {# Panel #}
     <div x-show="finalizeOpen" x-cloak
          role="dialog" aria-modal="true" aria-labelledby="finalize-modal-title"
          class="fixed inset-0 z-[60] flex items-center justify-center p-4"
-         x-transition:enter="transition ease-out duration-200"
-         x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
-         x-transition:leave="transition ease-in duration-100"
-         x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95">
+         {{ motion.modal_scale() }}>
       <div @click.stop class="w-full max-w-lg rounded-2xl bg-white shadow-2xl overflow-hidden">
         <form method="post" action="/invoices/{{ invoice.id }}/finalise">
           {# Header #}
@@ -876,18 +859,12 @@
          @click="lineConfirmOpen = false"
          aria-hidden="true"
          class="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm"
-         x-transition:enter="transition ease-out duration-150"
-         x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
-         x-transition:leave="transition ease-in duration-100"
-         x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"></div>
+         {{ motion.backdrop_fade() }}></div>
     {# Panel #}
     <div x-show="lineConfirmOpen" x-cloak
          role="dialog" aria-modal="true" aria-labelledby="line-confirm-modal-title"
          class="fixed inset-0 z-[60] flex items-center justify-center p-4"
-         x-transition:enter="transition ease-out duration-200"
-         x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
-         x-transition:leave="transition ease-in duration-100"
-         x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95">
+         {{ motion.modal_scale() }}>
       <div @click.stop class="w-full max-w-lg rounded-2xl bg-white shadow-2xl overflow-hidden">
         {# Header #}
         <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
@@ -924,17 +901,11 @@
     <div x-show="voidOpen" x-cloak
          @click="voidOpen = false"
          class="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm"
-         x-transition:enter="transition ease-out duration-150"
-         x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
-         x-transition:leave="transition ease-in duration-100"
-         x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"></div>
+         {{ motion.backdrop_fade() }}></div>
     {# Panel #}
     <div x-show="voidOpen" x-cloak
          class="fixed inset-0 z-[60] flex items-center justify-center p-4"
-         x-transition:enter="transition ease-out duration-200"
-         x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
-         x-transition:leave="transition ease-in duration-100"
-         x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95">
+         {{ motion.modal_scale() }}>
       <div @click.stop class="w-full max-w-lg rounded-2xl bg-white shadow-2xl overflow-hidden">
         <form method="post" action="/invoices/{{ invoice.id }}/void">
           {# Header #}
