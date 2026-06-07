@@ -19,8 +19,6 @@ import pathlib
 import sys
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -32,6 +30,7 @@ from app.models.product import (
 )
 from app.models.competitor import CompetitorPrice, CompetitorPriceHistory
 from app.services.product_import_service import ProductImportService
+from tests.conftest import activate, fresh_engine
 
 
 _HEADER = [
@@ -96,9 +95,13 @@ def _product_by_pai(db, pai_part):
 
 @pytest.fixture()
 def db():
-    eng = create_engine("sqlite:///:memory:")
-    appdb.Base.metadata.create_all(eng)
-    s = Session(eng)
+    # Per-test fresh engine via the shared isolation harness: StaticPool +
+    # activate() repoints app.database.engine/SessionLocal/get_db at THIS engine,
+    # so any global-session reach (routes, background tasks, future edits) hits
+    # the same in-memory DB the test reads — never the prior module's engine.
+    # See conftest docstring for the cross-module-leak this prevents.
+    activate(fresh_engine())
+    s = appdb.SessionLocal()
     try:
         yield s
     finally:

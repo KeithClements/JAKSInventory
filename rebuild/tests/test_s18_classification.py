@@ -12,8 +12,6 @@ import pathlib
 import sys
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -22,13 +20,19 @@ import app.models  # noqa: F401 — registers all models
 from app.models.product import Product, ProductCategory
 from app.services.classification_service import ClassificationService, normalize_make
 from app.services.product_import_service import ProductImportService
+from tests.conftest import activate, fresh_engine
 
 
 @pytest.fixture()
 def db():
-    eng = create_engine("sqlite:///:memory:")
-    appdb.Base.metadata.create_all(eng)
-    s = Session(eng)
+    # Per-test fresh engine via the shared isolation harness: StaticPool +
+    # activate() repoints app.database.engine/SessionLocal/get_db at THIS engine,
+    # so any global-session reach (routes, run_background_staging, future edits)
+    # hits the same in-memory DB the test reads — never the prior module's engine.
+    # (Was a raw create_engine(':memory:') with no activate() — the last of the
+    # three import-path modules that bypassed conftest; see conftest docstring.)
+    activate(fresh_engine())
+    s = appdb.SessionLocal()
     try:
         yield s
     finally:
