@@ -133,31 +133,71 @@
   <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
     <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Pricing</h2>
 
-    <div class="grid grid-cols-3 gap-4">
-      <div>
-        <label class="block text-xs font-medium text-gray-500 mb-1">Our Cost ($)</label>
-        <input name="cost" type="number" step="0.01" min="0"
-               value="{{ form_data.cost if form_data else '' }}"
-               placeholder="0.00"
-               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+    {# Pricing inputs + LIVE "what you charge" readout. Inline x-data mirrors the
+       core-charge block below; the math matches PricingService.sell_price_for —
+       price_override wins, else cost × (1 + markup/100), blank markup → default. #}
+    <div x-data="{
+           cost: {% if form_data and form_data.get('cost') not in (None, '') %}{{ form_data.cost|float(0) }}{% else %}null{% endif %},
+           markup: {% if form_data and form_data.get('markup_pct') not in (None, '') %}{{ form_data.markup_pct|float(0) }}{% else %}null{% endif %},
+           override: {% if form_data and form_data.get('price_override') not in (None, '') %}{{ form_data.price_override|float(0) }}{% else %}null{% endif %},
+           defaultMarkup: {{ default_markup|float(30) }},
+           get usingOverride() { return this.override !== null && this.override !== '' && Number(this.override) > 0; },
+           get effMarkup() { return (this.markup === null || this.markup === '') ? this.defaultMarkup : Number(this.markup); },
+           get hasInput() { return this.usingOverride || Number(this.cost) > 0; },
+           get sellPrice() { return this.usingOverride ? Number(this.override) : Math.round((Number(this.cost)||0) * (1 + this.effMarkup/100) * 100) / 100; },
+           get marginPct() { const s = this.sellPrice, c = Number(this.cost)||0; return (!s || !c) ? null : Math.round((s-c)/s*1000)/10; }
+         }">
+      <div class="grid grid-cols-3 gap-4">
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">Our Cost ($)</label>
+          <input name="cost" type="number" step="0.01" min="0"
+                 x-model.number="cost"
+                 value="{{ form_data.cost if form_data else '' }}"
+                 placeholder="0.00"
+                 class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">
+            Markup % <span class="text-gray-400 font-normal">(blank = {{ default_markup }}% default)</span>
+          </label>
+          <input name="markup_pct" type="number" step="0.1" min="0"
+                 x-model.number="markup"
+                 value="{{ form_data.markup_pct if form_data else '' }}"
+                 placeholder="{{ default_markup }}"
+                 class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">
+            Price Override ($) <span class="text-gray-400 font-normal">(skips markup)</span>
+          </label>
+          <input name="price_override" type="number" step="0.01" min="0"
+                 x-model.number="override"
+                 value="{{ form_data.price_override if form_data else '' }}"
+                 placeholder="Leave blank"
+                 class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        </div>
       </div>
-      <div>
-        <label class="block text-xs font-medium text-gray-500 mb-1">
-          Markup % <span class="text-gray-400 font-normal">(blank = {{ default_markup }}% default)</span>
-        </label>
-        <input name="markup_pct" type="number" step="0.1" min="0"
-               value="{{ form_data.markup_pct if form_data else '' }}"
-               placeholder="{{ default_markup }}"
-               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
-      </div>
-      <div>
-        <label class="block text-xs font-medium text-gray-500 mb-1">
-          Price Override ($) <span class="text-gray-400 font-normal">(skips markup)</span>
-        </label>
-        <input name="price_override" type="number" step="0.01" min="0"
-               value="{{ form_data.price_override if form_data else '' }}"
-               placeholder="Leave blank"
-               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+
+      {# Live readout — updates as cost / markup / override change. #}
+      <div x-cloak class="mt-4 flex items-end justify-between gap-4 rounded-lg border border-gray-100 bg-gray-50 px-4 py-3">
+        <div>
+          <div class="text-[10px] font-bold uppercase tracking-widest text-gray-400">You Charge</div>
+          <div class="text-2xl font-bold tabular-nums text-gray-900"
+               x-text="hasInput ? ('$' + sellPrice.toFixed(2)) : '—'"></div>
+        </div>
+        <div class="text-right text-xs text-gray-500 space-y-0.5">
+          <div x-show="usingOverride" class="text-gray-600">via price override</div>
+          <div x-show="!usingOverride && hasInput">
+            <span class="tabular-nums" x-text="'$' + (Number(cost)||0).toFixed(2)"></span> cost
+            × <span class="tabular-nums" x-text="effMarkup + '%'"></span> markup<span
+              x-show="markup === null || markup === ''"> (default)</span>
+          </div>
+          <div x-show="marginPct !== null">
+            Margin <span class="font-semibold tabular-nums"
+                         :class="marginPct < 0 ? 'text-red-600' : 'text-gray-700'"
+                         x-text="(marginPct || 0).toFixed(1) + '%'"></span>
+          </div>
+        </div>
       </div>
     </div>
 

@@ -1795,6 +1795,21 @@ shared `line_items/_line_adder.html` include; verified **in-tree**, not on repor
 (stale smoke add-part selectors) and Backend's (delete the now-dead per-doc search routes/partials per
 Contract §4).
 
+**§8H.4 amendment — results row is now TWO LINES (owner request, 2026-06-06).** The original single-line
+row pinned the SKU to a fixed `w-24` (~13 chars) with `truncate`; real PAI SKUs average ~16 chars and run
+to 29 (`JAKS-PAI-MAK6635-PFT2AWHT1000`), so the dropdown clipped nearly every SKU (`JAKS-PAI-3400…`). Owner
+asked for the full SKU + room for more info. The row in `line_items/_line_adder.html` now stacks:
+- **Line 1:** match chip · **full SKU** (`font-mono text-blue-700`, `whitespace-nowrap`, never truncated) ·
+  title (`truncate`). Right rail top: **price**.
+- **Line 2 (metadata, `text-[11px]`):** **vendor_name** (`text-purple-600` — vendor=purple per §4; newly
+  surfaced, the JSON already returned it) · OEM/cross-ref (gray) · last-sold (gray). Right rail bottom:
+  qty_available (red-at-0 / gray) + core chip (orange).
+**No new colors/classes/tokens** — every token is pre-existing §8H.4/§4; only the flex layout changed from
+one row to two. Applies to all four workspaces (Quote/SO/Invoice/PO) via the shared include. Keyboard-nav
+contract preserved (`#la-result-{idx}` ids, `selectProduct(r)` on click/Enter, arrow handlers) so the
+§9 smoke add-part step is unaffected. Verified in-browser on `/quotes/9`: `JAKS-PAI-DRS-4312G-010` renders
+in full (not clipped) with vendor "PAI Industries" on line 2.
+
 ---
 
 #### 8I. Phase-1A O-UI Visual Contracts — SET (Architect, 2026-05-31)

@@ -142,15 +142,25 @@
         </div>
       </div>
 
-      {# Pricing card #}
-      <div class="card">
+      {# Pricing card — x-data makes the sell price + margin update LIVE as cost /
+         markup / override are edited (math matches PricingService.sell_price_for).
+         Seeded from the saved product so it shows the same number before Alpine. #}
+      <div class="card" x-data="{
+             cost: {{ product.cost|float(0) }},
+             markup: {% if product.markup_pct is not none %}{{ product.markup_pct|float(0) }}{% else %}null{% endif %},
+             override: {% if product.price_override %}{{ product.price_override|float(0) }}{% else %}null{% endif %},
+             defaultMarkup: {{ default_markup|float(30) }},
+             get usingOverride() { return this.override !== null && this.override !== '' && Number(this.override) > 0; },
+             get effMarkup() { return (this.markup === null || this.markup === '') ? this.defaultMarkup : Number(this.markup); },
+             get sellPrice() { return this.usingOverride ? Number(this.override) : Math.round((Number(this.cost)||0) * (1 + this.effMarkup/100) * 100) / 100; },
+             get marginPct() { const s = this.sellPrice, c = Number(this.cost)||0; return (!s || !c) ? null : Math.round((s-c)/s*1000)/10; }
+           }">
         <div class="card-header">
           <h2 class="card-title flex items-center gap-3">
             Pricing
-            <span class="text-green-700 font-bold text-base">→ ${{ "%.2f"|format(product.selling_price) }}</span>
-            {% if product.price_override %}
-              <span class="badge-amber font-normal">price override</span>
-            {% endif %}
+            <span class="text-green-700 font-bold text-base"
+                  x-text="'→ $' + sellPrice.toFixed(2)">→ ${{ "%.2f"|format(product.selling_price) }}</span>
+            <span x-show="usingOverride" x-cloak class="badge-amber font-normal">price override</span>
           </h2>
         </div>
         <div class="card-body space-y-4">
@@ -158,6 +168,7 @@
             <div>
               <label class="form-label">Our Cost ($)</label>
               <input name="cost" type="number" step="0.01" min="0"
+                     x-model.number="cost"
                      value="{{ "%.2f"|format(product.cost) }}" class="form-input" />
               {% if product.cost_source %}
                 <p class="mt-0.5 text-xs text-gray-400">Source: {{ product.cost_source }}</p>
@@ -166,12 +177,14 @@
             <div>
               <label class="form-label">Markup %</label>
               <input name="markup_pct" type="number" step="0.1" min="0"
+                     x-model.number="markup"
                      value="{{ product.markup_pct or '' }}" placeholder="Global default"
                      class="form-input" />
             </div>
             <div>
               <label class="form-label">Price Override ($)</label>
               <input name="price_override" type="number" step="0.01" min="0"
+                     x-model.number="override"
                      value="{{ product.price_override or '' }}" placeholder="Leave blank for markup"
                      class="form-input" />
             </div>
@@ -194,7 +207,9 @@
             </div>
             <div x-show="showMargin" x-cloak>
               <label class="form-label">Margin</label>
-              <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm font-medium tabular-nums text-gray-700">{{ ("%.1f%%"|format(product.margin_percent)) if (product.cost and product.margin_percent is not none) else "— (set on receipt)" }}</div>
+              <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm font-medium tabular-nums"
+                   :class="marginPct !== null && marginPct < 0 ? 'text-red-600' : 'text-gray-700'"
+                   x-text="marginPct !== null ? (marginPct.toFixed(1) + '%') : '— (set on receipt)'">{{ ("%.1f%%"|format(product.margin_percent)) if (product.cost and product.margin_percent is not none) else "— (set on receipt)" }}</div>
             </div>
           </div>
           {% endif %}
