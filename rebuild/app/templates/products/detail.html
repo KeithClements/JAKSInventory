@@ -158,7 +158,7 @@
             <div>
               <label class="form-label">Our Cost ($)</label>
               <input name="cost" type="number" step="0.01" min="0"
-                     value="{{ product.cost }}" class="form-input" />
+                     value="{{ "%.2f"|format(product.cost) }}" class="form-input" />
               {% if product.cost_source %}
                 <p class="mt-0.5 text-xs text-gray-400">Source: {{ product.cost_source }}</p>
               {% endif %}

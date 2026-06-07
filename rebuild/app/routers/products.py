@@ -82,8 +82,11 @@ def product_list(
             Product.qty_on_hand > 0,
             Product.qty_on_hand <= Product.reorder_point,
         )
+    elif tab == "in_stock":
+        query = base.filter(Product.qty_on_hand > 0)
     elif tab == "out_of_stock":
-        query = base.filter(Product.qty_on_hand == 0)
+        # Real stockouts only — special-order parts are qty 0 by design, not "out".
+        query = base.filter(Product.qty_on_hand == 0, Product.special_order_only == False)  # noqa: E712
     elif tab == "special_order":
         query = base.filter(Product.special_order_only == True)  # noqa: E712
     else:
@@ -148,16 +151,17 @@ def product_list(
     # Tab counts (always based on full active set, ignoring current tab/search)
     counts = {
         "all": base.count(),
+        "in_stock": base.filter(Product.qty_on_hand > 0).count(),
         "low_stock": base.filter(
             Product.reorder_point > 0,
             Product.qty_on_hand > 0,
             Product.qty_on_hand <= Product.reorder_point,
         ).count(),
-        "out_of_stock": db.query(Product).filter(
-            Product.is_active == True, Product.qty_on_hand == 0  # noqa: E712
+        "out_of_stock": base.filter(
+            Product.qty_on_hand == 0, Product.special_order_only == False  # noqa: E712
         ).count(),
-        "special_order": db.query(Product).filter(
-            Product.is_active == True, Product.special_order_only == True  # noqa: E712
+        "special_order": base.filter(
+            Product.special_order_only == True  # noqa: E712
         ).count(),
     }
 
@@ -364,8 +368,10 @@ def product_export_csv(
             Product.qty_on_hand > 0,
             Product.qty_on_hand <= Product.reorder_point,
         )
+    elif tab == "in_stock":
+        base = base.filter(Product.qty_on_hand > 0)
     elif tab == "out_of_stock":
-        base = base.filter(Product.qty_on_hand == 0)
+        base = base.filter(Product.qty_on_hand == 0, Product.special_order_only == False)  # noqa: E712
     elif tab == "special_order":
         base = base.filter(Product.special_order_only == True)  # noqa: E712
 
