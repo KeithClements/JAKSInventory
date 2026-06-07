@@ -64,7 +64,10 @@
         {% endif %}
         <div class="flex items-center justify-between">
           <span class="text-xs text-gray-500">Sell Price</span>
-          <span class="text-sm font-bold text-gray-900 tabular-nums">${{ "%.2f"|format(p.selling_price) }}</span>
+          {# STAGED — Backend-resolved price when present (scalar resolved_price or
+             resolved_price_map[p.id]), else stored selling_price. Guarded, no-op until then. #}
+          {% set _rp = resolved_price if (resolved_price is defined and resolved_price is not none) else (resolved_price_map | default({})).get(p.id) %}
+          <span class="text-sm font-bold text-gray-900 tabular-nums">${{ "%.2f"|format(_rp if _rp is not none else p.selling_price) }}</span>
         </div>
         <div class="flex items-center justify-between pt-1 border-t border-gray-100">
           <span class="text-xs text-gray-500">Margin</span>

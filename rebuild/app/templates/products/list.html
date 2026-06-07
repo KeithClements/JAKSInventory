@@ -427,9 +427,12 @@
             <span class="text-sm text-gray-500 tabular-nums">${{ "%.2f"|format(p.cost) }}</span>
           </td>
 
-          {# Sell price #}
+          {# Sell price — renders the Backend-resolved price when present (STAGED, pairs
+             with Backend #2's resolved_price_map seam), else the stored selling_price.
+             Guarded → no change until the route passes the map. #}
           <td class="px-4 py-4 align-middle text-right">
-            <span class="text-sm font-bold text-gray-900 tabular-nums">${{ "%.2f"|format(p.selling_price) }}</span>
+            {% set _rp = (resolved_price_map | default({})).get(p.id) %}
+            <span class="text-sm font-bold text-gray-900 tabular-nums">${{ "%.2f"|format(_rp if _rp is not none else p.selling_price) }}</span>
           </td>
 
           {# Margin % — '—' when cost is $0 (unknown) so a 0-cost import doesn't read as 100% #}
