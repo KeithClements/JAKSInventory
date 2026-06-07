@@ -199,11 +199,18 @@ def step_save_quote(ctx: SmokeContext, step) -> None:
     notes = page.locator("#quote-header-form textarea[name='notes']")
     expect(notes).to_be_visible(timeout=8_000)
     notes.fill(f"Smoke autosave check {ctx.run_id}")
-    # Editing fires the input listener which schedules a 2.5s debounced fetch POST
-    # to /quotes/{id}/autosave; on success the JS sets '✓ All changes saved'.
-    # (Initial text is 'Saved automatically', so match the post-save string.)
-    expect(page.locator("#autosave-status")).to_contain_text("All changes saved", timeout=10_000)
-    step.actual = f"Header autosave confirmed (#autosave-status: '{page.locator('#autosave-status').inner_text().strip()}')"
+    # Save Standard v2 (workspace.html sticky save bar): editing a #quote-header-form
+    # field flips the pill to 'Unsaved changes' (dirty) and schedules a debounced
+    # POST /quotes/{id}/autosave. The manual 'Save' button force-flushes and, on
+    # success, surfaces the distinct green 'Quote saved' toast. (The old
+    # #autosave-status / 'All changes saved' element was removed in this rework.)
+    expect(page.get_by_text("Unsaved changes")).to_be_visible(timeout=5_000)
+    page.get_by_role("button", name="Save", exact=True).click()
+    expect(page.get_by_text("Quote saved")).to_be_visible(timeout=10_000)
+    step.actual = (
+        "Header autosave confirmed — editing notes flipped the save pill to "
+        "'Unsaved changes', and the manual Save flushed to a 'Quote saved' toast."
+    )
 
 
 def step_convert_quote_to_so(ctx: SmokeContext, step) -> None:
@@ -430,6 +437,10 @@ def step_confirm_inventory(ctx: SmokeContext, step) -> None:
     # ── Confirm the change is reflected in the product-detail UI (not just the DB) ──
     db_qty = factories.get_qty_on_hand(ctx.SessionLocal, ui_product_id)
     page.goto(f"{ctx.base_url}/products/{ui_product_id}", wait_until="domcontentloaded")
+    # 'On Hand' lives in the Stock Levels card on the product-detail INVENTORY tab
+    # (x-show="tab==='inventory'"); the page opens on the Info tab, so activate the
+    # Inventory tab first or the cell stays hidden (display:none).
+    page.locator('nav.tab-bar button:has-text("Inventory")').click()
     on_hand_cell = page.locator(
         "xpath=//label[normalize-space(.)='On Hand']/following-sibling::div[1]"
     ).first
@@ -457,8 +468,8 @@ STEPS: list[Step] = [
          "A new line row appears in #quote-lines-tbody",
          ("quote_id",), step_add_product_to_quote),
     Step("save_quote", "Save quote",
-         "Edit the quote notes and blur to trigger header autosave",
-         "#autosave-status shows 'All changes saved'",
+         "Edit the quote notes (save bar flips to 'Unsaved changes'), then click Save",
+         "Manual Save force-flushes the autosave → a 'Quote saved' toast appears",
          ("quote_id",), step_save_quote),
     Step("convert_quote_to_so", "Convert quote to sales order",
          "Open '→ Sales Order' popover and click 'Create Sales Order'",
@@ -525,6 +536,47 @@ def _missing_requirement(ctx: SmokeContext, requires: tuple[str, ...]) -> str | 
     return None
 
 
+def _login(page, base_url: str) -> None:
+    """Authenticate the smoke browser session once, before the workflow steps.
+
+    Since O2 enforcement landed there are TWO independent auth gates:
+      1. app.main `enforce_login` middleware — bypassed by JAKS_SKIP_AUTH (conftest
+         sets it for the in-memory TestClient suite).
+      2. app.deps.get_current_user_id — bypassed ONLY when the engine URL contains
+         ':memory:' (see ``_is_test_env``).
+    The smoke server runs against a real FILE SQLite DB on purpose (so the runner
+    can read inventory back), so gate #2 stays ARMED — every protected route 302s
+    to /login until the browser holds a valid signed session cookie. So we sign in
+    through the real form exactly as a user would; the cookie then rides every
+    subsequent request, including the same-origin JSON product-search ``fetch``.
+
+    The admin/admin user is seeded at startup by app.main._seed_default_user
+    (password overridable via JAKS_ADMIN_PASSWORD). A failure HERE is a harness /
+    auth-change problem, not a product bug — raise so the suite is marked a
+    bootstrap ERROR with a clear message rather than every step FAILing or
+    SKIPping confusingly downstream.
+    """
+    password = os.environ.get("JAKS_ADMIN_PASSWORD", "admin")
+    try:
+        page.goto(f"{base_url}/login", wait_until="domcontentloaded")
+        page.fill('input[name="username"]', "admin")
+        page.fill('input[name="password"]', password)
+        page.locator('form[action="/login"] button[type="submit"]').click()
+        # POST /login → 303 to / on success, or back to /login?error=1 on failure.
+        # Wait until we have navigated AWAY from the login page.
+        page.wait_for_url(lambda url: "/login" not in url, timeout=10_000)
+    except Exception as exc:  # noqa: BLE001 — reframe as an explicit bootstrap error
+        raise RuntimeError(
+            "Smoke harness could not authenticate the browser session via POST /login "
+            "(admin / JAKS_ADMIN_PASSWORD). Every protected route 302s to /login until "
+            "this succeeds, so no workflow step can run. "
+            f"Underlying error: {type(exc).__name__}: {exc}. Landed on: {page.url}. "
+            "Verify app/routers/auth.py (Form fields 'username'/'password'), "
+            "app/templates/auth/login.html (matching input names + submit), and "
+            "app/main._seed_default_user (the admin user must be seeded)."
+        ) from exc
+
+
 def run_suite(*, headed: bool = False, keep_db: bool = False) -> R.SuiteResult:
     from playwright.sync_api import sync_playwright
 
@@ -567,6 +619,13 @@ def run_suite(*, headed: bool = False, keep_db: bool = False) -> R.SuiteResult:
             page = context.new_page()
             # Accept the native confirm() in the SO fulfill step (and any other).
             page.on("dialog", lambda d: d.accept())
+
+            # One-time auth BEFORE any step: O2 enforcement 302s every protected
+            # route to /login unless the browser holds a signed session cookie, and
+            # the smoke server's FILE DB keeps app.deps' auth gate armed. Sign in
+            # once here so the cookie rides every subsequent request. A failure
+            # raises → caught by the outer handler → suite marked a bootstrap ERROR.
+            _login(page, server.base_url)
 
             ctx = SmokeContext(
                 page=page,

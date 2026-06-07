@@ -21,7 +21,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
 
-from app.constants import RAStatus, ReturnDisposition
+from app.constants import LineType, RAStatus, ReturnDisposition
 from app.deps import get_current_user_id, get_db
 from app.models.credit_memo import CreditMemo
 from app.models.customer import Customer
@@ -145,6 +145,7 @@ def ra_list(
 def ra_new(
     request: Request,
     customer_id: int = 0,
+    invoice_id: int = 0,
     db: Session = Depends(get_db),
 ):
     if not request.headers.get("HX-Request"):
@@ -165,6 +166,36 @@ def ra_new(
         db.query(Customer).filter(Customer.id == customer_id).first()
         if customer_id else None
     )
+
+    # ── Seed from an originating invoice (After-Sale Service entry point) ──
+    # Pre-fills the customer, carries the invoice number, and pre-loads the
+    # invoice's physical parts (PRODUCT lines) as editable return lines priced
+    # at what the customer paid.
+    selected_invoice = None
+    seed_lines: list[dict] = []
+    if invoice_id:
+        selected_invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+        if selected_invoice is not None:
+            if selected_customer is None:
+                selected_customer = selected_invoice.customer
+            for ln in selected_invoice.lines:
+                if ln.line_type == LineType.PRODUCT and ln.product_id:
+                    seed_lines.append({
+                        "productId": ln.product_id,
+                        "qty": ln.qty,
+                        "price": round(ln.unit_price or 0.0, 2),
+                        "fee": "",
+                        "disp": ReturnDisposition.QUARANTINE,
+                    })
+
+    # Keep seeded products selectable even if since deactivated.
+    if seed_lines:
+        have = {p.id for p in products}
+        missing = [s["productId"] for s in seed_lines if s["productId"] not in have]
+        if missing:
+            extra = db.query(Product).filter(Product.id.in_(missing)).all()
+            products = sorted([*products, *extra], key=lambda p: (p.sku or ""))
+
     return templates.TemplateResponse(
         request,
         "returns/_new_picker.html",
@@ -172,6 +203,8 @@ def ra_new(
             "customers": customers,
             "products": products,
             "selected_customer": selected_customer,
+            "selected_invoice": selected_invoice,
+            "seed_lines": seed_lines,
             "ReturnDisposition": ReturnDisposition,
         },
     )

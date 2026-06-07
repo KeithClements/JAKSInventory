@@ -1,8 +1,12 @@
+{# seed_lines (set when launched from an invoice) injected as JSON in a script tag,
+   then parsed in x-init — never tojson-in-attribute (breaks on quotes). #}
+<script type="application/json" id="ra-seed-lines">{{ seed_lines | default([]) | tojson }}</script>
 <div x-data="{
   customerId: '{{ selected_customer.id if selected_customer else '' }}',
   lines: [{ productId: '', qty: 1, price: '', fee: '', disp: 'quarantine' }],
   addLine() { this.lines.push({ productId: '', qty: 1, price: '', fee: '', disp: 'quarantine' }); },
-}">
+}"
+x-init="lines = JSON.parse(document.getElementById('ra-seed-lines').textContent || '[]'); if (!lines.length) lines = [{ productId: '', qty: 1, price: '', fee: '', disp: 'quarantine' }]">
   <form method="post" action="/returns/new" class="space-y-4">
 
     <div>
@@ -20,6 +24,7 @@
     <div>
       <label class="form-label">Original Invoice # (optional)</label>
       <input type="text" name="invoice_number" placeholder="e.g. INV-2025-0042"
+             value="{{ selected_invoice.invoice_number if selected_invoice else '' }}"
              class="form-input font-mono" />
     </div>
 

@@ -145,16 +145,28 @@
     </div>
   </td>
 
-  {# QOH — colored dot + count; only meaningful for product lines #}
+  {# QOH — colored dot + on-hand count; only meaningful for product lines.
+     The dot/number color reflects SELLABLE availability (on_hand − committed),
+     not raw on-hand: stock already reserved to open sales orders must not read
+     as freely sellable (e.g. 1 on hand but committed = 0 available → red, not
+     amber).  Hover gives the full on-hand / committed / available breakdown so
+     the salesperson knows the unit is spoken for. #}
   <td class="px-2 py-1.5 text-center w-14">
     {% if line.product %}
       {% set _qoh = line.product.qty_on_hand %}
-      <div class="flex items-center justify-center gap-1">
+      {% set _committed = line.product.qty_committed %}
+      {% set _avail = line.product.qty_available %}
+      {% if _committed > 0 %}
+        {% set _qoh_title = _qoh ~ ' on hand · ' ~ _committed ~ ' committed to open orders · ' ~ (_avail if _avail > 0 else 0) ~ ' available to sell' %}
+      {% else %}
+        {% set _qoh_title = _qoh ~ ' on hand · available to sell' %}
+      {% endif %}
+      <div class="flex items-center justify-center gap-1" title="{{ _qoh_title }}">
         <span class="inline-block w-2 h-2 rounded-full shrink-0
-               {% if _qoh >= 2 %}bg-green-500{% elif _qoh == 1 %}bg-amber-400{% else %}bg-red-500{% endif %}">
+               {% if _avail >= 2 %}bg-green-500{% elif _avail == 1 %}bg-amber-400{% else %}bg-red-500{% endif %}">
         </span>
         <span class="font-mono text-xs font-semibold tabular-nums
-               {% if _qoh >= 2 %}text-green-700{% elif _qoh == 1 %}text-amber-600{% else %}text-red-600{% endif %}">
+               {% if _avail >= 2 %}text-green-700{% elif _avail == 1 %}text-amber-600{% else %}text-red-600{% endif %}">
           {{ _qoh }}
         </span>
       </div>

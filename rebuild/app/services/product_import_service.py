@@ -36,6 +36,7 @@ from collections import OrderedDict
 from datetime import datetime
 
 from app.constants import CrossRefType, ProductStatus
+from app.services.classification_service import ClassificationService
 from app.models.product import (
     Product, ProductCategory, ProductImage, ProductApplication,
     ProductVendorSource, CrossReference, ProductCostHistory,
@@ -179,7 +180,8 @@ class ProductImportService(BaseService):
             "mode": "full_import", "dry_run": dry_run,
             "products_seen": len(rows), "created": 0, "skipped_existing": 0,
             "skipped_no_sku": 0, "cross_refs": 0, "applications": 0, "images": 0,
-            "categories_created": 0, "vendor_sources": 0, "sample": [],
+            "categories_created": 0, "vendor_sources": 0, "needs_review": 0,
+            "classified": 0, "sample": [],
         }
         if not rows:
             return summary
@@ -187,6 +189,7 @@ class ProductImportService(BaseService):
         existing = {s.strip().lower() for (s,) in self.db.query(Product.sku).all() if s}
         cat_cache = {c.name.strip().lower(): c.id for c in self.db.query(ProductCategory).all()}
         pai_id = self._resolve_pai_vendor(dry_run)
+        classifier = ClassificationService(self.db)   # §18.6 — rules cache built once
         seen: set[str] = set()
         committed = 0
 
@@ -202,6 +205,16 @@ class ProductImportService(BaseService):
             seen.add(k)
 
             cat_id = self._resolve_category(p["type"], cat_cache, summary, dry_run)
+            # §18.6 — refine below the Shopify-Type category + derive engine make.
+            cls = classifier.classify(
+                title=p["title"], tags=p.get("tags", ""),
+                app_makes=[_split_two(a)[0] for a in p["apps"]],
+                app_models=[_split_two(a)[1] for a in p["apps"]],
+            )
+            if cls["needs_review"]:
+                summary["needs_review"] += 1
+            if cls["category_id"] or cls["engine_manufacturer"]:
+                summary["classified"] += 1
             n_oem = sum(1 for it in p["oem"] if _split_two(it)[1])
             n_app = len(p["apps"])
             n_img = len(p["images"]) if import_images else 0
@@ -227,10 +240,15 @@ class ProductImportService(BaseService):
             product = Product(
                 sku=sku,
                 title=p["title"][:500],
-                brand=_PAI_VENDOR_CODE,
-                manufacturer=_PAI_VENDOR_NAME,
+                brand=_PAI_VENDOR_CODE,                          # §18.2 — Brand (correct)
+                # §18.2 / A1: do NOT set manufacturer to the vendor name. Manufacturer =
+                # engine make (engine_manufacturer), filled by the §18.6 classification
+                # pass. Left blank here so Brand != Vendor != Manufacturer stays clean.
                 barcode=p["barcode"] or None,
-                category_id=cat_id,
+                category_id=cls["category_id"] or cat_id,        # §18.6 — deeper if confident, else Type
+                engine_manufacturer=cls["engine_manufacturer"],  # §18 A1 — Manufacturer = engine make
+                engine_model=cls["engine_model"],
+                needs_review=cls["needs_review"],                 # §18.6 — low-confidence → Import Review
                 status=ProductStatus.ACTIVE,
                 is_active=True,
                 special_order_only=True,

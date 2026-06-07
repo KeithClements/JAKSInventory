@@ -21,6 +21,8 @@ from app.models.customer import (
 )
 from app.models.product import (
     ProductCategory,
+    Brand,
+    Manufacturer,
     Product,
     ProductVendorSource,
     ProductImage,
@@ -114,6 +116,8 @@ __all_models__ = [
     CustomerCallLog,
     CustomerTypeDefault,
     ProductCategory,
+    Brand,
+    Manufacturer,
     Product,
     ProductVendorSource,
     ProductImage,

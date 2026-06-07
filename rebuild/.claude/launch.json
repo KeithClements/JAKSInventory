@@ -6,6 +6,12 @@
       "runtimeExecutable": ".venv\\Scripts\\python.exe",
       "runtimeArgs": ["run.py"],
       "port": 8000
+    },
+    {
+      "name": "lead-finder",
+      "runtimeExecutable": "C:\\Users\\keith\\JAKSLeadFinder\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--app-dir", "C:\\Users\\keith\\JAKSLeadFinder", "--host", "127.0.0.1", "--port", "8200"],
+      "port": 8200
     }
   ]
 }

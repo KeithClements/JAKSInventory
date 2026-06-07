@@ -1,0 +1,16 @@
+# ── rebuild/ ignores (supplements the repo-root .gitignore) ──────────────────
+
+# Node tooling (Tailwind build) — package-lock.json IS tracked; the tree is not.
+node_modules/
+
+# Local SQLite database + its backups — throwaway / re-importable, never tracked.
+data/
+
+# Generated visual-regression artifacts (test output, not source).
+tests/visual/diffs/
+
+# User-uploaded files (company logos, etc.) — runtime data, not source.
+app/static/uploads/
+
+# Scratch / logs
+*.log

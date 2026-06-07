@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from app.constants import (
     QuoteOutcome, QuoteStatus, SOPaymentMode, LineRole,
     LostReason, LOST_REASON_LABELS,
+    ENGINE_MAKES, ENGINE_MODELS_BY_MAKE,
 )
 from app.deps import get_current_user_id, get_db
 from app.services.document_render import get_company_dict, get_prepared_by
@@ -390,6 +391,9 @@ async def workspace(
             # P2-D7 — structured Mark-Lost reason picker (UI wires the dropdown).
             "lost_reasons": list(LostReason),
             "lost_reason_labels": LOST_REASON_LABELS,
+            # Standardized engine make/model cascading picker (header).
+            "engine_makes": ENGINE_MAKES,
+            "engine_models_by_make": ENGINE_MODELS_BY_MAKE,
             # Seam 3 — customer relationship context while quoting
             **_quote_customer_ctx(db, quote),
             **_totals_ctx(quote),

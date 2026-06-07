@@ -85,9 +85,11 @@
     .doc-dates .overdue { color: #dc2626; font-weight: 600; }
 
     /* ── "Bill To" block ───────────────────────────────────────────────────── */
+    /* gap matches documents/_styles.html .party-row (36px) so the customer +
+       reference row lines up identically with quotes & sales orders. */
     .bill-row {
       display: flex;
-      gap: 48px;
+      gap: 36px;
       margin-bottom: 22px;
     }
     .bill-block { flex: 1; }
@@ -102,7 +104,7 @@
     /* ── Reference fields block ────────────────────────────────────────────── */
     .ref-block { font-size: 8.5pt; color: #555; line-height: 1.85; }
     .ref-row { display: flex; gap: 8px; }
-    .ref-label { color: #9ca3af; width: 90px; shrink: 0; font-size: 7.5pt; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; }
+    .ref-label { color: #9ca3af; width: 110px; flex-shrink: 0; font-size: 7.5pt; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; }
     .ref-val   { font-family: monospace; color: #374151; }
 
     /* ── Lines table ───────────────────────────────────────────────────────── */

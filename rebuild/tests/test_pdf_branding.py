@@ -68,7 +68,8 @@ def _set(db, key, value):
 def test_branding_settings_seeded(db):
     # startup seed_settings ran via the client fixture
     keys = {s.key for s in db.query(Setting).all()}
-    assert {"company_logo_path", "document_footer_text", "document_show_logo"} <= keys
+    assert {"company_logo_path", "document_footer_text", "document_show_logo",
+            "document_logo_height"} <= keys
 
 
 # ── 2. get_company_dict empty-safe (no regression) ─────────────────────────────
@@ -102,6 +103,36 @@ def test_company_dict_footer_text(db):
     _set(db, "document_footer_text", "")
 
 
+# ── 2b. Owner-adjustable logo height (empty-safe + clamped) ────────────────────
+
+def test_company_dict_logo_height_default(db):
+    _set(db, "document_logo_height", "56")
+    assert get_company_dict(db)["logo_height"] == 56
+
+
+def test_company_dict_logo_height_custom(db):
+    _set(db, "document_logo_height", "96")
+    assert get_company_dict(db)["logo_height"] == 96
+    _set(db, "document_logo_height", "56")   # reset for other tests
+
+
+def test_company_dict_logo_height_clamped(db):
+    # absurd values are clamped to the safe 24–160 px range, never break the doc
+    _set(db, "document_logo_height", "9999")
+    assert get_company_dict(db)["logo_height"] == 160
+    _set(db, "document_logo_height", "1")
+    assert get_company_dict(db)["logo_height"] == 24
+    _set(db, "document_logo_height", "56")   # reset
+
+
+def test_company_dict_logo_height_non_numeric_falls_back(db):
+    _set(db, "document_logo_height", "huge please")
+    assert get_company_dict(db)["logo_height"] == 56     # invalid → default
+    _set(db, "document_logo_height", "")
+    assert get_company_dict(db)["logo_height"] == 56     # blank → default
+    _set(db, "document_logo_height", "56")   # reset
+
+
 # ── 3. Upload route ────────────────────────────────────────────────────────────
 
 def test_upload_logo_valid(client, db, monkeypatch, tmp_path):
@@ -125,7 +156,9 @@ def test_upload_logo_rejects_non_image(client, db, monkeypatch, tmp_path):
     r = client.post("/settings/logo",
                     files={"file": ("evil.txt", b"not an image", "text/plain")},
                     follow_redirects=False)
-    assert r.status_code == 400
+    # Full-page form → redirect back to settings with a friendly error, not raw JSON.
+    assert r.status_code == 303
+    assert "logo_error" in r.headers["location"]
     db.expire_all()
     after = db.query(Setting).filter(Setting.key == "company_logo_path").first().value
     assert after == before                # setting unchanged
@@ -134,10 +167,15 @@ def test_upload_logo_rejects_non_image(client, db, monkeypatch, tmp_path):
 def test_upload_logo_rejects_oversize(client, db, monkeypatch, tmp_path):
     monkeypatch.setattr(settings_mod, "_UPLOAD_DIR", tmp_path)
     monkeypatch.setattr(settings_mod, "_MAX_LOGO_BYTES", 8)   # tiny cap
+    before = db.query(Setting).filter(Setting.key == "company_logo_path").first().value
     r = client.post("/settings/logo",
                     files={"file": ("big.png", _PNG, "image/png")},
                     follow_redirects=False)
-    assert r.status_code == 400
+    assert r.status_code == 303
+    assert "logo_error" in r.headers["location"]
+    db.expire_all()
+    after = db.query(Setting).filter(Setting.key == "company_logo_path").first().value
+    assert after == before                # oversize never written
 
 
 def test_upload_logo_rejects_wrong_extension(client, db, monkeypatch, tmp_path):
@@ -146,4 +184,5 @@ def test_upload_logo_rejects_wrong_extension(client, db, monkeypatch, tmp_path):
     r = client.post("/settings/logo",
                     files={"file": ("logo.svg", _PNG, "image/svg+xml")},
                     follow_redirects=False)
-    assert r.status_code == 400
+    assert r.status_code == 303
+    assert "logo_error" in r.headers["location"]

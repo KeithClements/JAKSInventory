@@ -33,6 +33,14 @@
       </div>
 
       <div>
+        <label class="block text-xs font-medium text-gray-500 mb-1">
+          SKU # <span class="font-normal text-gray-400 normal-case">(1 digit, used in JAKS SKUs — e.g. 9)</span>
+        </label>
+        <input name="vendor_number" maxlength="2" inputmode="numeric" pattern="[0-9]*" placeholder="e.g. 9"
+               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+      </div>
+
+      <div>
         <label class="block text-xs font-medium text-gray-500 mb-1">Account Number</label>
         <input name="account_number" placeholder="Your account # with this vendor"
                class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />

@@ -29,7 +29,7 @@
 {% if counts is defined and counts %}
   {% set _counts = counts %}
 {% else %}
-  {% set _counts = {'all': 0, 'open_pos': 0, 'credits': 0} %}
+  {% set _counts = {'active': 0, 'inactive': 0, 'all': 0} %}
 {% endif %}
 
 {# ── §2B Payment-terms chip map (§4 color semantics) ─────────────────────── #}
@@ -56,11 +56,12 @@
 ══════════════════════════════════════════════════════════════════════════════ #}
 <div class="flex flex-wrap items-center gap-3">
 
-  {# Filter tabs — counts stub zeros until backend adds unfiltered counts #}
+  {# Filter tabs — slugs match the router contract (active / inactive / all).
+     Default view is `active`; `inactive` surfaces deactivated vendors. #}
   {% set vendor_tabs = [
-    ('',         'All',         _counts.get('all',      0)),
-    ('open_pos', 'Active POs',  _counts.get('open_pos', 0)),
-    ('credits',  'Open Credits',_counts.get('credits',  0)),
+    ('active',   'Active',   _counts.get('active',   0)),
+    ('inactive', 'Inactive', _counts.get('inactive', 0)),
+    ('all',      'All',      _counts.get('all',      0)),
   ] %}
   {{ filter_tabs(vendor_tabs, active_tab, q) }}
 
@@ -307,7 +308,7 @@
   <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
     <span class="text-xs text-gray-400">
       {{ vendors | length }} vendor{{ 's' if vendors | length != 1 else '' }}
-      {% if active_tab or q %} · filtered{% endif %}
+      {% if active_tab != 'all' or q %} · filtered{% endif %}
     </span>
     <span x-show="selectedCount > 0" x-cloak class="text-xs text-brand-700 font-medium">
       <span x-text="selectedCount"></span> selected

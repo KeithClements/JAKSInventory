@@ -49,6 +49,7 @@ class POService(BaseService):
         MatchResolution.ACCEPTED,
         MatchResolution.CREDITED,
         MatchResolution.CLEARED,
+        MatchResolution.CORRECTED,
     })
 
     # Decisions that require a non-empty reason.
@@ -107,7 +108,13 @@ class POService(BaseService):
                 state = raw_state
                 is_flag = True
         else:
-            state = raw_state
+            # Not a live variance. A line explicitly CORRECTED by AP (its PO/bill
+            # numbers were edited so it reconciles) still surfaces its resolution
+            # so the UI shows the "Corrected" attribution, not a plain "Matched".
+            if resolution == MatchResolution.CORRECTED:
+                state = "resolved_corrected"
+            else:
+                state = raw_state
             is_flag = False
 
         # Suggested credit amount for the Create-Credit shortcut in the UI
@@ -827,6 +834,171 @@ class POService(BaseService):
         for bill in po.bills:
             if bill.status == VendorBillStatus.DISCREPANCY:
                 self._advance_bill_after_match(bill)
+
+        self.db.commit()
+        return line
+
+    def correct_match_line(
+        self,
+        po_line_id: int,
+        bill_id: int,
+        new_po_unit_cost: float | None = None,
+        new_billed_qty: int | None = None,
+        new_billed_unit_cost: float | None = None,
+        reason: str = "",
+    ) -> POLine:
+        """
+        Correct the actual PO/bill numbers on a flagged match line so the PO and
+        bill reconcile, then clear the flag (match_resolution = CORRECTED).
+
+        Distinct from resolve_match_line, which only records an AP *decision* and
+        leaves the divergent numbers in place. This edits the data so the variance
+        genuinely goes away:
+          - new_po_unit_cost     → POLine.unit_cost (the price the PO authorized)
+          - new_billed_qty       → the bill line's qty_billed (PO line's cumulative
+                                    qty_billed is recomputed from all bill lines)
+          - new_billed_unit_cost → the bill line's unit_cost
+        The bill total is recomputed after any bill-side edit.
+
+        Rules:
+        - Requires Permission.APPROVE_VENDOR_BILL.
+        - `reason` is mandatory — this is a money-path edit; record why.
+        - MUST reconcile: after the edits the line must match — cumulative billed
+          qty <= received AND <= ordered, AND the averaged billed unit cost is
+          within COST_VARIANCE_TOLERANCE of the PO unit cost. If it does not
+          reconcile, NOTHING is written and a ValueError explains the residual
+          (the caller can fall back to Accept / Create-Credit instead).
+        - Records-only: does NOT re-cost already-received inventory. The moving-
+          average cost booked at receipt is intentionally left untouched.
+        - Opens the explicit-approve gate (DISCREPANCY -> PENDING) when this clears
+          the last live flag on the bill. Does NOT approve the bill.
+        """
+        self.assert_can(Permission.APPROVE_VENDOR_BILL)
+
+        if not reason.strip():
+            raise ValueError("A reason is required to correct a match line.")
+
+        line = self.db.query(POLine).filter(POLine.id == po_line_id).first()
+        if line is None:
+            raise ValueError(f"POLine {po_line_id} not found")
+
+        bill = self.db.query(VendorBill).filter(VendorBill.id == bill_id).first()
+        if bill is None:
+            raise ValueError(f"VendorBill {bill_id} not found")
+
+        bill_line = next(
+            (bl for bl in bill.lines if bl.po_line_id == po_line_id), None
+        )
+        if bill_line is None:
+            raise ValueError(
+                f"Bill {bill_id} has no line for PO line {po_line_id}."
+            )
+
+        # ── Capture before-state (audit trail) ──────────────────────────────────
+        before = {
+            "po_unit_cost":     line.unit_cost,
+            "billed_qty":       bill_line.qty_billed,
+            "billed_unit_cost": bill_line.unit_cost,
+            "po_qty_billed":    line.qty_billed,
+            "bill_total":       bill.total_amount,
+        }
+
+        # ── Compute prospective values WITHOUT mutating, then gate ──────────────
+        prospective_po_cost = (
+            round(float(new_po_unit_cost), 2)
+            if new_po_unit_cost is not None else line.unit_cost
+        )
+        prospective_bill_qty = (
+            int(new_billed_qty)
+            if new_billed_qty is not None else bill_line.qty_billed
+        )
+        prospective_bill_cost = (
+            round(float(new_billed_unit_cost), 2)
+            if new_billed_unit_cost is not None else bill_line.unit_cost
+        )
+        if prospective_bill_qty < 0:
+            raise ValueError("Billed qty cannot be negative.")
+        if prospective_po_cost < 0 or prospective_bill_cost < 0:
+            raise ValueError("Costs cannot be negative.")
+
+        # Recompute cumulative billed qty and the averaged billed unit cost across
+        # ALL of this PO line's bill lines, substituting the edited values for the
+        # target line. (Invariant: line.qty_billed == sum of its bill_lines.qty_billed.)
+        cumulative_qty = 0
+        total_amt = 0.0
+        for bl in line.bill_lines:
+            q = prospective_bill_qty if bl.id == bill_line.id else bl.qty_billed
+            c = prospective_bill_cost if bl.id == bill_line.id else bl.unit_cost
+            cumulative_qty += q
+            total_amt += q * c
+        avg_billed_cost = (
+            round(total_amt / cumulative_qty, 2) if cumulative_qty > 0 else None
+        )
+
+        # ── Must-match gate ─────────────────────────────────────────────────────
+        problems: list[str] = []
+        if cumulative_qty > line.qty_received:
+            problems.append(
+                f"billed qty {cumulative_qty} still exceeds received {line.qty_received}"
+            )
+        if cumulative_qty > line.qty_ordered:
+            problems.append(
+                f"billed qty {cumulative_qty} still exceeds PO-ordered {line.qty_ordered}"
+            )
+        if (
+            avg_billed_cost is not None
+            and abs(avg_billed_cost - prospective_po_cost) >= COST_VARIANCE_TOLERANCE
+        ):
+            problems.append(
+                f"billed cost ${avg_billed_cost:.2f} still differs from "
+                f"PO cost ${prospective_po_cost:.2f}"
+            )
+        if problems:
+            raise ValueError(
+                "Correction does not reconcile: "
+                + "; ".join(problems)
+                + ". Adjust the numbers so the PO and bill match, "
+                "or use Accept / Create Credit to keep the variance."
+            )
+
+        # ── Apply (gate passed) ─────────────────────────────────────────────────
+        line.unit_cost = prospective_po_cost
+        bill_line.qty_billed = prospective_bill_qty
+        bill_line.unit_cost = prospective_bill_cost
+        line.qty_billed = cumulative_qty
+
+        # Bill-side edits change what we owe — recompute the bill total from lines.
+        bill.total_amount = round(
+            sum(bl.qty_billed * bl.unit_cost for bl in bill.lines), 2
+        )
+
+        line.match_resolution = MatchResolution.CORRECTED
+        line.match_resolution_reason = reason.strip()
+        line.match_resolved_by_id = self.current_user_id
+        line.match_resolved_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
+        after = {
+            "po_unit_cost":     line.unit_cost,
+            "billed_qty":       bill_line.qty_billed,
+            "billed_unit_cost": bill_line.unit_cost,
+            "po_qty_billed":    line.qty_billed,
+            "bill_total":       bill.total_amount,
+        }
+
+        self.audit(
+            entity_type=EntityType.PURCHASE_ORDER,
+            entity_id=line.po_id,
+            action=AuditAction.MATCH_CORRECTED,
+            old_value=before,
+            new_value={"po_line_id": po_line_id, "bill_id": bill_id, **after},
+            notes=reason.strip(),
+        )
+
+        self.db.flush()
+
+        # Open the approve gate if this cleared the last live flag on the bill.
+        if bill.status == VendorBillStatus.DISCREPANCY:
+            self._advance_bill_after_match(bill)
 
         self.db.commit()
         return line

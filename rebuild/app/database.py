@@ -214,6 +214,24 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     ("products", "last_enriched_at",         "DATETIME NULL"),
     ("products", "enrichment_source",        "TEXT NOT NULL DEFAULT ''"),
     ("products", "needs_review",             "BOOLEAN NOT NULL DEFAULT 0"),
+
+    # ── §18 — Category Maintenance: sort order, default markup, import rules.
+    #    brands / manufacturers are NEW tables → create_all() handles them. ──
+    ("product_categories", "sort_order",         "INTEGER NOT NULL DEFAULT 0"),
+    ("product_categories", "default_markup_pct", "REAL NULL"),
+    ("product_categories", "import_keywords",    "TEXT NOT NULL DEFAULT ''"),
+
+    # ── JAKS SKU scheme (owner-locked 2026-06-06): vendor-independent
+    #    JAKS-[ENGINE]-[CATEGORY]-[V][NNNN]. `code` = short per-category-node code;
+    #    `vendor_number` = 1-digit opaque vendor digit (PAI=9, …); products carry the
+    #    FROZEN sku components (engine_code/category_code/part_seq) so the assembled
+    #    sku never drifts when a category is renamed/re-coded, and a 2nd vendor's
+    #    version of the same part can reuse part_seq with a different digit. ──
+    ("product_categories", "code",          "TEXT NOT NULL DEFAULT ''"),
+    ("vendors",            "vendor_number", "TEXT NOT NULL DEFAULT ''"),
+    ("products",           "engine_code",   "TEXT NOT NULL DEFAULT ''"),
+    ("products",           "category_code", "TEXT NOT NULL DEFAULT ''"),
+    ("products",           "part_seq",      "INTEGER NULL"),
 ]
 
 

@@ -15,8 +15,13 @@ class Vendor(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
 
     # ── Identification ────────────────────────────────────────────────────────
-    # vendor_code drives SKU generation: JAKS-[VENDOR_CODE]-[PART#]
+    # vendor_code drives the INTERNAL vendor_sku: JAKS-[VENDOR_CODE]-[PART#]
     vendor_code: Mapped[str] = mapped_column(String(4), nullable=False, default="")
+    # JAKS SKU scheme (owner-locked 2026-06-06): 1-digit OPAQUE vendor number baked
+    # into the customer-facing SKU JAKS-[ENGINE]-[CAT]-[V][NNNN] (e.g. PAI=9). Owner-
+    # set on the vendor record; distinct from the readable vendor_code (PAI/HHP),
+    # which stays on the internal vendor_sku only. '' until assigned.
+    vendor_number: Mapped[str] = mapped_column(String(2), nullable=False, default="")
     account_number: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     website: Mapped[str] = mapped_column(String(300), nullable=False, default="")
 

@@ -68,6 +68,14 @@ def get_company_dict(db: Session) -> dict[str, Any]:
     logo_path = (get_setting_value_db(db, "company_logo_path", "") or "").strip()
     show_logo = (get_setting_value_db(db, "document_show_logo", "true") or "true").strip().lower() == "true"
     logo_url = f"/static/{logo_path.lstrip('/')}" if logo_path else None
+    # Owner-adjustable logo height (px), uniform across every document header.
+    # Parse defensively: a blank/non-numeric/out-of-range value falls back to the
+    # 56px default so a document never renders broken CSS.
+    raw_logo_h = (get_setting_value_db(db, "document_logo_height", "56") or "56").strip()
+    try:
+        logo_height = max(24, min(160, int(float(raw_logo_h))))
+    except (TypeError, ValueError):
+        logo_height = 56
     return {
         "name":        get_setting_value_db(db, "company_name",    "JAKS Parts"),
         "address":     get_setting_value_db(db, "company_address", ""),
@@ -76,6 +84,7 @@ def get_company_dict(db: Session) -> dict[str, Any]:
         # §5.12 branding
         "logo_url":    logo_url,
         "show_logo":   show_logo,
+        "logo_height": logo_height,
         "footer_text": get_setting_value_db(db, "document_footer_text", ""),
         "terms_text":  get_setting_value_db(db, "document_terms_text", ""),
     }

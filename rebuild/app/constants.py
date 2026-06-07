@@ -498,6 +498,7 @@ class MatchResolution(StrEnum):
     ON_HOLD    = "on_hold"    # parked pending more info
     CREDITED   = "credited"   # offset by a linked vendor credit memo
     CLEARED    = "cleared"    # manually dismissed (corrected outside system)
+    CORRECTED  = "corrected"  # PO and/or bill numbers edited so the line reconciles
 
 
 # ─── Payments ─────────────────────────────────────────────────────────────────
@@ -775,6 +776,7 @@ class AuditAction(StrEnum):
     INVOICE_CONVERTED  = "invoice_converted"
     STATUS_CHANGED     = "status_changed"
     MATCH_RESOLVED     = "match_resolved"
+    MATCH_CORRECTED    = "match_corrected"
 
 
 # ─── Scraper / Enrichment ─────────────────────────────────────────────────────
@@ -994,3 +996,68 @@ class Permission(StrEnum):
     RECEIVE_WITHOUT_PO          = "receive_without_po"
     INVENTORY_TRANSFER          = "inventory_transfer"
     APPROVE_VENDOR_BILL         = "approve_vendor_bill"
+
+
+# ─── Engine Make / Model catalog ─────────────────────────────────────────────
+# Standardized engine make + dependent model lists for the quote/job header (and,
+# later, SO/invoice headers, product lookup, and cross-reference search). Picking
+# from these presets is what stops the messy free-text that blocks filtering and
+# cross-refs — "Cat" / "CAT" / "Caterpillar", "C15 Acert" / "c-15", "Cummins ISX15".
+#
+# These string values ARE what gets stored (currently in the engine_manufacturer /
+# engine_model columns). The UI renders a cascading make→model picker; selecting
+# "Other" reveals a free-text input so a value outside the presets can still be
+# captured. Invariants enforced by tests/test_engine_catalog.py:
+#   • every ENGINE_MODELS_BY_MAKE key is a member of ENGINE_MAKES
+#   • every make in ENGINE_MAKES has a model list (makes with no real presets —
+#     Mercedes, Other — offer just ["Other"])
+#   • every model list ends with "Other" so a custom value is always reachable
+
+ENGINE_MAKES: list[str] = [
+    "CAT / Caterpillar",
+    "Cummins",
+    "Detroit",
+    "Paccar",
+    "Mack",
+    "Volvo",
+    "International / Navistar",
+    "Mercedes",
+    "Other",
+]
+
+ENGINE_MODELS_BY_MAKE: dict[str, list[str]] = {
+    "CAT / Caterpillar": [
+        "3406E", "C7", "C9", "C10", "C12", "C13", "C15", "C16",
+        "3126", "3116", "3208", "Other",
+    ],
+    "Cummins": [
+        "4BT", "6BT", "ISB", "ISC", "ISL", "ISM", "ISX", "X15",
+        "N14", "Big Cam", "Other",
+    ],
+    "Detroit": [
+        "Series 60 12.7", "Series 60 14.0", "DD13", "DD15", "DD16",
+        "8V92", "6V92", "Other",
+    ],
+    "Paccar": ["MX-11", "MX-13", "PX-7", "PX-9", "Other"],
+    "Mack": ["E6", "E7", "ASET", "MP7", "MP8", "MP10", "Other"],
+    "Volvo": ["D11", "D12", "D13", "D16", "Other"],
+    "International / Navistar": [
+        "DT466", "DT530", "MaxxForce 7", "MaxxForce DT", "MaxxForce 13",
+        "N13", "Other",
+    ],
+    # Makes the owner listed without a preset model set — free-text via "Other".
+    "Mercedes": ["Other"],
+    "Other": ["Other"],
+}
+
+
+# ─── Brands (§18.2 — owner-maintained parts-brand list) ───────────────────────
+# Brand = the parts brand on the box. DISTINCT from Vendor (who we buy it from) and
+# from Manufacturer / Engine Make (the engine platform — see ENGINE_MAKES above).
+# Seeds the `brands` table (app/seeds.py:seed_brands). "JAK'S" is the house brand.
+BRANDS: list[str] = [
+    "PAI",
+    "Interstate-McBee",
+    "SAMPA",
+    "JAK'S",
+]

@@ -74,6 +74,8 @@
     'received':     'Goods received and inventory updated.',
     'billed':       'Vendor bill created successfully.',
     'bill_approved':'Vendor bill approved.',
+    'match_resolved':'Match line resolved.',
+    'match_corrected':'Match corrected — PO and bill now reconcile. Bill is ready to approve.',
   } %}
   {% if request.query_params.get('ok') %}
   <div class="rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800 flex items-center gap-2">
@@ -537,25 +539,80 @@
           <tr class="bg-red-50/30">
             <td colspan="5" class="px-4 py-3">
               <div class="text-xs text-red-800">
-                <p class="font-semibold mb-1 flex items-center gap-1.5">
+                <p class="font-semibold mb-2 flex items-center gap-1.5">
                   <svg class="w-3.5 h-3.5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01"/>
                   </svg>
                   Discrepancy — billed amounts differ from the PO on:
                 </p>
-                <ul class="space-y-0.5 pl-5 list-disc mb-3">
+                <ul class="space-y-1.5 mb-3">
                   {% for bl in bill.lines if bl.has_discrepancy %}
-                  <li>
-                    <span class="font-mono">{{ bl.po_line.product.sku if bl.po_line and bl.po_line.product else '—' }}</span>
-                    {# Branch the clause: qty over-bill vs cost-only variance — has_discrepancy covers both
-                       (qty_billed > qty_received OR |unit_cost − po unit_cost| ≥ tolerance). #}
-                    {% if bl.po_line and bl.qty_billed > bl.po_line.qty_received %}
-                    — billed <span class="font-semibold">{{ bl.qty_billed }}</span>,
-                    received {{ bl.po_line.qty_received }}
-                    <span class="text-red-600 font-semibold">(+{{ bl.qty_billed - bl.po_line.qty_received }} over)</span>
-                    {% elif bl.po_line %}
-                    — unit cost differs
-                    <span class="text-red-600 font-semibold">(billed ${{ '%.2f' | format(bl.unit_cost) }} vs PO ${{ '%.2f' | format(bl.po_line.unit_cost) }})</span>
+                  {% set pol = bl.po_line %}
+                  <li x-data="{ open: false }" class="border border-red-100 rounded-lg bg-white/60 px-3 py-2">
+                    <div class="flex items-start justify-between gap-3">
+                      <div class="leading-relaxed">
+                        <span class="font-mono font-semibold text-gray-700">{{ pol.product.sku if pol and pol.product else '—' }}</span>
+                        {# Branch the clause: qty over-bill vs cost-only variance — has_discrepancy covers both
+                           (qty_billed > qty_received OR |unit_cost − po unit_cost| ≥ tolerance). #}
+                        {% if pol and bl.qty_billed > pol.qty_received %}
+                        — billed <span class="font-semibold">{{ bl.qty_billed }}</span>,
+                        received {{ pol.qty_received }}
+                        <span class="text-red-600 font-semibold">(+{{ bl.qty_billed - pol.qty_received }} over)</span>
+                        {% elif pol %}
+                        — unit cost differs
+                        <span class="text-red-600 font-semibold">(billed ${{ '%.2f' | format(bl.unit_cost) }} vs PO ${{ '%.2f' | format(pol.unit_cost) }})</span>
+                        {% endif %}
+                      </div>
+                      {% if pol %}
+                      <button type="button" @click="open = !open"
+                              class="shrink-0 px-2.5 py-1 text-[11px] font-semibold text-brand-700 border border-brand-200 rounded-md hover:bg-brand-50 transition-colors"
+                              x-text="open ? 'Cancel' : 'Correct'"></button>
+                      {% endif %}
+                    </div>
+
+                    {% if pol %}
+                    {# ── Correct & Reconcile — edit the side that's wrong so PO + bill match ── #}
+                    <form x-show="open" x-cloak method="post"
+                          action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/lines/{{ pol.id }}/correct"
+                          class="mt-2.5 pt-2.5 border-t border-red-100 space-y-2.5">
+                      <p class="text-[11px] text-gray-500">
+                        Fix the number that's wrong, then save. The PO and bill must reconcile —
+                        this isn't an override. (To keep the variance instead, use Approve&nbsp;Anyway below.)
+                      </p>
+                      <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <label class="block">
+                          <span class="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-0.5">PO unit cost</span>
+                          <input type="number" step="0.01" min="0" name="po_unit_cost"
+                                 value="{{ '%.2f' | format(pol.unit_cost) }}"
+                                 class="w-full px-2 py-1 text-sm border border-gray-300 rounded-md tabular-nums focus:ring-1 focus:ring-brand-400 focus:border-brand-400">
+                        </label>
+                        <label class="block">
+                          <span class="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-0.5">Billed qty</span>
+                          <input type="number" step="1" min="0" name="billed_qty"
+                                 value="{{ bl.qty_billed }}"
+                                 class="w-full px-2 py-1 text-sm border border-gray-300 rounded-md tabular-nums focus:ring-1 focus:ring-brand-400 focus:border-brand-400">
+                        </label>
+                        <label class="block">
+                          <span class="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-0.5">Billed unit cost</span>
+                          <input type="number" step="0.01" min="0" name="billed_unit_cost"
+                                 value="{{ '%.2f' | format(bl.unit_cost) }}"
+                                 class="w-full px-2 py-1 text-sm border border-gray-300 rounded-md tabular-nums focus:ring-1 focus:ring-brand-400 focus:border-brand-400">
+                        </label>
+                      </div>
+                      <label class="block">
+                        <span class="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-0.5">Reason <span class="text-red-500">*</span></span>
+                        <input type="text" name="reason" required maxlength="500"
+                               placeholder="e.g. Vendor raised price — PO updated to match the invoice"
+                               class="w-full px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-1 focus:ring-brand-400 focus:border-brand-400">
+                      </label>
+                      <div class="flex flex-wrap items-center gap-2">
+                        <button type="submit"
+                                class="px-3 py-1.5 text-xs font-semibold text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors">
+                          Save &amp; Reconcile
+                        </button>
+                        <span class="text-[10px] text-gray-400">Records-only — does not re-cost received inventory.</span>
+                      </div>
+                    </form>
                     {% endif %}
                   </li>
                   {% endfor %}
@@ -563,10 +620,31 @@
                 <form id="approve-bill-{{ bill.id }}" method="post"
                       action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/approve" class="hidden"></form>
                 <button type="button"
-                        @click="askConfirm('approve-bill-{{ bill.id }}', 'Approve bill with discrepancy?', 'This bill differs from the PO (quantity and/or unit cost). Approving accepts the variance.', 'Approve anyway', true)"
+                        @click="askConfirm('approve-bill-{{ bill.id }}', 'Approve bill with discrepancy?', 'This bill still differs from the PO (quantity and/or unit cost). Approving accepts the variance as-is.', 'Approve anyway', true)"
                         class="px-3 py-1.5 text-xs font-semibold text-white bg-red-600
                                hover:bg-red-700 rounded-lg transition-colors">
                   Approve Anyway
+                </button>
+              </div>
+            </td>
+          </tr>
+          {% elif bill.status == 'pending' %}
+          {# Reconciled — all variances cleared (corrected / accepted / credited); ready for explicit approval #}
+          <tr class="bg-green-50/40">
+            <td colspan="5" class="px-4 py-3">
+              <div class="flex items-center justify-between gap-3">
+                <p class="text-xs text-green-800 flex items-center gap-1.5">
+                  <svg class="w-3.5 h-3.5 text-green-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                  </svg>
+                  All variances resolved — the PO and bill reconcile. Ready to approve.
+                </p>
+                <form id="approve-bill-{{ bill.id }}" method="post"
+                      action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/approve" class="hidden"></form>
+                <button type="button"
+                        @click="askConfirm('approve-bill-{{ bill.id }}', 'Approve this bill?', 'The PO and bill now reconcile. Approving posts it for payment and QBO sync.', 'Approve', false)"
+                        class="shrink-0 px-3 py-1.5 text-xs font-semibold text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors">
+                  Approve Bill
                 </button>
               </div>
             </td>

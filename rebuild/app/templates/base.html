@@ -733,12 +733,28 @@
       {# ── INVENTORY ───────────────────────────────────────────────── #}
       <p class="nav-section">Inventory</p>
 
-      <a href="/products/" class="nav-link {% if '/products' in request.url.path and '/products/import' not in request.url.path %}active{% endif %}">
+      <a href="/products/" class="nav-link {% if '/products' in request.url.path and '/products/import' not in request.url.path and '/products/review' not in request.url.path %}active{% endif %}">
         <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
                 d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10"/>
         </svg>
         Products
+      </a>
+
+      <a href="/categories/" class="nav-link {% if '/categories' in request.url.path %}active{% endif %}">
+        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+        </svg>
+        Category Maintenance
+      </a>
+
+      <a href="/products/review" class="nav-link {% if '/products/review' in request.url.path %}active{% endif %}">
+        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        Import Review
       </a>
 
       <a href="/products/import" class="nav-link {% if '/products/import' in request.url.path %}active{% endif %}">

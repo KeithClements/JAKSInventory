@@ -4,13 +4,9 @@
 
 {% block header_actions %}
   <a href="/products/" class="text-sm text-gray-500 hover:text-gray-700">← Products</a>
-  {% if product.is_active %}
-  <button type="button"
-          @click="$dispatch('open-adjust-inventory')"
-          class="btn-ghost btn-sm text-amber-700 border border-amber-200 hover:bg-amber-50 transition-colors ml-2">
-    Adjust Inventory
-  </button>
-  {% endif %}
+  {# "Adjust Inventory" used to live here as a global header action, so it appeared on
+     EVERY tab. Owner feedback 2026-06-06: it belongs on the Info tab only — it now sits
+     in a card at the bottom of the Info panel below. #}
   {# Scraper enrichment (PAI/HHP/ATL) removed — P2-D9 / §8P: vendor-catalog
      integration is out of ERP scope. Backend drops the /enrich-panel route. #}
 {% endblock %}
@@ -66,79 +62,92 @@
       <input type="hidden" name="reason" value="archived via UI" />
     </form>
 
-    <form method="post" action="/products/{{ product.id }}"
-          x-data="{ _dirty: false }"
-          @change="_dirty = true"
-          @input="_dirty = true"
+    {# Save Standard v2: this form TRULY auto-saves. The JS at the bottom of the page
+       debounces edits and POSTs the whole form to /products/{id}/autosave, then drives
+       the honest save-state pill below off the real HTTP result. The manual "Save
+       Changes" button remains as a native no-JS fallback. (Owner feedback 2026-06-06:
+       the old _dirty flag was cosmetic — it showed "All changes saved" on load and was
+       never wired to an actual save, so edits were silently lost on navigation.) #}
+    <form id="product-info-form" method="post" action="/products/{{ product.id }}"
           class="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
 
-      {# Identity card #}
-      <div class="card">
+      {# Identity card — product fields (left) + single square primary photo (right),
+         one full-width row. Replaces the old separate Identity + Photos cards (owner
+         feedback 2026-06-06). The Images tab stays the full manager (upload / delete /
+         reorder / set-primary); "Manage Photos →" jumps there. #}
+      <div class="card xl:col-span-2">
         <div class="card-header">
           <h2 class="card-title">Identity</h2>
         </div>
-        <div class="card-body space-y-4">
-          <div class="grid grid-cols-2 gap-4">
-            <div>
-              <label class="form-label">SKU</label>
-              <input name="sku" value="{{ product.sku }}" required class="form-input font-mono" />
-            </div>
-            <div>
-              <label class="form-label">Title</label>
-              <input name="title" value="{{ product.title }}" class="form-input" />
-            </div>
-          </div>
-          <div class="grid grid-cols-2 gap-4">
-            <div>
-              <label class="form-label">Manufacturer</label>
-              <select name="manufacturer" class="form-select">
-                <option value="">— Select —</option>
-                {% for m in manufacturers %}
-                  <option value="{{ m }}" {% if product.manufacturer == m %}selected{% endif %}>{{ m }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div>
-              <label class="form-label">Brand</label>
-              <input name="brand" value="{{ product.brand }}" class="form-input" />
-            </div>
-          </div>
-          <div>
-            <label class="form-label">Category</label>
-            <select name="category_id" class="form-select">
-              <option value="">— None —</option>
-              {% for cat in categories %}
-                <option value="{{ cat.id }}" {% if product.category_id == cat.id %}selected{% endif %}>
-                  {{ cat.full_path }}
-                </option>
-              {% endfor %}
-            </select>
-          </div>
-          <div>
-            <label class="form-label">Description</label>
-            <textarea name="description" rows="3" class="form-textarea">{{ product.description }}</textarea>
-          </div>
-        </div>
-      </div>
-
-      {# Photos card — read-only thumbnails (manage on the Images tab) #}
-      <div class="card">
-        <div class="card-header">
-          <h2 class="card-title">Photos <span class="text-xs font-normal text-gray-400">{{ product.images|length }}</span></h2>
-          <button type="button" @click="tab='images'" class="text-xs text-brand-700 hover:underline">Manage →</button>
-        </div>
         <div class="card-body">
-          {% if product.images %}
-          <div class="grid grid-cols-3 gap-2">
-            {% for im in product.images[:6] %}
-            <img src="{{ im.url }}" alt="{{ im.alt_text or product.title }}" loading="lazy"
-                 class="w-full h-24 object-cover rounded-lg border border-gray-100 bg-gray-50{% if im.is_primary %} ring-2 ring-brand-400{% endif %}" />
-            {% endfor %}
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+            {# ── Left: product fields ── #}
+            <div class="md:col-span-2 space-y-4">
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="form-label">SKU</label>
+                  <input name="sku" value="{{ product.sku }}" required class="form-input font-mono" />
+                </div>
+                <div>
+                  <label class="form-label">Title</label>
+                  <input name="title" value="{{ product.title }}" class="form-input" />
+                </div>
+              </div>
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="form-label">Manufacturer</label>
+                  <select name="manufacturer" class="form-select">
+                    <option value="">— Select —</option>
+                    {% for m in manufacturers %}
+                      <option value="{{ m }}" {% if product.manufacturer == m %}selected{% endif %}>{{ m }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div>
+                  <label class="form-label">Brand</label>
+                  <input name="brand" value="{{ product.brand }}" class="form-input" />
+                </div>
+              </div>
+              <div>
+                <label class="form-label">Category</label>
+                <select name="category_id" class="form-select">
+                  <option value="">— None —</option>
+                  {% for cat in categories %}
+                    <option value="{{ cat.id }}" {% if product.category_id == cat.id %}selected{% endif %}>
+                      {{ cat.full_path }}
+                    </option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div>
+                <label class="form-label">Description</label>
+                <textarea name="description" rows="3" class="form-textarea">{{ product.description }}</textarea>
+              </div>
+            </div>
+
+            {# ── Right: single square primary photo ── #}
+            <div class="md:col-span-1">
+              <div class="flex items-center justify-between mb-2">
+                <label class="form-label">Primary Image</label>
+                <button type="button" @click="tab='images'" class="text-xs text-brand-700 hover:underline">Manage Photos →</button>
+              </div>
+              {% set primary_image = (product.images|selectattr('is_primary')|first) or (product.images|first) %}
+              {% if primary_image %}
+              <img src="{{ primary_image.url }}" alt="{{ primary_image.alt_text or product.title }}" loading="lazy"
+                   class="w-full max-w-xs aspect-square object-cover rounded-lg border border-gray-200 bg-gray-50" />
+              {% else %}
+              <button type="button" @click="tab='images'"
+                      class="w-full max-w-xs aspect-square rounded-lg border-2 border-dashed border-gray-200 bg-gray-50 flex flex-col items-center justify-center gap-2 text-gray-400 hover:border-brand-400 hover:text-brand-700 transition-colors">
+                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M3.75 19.5h16.5a1.5 1.5 0 001.5-1.5V6a1.5 1.5 0 00-1.5-1.5H3.75A1.5 1.5 0 002.25 6v12a1.5 1.5 0 001.5 1.5z" />
+                </svg>
+                <span class="text-sm">No image yet</span>
+              </button>
+              {% endif %}
+            </div>
+
           </div>
-          {% if product.images|length > 6 %}<p class="mt-2 text-xs text-gray-400">+{{ product.images|length - 6 }} more on the Images tab</p>{% endif %}
-          {% else %}
-          <p class="text-sm text-gray-400 italic">No images yet.</p>
-          {% endif %}
         </div>
       </div>
 
@@ -394,22 +403,19 @@
         </div>
       </div>
 
-      {# Actions — Archive uses deactivate-form defined above to avoid form nesting #}
-      <div class="flex items-center gap-3 xl:col-span-2">
+      {# Actions — honest save-state pill (Save Standard v2). saveState is driven by the
+         autosave JS via 'product-save-state' window events; green "All changes saved"
+         appears ONLY after a confirmed save. Archive uses deactivate-form (no nesting). #}
+      <div class="flex items-center gap-3 xl:col-span-2"
+           x-data="{ saveState: 'clean' }"
+           @product-save-state.window="saveState = $event.detail">
         <button type="submit" class="btn-primary">Save Changes</button>
         <a href="/products/" class="btn-secondary">Cancel</a>
-        {# Save indicator — shows dirty state / clean state (mirrors §8C Quote workspace pattern) #}
-        <span x-show="_dirty" x-cloak
-              class="inline-flex items-center gap-1 text-xs text-amber-600 font-medium">
-          <span class="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0"></span>
-          Unsaved changes
-        </span>
-        <span x-show="!_dirty"
-              class="inline-flex items-center gap-1 text-xs text-gray-400">
-          <svg class="w-3 h-3 text-green-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
-          </svg>
-          All changes saved
+        <span class="inline-flex items-center gap-1.5 text-xs"
+              :class="{ 'text-amber-600': saveState==='dirty', 'text-gray-400': saveState==='clean'||saveState==='saving', 'text-red-600': saveState==='error' }">
+          <span class="w-1.5 h-1.5 rounded-full shrink-0"
+                :class="{ 'bg-amber-400': saveState==='dirty', 'bg-green-500': saveState==='clean', 'bg-gray-300 animate-pulse': saveState==='saving', 'bg-red-500': saveState==='error' }"></span>
+          <span x-text="({clean:'All changes saved', dirty:'Unsaved changes — saving…', saving:'Saving…', error:'Save failed — retry'})[saveState]"></span>
         </span>
         <button type="submit" form="deactivate-form"
                 class="ml-auto rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors">
@@ -418,6 +424,71 @@
       </div>
 
     </form>
+
+    {# ── Adjust Inventory — Info tab only ──────────────────────────────────────
+       Was a global header button + a card outside the tab wrapper, so it rendered on
+       EVERY tab. Owner feedback 2026-06-06: keep it on the Info tab only. #}
+    {% if product.is_active %}
+    <div id="adjust-inventory" class="card border-amber-100 mt-4"
+         x-data="{ open: false }">
+      <div class="card-header">
+        <div>
+          <h3 class="card-title">Adjust Inventory</h3>
+          <p class="text-xs text-gray-400 mt-0.5">
+            Cycle count correction, damaged goods, found stock, internal use, etc.
+          </p>
+        </div>
+        <button type="button" @click="open = !open"
+                class="rounded-lg border border-amber-200 px-3 py-1.5 text-sm font-medium
+                       text-amber-700 hover:bg-amber-50 transition-colors">
+          Adjust…
+        </button>
+      </div>
+      <div x-show="open" x-cloak class="card-body border-t border-gray-100">
+        <form method="post" action="/products/{{ product.id }}/adjust-inventory"
+              class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label class="form-label">Qty Change</label>
+            <p class="text-xs text-gray-400 mb-1">Positive = add stock. Negative = remove stock.</p>
+            <input type="number" name="qty_delta" value="0" required
+                   class="form-input w-32 text-right" />
+          </div>
+          <div>
+            <label class="form-label">Reason</label>
+            <select name="reason" class="form-select" required>
+              <option value="">— Select —</option>
+              <option value="cycle_count_over">Cycle Count — Over</option>
+              <option value="cycle_count_short">Cycle Count — Short</option>
+              <option value="found">Found</option>
+              <option value="damaged">Damaged / Write-off</option>
+              <option value="lost">Lost</option>
+              <option value="internal_use">Internal Use</option>
+              <option value="initial_inventory_load">Initial Inventory Load</option>
+              <option value="correction">Correction</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <div class="sm:col-span-2">
+            <label class="form-label">Note <span class="text-gray-400 font-normal">(required for Correction / Other)</span></label>
+            <input type="text" name="note" placeholder="Brief explanation…"
+                   class="form-input" />
+          </div>
+          <div>
+            <label class="form-label">Unit Cost <span class="text-gray-400 font-normal">(optional — updates avg cost if adding stock)</span></label>
+            <div class="relative">
+              <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
+              <input type="number" name="unit_cost" step="0.01" min="0" placeholder="—"
+                     class="form-input w-32 pl-6 text-right" />
+            </div>
+          </div>
+          <div class="sm:col-span-2 flex gap-2 pt-1">
+            <button type="submit" class="btn-primary">Apply Adjustment</button>
+            <button type="button" @click="open = false" class="btn-secondary btn-sm">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    {% endif %}
   </div>
 
 
@@ -496,6 +567,7 @@
               hx-target="#vendor-sources-body"
               hx-swap="beforeend"
               hx-on::after-request="this.reset()"
+              data-unsaved-guard data-guard-field="vendor_id"
               x-data
               @record-created.window="
                 if ($event.detail.type === 'vendor') {
@@ -597,6 +669,7 @@
               hx-target="#cross-refs-body"
               hx-swap="beforeend"
               hx-on::after-request="this.reset()"
+              data-unsaved-guard data-guard-field="ref_number"
               class="grid grid-cols-3 gap-4">
           <div>
             <label class="form-label">Type</label>
@@ -717,31 +790,43 @@
       </div>
     </div>
 
-    <div class="card">
+    {# overflow-visible so the product-search dropdown isn't clipped by the card boundary #}
+    <div class="card" style="overflow: visible">
       <div class="card-header">
         <h2 class="card-title">Add Suggested Product</h2>
       </div>
-      <div class="card-body">
+      <div class="card-body" style="overflow: visible">
         <form hx-post="/products/{{ product.id }}/suggested-sells"
               hx-target="#suggested-sells-body"
               hx-swap="beforeend"
               hx-on::after-request="this.reset()"
+              data-unsaved-guard data-guard-field="sku"
               class="grid grid-cols-3 gap-4">
           <div x-data="{
-                 _q: '', _sku: '', _showRes: false, _results: [], _loading: false,
+                 _q: '', _sku: '', _showRes: false, _results: [], _loading: false, _ai: -1,
                  async _doSearch() {
                    const term = this._q.trim();
-                   if (term.length < 2) { this._results = []; return; }
+                   if (term.length < 2) { this._results = []; this._ai = -1; return; }
                    this._loading = true;
                    try {
                      const r = await fetch('/line-items/product-search?q=' + encodeURIComponent(term));
                      this._results = r.ok ? await r.json() : [];
                    } catch (e) { this._results = []; } finally { this._loading = false; }
+                   this._ai = this._results.length ? 0 : -1;
+                 },
+                 _move(d) {
+                   if (!this._results.length) return;
+                   this._ai = (this._ai + d + this._results.length) % this._results.length;
+                   const el = document.getElementById('ss-result-' + this._ai);
+                   if (el) el.scrollIntoView({ block: 'nearest' });
+                 },
+                 _choose() {
+                   if (this._ai >= 0 && this._results[this._ai]) this._select(this._results[this._ai]);
                  },
                  _select(p) {
                    this._sku = p.sku || p.part_number || '';
                    this._q = this._sku + ' — ' + (p.title || p.description || '');
-                   this._results = []; this._showRes = false;
+                   this._results = []; this._showRes = false; this._ai = -1;
                  }
                }">
             <label class="form-label">Product <span class="text-red-500">*</span></label>
@@ -752,6 +837,9 @@
                  consumer of /purchase-orders/_/product-search is gone (Contract §4 cleanup). #}
               <input type="text" x-model="_q"
                      @input.debounce.250ms="_showRes = true; _sku = ''; _doSearch()"
+                     @keydown.down.prevent="_showRes = true; _move(1)"
+                     @keydown.up.prevent="_move(-1)"
+                     @keydown.enter.prevent="_choose()"
                      @keydown.escape="_showRes = false; _results = []"
                      placeholder="Search by SKU or title…"
                      autocomplete="off"
@@ -762,8 +850,11 @@
                    @click.outside="_showRes = false"
                    class="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200
                           rounded-lg shadow-lg z-40 max-h-52 overflow-y-auto divide-y divide-gray-100">
-                <template x-for="p in _results" :key="p.product_id">
+                <template x-for="(p, idx) in _results" :key="p.product_id">
                   <button type="button" @click="_select(p)"
+                          @mouseenter="_ai = idx"
+                          :id="'ss-result-' + idx"
+                          :class="idx === _ai ? 'cust-pick-active' : ''"
                           class="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-gray-50/80 transition-colors">
                     <span class="font-mono text-xs font-bold text-brand-700 w-24 shrink-0 truncate" x-text="p.sku || p.part_number"></span>
                     <span class="flex-1 min-w-0 text-sm text-gray-800 truncate" x-text="p.title || p.description"></span>
@@ -862,68 +953,56 @@
 
 </div>
 
-{# ── Inventory Adjustment ──────────────────────────────────────────────── #}
-{% if product.is_active %}
-<div id="adjust-inventory"
-     class="card border-amber-100 mt-6"
-     x-data="{ open: false }"
-     @open-adjust-inventory.window="open = true; $nextTick(() => $el.scrollIntoView({behavior: 'smooth', block: 'start'}))">
-  <div class="card-header">
-    <div>
-      <h3 class="card-title">Adjust Inventory</h3>
-      <p class="text-xs text-gray-400 mt-0.5">
-        Cycle count correction, damaged goods, found stock, internal use, etc.
-      </p>
-    </div>
-    <button type="button" @click="open = !open"
-            class="rounded-lg border border-amber-200 px-3 py-1.5 text-sm font-medium
-                   text-amber-700 hover:bg-amber-50 transition-colors">
-      Adjust…
-    </button>
-  </div>
-  <div x-show="open" x-cloak class="card-body border-t border-gray-100">
-    <form method="post" action="/products/{{ product.id }}/adjust-inventory"
-          class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-      <div>
-        <label class="form-label">Qty Change</label>
-        <p class="text-xs text-gray-400 mb-1">Positive = add stock. Negative = remove stock.</p>
-        <input type="number" name="qty_delta" value="0" required
-               class="form-input w-32 text-right" />
-      </div>
-      <div>
-        <label class="form-label">Reason</label>
-        <select name="reason" class="form-select" required>
-          <option value="">— Select —</option>
-          <option value="cycle_count_over">Cycle Count — Over</option>
-          <option value="cycle_count_short">Cycle Count — Short</option>
-          <option value="found">Found</option>
-          <option value="damaged">Damaged / Write-off</option>
-          <option value="lost">Lost</option>
-          <option value="internal_use">Internal Use</option>
-          <option value="initial_inventory_load">Initial Inventory Load</option>
-          <option value="correction">Correction</option>
-          <option value="other">Other</option>
-        </select>
-      </div>
-      <div class="sm:col-span-2">
-        <label class="form-label">Note <span class="text-gray-400 font-normal">(required for Correction / Other)</span></label>
-        <input type="text" name="note" placeholder="Brief explanation…"
-               class="form-input" />
-      </div>
-      <div>
-        <label class="form-label">Unit Cost <span class="text-gray-400 font-normal">(optional — updates avg cost if adding stock)</span></label>
-        <div class="relative">
-          <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
-          <input type="number" name="unit_cost" step="0.01" min="0" placeholder="—"
-                 class="form-input w-32 pl-6 text-right" />
-        </div>
-      </div>
-      <div class="sm:col-span-2 flex gap-2 pt-1">
-        <button type="submit" class="btn-primary">Apply Adjustment</button>
-        <button type="button" @click="open = false" class="btn-secondary btn-sm">Cancel</button>
-      </div>
-    </form>
-  </div>
-</div>
-{% endif %}
+{# ── Autosave (Save Standard v2) + unsaved-entry guard ──────────────────────────
+   Real auto-save for the Info edit form: debounced fetch → /products/{id}/autosave,
+   driving the honest save-state pill (green ONLY after a confirmed save). The
+   beforeunload guard warns when an "Add …" form on another tab has a started-but-not-
+   added entry (e.g. a vendor selected but "Add Source" not clicked) so it isn't lost on
+   navigation — the exact loss owner reported 2026-06-06. #}
+<script>
+(function () {
+  // ── Info-tab autosave ──────────────────────────────────────────────────────
+  var timer = null;
+  function emit(state) { window.dispatchEvent(new CustomEvent('product-save-state', { detail: state })); }
+  function doSave() {
+    var form = document.getElementById('product-info-form');
+    if (!form) return;
+    emit('saving');
+    fetch('/products/{{ product.id }}/autosave', { method: 'POST', body: new FormData(form) })
+      .then(function (r) { emit(r.ok ? 'clean' : 'error'); })
+      .catch(function () { emit('error'); });
+  }
+  function schedule() { emit('dirty'); clearTimeout(timer); timer = setTimeout(doSave, 1500); }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    var form = document.getElementById('product-info-form');
+    if (form) {
+      form.querySelectorAll('input, select, textarea').forEach(function (el) {
+        el.addEventListener('input', schedule);
+        el.addEventListener('change', schedule);
+      });
+      // A native "Save Changes" submit flushes the pending debounce so we don't post a
+      // half-typed value via fetch and then reload over it.
+      form.addEventListener('submit', function () { clearTimeout(timer); });
+    }
+  });
+
+  // ── Unsaved "Add …" entry guard ────────────────────────────────────────────
+  // Each guarded add-form declares (data-guard-field) the one field whose non-emptiness
+  // means the user started an entry but hasn't clicked Add yet. HTMX add requests don't
+  // navigate, so this only fires on a real page-leave.
+  function hasUnsavedEntry() {
+    var dirty = false;
+    document.querySelectorAll('form[data-unsaved-guard]').forEach(function (f) {
+      var name = f.getAttribute('data-guard-field');
+      var el = name && f.querySelector('[name="' + name + '"]');
+      if (el && String(el.value || '').trim() !== '') dirty = true;
+    });
+    return dirty;
+  }
+  window.addEventListener('beforeunload', function (e) {
+    if (hasUnsavedEntry()) { e.preventDefault(); e.returnValue = ''; }
+  });
+})();
+</script>
 {% endblock %}

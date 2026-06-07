@@ -21,6 +21,16 @@ class ProductCategory(Base):
     )
     level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # ── §18 Category Maintenance — display order, optional per-category default
+    #    markup (wired later, O5), and importer classification keywords. ──
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    default_markup_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    import_keywords: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # JAKS SKU scheme: short code for this node (FP, INJ, GSK, ENG, …). The SKU's
+    # [CATEGORY] segment uses the code of the DEEPEST category a product is tagged to.
+    # Owner-maintained on the Category Maintenance screen; auto-derived from the name
+    # when left blank (see SkuService.code_for_category).
+    code: Mapped[str] = mapped_column(String(16), nullable=False, default="")
 
     # Self-referential — children share same parent_id FK
     children: Mapped[list[ProductCategory]] = relationship(
@@ -36,6 +46,33 @@ class ProductCategory(Base):
         if self.parent:
             return f"{self.parent.full_path} → {self.name}"
         return self.name
+
+
+class Brand(Base):
+    """Owner-maintained parts-brand list (PAI, Interstate-McBee, SAMPA, JAK'S).
+    §18.2 — Brand is DISTINCT from Vendor (who we buy from) and from
+    Manufacturer / Engine Make (the engine platform). Maintained on the
+    Inventory → Category Maintenance screen; seeded from constants.BRANDS."""
+    __tablename__ = "brands"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_house_brand: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class Manufacturer(Base):
+    """Owner-maintained Manufacturer / Engine-Make list (Cummins, CAT, Detroit,
+    Mack, Volvo, International, Paccar, Mercedes). §18 A1 — the SAME concept as
+    Product.engine_manufacturer (one field). DISTINCT from Brand and Vendor.
+    Maintained on Category Maintenance; seeded from constants.ENGINE_MAKES."""
+    __tablename__ = "manufacturers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class Product(Base):
@@ -58,6 +95,18 @@ class Product(Base):
     category_id: Mapped[int | None] = mapped_column(
         ForeignKey("product_categories.id"), nullable=True
     )
+
+    # ── JAKS SKU components (frozen at mint; owner-locked scheme 2026-06-06) ──────
+    # The customer-facing `sku` is assembled as
+    #   JAKS-[engine_code]-[category_code]-[vendor digit][part_seq:04d]
+    # These columns store the FROZEN pieces so the assembled sku never drifts if a
+    # category is later renamed/re-coded, and so a 2nd vendor's version of the SAME
+    # physical part can reuse part_seq with a different vendor digit (readable
+    # equivalence: 90001 ↔ 30001). engine_code is '' for multi-fit / engine-agnostic
+    # parts — the [ENGINE] segment is then omitted (JAKS-[CATEGORY]-[V][NNNN]).
+    engine_code: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    category_code: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    part_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # ── Status ────────────────────────────────────────────────────────────────
     status: Mapped[str] = mapped_column(

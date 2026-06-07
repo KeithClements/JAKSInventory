@@ -74,6 +74,7 @@ Dashboard
   Purchase Orders
 ── INVENTORY ───────────────
   Products
+  Category Maintenance
 ── CORES ───────────────────
   Core Charges
 ── REPORTS ─────────────────
@@ -211,6 +212,15 @@ All 13 services in `/app/services/`:
 
 ## 9. Build Status — What Is NOT YET BUILT ❌
 
+> **🔍 2026-06-05 GO-LIVE AUDIT — reconciled (status-refresher). It scored 68/100 "not deployable," but 3 of its 4 blockers are already addressed in-tree; one is real.**
+> Ground-truthed each against the current code:
+> - ~~Ungated DB-wipe (`demo.py:73`)~~ → **admin-gated + confirmation** (`demo.py:76`, `require_admin`). Minor hardening only (could add a sandbox-env guard); NOT a deploy blocker.
+> - ~~No CSRF~~ → **SameSite-Lax cookie** (`auth.py:72`) — the documented local-2-user-LAN waiver. No per-form tokens; revisit only if internet-exposed.
+> - ~~Double-credit~~ → **guarded** (`core_service.py:726`, BUG-4 `credit_issued_at` idempotency, `e119c19`). Not a bug.
+> - **Fake tier-pricing → REAL.** `customer.pricing_tier` is stored + shown in a dropdown but **no pricing/quote/invoice logic reads it** (0 refs) — a customer's tier never changes price (only `discount_pct` does). Logged in §9.1.
+> - "Cores/Returns/Warranty/Reports/E2E never owner-tested" → **automated-proven** (`9d0ced2`; 980 tests green) but the **owner hand-walked only the spines** (Suite B/D). Fair *confidence* gap → schedule an owner walk-through; not a code defect.
+> **Net: the audit's headline overstates risk (mostly stale). Real items = tier-pricing bug + the operational cutover (one real backup→restore + strong admin pw) before real data.**
+
 > **✅ 2026-06-04 — QBO Phase-1B BUILT + the Phase-2 UI wave largely shipped. The "gated"/"scaffold-only" notes below are SUPERSEDED for QBO.**
 > Ground-truthed against the live tree (`backend/workflow-series-3` @ `9f50216`, fast-forward-merged into local `main`): **966 tests pass**, only the 6 known cosmetic reds.
 > - **QBO (Phase 1B) is BUILT — no longer gated.** Hand-rolled OAuth2 (connect/callback/refresh/disconnect) + REST client (httpx, no new deps); **accounting-summary invoice push** (each line-type → a generic income item; cc_surcharge + tax excluded; customer resolve/create; one-time item setup); **bulk push** (Sync Selected / Sync All Unsynced via `/qbo/invoices/push-batch`); Settings "Connect to QuickBooks" card; invoice-list **QBO status column + filter tabs**; workspace Push button. Push is best-effort and **NEVER touches the money path** (success→`mark_synced`/lock, fail→`mark_sync_failed`). **Owner connected the live sandbox and pushed test invoices successfully.** Commits `3873e0e`/`e636760`/`e09a5c9` + the UI wave. *Still deferred within 1B:* payments / vendor-bills / credit-memos push; token-at-rest encryption (Fernet); AST-tax reconciliation (kill-switch = `qbo_push_tax`).
@@ -249,6 +259,7 @@ All 13 services in `/app/services/`:
 >   tests) and the final 1A gates closed: cost-variance 3-way (`c36769c`), O2-enforce (`07f7747`/`c4f10f9`),
 >   O3 backup (`619a156`), O4/O5/O6, route cleanup (`331a872`), quote-flow + Save-Standard clusters.
 > - **2026-06-02** — the last gate, the owner's hand-run acceptance of both spines, passed → **signed off**.
+> - **2026-06-06** — 3-way match gained a write-side *correction* path: `POService.correct_match_line` edits the PO/bill so they genuinely reconcile (must-match gate, records-only, `→ PENDING`, audited `MATCH_CORRECTED`) — alongside the existing accept/credit decisions, not replacing them. Backend + workspace UI + `tests/test_match_correct.py` (12). Closes the owner gap "approving a discrepancy doesn't actually fix it." See §2.4.
 >
 > One cosmetic nit logged along the way remains open (non-blocking): the quote PDF doesn't print part #s —
 > `quotes/print.html` references `line.product.part_number` (real attr is `ProductVendorSource.vendor_part_number`).
@@ -286,6 +297,8 @@ intelligence render, dashboard Top-Customers/Follow-Ups widgets, Prepared-By pri
 
 | Feature | Status | Notes |
 |---|---|---|
+| **Product categorization & classification system** | **✅ BUILT 2026-06-06** (see §18) | Dedicated **Inventory → Category Maintenance** screen (owns Category/Subcategory/Product-Family tree + sort order + active + default markup + import rules; also Brand & Manufacturer/Engine-Make lists). Products List gets **filters** (Category/Subcategory/Family/Manufacturer/Brand/Needs-Review/Uncategorized) + **bulk Assign Category/Manufacturer** + **Manage Categories** link only. Importer: Shopify **Type → top-level category only**; Title/Tags/Body-HTML/OEM/Applications → suggest subcategory/family/manufacturer; low-confidence → `needs_review` + **Import Review queue**. Enforces **Brand ≠ Vendor ≠ Manufacturer/Engine-Make** (today the importer hard-codes `brand`+`manufacturer` both to "PAI"). Full spec + 4 owner forks in **§18**. |
+| **🟡 UX — customer `pricing_tier` is a decorative label** | **DOWNGRADED 2026-06-06 (was "🔴 BUG")** | Per-customer pricing **does** work — `customer.discount_pct` auto-applies to quote lines (`quote_service.py:119-122`) + invoice draft, regression-locked by `tests/test_tier_pricing.py` (`1393ae6`). The `pricing_tier` dropdown (wholesale/fleet/dealer) is a label **no pricing logic reads** — not a mispricing bug, just a control that implies more than it does. Decide: relabel it "Customer Type", or wire tier→default-discount so picking a tier seeds `discount_pct`. |
 | QBO OAuth + **invoice** push | **✅ BUILT 2026-06-04** | OAuth2 + REST client + accounting-summary invoice push + bulk sync + Settings/invoice-list/workspace UI; 17+ tests; owner-tested against the live sandbox. Fails-soft — never touches the money path. **Still deferred within 1B:** payments / vendor-bills / credit-memos push; Fernet token encryption; AST-tax reconcile (`qbo_push_tax` kill-switch). |
 | Vendor availability + ESN scrapers (PAI/HHP/ATL) | **REMOVED from ERP scope (P2-D9, 2026-06-02)** | The ERP never scrapes. `vendor_availability_service.py` / `esn_lookup_service.py` stubs + `scraper.py` models + scraper routes/seed are being deleted (Backend). Live pricing/catalog lives in the standalone PAI Info tool → Shopify. |
 | Product enrichment sync (cross-refs + CPL/ESN) | **✅ BUILT (`370820b`)** | One-way sync from the scraper's CSV export onto stocked products (match `jaks_sku`→`products.sku`; never creates products / touches cost/sell). `ProductApplication` model + `ProductEnrichmentService` + `POST /products/enrich-sync` + UI trigger; 9 tests. Spec: `PHASE_2_PLAN.md` §7.2. |
@@ -378,6 +391,11 @@ Payment mode selector on SO form (Full / Deposit / None). `PaymentService.record
 
 **2.4 — Vendor Bill Creation (3-way match)**
 From received PO: "Create Bill" button → `POService.create_vendor_bill()`. Auto-approve if PO/receipt/bill qty match. Flag discrepancy if qty_billed > qty_received.
+
+3-way match discrepancy handling (PO workspace → **Vendor Bills**):
+- A bill line flags when billed qty > received/ordered (`over_billed`) or billed unit cost ≠ PO cost by ≥ 1¢ (`cost_variance`); either sets the bill to `DISCREPANCY` and blocks approval.
+- **Decision-only resolutions (don't change the numbers):** Accept / Reject / Hold / Clear (`resolve_match_line`) + Create vendor credit (`create_match_vendor_credit`). Accept/Clear suppress the flag but leave the PO and bill divergent — the "Approve Anyway" path.
+- **Correct & Reconcile (2026-06-06 — edits the numbers):** `POService.correct_match_line()` lets AP edit the PO unit cost and/or the bill line qty/cost so the PO and bill actually match, with a mandatory reason. Three supported fixes (owner-confirmed): update PO to match bill (vendor price rose), correct a mis-keyed bill entry, fix a qty over-bill. **Must-match gate** — refuses to write unless the line reconciles (variance = 0); otherwise nothing changes and the error explains the residual. **Records-only** — does NOT re-cost already-received inventory (the moving-avg cost booked at receipt is intentionally left untouched, per owner decision). Recomputes the bill total, marks the line `match_resolution = CORRECTED`, audits before→after (`MATCH_CORRECTED`), and opens `DISCREPANCY → PENDING` so AP explicitly clicks **Approve Bill** (never auto-approves). UI: per-line inline editor + reconciled "Approve Bill" row in `purchase_orders/workspace.html`; route `POST /purchase-orders/{po}/bills/{bill}/lines/{line}/correct`; `APPROVE_VENDOR_BILL` perm. Tests: `tests/test_match_correct.py` (12).
 
 ### SPRINT 3 — Special Processes
 
@@ -729,7 +747,27 @@ Sequences reset annually (Jan 1). `current_sequence_year` in settings detected o
 > (Suites B+D) + automated tests, not the whole app. **This section is the authoritative
 > remaining punch list and supersedes the §16.6 snapshot.**
 
-### 17.1 — Fixed 2026-06-05 ✅ (commit `acf3c34`, branch `backend/workflow-series-3`; 970 tests green)
+> **🔍 2026-06-06 STATUS-REFRESHER VERIFICATION (ground-truthed against the live tree @ `1393ae6`).**
+> - **Tests: 983 passed / 6 failed / 55 skipped** (verified live, 64s). All 6 reds are non-functional
+>   (5 `test_ui_lint` cosmetic-governance + 1 brittle `test_template_renders` W-4). **Zero functional reds;
+>   zero service stubs** (`NotImplementedError` gone — scraper services deleted as planned).
+> - **Tier-pricing blocker DOWNGRADED — it is NOT a mispricing bug.** Per-customer pricing genuinely flows:
+>   `QuoteService.add_line` auto-applies `customer.discount_pct` to each discountable line
+>   (`quote_service.py:119-122`) and `InvoiceService.create_draft` stamps `invoice.discount_pct` from the
+>   customer — regression-locked by `tests/test_tier_pricing.py` (`1393ae6`). The only cosmetic gap is the
+>   `pricing_tier` **label** (wholesale/fleet/dealer) which no pricing logic reads — decide: relabel it or
+>   wire tier→default-discount. Reframed in §9.1 / §17.2 (was "High — silent mispricing").
+> - **Real-data cutover is now LIVE, not theoretical.** `data/jaks.db` = 20 MB with **13,153 products**
+>   (PAI catalog import, `255e92b`/`67988ae`) + a pre-import `.bak`. Customers (9) + invoices (20) are still
+>   seed-level → **catalog loaded, live transactional use not yet begun** (ideal soft-launch posture).
+>   This makes the O3 backup→restore drill + strong-password cutover the top operational gate.
+> - **The one true status gap is owner-acceptance BREADTH:** the two spines are owner-proven, but the R3
+>   sheet's result columns for Cores / Returns / Warranty / Vendor-Returns / Reports / the 5 E2E flows are
+>   **still blank** — automated-proven, never hand-walked on the current build. That is a confidence gap, not
+>   a code defect. **In flight (risky to touch):** After-Sale Service from invoice (`returns.py` / `warranty.py`
+>   + `_new_picker` templates, uncommitted).
+
+### 17.1 — Fixed 2026-06-05 ✅ (commit `acf3c34`, branch `backend/workflow-series-3`; 970 tests green; re-verified 983 green @ `1393ae6`)
 
 - **Authorization holes closed:** `/admin/demo/reset`, `POST /settings/`, `/admin/backup/run`
   now `require_admin` (were reachable by any logged-in user / forged POST → DB wipe / pricing
@@ -753,7 +791,7 @@ Sequences reset annually (Jan 1). `current_sequence_year` in settings detected o
 |---|---|---|---|
 | **Owner test pass** — Cores, Returns, Warranty, Vendor Returns, Reports, 5 E2E flows + one backup→restore drill | **High** | M | Never owner-tested. Biggest confidence gap. Fill the R3 sheet with real data. |
 | **CSRF** on all state-changing POSTs | **High** | M | No CSRF anywhere (`main.py:58`). All-or-nothing app-wide pass. Catastrophic routes now admin-gated, so exposure is reduced but not eliminated. |
-| **Tier pricing: fix or kill** | **High** | M | `pricing_tier` is stored + shown but never affects price (`pricing_service.py:82`). Silent mispricing of fleet/dealer accounts. |
+| **Tier-pricing label: relabel or wire** | ~~High~~ **Low (downgraded 2026-06-06)** | S | **NOT a mispricing bug.** Per-customer pricing works: `discount_pct` auto-applies on quote lines (`quote_service.py:119-122`) + invoice draft; regression-locked (`tests/test_tier_pricing.py`). Only the `pricing_tier` dropdown is a decorative label no logic reads — relabel as "Customer Type" or wire tier→default-discount. |
 | Encrypt QBO OAuth tokens at rest | Med | M | Plaintext in `data/jaks.db` (`qbo_client.py:133`). **Needs the `cryptography` dependency (not currently installed).** |
 | Force admin password change on first login | Med | S | Dashboard banner (17.1) is the interim; hard redirect-on-login still to do. |
 | `demo-reset` env-guard (refuse on the prod instance) | Low | S | Belt-and-suspenders atop the new admin gate. |
@@ -789,6 +827,87 @@ Sequences reset annually (Jan 1). `current_sequence_year` in settings detected o
 
 ---
 
+## 18. Product Categorization & Classification — Key Specs
+
+*Added 2026-06-06 (owner request); **BUILT the same night** (owner: "knock them all out"). The four §18.9 forks stand on their recommended defaults (owner approved "yes dispatch" → "build on integration branch").*
+
+> **✅ §18 BUILT & VERIFIED 2026-06-06 on `backend/workflow-series-3`.** Increments 1–7 shipped + tested — ≈24 new tests; full functional suite **1051 passed**, only the 6 pre-existing cosmetic reds (`test_ui_lint`×5 + W-4). What landed:
+> 1. **Schema** — `product_categories` += `sort_order`/`default_markup_pct`/`import_keywords`; new owner-maintained `brands` + `manufacturers` tables (seeded from `BRANDS` + `ENGINE_MAKES`).
+> 2. **Importer de-conflation** — stops writing `"PAI Industries"` into `manufacturer`; Brand≠Vendor≠Manufacturer.
+> 3. **`CategoryService` + `/categories` router** (tree + brand + manufacturer CRUD).
+> 4. **Inventory → Category Maintenance** screen + nav link.
+> 5. **Products List** — Category/Subcategory/Family (tree) · Manufacturer · Brand filters + **Needs-Review/Uncategorized** tabs + bulk **Assign Category/Manufacturer** + **Manage Categories** link; row badge now shows Engine Make.
+> 6. **`ClassificationService`** — engine-make from Applications + keyword→deepest-category match + confidence gate → `needs_review`; wired into `full_import` (Shopify Type → top-level category only).
+> 7. **Import Review queue** (`/products/review`) + nav; per-row assign clears the flag.
+> **Backfill applied to the live 13,154-part catalog** (backup `data/jaks.db.pre-s18-backfill-20260606.bak`): **13,123 de-conflated · 7,354 engine makes set · 76 flagged · 0 left as "PAI Industries".** NOT git-committed (working tree is a large pre-existing WIP pile — review + commit pending). Follow-ups: owner sets per-category `import_keywords` on the Maintenance screen then re-runs `scripts/backfill_s18_classification.py --apply` to auto-deepen subcategories; UI-lint allowlist pass on the 2 new templates.*
+
+### 18.1 — Why (the problem today)
+- The importer hard-codes `brand = "PAI"` **and** `manufacturer = "PAI Industries"` on every part (`product_import_service.py`), so **Brand, Vendor, and Manufacturer are conflated** across the whole ~13,153-part catalog.
+- Classification stops at Shopify **Type → one flat level-1 category** (`_resolve_category`). Subcategory, Product Family, and Manufacturer/Engine-Make are never derived.
+- The Products List has **no** Category/Subcategory/Family/Manufacturer/Brand filters, no Needs-Review/Uncategorized filter, and no "Manage Categories" link.
+- `product.needs_review` exists in the schema but **nothing ever sets it** — there is no Import Review queue.
+
+### 18.2 — Three separate axes (the core rule)
+**Brand, Vendor, and Manufacturer/Engine-Make are three different things and must never be merged.**
+
+| Axis | Means | Values | Stored on |
+|---|---|---|---|
+| **Brand** | The parts brand on the box | PAI · Interstate-McBee · SAMPA · JAK'S (house) | `product.brand` (owner-maintained list) |
+| **Vendor Source** | Who JAK'S buys / imports it from | (the vendors) | `ProductVendorSource → Vendor` — **already separate, unchanged** |
+| **Manufacturer / Engine Make** | The engine platform the part is for | Cummins · CAT · Detroit · Mack · Volvo · International · Paccar · Mercedes | `product.engine_manufacturer` (already standardized via `ENGINE_MAKES`) |
+
+→ The legacy `product.manufacturer` column (today = "PAI Industries") is **retired**: stop writing the vendor name into it; migrate any real value to `brand`. "Manufacturer" in the UI = `engine_manufacturer`. *(Fork A1.)*
+
+### 18.3 — Category structure (the maintained master)
+- **Three-level tree: Category → Subcategory → Product Family.** Re-labels today's Group/Category/Subcategory. `product_categories` is already self-referential (`parent_id` + `level` + `is_active`); **Product Family = the deepest level (3).** A product's `category_id` points at a Family leaf and rolls up to its Subcategory + Category. The free-text `product.product_family` column becomes a denormalized rollup of the leaf (or is dropped). *(Fork A2.)*
+- New on `product_categories`: **`sort_order`** (int) · **`default_markup_pct`** (float, nullable — wired later, see O5) · **import rules** (keywords/regex + source-field weights; JSON or child table).
+
+### 18.4 — Inventory → Category Maintenance (NEW screen)
+The master-structure editor. **Not** on the Products List.
+- **Category tree:** add/rename/reparent Category · Subcategory · Product Family; set **sort order**, **active/inactive**, optional **default markup**.
+- **Brand list** and **Manufacturer/Engine-Make list:** add/rename/activate/deactivate (Manufacturer list seeded from `ENGINE_MAKES`; replaces the hardcoded `MANUFACTURERS` in `products.py`). *(Fork A3.)*
+- **Import classification rules** live here, attached per node: keyword / Tag / OEM-prefix / Application rules that map import signals → Subcategory / Product Family / Manufacturer.
+
+### 18.5 — Products List (stays a fast working screen)
+Add only — **no structure editing here**:
+- **Filters:** Category · Subcategory · Product Family · Manufacturer/Engine-Make · Brand · **Needs Review** · **Uncategorized**.
+- **Bulk action:** **Assign Category / Manufacturer** to selected rows (the checkbox/`bulk-status` plumbing already exists; add the assign route + a real bulk toolbar form).
+- **Link:** **Manage Categories** → the Category Maintenance screen.
+
+### 18.6 — Importer classification (rule-driven, confidence-gated)
+- **Shopify Type → broad (top-level) Category ONLY.** Never deeper.
+- **Subcategory · Product Family · Manufacturer/Engine-Make → *suggested*** by matching **Title, Tags, Body HTML, OEM references, and Applications** (the last two already parsed by `parse_body_html`) against the §18.4 rules.
+- **Brand** comes from an explicit brand signal, else defaults to the import source's brand (e.g. PAI) — **never** the manufacturer.
+- **Confidence gate:** a rule match classifies the field; **ambiguous or no match → leave the field blank and set `needs_review = True`.** Never force a part into a wrong category.
+- Idempotent + dry-run behavior preserved.
+
+### 18.7 — Import Review queue (NEW)
+- Every `needs_review = True` product surfaces in an **Import Review queue** (the Products List "Needs Review" filter + a focused queue view).
+- Owner triages: accept the suggestion · pick the correct value · bulk-assign. Resolving clears `needs_review`.
+
+### 18.8 — Existing-catalog backfill *(Fork A4)*
+- Back up `data/jaks.db` first, then **run the new rules across the existing ~13,153 parts:** split Brand vs Manufacturer, populate Engine Make from Body HTML/Tags, assign the Category tree where confident; **everything uncertain lands in Import Review** rather than guessing.
+
+### 18.9 — Forks pending owner confirmation
+*Written in on the recommended default; change here and the spec above follows.*
+
+| Fork | Default (written in) | Override |
+|---|---|---|
+| **A1 Manufacturer** | One field = Engine Make (`engine_manufacturer`); retire legacy `manufacturer` | Two fields (part-OEM ≠ engine make) |
+| **A2 Product Family** | Level 3 of the category tree | Independent cross-cutting tag |
+| **A3 Brand/Mfr lists** | Owner-maintained on the Maintenance screen | Code constants · or free-text + autocomplete |
+| **A4 Existing 13k** | Backfill now; low-confidence → Review | New imports only · or safe-fields-only |
+
+### 18.10 — Build order (when approved)
+1. **Schema:** `product_categories` + `sort_order`/`default_markup_pct`/rules; Brand + Manufacturer maintained lists; retire the `manufacturer` write. (Backend)
+2. **Category Maintenance screen** + nav entry. (Backend + UI)
+3. **Importer rules + confidence gate** → set `needs_review`; Type → top-category only. (Backend)
+4. **Products List** filters + bulk Assign + Manage-Categories link. (UI)
+5. **Import Review queue.** (UI)
+6. **Backfill run** over the live catalog (after a verified jaks.db backup). (Backend, one-shot)
+
+---
+
 *This document is the single source of truth for all JAKS Inventory build decisions.*
 *Update it as decisions change. All other planning documents are superseded.*
-*Last updated: 2026-06-05 — §17 go-live remaining punch list added (independent audit + acf3c34 remediation); supersedes the §16.6 "signed off" snapshot.*
+*Last updated: 2026-06-06 — status-refresher pass: 983 tests verified green; tier-pricing downgraded from blocker to a label decision (money path proven real); real-data cutover (13,153-part catalog) recorded as the live operational gate; owner-acceptance breadth named as the one true status gap. See §17 banner. **Added §18 Product Categorization & Classification spec** (Inventory → Category Maintenance screen; Products-List filters/bulk-assign/Manage-Categories link; importer rules + Import Review queue; Brand/Vendor/Manufacturer-Engine-Make separation) — **BUILT & verified the same night** (increments 1–7; 1051 tests pass; backfill applied to the live 13,154-part catalog). Not yet git-committed. See §18 banner.*

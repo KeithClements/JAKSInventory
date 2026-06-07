@@ -62,6 +62,23 @@ def _categories(db: Session):
     return sorted(cats, key=lambda c: c.full_path.lower())
 
 
+def _descendant_category_ids(db: Session, root_id: int) -> list[int]:
+    """§18 — root category id + every descendant id, so filtering a top-level
+    Category also shows products tagged to its Subcategories / Product Families."""
+    from app.models.product import ProductCategory
+    pairs = db.query(ProductCategory.id, ProductCategory.parent_id).all()
+    children: dict[int, list[int]] = {}
+    for cid, pid in pairs:
+        children.setdefault(pid, []).append(cid)
+    out: list[int] = []
+    stack = [root_id]
+    while stack:
+        cid = stack.pop()
+        out.append(cid)
+        stack.extend(children.get(cid, []))
+    return out
+
+
 # ── List ─────────────────────────────────────────────────────────────────────
 
 @router.get("/", response_class=HTMLResponse)
@@ -71,6 +88,9 @@ def product_list(
     tab: str = "all",
     sort: str = "sku",
     page: int = 1,
+    category_id: int = 0,       # §18 — filter by category (incl. descendants)
+    manufacturer: str = "",     # §18 — filter by Manufacturer / Engine Make
+    brand: str = "",            # §18 — filter by Brand
     db: Session = Depends(get_db),
 ):
     base = db.query(Product).filter(Product.is_active == True)  # noqa: E712
@@ -89,6 +109,10 @@ def product_list(
         query = base.filter(Product.qty_on_hand == 0, Product.special_order_only == False)  # noqa: E712
     elif tab == "special_order":
         query = base.filter(Product.special_order_only == True)  # noqa: E712
+    elif tab == "needs_review":
+        query = base.filter(Product.needs_review == True)  # noqa: E712
+    elif tab == "uncategorized":
+        query = base.filter(Product.category_id.is_(None))
     else:
         query = base
 
@@ -107,6 +131,14 @@ def product_list(
             _dedashed_sku = func.replace(func.replace(Product.sku, "-", ""), " ", "")
             _filter = _filter | _dedashed_sku.ilike(f"%{_q_clean}%")
         query = query.filter(_filter)
+
+    # §18 — structured filters (category incl. descendants · manufacturer · brand)
+    if category_id:
+        query = query.filter(Product.category_id.in_(_descendant_category_ids(db, category_id)))
+    if manufacturer:
+        query = query.filter(Product.engine_manufacturer == manufacturer)
+    if brand:
+        query = query.filter(Product.brand == brand)
 
     from app.models.product import ProductCategory
 
@@ -163,7 +195,24 @@ def product_list(
         "special_order": base.filter(
             Product.special_order_only == True  # noqa: E712
         ).count(),
+        "needs_review": base.filter(Product.needs_review == True).count(),  # noqa: E712
+        "uncategorized": base.filter(Product.category_id.is_(None)).count(),
     }
+
+    # §18 — filter dropdown options (active category tree + maintained lists)
+    from app.models.product import Brand as _Brand, Manufacturer as _Manufacturer
+    filter_categories = sorted(
+        db.query(ProductCategory).filter(ProductCategory.is_active == True).all(),  # noqa: E712
+        key=lambda c: c.full_path.lower(),
+    )
+    filter_brands = (
+        db.query(_Brand).filter(_Brand.is_active == True)  # noqa: E712
+        .order_by(_Brand.sort_order, _Brand.name).all()
+    )
+    filter_manufacturers = (
+        db.query(_Manufacturer).filter(_Manufacturer.is_active == True)  # noqa: E712
+        .order_by(_Manufacturer.sort_order, _Manufacturer.name).all()
+    )
 
     return templates.TemplateResponse(request, "products/list.html", {
         "products": products,
@@ -177,6 +226,12 @@ def product_list(
         "page_start": page_start,
         "page_end": page_end,
         "page_size": PAGE_SIZE,
+        "filter_categories": filter_categories,
+        "filter_brands": filter_brands,
+        "filter_manufacturers": filter_manufacturers,
+        "category_id": category_id,
+        "manufacturer": manufacturer,
+        "brand": brand,
     })
 
 
@@ -345,6 +400,82 @@ async def product_bulk_status(
         db.commit()
 
     return RedirectResponse("/products/", status_code=303)
+
+
+# ── Bulk Assign Category / Manufacturer — MUST be before /{product_id} ────────
+# §18 — the Products-List triage action. Assigns a category and/or a
+# Manufacturer / Engine Make to the selected products. Assigning clears
+# needs_review (the row has now been triaged → leaves the Import Review queue).
+
+@router.post("/bulk-assign", response_class=RedirectResponse)
+async def product_bulk_assign(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    form = await request.form()
+    raw_ids = form.getlist("product_ids")
+    product_ids: list[int] = []
+    for raw in raw_ids:
+        try:
+            product_ids.append(int(raw))
+        except (ValueError, TypeError):
+            pass
+
+    category_id_raw = str(form.get("category_id", "")).strip()
+    manufacturer = str(form.get("manufacturer", "")).strip()
+
+    updates: dict = {}
+    if category_id_raw:
+        try:
+            updates["category_id"] = int(category_id_raw)
+        except (ValueError, TypeError):
+            pass
+    if manufacturer:
+        updates["engine_manufacturer"] = manufacturer
+
+    if product_ids and updates:
+        # Assigning is the triage action → the row leaves "Needs Review".
+        updates["needs_review"] = False
+        db.query(Product).filter(Product.id.in_(product_ids)).update(
+            updates, synchronize_session=False
+        )
+        db.commit()
+
+    return_to = str(form.get("return_to", "/products/")).strip()
+    if not return_to.startswith("/products"):
+        return_to = "/products/"          # guard against open redirect
+    return RedirectResponse(return_to, status_code=303)
+
+
+# ── Import Review queue (§18.7) — MUST be before /{product_id} ────────────────
+# Products the importer flagged needs_review (couldn't confidently place into a
+# Subcategory / Product Family). Per-row inline assign posts to /bulk-assign and
+# returns here; assigning clears the flag so the row leaves the queue.
+
+@router.get("/review", response_class=HTMLResponse)
+def product_review_queue(request: Request, db: Session = Depends(get_db)):
+    from app.models.product import Manufacturer as _Manufacturer, ProductCategory as _PC
+    base = db.query(Product).filter(
+        Product.is_active == True, Product.needs_review == True  # noqa: E712
+    )
+    total = base.count()
+    products = (
+        base.options(joinedload(Product.category).joinedload(_PC.parent))
+        .order_by(Product.sku).limit(300).all()
+    )
+    filter_categories = sorted(
+        db.query(_PC).filter(_PC.is_active == True).all(),  # noqa: E712
+        key=lambda c: c.full_path.lower(),
+    )
+    filter_manufacturers = (
+        db.query(_Manufacturer).filter(_Manufacturer.is_active == True)  # noqa: E712
+        .order_by(_Manufacturer.sort_order, _Manufacturer.name).all()
+    )
+    return templates.TemplateResponse(request, "products/review.html", {
+        "products": products, "total": total, "shown": len(products),
+        "filter_categories": filter_categories,
+        "filter_manufacturers": filter_manufacturers,
+    })
 
 
 # ── Export CSV — MUST be before /{product_id} ─────────────────────────────────
@@ -528,6 +659,45 @@ async def product_update(product_id: int, request: Request, db: Session = Depend
             "default_markup": float(get_setting_value_db(db, "default_markup_pct", "30.0")),
             "error": str(exc),
         }, status_code=422)
+
+
+# ── Autosave (Save Standard v2) ───────────────────────────────────────────────
+# Real auto-save for the Info-tab edit form. The detail page POSTs the whole form here
+# (debounced) via fetch and drives the honest save-state pill off the HTTP status —
+# green "All changes saved" appears ONLY after a confirmed commit. Replaces the old
+# cosmetic _dirty flag, which defaulted to "All changes saved" on load even though
+# nothing had been persisted, so edits were silently lost on navigation (owner-reported
+# 2026-06-06). Same field set / validation as product_update; never redirects.
+@router.post("/{product_id}/autosave", response_class=HTMLResponse)
+async def product_autosave(
+    product_id: int, request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    p = db.query(Product).filter(Product.id == product_id).first()
+    if not p:
+        return HTMLResponse(
+            '<span class="text-xs text-red-600">Product not found.</span>',
+            status_code=404,
+        )
+    form = await request.form()
+    try:
+        data = _parse_product_form(form)
+        _svc(db, user_id).update_product(product_id, data)
+        return HTMLResponse('<span class="text-xs text-green-600 font-medium">&#10003; Saved</span>')
+    except ValueError as exc:
+        db.rollback()
+        return HTMLResponse(
+            f'<span class="text-xs text-red-600">{html.escape(str(exc))}</span>',
+            status_code=422,
+        )
+    except Exception:
+        db.rollback()
+        import logging
+        logging.getLogger(__name__).exception("Product autosave failed for %s", product_id)
+        return HTMLResponse(
+            '<span class="text-xs text-red-600">Save failed.</span>',
+            status_code=500,
+        )
 
 
 # ── Deactivate ───────────────────────────────────────────────────────────────

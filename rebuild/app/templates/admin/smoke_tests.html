@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block title %}Smoke Tests — JAKS Inventory{% endblock %}
+{% block heading %}Workflow Smoke Tests{% endblock %}
+
+{% set status_badge = {
+  'passed':  'badge-green',
+  'failed':  'badge-red',
+  'skipped': 'badge-gray',
+  'running': 'badge-amber',
+  'error':   'badge-red',
+} %}
+
+{% block header_actions %}
+  <form method="post" action="/admin/smoke-tests/run">
+    <button type="submit" class="btn-primary btn-sm" {% if running %}disabled{% endif %}>
+      {% if running %}
+        <svg class="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+        </svg>
+        Running…
+      {% else %}
+        Run smoke tests
+      {% endif %}
+    </button>
+  </form>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl space-y-4">
+
+  {# Auto-refresh while a run is in flight (no head block to inject meta-refresh). #}
+  {% if running %}
+  <script>setTimeout(function () { window.location.reload(); }, 4000);</script>
+  <div class="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800">
+    <svg class="animate-spin w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24">
+      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+    </svg>
+    A smoke run is in progress — this page refreshes automatically.
+  </div>
+  {% endif %}
+
+  <p class="text-sm text-gray-500">
+    End-to-end checks of the 12 business-critical workflow steps, driven through a real browser
+    against an isolated, freshly-seeded database. This is a functional smoke gate — it answers
+    “do the workflows actually work?”, not cosmetics.
+  </p>
+
+  {% if not results %}
+    {# ── Never run ── #}
+    <div class="card">
+      <div class="card-body text-center py-12">
+        <p class="text-sm text-gray-500 mb-1">No smoke run has completed yet.</p>
+        <p class="text-xs text-gray-400">Click “Run smoke tests” above to start the first run
+          (it takes ~40 seconds and opens a headless browser in the background).</p>
+      </div>
+    </div>
+  {% else %}
+    {% set t = results.totals %}
+
+    {# ── Summary banner ── #}
+    {% set banner = 'bg-green-50 border-green-200 text-green-800' if results.status == 'passed'
+                    else ('bg-red-50 border-red-200 text-red-800' if results.status in ['failed','error']
+                    else 'bg-amber-50 border-amber-200 text-amber-800') %}
+    <div class="rounded-lg border px-4 py-3 {{ banner }}">
+      <div class="flex items-center justify-between flex-wrap gap-2">
+        <div class="text-sm font-semibold">
+          {% if results.status == 'passed' %}All workflows passing
+          {% elif results.status == 'failed' %}{{ t.failed }} workflow{{ 's' if t.failed != 1 }} failing
+          {% elif results.status == 'error' %}Suite could not run
+          {% else %}{{ results.status|title }}{% endif %}
+        </div>
+        <div class="text-xs tabular-nums">
+          <span class="font-semibold text-green-700">{{ t.passed }} passed</span> ·
+          <span class="font-semibold text-red-700">{{ t.failed }} failed</span> ·
+          <span class="text-gray-500">{{ t.skipped }} skipped</span>
+          of {{ t.total }}
+        </div>
+      </div>
+      {% if results.error %}
+      <pre class="mt-2 text-xs whitespace-pre-wrap font-mono opacity-80">{{ results.error }}</pre>
+      {% endif %}
+    </div>
+
+    {# ── Run metadata ── #}
+    <div class="flex flex-wrap gap-x-6 gap-y-1 text-xs text-gray-500">
+      <span>Finished: <span class="text-gray-700">{{ results.finished_at or '—' }}</span></span>
+      <span>Duration: <span class="text-gray-700 tabular-nums">{{ results.duration_s }}s</span></span>
+      <span>Target: <span class="text-gray-700 font-mono">{{ results.base_url or '—' }}</span></span>
+      <span>Python {{ results.environment.python }} · Playwright {{ results.environment.playwright }}</span>
+      {% if results.trace %}
+      <a class="link" target="_blank"
+         href="/admin/smoke-tests/artifact/{{ results.trace }}">trace.zip</a>
+      {% endif %}
+    </div>
+
+    {# ── Steps ── #}
+    <div class="card">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th w-10">#</th>
+            <th class="tbl-th">Workflow step</th>
+            <th class="tbl-th w-28">Status</th>
+            <th class="tbl-th-r w-20">Time</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in results.steps %}
+          <tr class="border-t border-gray-100 align-top">
+            <td class="tbl-td tabular-nums text-gray-400">{{ s.index }}</td>
+            <td class="tbl-td">
+              <div class="font-medium text-gray-800">{{ s.title }}</div>
+              <div class="text-xs text-gray-400 mt-0.5">{{ s.action }}</div>
+
+              {% if s.status == 'failed' %}
+                <div class="mt-2 rounded-md bg-red-50 border border-red-100 px-3 py-2 text-xs space-y-1">
+                  <div><span class="font-semibold text-gray-500">Expected:</span> <span class="text-gray-700">{{ s.expected }}</span></div>
+                  <div><span class="font-semibold text-gray-500">Actual:</span> <span class="text-red-700">{{ s.actual }}</span></div>
+                  {% if s.page_url %}<div><span class="font-semibold text-gray-500">URL:</span> <span class="font-mono text-gray-600 break-all">{{ s.page_url }}</span></div>{% endif %}
+                  <div class="flex flex-wrap gap-3 pt-1">
+                    {% if s.screenshot %}<a class="link" target="_blank" href="/admin/smoke-tests/artifact/{{ s.screenshot }}">screenshot</a>{% endif %}
+                    {% if s.video %}<a class="link" target="_blank" href="/admin/smoke-tests/artifact/{{ s.video }}">video</a>{% endif %}
+                    {% if results.trace %}<a class="link" target="_blank" href="/admin/smoke-tests/artifact/{{ results.trace }}">trace</a>{% endif %}
+                  </div>
+                </div>
+              {% elif s.status == 'skipped' %}
+                <div class="mt-1 text-xs text-gray-400 italic">{{ s.actual }}</div>
+              {% elif s.status == 'passed' and s.actual %}
+                <div class="mt-1 text-xs text-gray-500">{{ s.actual }}</div>
+              {% endif %}
+            </td>
+            <td class="tbl-td">
+              <span class="{{ status_badge.get(s.status, 'badge-gray') }}">{{ s.status|upper }}</span>
+            </td>
+            <td class="tbl-td-r text-gray-400">{{ '%.2f'|format(s.duration_s) }}s</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <p class="text-xs text-gray-400">
+      Failing steps include the page URL, the attempted action, expected vs. actual result, and a
+      screenshot; a full Playwright trace and a video of the run are linked above. Open the trace with
+      <span class="font-mono">playwright show-trace &lt;trace.zip&gt;</span>.
+    </p>
+  {% endif %}
+
+</div>
+{% endblock %}

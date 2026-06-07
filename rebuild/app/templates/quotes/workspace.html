@@ -9,6 +9,7 @@
 {% block content %}
 {% from "macros/linked_docs.html" import linked_strip %}
 {% import "macros/customer_flags.html" as flagmacro %}
+{% from "macros/engine_picker.html" import engine_picker %}
 
 {% if linked_documents %}
 <div class="mb-3">{{ linked_strip(linked_documents) }}</div>
@@ -150,14 +151,10 @@
         <label class="form-label">ESN</label>
         <input type="text" name="esn" value="{{ quote.esn or '' }}" class="form-input text-sm" />
       </div>
-      <div>
-        <label class="form-label">Engine Make</label>
-        <input type="text" name="engine_manufacturer" value="{{ quote.engine_manufacturer or '' }}" class="form-input text-sm" />
-      </div>
-      <div>
-        <label class="form-label">Engine Model</label>
-        <input type="text" name="engine_model" value="{{ quote.engine_model or '' }}" class="form-input text-sm" />
-      </div>
+      {# Engine Make / Model — standardized cascading dropdowns (replaces free text).
+         Renders two grid cells via display:contents and submits engine_manufacturer /
+         engine_model exactly as before, so autosave + carry-forward are unchanged. #}
+      {{ engine_picker(quote.engine_manufacturer, quote.engine_model, engine_makes, engine_models_by_make) }}
       <div>
         <label class="form-label">Customer PO #</label>
         <input type="text" name="customer_po_number" value="{{ quote.customer_po_number or '' }}" class="form-input text-sm" />

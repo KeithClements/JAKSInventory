@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from app.models.product import ProductCategory
+from app.models.product import ProductCategory, Brand, Manufacturer
+from app.constants import BRANDS, ENGINE_MAKES
 
 
 # NOTE: vendor scraper sources removed — all scraping/cataloging is external now
@@ -65,3 +66,31 @@ def seed_default_categories(db: Session) -> None:
 def seed_customer_type_defaults(db: Session) -> None:
     from app.services.customer_service import CustomerService
     CustomerService(db).ensure_type_defaults_seeded()
+
+
+# ── Brands & Manufacturers (§18.2 — three-axis classification) ────────────────
+# Brand (PAI / Interstate-McBee / SAMPA / JAK'S) and Manufacturer / Engine-Make
+# (Cummins, CAT, …) are owner-maintained lists, DISTINCT from each other and from
+# Vendor. Both idempotent by emptiness so a curated list is never overwritten.
+
+def seed_brands(db: Session) -> None:
+    if db.query(Brand.id).first() is not None:
+        return
+    for i, name in enumerate(BRANDS):
+        db.add(Brand(
+            name=name, sort_order=i, is_active=True,
+            is_house_brand=name.upper().startswith("JAK"),
+        ))
+    db.commit()
+
+
+def seed_manufacturers(db: Session) -> None:
+    if db.query(Manufacturer.id).first() is not None:
+        return
+    i = 0
+    for name in ENGINE_MAKES:
+        if name.strip().lower() == "other":
+            continue  # 'Other' is a UI free-text escape hatch, not a real row
+        db.add(Manufacturer(name=name, sort_order=i, is_active=True))
+        i += 1
+    db.commit()

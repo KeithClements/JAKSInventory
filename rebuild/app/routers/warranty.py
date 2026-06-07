@@ -22,7 +22,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
-from app.constants import WarrantyDecision, WarrantyResolution, WarrantyStatus
+from app.constants import LineType, WarrantyDecision, WarrantyResolution, WarrantyStatus
 from app.deps import get_current_user_id, get_db
 from app.models.customer import Customer
 from app.models.invoice import Invoice
@@ -166,6 +166,32 @@ def warranty_new(
         db.query(Customer).filter(Customer.id == customer_id).first()
         if customer_id else None
     )
+
+    # ── Seed from an originating invoice (After-Sale Service entry point) ──
+    # Pre-fills the customer, carries the invoice number, and pre-loads the
+    # invoice's physical parts (PRODUCT lines) as editable claim lines.
+    selected_invoice = None
+    seed_lines: list[dict] = []
+    if invoice_id:
+        selected_invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+        if selected_invoice is not None:
+            if selected_customer is None:
+                selected_customer = selected_invoice.customer
+            for ln in selected_invoice.lines:
+                if ln.line_type == LineType.PRODUCT and ln.product_id:
+                    seed_lines.append(
+                        {"productId": ln.product_id, "qty": ln.qty, "credit": ""}
+                    )
+
+    # Keep seeded products selectable even if since deactivated (the <select>
+    # only lists active products otherwise, dropping the pre-filled option).
+    if seed_lines:
+        have = {p.id for p in products}
+        missing = [s["productId"] for s in seed_lines if s["productId"] not in have]
+        if missing:
+            extra = db.query(Product).filter(Product.id.in_(missing)).all()
+            products = sorted([*products, *extra], key=lambda p: (p.sku or ""))
+
     return templates.TemplateResponse(
         request,
         "warranty/_new_picker.html",
@@ -174,6 +200,8 @@ def warranty_new(
             "vendors": vendors,
             "products": products,
             "selected_customer": selected_customer,
+            "selected_invoice": selected_invoice,
+            "seed_lines": seed_lines,
         },
     )
 

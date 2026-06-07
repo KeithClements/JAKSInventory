@@ -60,6 +60,8 @@ def test_settings_tabs_and_documents_card_render(client):
     # the in-flight Documents & PDFs card survived the reorg, with its fields
     assert "Documents" in html
     assert 'name="document_show_logo"' in html
+    # owner-adjustable logo-size control renders in the same card
+    assert 'name="document_logo_height"' in html
     # a QuickBooks-tab field renders (proves tab panels carry their fields)
     assert 'name="qbo_environment"' in html
 

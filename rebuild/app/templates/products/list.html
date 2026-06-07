@@ -3,6 +3,13 @@
 {% block heading %}Products{% endblock %}
 
 {% block header_actions %}
+  <a href="/categories/" class="btn-secondary btn-sm">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+    </svg>
+    Manage Categories
+  </a>
   <a href="/products/new" class="btn-primary btn-sm">
     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
@@ -105,15 +112,33 @@
   {# Status tabs — §7 Primitive 1 #}
   {% set product_tabs = [
     ('all',           'All',           counts.all),
+    ('in_stock',      'In Stock',      counts.in_stock),
     ('low_stock',     'Low Stock',     counts.low_stock),
     ('out_of_stock',  'Out of Stock',  counts.out_of_stock),
     ('special_order', 'Special Order', counts.special_order),
+    ('needs_review',  'Needs Review',  counts.needs_review),
+    ('uncategorized', 'Uncategorized', counts.uncategorized),
   ] %}
   {{ filter_tabs(product_tabs, tab, q) }}
 
-  {# Search #}
+  {# Sort — SKU (default) · Vendor · Category (hierarchical: Major Group → Category → Sub-category) #}
   <form method="get" class="flex items-center gap-2 ml-auto">
     <input type="hidden" name="tab" value="{{ tab }}" />
+    {% if q %}<input type="hidden" name="q" value="{{ q }}" />{% endif %}
+    <label for="product-sort" class="text-xs font-medium text-gray-500 whitespace-nowrap">Sort by</label>
+    <select id="product-sort" name="sort" onchange="this.form.submit()"
+            class="py-2 pl-3 pr-8 text-sm border border-gray-200 rounded-lg bg-white cursor-pointer
+                   focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400">
+      <option value="sku"      {% if sort == 'sku' %}selected{% endif %}>SKU</option>
+      <option value="vendor"   {% if sort == 'vendor' %}selected{% endif %}>Vendor</option>
+      <option value="category" {% if sort == 'category' %}selected{% endif %}>Category</option>
+    </select>
+  </form>
+
+  {# Search #}
+  <form method="get" class="flex items-center gap-2">
+    <input type="hidden" name="tab" value="{{ tab }}" />
+    <input type="hidden" name="sort" value="{{ sort }}" />
     <div class="relative">
       <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
            fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -131,7 +156,7 @@
       Search
     </button>
     {% if q %}
-    <a href="?tab={{ tab }}"
+    <a href="?tab={{ tab }}{% if sort != 'sku' %}&sort={{ sort }}{% endif %}"
        class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</a>
     {% endif %}
   </form>
@@ -139,12 +164,88 @@
 </div>
 
 {# ══════════════════════════════════════════════════════════════════════════════
+   §18 FILTERS — Category (incl. subcategory/family) · Manufacturer · Brand
+══════════════════════════════════════════════════════════════════════════════ #}
+<form method="get" class="flex flex-wrap items-center gap-2">
+  <input type="hidden" name="tab" value="{{ tab }}" />
+  <input type="hidden" name="sort" value="{{ sort }}" />
+  {% if q %}<input type="hidden" name="q" value="{{ q }}" />{% endif %}
+  <span class="text-xs font-medium text-gray-500">Filter</span>
+  <select name="category_id" onchange="this.form.submit()"
+          class="py-2 pl-3 pr-8 text-sm border border-gray-200 rounded-lg bg-white cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400">
+    <option value="0">All categories</option>
+    {% for c in filter_categories %}
+    <option value="{{ c.id }}" {% if category_id == c.id %}selected{% endif %}>{{ c.full_path }}</option>
+    {% endfor %}
+  </select>
+  <select name="manufacturer" onchange="this.form.submit()"
+          class="py-2 pl-3 pr-8 text-sm border border-gray-200 rounded-lg bg-white cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400">
+    <option value="">All manufacturers</option>
+    {% for m in filter_manufacturers %}
+    <option value="{{ m.name }}" {% if manufacturer == m.name %}selected{% endif %}>{{ m.name }}</option>
+    {% endfor %}
+  </select>
+  <select name="brand" onchange="this.form.submit()"
+          class="py-2 pl-3 pr-8 text-sm border border-gray-200 rounded-lg bg-white cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400">
+    <option value="">All brands</option>
+    {% for b in filter_brands %}
+    <option value="{{ b.name }}" {% if brand == b.name %}selected{% endif %}>{{ b.name }}</option>
+    {% endfor %}
+  </select>
+  {% if category_id or manufacturer or brand %}
+  <a href="?tab={{ tab }}&sort={{ sort }}{% if q %}&q={{ q|urlencode }}{% endif %}"
+     class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear filters</a>
+  {% endif %}
+</form>
+
+{# ══════════════════════════════════════════════════════════════════════════════
    BULK ACTION BAR — §7 Primitive 4
 ══════════════════════════════════════════════════════════════════════════════ #}
 {% call bulk_toolbar() %}
-  <button class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">
+  {# §18 — Bulk Assign Category / Manufacturer to the selected rows #}
+  <div x-data="{ open: false }" class="relative">
+    <button type="button" @click="open = !open"
+            class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">
+      Assign Category / Manufacturer
+    </button>
+    <div x-show="open" x-cloak @click.outside="open = false"
+         class="absolute left-0 top-full mt-2 z-20 w-80 bg-white border border-gray-200 rounded-xl shadow-lg p-4 space-y-3">
+      <form method="post" action="/products/bulk-assign" class="space-y-3">
+        <template x-for="id in Object.keys(selected).filter(k => selected[k])" :key="id">
+          <input type="hidden" name="product_ids" :value="id" />
+        </template>
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">Category</label>
+          <select name="category_id"
+                  class="w-full py-2 pl-3 pr-8 text-sm border border-gray-200 rounded-lg bg-white">
+            <option value="">— leave unchanged —</option>
+            {% for c in filter_categories %}
+            <option value="{{ c.id }}">{{ c.full_path }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">Manufacturer / Engine Make</label>
+          <select name="manufacturer"
+                  class="w-full py-2 pl-3 pr-8 text-sm border border-gray-200 rounded-lg bg-white">
+            <option value="">— leave unchanged —</option>
+            {% for m in filter_manufacturers %}
+            <option value="{{ m.name }}">{{ m.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <button type="submit" class="btn-primary btn-sm w-full">
+          Apply to <span x-text="selectedCount"></span> selected
+        </button>
+        <p class="text-[11px] text-gray-400">Assigning clears "Needs Review" for these items.</p>
+      </form>
+    </div>
+  </div>
+  <div class="h-4 w-px bg-brand-200"></div>
+  <a href="/products/export.csv?tab={{ request.query_params.get('tab','') }}&q={{ request.query_params.get('q','')|urlencode }}"
+     class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">
     Export CSV
-  </button>
+  </a>
 {% endcall %}
 
 {# ══════════════════════════════════════════════════════════════════════════════
@@ -231,7 +332,9 @@
         {% endif %}
 
         {# Manufacturer badge color #}
-        {% set _ml = (p.manufacturer or '') | lower %}
+        {# §18 A1 — Manufacturer column = Engine Make (engine_manufacturer); legacy fallback #}
+        {% set _mfr_display = p.engine_manufacturer or p.manufacturer or '' %}
+        {% set _ml = _mfr_display | lower %}
         {% if 'cummins' in _ml %}
           {% set mfr_cls = 'bg-blue-100 text-blue-700 border-blue-200' %}
         {% elif 'caterpillar' in _ml %}
@@ -275,9 +378,10 @@
               <a href="/products/{{ p.id }}"
                  class="font-mono text-sm font-bold text-brand-700 hover:text-brand-900 hover:underline leading-none"
                  @click.stop>{{ p.sku }}</a>
-              {% if p.manufacturer %}
-              <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border {{ mfr_cls }}">
-                {{ p.manufacturer | truncate(4, true, '') }}
+              {% if _mfr_display %}
+              <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border {{ mfr_cls }}"
+                    title="{{ _mfr_display }}">
+                {{ _mfr_display | truncate(4, true, '') }}
               </span>
               {% endif %}
             </div>
@@ -313,6 +417,8 @@
             <p class="text-xs text-gray-400 mt-0.5 truncate" title="{{ p.category.full_path }}">{{ p.category.full_path }}</p>
             {% elif p.engine_manufacturer %}
             <p class="text-xs text-gray-400 mt-0.5 truncate">{{ p.engine_manufacturer }}{% if p.engine_model %} · {{ p.engine_model }}{% endif %}</p>
+            {% else %}
+            <p class="text-xs text-gray-300 mt-0.5 italic">Uncategorized</p>
             {% endif %}
           </td>
 
@@ -326,11 +432,16 @@
             <span class="text-sm font-bold text-gray-900 tabular-nums">${{ "%.2f"|format(p.selling_price) }}</span>
           </td>
 
-          {# Margin % #}
+          {# Margin % — '—' when cost is $0 (unknown) so a 0-cost import doesn't read as 100% #}
           <td class="px-4 py-4 align-middle text-right">
+            {% if p.cost and p.cost > 0 %}
             <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-sm font-bold border {{ margin_badge }} tabular-nums">
               {{ "%.0f"|format(margin_pct) }}%
             </span>
+            {% else %}
+            <span title="No cost yet — margin shows after the first PO is received"
+                  class="inline-flex items-center px-2.5 py-1 rounded-lg text-sm font-medium border bg-gray-50 text-gray-400 border-gray-100 tabular-nums">—</span>
+            {% endif %}
           </td>
 
           {# On Hand + min / max indicators #}
@@ -392,14 +503,23 @@
   </div>
 
   {# ── Table footer count ── #}
-  <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
+  <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between gap-3">
     <span class="text-xs text-gray-400">
-      {{ products | length }} product{{ 's' if products | length != 1 else '' }}
+      {% if total %}Showing {{ page_start }}–{{ page_end }} of {{ total }}{% else %}0 products{% endif %}
       {% if tab != 'all' or q %} · filtered{% endif %}
+      <span x-show="selectedCount > 0" x-cloak class="ml-2 text-brand-700 font-medium"><span x-text="selectedCount"></span> selected</span>
     </span>
-    <span x-show="selectedCount > 0" x-cloak class="text-xs text-brand-700 font-medium">
-      <span x-text="selectedCount"></span> selected
-    </span>
+    {% if total_pages > 1 %}
+    {% set _qs = ('&q=' ~ (q | urlencode)) if q else '' %}
+    {% set _qs = _qs ~ (('&tab=' ~ tab) if (tab and tab != 'all') else '') ~ (('&sort=' ~ sort) if (sort and sort != 'sku') else '') %}
+    <div class="flex items-center gap-1 shrink-0">
+      {% if page > 1 %}<a href="?page={{ page - 1 }}{{ _qs }}" class="btn-secondary btn-xs">← Prev</a>
+      {% else %}<span class="btn-secondary btn-xs opacity-40 cursor-not-allowed">← Prev</span>{% endif %}
+      <span class="text-xs text-gray-500 px-2 tabular-nums">Page {{ page }} / {{ total_pages }}</span>
+      {% if page < total_pages %}<a href="?page={{ page + 1 }}{{ _qs }}" class="btn-secondary btn-xs">Next →</a>
+      {% else %}<span class="btn-secondary btn-xs opacity-40 cursor-not-allowed">Next →</span>{% endif %}
+    </div>
+    {% endif %}
   </div>
 </div>
 

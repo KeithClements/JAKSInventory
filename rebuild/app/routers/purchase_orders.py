@@ -896,6 +896,72 @@ async def po_create_match_credit(
     )
 
 
+@router.post("/{po_id}/bills/{bill_id}/lines/{line_id}/correct", response_class=RedirectResponse)
+async def po_correct_match_line(
+    po_id: int, bill_id: int, line_id: int,
+    request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """
+    Correct the actual PO/bill numbers on a flagged match line so they reconcile,
+    then clear the flag (match_resolution = CORRECTED). Requires APPROVE_VENDOR_BILL.
+
+    Unlike /resolve (which only records a decision and leaves the numbers diverged),
+    this edits POLine.unit_cost and/or the bill line's qty_billed / unit_cost,
+    recomputes the bill total, and enforces a must-match gate. Opens the bill
+    DISCREPANCY -> PENDING when the last flag clears; does NOT approve.
+
+    `line_id` is the PO line id (mirrors the /resolve route).
+    Form fields (all the numeric ones optional; blank = leave that side unchanged):
+      po_unit_cost · billed_qty · billed_unit_cost · reason (required)
+    """
+    form = await request.form()
+    reason = str(form.get("reason", "")).strip()
+
+    def _opt_float(key: str) -> float | None:
+        raw = str(form.get(key, "")).strip()
+        return float(raw) if raw else None
+
+    def _opt_int(key: str) -> int | None:
+        raw = str(form.get(key, "")).strip()
+        return int(raw) if raw else None
+
+    try:
+        po_unit_cost = _opt_float("po_unit_cost")
+        billed_unit_cost = _opt_float("billed_unit_cost")
+        billed_qty = _opt_int("billed_qty")
+    except (ValueError, TypeError):
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote('Enter valid numbers for the corrected cost / qty.')}",
+            status_code=303,
+        )
+
+    svc = POService(db, current_user_id=user_id)
+    try:
+        svc.correct_match_line(
+            po_line_id=line_id,
+            bill_id=bill_id,
+            new_po_unit_cost=po_unit_cost,
+            new_billed_qty=billed_qty,
+            new_billed_unit_cost=billed_unit_cost,
+            reason=reason,
+        )
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote(str(exc))}",
+            status_code=303,
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error correcting match line %s on bill %s", line_id, bill_id)
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote('Unexpected error — line was not corrected.')}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/purchase-orders/{po_id}?ok=match_corrected", status_code=303)
+
+
 # ── Print / PDF ───────────────────────────────────────────────────────────────
 
 def _po_print_context(po: PurchaseOrder, db: Session) -> dict:

@@ -1,8 +1,9 @@
-{#- line_part_no: printable part # for a product. product.part_number does NOT exist;
-    vendor_part_number lives per-vendor in product_vendor_sources. Prefer the preferred
-    source's vendor_part_number, fall back to the JAKS master SKU so a part # always prints. -#}
+{#- line_part_no: the CUSTOMER-FACING JAKS SKU only. NEVER the vendor/PAI part number
+    (that lives on product_vendor_sources and must stay OFF customer documents) — JAKS
+    SKU scheme, owner-locked 2026-06-06. Was: preferred source's vendor_part_number || sku,
+    which leaked the vendor's real part number onto quotes. -#}
 {%- macro line_part_no(product) -%}
-{%- if product -%}{%- set pvs = product.preferred_vendor_source -%}{{- (pvs.vendor_part_number if pvs else '') or product.sku or '' -}}{%- endif -%}
+{%- if product -%}{{- product.sku or '' -}}{%- endif -%}
 {%- endmacro -%}
 <!DOCTYPE html>
 <html lang="en">
@@ -89,15 +90,27 @@
     }
     .doc-dates strong { color: #374151; }
 
-    /* ── "Prepared for" block ──────────────────────────────────────────────── */
-    .bill-section { margin-bottom: 22px; }
-    .bill-label {
+    /* ── "Prepared For" + "Engine / Reference" row ─────────────────────────────
+       Mirrors documents/_styles.html so the quote matches sales orders & invoices:
+       customer on the LEFT, engine/reference on the RIGHT (side-by-side, not stacked). */
+    .party-row { display: flex; gap: 36px; margin-bottom: 22px; }
+    .party-block { flex: 1; }
+    .party-label {
       font-size: 7pt; font-weight: 700;
       text-transform: uppercase; letter-spacing: 0.11em;
       color: #9ca3af; margin-bottom: 4px;
     }
-    .bill-company { font-size: 12pt; font-weight: 700; color: #111; }
-    .bill-detail  { font-size: 8.5pt; color: #555; line-height: 1.75; margin-top: 2px; }
+    .party-name { font-size: 12pt; font-weight: 700; color: #111; }
+    .party-detail { font-size: 8.5pt; color: #555; line-height: 1.75; margin-top: 2px; }
+    /* Reference key/value rows (uppercase label column + monospace value) */
+    .ref-block { font-size: 8.5pt; color: #555; line-height: 1.85; }
+    .ref-row { display: flex; gap: 8px; }
+    .ref-label {
+      color: #9ca3af; width: 110px; flex-shrink: 0;
+      font-size: 7.5pt; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.08em;
+    }
+    .ref-val { font-family: monospace; color: #374151; }
 
     /* ── Lines table ───────────────────────────────────────────────────────── */
     table.lines {
@@ -266,29 +279,42 @@
     </div>
   </div>
 
-  {# ── Prepared For ────────────────────────────────────────────────────────── #}
-  <div class="bill-section">
-    <div class="bill-label">Prepared For</div>
-    <div class="bill-company">{{ quote.customer.company_name }}</div>
-    {% if customer_addr_lines %}
-    <div class="bill-detail">
-      {% for ln in customer_addr_lines %}{{ ln }}<br>{% endfor %}
+  {# ── Prepared For (left)  +  Engine / Reference (right) ──────────────────────
+       Side-by-side, uniform with sales orders & invoices. When there's no
+       engine/reference data the customer block simply spans the full width. #}
+  <div class="party-row">
+
+    <div class="party-block">
+      <div class="party-label">Prepared For</div>
+      <div class="party-name">{{ quote.customer.company_name }}</div>
+      {% if customer_addr_lines %}
+      <div class="party-detail">
+        {% for ln in customer_addr_lines %}{{ ln }}<br>{% endfor %}
+      </div>
+      {% endif %}
+    </div>
+
+    {% if quote.esn or quote.engine_manufacturer or quote.engine_model or quote.customer_po_number or quote.customer_job_number %}
+    <div class="party-block">
+      <div class="party-label">Engine / Reference</div>
+      <div class="ref-block">
+        {% if quote.esn %}
+        <div class="ref-row"><span class="ref-label">ESN</span><span class="ref-val">{{ quote.esn }}</span></div>
+        {% endif %}
+        {% if quote.engine_manufacturer or quote.engine_model %}
+        <div class="ref-row"><span class="ref-label">Engine</span><span class="ref-val">{{ quote.engine_manufacturer }} {{ quote.engine_model }}</span></div>
+        {% endif %}
+        {% if quote.customer_po_number %}
+        <div class="ref-row"><span class="ref-label">Customer PO</span><span class="ref-val">{{ quote.customer_po_number }}</span></div>
+        {% endif %}
+        {% if quote.customer_job_number %}
+        <div class="ref-row"><span class="ref-label">Job #</span><span class="ref-val">{{ quote.customer_job_number }}</span></div>
+        {% endif %}
+      </div>
     </div>
     {% endif %}
-  </div>
 
-  {# ── Engine / Reference ──────────────────────────────────────────────────── #}
-  {% if quote.esn or quote.engine_manufacturer or quote.engine_model or quote.customer_po_number or quote.customer_job_number %}
-  <div class="bill-section">
-    <div class="bill-label">Engine / Reference</div>
-    <div class="bill-detail">
-      {% if quote.esn %}<strong>ESN:</strong> {{ quote.esn }}<br>{% endif %}
-      {% if quote.engine_manufacturer or quote.engine_model %}<strong>Engine:</strong> {{ quote.engine_manufacturer }} {{ quote.engine_model }}<br>{% endif %}
-      {% if quote.customer_po_number %}<strong>Customer PO:</strong> {{ quote.customer_po_number }}<br>{% endif %}
-      {% if quote.customer_job_number %}<strong>Job #:</strong> {{ quote.customer_job_number }}{% endif %}
-    </div>
-  </div>
-  {% endif %}
+  </div>{# /party-row #}
 
   {# ── Main line items ─────────────────────────────────────────────────────── #}
   <table class="lines">

@@ -118,6 +118,9 @@ def test_full_import_creates_products_and_relations(db):
     assert p.supplier_warranty_months == 24
     assert p.shopify_product_id == "jaks-pai-1"
     assert p.search_keywords == "CUMMINS"
+    # §18.2 — Brand / Vendor / Manufacturer kept separate (was conflated pre-§18)
+    assert p.brand == "PAI"               # Brand = the parts brand
+    assert p.manufacturer == ""           # NOT "PAI Industries" (the vendor name)
     # PAI vendor source created, vendor_cost BLANK
     src = db.query(ProductVendorSource).filter(ProductVendorSource.product_id == p.id).first()
     assert src is not None and src.is_preferred is True
@@ -206,3 +209,46 @@ def test_pricing_update_competitor_never_touches_product(db):
     after = (p.title, p.category_id, p.price_override, p.compare_at_price,
              db.query(CrossReference).filter(CrossReference.product_id == p.id).count())
     assert before == after  # identity / pricing-override / cross-refs all untouched
+
+
+# ── §18 — Categorization & classification foundation ─────────────────────────
+
+def test_full_import_does_not_conflate_brand_and_manufacturer(db):
+    """§18.2 / A1 — the importer must never write the vendor name into
+    product.manufacturer. Brand = 'PAI'; manufacturer is left blank for the
+    §18.6 classification pass (engine make). Regression guard."""
+    ProductImportService(db, None).full_import(_shopify_csv(), dry_run=False)
+    products = db.query(Product).all()
+    assert products
+    for p in products:
+        assert p.brand == "PAI"
+        assert p.manufacturer == ""               # was "PAI Industries" pre-§18
+        assert p.manufacturer != "PAI Industries"
+
+
+def test_category_has_maintenance_columns(db):
+    """§18.3 — product_categories gains sort_order / default_markup_pct /
+    import_keywords for the Category Maintenance screen."""
+    c = ProductCategory(name="Engine", level=1, sort_order=5,
+                        default_markup_pct=42.0, import_keywords="head, gasket")
+    db.add(c)
+    db.commit()
+    db.refresh(c)
+    assert c.sort_order == 5
+    assert c.default_markup_pct == 42.0
+    assert c.import_keywords == "head, gasket"
+
+
+def test_seed_brands_and_manufacturers_idempotent(db):
+    """§18.2 — Brand + Manufacturer maintained lists seed once, idempotently."""
+    from app.seeds import seed_brands, seed_manufacturers
+    from app.models.product import Brand, Manufacturer
+    seed_brands(db); seed_brands(db)              # second call must be a no-op
+    seed_manufacturers(db); seed_manufacturers(db)
+    brand_names = {b.name for b in db.query(Brand).all()}
+    assert {"PAI", "Interstate-McBee", "SAMPA", "JAK'S"} <= brand_names
+    assert db.query(Brand).count() == 4           # no duplicates
+    assert db.query(Brand).filter(Brand.is_house_brand == True).count() == 1   # JAK'S
+    man_names = {m.name for m in db.query(Manufacturer).all()}
+    assert "Cummins" in man_names and "CAT / Caterpillar" in man_names
+    assert "Other" not in man_names               # UI escape hatch, not a real row

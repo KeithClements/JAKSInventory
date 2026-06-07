@@ -18,11 +18,13 @@
   </div>
   {% endif %}
 
-  {# Deactivate form lives outside the main edit form to prevent nesting #}
+  {# Status-change forms live outside the main edit form to prevent nesting #}
   {% if vendor.is_active %}
   <form id="deactivate-form" method="post" action="/vendors/{{ vendor.id }}/deactivate"
         onsubmit="return confirm('Deactivate {{ vendor.name }}? They will no longer appear in vendor lists.')">
   </form>
+  {% else %}
+  <form id="reactivate-form" method="post" action="/vendors/{{ vendor.id }}/reactivate"></form>
   {% endif %}
 
   {# ── Info card ── #}
@@ -50,6 +52,16 @@
             <input name="vendor_code" value="{{ vendor.vendor_code }}" maxlength="4"
                    oninput="this.value=this.value.toUpperCase()"
                    class="form-input font-mono uppercase" />
+          </div>
+
+          <div>
+            <label class="form-label">
+              SKU #
+              <span class="font-normal text-gray-400 normal-case">(1 digit — opaque vendor code baked into JAKS SKUs, e.g. PAI = 9)</span>
+            </label>
+            <input name="vendor_number" value="{{ vendor.vendor_number }}" maxlength="2"
+                   inputmode="numeric" pattern="[0-9]*"
+                   class="form-input font-mono" />
           </div>
 
           <div>
@@ -111,6 +123,11 @@
           <button type="submit" form="deactivate-form"
                   class="text-xs text-gray-400 hover:text-red-500 transition-colors">
             Deactivate vendor
+          </button>
+          {% else %}
+          <button type="submit" form="reactivate-form"
+                  class="text-xs font-medium text-brand-700 hover:text-brand-600 transition-colors">
+            Reactivate vendor
           </button>
           {% endif %}
         </div>

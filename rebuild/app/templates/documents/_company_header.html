@@ -4,13 +4,19 @@
    ONE definition — included by every print template; do not inline a copy.
    Vars (from app.services.document_render.get_company_dict):
      company.name      (str)            — fallback brand text / logo alt
-     company.logo_url  (str | None)     — /static/… when set, else None
-     company.show_logo (bool, optional) — owner can suppress the logo without deleting it
+     company.logo_url    (str | None)     — /static/… when set, else None
+     company.show_logo   (bool, optional) — owner can suppress the logo without deleting it
+     company.logo_height (int, optional)  — owner-set logo height in px (default 56)
      company.address / company.phone / company.email (str, optional)
 #}
 <div>
   {% if company.logo_url and (company.show_logo | default(true)) %}
-  <img src="{{ company.logo_url }}" alt="{{ company.name or 'Company' }}" class="co-logo">
+  {# Owner-adjustable size: the inline max-height overrides the .co-logo rule in
+     EVERY document (quote/invoice inline styles + documents/_styles.html), so the
+     logo resizes uniformly from one Settings field. Falls back to 56px when
+     logo_height is unset so any route that builds `company` by hand still works. #}
+  <img src="{{ company.logo_url }}" alt="{{ company.name or 'Company' }}" class="co-logo"
+       style="max-height:{{ company.logo_height | default(56) }}px;max-width:360px;width:auto;">
   {% else %}
   <div class="co-name">{{ company.name or "JAKS Parts" }}</div>
   {% endif %}

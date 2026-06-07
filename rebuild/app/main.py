@@ -13,11 +13,15 @@ from sqlalchemy.orm import Session
 import app.database as _appdb
 from app.database import init_db
 from app.routers.settings import seed_settings
-from app.seeds import seed_default_categories, seed_customer_type_defaults
+from app.seeds import (
+    seed_default_categories, seed_customer_type_defaults,
+    seed_brands, seed_manufacturers,
+)
 from app.routers.settings import seed_markup_tiers
 from app.routers import (
     dashboard,
     products,
+    categories as categories_router,
     customers,
     vendors,
     purchase_orders,
@@ -77,6 +81,8 @@ def on_startup() -> None:
     try:
         seed_settings(db)
         seed_default_categories(db)
+        seed_brands(db)
+        seed_manufacturers(db)
         seed_customer_type_defaults(db)
         seed_markup_tiers(db)
         _seed_session_secret(db)
@@ -308,6 +314,7 @@ def _lock_overdue_invoices(db: Session) -> None:
 app.include_router(dashboard.router)
 app.include_router(search_router.router)
 app.include_router(products.router)
+app.include_router(categories_router.router)
 app.include_router(customers.router)
 app.include_router(vendors.router)
 app.include_router(purchase_orders.router)
