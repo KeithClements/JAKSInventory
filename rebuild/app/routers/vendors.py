@@ -11,7 +11,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.constants import PaymentTerms, POStatus, VendorBillStatus, VendorContactRole, VendorCreditStatus
-from app.deps import get_db
+from app.deps import get_db, get_current_user_id
 from app.models.vendor import Vendor, VendorContact, VendorCredit
 from app.models.purchase_order import PurchaseOrder, VendorBill
 from app.models.product import ProductVendorSource
@@ -152,7 +152,11 @@ def vendor_new(request: Request):
 
 
 @router.post("/new", response_class=RedirectResponse)
-async def vendor_create(request: Request, db: Session = Depends(get_db)):
+async def vendor_create(
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
     form = await request.form()
     vendor_code = str(form.get("vendor_code", "")).strip().upper()[:4]
     v = Vendor(
@@ -180,7 +184,11 @@ def vendor_quick_create_form(request: Request):
 
 
 @router.post("/quick-create", response_class=HTMLResponse)
-async def vendor_quick_create(request: Request, db: Session = Depends(get_db)):
+async def vendor_quick_create(
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
     form = await request.form()
     name = str(form.get("name", "")).strip()
     vendor_code = str(form.get("vendor_code", "")).strip().upper()[:10]
@@ -337,7 +345,12 @@ def vendor_detail(vendor_id: int, request: Request, db: Session = Depends(get_db
 
 
 @router.post("/{vendor_id}", response_class=RedirectResponse)
-async def vendor_update(vendor_id: int, request: Request, db: Session = Depends(get_db)):
+async def vendor_update(
+    vendor_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
     v = db.query(Vendor).filter(Vendor.id == vendor_id).first()
     if not v:
         return RedirectResponse("/vendors/", status_code=303)
@@ -358,7 +371,11 @@ async def vendor_update(vendor_id: int, request: Request, db: Session = Depends(
 
 
 @router.post("/{vendor_id}/deactivate", response_class=RedirectResponse)
-def vendor_deactivate(vendor_id: int, db: Session = Depends(get_db)):
+def vendor_deactivate(
+    vendor_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
     v = db.query(Vendor).filter(Vendor.id == vendor_id).first()
     if v:
         v.is_active = False
@@ -367,7 +384,11 @@ def vendor_deactivate(vendor_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{vendor_id}/reactivate", response_class=RedirectResponse)
-def vendor_reactivate(vendor_id: int, db: Session = Depends(get_db)):
+def vendor_reactivate(
+    vendor_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
     v = db.query(Vendor).filter(Vendor.id == vendor_id).first()
     if v:
         v.is_active = True
@@ -411,6 +432,7 @@ def vendor_contact_create(
     is_accounting_contact: bool = Form(False),
     notes: str = Form(""),
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     """Add a contact.  The first contact (or is_primary=on) becomes primary."""
     vendor = db.query(Vendor).filter(Vendor.id == vendor_id).first()
@@ -464,6 +486,7 @@ def vendor_contact_update(
     is_accounting_contact: bool = Form(False),
     notes: str = Form(""),
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     """Edit a contact's fields.  Primary status is managed via /make-primary, not here."""
     contact = (
@@ -490,7 +513,12 @@ def vendor_contact_update(
 
 
 @router.post("/{vendor_id}/contacts/{contact_id}/make-primary", response_class=RedirectResponse)
-def vendor_contact_make_primary(vendor_id: int, contact_id: int, db: Session = Depends(get_db)):
+def vendor_contact_make_primary(
+    vendor_id: int,
+    contact_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
     """Mark one contact primary; clears the flag on every other contact for this vendor."""
     contact = (
         db.query(VendorContact)
@@ -507,7 +535,12 @@ def vendor_contact_make_primary(vendor_id: int, contact_id: int, db: Session = D
 
 
 @router.post("/{vendor_id}/contacts/{contact_id}/delete", response_class=RedirectResponse)
-def vendor_contact_delete(vendor_id: int, contact_id: int, db: Session = Depends(get_db)):
+def vendor_contact_delete(
+    vendor_id: int,
+    contact_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
     """Soft-delete a contact (is_active=False).  If it was primary, the vendor is left
     without a primary until another is promoted via /make-primary."""
     contact = (

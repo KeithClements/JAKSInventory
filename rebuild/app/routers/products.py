@@ -214,8 +214,16 @@ def product_list(
         .order_by(_Manufacturer.sort_order, _Manufacturer.name).all()
     )
 
+    # Build a settings-aware sell-price map so the list template never has to
+    # call the hardcoded 30 % model property.  PricingService reads the stored
+    # default_markup_pct setting, respects price_override, etc.
+    from app.services.pricing_service import PricingService as _PS
+    _pricing_svc = _PS(db)
+    sell_price_map: dict[int, float] = {p.id: _pricing_svc.sell_price_for(p) for p in products}
+
     return templates.TemplateResponse(request, "products/list.html", {
         "products": products,
+        "sell_price_map": sell_price_map,
         "q": q,
         "tab": tab,
         "sort": sort,
@@ -246,8 +254,11 @@ def product_preview_panel(
         return HTMLResponse(
             '<p class="px-6 py-4 text-sm text-gray-400">Product not found.</p>'
         )
+    from app.services.pricing_service import PricingService as _PS
+    sell_price = _PS(db).sell_price_for(p)
     return templates.TemplateResponse(request, "products/_preview_panel.html", {
         "p": p,
+        "sell_price": sell_price,
     })
 
 

@@ -14,8 +14,8 @@ single CustomerMetricsService definition (P2-Q1) so every surface agrees.
 from __future__ import annotations
 
 from app.constants import (
-    CustomerFlag, CustomerType, PaymentTerms, PricingTier, PreferredContactMethod,
-    CUSTOMER_STORED_FLAGS,
+    CustomerFlag, CustomerStatus, CustomerType, PaymentTerms, PricingTier,
+    PreferredContactMethod, CUSTOMER_STORED_FLAGS,
 )
 from app.models.customer import Customer, CustomerTypeDefault
 from app.services.base import BaseService
@@ -152,6 +152,12 @@ class CustomerService(BaseService):
             else:
                 stored.discard(flag)
             customer.flags = self._serialize_stored(stored)
+            # Sync customer_status with the Credit-Hold flag so both fields
+            # always agree (go-live bug #3: dual-state misread).
+            if flag == CustomerFlag.CREDIT_HOLD:
+                customer.customer_status = (
+                    CustomerStatus.CREDIT_HOLD if on else CustomerStatus.ACTIVE
+                )
         self.db.flush()
 
     def set_flags(self, customer: Customer, flags: list[str]) -> None:
@@ -177,6 +183,13 @@ class CustomerService(BaseService):
             if str(f) in _STORED_FLAGS
         }
         customer.flags = self._serialize_stored(wanted)
+        # Sync customer_status with the Credit-Hold flag (go-live bug #3).
+        if CustomerFlag.CREDIT_HOLD in wanted:
+            customer.customer_status = CustomerStatus.CREDIT_HOLD
+        elif customer.customer_status == CustomerStatus.CREDIT_HOLD:
+            # Only revert if credit hold was what caused the status; leave
+            # 'inactive' alone (that mirrors is_active=False, not the flag).
+            customer.customer_status = CustomerStatus.ACTIVE
         self.db.flush()
 
     def is_on_credit_hold(self, customer: Customer) -> bool:

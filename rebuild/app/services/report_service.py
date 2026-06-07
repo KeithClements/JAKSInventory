@@ -226,14 +226,19 @@ class ReportService(BaseService):
             row = by_customer[inv.customer_id]
             row["customer"] = inv.customer
             row["invoice_count"] += 1
-            row["gross_sales"] = round(row["gross_sales"] + inv.total, 2)
+            # Core-charge lines are a deposit on part returns, not earned revenue.
+            # Subtract their line_total from the invoice total so reports reflect
+            # true product/service revenue only.
+            core_deposits = sum(ln.line_total for ln in inv.lines if ln.is_core_line)
+            row["gross_sales"] = round(row["gross_sales"] + inv.total - core_deposits, 2)
             row["payments_received"] = round(
                 row["payments_received"] + inv.amount_paid, 2
             )
             row["balance_due"] = round(row["balance_due"] + inv.balance_due, 2)
-            # Cost snapshot is per-line; sum across all lines
+            # Cost snapshot is per-line; exclude core-charge lines (deposit, not COGS).
             line_cost = sum(
                 (ln.unit_cost or 0.0) * ln.qty for ln in inv.lines
+                if not ln.is_core_line
             )
             row["cost"] = round(row["cost"] + line_cost, 2)
 
@@ -329,6 +334,11 @@ class ReportService(BaseService):
         })
 
         for ln in lines:
+            # Core-charge lines are a deposit on part returns — exclude them from
+            # revenue so the product revenue report shows earned income only.
+            if ln.is_core_line:
+                continue
+
             key = ln.product_id  # None means non-product line (freight, misc fee, etc.)
             row = by_product[key]
 

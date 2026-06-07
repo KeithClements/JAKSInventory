@@ -550,7 +550,11 @@ def customer_type_defaults(customer_type: str, db: Session = Depends(get_db)):
 
 
 @router.post("/new", response_class=RedirectResponse)
-async def customer_create(request: Request, db: Session = Depends(get_db)):
+async def customer_create(
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
     form = await request.form()
     company_name = str(form.get("company_name", "")).strip()
 
@@ -1274,6 +1278,7 @@ async def customer_update(
     customer_id: int,
     request: Request,
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     c = db.query(Customer).filter(Customer.id == customer_id).first()
     if not c:
@@ -1311,7 +1316,18 @@ async def customer_update(
     # flags_submitted marker), else a save from a form without the editor would
     # wipe the flags. set_stored_flags leaves tax-exempt / contact-method alone.
     if form.get("flags_submitted"):
+        # set_stored_flags syncs customer_status ↔ CREDIT_HOLD (go-live bug #3).
         CustomerService(db).set_stored_flags(c, form.getlist("flags"))
+    elif "customer_status" in form:
+        # When the status dropdown is saved WITHOUT the chip editor, mirror the
+        # CREDIT_HOLD flag in the stored CSV so the two fields stay consistent.
+        from app.constants import CustomerStatus as _CS, CustomerFlag as _CF
+        _stored = set(CustomerService._parse_stored(c.flags))
+        if c.customer_status == _CS.CREDIT_HOLD:
+            _stored.add(_CF.CREDIT_HOLD)
+        else:
+            _stored.discard(_CF.CREDIT_HOLD)
+        c.flags = CustomerService._serialize_stored(_stored)
     db.commit()
     return RedirectResponse(f"/customers/{customer_id}?saved=1", status_code=303)
 

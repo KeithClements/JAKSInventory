@@ -97,11 +97,16 @@ def _build_invoice_panel_metrics(m: dict) -> list[dict]:
     ]
 
 
-def _workspace_context(db: Session, request: Request, invoice: Invoice) -> dict:
+def _workspace_context(
+    db: Session,
+    request: Request,
+    invoice: Invoice,
+    current_user_id: int = 1,
+) -> dict:
     """Build the full context dict the workspace template expects."""
     from app.services.invoice_service import InvoiceService
     from app.services.statement_service import StatementService
-    totals = InvoiceService(db, 1).calculate_totals(invoice.id)
+    totals = InvoiceService(db, current_user_id).calculate_totals(invoice.id)
 
     customers = (
         db.query(Customer)
@@ -489,7 +494,12 @@ async def invoice_create_draft(
 # ── Workspace (DRAFT editable; OPEN/PARTIAL/PAID/VOID locked read-only) ──────
 
 @router.get("/{invoice_id}", response_class=HTMLResponse)
-def invoice_workspace(invoice_id: int, request: Request, db: Session = Depends(get_db)):
+def invoice_workspace(
+    invoice_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
     """
     Full workspace. Template uses `editable` flag to switch between input fields
     (DRAFT) and static text (OPEN/PARTIAL/PAID/VOID).
@@ -498,7 +508,7 @@ def invoice_workspace(invoice_id: int, request: Request, db: Session = Depends(g
     if isinstance(inv, RedirectResponse):
         return inv
     from app.services.document_links import related_documents
-    ctx = _workspace_context(db, request, inv)
+    ctx = _workspace_context(db, request, inv, user_id)
     ctx["linked_documents"] = related_documents(db, inv)
     return templates.TemplateResponse(
         request,
@@ -564,7 +574,7 @@ async def invoice_update_header(
     return templates.TemplateResponse(
         request,
         "invoices/_totals_panel.html",
-        _workspace_context(db, request, inv),
+        _workspace_context(db, request, inv, user_id),
     )
 
 
@@ -645,7 +655,7 @@ async def invoice_add_line(
     return templates.TemplateResponse(
         request,
         "invoices/_lines_and_totals.html",
-        _workspace_context(db, request, inv),
+        _workspace_context(db, request, inv, user_id),
     )
 
 
@@ -690,7 +700,7 @@ async def invoice_update_line(
     return templates.TemplateResponse(
         request,
         "invoices/_lines_and_totals.html",
-        _workspace_context(db, request, inv),
+        _workspace_context(db, request, inv, user_id),
     )
 
 
@@ -719,7 +729,7 @@ def invoice_delete_line(
     return templates.TemplateResponse(
         request,
         "invoices/_lines_and_totals.html",
-        _workspace_context(db, request, inv),
+        _workspace_context(db, request, inv, user_id),
     )
 
 
@@ -749,7 +759,7 @@ def invoice_unlink_line(
     return templates.TemplateResponse(
         request,
         "invoices/_lines_and_totals.html",
-        _workspace_context(db, request, inv),
+        _workspace_context(db, request, inv, user_id),
     )
 
 
@@ -982,6 +992,76 @@ async def invoice_apply_credit(
             status_code=303,
         )
     return RedirectResponse(f"/invoices/{invoice_id}?saved=1", status_code=303)
+
+
+# ── Issue Credit Memo (R8 — correct a finalized/locked invoice) ──────────────
+
+@router.post("/{invoice_id}/issue-credit-memo", response_class=RedirectResponse)
+async def invoice_issue_credit_memo(
+    invoice_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Issue a customer credit memo against a finalized (OPEN/PARTIAL/PAID) invoice.
+
+    A credit memo is an INDEPENDENT financial document — it does NOT modify the
+    locked invoice. Form fields:
+      - reason (required) — recorded on the CM and its audit row.
+      - amount (optional) — credit a custom amount instead of the full invoice.
+        Blank/absent → InvoiceService defaults to the full invoice subtotal+tax.
+    On success, redirects to the new credit memo's detail page.
+    """
+    from app.services.invoice_service import InvoiceService
+
+    inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    if not inv:
+        return RedirectResponse("/invoices/", status_code=303)
+
+    form = await request.form()
+    reason = str(form.get("reason", "")).strip()
+
+    # Optional single override line. Blank/absent → full-invoice default (lines=None).
+    lines = None
+    amount_raw = str(form.get("amount", "")).strip()
+    if amount_raw:
+        try:
+            amount = float(amount_raw)
+        except ValueError:
+            amount = 0.0
+        if amount > 0:
+            lines = [{
+                "description": f"Credit for invoice {inv.invoice_number}: {reason}",
+                "qty": 1,
+                "unit_price": amount,
+            }]
+
+    try:
+        cm = InvoiceService(db, user_id).issue_credit_memo(
+            invoice_id, lines=lines, reason=reason,
+        )
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/invoices/{invoice_id}?error={url_quote(str(exc))}",
+            status_code=303,
+        )
+    except PermissionError:
+        db.rollback()
+        return RedirectResponse(
+            f"/invoices/{invoice_id}?error="
+            f"{url_quote('You do not have permission to issue credit memos.')}",
+            status_code=303,
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error issuing credit memo for invoice %s", invoice_id)
+        return RedirectResponse(
+            f"/invoices/{invoice_id}?error="
+            f"{url_quote('Unexpected error — credit memo was not issued.')}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/credit-memos/{cm.id}", status_code=303)
 
 
 # ── Void (unchanged) ──────────────────────────────────────────────────────────
