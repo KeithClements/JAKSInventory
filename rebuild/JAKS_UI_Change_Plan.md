@@ -131,16 +131,18 @@ Define four levels:
 - **L3 — Workspace-grade workflow screen** — autosave, inline editing, live totals, slide-over integration, keyboard support, real-time state feedback
 - **L4 — Power-user optimized screen** — all of L3 plus bulk operations, keyboard-driven navigation, Ctrl+K integration, side-by-side or docked panels
 
-Current target mapping (last audited 2026-05-29):
+Current target mapping (last audited 2026-06-07):
 
 | Screen | Current | Target | Notes |
 |---|---|---|---|
 | Products List | ✅ L2 ref | L2 ref | Official reference. Governance pass done. |
 | PO List | ✅ L2 | L2 | Governance pass done. Overdue bug fixed. |
 | Invoice List | ✅ L2 | L2 | Governance pass done 2026-05-28. Red stripe for financial overdue (intentional domain distinction). |
-| Quotes List | L2 | L2 | Has tabs+divide-y but no preview dock, no border-l-4 stripe. Pending final alignment pass. |
-| Quote Workspace | L3 | L3 | Autosave, inline editing done. **⚠️ "done" recorded in the 500-era build — gated on post-b514196 owner re-test (§8G).** **Shared one-click line-adder (§8H) migrated @797a407 — immediate-add replaces 2-step staging; governance PASS 2026-05-31.** |
-| Customers List | ✅ L2 | L2 | Governance pass done 2026-05-29. §2B operational intelligence complete (Balance Due, Open Invoices/Quotes/SOs, Cores, Last Sale, Terms). M1/M2 cosmetic deferred. **Inactive-tab + Reactivate gap fixed 2026-05-31 — deactivated customers reachable/reactivatable; locked by `tests/test_customer_list_tabs.py` (see As-Built "Fix").** |
+| Quotes List | L2 | L2 | Has tabs+divide-y. §8W: sortable columns (Total/Margin, Valid Until via `th_class`), rich QOH hover card, UoM badge. Preview dock pending. |
+| Quote Workspace | ✅ L3 | L3 | §8B/§8T done @f73cc2f: always-visible action bar, Zone 1 back-link, `jakConfirm()` on Convert. §8X: customer-name removed (overflow fix). Save pill shows last-saved time. Intel chips wired. |
+| Dashboard | ✅ L2 | L2 | §8T-1 rLayout done @f73cc2f: revenue chart + Top Customers + Follow-Ups. Security banner @acf3c34. KPI strip (7 tiles) + sidebar wired. |
+| Customers List | ✅ L2 | L2 | §2B intelligence complete. `pricing_tier` wired @4f4b5db (no longer cosmetic). **§8Y: credit-hold red stripe BLESSED** (`border-l-red-400`, highest priority). `customer_status_chip` adoption (§8U-3) still OPEN on 3 files. |
+| Customer Detail | L2 | L3 | **§8Y rulings**: Call Log + Communications tabs retire → Timeline. Contacts + Addresses cards via `#create-slide`. Fleet tab gated on Backend `CustomerVehicle` table. |
 | Product Detail | L1 | L2 | Raw form, no card sections. |
 | Sales Orders List | L1 | L2 | Old tbl-* table, no L2 elements. |
 | Vendors List | L1 | L2 | Old tbl-* table, no L2 elements. |
@@ -149,7 +151,7 @@ Current target mapping (last audited 2026-05-29):
 | Warranty List | L1 | L2 | Old tbl-* table, no L2 elements. |
 | Cores List | L1 | L2 | Old tbl-* table, no L2 elements. |
 | PO Receiving Queue | ✅ QB2 | QB2 | Queue Board archetype ratified 2026-05-28. Official QB2 reference implementation. |
-| PO Match Queue | ✅ QB2 | QB2 | Queue Board archetype ratified 2026-05-28. No metrics strip — non-blocking, entry via Receiving Queue provides context. |
+| PO Match Queue | ✅ QB2 | QB2 | Queue Board archetype ratified 2026-05-28. No metrics strip — non-blocking. |
 
 ---
 
@@ -2970,6 +2972,173 @@ All 4 items in `f73cc2f` PASS. No blocking punches.
 2. Prepared-by in SO / PO / Returns / Warranty print templates (4 files)
 3. Backend xfail #1: fix `cust_last_purchase`/`cust_outstanding_cores` seam keys
 4. Backend xfail #2: fix `get_prepared_by(db, unknown_id)` AttributeError
+
+---
+
+#### §8X. Workspace action-bar overflow — root cause + Quote fix (2026-06-07)
+
+**Owner report (Quote screen, Critical):** at standard monitor widths the workspace action
+buttons ("Send to Customer", "→ Sales Order") run off the right edge of the sticky header.
+
+**Root cause — SHARED SHELL, affects ALL four workspace headers (Quote/Invoice/SO/PO), not just
+Quote.** `base.html`'s top bar (`<header class="sticky top-0 ... flex h-16 items-center gap-3">`,
+~line 415) is a single **fixed-height, non-wrapping** flex row that holds the global chrome
+(search, Live, Margin, notifications, Log Call, avatar) **and** the per-page
+`{% block header_actions %}` group on one line. Every child is `shrink-0` except an empty
+`flex-1` spacer and the global search — and the search already collapses to a ~26px icon under
+pressure. So when a workspace's action group is wide there is nowhere left to give and it
+overflows off the right. Measured on a DRAFT quote at 1366px: **123px overflow, search already at
+its 26px floor** → the deficit is in the action group, not reclaimable from chrome. `flex-wrap`
+on the inner action `<div>` is inert because the parent is fixed-height `h-16` (a wrapped second
+row would be clipped).
+
+**Fix applied (surgical, Quote only) — `quotes/_header_actions.html`:** removed the redundant
+customer-name span. Per §8S-4/§8T-2 customer context belongs in the workspace customer strip
+(rendered directly below in `workspace.html`), **not** the sticky header. Reclaimed ~134px →
+action group 710px→569px. **Verified live** (admin, `/quotes/12`, DRAFT): **0px overflow at
+1366px**, all of `← All quotes · Draft · Send · → Sales Order ▾ · Print / PDF · More ▾` visible;
+no console errors. `test_ui_lint` 155 pass, quote tests green. List/dashboard headers unaffected
+(small action groups never overflowed).
+
+**Residual / Architect follow-up (NOT done here, to keep the Critical fix surgical):** below
+~1300px the lowest-priority "More ▾" still clips (68px over at 1280) — the four §8B buttons + chip
++ back link are inherently wide for the shared bar. The durable fix is a **responsive-chrome pass
+on the shared header** (collapse Live/Margin/search at narrower widths, or a two-tier bar) which
+would also fix the Invoice/SO/PO workspace headers. Treat the §8B "max 4 buttons + More ▾" cap as
+binding for every workspace header until that lands.
+
+---
+
+#### §8Y. Quote screen quick-wins batch (2026-06-07)
+
+Owner Quote-screen review follow-ups — the buildable, no-decision items. All verified live on
+`/quotes/12` + `/quotes/?sort=margin`; `test_ui_lint` (155) + `test_template_renders` green
+(only the pre-existing W-4 narrative fail remains).
+
+1. **On-Hand → rich ATP hover card** (`quotes/_line_row.html`). The inline dot/number keep the
+   availability-aware color; hovering shows a card with On hand / Committed / **Available to
+   promise**. **Pattern note (reusable):** the line grid is inside `overflow-x-auto`, which clips
+   an absolute popover, so the card renders in a `<template x-teleport="body">` (Alpine 3) and is
+   positioned `fixed` from the cell's `getBoundingClientRect`. Use this teleport approach for any
+   hover card that must escape a scroll/clip container. Replaced the old native `title` tooltip.
+2. **Unit of measure** (`_line_row.html` + `print.html`). Shows the product UoM on the workspace
+   line + all 3 print line sections **only when ≠ EA** (all 13k seeded products are EA today, so
+   it's invisible by design; ft/qt/kit/set/etc. render explicitly). Negative case verified live;
+   positive path is a trivial conditional covered by the render test.
+3. **Autosave timestamp** (`quotes/workspace.html`). The Save-Standard-v2 pill now reads
+   "Saved h:mm AM" after a confirmed save (sets `savedAt` only on the `clean` 2xx transition —
+   still green ONLY when truly saved). No backend change.
+4. **Margin + expiry sort** (`quotes/list.html`, `routers/quotes.py`, `macros/sortable.html`).
+   `valid_until` was already a SQL sort key but had no clickable header; `margin` is computed, so
+   it sorts in **Python after `.all()`** (per the §2 non-column-sort rule) — zero-subtotal quotes
+   sort last. Both headers are now `sortable_th`. **Primitive change (Architect-approved here):**
+   `sortable_th` gained an optional `th_class=''` param (backward-compatible; default no-op) so a
+   responsive-hidden column (`hidden lg:table-cell`) can still be a sort header. Margin ordering
+   verified live (desc 43/29/29…, asc −22/−20/−18…).
+
+**Descoped — NOT a quick win (needs a decision/schema):** "salesperson contact on print." The
+`User` model has no phone/email columns, and the **company** phone/email already print via
+`documents/_company_header.html`. Showing the individual preparer's direct line needs
+`User.phone`/`User.email` + a profile/settings input — a small feature, flagged for the owner.
+
+---
+
+#### §8Z. Go-live hardening — self-hosted JS, dock left-bind, hx-confirm sweep, Export CSV disable (2026-06-07)
+
+Three go-live blockers resolved in one Architect commit.
+
+##### §8Z-1. Self-hosted vendor JS (go-live blocker)
+
+**Problem:** `base.html` loaded Alpine, HTMX, and Chart.js from external CDNs. A single shop-internet
+hiccup or CDN outage kills *all* interactivity (Alpine) and HTMX navigation — not just visual polish.
+Additionally Alpine was pinned to the *floating* `@3.x.x` tag, meaning an upstream minor release could
+silently break the app overnight.
+
+**Fix:** Vendored all three into `app/static/vendor/` (served by FastAPI's static mount at `/static/`),
+exact-pinned each:
+
+| Library  | Version | File |
+|----------|---------|------|
+| Alpine.js | **3.14.9** (exact) | `alpine.3.14.9.min.js` — 44 KB |
+| HTMX | 1.9.12 | `htmx.1.9.12.min.js` — 48 KB |
+| Chart.js | 4.4.3 | `chart.4.4.3.umd.min.js` — 205 KB |
+
+`base.html` CDN `<script>` tags replaced with `/static/vendor/…` local paths. A comment documents the
+upgrade path: download new min.js → update `src=` here.
+
+**Rule:** CDN references are now forbidden in `base.html`. Any JS library needed at runtime must be
+vendored first.
+
+##### §8Z-2. Preview dock left-offset tracks sidebar state
+
+**Problem:** `macros/preview_dock.html` hardcoded `left-64` on the fixed dock panel. When the sidebar
+collapses to `w-20`, the dock stays at `left-64` — misaligned by 44px over the sidebar.
+
+**Fix:** The body `x-data` already exposes `sidebarCollapsed` (localStorage-persisted boolean). The
+dock now binds `:class="sidebarCollapsed ? 'left-20' : 'left-64'"` and keeps `left-*` out of the
+static class string. No extra Alpine scope needed — the dock renders inside the `<body x-data>` root.
+
+##### §8Z-3. hx-confirm → jakConfirm sweep (products/ subcomponents)
+
+**Problem:** 6 destructive Remove buttons across `products/` subcomponents still used the native
+`hx-confirm="…"` attribute. Managed-Chrome can suppress the browser native dialog → silent
+destructive deletes with no user confirmation at all.
+
+**Files fixed:**
+- `products/detail.html` (vendor source inline table)
+- `products/_cross_ref_row.html`
+- `products/_image_card.html`
+- `products/_suggested_sell_row.html`
+- `products/_vendor_sources_table.html`
+- `products/_vendor_source_row.html`
+
+**Pattern used:** All 6 are `hx-delete` with relative `hx-target="closest tr"` — the HTMX relative
+target can't be reproduced via `htmx.ajax()` with an absolute selector, so the `hxDelete` path in
+jakConfirm is not suitable here. Instead:
+
+```html
+hx-trigger="confirmed"          ← HTMX only fires on this custom event, not click
+@click.prevent="jakConfirm({ ..., confirmEvent: 'jak-del-vsrc-{{ source.id }}' })"
+@jak-del-vsrc-{{ source.id }}.window="htmx.trigger($el, 'confirmed')"
+```
+
+Flow: click → jakConfirm modal → user confirms → window event dispatched → HTMX `confirmed`
+trigger fires → delete request with `closest tr` targeting intact.
+
+**Also added:** `hxDelete` path to `jakConfirmModal.confirm()` in `macros/confirm_modal.html` for
+future callers that *do* have absolute targets. Migration guide comment updated.
+
+Remaining `hx-confirm` instances in the repo (not this dispatch):
+- `sales_orders/_lines_section.html:220` — Cancel line (out of scope for this sweep)
+
+##### §8Z-4. Dead Export CSV buttons disabled (8 list screens)
+
+**Problem:** 8 `<button>` elements with text "Export CSV" existed in the bulk action bars of list
+screens with no backend export route. They were active/clickable (styling: `text-gray-600
+hover:text-gray-900 transition-colors`) but had no `@click` handler and no `hx-*` attributes —
+completely inert, creating false UI affordance.
+
+**Screens fixed (all non-reports list screens without a working export):**
+`customers/list.html`, `invoices/list.html`, `payments/list.html`, `purchase_orders/list.html`,
+`quotes/list.html`, `sales_orders/list.html`, `vendors/list.html`, `vendor_returns/list.html`
+
+**Fix:** `disabled` attribute + `title="CSV export — coming soon"` + class changed to
+`text-gray-400 cursor-not-allowed` (removes hover). Buttons remain visible inside the bulk toolbar
+so Backend/QA know where to wire the export when ready.
+
+**Excluded:** `products/list.html` — its Export CSV is an `<a href="/products/export.csv?…">` that
+points to a real route and is left as-is.
+
+##### §8Z Summary
+
+| Item | Files | Status |
+|------|-------|--------|
+| Self-host JS (Alpine 3.14.9 / HTMX 1.9.12 / Chart.js 4.4.3) | `base.html`, `app/static/vendor/` (3 files) | ✅ DONE |
+| Preview dock left-bind | `macros/preview_dock.html` | ✅ DONE |
+| hx-confirm → jakConfirm (6 products/ subcomponents) | 6 template files + `confirm_modal.html` | ✅ DONE |
+| Dead Export CSV → disabled (8 list screens) | 8 template files | ✅ DONE |
+
+Lint: 157 passed, 1 xfailed (pre-existing tbl-classes xfail). No regressions.
 
 ---
 

@@ -27,7 +27,9 @@
             hx-delete="/products/{{ product_id }}/vendor-sources/{{ source.id }}"
             hx-target="closest tr"
             hx-swap="outerHTML swap:200ms"
-            hx-confirm="Remove this vendor source?"
+            hx-trigger="confirmed"
+            @click.prevent="jakConfirm({ title: 'Remove Vendor Source', body: 'This vendor source will be permanently removed from the product.', cta: 'Remove', danger: true, confirmEvent: 'jak-del-vsrc-{{ source.id }}' })"
+            @jak-del-vsrc-{{ source.id }}.window="htmx.trigger($el, 'confirmed')"
             class="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50">
       Remove
     </button>

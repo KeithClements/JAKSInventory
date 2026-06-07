@@ -79,7 +79,9 @@
             hx-delete="/products/{{ xref.product_id }}/cross-refs/{{ xref.id }}"
             hx-target="closest tr"
             hx-swap="outerHTML swap:200ms"
-            hx-confirm="Remove this cross reference?"
+            hx-trigger="confirmed"
+            @click.prevent="jakConfirm({ title: 'Remove Cross Reference', body: 'This cross reference will be permanently removed.', cta: 'Remove', danger: true, confirmEvent: 'jak-del-xref-{{ xref.id }}' })"
+            @jak-del-xref-{{ xref.id }}.window="htmx.trigger($el, 'confirmed')"
             class="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors">
       Remove
     </button>

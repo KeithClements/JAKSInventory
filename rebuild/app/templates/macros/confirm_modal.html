@@ -25,8 +25,12 @@
 
      window.confirm('…')              →  jakConfirm({ …, confirmEvent: 'my-event' })
                                           + @my-event.window listener in x-data
-     hx-confirm="…"  on any element   →  remove hx-confirm; add @click.prevent +
+     hx-confirm="…"  on hx-post/hx-get  →  remove hx-confirm; add @click.prevent +
                                           jakConfirm({ hxPost: …, hxTarget: … })
+     hx-confirm="…"  on hx-delete w/   →  keep hx-delete/hx-target/hx-swap; ADD
+       relative hx-target (closest tr)     hx-trigger="confirmed"; then @click.prevent
+                                          jakConfirm({ …, confirmEvent: 'jak-del-ID' })
+                                          + @jak-del-ID.window="htmx.trigger($el,'confirmed')"
      per-workspace askConfirmHx(…)    →  jakConfirm({ hxPost, hxTarget, title, body })
      per-workspace askConfirm(formId) →  jakConfirm({ formId, title, body })
 
@@ -127,8 +131,14 @@ window.jakConfirmModal = window.jakConfirmModal || function () {
         /* form-submit mode */
         const f = document.getElementById(o.formId);
         if (f) f.submit();
+      } else if (o.hxDelete) {
+        /* htmx-ajax DELETE mode — use when hx-target is an absolute selector */
+        htmx.ajax('DELETE', o.hxDelete, {
+          target: o.hxTarget || 'body',
+          swap:   o.hxSwap   || 'outerHTML',
+        });
       } else if (o.hxPost) {
-        /* htmx-ajax mode */
+        /* htmx-ajax POST mode */
         htmx.ajax('POST', o.hxPost, {
           target: o.hxTarget || 'body',
           swap:   o.hxSwap   || 'outerHTML',

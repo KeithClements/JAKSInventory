@@ -49,7 +49,9 @@
             hx-delete="/products/{{ product_id }}/images/{{ image.id }}"
             hx-target="#img-{{ image.id }}"
             hx-swap="outerHTML swap:200ms"
-            hx-confirm="Remove this image?"
+            hx-trigger="confirmed"
+            @click.prevent="jakConfirm({ title: 'Remove Image', body: 'This image will be permanently removed from the product.', cta: 'Remove', danger: true, confirmEvent: 'jak-del-img-{{ image.id }}' })"
+            @jak-del-img-{{ image.id }}.window="htmx.trigger($el, 'confirmed')"
             class="rounded-md bg-red-600/90 text-xs px-2.5 py-1 font-medium text-white hover:bg-red-600 transition-colors">
       Remove
     </button>

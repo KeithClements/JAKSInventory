@@ -13,9 +13,14 @@
      Tokens:  tailwind.config.js  (brand palette, font, content paths)
      Rebuild: npm run build:css  |  Watch: npm run watch:css ─────────────── #}
   <link rel="stylesheet" href="/static/css/app.css">
-  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-  <script defer src="https://unpkg.com/htmx.org@1.9.12"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  {# ── Vendor JS — self-hosted, no CDN dependency (go-live §8Z) ─────────────
+     Alpine  3.14.9  (exact pin — floating @3.x.x eliminated)
+     HTMX    1.9.12  (unchanged version, now local)
+     Chart.js 4.4.3  (unchanged version, now local)
+     To upgrade: download new min.js to app/static/vendor/, update src below. ─ #}
+  <script defer src="/static/vendor/alpine.3.14.9.min.js"></script>
+  <script defer src="/static/vendor/htmx.1.9.12.min.js"></script>
+  <script defer src="/static/vendor/chart.4.4.3.umd.min.js"></script>
   <style>
     [x-cloak] { display: none !important; }
 
@@ -431,7 +436,7 @@
       {# Global search — opens Ctrl+K overlay #}
       <button type="button"
               @click="cmdKOpen = true"
-              class="hidden sm:flex items-center gap-2 w-52 md:w-72 lg:w-[380px] shrink-0
+              class="hidden sm:flex items-center gap-2 w-52 md:w-72 lg:w-[340px] min-w-0
                      px-3 py-2 text-sm border border-stone-200 rounded-lg bg-stone-50/80
                      text-gray-400 hover:bg-white hover:border-brand-300 hover:text-gray-500
                      transition-all duration-150 text-left cursor-text">
@@ -714,7 +719,7 @@
         Purchase Orders
       </a>
 
-      <a href="/purchase-orders/receiving" class="nav-link {% if '/receiving' in request.url.path %}active{% endif %}">
+      <a href="/purchase-orders/receiving" title="Receive parts against open purchase orders" class="nav-link {% if '/receiving' in request.url.path %}active{% endif %}">
         <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
                 d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
@@ -722,7 +727,7 @@
         Receiving
       </a>
 
-      <a href="/purchase-orders/match" class="nav-link {% if request.url.path == '/purchase-orders/match' %}active{% endif %}">
+      <a href="/purchase-orders/match" title="Match the PO, the receipt, and the vendor bill before paying a bill" class="nav-link {% if request.url.path == '/purchase-orders/match' %}active{% endif %}">
         <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
                 d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
@@ -741,7 +746,7 @@
         Products
       </a>
 
-      <a href="/categories/" class="nav-link {% if '/categories' in request.url.path %}active{% endif %}">
+      <a href="/categories/" title="Manage the product category tree" class="nav-link {% if '/categories' in request.url.path %}active{% endif %}">
         <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
                 d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
@@ -749,7 +754,7 @@
         Category Maintenance
       </a>
 
-      <a href="/products/review" class="nav-link {% if '/products/review' in request.url.path %}active{% endif %}">
+      <a href="/products/review" title="Review and approve staged product imports before they go live" class="nav-link {% if '/products/review' in request.url.path %}active{% endif %}">
         <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
                 d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
@@ -757,7 +762,7 @@
         Import Review
       </a>
 
-      <a href="/products/import" class="nav-link {% if '/products/import' in request.url.path %}active{% endif %}">
+      <a href="/products/import" title="Bulk-import or update products from a CSV file" class="nav-link {% if '/products/import' in request.url.path %}active{% endif %}">
         <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
                 d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
@@ -765,10 +770,18 @@
         Import Products
       </a>
 
+      <a href="/import-review/" title="Stage a scraper/CSV feed, review each row against the 7 checks, then approve into the catalog" class="nav-link {% if '/import-review' in request.url.path %}active{% endif %}">
+        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"/>
+        </svg>
+        Smart Import
+      </a>
+
       {# ── CORES ───────────────────────────────────────────────────── #}
       <p class="nav-section">Cores</p>
 
-      <a href="/cores/" class="nav-link {% if '/cores' in request.url.path %}active{% endif %}">
+      <a href="/cores/" title="Track refundable core deposits owed by and returned from customers" class="nav-link {% if '/cores' in request.url.path %}active{% endif %}">
         <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
                 d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
@@ -776,7 +789,7 @@
         Core Charges
       </a>
 
-      <a href="/warranty/" class="nav-link {% if '/warranty' in request.url.path %}active{% endif %}">
+      <a href="/warranty/" title="Manage warranty claims and recover vendor credits" class="nav-link {% if '/warranty' in request.url.path %}active{% endif %}">
         <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
                 d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
@@ -784,7 +797,7 @@
         Warranty Claims
       </a>
 
-      <a href="/returns/" class="nav-link {% if '/returns' in request.url.path %}active{% endif %}">
+      <a href="/returns/" title="Return authorizations (RAs) for customer returns" class="nav-link {% if '/returns' in request.url.path %}active{% endif %}">
         <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
                 d="M16 15v-1a4 4 0 00-4-4H8m0 0l3 3m-3-3l3-3m9 14V5a2 2 0 00-2-2H6a2 2 0 00-2 2v16l4-2 4 2 4-2 4 2z"/>
