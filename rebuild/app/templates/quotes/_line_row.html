@@ -451,9 +451,10 @@
         {% if s.relationship_type == 'recommended' %}
         <button type="button"
                 hx-post="/quotes/{{ line.quote_id }}/lines"
+                {# Prices intentionally OMITTED — add_line resolves the customer's tier
+                   price via PricingService.sell_price_for_tier (fleet/dealer correctness).
+                   Hardcoding selling_price/cost here bypassed tier pricing on the hot path. #}
                 hx-vals='{"product_id": {{ s.suggested_product_id }}, "qty": 1,
-                          "unit_price": {{ "%.2f"|format(s.suggested_product.selling_price) }},
-                          "unit_cost": {{ "%.2f"|format(s.suggested_product.cost) }},
                           "line_type": "product", "line_role": "suggested"}'
                 hx-target="#quote-lines-tbody"
                 hx-swap="beforeend"
@@ -470,9 +471,10 @@
         {% elif s.relationship_type == 'required' %}
         <button type="button"
                 hx-post="/quotes/{{ line.quote_id }}/lines"
+                {# Prices intentionally OMITTED — add_line resolves the customer's tier
+                   price via PricingService.sell_price_for_tier (fleet/dealer correctness).
+                   Hardcoding selling_price/cost here bypassed tier pricing on the hot path. #}
                 hx-vals='{"product_id": {{ s.suggested_product_id }}, "qty": 1,
-                          "unit_price": {{ "%.2f"|format(s.suggested_product.selling_price) }},
-                          "unit_cost": {{ "%.2f"|format(s.suggested_product.cost) }},
                           "line_type": "product", "line_role": "suggested"}'
                 hx-target="#quote-lines-tbody"
                 hx-swap="beforeend"
