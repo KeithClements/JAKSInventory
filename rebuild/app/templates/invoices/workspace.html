@@ -738,9 +738,10 @@
                 This exceeds the Balance Due by
                 <span class="font-semibold" x-text="'$' + (amount - balanceDue).toFixed(2)"></span>.
                 <span class="font-semibold" x-text="'$' + balanceDue.toFixed(2)"></span>
-                will be applied to this invoice and
+                will be applied to this invoice and the remaining
                 <span class="font-semibold" x-text="'$' + (amount - balanceDue).toFixed(2)"></span>
-                recorded as <span class="font-semibold">account credit</span> for the customer.
+                will be held as <span class="font-semibold">unapplied credit</span> on the customer's
+                account, available to apply to future invoices.
               </span>
             </div>
 

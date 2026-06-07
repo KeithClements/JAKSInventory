@@ -12,6 +12,7 @@ Key rules:
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from app.constants import (
@@ -23,6 +24,8 @@ from app.models.customer import Customer
 from app.models.invoice import Invoice, Payment, PaymentAllocation
 from app.services.base import BaseService
 from app.settings_utils import get_setting_value_db
+
+log = logging.getLogger(__name__)
 
 
 class PaymentService(BaseService):
@@ -257,6 +260,14 @@ class PaymentService(BaseService):
                 "unit_cost": 0.0,
             }],
         )
+        # create_invoice leaves the fee invoice in DRAFT; finalise it so it
+        # becomes a live A/R document the customer actually owes. Fails soft —
+        # a DRAFT fee invoice is recoverable, a crashed NSF workflow is not.
+        try:
+            inv_svc.finalise(nsf_invoice.id)
+        except Exception as exc:
+            log.warning("NSF invoice %s could not be auto-finalized: %s", nsf_invoice.id, exc)
+
         self.audit(
             entity_type=EntityType.PAYMENT,
             entity_id=payment_id,
