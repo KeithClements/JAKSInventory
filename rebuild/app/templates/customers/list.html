@@ -193,8 +193,10 @@
         {% set so_count = open_so_counts.get(c.id, 0) %}
         {% set core_count = outstanding_cores_map.get(c.id, 0) %}
 
-        {# Left-edge stripe: quotes need follow-up (amber) > open AR activity (blue) > none #}
-        {% if q_count > 0 %}{% set stripe = 'amber' %}
+        {# Left-edge stripe (§4): credit-hold (RED, critical) > quotes need follow-up (amber) > open AR activity (blue) > none.
+           #4 — credit_hold added as the highest-priority RED stripe (red=critical is §4-compliant; LOCKED-feature change, Architect to confirm). #}
+        {% if c.customer_status == 'credit_hold' %}{% set stripe = 'red' %}
+        {% elif q_count > 0 %}{% set stripe = 'amber' %}
         {% elif inv_count > 0 %}{% set stripe = 'blue' %}
         {% else %}{% set stripe = 'none' %}{% endif %}
 
@@ -206,13 +208,14 @@
           @click="togglePreview({{ c.id }})"
           :class="{
             'ring-inset ring-1 ring-brand-300 bg-brand-50/40': previewId === {{ c.id }},
+            'bg-red-50/30': '{{ stripe }}' === 'red' && previewId !== {{ c.id }},
             'bg-amber-50/20': '{{ stripe }}' === 'amber' && previewId !== {{ c.id }}
           }"
           class="cursor-pointer hover:bg-gray-50/80 transition-colors group">
 
           {# Checkbox — first cell carries the health stripe #}
           <td class="w-10 px-4 py-4 align-middle text-center
-                     border-l-4 {% if stripe == 'amber' %}border-l-amber-400{% elif stripe == 'blue' %}border-l-blue-300{% else %}border-l-transparent{% endif %}"
+                     border-l-4 {% if stripe == 'red' %}border-l-red-400{% elif stripe == 'amber' %}border-l-amber-400{% elif stripe == 'blue' %}border-l-blue-300{% else %}border-l-transparent{% endif %}"
               @click.stop>
             <input type="checkbox"
                    :checked="isSelected({{ c.id }})"
@@ -340,13 +343,16 @@
             </div>
           </td>
 
-          {# Last Sale #}
+          {# Last Sale (+ #5 STAGED last-contacted sub-line, folded — no new column per dispatch) #}
           <td class="px-4 py-4 align-middle text-right hidden md:table-cell">
             {% if last_sale %}
             <span class="text-xs text-gray-500 tabular-nums whitespace-nowrap">{{ last_sale }}</span>
             {% else %}
             <span class="text-sm text-gray-300">—</span>
             {% endif %}
+            {# #5 STAGED — relative last-contacted; lights up when Backend passes last_contacted_map #}
+            {% set _lc = (last_contacted_map | default({})).get(c.id) %}
+            {% if _lc %}<div class="text-[11px] text-gray-400 whitespace-nowrap mt-0.5">Contacted {{ _lc }}</div>{% endif %}
           </td>
 
           {# Quick actions — always visible (Quick Invoice / Quick Quote are the

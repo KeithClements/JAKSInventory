@@ -4,6 +4,7 @@
      open_invoice_count : int   (open/draft/partial invoices for this customer)
      open_quote_count   : int   (active quotes for this customer)
      last_sale          : str | None   (formatted "Mon DD" or None)
+     last_contacted     : str | None   (STAGED #5 — relative "12d ago"; optional, guarded)
    All aggregates are read with |default(0) so the panel still renders if the
    route passes only `c`.
 ─────────────────────────────────────────────────────────────────────────── #}
@@ -153,6 +154,13 @@
           <span class="text-xs text-gray-500">Last Sale</span>
           <span class="text-sm text-gray-700 tabular-nums">{{ last_sale if last_sale else '—' }}</span>
         </div>
+        {# #5 STAGED — last contacted; renders when Backend passes `last_contacted` to the preview route #}
+        {% if last_contacted is defined and last_contacted %}
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Last Contacted</span>
+          <span class="text-sm text-gray-700 tabular-nums">{{ last_contacted }}</span>
+        </div>
+        {% endif %}
       </div>
     </div>
 
