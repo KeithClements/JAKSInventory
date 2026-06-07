@@ -350,9 +350,9 @@
             {% else %}
             <span class="text-sm text-gray-300">—</span>
             {% endif %}
-            {# #5 STAGED — relative last-contacted; lights up when Backend passes last_contacted_map #}
+            {# #5 — last contacted (last_contacted_map: {cust_id: datetime|None}) #}
             {% set _lc = (last_contacted_map | default({})).get(c.id) %}
-            {% if _lc %}<div class="text-[11px] text-gray-400 whitespace-nowrap mt-0.5">Contacted {{ _lc }}</div>{% endif %}
+            {% if _lc %}<div class="text-[11px] text-gray-400 whitespace-nowrap mt-0.5" title="Last contacted">Contacted {{ _lc.strftime('%b %d') }}</div>{% endif %}
           </td>
 
           {# Quick actions — always visible (Quick Invoice / Quick Quote are the
