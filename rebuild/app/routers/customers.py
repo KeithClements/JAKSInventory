@@ -346,9 +346,25 @@ def customer_list(
         _csvc = CustomerService(db)
         customer_flags = {c.id: _csvc.flags_for(c) for c in customers}
         customer_metrics = CustomerMetricsService(db).metrics_for_batch(customer_ids)
+
+        # last_contacted_map (#5) — most recent CustomerCallLog.logged_at per
+        # visible customer.  Single grouped query, no N+1.
+        _lc_raw = dict(
+            db.query(
+                CustomerCallLog.customer_id,
+                func.max(CustomerCallLog.logged_at),
+            )
+            .filter(CustomerCallLog.customer_id.in_(customer_ids))
+            .group_by(CustomerCallLog.customer_id)
+            .all()
+        )
+        last_contacted_map: dict[int, datetime | None] = {
+            cid: _lc_raw.get(cid) for cid in customer_ids
+        }
     else:
         customer_flags = {}
         customer_metrics = {}
+        last_contacted_map = {}
 
     return templates.TemplateResponse(
         request,
@@ -373,6 +389,8 @@ def customer_list(
             "customer_metrics": customer_metrics,
             "customer_flag_labels": CUSTOMER_FLAG_LABELS,
             "customer_type_labels": CUSTOMER_TYPE_LABELS,
+            # #5 — last_contacted_map: {customer_id: datetime|None}
+            "last_contacted_map": last_contacted_map,
         },
     )
 
@@ -473,16 +491,11 @@ def customer_preview_panel(
         or 0
     )
 
-    # last_contact — most recent CustomerCallLog.logged_at for this customer.
-    # Used by the preview dock to surface "last contacted X ago".
-    _last_contact_raw = (
-        db.query(func.max(CustomerCallLog.logged_at))
-        .filter(CustomerCallLog.customer_id == customer_id)
-        .scalar()
-    )
-    last_contact = _last_contact_raw  # datetime | None
-
+    # last_contact — most recent CustomerCallLog.logged_at.
+    # Delegated to CustomerService.last_contacted so the query lives in exactly
+    # one place (single-customer path; list route uses a grouped query instead).
     _csvc = CustomerService(db)
+    last_contact = _csvc.last_contacted(customer_id)  # datetime | None
     return templates.TemplateResponse(
         request,
         "customers/_preview_panel.html",

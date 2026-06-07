@@ -351,3 +351,23 @@ class CustomerService(BaseService):
             "warn": bool(on_hold or over_limit),
             "message": " ".join(messages),
         }
+
+    # ════════════════════════════════════════════════════════════════════════
+    # Last-Contacted helper (#5)
+    # ════════════════════════════════════════════════════════════════════════
+
+    def last_contacted(self, customer_id: int):
+        """Return the most recent ``CustomerCallLog.logged_at`` datetime for
+        this customer, or ``None`` when no call log exists.
+
+        For single-customer use (preview panel, detail page, timeline header).
+        For the customer LIST, build a single grouped query on the caller side
+        to avoid N+1 — see the list route in customers.py.
+        """
+        from sqlalchemy import func as _func
+        from app.models.customer import CustomerCallLog as _CCL
+        return (
+            self.db.query(_func.max(_CCL.logged_at))
+            .filter(_CCL.customer_id == customer_id)
+            .scalar()
+        )

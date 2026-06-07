@@ -31,6 +31,7 @@ from app.models.customer import Activity, Customer, CustomerCallLog
 from app.models.invoice import Invoice, Payment
 from app.models.communication import Communication
 from app.services.base import BaseService
+from app.services.ar_aging_utils import as_date, zero_buckets, bucket_for
 
 
 class CRMService(BaseService):
@@ -299,12 +300,36 @@ class CRMService(BaseService):
         )
         unapplied_payments = round(sum(p.amount_unallocated for p in payments), 2)
 
+        # ── AR aging buckets ──────────────────────────────────────────────────
+        # Use the shared ar_aging_utils helpers so these boundaries stay in
+        # sync with the AR Aging report and customer statement pages.
+        # Reference date: invoice.due_date when set, else invoice.created_at
+        # (same fallback used by ReportService.get_ar_aging).
+        from datetime import date as _date
+        _today = _date.today()
+        buckets = zero_buckets()
+        for inv in open_invoices:
+            bal = inv.balance_due
+            if bal <= 0:
+                continue
+            ref = as_date(inv.due_date) or as_date(inv.created_at)
+            if ref is None:
+                buckets["current"] = round(buckets["current"] + bal, 2)
+                continue
+            days_late = (_today - ref).days
+            b = bucket_for(days_late)
+            buckets[b] = round(buckets[b] + bal, 2)
+
         return {
             "total_open": total_open,
             "overdue_amount": overdue_amount,
             "oldest_overdue_days": oldest_overdue_days,
             "credit_balance": customer.credit_balance,
             "unapplied_payments": unapplied_payments,
+            # AR aging buckets: current / 1_30 / 31_60 / 61_90 / over_90
+            # Matches the boundaries in ReportService.get_ar_aging() and
+            # StatementService so all three surfaces agree.
+            "buckets": buckets,
         }
 
     def get_overdue_accounts(self, min_days_overdue: int = 1) -> list[dict]:

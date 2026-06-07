@@ -39,6 +39,9 @@ from app.models.product import Product
 from app.models.purchase_order import PurchaseOrder, POLine
 from app.models.quote import LostSaleLog, SalesOrder, SOLine
 from app.services.base import BaseService
+from app.services.ar_aging_utils import (
+    AGING_BUCKETS, as_date, zero_buckets, bucket_for,
+)
 
 
 # Statuses that count as "finalized" — posted invoices that represent real revenue.
@@ -55,21 +58,10 @@ _OPEN_CORE_STATUSES = (
     CoreStatus.PARTIAL,
 )
 
-# Aging bucket keys — kept in display order
-_AGING_BUCKETS = ("current", "1_30", "31_60", "61_90", "over_90")
-
-
-def _as_date(value: Any) -> date | None:
-    """Normalize a datetime/date/None to a date for day-diff math."""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    return value
-
-
-def _zero_buckets() -> dict[str, float]:
-    return {k: 0.0 for k in _AGING_BUCKETS}
+# Aging bucket keys — canonical order from shared utils (kept here for imports
+# that reference report_service._AGING_BUCKETS if any).  New code should import
+# directly from ar_aging_utils.
+_AGING_BUCKETS = AGING_BUCKETS
 
 
 class ReportService(BaseService):
@@ -122,7 +114,7 @@ class ReportService(BaseService):
             "customer": None,
             "customer_id": None,
             "invoice_count": 0,
-            **_zero_buckets(),
+            **zero_buckets(),
             "total": 0.0,
             "invoices": [],
         })
@@ -140,24 +132,24 @@ class ReportService(BaseService):
             row["total"] = round(row["total"] + balance, 2)
 
             # Use due_date if present, else fall back to invoice created date
-            reference_date = _as_date(inv.due_date) or _as_date(inv.created_at)
+            reference_date = as_date(inv.due_date) or as_date(inv.created_at)
             if reference_date is None:
                 # Truly no date — treat as current rather than crashing
                 row["current"] = round(row["current"] + balance, 2)
                 continue
 
             days_late = (as_of - reference_date).days
-            bucket = self._bucket_for(days_late)
+            bucket = bucket_for(days_late)
             row[bucket] = round(row[bucket] + balance, 2)
 
         # Sort by total descending — biggest debtors at the top
         rows = sorted(aging.values(), key=lambda r: r["total"], reverse=True)
 
-        totals = {b: round(sum(r[b] for r in rows), 2) for b in _AGING_BUCKETS}
+        totals = {b: round(sum(r[b] for r in rows), 2) for b in AGING_BUCKETS}
         totals["total"] = round(sum(r["total"] for r in rows), 2)
 
         # Smoke check: bucket columns must sum to grand total
-        bucket_sum = round(sum(totals[b] for b in _AGING_BUCKETS), 2)
+        bucket_sum = round(sum(totals[b] for b in AGING_BUCKETS), 2)
         if abs(bucket_sum - totals["total"]) > 0.02:
             log.warning(
                 "AR aging bucket sum %.2f != totals.total %.2f (as_of=%s)",
@@ -165,18 +157,6 @@ class ReportService(BaseService):
             )
 
         return {"as_of": as_of, "rows": rows, "totals": totals}
-
-    @staticmethod
-    def _bucket_for(days_late: int) -> str:
-        if days_late <= 0:
-            return "current"
-        if days_late <= 30:
-            return "1_30"
-        if days_late <= 60:
-            return "31_60"
-        if days_late <= 90:
-            return "61_90"
-        return "over_90"
 
     # ── 2. Sales by Customer ─────────────────────────────────────────────────
 
@@ -576,7 +556,7 @@ class ReportService(BaseService):
             if not line_rows:
                 continue  # fully fulfilled (status not yet rolled to RECEIVED)
 
-            expected_date = _as_date(po.expected_at)
+            expected_date = as_date(po.expected_at)
             overdue = expected_date is not None and expected_date < as_of
 
             rows.append({
@@ -685,7 +665,7 @@ class ReportService(BaseService):
                 continue  # safety — status should already exclude these
 
             amount = round(core.customer_unit_charge * qty_out, 2)
-            created_d = _as_date(core.created_at) or as_of
+            created_d = as_date(core.created_at) or as_of
             age_days = max((as_of - created_d).days, 0)
 
             invoice_number = (
@@ -797,7 +777,7 @@ class ReportService(BaseService):
             if balance <= 0:
                 continue
 
-            due = _as_date(inv.due_date)
+            due = as_date(inv.due_date)
             if due is None:
                 continue  # safety — filter above should already exclude these
 
@@ -911,7 +891,7 @@ class ReportService(BaseService):
                 2,
             )
 
-            invoice_date = _as_date(inv.created_at) or date.today()
+            invoice_date = as_date(inv.created_at) or date.today()
 
             rows.append({
                 "invoice": inv,

@@ -25,6 +25,7 @@ from app.constants import CoreDirection, CoreStatus, InvoiceStatus
 from app.models.core import CoreCharge
 from app.models.customer import Customer
 from app.models.invoice import Invoice, Payment
+from app.services.ar_aging_utils import as_date, zero_buckets, bucket_for
 
 
 class StatementLine(TypedDict):
@@ -164,32 +165,21 @@ class StatementService:
             .all()
         )
 
-        aging: dict[str, float] = {
-            "current": 0.0,
-            "1_30": 0.0,
-            "31_60": 0.0,
-            "61_90": 0.0,
-            "over_90": 0.0,
-        }
+        # Bucket open balances using the shared ar_aging_utils helpers so that
+        # the statement aging agrees exactly with the AR aging report and the
+        # customer balance widget (same boundaries, same code).
+        aging: dict[str, float] = zero_buckets()
         for inv in open_invoices:
             bal = inv.balance_due
             if bal <= 0:
                 continue
-            if inv.due_date is None:
+            due = as_date(inv.due_date)
+            if due is None:
                 aging["current"] = round(aging["current"] + bal, 2)
                 continue
-            due = inv.due_date.date() if isinstance(inv.due_date, datetime) else inv.due_date
             days_late = (as_of - due).days
-            if days_late <= 0:
-                aging["current"] = round(aging["current"] + bal, 2)
-            elif days_late <= 30:
-                aging["1_30"] = round(aging["1_30"] + bal, 2)
-            elif days_late <= 60:
-                aging["31_60"] = round(aging["31_60"] + bal, 2)
-            elif days_late <= 90:
-                aging["61_90"] = round(aging["61_90"] + bal, 2)
-            else:
-                aging["over_90"] = round(aging["over_90"] + bal, 2)
+            b = bucket_for(days_late)
+            aging[b] = round(aging[b] + bal, 2)
 
         return StatementData(
             customer=customer,
