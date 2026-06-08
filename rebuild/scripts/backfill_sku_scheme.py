@@ -67,18 +67,18 @@ def main(apply: bool, limit: int | None = None) -> dict:
     finally:
         db.close()
 
-    print(("APPLIED" if apply else "DRY-RUN") + " — JAKS SKU scheme backfill")
+    print(("APPLIED" if apply else "DRY-RUN") + " - JAKS SKU scheme backfill")
     print(f"  products scanned     : {summary['products']}")
     print(f"  regenerated          : {summary['regenerated']}")
     print(f"  skipped (no vendor)  : {summary['skipped_no_vendor']}")
     print(f"  skipped (no SKU #)   : {summary['skipped_no_vendor_number']}")
     print(f"  by vendor digit      : {summary['by_vendor_digit']}")
     if summary["skipped_no_vendor_number"]:
-        print("  ⚠  Some vendors have no 1-digit SKU number set — their products were "
+        print("  [!] Some vendors have no 1-digit SKU number set - their products were "
               "skipped. Set it on each vendor, then re-run.")
-    print("  samples (old → new):")
+    print("  samples (old -> new):")
     for s in summary["samples"]:
-        print(f"    {s['old']:<22} → {s['new']:<22}  {s['title']}")
+        print(f"    {s['old']:<22} -> {s['new']:<22}  {s['title']}")
     if not apply:
         print("  (dry-run — nothing written. Re-run with --apply to commit.)")
     return summary
