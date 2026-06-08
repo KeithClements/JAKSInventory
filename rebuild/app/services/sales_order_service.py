@@ -229,6 +229,27 @@ class SalesOrderService(BaseService):
         self._release_line_commitment(line, so.so_number)
         # Freeze at what's already invoiced — remaining qty is gone
         line.qty_ordered = line.qty_invoiced
+
+        # Recompute SO status. Cancelling the backordered remainder of an order
+        # whose other lines are already invoiced must not leave the SO stranded in
+        # OPEN/PARTIAL forever (it would otherwise linger in the Open tab and the
+        # workspace would still offer fulfil/invoice actions on a closed order).
+        # Only advance from the active fulfilling states, and never flip an order
+        # with zero invoiced qty to INVOICED. Mirrors fulfill_and_invoice's recompute.
+        if so.status in (SOStatus.OPEN, SOStatus.PARTIAL) and any(
+            ln.qty_invoiced > 0 for ln in so.lines
+        ):
+            old_status = so.status
+            so.status = SOStatus.INVOICED if so.is_fully_invoiced else SOStatus.PARTIAL
+            if so.status != old_status:
+                self.audit(
+                    entity_type=EntityType.SALES_ORDER,
+                    entity_id=so.id,
+                    action=AuditAction.STATUS_CHANGED,
+                    old_value=old_status,
+                    new_value=so.status,
+                    notes=f"line #{line.id} cancelled",
+                )
         self.db.commit()
 
     def set_line_eta(self, line_id: int, eta_date) -> SOLine:
