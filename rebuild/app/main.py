@@ -15,7 +15,7 @@ from app.database import init_db
 from app.routers.settings import seed_settings
 from app.seeds import (
     seed_default_categories, seed_customer_type_defaults,
-    seed_brands, seed_manufacturers,
+    seed_brands, seed_manufacturers, backfill_category_keywords,
 )
 from app.routers.settings import seed_markup_tiers
 from app.routers import (
@@ -83,6 +83,7 @@ def on_startup() -> None:
     try:
         seed_settings(db)
         seed_default_categories(db)
+        backfill_category_keywords(db)
         seed_brands(db)
         seed_manufacturers(db)
         seed_customer_type_defaults(db)

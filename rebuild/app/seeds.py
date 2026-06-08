@@ -26,35 +26,96 @@ from app.constants import BRANDS, ENGINE_MAKES
 # A full category-management UI is deferred — see the Category panel TODO in
 # app/templates/products/new.html. Each child sits one level under its group.
 
-_DEFAULT_CATEGORIES: dict[str, list[str]] = {
-    "Engine":         ["Seals & Gaskets", "Pistons & Liners", "Bearings", "Valvetrain"],
-    "Fuel System":    ["Injectors", "Fuel Pumps", "Fuel Filters"],
-    "Air & Turbo":    ["Turbochargers", "Air Filters", "Intake & Charge Air"],
-    "Cooling System": ["Water Pumps", "Radiators & Coolers", "Thermostats"],
-    "Lubrication":    ["Oil Pumps", "Oil Coolers", "Oil Filters"],
-    "Electrical":     ["Starters & Alternators", "Sensors & Switches", "Wiring & Connectors"],
+# Major Group → [(Subcategory, SKU code, importer keywords)]. Keywords are
+# lowercase substrings matched against the product TITLE by ClassificationService;
+# the classifier picks the first matching (deepest) subcategory, so keep them
+# specific. This is what lets a fresh import classify the PAI catalog by part type
+# — gasket / injector / turbo / … → a real subcategory (needs_review=False) AND a
+# meaningful SKU [CATEGORY] code (GSK / INJ / TURBO …) — instead of dumping 96% of
+# parts into the generic "ENGINE PARTS" Type bucket.
+_CATEGORY_TREE: dict[str, list[tuple[str, str, str]]] = {
+    "Engine": [
+        ("Cylinder Heads",       "HEAD", "cylinder head, loaded head, bare head, head assembly, head gasket"),
+        ("Seals & Gaskets",      "GSK",  "gasket, seal, o-ring, o ring, oring, grommet, washer seal"),
+        ("Pistons & Liners",     "PIS",  "piston, liner, sleeve, wrist pin, piston ring, ring set"),
+        ("Bearings",             "BRG",  "bearing, bushing, thrust washer"),
+        ("Valvetrain",           "VLV",  "valve, camshaft, cam follower, lifter, rocker, push rod, pushrod, tappet, valve guide, valve spring"),
+        ("Crankshaft & Rods",    "CRK",  "crankshaft, connecting rod, conrod, crank gear, rod assembly, harmonic balancer, vibration damper"),
+        ("Fasteners & Hardware", "FAS",  "screw, bolt, stud, nut, dowel, clamp, plug, fitting, retainer, snap ring"),
+    ],
+    "Fuel System": [
+        ("Injectors",    "INJ",     "injector, nozzle, injector cup, injector sleeve"),
+        ("Fuel Pumps",   "FUELPMP", "fuel pump, injection pump, transfer pump, lift pump, hpfp"),
+        ("Fuel Filters", "FUELFLT", "fuel filter, fuel water separator"),
+    ],
+    "Air & Turbo": [
+        ("Turbochargers",       "TURBO",  "turbo, turbocharger, cartridge, chra"),
+        ("Manifolds",           "MAN",    "manifold"),
+        ("Air Filters",         "AIRFLT", "air filter"),
+        ("Intake & Charge Air", "INTAKE", "intake, charge air, intercooler, air cooler, egr cooler, egr valve"),
+    ],
+    "Cooling System": [
+        ("Water Pumps",         "WPMP",  "water pump, coolant pump"),
+        ("Radiators & Coolers", "RAD",   "radiator, coolant tube, coolant manifold"),
+        ("Thermostats",         "THERM", "thermostat"),
+    ],
+    "Lubrication": [
+        ("Oil Pumps",   "OILPMP", "oil pump"),
+        ("Oil Coolers", "OILCLR", "oil cooler"),
+        ("Oil Filters", "OILFLT", "oil filter, oil pan, dipstick"),
+    ],
+    "Electrical": [
+        ("Starters & Alternators", "ELEC", "starter, alternator, solenoid"),
+        ("Sensors & Switches",     "SENS", "sensor, switch, sender, gauge"),
+        ("Wiring & Connectors",    "WIRE", "wiring, connector, harness, terminal"),
+    ],
 }
 
 
 def seed_default_categories(db: Session) -> None:
     """
-    Seed a starter category tree (Major Group → Category) so the product Category
-    dropdown isn't empty on a fresh database.
+    Seed the starter Major Group → Subcategory tree, each subcategory carrying its
+    SKU [CATEGORY] code + importer classification keywords, so a fresh database
+    classifies the PAI catalog by part type out of the box.
 
     Idempotent by emptiness: if ANY category already exists this is a no-op, so a
     hand-curated taxonomy is never overwritten and restarts never duplicate rows.
+    (Use backfill_category_keywords() to enrich an already-populated tree.)
     """
     if db.query(ProductCategory.id).first() is not None:
         return
-    for major, subs in _DEFAULT_CATEGORIES.items():
+    for major, subs in _CATEGORY_TREE.items():
         parent = ProductCategory(name=major, parent_id=None, level=1, is_active=True)
         db.add(parent)
         db.flush()  # assign parent.id before linking children
-        for sub in subs:
+        for name, code, kws in subs:
             db.add(ProductCategory(
-                name=sub, parent_id=parent.id, level=2, is_active=True,
+                name=name, parent_id=parent.id, level=2, is_active=True,
+                code=code, import_keywords=kws,
             ))
     db.commit()
+
+
+def backfill_category_keywords(db: Session) -> None:
+    """Enrich EXISTING categories (matched by name) with the seed SKU code + import
+    keywords wherever those fields are blank — so a DB that already has the older
+    keyword-less category tree also gains title-based classification. Never clobbers
+    an owner-set value and never adds nodes. Idempotent."""
+    by_name = {c.name.strip().lower(): c for c in db.query(ProductCategory).all()}
+    changed = False
+    for subs in _CATEGORY_TREE.values():
+        for name, code, kws in subs:
+            c = by_name.get(name.strip().lower())
+            if not c:
+                continue
+            if not (c.import_keywords or "").strip():
+                c.import_keywords = kws
+                changed = True
+            if not (c.code or "").strip():
+                c.code = code
+                changed = True
+    if changed:
+        db.commit()
 
 
 # ── Customer type-default profiles (Phase 2, P2-D1) ───────────────────────────────

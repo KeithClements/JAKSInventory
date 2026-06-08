@@ -60,14 +60,16 @@ class ClassificationService(BaseService):
 
     def __init__(self, db, current_user_id=None) -> None:
         super().__init__(db, current_user_id)
-        self._rules_cache: list[tuple[ProductCategory, list[str]]] | None = None
+        self._rules_cache: list[tuple[int, str, int, list[str]]] | None = None
 
-    def _category_rules(self) -> list[tuple[ProductCategory, list[str]]]:
-        """(category, keywords) for every ACTIVE category that has import_keywords,
-        sorted DEEPEST level first so a Product-Family match beats a Category match.
-        Built once per service instance (cheap to reuse across 13k backfill rows)."""
+    def _category_rules(self) -> list[tuple[int, str, int, list[str]]]:
+        """(category_id, name, level, keywords) for every ACTIVE category that has
+        import_keywords, sorted DEEPEST level first so a Product-Family match beats a
+        Category match. Built once per service instance. Stores PLAIN VALUES, not ORM
+        objects, so the cache survives the periodic commits of a large import without
+        a DetachedInstanceError when a keyword later hits."""
         if self._rules_cache is None:
-            rules: list[tuple[ProductCategory, list[str]]] = []
+            rules: list[tuple[int, str, int, list[str]]] = []
             cats = (
                 self.db.query(ProductCategory)
                 .filter(ProductCategory.is_active == True)  # noqa: E712
@@ -78,8 +80,8 @@ class ClassificationService(BaseService):
                 kws = [t.strip().lower() for t in raw.split(",")]
                 kws = [k for k in kws if len(k) >= _MIN_KEYWORD_LEN]
                 if kws:
-                    rules.append((c, kws))
-            rules.sort(key=lambda r: r[0].level, reverse=True)
+                    rules.append((c.id, c.name, c.level, kws))
+            rules.sort(key=lambda r: r[2], reverse=True)
             self._rules_cache = rules
         return self._rules_cache
 
@@ -110,17 +112,17 @@ class ClassificationService(BaseService):
 
         # ── Category refinement via keyword rules (deepest match wins) ──────────
         haystack = " ".join([title or "", tags or "", extra_text or ""]).lower()
-        matched: ProductCategory | None = None
-        for cat, kws in self._category_rules():
+        matched: tuple[int, str, int] | None = None
+        for cid, cname, clevel, kws in self._category_rules():
             hit = next((k for k in kws if k in haystack), None)
             if hit:
-                matched = cat
-                reasons.append(f"category '{cat.name}' ← keyword '{hit}'")
+                matched = (cid, cname, clevel)
+                reasons.append(f"category '{cname}' ← keyword '{hit}'")
                 break  # deepest-first → first hit is the most specific
 
-        category_id = matched.id if matched else None
+        category_id = matched[0] if matched else None
         # Confident only when placed in a real Subcategory / Product Family (level>=2).
-        needs_review = (matched is None) or (matched.level < 2)
+        needs_review = (matched is None) or (matched[2] < 2)
         if needs_review:
             reasons.append("needs review — no confident subcategory/family match")
 
