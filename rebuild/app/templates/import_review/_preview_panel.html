@@ -1,0 +1,52 @@
+{# Candidate preview dock body — htmx-loaded into #import-candidate-body #}
+<div class="px-6 py-4">
+  <div class="flex items-start justify-between gap-4 mb-4">
+    <div>
+      <p class="font-mono text-sm font-bold text-gray-900">{{ c.sku or '—' }}</p>
+      <p class="text-sm text-gray-600">{{ c.title or '—' }}</p>
+    </div>
+    <span class="inline-flex items-center px-2 py-1 rounded-lg text-xs font-semibold
+      {% if c.review_status == 'accepted' %}bg-green-50 text-green-700
+      {% elif c.review_status == 'rejected' %}bg-red-50 text-red-700
+      {% elif c.review_status == 'ignored' %}bg-slate-100 text-slate-500
+      {% else %}bg-gray-100 text-gray-600{% endif %}">{{ c.review_status | title }}</span>
+  </div>
+
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-4">
+    <div>
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Disposition</p>
+      <p class="text-sm font-medium text-gray-900">{{ c.disposition | replace('_',' ') | title }}</p>
+      {% if c.matched_product_id %}
+      <a href="/products/{{ c.matched_product_id }}" class="text-xs text-brand-600 hover:underline">
+        → product #{{ c.matched_product_id }}{% if matched %} ({{ matched.sku }}){% endif %}</a>
+      {% endif %}
+    </div>
+    <div>
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Category</p>
+      {% if c.category_issue %}
+      <p class="text-sm text-amber-600">{{ c.category_name or 'none' }} · needs mapping</p>
+      {% else %}<p class="text-sm text-gray-900">{{ c.category_name or '—' }}</p>{% endif %}
+    </div>
+    <div>
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Engine</p>
+      <p class="text-sm text-gray-900">{{ c.engine_manufacturer or '—' }}{% if c.engine_model %} · {{ c.engine_model }}{% endif %}</p>
+    </div>
+    <div>
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Price</p>
+      {% if c.price_changed and c.old_price is not none %}
+      <p class="text-sm"><span class="text-gray-400 line-through">${{ "%.2f"|format(c.old_price) }}</span>
+        <span class="font-bold text-gray-900">${{ "%.2f"|format(c.new_price or 0) }}</span></p>
+      {% elif c.new_price is not none %}
+      <p class="text-sm font-medium text-gray-900">${{ "%.2f"|format(c.new_price) }}</p>
+      {% else %}<p class="text-sm text-gray-300">—</p>{% endif %}
+    </div>
+    <div>
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Images</p>
+      <p class="text-sm text-gray-900">{{ c.incoming_image_count }}{% if c.has_new_images %} <span class="text-sky-600">(new)</span>{% endif %}</p>
+    </div>
+    <div class="col-span-2 sm:col-span-3">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Flags</p>
+      <p class="text-sm text-gray-700">{{ c.flags or '—' }}</p>
+    </div>
+  </div>
+</div>

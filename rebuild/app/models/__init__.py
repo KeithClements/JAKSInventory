@@ -51,6 +51,9 @@ from app.models.purchase_order import (
 # ── Research ──────────────────────────────────────────────────────────────────
 from app.models.research import ResearchItem, ResearchActivityLog
 
+# ── Smart Import / Review Queue ───────────────────────────────────────────────
+from app.models.import_review import ImportBatch, ImportCandidate
+
 # ── Sales cycle ───────────────────────────────────────────────────────────────
 from app.models.quote import (
     Quote,
@@ -153,6 +156,9 @@ __all_models__ = [
     # Research
     ResearchItem,
     ResearchActivityLog,
+    # Smart Import / Review Queue
+    ImportBatch,
+    ImportCandidate,
     # Special processes
     CoreCharge,
     CoreReturnEvent,

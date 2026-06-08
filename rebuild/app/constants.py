@@ -810,6 +810,24 @@ class ScrapedItemReviewStatus(StrEnum):
     IGNORED  = "ignored"   # deliberately skipped
 
 
+# ─── Smart Import / Review Queue ──────────────────────────────────────────────
+# The scraper (or any CSV/Excel feed) never writes the catalog directly: each row
+# is staged as an ImportCandidate, reviewed by a human, then applied.
+
+class ImportBatchStatus(StrEnum):
+    STAGED    = "staged"     # analyzed, candidates awaiting review
+    APPLYING  = "applying"   # approved candidates being written to the catalog
+    APPLIED   = "applied"    # done
+    DISCARDED = "discarded"  # batch thrown away
+
+
+class ImportDisposition(StrEnum):
+    NEW       = "new"        # SKU not in the catalog
+    UPDATE    = "update"     # SKU already exists -> update path
+    CROSS_REF = "cross_ref"  # different SKU but an OEM cross-ref matches a product
+    DUPLICATE = "duplicate"  # appears more than once within the same feed
+
+
 # ─── QBO / Integrations ───────────────────────────────────────────────────────
 
 class QBOSyncStatus(StrEnum):
@@ -996,6 +1014,7 @@ class Permission(StrEnum):
     RECEIVE_WITHOUT_PO          = "receive_without_po"
     INVENTORY_TRANSFER          = "inventory_transfer"
     APPROVE_VENDOR_BILL         = "approve_vendor_bill"
+    APPLY_IMPORT                = "apply_import"
 
 
 # ─── Engine Make / Model catalog ─────────────────────────────────────────────
