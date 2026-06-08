@@ -46,6 +46,7 @@ from app.routers import activities as activities_router
 from app.routers import demo as demo_router
 from app.routers import qbo as qbo_router
 from app.routers import import_review as import_review_router
+from app.routers import credit_memos as credit_memos_router
 
 log = logging.getLogger(__name__)
 
@@ -338,3 +339,4 @@ app.include_router(activities_router.router)
 app.include_router(demo_router.router)
 app.include_router(qbo_router.router)
 app.include_router(import_review_router.router)
+app.include_router(credit_memos_router.router)

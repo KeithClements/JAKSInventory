@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}{{ cm.cm_number }} — JAKS Inventory{% endblock %}
+{% block heading %}{{ cm.cm_number }}{% endblock %}
+
+{% set status_pill_map = {
+  'open':     ('badge-blue',  'OPEN'),
+  'partial':  ('badge-amber', 'PARTIAL'),
+  'applied':  ('badge-green', 'APPLIED'),
+  'reversed': ('badge-red',   'REVERSED'),
+} %}
+
+{% block header_actions %}
+  {% if cm.original_invoice %}
+  <a href="/invoices/{{ cm.original_invoice_id }}" class="btn-secondary btn-sm">View Invoice</a>
+  {% endif %}
+  <a href="/credit-memos/" class="text-sm text-gray-500 hover:text-gray-700">← Credit Memos</a>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl space-y-3">
+
+  {# ── Header strip ─────────────────────────────────────────────────────────── #}
+  <div class="card">
+    <div class="card-body py-3">
+      <div class="flex items-center gap-x-5 gap-y-2 flex-wrap text-sm">
+        {% set pill = status_pill_map.get(cm.status, ('badge-gray', cm.status|upper)) %}
+        <span class="{{ pill[0] }} text-xs font-bold tracking-wider">{{ pill[1] }}</span>
+
+        <div class="flex items-center gap-2 shrink-0">
+          <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Customer</span>
+          <a href="/customers/{{ cm.customer_id }}" class="font-semibold text-gray-800 link">
+            {{ cm.customer.company_name if cm.customer else '—' }}
+          </a>
+        </div>
+
+        <div class="flex items-center gap-1.5 shrink-0 text-gray-500">
+          <span class="text-xs text-gray-400">Issued</span>
+          <span class="text-gray-700 text-xs">{{ cm.created_at.strftime('%b %d, %Y') if cm.created_at else '—' }}</span>
+        </div>
+
+        <div class="flex items-center gap-1.5 shrink-0">
+          <span class="text-xs text-gray-400">Source</span>
+          <span class="text-xs text-gray-700">{{ cm.trigger_type | replace('_', ' ') | title }}</span>
+        </div>
+
+        {% if cm.original_invoice %}
+        <div class="flex items-center gap-1.5 shrink-0">
+          <span class="text-xs text-gray-400">Invoice</span>
+          <a href="/invoices/{{ cm.original_invoice_id }}" class="text-xs link font-medium">{{ cm.original_invoice.invoice_number }}</a>
+        </div>
+        {% endif %}
+
+        {# ── Amount chips ── #}
+        <div class="ml-auto flex items-center gap-2 flex-wrap">
+          <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-gray-100 rounded text-gray-600">
+            Total: <span class="font-bold text-gray-800 tabular-nums">${{ '%.2f' % cm.total_amount }}</span>
+          </span>
+          <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-green-50 rounded text-green-700 font-semibold border border-green-100">
+            Applied: <span class="tabular-nums">${{ '%.2f' % cm.applied_amount }}</span>
+          </span>
+          {% if cm.unapplied_amount > 0 %}
+          <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-amber-50 rounded text-amber-700 font-semibold border border-amber-100">
+            Unapplied: <span class="tabular-nums">${{ '%.2f' % cm.unapplied_amount }}</span>
+          </span>
+          {% endif %}
+        </div>
+      </div>
+
+      {# Reason / notes #}
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3 pt-3 border-t border-gray-100">
+        <div>
+          <label class="form-label">Reason</label>
+          <p class="text-sm text-gray-700 whitespace-pre-wrap">{{ cm.reason or '—' }}</p>
+        </div>
+        <div>
+          <label class="form-label">Notes</label>
+          <p class="text-sm text-gray-500 whitespace-pre-wrap italic">{{ cm.notes or '—' }}</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# ── Lines ────────────────────────────────────────────────────────────────── #}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Lines</h2>
+      <span class="text-xs text-gray-400">{{ cm.lines | length }} line{{ 's' if cm.lines | length != 1 }}</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full divide-y divide-gray-100 text-sm">
+        <thead class="bg-gray-50">
+          <tr>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Description</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Qty</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Unit Price</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Disc %</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Line Total</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for ln in cm.lines %}
+          {% set line_total = ln.qty * ln.unit_price * (1 - (ln.discount_pct or 0) / 100) %}
+          <tr>
+            <td class="px-4 py-3 text-gray-700">{{ ln.description or '—' }}</td>
+            <td class="px-4 py-3 text-right tabular-nums text-gray-600">{{ ln.qty }}</td>
+            <td class="px-4 py-3 text-right tabular-nums text-gray-600">${{ '%.2f' % ln.unit_price }}</td>
+            <td class="px-4 py-3 text-right tabular-nums text-gray-500">{{ '%g' % (ln.discount_pct or 0) }}%</td>
+            <td class="px-4 py-3 text-right tabular-nums font-semibold text-gray-800">${{ '%.2f' % line_total }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="px-4 py-6 text-center text-sm text-gray-400">No lines.</td></tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="border-t-2 border-gray-200">
+          <tr class="bg-gray-50">
+            <td colspan="4" class="px-4 py-2 text-right text-xs font-semibold text-gray-500">Total</td>
+            <td class="px-4 py-2 text-right text-sm font-bold text-gray-800 tabular-nums">${{ '%.2f' % cm.total_amount }}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+
+  {# ── Allocations (when applied to invoices) ───────────────────────────────── #}
+  {% if active_allocations %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Applied To</h2>
+      <span class="text-xs text-gray-400">{{ active_allocations | length }} allocation{{ 's' if active_allocations | length != 1 }}</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full divide-y divide-gray-100 text-sm">
+        <thead class="bg-gray-50">
+          <tr>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Invoice</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Date</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Amount Applied</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for a in active_allocations %}
+          <tr class="hover:bg-gray-50/80 transition-colors">
+            <td class="px-4 py-3">
+              {% if a.invoice %}
+              <a href="/invoices/{{ a.invoice_id }}" class="link font-medium">{{ a.invoice.invoice_number }}</a>
+              {% else %}#{{ a.invoice_id }}{% endif %}
+            </td>
+            <td class="px-4 py-3 text-xs text-gray-500">{{ a.applied_at.strftime('%b %d, %Y') if a.applied_at else '—' }}</td>
+            <td class="px-4 py-3 text-right tabular-nums font-semibold text-green-700">${{ '%.2f' % a.amount_applied }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}
