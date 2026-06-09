@@ -157,9 +157,12 @@ def test_suggestion_sets_category_flag_and_notes_without_approving(monkeypatch):
     assert "Water Pump" in cand.flags          # breadcrumb label
     assert "clearly a water pump" in cand.review_notes
     assert cand.engine_manufacturer == "Cummins"
-    # NEVER auto-approved — a human still confirms.
+    # NEVER auto-approved — a human still confirms the status.
     assert cand.review_status == _RS.PENDING
-    assert cand.needs_review is True
+    # needs_review is cleared when AI successfully assigns a category so that
+    # "Approve all confident" can pick up AI-categorized rows without a manual
+    # per-row action.
+    assert cand.needs_review is False
     db.close()
 
 

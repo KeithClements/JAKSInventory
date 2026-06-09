@@ -210,6 +210,9 @@ def queue(batch_id: int, request: Request, q: str = "", tab: str = "all",
     ai_svc = AICategorizationService(db)
     ai_enabled = ai_svc.is_enabled()
     counts["ai_pending"] = ai_svc.flagged_pending_count(batch_id) if ai_enabled else 0
+    # How many accepted candidates have NOT been applied yet — used by the Apply
+    # button so it stays visible (and accurate) even after a partial or repeated apply.
+    unapplied_count = max(0, counts["accepted"] - (batch.applied_count or 0))
     return templates.TemplateResponse(request, "import_review/list.html", {
         "batch": batch, "candidates": candidates, "counts": counts, "tab": tab, "q": q,
         "staged": staged, "processing": processing, "failed": failed, "ai_enabled": ai_enabled,
@@ -217,6 +220,7 @@ def queue(batch_id: int, request: Request, q: str = "", tab: str = "all",
         "page": page, "total_pages": total_pages, "total_matching": total_matching,
         "showing_from": ((page - 1) * _PAGE_SIZE + 1) if total_matching else 0,
         "showing_to": min(page * _PAGE_SIZE, total_matching),
+        "unapplied_count": unapplied_count,
     })
 
 
@@ -280,6 +284,38 @@ def approve_all(batch_id: int, request: Request,
     ImportReviewService(db, user_id).bulk_set_status(batch_id, target, scope=scope)
     back = "rejected" if action == "reject" else "accepted"
     return RedirectResponse(f"/import-review/{batch_id}?tab={back}", status_code=303)
+
+
+# ── Approve everything pending, then immediately apply to the catalog ─────────
+@router.post("/{batch_id}/approve-and-apply")
+def approve_and_apply(batch_id: int, request: Request,
+                      scope: str = Form("all"),
+                      db: Session = Depends(get_db),
+                      user_id: int = Depends(get_current_user_id)):
+    """One-click: approve ALL (or confident) pending candidates, then apply them.
+    This is the fast path for owners who trust the import and don't need per-row
+    review — just get it into the catalog quickly."""
+    try:
+        ImportReviewService(db, user_id).bulk_set_status(batch_id, _RS.ACCEPTED, scope=scope)
+        summary = ImportReviewService(db, user_id).apply_approved(batch_id)
+        created   = summary.get("created", 0)
+        updated   = summary.get("updated", 0)
+        err_count = len(summary.get("errors", []))
+        return RedirectResponse(
+            f"/import-review/{batch_id}?tab=accepted"
+            f"&apply_created={created}&apply_updated={updated}&apply_errors={err_count}",
+            status_code=303,
+        )
+    except PermissionDeniedError:
+        return HTMLResponse(
+            '<div style="max-width:40rem;margin:3rem auto;font-family:system-ui">'
+            '<h2 style="color:#b91c1c">Not allowed</h2>'
+            '<p>Applying an import batch to the catalog requires admin access.</p>'
+            f'<p><a href="/import-review/{batch_id}">&larr; Back to the queue</a></p></div>',
+            status_code=403)
+    except ValueError:
+        pass
+    return RedirectResponse(f"/import-review/{batch_id}?tab=accepted", status_code=303)
 
 
 # ── AI-categorize the flagged (needs-review) candidates via Claude ────────────

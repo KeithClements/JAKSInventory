@@ -1360,6 +1360,12 @@
     unlock(evt.detail.elt);
   });
 
+  /* Re-initialize Alpine on any HTMX-swapped content so x-data / x-show / @click
+     directives in dynamically-loaded partials (e.g. preview docks) work correctly. */
+  document.body.addEventListener('htmx:afterSwap', function (evt) {
+    if (window.Alpine && Alpine.initTree) Alpine.initTree(evt.target);
+  });
+
   /* Native form submits — lock the first submit button; clears on page load */
   document.addEventListener('submit', function (evt) {
     var btn = evt.target.querySelector('button[type="submit"]:not([data-no-pending])');

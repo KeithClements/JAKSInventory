@@ -238,6 +238,9 @@ class AICategorizationService(BaseService):
         cid = int(cid_raw)
         candidate.resolved_category_id = cid
         candidate.category_issue = False
+        # AI filled in the category → treat as confident so "Approve all confident"
+        # picks it up without requiring the human to manually clear the flag.
+        candidate.needs_review = False
         if mfr and not candidate.engine_manufacturer:
             candidate.engine_manufacturer = mfr[:200]
         label = labels.get(cid, str(cid))
