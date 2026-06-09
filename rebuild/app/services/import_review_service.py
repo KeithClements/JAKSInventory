@@ -301,6 +301,29 @@ class ImportReviewService(BaseService):
         self.db.commit()
         return n
 
+    def update_candidate(self, candidate_id: int, updates: dict) -> ImportCandidate:
+        """Let a reviewer correct fields on a candidate before approving.
+        Allowed: new_price, resolved_category_id, engine_manufacturer, review_notes, title.
+        Setting resolved_category_id also clears category_issue + needs_review so the
+        row no longer shows as flagged once the reviewer has manually fixed it."""
+        cand = self.db.get(ImportCandidate, candidate_id)
+        if cand is None:
+            raise ValueError(f"Candidate {candidate_id} not found")
+        _allowed = {"new_price", "resolved_category_id", "engine_manufacturer",
+                    "review_notes", "title"}
+        for k, v in updates.items():
+            if k in _allowed:
+                setattr(cand, k, v)
+        if updates.get("resolved_category_id"):
+            cand.category_issue = False
+            cand.needs_review = False   # reviewer explicitly set category — no longer uncertain
+        if "new_price" in updates:
+            val = updates["new_price"]
+            cand.new_price = val
+            cand.price_changed = True   # still track that reviewer touched the price
+        self.db.commit()
+        return cand
+
     def list_candidates(self, batch_id: int, *, review_status: str | None = None,
                         disposition: str | None = None) -> list[ImportCandidate]:
         q = self.db.query(ImportCandidate).filter(ImportCandidate.batch_id == batch_id)
@@ -411,14 +434,42 @@ class ImportReviewService(BaseService):
         return prod.id if prod else None
 
     def _apply_update(self, psvc, product_id, p, c) -> dict:
-        """Surgically enrich an existing matched product — add only NEW images +
-        cross-refs, set category only if missing. Never touches title/price/cost."""
+        """Enrich an existing matched product from the approved import candidate.
+
+        Always updates: price_override (imported prices are deliberately set to beat
+        competitors and must always win), description/tags if currently blank,
+        category if currently unset.
+        Also adds: new images, new cross-refs/OEM refs.
+        Never touches: title, cost (COGS — set only on PO receipt)."""
         got = {"images": 0, "cross_refs": 0}
         product = self.db.get(Product, product_id) if product_id else None
         if product is None:
             return got
-        if product.category_id is None and c.resolved_category_id:
-            psvc.update_product(product_id, {"category_id": c.resolved_category_id})
+
+        # ── Price — the import price is our competitor-matched sell price; always apply
+        if c.new_price is not None and c.new_price > 0:
+            product.price_override = c.new_price
+            got["price_updated"] = True
+
+        # ── Category — set if currently blank, or if AI/human resolved it
+        if c.resolved_category_id and (product.category_id is None or c.category_issue is False):
+            product.category_id = c.resolved_category_id
+            product.needs_review = False
+
+        # ── Description / tags — fill from AI suggestions if product has none
+        if not product.description or not product.search_keywords:
+            try:
+                raw = json.loads(c.raw_json) if c.raw_json else {}
+                if not product.description:
+                    ai_desc = (raw.get("_ai_description") or "").strip()
+                    if ai_desc:
+                        product.description = ai_desc[:2000]
+                if not product.search_keywords:
+                    ai_tags = (raw.get("_ai_tags") or "").strip()
+                    if ai_tags:
+                        product.search_keywords = ai_tags[:500]
+            except (ValueError, TypeError):
+                pass
         existing_refs = {_norm(r.ref_number) for r in self.db.query(CrossReference)
                          .filter(CrossReference.product_id == product_id).all()}
         for it in (p.get("oem") or []):

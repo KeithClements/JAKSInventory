@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.constants import ImportDisposition, ScrapedItemReviewStatus
 from app.deps import get_db, get_current_user_id
 from app.models.import_review import ImportBatch, ImportCandidate
-from app.models.product import Product
+from app.models.product import Product, ProductCategory
 from app.services.base import PermissionDeniedError
 from app.services.import_review_service import (
     ImportReviewService, run_background_staging, IMPORT_ERROR_PREFIX,
@@ -64,8 +64,54 @@ def candidate_preview(candidate_id: int, request: Request, db: Session = Depends
     if not c:
         return HTMLResponse('<p class="px-6 py-4 text-sm text-gray-400">Candidate not found.</p>')
     matched = db.get(Product, c.matched_product_id) if c.matched_product_id else None
+    # Load category tree for the edit dropdown (shallow — just id/name/level/parent_id)
+    categories = (db.query(ProductCategory)
+                  .filter(ProductCategory.is_active == True)   # noqa: E712
+                  .order_by(ProductCategory.level, ProductCategory.name).all())
     return templates.TemplateResponse(request, "import_review/_preview_panel.html",
-                                      {"c": c, "matched": matched})
+                                      {"c": c, "matched": matched, "categories": categories})
+
+
+@router.post("/candidate/{candidate_id}/save", response_class=HTMLResponse)
+def candidate_save(candidate_id: int, request: Request,
+                   new_price: str = Form(""),
+                   resolved_category_id: str = Form(""),
+                   engine_manufacturer: str = Form(""),
+                   review_notes: str = Form(""),
+                   db: Session = Depends(get_db),
+                   user_id: int = Depends(get_current_user_id)):
+    """Inline-edit a candidate's correctable fields from the preview dock.
+    Returns the refreshed preview panel partial (HTMX swap)."""
+    from app.services.import_review_service import ImportReviewService
+    updates: dict = {}
+    if new_price.strip():
+        try:
+            updates["new_price"] = float(new_price.strip())
+        except ValueError:
+            pass
+    if resolved_category_id.strip():
+        try:
+            updates["resolved_category_id"] = int(resolved_category_id.strip())
+        except ValueError:
+            pass
+    if engine_manufacturer.strip():
+        updates["engine_manufacturer"] = engine_manufacturer.strip()
+    if review_notes.strip():
+        updates["review_notes"] = review_notes.strip()
+    if updates:
+        try:
+            ImportReviewService(db, user_id).update_candidate(candidate_id, updates)
+        except ValueError:
+            pass
+    # Return refreshed preview panel
+    c = db.get(ImportCandidate, candidate_id)
+    matched = db.get(Product, c.matched_product_id) if c and c.matched_product_id else None
+    categories = (db.query(ProductCategory)
+                  .filter(ProductCategory.is_active == True)   # noqa: E712
+                  .order_by(ProductCategory.level, ProductCategory.name).all())
+    return templates.TemplateResponse(request, "import_review/_preview_panel.html",
+                                      {"c": c, "matched": matched, "categories": categories,
+                                       "saved": True})
 
 
 _PAGE_SIZE = 100

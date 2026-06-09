@@ -1,31 +1,63 @@
 {# Candidate preview dock body — htmx-loaded into #import-candidate-body #}
-<div class="px-6 py-4">
-  <div class="flex items-start justify-between gap-4 mb-4">
+<div class="px-6 py-4 space-y-5" x-data="{ editing: false }">
+
+  {# ── Header: SKU + status ───────────────────────────────────────────────── #}
+  <div class="flex items-start justify-between gap-4">
     <div>
       <p class="font-mono text-sm font-bold text-gray-900">{{ c.sku or '—' }}</p>
       <p class="text-sm text-gray-600">{{ c.title or '—' }}</p>
+      {% if c.applied_product_id %}
+      <a href="/products/{{ c.applied_product_id }}"
+         class="text-xs text-green-600 hover:underline font-semibold mt-0.5 inline-block">→ View in catalog</a>
+      {% elif c.matched_product_id %}
+      <a href="/products/{{ c.matched_product_id }}"
+         class="text-xs text-brand-600 hover:underline mt-0.5 inline-block">→ matched product{% if matched %} ({{ matched.sku }}){% endif %}</a>
+      {% endif %}
     </div>
-    <span class="inline-flex items-center px-2 py-1 rounded-lg text-xs font-semibold
-      {% if c.review_status == 'accepted' %}bg-green-50 text-green-700
-      {% elif c.review_status == 'rejected' %}bg-red-50 text-red-700
-      {% elif c.review_status == 'ignored' %}bg-slate-100 text-slate-500
-      {% else %}bg-gray-100 text-gray-600{% endif %}">{{ c.review_status | title }}</span>
+    <div class="flex items-center gap-2 shrink-0">
+      <span class="inline-flex items-center px-2 py-1 rounded-lg text-xs font-semibold
+        {% if c.review_status == 'accepted' %}bg-green-50 text-green-700
+        {% elif c.review_status == 'rejected' %}bg-red-50 text-red-700
+        {% elif c.review_status == 'ignored' %}bg-slate-100 text-slate-500
+        {% else %}bg-gray-100 text-gray-600{% endif %}">{{ c.review_status | title }}</span>
+      {# Edit toggle — only for PENDING/ACCEPTED (not after apply) #}
+      {% if not c.applied_product_id %}
+      <button type="button" @click="editing = !editing"
+              :class="editing ? 'bg-brand-50 text-brand-700 border-brand-200' : 'text-gray-500 border-gray-200'"
+              class="text-xs font-medium border rounded-lg px-2.5 py-1 hover:bg-gray-50 transition-colors">
+        <span x-show="!editing">✏ Correct</span>
+        <span x-show="editing" x-cloak>✕ Cancel</span>
+      </button>
+      {% endif %}
+    </div>
   </div>
 
+  {# ── Saved confirmation ─────────────────────────────────────────────────── #}
+  {% if saved %}
+  <div class="rounded-lg bg-green-50 border border-green-200 text-green-700 px-3 py-2 text-xs font-semibold">
+    ✓ Corrections saved. Approve the candidate to apply them to the catalog.
+  </div>
+  {% endif %}
+
+  {# ── Data grid ──────────────────────────────────────────────────────────── #}
   <div class="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-4">
     <div>
       <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Disposition</p>
       <p class="text-sm font-medium text-gray-900">{{ c.disposition | replace('_',' ') | title }}</p>
-      {% if c.matched_product_id %}
-      <a href="/products/{{ c.matched_product_id }}" class="text-xs text-brand-600 hover:underline">
-        → product #{{ c.matched_product_id }}{% if matched %} ({{ matched.sku }}){% endif %}</a>
-      {% endif %}
     </div>
     <div>
       <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Category</p>
-      {% if c.category_issue %}
-      <p class="text-sm text-amber-600">{{ c.category_name or 'none' }} · needs mapping</p>
-      {% else %}<p class="text-sm text-gray-900">{{ c.category_name or '—' }}</p>{% endif %}
+      {% if c.resolved_category_id %}
+        {% set resolved_name = categories | selectattr('id', 'equalto', c.resolved_category_id) | map(attribute='name') | first %}
+        <p class="text-sm text-green-700 font-medium">{{ resolved_name or ('ID ' ~ c.resolved_category_id) }}</p>
+        {% if c.category_issue %}
+        <p class="text-xs text-amber-600">was: {{ c.category_name or 'none' }}</p>
+        {% endif %}
+      {% elif c.category_issue %}
+        <p class="text-sm text-amber-600">{{ c.category_name or 'none' }} · needs mapping</p>
+      {% else %}
+        <p class="text-sm text-gray-900">{{ c.category_name or '—' }}</p>
+      {% endif %}
     </div>
     <div>
       <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Engine</p>
@@ -34,8 +66,11 @@
     <div>
       <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Price</p>
       {% if c.price_changed and c.old_price is not none %}
-      <p class="text-sm"><span class="text-gray-400 line-through">${{ "%.2f"|format(c.old_price) }}</span>
-        <span class="font-bold text-gray-900">${{ "%.2f"|format(c.new_price or 0) }}</span></p>
+      <p class="text-sm">
+        <span class="text-gray-400 line-through">${{ "%.2f"|format(c.old_price) }}</span>
+        <span class="font-bold text-gray-900 ml-1">${{ "%.2f"|format(c.new_price or 0) }}</span>
+        <span class="text-xs text-green-600 ml-1">✓ will apply</span>
+      </p>
       {% elif c.new_price is not none %}
       <p class="text-sm font-medium text-gray-900">${{ "%.2f"|format(c.new_price) }}</p>
       {% else %}<p class="text-sm text-gray-300">—</p>{% endif %}
@@ -45,8 +80,78 @@
       <p class="text-sm text-gray-900">{{ c.incoming_image_count }}{% if c.has_new_images %} <span class="text-sky-600">(new)</span>{% endif %}</p>
     </div>
     <div class="col-span-2 sm:col-span-3">
-      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Flags</p>
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Flags / AI Notes</p>
       <p class="text-sm text-gray-700">{{ c.flags or '—' }}</p>
+      {% if c.review_notes %}
+      <p class="text-xs text-gray-400 mt-1">{{ c.review_notes[:200] }}{% if c.review_notes|length > 200 %}…{% endif %}</p>
+      {% endif %}
     </div>
   </div>
+
+  {# ── Inline edit form (toggled by "Correct" button) ──────────────────────── #}
+  <div x-show="editing" x-cloak
+       class="border-t border-gray-100 pt-4">
+    <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Correct this candidate</p>
+    <form method="post"
+          action="/import-review/candidate/{{ c.id }}/save"
+          hx-post="/import-review/candidate/{{ c.id }}/save"
+          hx-target="#import-candidate-body"
+          hx-swap="innerHTML"
+          class="space-y-3">
+
+      {# Price override #}
+      <div class="flex items-center gap-3">
+        <label class="text-xs font-medium text-gray-600 w-28 shrink-0">Sell price ($)</label>
+        <input type="number" name="new_price" step="0.01" min="0"
+               value="{{ "%.2f"|format(c.new_price) if c.new_price is not none else '' }}"
+               placeholder="leave blank to keep"
+               class="w-36 rounded-lg border border-gray-200 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        <span class="text-xs text-gray-400">Price will always be applied to catalog on Apply.</span>
+      </div>
+
+      {# Category dropdown #}
+      <div class="flex items-start gap-3">
+        <label class="text-xs font-medium text-gray-600 w-28 shrink-0 pt-1.5">Category</label>
+        <select name="resolved_category_id"
+                class="flex-1 rounded-lg border border-gray-200 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">
+          <option value="">— keep current —</option>
+          {% for cat in categories %}
+          <option value="{{ cat.id }}"
+                  {% if c.resolved_category_id == cat.id %}selected{% endif %}>
+            {{ '  ' * (cat.level - 1) }}{{ cat.name }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      {# Engine manufacturer #}
+      <div class="flex items-center gap-3">
+        <label class="text-xs font-medium text-gray-600 w-28 shrink-0">Engine make</label>
+        <input type="text" name="engine_manufacturer"
+               value="{{ c.engine_manufacturer or '' }}"
+               placeholder="e.g. Cummins, Detroit, CAT"
+               class="flex-1 rounded-lg border border-gray-200 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
+      </div>
+
+      {# Notes #}
+      <div class="flex items-start gap-3">
+        <label class="text-xs font-medium text-gray-600 w-28 shrink-0 pt-1.5">Notes</label>
+        <textarea name="review_notes" rows="2"
+                  placeholder="Optional reviewer notes…"
+                  class="flex-1 rounded-lg border border-gray-200 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">{{ c.review_notes or '' }}</textarea>
+      </div>
+
+      <div class="flex items-center gap-2 pt-1">
+        <button type="submit"
+                class="px-4 py-1.5 text-xs font-semibold text-white bg-brand-700 hover:bg-brand-600 rounded-lg transition-colors">
+          Save corrections
+        </button>
+        <button type="button" @click="editing = false"
+                class="px-4 py-1.5 text-xs font-medium text-gray-600 bg-white border border-gray-200 hover:bg-gray-50 rounded-lg transition-colors">
+          Cancel
+        </button>
+      </div>
+    </form>
+  </div>
+
 </div>

@@ -241,8 +241,9 @@ def test_apply_never_writes_cost(db):
 
 
 def test_apply_update_adds_crossrefs(db):
-    """An ACCEPTED UPDATE candidate should surgically add new cross-refs to the
-    matched product without clobbering its title, price, or cost."""
+    """An ACCEPTED UPDATE candidate should add new cross-refs, apply the imported
+    sell price (prices are deliberately set to beat competitors and must always win),
+    and never touch title or COGS cost."""
     # Seed an existing product (manual, no vendor source — dedup hits product.sku)
     existing = Product(sku="APPLY-UPDATE-001", title="Original Title",
                        price_override=25.00, cost=0.0)
@@ -268,10 +269,12 @@ def test_apply_update_adds_crossrefs(db):
     refs = db.query(CrossReference).filter(CrossReference.product_id == existing.id).all()
     assert any(r.ref_number == "999888" for r in refs)
 
-    # Title + price NEVER clobbered
     db.refresh(existing)
+    # Title NEVER clobbered — import title is ignored for existing products
     assert existing.title == "Original Title"
-    assert existing.price_override == 25.00
+    # Price IS updated — imported prices are competitor-matched and always win
+    assert existing.price_override == 10.99   # _prod_row default price
+    # COGS cost never touched (only written on PO receipt)
     assert (existing.cost is None) or (existing.cost == 0.0)
 
 
