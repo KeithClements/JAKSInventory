@@ -263,6 +263,20 @@
         {% endfor %}
         <p class="text-xs text-gray-400">Document sequences &amp; backups are managed automatically (and from the Admin tools), not here.</p>
       </div>
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Smart Import — AI Categorization</h2>
+        {% for s in settings %}
+        {% if s.key == 'anthropic_api_key' %}
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">{{ s.label }}</label>
+          <input name="{{ s.key }}" value="{{ s.value }}" type="password" autocomplete="off"
+            class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400"
+            placeholder="sk-ant-…" />
+        </div>
+        {% endif %}
+        {% endfor %}
+        <p class="text-xs text-gray-400">When set, a <b>🤖 AI-categorize flagged</b> button appears on any Smart Import batch's <em>Needs Review</em> tab. Claude suggests a <b>category, product description, and search tags</b> for each flagged row — a human still reviews and clicks Approve &amp; Apply. Model: <b>Claude Haiku</b> (~$0.001 per part, cheap/fast for bulk runs). Leave blank to disable. Never auto-approves anything.</p>
+      </div>
     </div>{# /system tab #}
 
     <button type="submit" class="rounded-lg bg-brand-700 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-600 transition-colors">Save Settings</button>

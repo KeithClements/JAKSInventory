@@ -365,6 +365,29 @@ class ImportReviewService(BaseService):
                     c.applied_product_id = product_id
                     c.applied_at = datetime.utcnow()
                     summary["applied"] += 1
+                    # A human approved this candidate → clear needs_review on
+                    # the product so it no longer appears in the Products "Needs
+                    # Review" tab, and apply any AI-generated fields.
+                    prod_obj = self.db.get(Product, product_id)
+                    if prod_obj:
+                        prod_obj.needs_review = False
+                        # Apply resolved category if product still has none
+                        if not prod_obj.category_id and c.resolved_category_id:
+                            prod_obj.category_id = c.resolved_category_id
+                        # Apply AI-generated description and tags if product
+                        # was created without them (full_import leaves these blank).
+                        try:
+                            raw = json.loads(c.raw_json) if c.raw_json else {}
+                            if not prod_obj.description:
+                                ai_desc = (raw.get("_ai_description") or "").strip()
+                                if ai_desc:
+                                    prod_obj.description = ai_desc[:2000]
+                            if not prod_obj.search_keywords:
+                                ai_tags = (raw.get("_ai_tags") or "").strip()
+                                if ai_tags:
+                                    prod_obj.search_keywords = ai_tags[:500]
+                        except (ValueError, TypeError):
+                            pass
                 self.db.commit()
             except Exception as exc:  # noqa: BLE001 — one bad row never aborts the batch
                 self.db.rollback()

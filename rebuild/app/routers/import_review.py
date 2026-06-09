@@ -71,6 +71,27 @@ def candidate_preview(candidate_id: int, request: Request, db: Session = Depends
 _PAGE_SIZE = 100
 
 
+@router.get("/{batch_id}/ai-status")
+def ai_status(batch_id: int, db: Session = Depends(get_db)):
+    """Lightweight AI-categorize progress poll — returns counts so the UI can
+    show a live progress bar without reloading the whole candidate table."""
+    from app.services.ai_categorization_service import AICategorizationService
+    svc = AICategorizationService(db)
+    total_flagged = db.query(func.count(ImportCandidate.id)).filter(
+        ImportCandidate.batch_id == batch_id,
+        ImportCandidate.needs_review == True,   # noqa: E712
+        ImportCandidate.review_status == _RS.PENDING,
+    ).scalar() or 0
+    pending = svc.flagged_pending_count(batch_id) if svc.is_enabled() else 0
+    processed = total_flagged - pending
+    return JSONResponse({
+        "total": total_flagged,
+        "processed": processed,
+        "pending": pending,
+        "done": pending == 0,
+    })
+
+
 @router.get("/{batch_id}/progress")
 def progress(batch_id: int, db: Session = Depends(get_db)):
     """Lightweight staging-progress poll (JSON only — no candidate rows, no tab
@@ -161,7 +182,15 @@ def apply_batch(batch_id: int, request: Request, db: Session = Depends(get_db),
     on the summary; the redirect always lands back on the queue. Applying to the
     catalog is gated (admin-only) — a denial returns 403, never silently applies."""
     try:
-        ImportReviewService(db, user_id).apply_approved(batch_id)
+        summary = ImportReviewService(db, user_id).apply_approved(batch_id)
+        created  = summary.get("created", 0)
+        updated  = summary.get("updated", 0)
+        err_count = len(summary.get("errors", []))
+        return RedirectResponse(
+            f"/import-review/{batch_id}?tab=accepted"
+            f"&apply_created={created}&apply_updated={updated}&apply_errors={err_count}",
+            status_code=303,
+        )
     except PermissionDeniedError:
         return HTMLResponse(
             '<div style="max-width:40rem;margin:3rem auto;font-family:system-ui">'

@@ -96,10 +96,14 @@ class AICategorizationService(BaseService):
         cat_lines = "\n".join(f"{cid}: {label}" for cid, label, _ in options)
         system = (
             "You classify heavy-duty diesel engine parts for a parts distributor. "
-            "Choose the SINGLE best-fitting category for the product from the "
-            "numbered list below. Prefer the most specific (deepest) category that "
-            "clearly fits over a broad top-level one. If nothing fits with "
-            "reasonable confidence, return \"UNKNOWN\" rather than guessing.\n\n"
+            "For each part you will:\n"
+            "1. Choose the SINGLE best-fitting category from the numbered list. "
+            "Prefer the most specific (deepest) category. Return \"UNKNOWN\" if nothing "
+            "fits with reasonable confidence — never guess.\n"
+            "2. Write a concise 1–3 sentence product description (plain text, no HTML) "
+            "suitable for a parts catalog. Mention the engine application, part function, "
+            "and any key specs. Leave blank if the part is ambiguous.\n"
+            "3. Return 3–8 comma-separated search tags (engine make, part type, etc.).\n\n"
             "Return the category's numeric id exactly as shown.\n\n"
             "CATEGORIES (id: full path):\n" + cat_lines
         )
@@ -111,6 +115,10 @@ class AICategorizationService(BaseService):
                 "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
                 "engine_manufacturer": {"type": "string"},
                 "reason": {"type": "string"},
+                # Optional product-creation fields — let Claude fill these so
+                # applied products aren't created with empty description/tags.
+                "description": {"type": "string"},   # 1–3 sentences, no HTML
+                "tags": {"type": "string"},           # comma-separated search tags
             },
             "required": ["category_id", "confidence", "engine_manufacturer", "reason"],
             "additionalProperties": False,
@@ -235,6 +243,22 @@ class AICategorizationService(BaseService):
         label = labels.get(cid, str(cid))
         candidate.review_notes = (prefix + f"{label}. " + reason)[:2000]
         self._set_ai_flag(candidate, f"{AI_FLAG}: {label}")
+
+        # Patch AI-generated product fields into raw_json so apply_approved can
+        # use them when creating the product (description + tags only if missing).
+        ai_description = str((result or {}).get("description", "")).strip()
+        ai_tags = str((result or {}).get("tags", "")).strip()
+        if (ai_description or ai_tags) and candidate.raw_json:
+            try:
+                rj = json.loads(candidate.raw_json)
+                if ai_description and not rj.get("_ai_description"):
+                    rj["_ai_description"] = ai_description[:2000]
+                if ai_tags and not rj.get("_ai_tags"):
+                    rj["_ai_tags"] = ai_tags[:500]
+                candidate.raw_json = json.dumps(rj)
+            except (ValueError, TypeError):
+                pass
+
         return True
 
     # ── Counting (for the UI button) ──────────────────────────────────────────

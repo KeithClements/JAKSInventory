@@ -25,6 +25,38 @@
   x-data="operationalListData('import-candidate-body', '/import-review/preview/', [{% for c in candidates %}{{ c.id }}{% if not loop.last %},{% endif %}{% endfor %}])"
 >
 
+{# ── Queue state persistence — save tab/page/q so navigating away and back
+     restores position. On load: if URL has no tab param AND saved state exists,
+     redirect to saved state. On every render: save current state. ── #}
+<script>
+(function () {
+  var SK = 'irq_{{ batch.id }}';
+  var url = new URL(window.location.href);
+  var currentTab = url.searchParams.get('tab');
+  if (!currentTab) {
+    var saved = sessionStorage.getItem(SK);
+    if (saved) {
+      try {
+        var s = JSON.parse(saved);
+        if (s.tab && s.tab !== 'all') {
+          url.searchParams.set('tab', s.tab);
+          if (s.q)    url.searchParams.set('q', s.q);
+          if (s.page && s.page > 1) url.searchParams.set('page', s.page);
+          window.location.replace(url.toString());
+          return;
+        }
+      } catch (e) {}
+    }
+  }
+  // Save the current state (runs on every page render)
+  sessionStorage.setItem(SK, JSON.stringify({
+    tab:  '{{ tab }}',
+    q:    '{{ q | e }}',
+    page: {{ page }}
+  }));
+})();
+</script>
+
 {# ── Batch summary strip ──────────────────────────────────────────────────── #}
 <div class="card px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-1">
   <div>
@@ -187,20 +219,80 @@
 </div>
 {% endif %}
 
-{# AI categorize flash (suggestions run in the background; refresh to see them) #}
-{% if request.query_params.get('ai_started') %}
-<div class="card px-5 py-3 text-sm text-violet-800 bg-violet-50 border border-violet-100">
-  🤖 Claude is suggesting categories for the flagged items in the background.
-  Refresh this page in a bit — suggestions appear as a <b>🤖 AI</b> flag on each row
-  (review them, then Approve &amp; Apply as usual).
+{# ── Apply summary flash ──────────────────────────────────────────────────── #}
+{% set ap_created = request.query_params.get('apply_created') %}
+{% set ap_errors  = request.query_params.get('apply_errors') %}
+{% if ap_created is not none %}
+<div class="card px-5 py-3 text-sm {% if ap_errors and ap_errors != '0' %}text-amber-800 bg-amber-50 border border-amber-100{% else %}text-green-800 bg-green-50 border border-green-100{% endif %}">
+  ✓ Applied:
+  <b>{{ request.query_params.get('apply_created','0') }}</b> product(s) created,
+  <b>{{ request.query_params.get('apply_updated','0') }}</b> updated.
+  {% if ap_errors and ap_errors != '0' %}
+  <span class="text-red-600 ml-1">{{ ap_errors }} error(s) — see console/logs for details.</span>
+  {% endif %}
+  Find applied products via the <b>→ View in catalog</b> links on each row.
 </div>
-{% elif request.query_params.get('ai_error') == 'nokey' %}
+{% endif %}
+
+{# ── AI categorize progress banner (polls while background job is running) ── #}
+{% if request.query_params.get('ai_error') == 'nokey' %}
 <div class="card px-5 py-3 text-sm text-amber-800 bg-amber-50 border border-amber-100">
   No Anthropic API key is configured. Add one under
-  <a href="/settings/" class="underline font-semibold">Settings → Anthropic (Claude) API Key</a>
+  <a href="/settings/" class="underline font-semibold">Settings → System → Anthropic (Claude) API Key</a>
   to enable AI categorize.
 </div>
 {% endif %}
+{# AI progress banner — shown when ai_started is fresh OR while there are still
+   unresolved flagged items after a run was triggered this session. Polls
+   /ai-status every 2 s; reloads once when done. #}
+<div id="ai-progress-banner" style="display:none"
+     class="card px-5 py-3 flex items-center gap-3 border-l-4 border-l-purple-400">
+  <svg class="w-5 h-5 text-violet-500 animate-spin shrink-0" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+  </svg>
+  <div class="flex-1">
+    <p class="text-sm font-semibold text-gray-900">🤖 Claude is categorizing flagged items…</p>
+    <div class="flex items-center gap-3 mt-1">
+      <div class="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+        <div id="ai-progress-bar" class="h-full bg-violet-500 transition-all duration-500" style="width:0%"></div>
+      </div>
+      <span id="ai-progress-text" class="text-xs text-gray-500 tabular-nums whitespace-nowrap">checking…</span>
+    </div>
+    <p class="text-xs text-gray-400 mt-0.5">Suggestions appear as a 🤖 AI flag — review then Approve &amp; Apply as usual.</p>
+  </div>
+</div>
+<script>
+(function () {
+  var KEY = 'ai_running_{{ batch.id }}';
+  var aiStarted = {{ 'true' if request.query_params.get('ai_started') else 'false' }};
+  if (aiStarted) { sessionStorage.setItem(KEY, '1'); }
+  if (!aiStarted && !sessionStorage.getItem(KEY)) { return; }
+
+  var banner = document.getElementById('ai-progress-banner');
+  var bar    = document.getElementById('ai-progress-bar');
+  var label  = document.getElementById('ai-progress-text');
+  banner.style.display = '';
+
+  function poll() {
+    fetch('/import-review/{{ batch.id }}/ai-status', { headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var pct = d.total > 0 ? Math.round(d.processed / d.total * 100) : 0;
+        bar.style.width = pct + '%';
+        label.textContent = d.processed.toLocaleString() + ' / ' + d.total.toLocaleString();
+        if (d.done) {
+          sessionStorage.removeItem(KEY);
+          window.location.reload();
+        } else {
+          setTimeout(poll, 2000);
+        }
+      })
+      .catch(function () { setTimeout(poll, 4000); });
+  }
+  setTimeout(poll, aiStarted ? 1500 : 500);
+})();
+</script>
 
 {# ── Bulk review actions (selected rows) ─────────────────────────────────────── #}
 {% call bulk_toolbar() %}
@@ -285,9 +377,12 @@
               <span class="font-mono text-sm font-bold text-gray-900 leading-none">{{ c.sku or '—' }}</span>
               <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border {{ disp_cls }}">{{ disp_lbl }}</span>
             </div>
-            {% if c.matched_product_id %}
+            {% if c.applied_product_id %}
+            <a href="/products/{{ c.applied_product_id }}" @click.stop
+               class="text-xs text-green-600 hover:underline mt-1 inline-block font-semibold">→ View in catalog</a>
+            {% elif c.matched_product_id %}
             <a href="/products/{{ c.matched_product_id }}" @click.stop
-               class="text-xs text-brand-600 hover:underline mt-1 inline-block">→ matched product #{{ c.matched_product_id }}</a>
+               class="text-xs text-brand-600 hover:underline mt-1 inline-block">→ matched product</a>
             {% endif %}
           </td>
 
