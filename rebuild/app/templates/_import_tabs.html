@@ -1,0 +1,15 @@
+{# Shared tab bar for the unified Import module. Included at the top of each import
+   surface (Import / Review Queue / Flagged Products) so the three formerly-separate
+   screens read as one tabbed area. Relies on `request` (passed by every
+   TemplateResponse) to highlight the active tab. #}
+<div class="border-b border-gray-200 mb-5">
+  <nav class="flex gap-1 -mb-px" aria-label="Import">
+    {% set _p = request.url.path %}
+    <a href="/products/import"
+       class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors {% if '/products/import' in _p %}border-brand-600 text-brand-700{% else %}border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300{% endif %}">Import</a>
+    <a href="/import-review/"
+       class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors {% if '/import-review' in _p %}border-brand-600 text-brand-700{% else %}border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300{% endif %}">Review Queue</a>
+    <a href="/products/review"
+       class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors {% if '/products/review' in _p %}border-brand-600 text-brand-700{% else %}border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300{% endif %}">Flagged Products</a>
+  </nav>
+</div>

@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Import Products — JAKS Inventory{% endblock %}
-{% block heading %}Import Products{% endblock %}
+{% block heading %}Import{% endblock %}
 
 {% block content %}
+{% include "_import_tabs.html" %}
 <div class="max-w-3xl space-y-4" x-data="productImport()">
 
   {# ── Mode + file ─────────────────────────────────────────────────────────── #}

@@ -56,6 +56,10 @@ class ImportCandidate(Base):
         Index("ix_import_candidates_batch_id", "batch_id"),
         Index("ix_import_candidates_review_status", "review_status"),
         Index("ix_import_candidates_sku", "sku"),
+        # Composite indexes for the queue page's per-tab COUNT()s (batch + filter).
+        Index("ix_import_candidates_batch_review", "batch_id", "review_status"),
+        Index("ix_import_candidates_batch_disposition", "batch_id", "disposition"),
+        Index("ix_import_candidates_batch_needs", "batch_id", "needs_review"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

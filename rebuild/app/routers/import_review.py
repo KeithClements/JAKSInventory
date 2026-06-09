@@ -7,8 +7,9 @@ approved candidates to the catalog is Phase C; Shopify/eBay publishing is Phase 
 from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.constants import ImportDisposition, ScrapedItemReviewStatus
@@ -67,18 +68,36 @@ def candidate_preview(candidate_id: int, request: Request, db: Session = Depends
                                       {"c": c, "matched": matched})
 
 
+_PAGE_SIZE = 100
+
+
+@router.get("/{batch_id}/progress")
+def progress(batch_id: int, db: Session = Depends(get_db)):
+    """Lightweight staging-progress poll (JSON only — no candidate rows, no tab
+    COUNTs). The queue page polls THIS while a large feed analyzes, instead of
+    reloading the entire candidate table every couple seconds."""
+    batch = db.get(ImportBatch, batch_id)
+    if not batch:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    staged = db.query(func.count(ImportCandidate.id)).filter(
+        ImportCandidate.batch_id == batch_id).scalar() or 0
+    failed = bool(batch.notes) and batch.notes.startswith(IMPORT_ERROR_PREFIX)
+    total = batch.total or 0
+    return JSONResponse({"staged": staged, "total": total,
+                         "done": bool(failed or staged >= total), "failed": failed})
+
+
 # ── Review Queue for one batch ────────────────────────────────────────────────
 @router.get("/{batch_id}", response_class=HTMLResponse)
 def queue(batch_id: int, request: Request, q: str = "", tab: str = "all",
-          db: Session = Depends(get_db)):
+          page: int = 1, db: Session = Depends(get_db)):
     batch = db.get(ImportBatch, batch_id)
     if not batch:
         return RedirectResponse("/import-review/", status_code=303)
     base = db.query(ImportCandidate).filter(ImportCandidate.batch_id == batch_id)
 
     # Background-staging progress: a batch is still analyzing while fewer candidates
-    # exist than the feed's row count. A notes sentinel marks a failed run so the
-    # page stops polling.
+    # exist than the feed's row count. A notes sentinel marks a failed run.
     staged = base.count()
     failed = bool(batch.notes) and batch.notes.startswith(IMPORT_ERROR_PREFIX)
     processing = staged < (batch.total or 0) and not failed
@@ -96,7 +115,14 @@ def queue(batch_id: int, request: Request, q: str = "", tab: str = "all",
     if q:
         like = f"%{q}%"
         filtered = filtered.filter(ImportCandidate.sku.ilike(like) | ImportCandidate.title.ilike(like))
-    candidates = filtered.order_by(ImportCandidate.id).all()
+
+    # Pagination — NEVER send the whole feed to the template. Rendering 13k rows
+    # (each with Alpine bindings) is what froze the browser; cap it to one page.
+    total_matching = filtered.count()
+    total_pages = max(1, (total_matching + _PAGE_SIZE - 1) // _PAGE_SIZE)
+    page = max(1, min(page, total_pages))
+    candidates = (filtered.order_by(ImportCandidate.id)
+                  .limit(_PAGE_SIZE).offset((page - 1) * _PAGE_SIZE).all())
 
     # Tab counts — always from the full batch set (governance: unfiltered)
     counts = {
@@ -108,11 +134,17 @@ def queue(batch_id: int, request: Request, q: str = "", tab: str = "all",
         "cross_ref":    base.filter(ImportCandidate.disposition == _DISP.CROSS_REF).count(),
         "accepted":     base.filter(ImportCandidate.review_status == _RS.ACCEPTED).count(),
         "rejected":     base.filter(ImportCandidate.review_status == _RS.REJECTED).count(),
+        "confident_pending": base.filter(
+            ImportCandidate.review_status == _RS.PENDING,
+            ImportCandidate.needs_review == False).count(),  # noqa: E712
     }
     return templates.TemplateResponse(request, "import_review/list.html", {
         "batch": batch, "candidates": candidates, "counts": counts, "tab": tab, "q": q,
         "staged": staged, "processing": processing, "failed": failed,
         "fail_msg": (batch.notes[len(IMPORT_ERROR_PREFIX):].strip() if failed else ""),
+        "page": page, "total_pages": total_pages, "total_matching": total_matching,
+        "showing_from": ((page - 1) * _PAGE_SIZE + 1) if total_matching else 0,
+        "showing_to": min(page * _PAGE_SIZE, total_matching),
     })
 
 
@@ -152,3 +184,19 @@ def review(batch_id: int, request: Request, action: str = Form(...),
             except ValueError:
                 continue
     return RedirectResponse(f"/import-review/{batch_id}?tab={tab}", status_code=303)
+
+
+# ── Bulk approve/reject for a WHOLE batch (no per-row selection) ──────────────
+@router.post("/{batch_id}/approve-all")
+def approve_all(batch_id: int, request: Request,
+                scope: str = Form("confident"), action: str = Form("approve"),
+                db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    """One-click bulk review for an ENTIRE batch — no checkbox selection.
+      approve + confident -> accept every PENDING, not-flagged candidate
+      approve + all       -> accept every PENDING candidate (incl. flagged)
+      reject  + flagged   -> reject every PENDING flagged candidate
+    Only PENDING rows are touched, so manual decisions are never overridden."""
+    target = _RS.REJECTED if action == "reject" else _RS.ACCEPTED
+    ImportReviewService(db, user_id).bulk_set_status(batch_id, target, scope=scope)
+    back = "rejected" if action == "reject" else "accepted"
+    return RedirectResponse(f"/import-review/{batch_id}?tab={back}", status_code=303)

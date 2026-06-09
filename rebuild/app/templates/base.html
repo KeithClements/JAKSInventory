@@ -754,28 +754,12 @@
         Category Maintenance
       </a>
 
-      <a href="/products/review" title="Review and approve staged product imports before they go live" class="nav-link {% if '/products/review' in request.url.path %}active{% endif %}">
-        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-        </svg>
-        Import Review
-      </a>
-
-      <a href="/products/import" title="Bulk-import or update products from a CSV file" class="nav-link {% if '/products/import' in request.url.path %}active{% endif %}">
+      <a href="/products/import" title="Import a CSV, review staged candidates, and fix flagged items — all in one place" class="nav-link {% if '/products/import' in request.url.path or '/import-review' in request.url.path or '/products/review' in request.url.path %}active{% endif %}">
         <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
                 d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
         </svg>
-        Import Products
-      </a>
-
-      <a href="/import-review/" title="Stage a scraper/CSV feed, review each row against the 7 checks, then approve into the catalog" class="nav-link {% if '/import-review' in request.url.path %}active{% endif %}">
-        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-                d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"/>
-        </svg>
-        Smart Import
+        Import
       </a>
 
       {# ── CORES ───────────────────────────────────────────────────── #}

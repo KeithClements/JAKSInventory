@@ -69,7 +69,11 @@ class ImportReviewService(BaseService):
 
     # ── internals shared by the sync + background paths ───────────────────────
     def _parse_rows(self, text: str, limit: int | None = None) -> list:
-        rows = ProductImportService(self.db, self.current_user_id).parse_shopify_csv(text)
+        pis = ProductImportService(self.db, self.current_user_id)
+        if pis.detect_format(text) == "jaks":
+            rows = pis.parse_jaks_export_csv(text)
+        else:
+            rows = pis.parse_shopify_csv(text)
         if limit:
             rows = rows[:limit]
         if len(rows) > self._MAX_ROWS:
@@ -90,7 +94,8 @@ class ImportReviewService(BaseService):
         self.db.flush()
         return batch
 
-    def _stage_rows(self, batch: ImportBatch, rows: list, *, dry_run: bool = False) -> None:
+    def _stage_rows(self, batch: ImportBatch, rows: list, *, dry_run: bool = False,
+                    auto_accept_confident: bool = False) -> None:
         """Analyze each row into an ImportCandidate, committing + expunging per chunk
         so a large feed never holds the SQLite write-lock or the whole feed in memory
         long enough to freeze the app. (dry_run stays in one transaction so the final
@@ -124,7 +129,8 @@ class ImportReviewService(BaseService):
         pending: list[ImportCandidate] = []
         for p in rows:
             cand = self._analyze_row(p, batch.id, sku_to_id, xref_index, img_counts,
-                                     price_by_id, cat_names, classifier, seen)
+                                     price_by_id, cat_names, classifier, seen,
+                                     auto_accept_confident=auto_accept_confident)
             self.db.add(cand)
             self._tally(batch, cand)
             pending.append(cand)
@@ -140,7 +146,8 @@ class ImportReviewService(BaseService):
             self.db.commit()
 
     def _analyze_row(self, p, batch_id, sku_to_id, xref_index, img_counts,
-                     price_by_id, cat_names, classifier, seen) -> ImportCandidate:
+                     price_by_id, cat_names, classifier, seen,
+                     auto_accept_confident: bool = False) -> ImportCandidate:
         sku = (p.get("sku") or "").strip()
         k = _norm(sku)
         flags: list[str] = []
@@ -205,6 +212,16 @@ class ImportReviewService(BaseService):
         if needs_review:
             flags.append("needs review")
 
+        # Auto-accept the confident rows (owner-chosen "auto-approve confident, review
+        # only flagged"). Confident = NOT flagged AND a clean NEW/UPDATE (never a
+        # duplicate or an uncertain cross-ref). They still wait for the explicit
+        # "Apply Approved" click before anything is written to the catalog.
+        confident = (not needs_review) and disposition in (
+            ImportDisposition.NEW, ImportDisposition.UPDATE)
+        review_status = (ScrapedItemReviewStatus.ACCEPTED
+                         if (auto_accept_confident and confident)
+                         else ScrapedItemReviewStatus.PENDING)
+
         return ImportCandidate(
             batch_id=batch_id, sku=sku[:100], title=(p.get("title") or "")[:500],
             category_name=(p.get("type") or "")[:200],
@@ -216,7 +233,7 @@ class ImportReviewService(BaseService):
             engine_manufacturer=cls.get("engine_manufacturer") or "",
             engine_model=cls.get("engine_model") or "",
             needs_review=needs_review, flags=", ".join(flags)[:300],
-            review_status=ScrapedItemReviewStatus.PENDING,
+            review_status=review_status,
         )
 
     @staticmethod
@@ -229,6 +246,8 @@ class ImportReviewService(BaseService):
             batch.cross_ref_count += 1
         if cand.needs_review:
             batch.needs_review_count += 1
+        if cand.review_status == ScrapedItemReviewStatus.ACCEPTED:
+            batch.approved_count += 1   # auto-accepted confident rows count as approved
 
     # ── Review actions ────────────────────────────────────────────────────────
     def set_review_status(self, candidate_id: int, status: str, *,
@@ -248,6 +267,39 @@ class ImportReviewService(BaseService):
         ).count()
         self.db.commit()
         return cand
+
+    def bulk_set_status(self, batch_id: int, target: str, *, scope: str = "all") -> int:
+        """Set review_status on MANY candidates at once — no per-row checkbox
+        selection. Only touches PENDING rows (never overrides a manual accept/reject).
+
+        scope:
+          'confident' — PENDING rows that are NOT flagged needs_review
+          'flagged'   — PENDING rows that ARE flagged needs_review
+          'all'       — every PENDING row
+
+        One bulk UPDATE (fast at 13k rows). Returns the count changed and refreshes
+        the batch's approved tally."""
+        q = self.db.query(ImportCandidate).filter(
+            ImportCandidate.batch_id == batch_id,
+            ImportCandidate.review_status == ScrapedItemReviewStatus.PENDING,
+        )
+        if scope == "confident":
+            q = q.filter(ImportCandidate.needs_review == False)   # noqa: E712
+        elif scope == "flagged":
+            q = q.filter(ImportCandidate.needs_review == True)    # noqa: E712
+        n = q.update({
+            ImportCandidate.review_status: target,
+            ImportCandidate.reviewed_by_id: self.current_user_id,
+            ImportCandidate.reviewed_at: datetime.utcnow(),
+        }, synchronize_session=False)
+        batch = self.db.get(ImportBatch, batch_id)
+        if batch is not None:
+            batch.approved_count = self.db.query(func.count(ImportCandidate.id)).filter(
+                ImportCandidate.batch_id == batch_id,
+                ImportCandidate.review_status == ScrapedItemReviewStatus.ACCEPTED,
+            ).scalar() or 0
+        self.db.commit()
+        return n
 
     def list_candidates(self, batch_id: int, *, review_status: str | None = None,
                         disposition: str | None = None) -> list[ImportCandidate]:
@@ -401,7 +453,8 @@ def run_background_staging(batch_id: int, rows: list, user_id: int | None) -> No
         batch = db.get(ImportBatch, batch_id)
         if batch is None:
             return
-        ImportReviewService(db, user_id)._stage_rows(batch, rows, dry_run=False)
+        ImportReviewService(db, user_id)._stage_rows(batch, rows, dry_run=False,
+                                                     auto_accept_confident=True)
     except Exception as exc:  # noqa: BLE001 — record the failure, let the UI stop polling
         db.rollback()
         b = db.get(ImportBatch, batch_id)

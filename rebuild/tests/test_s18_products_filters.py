@@ -113,7 +113,7 @@ def test_import_review_queue_renders_and_assign_returns_to_queue():
     client = TestClient(app)
     r = client.get("/products/review")
     assert r.status_code == 200
-    assert "Import Review" in r.text
+    assert "Flagged Products" in r.text   # renamed from "Import Review" (import module consolidation)
     assert "TESTGK" in r.text          # the needs_review item is queued
     assert "TESTWP" not in r.text      # a confident item is not
 

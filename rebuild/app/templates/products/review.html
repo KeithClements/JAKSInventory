@@ -1,6 +1,6 @@
 {% extends "base.html" %}
-{% block title %}Import Review — JAKS Inventory{% endblock %}
-{% block heading %}Import Review{% endblock %}
+{% block title %}Flagged Products — JAKS Inventory{% endblock %}
+{% block heading %}Flagged Products{% endblock %}
 
 {% block header_actions %}
   <a href="/products/" class="btn-secondary btn-sm">All Products</a>
@@ -8,6 +8,7 @@
 {% endblock %}
 
 {% block content %}
+{% include "_import_tabs.html" %}
 <div class="space-y-4">
 
   <p class="text-sm text-gray-500">

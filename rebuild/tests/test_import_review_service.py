@@ -364,3 +364,45 @@ def test_apply_allowed_for_admin(db):
     assert result["applied"] == 1
     db.refresh(c)
     assert c.applied_product_id is not None
+
+
+# ── Bulk review: auto-accept confident at staging + one-click bulk approve ─────
+
+def test_auto_accept_confident_at_staging(db):
+    """The interactive upload path stages with auto_accept_confident=True: a clearly
+    classifiable NEW row is ACCEPTED automatically; an unclassifiable one stays
+    PENDING (flagged)."""
+    from app.seeds import seed_default_categories
+    seed_default_categories(db)
+    svc = ImportReviewService(db, None)
+    rows = svc._parse_rows(_csv([
+        _prod_row("AUTO-GSK", title="HEAD GASKET", oem=""),       # -> a real category, confident
+        _prod_row("AUTO-ODD", title="ZZQX UNKNOWN ITEM", oem=""),  # -> no match, flagged
+    ]))
+    batch = svc._new_batch(rows)
+    svc._stage_rows(batch, rows, auto_accept_confident=True)
+    by_sku = {c.sku: c for c in _cands(db, batch)}
+    assert by_sku["AUTO-GSK"].needs_review is False
+    assert by_sku["AUTO-GSK"].review_status == ScrapedItemReviewStatus.ACCEPTED
+    assert by_sku["AUTO-ODD"].needs_review is True
+    assert by_sku["AUTO-ODD"].review_status == ScrapedItemReviewStatus.PENDING
+    assert batch.approved_count == 1
+
+
+def test_bulk_set_status_confident_only(db):
+    """bulk_set_status(scope='confident') accepts every PENDING not-flagged row in
+    one call and never touches the flagged ones."""
+    from app.seeds import seed_default_categories
+    seed_default_categories(db)
+    svc = ImportReviewService(db, None)
+    rows = svc._parse_rows(_csv([
+        _prod_row("BULK-GSK", title="HEAD GASKET", oem=""),
+        _prod_row("BULK-ODD", title="ZZQX UNKNOWN ITEM", oem=""),
+    ]))
+    batch = svc._new_batch(rows)
+    svc._stage_rows(batch, rows, auto_accept_confident=False)   # all PENDING
+    n = svc.bulk_set_status(batch.id, ScrapedItemReviewStatus.ACCEPTED, scope="confident")
+    by_sku = {c.sku: c for c in _cands(db, batch)}
+    assert n == 1
+    assert by_sku["BULK-GSK"].review_status == ScrapedItemReviewStatus.ACCEPTED
+    assert by_sku["BULK-ODD"].review_status == ScrapedItemReviewStatus.PENDING
