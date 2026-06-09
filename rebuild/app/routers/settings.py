@@ -73,6 +73,9 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     # ── TaxJar integration ────────────────────────────────────────────────────
     "taxjar_api_key":              ("",        "TaxJar API Key"),
 
+    # ── Anthropic / Claude (Smart Import AI categorization) ────────────────────
+    "anthropic_api_key":           ("",        "Anthropic (Claude) API Key — enables AI categorize for flagged imports"),
+
     # ─────────────────────────────────────────────────────────────────────────
     # Phase A additions (Rounds 1–12)
     # ─────────────────────────────────────────────────────────────────────────
@@ -196,6 +199,7 @@ VISIBLE_KEYS = [
     "qbo_push_tax",
     "shopify_store_url", "shopify_api_key", "shopify_api_secret",
     "taxjar_api_key",
+    "anthropic_api_key",
     # §5.12 — document branding (logo itself is set via POST /settings/logo)
     "document_footer_text", "document_terms_text", "document_show_logo", "document_logo_height",
 ]

@@ -174,7 +174,31 @@
     </button>
   </form>
   {% endif %}
+  {% if ai_enabled and counts.ai_pending %}
+  <form method="post" action="/import-review/{{ batch.id }}/ai-categorize" class="inline"
+        onsubmit="return confirm('Ask Claude to suggest a category for {{ counts.ai_pending }} flagged item(s)? This only fills in a suggestion — nothing is approved or written to the catalog.')">
+    <button type="submit"
+            class="px-3 py-1.5 text-xs font-semibold text-white bg-violet-600 hover:bg-violet-700 rounded-lg transition-colors">
+      🤖 AI-categorize flagged ({{ counts.ai_pending }})
+    </button>
+  </form>
+  {% endif %}
   <span class="text-xs text-gray-400 ml-auto">…or tick individual rows below.</span>
+</div>
+{% endif %}
+
+{# AI categorize flash (suggestions run in the background; refresh to see them) #}
+{% if request.query_params.get('ai_started') %}
+<div class="card px-5 py-3 text-sm text-violet-800 bg-violet-50 border border-violet-100">
+  🤖 Claude is suggesting categories for the flagged items in the background.
+  Refresh this page in a bit — suggestions appear as a <b>🤖 AI</b> flag on each row
+  (review them, then Approve &amp; Apply as usual).
+</div>
+{% elif request.query_params.get('ai_error') == 'nokey' %}
+<div class="card px-5 py-3 text-sm text-amber-800 bg-amber-50 border border-amber-100">
+  No Anthropic API key is configured. Add one under
+  <a href="/settings/" class="underline font-semibold">Settings → Anthropic (Claude) API Key</a>
+  to enable AI categorize.
 </div>
 {% endif %}
 
@@ -185,15 +209,18 @@
       <input type="hidden" name="candidate_ids" :value="id" />
     </template>
     <input type="hidden" name="tab" value="{{ tab }}" />
-    <button type="submit" name="action" value="approve"
+    {# data-no-pending: the global submit-lock disables the first submit button on
+       submit, which strips a NAMED button's value (action) from the POST -> 422.
+       These carry their action in name/value, so they must opt out of the lock. #}
+    <button type="submit" name="action" value="approve" data-no-pending
             class="px-3 py-1.5 text-xs font-semibold text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors">
       Approve <span x-text="selectedCount"></span>
     </button>
-    <button type="submit" name="action" value="reject"
+    <button type="submit" name="action" value="reject" data-no-pending
             class="px-3 py-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors">
       Reject
     </button>
-    <button type="submit" name="action" value="ignore"
+    <button type="submit" name="action" value="ignore" data-no-pending
             class="px-3 py-1.5 text-xs font-semibold text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 rounded-lg transition-colors">
       Ignore
     </button>

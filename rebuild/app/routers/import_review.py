@@ -138,9 +138,14 @@ def queue(batch_id: int, request: Request, q: str = "", tab: str = "all",
             ImportCandidate.review_status == _RS.PENDING,
             ImportCandidate.needs_review == False).count(),  # noqa: E712
     }
+    # AI categorize assist — only offered when an Anthropic key is configured.
+    from app.services.ai_categorization_service import AICategorizationService
+    ai_svc = AICategorizationService(db)
+    ai_enabled = ai_svc.is_enabled()
+    counts["ai_pending"] = ai_svc.flagged_pending_count(batch_id) if ai_enabled else 0
     return templates.TemplateResponse(request, "import_review/list.html", {
         "batch": batch, "candidates": candidates, "counts": counts, "tab": tab, "q": q,
-        "staged": staged, "processing": processing, "failed": failed,
+        "staged": staged, "processing": processing, "failed": failed, "ai_enabled": ai_enabled,
         "fail_msg": (batch.notes[len(IMPORT_ERROR_PREFIX):].strip() if failed else ""),
         "page": page, "total_pages": total_pages, "total_matching": total_matching,
         "showing_from": ((page - 1) * _PAGE_SIZE + 1) if total_matching else 0,
@@ -200,3 +205,23 @@ def approve_all(batch_id: int, request: Request,
     ImportReviewService(db, user_id).bulk_set_status(batch_id, target, scope=scope)
     back = "rejected" if action == "reject" else "accepted"
     return RedirectResponse(f"/import-review/{batch_id}?tab={back}", status_code=303)
+
+
+# ── AI-categorize the flagged (needs-review) candidates via Claude ────────────
+@router.post("/{batch_id}/ai-categorize")
+def ai_categorize(batch_id: int, request: Request, background: BackgroundTasks,
+                  limit: int = Form(0), db: Session = Depends(get_db),
+                  user_id: int = Depends(get_current_user_id)):
+    """Kick off a background pass that asks Claude to SUGGEST a category for each
+    flagged, still-pending candidate. Writes only a suggestion (resolved category +
+    a 🤖 AI flag); never changes review status and never writes the catalog. Gated
+    on a configured Anthropic API key — fails soft to a flash otherwise."""
+    from app.services.ai_categorization_service import (
+        AICategorizationService, run_background_ai_categorize,
+    )
+    if not AICategorizationService(db).is_enabled():
+        return RedirectResponse(
+            f"/import-review/{batch_id}?tab=needs_review&ai_error=nokey", status_code=303)
+    background.add_task(run_background_ai_categorize, batch_id, user_id, (limit or None))
+    return RedirectResponse(
+        f"/import-review/{batch_id}?tab=needs_review&ai_started=1", status_code=303)
