@@ -23,7 +23,7 @@ from app.constants import (
     VendorCreditMemoTrigger,
 )
 from app.models.inventory import InventoryTransaction
-from app.models.product import Product
+from app.models.product import Product, ProductCostHistory
 from app.models.purchase_order import (
     COST_VARIANCE_TOLERANCE,
     POLine, POReceipt, POReceiptLine,
@@ -288,12 +288,17 @@ class POService(BaseService):
         """
         Record goods receipt against one or more PO lines.
 
-        For each line (R6, R7, R11):
+        For each line (R6, R7, R11, R3):
           1. Creates POReceiptLine
           2. Detects over-receipt (qty_received > qty_ordered) → flags line
           3. Writes InventoryTransaction (PO_RECEIPT) unless drop-ship
           4. Updates Product.qty_on_hand cache + qty_on_order
-          5. Updates Product.cost via moving-weighted-average + last_cost
+          5. Updates Product.cost via moving-weighted-average + last_cost —
+             R3: at the LANDED unit cost (unit_cost + allocated freight adder)
+             when the PO carries freight_in_cost; see _compute_freight_adders
+             for the allocation rule. Zero/absent freight is bit-for-bit the
+             pre-R3 behavior. Writes POLine.landed_cost_per_unit and a
+             ProductCostHistory "landed cost" row when freight lands.
           6. FIFO-allocates received qty to linked SO lines (any qty leftover
              goes to general available stock)
           7. Records ProductCostHistory if vendor source cost differs
@@ -315,6 +320,16 @@ class POService(BaseService):
         # Lazy import to avoid circular reference at module load time
         from app.services.inventory_service import InventoryService
         inv_svc = InventoryService(self.db, self.current_user_id)
+
+        # R3 — freight landing: per-unit freight adders for every freight-bearing
+        # PO touched by this receipt. Zero/absent freight → empty dict, and the
+        # whole receipt path below behaves exactly as before R3.
+        received_line_ids = [lid for lid, q in po_line_quantities.items() if q > 0]
+        received_lines = (
+            self.db.query(POLine).filter(POLine.id.in_(received_line_ids)).all()
+            if received_line_ids else []
+        )
+        freight_adders = self._compute_freight_adders(received_lines)
 
         po = None  # populated on first processed line; used for status update after loop
         for po_line_id, qty in po_line_quantities.items():
@@ -356,6 +371,18 @@ class POService(BaseService):
                     qty_received=po_line.qty_received,
                 )
 
+            # R3 — freight landing: per-unit freight adder allocated from the
+            # PO's freight_in_cost (0.0 when the PO carries no freight). The
+            # landed unit cost (unit_cost + adder) is what actually hit COGS,
+            # so record it on the PO line. The adder is per ORDERED unit, so the
+            # value is identical across partial receipts (cumulative-weighted
+            # average degenerates to the same number) — the write is idempotent.
+            freight_adder = freight_adders.get(po_line_id, 0.0)
+            if freight_adder > 0:
+                po_line.landed_cost_per_unit = round(
+                    po_line.unit_cost + freight_adder, 4
+                )
+
             # Update product inventory cache + ledger (stock receipts only)
             if not is_drop_ship and po_line.product_id:
                 product = self.db.query(Product).filter(Product.id == po_line.product_id).first()
@@ -364,8 +391,13 @@ class POService(BaseService):
                     product.qty_on_order = max(0, product.qty_on_order - qty)
 
                     # R11 — moving weighted average cost update
-                    if po_line.unit_cost and po_line.unit_cost > 0:
-                        inv_svc._apply_moving_average_cost(product, qty, po_line.unit_cost)
+                    # R3: absorbs the landed unit cost (unit_cost + freight
+                    # adder); freight_adder=0 is the exact pre-R3 behavior.
+                    if po_line.unit_cost > 0 or freight_adder > 0:
+                        inv_svc._apply_moving_average_cost(
+                            product, qty, po_line.unit_cost,
+                            freight_adder=freight_adder,
+                        )
 
                     txn = InventoryTransaction(
                         product_id=product.id,
@@ -387,6 +419,23 @@ class POService(BaseService):
                         new_cost=po_line.unit_cost,
                         po_id=po_line.po_id,
                     )
+
+                # R3 — record the LANDED unit cost in cost history when freight
+                # was allocated. History row ONLY — never touches the vendor
+                # source quote (vendor_cost stays the bare unit cost above).
+                if freight_adder > 0:
+                    self.db.add(ProductCostHistory(
+                        product_id=po_line.product_id,
+                        vendor_id=vendor_id,
+                        old_cost=po_line.unit_cost,
+                        new_cost=round(po_line.unit_cost + freight_adder, 4),
+                        changed_by_id=self.current_user_id,
+                        po_id=po_line.po_id,
+                        notes=(
+                            f"PO receipt landed cost — freight included "
+                            f"(+${freight_adder:.4f}/unit)"
+                        ),
+                    ))
 
                 # R7 — FIFO-allocate to linked SO lines before excess goes to stock
                 self._allocate_to_linked_sos(po_line_id, qty, po.po_number)
@@ -410,6 +459,55 @@ class POService(BaseService):
         )
         self.db.commit()
         return receipt
+
+    def _compute_freight_adders(self, received_lines: list[POLine]) -> dict[int, float]:
+        """
+        R3 — Allocate PO-level freight (PurchaseOrder.freight_in_cost) into a
+        per-unit "freight adder" for each line of every freight-bearing PO
+        touched by a receipt.
+
+        Allocation rule (deterministic, receipt-independent):
+          * Freight is spread across the FULL ORDERED quantity of every line on
+            the PO, weighted by line value (qty_ordered × unit_cost):
+                adder_per_unit(line) = freight × unit_cost / Σ(qty_ordered × unit_cost)
+          * If the PO has no line value at all (every line zero-cost), the
+            weight falls back to quantity:
+                adder_per_unit = freight / Σ(qty_ordered)
+          * A zero-cost line on a MIXED PO carries no value weight (adder 0) —
+            its freight share lands on the costed lines, conserving the total.
+          * Because the adder is per ORDERED unit, a partial receipt lands only
+            the freight belonging to the units received in THAT receipt (a PO
+            received in two halves lands half the freight each time), so
+            multiple receipts can never over-allocate. (Over-RECEIPT beyond
+            qty_ordered keeps the same per-unit adder — the R6 flag, not this
+            allocator, is the control for that.)
+
+        Returns {po_line_id: freight_adder_per_unit} (rounded to 4dp) covering
+        every line of each freight-bearing PO. POs with zero/absent freight
+        contribute nothing, so the receipt path stays bit-for-bit unchanged
+        for them.
+        """
+        adders: dict[int, float] = {}
+        pos_seen: dict[int, PurchaseOrder] = {}
+        for ln in received_lines:
+            if ln.po_id not in pos_seen:
+                pos_seen[ln.po_id] = ln.po
+        for po in pos_seen.values():
+            freight = float(po.freight_in_cost or 0.0)
+            if freight <= 0:
+                continue
+            total_value = sum(l.qty_ordered * l.unit_cost for l in po.lines)
+            if total_value > 0:
+                for l in po.lines:
+                    adders[l.id] = round(freight * l.unit_cost / total_value, 4)
+            else:
+                total_qty = sum(l.qty_ordered for l in po.lines)
+                if total_qty <= 0:
+                    continue
+                per_unit = round(freight / total_qty, 4)
+                for l in po.lines:
+                    adders[l.id] = per_unit
+        return adders
 
     def _allocate_to_linked_sos(
         self,

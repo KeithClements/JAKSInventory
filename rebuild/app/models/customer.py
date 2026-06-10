@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from sqlalchemy import String, Text, Date, DateTime, Float, Boolean, Integer, ForeignKey, Index, func
+from sqlalchemy import String, Text, Date, DateTime, Float, Boolean, Integer, ForeignKey, Index, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 from app.constants import (
@@ -13,6 +13,16 @@ from app.constants import (
 
 class Customer(Base):
     __tablename__ = "customers"
+    __table_args__ = (
+        # R3 — DB backstop: non-blank account numbers must be unique. Partial:
+        # the '' default (most customers) repeats freely. Name must match
+        # _PENDING_UNIQUE_INDEXES in app/database.py (defensive live-DB path).
+        Index(
+            "uq_customers_account_number", "account_number",
+            unique=True,
+            sqlite_where=text("account_number IS NOT NULL AND account_number != ''"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     company_name: Mapped[str] = mapped_column(String(200), nullable=False)

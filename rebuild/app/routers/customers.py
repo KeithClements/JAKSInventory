@@ -1636,14 +1636,26 @@ def customer_reactivate(
 
 # ── Statement ─────────────────────────────────────────────────────────────────
 
+def _optional_user_id(request: Request) -> int | None:
+    """Resolve the signed-in user id WITHOUT enforcing auth (R3 — statement
+    persistence attribution only; the route itself stays as permissive as it
+    was before persistence existed)."""
+    try:
+        from app.auth import read_session_token, SESSION_COOKIE
+        return read_session_token(request.cookies.get(SESSION_COOKIE))
+    except Exception:
+        return None
+
+
 @router.get("/{customer_id}/statement", response_class=HTMLResponse)
 def customer_statement_form(
     customer_id: int,
     request: Request,
     db: Session = Depends(get_db),
 ):
-    """Statement date-range selector page."""
+    """Statement date-range selector page + saved-statement history (R3)."""
     from datetime import date
+    from app.services.statement_service import StatementService
     c = db.query(Customer).filter(Customer.id == customer_id).first()
     if c is None:
         return RedirectResponse("/customers/", status_code=303)
@@ -1657,6 +1669,8 @@ def customer_statement_form(
             "customer": c,
             "default_start": default_start.isoformat(),
             "default_end": today.isoformat(),
+            # R3 — archived statements (immutable snapshots of what was sent)
+            "history": StatementService(db).get_statement_history(customer_id),
         },
     )
 
@@ -1682,11 +1696,15 @@ def customer_statement_print(
         period_start = today.replace(day=1)
         period_end = today
 
-    stmt = StatementService(db).generate_statement(
+    svc = StatementService(db)
+    stmt = svc.generate_statement(
         customer_id=customer_id,
         period_start=period_start,
         period_end=period_end,
     )
+    # R3 — the print view is the "this went to the customer" moment: persist an
+    # immutable snapshot (idempotent per customer+period+day, see service).
+    saved = svc.persist_statement(stmt, generated_by_user_id=_optional_user_id(request))
     company = {
         "name":    get_setting_value_db(db, "company_name",    "JAKS Parts"),
         "address": get_setting_value_db(db, "company_address", ""),
@@ -1696,7 +1714,8 @@ def customer_statement_print(
     return templates.TemplateResponse(
         request,
         "customers/statement_print.html",
-        {"stmt": stmt, "company": company},
+        {"stmt": stmt, "company": company,
+         "statement_number": saved.statement_number},
     )
 
 
@@ -1723,11 +1742,15 @@ def customer_statement_pdf(
         period_start = today.replace(day=1)
         period_end = today
 
-    stmt = StatementService(db).generate_statement(
+    svc = StatementService(db)
+    stmt = svc.generate_statement(
         customer_id=customer_id,
         period_start=period_start,
         period_end=period_end,
     )
+    # R3 — PDF generation is also a "sent to customer" moment; same idempotent
+    # persistence as /print (same customer+period+day reuses the row).
+    saved = svc.persist_statement(stmt, generated_by_user_id=_optional_user_id(request))
     company = {
         "name":    get_setting_value_db(db, "company_name",    "JAKS Parts"),
         "address": get_setting_value_db(db, "company_address", ""),
@@ -1736,6 +1759,7 @@ def customer_statement_pdf(
     }
     html_str = templates.env.get_template("customers/statement_print.html").render(
         request=request, stmt=stmt, company=company,
+        statement_number=saved.statement_number,
     )
     try:
         from weasyprint import HTML
@@ -1753,5 +1777,54 @@ def customer_statement_pdf(
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
             "Content-Length": str(len(pdf_bytes)),
+        },
+    )
+
+
+@router.get("/{customer_id}/statement/archive/{statement_id}", response_class=HTMLResponse)
+def customer_statement_archive(
+    customer_id: int,
+    statement_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """R3 — read-only ARCHIVED statement, re-rendered from snapshot_json.
+
+    This is the dispute-resolution view: it shows exactly what was generated
+    and sent, never live data. No persistence, no recalculation."""
+    from app.models.statement import CustomerStatement
+    from app.services.statement_service import StatementService
+    from app.settings_utils import get_setting_value_db
+
+    row = (
+        db.query(CustomerStatement)
+        .filter(
+            CustomerStatement.id == statement_id,
+            CustomerStatement.customer_id == customer_id,
+        )
+        .first()
+    )
+    if row is None:
+        return RedirectResponse(f"/customers/{customer_id}/statement", status_code=303)
+
+    stmt = StatementService.snapshot_to_render_ctx(row)
+    if stmt is None:  # legacy row persisted before snapshots existed
+        return RedirectResponse(f"/customers/{customer_id}/statement", status_code=303)
+
+    company = {
+        "name":    get_setting_value_db(db, "company_name",    "JAKS Parts"),
+        "address": get_setting_value_db(db, "company_address", ""),
+        "phone":   get_setting_value_db(db, "company_phone",   ""),
+        "email":   get_setting_value_db(db, "company_email",   ""),
+    }
+    return templates.TemplateResponse(
+        request,
+        "customers/statement_print.html",
+        {
+            "stmt": stmt,
+            "company": company,
+            "statement_number": row.statement_number,
+            "archived": True,
+            "archived_generated_at": row.generated_at,
         },
     )

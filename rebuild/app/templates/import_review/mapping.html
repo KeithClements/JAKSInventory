@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Map Columns — JAKS Inventory{% endblock %}
+{% block heading %}Map CSV Columns{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl space-y-4">
+
+  <div class="card p-5">
+    <h2 class="text-sm font-semibold text-gray-800 mb-1">
+      Unrecognized feed — tell us what each column means
+    </h2>
+    <p class="text-xs text-gray-400">
+      <span class="font-medium text-gray-600">{{ pending.filename or 'uploaded file' }}</span>
+      {% if pending.source_app %} · source <span class="font-medium text-gray-600">{{ pending.source_app }}</span>{% endif %}
+      — this file doesn't match the PAI/Shopify or JAKS-native formats. Map its
+      columns to catalog fields below; the rows then stage for review exactly like
+      any other feed. <span class="font-medium">SKU / Part Number is required.</span>
+    </p>
+    {% if template %}
+    <p class="text-xs text-brand-700 mt-2 bg-brand-50 rounded-lg px-3 py-2">
+      Pre-filled from saved template <span class="font-semibold">{{ template.name }}</span>
+      ({{ template.source_label or 'no source' }}).
+    </p>
+    {% endif %}
+    {% if error %}
+    <p class="text-xs text-red-700 mt-2 bg-red-50 rounded-lg px-3 py-2" role="alert">{{ error }}</p>
+    {% endif %}
+  </div>
+
+  <form method="post" action="/import-review/mapping/{{ pending.id }}" class="space-y-4">
+    <div class="card overflow-hidden">
+      <table class="w-full" aria-label="Column mapping">
+        <thead>
+          <tr class="bg-gray-50 border-b border-gray-200">
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">CSV Column</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Imports As</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for h in headers %}
+          {% set pre = prefill.get(h, '') %}
+          <tr>
+            <td class="px-4 py-2.5 text-sm font-medium text-gray-900">
+              {{ h }}
+              <input type="hidden" name="header_{{ loop.index0 }}" value="{{ h }}" />
+            </td>
+            <td class="px-4 py-2.5">
+              <select name="field_{{ loop.index0 }}" data-prefill="{{ pre }}"
+                      class="w-full max-w-xs px-2.5 py-1.5 text-sm border border-gray-200 rounded-lg bg-white
+                             focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400">
+                <option value="">— ignore —</option>
+                {% for key, label, hint in fields %}
+                <option value="{{ key }}" {% if pre == key %}selected{% endif %}
+                        {% if hint %}title="{{ hint }}"{% endif %}>{{ label }}</option>
+                {% endfor %}
+              </select>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card p-5 space-y-3">
+      <label class="flex items-center gap-2 text-sm text-gray-700">
+        <input type="checkbox" name="save_template" value="1" checked
+               class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+        Save this mapping as a template for future uploads from this source
+      </label>
+      <div class="flex flex-wrap items-center gap-3">
+        <input type="text" name="template_name" placeholder="template name"
+               value="{{ (pending.source_app ~ ' mapping') if pending.source_app else '' }}"
+               class="px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white w-56
+                      focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400" />
+        <input type="text" name="source_label" placeholder="source (e.g. sampa, imb)"
+               value="{{ pending.source_app }}"
+               class="px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white w-48
+                      focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400" />
+      </div>
+      <div class="flex items-center gap-3 pt-1">
+        <button type="submit" class="btn-primary btn-sm">Parse &amp; Stage</button>
+        <a href="/import-review/" class="text-sm text-gray-500 hover:underline">&larr; Back</a>
+      </div>
+    </div>
+  </form>
+
+  <form method="post" action="/import-review/mapping/{{ pending.id }}/discard">
+    <button type="submit" class="text-xs text-gray-400 hover:text-red-600 hover:underline">
+      Discard this upload
+    </button>
+  </form>
+
+</div>
+{% endblock %}

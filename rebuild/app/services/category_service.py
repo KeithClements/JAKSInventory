@@ -40,7 +40,10 @@ class CategoryService(BaseService):
     def category_tree(self) -> list[dict]:
         """Flat, display-ordered rows: parent immediately followed by its
         descendants; each sibling level sorted by (sort_order, name). Each row =
-        {cat, depth, label, product_count}."""
+        {cat, depth, label, product_count, total_count, reparent_targets,
+        merge_targets} — total_count is descendant-inclusive (R3-4) and the two
+        target lists feed the Move-to / Merge-into selects (server re-validates
+        regardless)."""
         cats = self.db.query(ProductCategory).all()
         counts = dict(
             self.db.query(Product.category_id, func.count(Product.id))
@@ -53,20 +56,77 @@ class CategoryService(BaseService):
         for lst in by_parent.values():
             lst.sort(key=lambda c: (c.sort_order or 0, (c.name or "").lower()))
 
+        # Subtree aggregates per node: descendant ids, deepest level, and
+        # descendant-inclusive product count.
+        desc_ids: dict[int, set[int]] = {}
+        deepest: dict[int, int] = {}
+        totals: dict[int, int] = {}
+
+        def _gather(c: ProductCategory) -> None:
+            ids: set[int] = set()
+            deep = c.level
+            total = counts.get(c.id, 0)
+            for ch in by_parent.get(c.id, []):
+                _gather(ch)
+                ids |= {ch.id} | desc_ids[ch.id]
+                deep = max(deep, deepest[ch.id])
+                total += totals[ch.id]
+            desc_ids[c.id], deepest[c.id], totals[c.id] = ids, deep, total
+
+        for top in by_parent.get(None, []):
+            _gather(top)
+
+        active_sorted = sorted(
+            (c for c in cats if c.is_active), key=lambda c: c.full_path.lower()
+        )
+
         rows: list[dict] = []
 
         def _walk(parent_id: int | None, depth: int) -> None:
             for c in by_parent.get(parent_id, []):
+                ds = desc_ids.get(c.id, set())
+                # Height of the subtree BELOW c (0 = leaf).
+                extra = deepest.get(c.id, c.level) - c.level
                 rows.append({
                     "cat": c,
                     "depth": depth,
                     "label": LEVEL_LABELS.get(c.level, f"L{c.level}"),
                     "product_count": counts.get(c.id, 0),
+                    "total_count": totals.get(c.id, counts.get(c.id, 0)),
+                    # R3-1: parents whose adoption of c keeps the whole moved
+                    # subtree within the 3-level cap (excl. self/descendants/
+                    # current parent).
+                    "reparent_targets": [
+                        p for p in active_sorted
+                        if p.id != c.id and p.id not in ds
+                        and p.id != c.parent_id
+                        and p.level + 1 + extra <= MAX_LEVEL
+                    ],
+                    # R3-2: destinations that could adopt c's children without
+                    # breaking the cap (excl. self/descendants).
+                    "merge_targets": [
+                        p for p in active_sorted
+                        if p.id != c.id and p.id not in ds
+                        and p.level + extra <= MAX_LEVEL
+                    ],
                 })
                 _walk(c.id, depth + 1)
 
         _walk(None, 0)
         return rows
+
+    def _subtree(self, root_id: int) -> list[ProductCategory]:
+        """All strict descendants of ``root_id`` (children, grandchildren, …)."""
+        by_parent: dict[int | None, list[ProductCategory]] = {}
+        for c in self.db.query(ProductCategory).all():
+            by_parent.setdefault(c.parent_id, []).append(c)
+        out: list[ProductCategory] = []
+        stack = list(by_parent.get(root_id, []))
+        while stack:
+            n = stack.pop()
+            out.append(n)
+            stack.extend(by_parent.get(n.id, []))
+        return out
 
     def categories_flat(self, include_inactive: bool = True) -> list[ProductCategory]:
         """All categories sorted by full_path — used for the parent <select>."""
@@ -151,6 +211,111 @@ class CategoryService(BaseService):
         self.db.delete(cat)
         self.db.commit()
         return "deleted"
+
+    # ══ R3 — post-import cleanup tools (reparent / merge) ══════════════════════
+    def reparent_category(self, cat_id: int, new_parent_id: int | None) -> ProductCategory:
+        """Move a category (and its whole subtree) under a new parent, or to the
+        top level when ``new_parent_id`` is falsy. Validates: target exists and
+        is active, no self/cycle, and the recomputed level of the node AND every
+        descendant stays within MAX_LEVEL."""
+        cat = self.db.get(ProductCategory, cat_id)
+        if cat is None:
+            raise ValueError("Category not found.")
+        new_parent_id = new_parent_id or None
+        new_level = 1
+        if new_parent_id:
+            if new_parent_id == cat_id:
+                raise ValueError("A category cannot be moved under itself.")
+            parent = self.db.get(ProductCategory, new_parent_id)
+            if parent is None:
+                raise ValueError("Target parent not found.")
+            if not parent.is_active:
+                raise ValueError("Target parent is inactive.")
+            new_level = parent.level + 1
+
+        descendants = self._subtree(cat_id)
+        if new_parent_id and new_parent_id in {d.id for d in descendants}:
+            raise ValueError("Cannot move a category under one of its own descendants.")
+
+        shift = new_level - cat.level
+        deepest = max([cat.level] + [d.level for d in descendants])
+        if deepest + shift > MAX_LEVEL:
+            raise ValueError(
+                f"Move would nest deeper than {LEVEL_LABELS[MAX_LEVEL]} (3 levels)"
+                " — reparent its children first."
+            )
+
+        cat.parent_id = new_parent_id
+        cat.level = new_level
+        for d in descendants:
+            d.level += shift
+        self.db.commit()
+        self.db.refresh(cat)
+        return cat
+
+    def merge_category(self, src_id: int, dest_id: int) -> dict:
+        """Merge ``src`` into ``dest``: reassign ALL of src's products to dest,
+        adopt src's children into dest (blocked with a clear error if that would
+        exceed MAX_LEVEL — reparent the children first), union the two
+        import_keywords lists onto dest, then soft-delete (deactivate) src.
+        Returns {'products_moved', 'children_adopted', 'dest_name'}."""
+        if src_id == dest_id:
+            raise ValueError("Cannot merge a category into itself.")
+        src = self.db.get(ProductCategory, src_id)
+        if src is None:
+            raise ValueError("Source category not found.")
+        dest = self.db.get(ProductCategory, dest_id)
+        if dest is None:
+            raise ValueError("Destination category not found.")
+        if not dest.is_active:
+            raise ValueError("Destination category is inactive.")
+
+        descendants = self._subtree(src_id)
+        if dest_id in {d.id for d in descendants}:
+            raise ValueError(
+                "Cannot merge a category into one of its own descendants"
+                " — reparent its children first."
+            )
+        children = [d for d in descendants if d.parent_id == src_id]
+        shift = dest.level - src.level
+        if descendants and max(d.level for d in descendants) + shift > MAX_LEVEL:
+            raise ValueError(
+                f"Merging would nest its children deeper than {LEVEL_LABELS[MAX_LEVEL]}"
+                " (3 levels) — reparent the children first."
+            )
+
+        # Products → dest.
+        products_moved = (
+            self.db.query(Product)
+            .filter(Product.category_id == src_id)
+            .update({"category_id": dest_id}, synchronize_session=False)
+        )
+
+        # import_keywords → union (dest's first), comma-joined, case-insensitive dedupe.
+        def _kw_list(raw: str | None) -> list[str]:
+            return [t.strip() for t in (raw or "").replace("\n", ",").split(",") if t.strip()]
+
+        merged: list[str] = []
+        seen: set[str] = set()
+        for kw in _kw_list(dest.import_keywords) + _kw_list(src.import_keywords):
+            if kw.lower() not in seen:
+                seen.add(kw.lower())
+                merged.append(kw)
+        dest.import_keywords = ", ".join(merged)
+
+        # Children (and their subtrees) → adopted by dest, levels recomputed.
+        for child in children:
+            child.parent_id = dest_id
+        for d in descendants:
+            d.level += shift
+
+        src.is_active = False
+        self.db.commit()
+        return {
+            "products_moved": int(products_moved or 0),
+            "children_adopted": len(children),
+            "dest_name": dest.name,
+        }
 
     # ══ Brands ═════════════════════════════════════════════════════════════════
     def brands(self, include_inactive: bool = True) -> list[Brand]:

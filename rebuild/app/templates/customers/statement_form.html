@@ -7,7 +7,7 @@
 {% endblock %}
 
 {% block content %}
-<div class="max-w-lg">
+<div class="max-w-lg space-y-6">
   <div class="card">
     <div class="card-body space-y-5">
       <div>
@@ -68,6 +68,61 @@
           </a>
         </div>
       </div>
+    </div>
+  </div>
+
+  {# ── R3 — Statement history: immutable archived copies of what was sent ── #}
+  <div class="card">
+    <div class="card-body">
+      <p class="text-xs text-gray-400 font-semibold uppercase tracking-wide mb-3">Statement History</p>
+      {% if history %}
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-left text-xs text-gray-400 border-b border-gray-100">
+            <th class="pb-2 font-semibold">Statement #</th>
+            <th class="pb-2 font-semibold">Period</th>
+            <th class="pb-2 font-semibold text-right">Total Due</th>
+            <th class="pb-2 font-semibold">Generated</th>
+            <th class="pb-2"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in history %}
+          <tr class="border-b border-gray-50">
+            <td class="py-2 font-medium text-gray-700">{{ s.statement_number }}</td>
+            <td class="py-2 text-gray-500 text-xs">
+              {{ s.date_range_start.strftime('%m/%d/%y') }} – {{ s.date_range_end.strftime('%m/%d/%y') }}
+            </td>
+            <td class="py-2 text-right font-medium {% if s.closing_balance > 0 %}text-red-600{% else %}text-gray-700{% endif %}">
+              ${{ '%.2f' % s.closing_balance }}
+            </td>
+            <td class="py-2 text-gray-500 text-xs">
+              {{ s.generated_at.strftime('%m/%d/%y %I:%M %p') if s.generated_at else '—' }}
+            </td>
+            <td class="py-2 text-right">
+              {% if s.snapshot_json %}
+              <a href="/customers/{{ customer.id }}/statement/archive/{{ s.id }}"
+                 target="_blank"
+                 class="text-xs text-blue-600 hover:text-blue-800 font-medium">
+                View archived copy
+              </a>
+              {% else %}
+              <span class="text-xs text-gray-300">no snapshot</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="text-[11px] text-gray-400 mt-2">
+        Archived copies show exactly what was generated at the time — they never change,
+        even if invoices or payments are edited later.
+      </p>
+      {% else %}
+      <p class="text-xs text-gray-400 italic">
+        No statements generated yet. Printing or downloading a statement saves an archived copy here.
+      </p>
+      {% endif %}
     </div>
   </div>
 </div>

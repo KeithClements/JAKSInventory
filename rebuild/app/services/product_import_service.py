@@ -62,6 +62,97 @@ _SKU_KEYS = ("jaks_sku", "sku", "variant sku", "internal_sku", "part_number", "j
 # True PAI cost columns (Pricing-Update pai_cost mode) — NOT "variant price" (that's sell)
 _COST_KEYS = ("pai_cost", "vendor_cost", "dealer_cost", "net_cost", "cost")
 
+# ── R3: CSV column-mapping (saved per-vendor templates) ───────────────────────
+# Canonical fields a mapping can target — derived from the intermediate row dict
+# that full_import() and ImportReviewService._analyze_row() actually consume
+# (sku/title/type/tags/price/compare_at/cost/barcode/grams/status/pai_part/oem/
+# apps/images/warranty_months/core_charge/is_reman/unit_of_measure/pack_qty).
+# (key, label, hint) — key is what mapping_json stores; label/hint feed the UI.
+CANONICAL_IMPORT_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("sku",                "SKU / Part Number",   "REQUIRED — the vendor's part number (dedup key)"),
+    ("title",              "Title",               "Product name / description line"),
+    ("category",           "Category / Type",     "Maps to the product category"),
+    ("engine_make",        "Engine Make",         "e.g. CUMMINS — feeds classification + applications"),
+    ("engine_models",      "Engine Model(s)",     "Pipe/comma-separated list, e.g. ISX|N14"),
+    ("price",              "Sell Price",          "OUR sell price → price_override (never cost)"),
+    ("compare_at_price",   "Compare-At Price",    "Marketing compare-at / MSRP"),
+    ("cost",               "Vendor Cost",         "True vendor cost → vendor source (never COGS)"),
+    ("core_charge",        "Core Charge",         "Dollar amount; sets has_core when > 0"),
+    ("barcode",            "Barcode / UPC",       ""),
+    ("weight_lbs",         "Weight (lbs)",        "Pounds — converted internally"),
+    ("weight_grams",       "Weight (grams)",      "Grams, Shopify-style"),
+    ("status",             "Status",              "active / draft — defaults to active"),
+    ("vendor_part_number", "Vendor Part #",       "Defaults to the SKU when unmapped"),
+    ("oem_refs",           "OEM References",      "Pipe/comma list, 'BRAND:NUM' or 'BRAND NUM'"),
+    ("image_urls",         "Image URL(s)",        "Pipe-separated list of image URLs"),
+    ("warranty_years",     "Warranty (years)",    "Converted to months"),
+    ("warranty_months",    "Warranty (months)",   "Wins over years when both are mapped"),
+    ("is_reman",           "Is Reman",            "1/true/yes — activates the core lifecycle"),
+    ("unit_of_measure",    "Unit of Measure",     "Defaults to EA"),
+    ("pack_qty",           "Pack Qty",            "Defaults to 1"),
+)
+CANONICAL_FIELD_KEYS = {k for k, _, _ in CANONICAL_IMPORT_FIELDS}
+
+# Fuzzy header-name guesses: normalized header → canonical field. Used only to
+# PRE-FILL the mapping screen; the user always confirms before anything parses.
+_HEADER_GUESSES: dict[str, str] = {
+    # sku / part number
+    "sku": "sku", "variant sku": "sku", "part number": "sku", "part no": "sku",
+    "part": "sku", "partnumber": "sku", "item number": "sku", "item no": "sku",
+    "item": "sku", "pai part no": "sku", "mfr part number": "sku", "jaks sku": "sku",
+    # title
+    "title": "title", "name": "title", "product name": "title",
+    "product title": "title", "description": "title", "desc": "title",
+    # category
+    "category": "category", "type": "category", "product type": "category",
+    "product category": "category",
+    # engine make / models
+    "engine make": "engine_make", "make": "engine_make", "manufacturer": "engine_make",
+    "engine": "engine_make",
+    "engine model": "engine_models", "engine models": "engine_models",
+    "model": "engine_models", "models": "engine_models", "application": "engine_models",
+    "applications": "engine_models",
+    # money
+    "price": "price", "sell price": "price", "selling price": "price",
+    "retail price": "price", "retail": "price", "list price": "price",
+    "variant price": "price", "your price": "price",
+    "msrp": "compare_at_price", "compare at price": "compare_at_price",
+    "variant compare at price": "compare_at_price",
+    "cost": "cost", "dealer cost": "cost", "net cost": "cost", "net price": "cost",
+    "vendor cost": "cost", "wholesale": "cost", "wholesale price": "cost",
+    "core": "core_charge", "core charge": "core_charge", "core price": "core_charge",
+    # physical
+    "barcode": "barcode", "upc": "barcode", "ean": "barcode",
+    "weight": "weight_lbs", "weight lbs": "weight_lbs", "lbs": "weight_lbs",
+    "wt": "weight_lbs", "weight grams": "weight_grams", "grams": "weight_grams",
+    "variant grams": "weight_grams",
+    # misc
+    "status": "status",
+    "vendor part number": "vendor_part_number", "vendor part": "vendor_part_number",
+    "mfg part number": "vendor_part_number",
+    "oem": "oem_refs", "oem refs": "oem_refs", "oem references": "oem_refs",
+    "cross reference": "oem_refs", "cross references": "oem_refs",
+    "interchange": "oem_refs",
+    "image": "image_urls", "images": "image_urls", "image src": "image_urls",
+    "image url": "image_urls", "image urls": "image_urls", "photo": "image_urls",
+    "warranty years": "warranty_years", "warranty": "warranty_years",
+    "warranty months": "warranty_months",
+    "is reman": "is_reman", "reman": "is_reman",
+    "uom": "unit_of_measure", "unit": "unit_of_measure",
+    "unit of measure": "unit_of_measure",
+    "pack qty": "pack_qty", "pack": "pack_qty", "qty per pack": "pack_qty",
+}
+
+
+def _norm_header(h: str) -> str:
+    """Normalize a CSV header for fuzzy matching: lowercase, non-alnum → space."""
+    return re.sub(r"[^a-z0-9]+", " ", str(h or "").lower()).strip()
+
+
+def _multi(s: str) -> list[str]:
+    """Split a pipe/semicolon/comma-separated multi-value cell."""
+    return [x.strip() for x in re.split(r"[|;,]", s or "") if x.strip()]
+
 
 def _norm(s) -> str:
     return str(s or "").strip().lower()
@@ -276,6 +367,141 @@ class ProductImportService(BaseService):
         else 'shopify' (the Shopify multi-row format)."""
         first = text.split("\n", 1)[0].lower()
         return "jaks" if "pai_part_no" in first else "shopify"
+
+    # ══ R3: generic mapped-CSV support (custom vendor feeds) ═══════════════════
+    @staticmethod
+    def csv_headers(text: str) -> list[str]:
+        """The CSV's header row, as written in the file (csv-parsed, not split)."""
+        reader = csv.reader(io.StringIO(text))
+        first = next(reader, [])
+        return [h.strip() for h in first if (h or "").strip()]
+
+    @classmethod
+    def detect_known_format(cls, text: str) -> str | None:
+        """'jaks' / 'shopify' when the existing parsers RECOGNIZE the headers,
+        else None (→ the upload flow routes to the column-mapping screen).
+
+        Stricter than detect_format(): that one falls back to 'shopify' for
+        anything non-JAKS, which silently imports a SAMPA/IMB-style feed SKU-less
+        (no 'Variant SKU' column → every row dropped or staged empty)."""
+        headers = {h.lower() for h in cls.csv_headers(text)}
+        if "pai_part_no" in headers:
+            return "jaks"
+        if "variant sku" in headers and "handle" in headers:
+            return "shopify"
+        return None
+
+    @staticmethod
+    def guess_mapping(headers: list[str]) -> dict[str, str]:
+        """Fuzzy header → canonical-field guesses to PRE-FILL the mapping screen.
+        First header wins per canonical field (no double-targeting); unmatched
+        headers are simply omitted (the UI shows them as 'ignore')."""
+        out: dict[str, str] = {}
+        taken: set[str] = set()
+        for h in headers:
+            field = _HEADER_GUESSES.get(_norm_header(h))
+            if field and field not in taken:
+                out[h] = field
+                taken.add(field)
+        return out
+
+    def parse_mapped_csv(self, text: str, mapping: dict[str, str]) -> list[dict]:
+        """Parse ANY one-row-per-product CSV through a user-confirmed column
+        mapping {csv header → canonical field} into the SAME intermediate dict
+        shape as parse_shopify_csv()/parse_jaks_export_csv(), so the staged-
+        candidate pipeline (and every downstream guard — vendor digit, dedupe,
+        DUPLICATE handling, category gating) applies unchanged.
+
+        SKU is the required minimum mapping — raises ValueError without it."""
+        clean = {str(h).strip(): f for h, f in (mapping or {}).items()
+                 if f in CANONICAL_FIELD_KEYS and str(h).strip()}
+        if "sku" not in set(clean.values()):
+            raise ValueError("The mapping must assign a SKU / Part Number column "
+                             "— refusing to import SKU-less rows.")
+        reader = csv.DictReader(io.StringIO(text))
+        rows: list[dict] = []
+        for raw in reader:
+            row = {_norm(k): (v or "").strip() for k, v in raw.items()}
+            vals: dict[str, str] = {}
+            for header, field in clean.items():
+                v = row.get(_norm(header), "")
+                if v and field not in vals:   # first non-empty column wins per field
+                    vals[field] = v
+            sku = (vals.get("sku") or "").strip()
+            if not sku:
+                continue
+
+            # OEM refs: "BRAND:NUM" / "BRAND NUM" / bare number → "BRAND NUM"
+            oem: list[str] = []
+            for item in _multi(vals.get("oem_refs", "")):
+                if ":" in item:
+                    brand_str, _, num = item.partition(":")
+                    if num.strip():
+                        oem.append(f"{brand_str.strip()} {num.strip()}")
+                else:
+                    oem.append(item)
+
+            # Applications: engine_make + model list → ["MAKE MODEL", ...]
+            engine_make = vals.get("engine_make", "").strip().upper()
+            apps: list[str] = []
+            for model in _multi(vals.get("engine_models", "")):
+                model = model.upper()
+                apps.append(f"{engine_make} {model}".strip() if engine_make else model)
+            if not apps and engine_make:
+                apps.append(engine_make)
+
+            title = vals.get("title", "").strip()
+            images = [{"url": u, "alt": title}
+                      for u in _multi(vals.get("image_urls", ""))]
+
+            # Warranty: months wins when both are mapped; else years*12
+            w_months = 0
+            if vals.get("warranty_months"):
+                try:
+                    w_months = int(round(float(vals["warranty_months"])))
+                except (TypeError, ValueError):
+                    w_months = 0
+            elif vals.get("warranty_years"):
+                w_months = _years_to_months(vals["warranty_years"])
+
+            # Weight → grams (full_import stores lbs via _grams_to_lbs)
+            grams_raw = vals.get("weight_grams", "").strip()
+            if not grams_raw and vals.get("weight_lbs"):
+                lbs = _to_float(vals["weight_lbs"])
+                grams_raw = str(round(lbs * 453.592, 1)) if lbs is not None else ""
+
+            core_charge = _to_float(vals.get("core_charge")) or 0.0
+            is_reman = (vals.get("is_reman", "0").strip().lower()
+                        in ("1", "true", "yes", "y"))
+            uom = (vals.get("unit_of_measure") or "EA").strip().upper() or "EA"
+            try:
+                pack_qty = max(1, int(float(vals.get("pack_qty") or 1)))
+            except (TypeError, ValueError):
+                pack_qty = 1
+
+            rows.append({
+                "sku":             sku,                  # vendor part # → dedup key
+                "title":           title,
+                "type":            vals.get("category", "").strip(),
+                "tags":            engine_make,
+                "price":           vals.get("price", "").strip(),          # SELL price
+                "compare_at":      vals.get("compare_at_price", "").strip(),
+                "cost":            vals.get("cost", "").strip(),           # vendor cost
+                "barcode":         vals.get("barcode", "").strip(),
+                "grams":           grams_raw,
+                "status":          vals.get("status", "active").strip() or "active",
+                "pai_part":        vals.get("vendor_part_number", "").strip() or sku,
+                "oem":             oem,
+                "apps":            apps,
+                "images":          images,
+                "warranty_months": w_months,
+                "handle":          sku.lower(),
+                "core_charge":     core_charge,
+                "is_reman":        is_reman,
+                "unit_of_measure": uom,
+                "pack_qty":        pack_qty,
+            })
+        return rows
 
     # ══ Mode 1: FULL PRODUCT IMPORT ════════════════════════════════════════════
     def full_import(self, text: str = "", *, dry_run: bool = True,

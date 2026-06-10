@@ -49,6 +49,50 @@ class ImportBatch(Base):
     )
 
 
+class ImportMappingTemplate(Base):
+    """A saved per-vendor CSV column-mapping (R3).
+
+    ``mapping_json`` is a JSON object {csv header (lowercased) -> canonical field}
+    where the canonical fields are the keys the staging row builder consumes
+    (see ProductImportService.CANONICAL_IMPORT_FIELDS). Saved once per
+    vendor/source feed so the next upload from the same source pre-fills."""
+    __tablename__ = "import_mapping_templates"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    source_label: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    mapping_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now())
+
+    @property
+    def mapping(self) -> dict:
+        """Parsed mapping dict (empty-safe — bad JSON never breaks a page)."""
+        import json
+        try:
+            m = json.loads(self.mapping_json or "{}")
+            return m if isinstance(m, dict) else {}
+        except ValueError:
+            return {}
+
+
+class ImportPendingUpload(Base):
+    """Holds an uploaded CSV between the upload POST and the mapping-confirm step
+    (R3). The upload is one-shot, so an unrecognized file must be parked somewhere
+    until the user confirms a column mapping; a row here is the least invasive
+    spot (no ImportBatch schema change, no temp-file lifecycle). Deleted as soon
+    as the mapped parse stages a batch."""
+    __tablename__ = "import_pending_uploads"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    filename: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    source_app: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class ImportCandidate(Base):
     """One staged product row awaiting human review (raw_json is authoritative for apply)."""
     __tablename__ = "import_candidates"

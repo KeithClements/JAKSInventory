@@ -19,7 +19,9 @@ from app.constants import (
     CrossRefType, ImportBatchStatus, ImportDisposition, Permission,
     ScrapedItemReviewStatus,
 )
-from app.models.import_review import ImportBatch, ImportCandidate
+from app.models.import_review import (
+    ImportBatch, ImportCandidate, ImportMappingTemplate, ImportPendingUpload,
+)
 from app.models.product import (
     Product, ProductImage, ProductCategory, CrossReference, ProductVendorSource,
 )
@@ -66,6 +68,67 @@ class ImportReviewService(BaseService):
         batch = self._new_batch(rows, label=label, source_app=source_app, filename=filename)
         self.db.commit()
         return batch.id, rows
+
+    def create_pending_batch_from_rows(self, rows: list, *, source_app: str = "",
+                                       filename: str = "", label: str = "") -> int:
+        """R3 mapped-CSV path: same contract as create_pending_batch(), but the
+        rows were already parsed through a user-confirmed column mapping
+        (ProductImportService.parse_mapped_csv). Feeding the SAME _new_batch +
+        _stage_rows pipeline means every downstream guard (vendor digit, dedupe,
+        DUPLICATE handling, category gating) applies unchanged."""
+        if len(rows) > self._MAX_ROWS:
+            raise ValueError(
+                f"This feed has {len(rows):,} rows, over the {self._MAX_ROWS:,}-row "
+                "safety cap. Split it into smaller batches.")
+        batch = self._new_batch(rows, label=label, source_app=source_app, filename=filename)
+        self.db.commit()
+        return batch.id
+
+    # ── R3: saved per-vendor mapping templates ────────────────────────────────
+    def find_template_for_source(self, source_label: str) -> ImportMappingTemplate | None:
+        """Most recently updated template whose source_label matches (case-
+        insensitive). Used to pre-fill the mapping screen for a repeat vendor."""
+        label = (source_label or "").strip().lower()
+        if not label:
+            return None
+        return (self.db.query(ImportMappingTemplate)
+                .filter(func.lower(ImportMappingTemplate.source_label) == label)
+                .order_by(ImportMappingTemplate.updated_at.desc(),
+                          ImportMappingTemplate.id.desc())
+                .first())
+
+    def save_mapping_template(self, name: str, source_label: str,
+                              mapping: dict) -> ImportMappingTemplate:
+        """Create or update (upsert by case-insensitive name) a saved mapping."""
+        name = (name or "").strip()[:200]
+        source_label = (source_label or "").strip()[:100]
+        if not name:
+            raise ValueError("Template name is required")
+        tpl = (self.db.query(ImportMappingTemplate)
+               .filter(func.lower(ImportMappingTemplate.name) == name.lower())
+               .first())
+        if tpl is None:
+            tpl = ImportMappingTemplate(name=name)
+            self.db.add(tpl)
+        tpl.source_label = source_label
+        tpl.mapping_json = json.dumps(mapping or {})
+        tpl.updated_at = datetime.utcnow()
+        self.db.commit()
+        return tpl
+
+    def delete_mapping_template(self, template_id: int) -> bool:
+        tpl = self.db.get(ImportMappingTemplate, template_id)
+        if tpl is None:
+            return False
+        self.db.delete(tpl)
+        self.db.commit()
+        return True
+
+    def discard_pending_upload(self, upload_id: int) -> None:
+        up = self.db.get(ImportPendingUpload, upload_id)
+        if up is not None:
+            self.db.delete(up)
+            self.db.commit()
 
     # ── internals shared by the sync + background paths ───────────────────────
     def _parse_rows(self, text: str, limit: int | None = None) -> list:

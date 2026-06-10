@@ -356,23 +356,97 @@ class ProductService(BaseService):
 
     # ── Inventory (ledger query) ───────────────────────────────────────────────
 
+    # R3 — Txn types that move AVAILABILITY (qty_committed), not on-hand stock.
+    # Semantics (verified against every writer):
+    #   SO_COMMITTED  (qty_change = -qty) — reserves stock at SO create/add-line;
+    #                 the parts are still physically on the shelf, so on-hand is
+    #                 UNCHANGED. Excluding these is BY DESIGN, not an omission.
+    #   SO_RELEASED   (qty_change = +qty) — returns the reservation on cancel /
+    #                 qty decrease / fulfill. The actual on-hand deduction is the
+    #                 separate INVOICE_SALE row written by InvoiceService.finalise
+    #                 (which IS counted). Counting SO_COMMITTED/SO_RELEASED would
+    #                 double-move on-hand for every committed-then-invoiced line.
+    #   TRANSFER      — location-only moves; live in inventory_transfers, never
+    #                 written to this ledger, excluded here as a guard anyway.
+    # Recomputation EXCLUDES these instead of allow-listing the rest so any
+    # future on-hand-affecting txn type is counted automatically rather than
+    # silently missed (the old allow-list was one new enum member away from a
+    # drifting resync).
+    _COMMITMENT_ONLY_TXN_TYPES = (
+        InventoryTxnType.SO_COMMITTED,
+        InventoryTxnType.SO_RELEASED,
+        InventoryTxnType.TRANSFER,
+    )
+
     def get_qty_on_hand(self, product_id: int, location_id: int | None = None) -> int:
         """
-        Return current on-hand quantity from the InventoryTransaction ledger.
+        Return current on-hand quantity recomputed from the InventoryTransaction
+        ledger (the source of truth; Product.qty_on_hand is a cache).
         If location_id is None, returns total across all locations.
+
+        Commitment movements (SO_COMMITTED / SO_RELEASED) are excluded by
+        design — committed stock is still ON HAND until invoiced. See
+        _COMMITMENT_ONLY_TXN_TYPES above.
         """
         query = self.db.query(func.sum(InventoryTransaction.qty_change)).filter(
             InventoryTransaction.product_id == product_id,
-            InventoryTransaction.transaction_type.in_([
-                "po_receipt", "return_to_stock", "manual_adjustment",
-                "initial_count", "correction", "invoice_sale",
-                "write_off", "drop_ship_sale",
-            ]),
+            InventoryTransaction.transaction_type.not_in(
+                [t.value for t in self._COMMITMENT_ONLY_TXN_TYPES]
+            ),
         )
         if location_id is not None:
             query = query.filter(InventoryTransaction.location_id == location_id)
         result = query.scalar()
         return int(result or 0)
+
+    def get_qty_committed_from_ledger(
+        self, product_id: int, location_id: int | None = None
+    ) -> int:
+        """
+        R3 — Recompute the open commitment (qty_committed cache) from the
+        commitment ledger rows. SO_COMMITTED rows carry qty_change = -qty
+        (reserved) and SO_RELEASED rows carry qty_change = +qty (released), so
+        the outstanding commitment is the NEGATED sum over both types.
+        Counterpart of :meth:`get_qty_on_hand` — together the two cover every
+        ledger row except TRANSFER (location-only, never written here).
+        """
+        query = self.db.query(func.sum(InventoryTransaction.qty_change)).filter(
+            InventoryTransaction.product_id == product_id,
+            InventoryTransaction.transaction_type.in_([
+                InventoryTxnType.SO_COMMITTED.value,
+                InventoryTxnType.SO_RELEASED.value,
+            ]),
+        )
+        if location_id is not None:
+            query = query.filter(InventoryTransaction.location_id == location_id)
+        return -int(query.scalar() or 0)
+
+    def resync_qty_on_hand(self, product_id: int) -> tuple[int, int]:
+        """
+        R3 — Recompute qty_on_hand from the ledger and write the corrected value
+        to the Product cache. Returns (old_qty, new_qty).
+
+        Audit-logs old → new even when the delta is 0 so there is a record that
+        the resync ran. Flushes only — the caller (admin route) commits.
+        """
+        product = self._get_or_404(product_id)
+        old_qty = product.qty_on_hand
+        new_qty = self.get_qty_on_hand(product_id)
+        product.qty_on_hand = new_qty
+        self.audit(
+            entity_type=EntityType.PRODUCT,
+            entity_id=product_id,
+            action=AuditAction.INVENTORY_ADJUSTED,
+            old_value={"qty_on_hand": old_qty},
+            new_value={
+                "qty_on_hand": new_qty,
+                "delta": new_qty - old_qty,
+                "source": "ledger_resync",
+            },
+            notes=f"Inventory resync from ledger: {old_qty} → {new_qty}",
+        )
+        self.db.flush()
+        return old_qty, new_qty
 
     def is_below_reorder_point(self, product_id: int) -> bool:
         """Return True if qty_on_hand <= reorder_point."""

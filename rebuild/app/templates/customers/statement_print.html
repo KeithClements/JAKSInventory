@@ -219,6 +219,19 @@
       color: #bbb;
     }
 
+    /* ── Archived-copy banner (R3 dispute-resolution view) ── */
+    .archived-banner {
+      background: #fef3c7;
+      border: 1px solid #f59e0b;
+      border-radius: 6px;
+      color: #92400e;
+      font-size: 8.5pt;
+      font-weight: 600;
+      padding: 8px 12px;
+      margin-bottom: 16px;
+      text-align: center;
+    }
+
     /* ── Print overrides ── */
     @media print {
       @page { size: letter portrait; margin: 0.55in 0.65in 0.75in 0.65in; }
@@ -237,6 +250,15 @@
 
 <div class="page-shell">
 
+  {# ── Archived-copy banner (R3) — rendered only by the archive route ── #}
+  {% if archived %}
+  <div class="archived-banner">
+    ARCHIVED COPY — Statement {{ statement_number }} as generated on
+    {{ archived_generated_at.strftime('%B %d, %Y at %I:%M %p') if archived_generated_at else 'record date unavailable' }}.
+    This is the stored record of what was sent to the customer; it does not reflect account activity since.
+  </div>
+  {% endif %}
+
   {# ── Header ── #}
   <div class="doc-header">
     <div>
@@ -250,6 +272,7 @@
     <div class="doc-right">
       <div class="doc-type">Account Statement</div>
       <div class="doc-meta">
+        {% if statement_number %}<strong>Statement #:</strong> {{ statement_number }}<br>{% endif %}
         <strong>Period:</strong>
         {{ stmt.period_start.strftime('%B %d, %Y') }} – {{ stmt.period_end.strftime('%B %d, %Y') }}<br>
         <strong>Statement Date:</strong> {{ stmt.as_of.strftime('%B %d, %Y') }}

@@ -255,6 +255,12 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     # ── R2 — warranty claim ESN (PAI / Interstate-McBee reject claims without
     #    the engine serial number; column on the claim, ESNLookup stays Phase-3) ─
     ("warranty_claims", "esn", "VARCHAR(100) NOT NULL DEFAULT ''"),
+
+    # ── R3 — statement persistence (coordinated with the statements lane, which
+    #    owns app/models/statement.py): over-90 aging bucket + NOT NULL JSON
+    #    snapshot on customer_statements. ───────────────────────────────────────
+    ("customer_statements", "over_90", "FLOAT NOT NULL DEFAULT 0"),
+    ("customer_statements", "snapshot_json", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 
@@ -266,13 +272,17 @@ def _backfill_customer_status(conn) -> None:
     ))
 
 
-def _apply_inline_migrations() -> None:
+def _apply_inline_migrations(bind=None) -> None:
     """Run idempotent ALTER TABLE ADD COLUMN for any columns missing from
-    existing databases. New databases pick everything up from create_all()."""
-    inspector = inspect(engine)
+    existing databases. New databases pick everything up from create_all().
+
+    ``bind`` lets tests run this against an isolated legacy engine; defaults
+    to the module-level live engine."""
+    target = bind if bind is not None else engine
+    inspector = inspect(target)
     existing_tables = set(inspector.get_table_names())
     _customer_status_added = False
-    with engine.begin() as conn:
+    with target.begin() as conn:
         for table, column, sql_def in _PENDING_COLUMN_ADDITIONS:
             if table not in existing_tables:
                 continue  # fresh DB — create_all() handled it
@@ -285,7 +295,7 @@ def _apply_inline_migrations() -> None:
                 _customer_status_added = True
     # Backfill customer_status for deactivated rows (runs once, after the ALTER)
     if _customer_status_added:
-        with engine.begin() as conn:
+        with target.begin() as conn:
             _backfill_customer_status(conn)
 
 
@@ -315,6 +325,124 @@ def _apply_index_migrations() -> None:
             ))
 
 
+# ── R3 — DB-level uniqueness backstops ────────────────────────────────────────
+# Until now every dedup rule lived in app code only (service-level checks); a
+# bug or an ORM-bypassing write could silently create duplicate active vendor
+# sources, cross-references, customer account numbers, or vendor bills. These
+# unique indexes are the database-level backstop. SQLite partial indexes
+# (WHERE ...) let history / blank rows repeat legitimately.
+#
+# DEFENSIVE CREATION: a live DB may already contain duplicates (the 13k-part PAI
+# import is known to have produced duplicate cross_references). Before creating
+# each index we run a cheap duplicate-count probe; if duplicates exist we SKIP
+# creation and log ONE clear WARNING naming the table + duplicate-group count —
+# the owner cleans the data up first, we NEVER delete rows here. Each probe +
+# create also runs in its OWN transaction inside try/except so nothing about
+# this batch can wedge startup. An integrity backstop must never brick the app.
+#
+# Each entry is mirrored as a unique Index in the owning model's __table_args__
+# (sqlite_where for the partial ones) so fresh databases and in-memory test
+# engines get the constraint from create_all(). The index NAMES here must match
+# the model definitions exactly so the two creation paths are no-ops against
+# each other. Append-only, same discipline as the column migrations above.
+#
+# Tuple shape: (index_name, table, duplicate_probe_sql, create_sql, dedup_hint).
+# probe_sql returns the number of DUPLICATE GROUPS (key tuples with >1 row)
+# under exactly the same WHERE scope as the partial index.
+_PENDING_UNIQUE_INDEXES: list[tuple[str, str, str, str, str]] = [
+    (
+        "uq_pvs_product_vendor_active",
+        "product_vendor_sources",
+        "SELECT COUNT(*) FROM ("
+        "SELECT 1 FROM product_vendor_sources WHERE is_active = 1 "
+        "GROUP BY product_id, vendor_id HAVING COUNT(*) > 1)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_pvs_product_vendor_active "
+        "ON product_vendor_sources (product_id, vendor_id) "
+        "WHERE is_active = 1",
+        "multiple ACTIVE vendor sources exist for the same (product_id, "
+        "vendor_id) — deactivate or merge the duplicate sources",
+    ),
+    (
+        "uq_cross_references_product_type_number",
+        "cross_references",
+        "SELECT COUNT(*) FROM ("
+        "SELECT 1 FROM cross_references "
+        "GROUP BY product_id, ref_type, ref_number HAVING COUNT(*) > 1)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_cross_references_product_type_number "
+        "ON cross_references (product_id, ref_type, ref_number)",
+        "duplicate (product_id, ref_type, ref_number) rows exist — delete the "
+        "extra cross-reference rows",
+    ),
+    (
+        "uq_customers_account_number",
+        "customers",
+        "SELECT COUNT(*) FROM ("
+        "SELECT 1 FROM customers "
+        "WHERE account_number IS NOT NULL AND account_number != '' "
+        "GROUP BY account_number HAVING COUNT(*) > 1)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_customers_account_number "
+        "ON customers (account_number) "
+        "WHERE account_number IS NOT NULL AND account_number != ''",
+        "multiple customers share the same non-blank account_number — blank out "
+        "or renumber the duplicates",
+    ),
+    (
+        "uq_vendor_bills_vendor_bill_number",
+        "vendor_bills",
+        "SELECT COUNT(*) FROM ("
+        "SELECT 1 FROM vendor_bills "
+        "WHERE bill_number IS NOT NULL AND bill_number != '' "
+        "GROUP BY vendor_id, bill_number HAVING COUNT(*) > 1)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_vendor_bills_vendor_bill_number "
+        "ON vendor_bills (vendor_id, bill_number) "
+        "WHERE bill_number IS NOT NULL AND bill_number != ''",
+        "the same vendor has two bills with the same bill_number — void or "
+        "renumber the duplicate bill",
+    ),
+]
+
+
+def _apply_unique_index_migrations(bind=None) -> None:
+    """Create the R3 unique-index backstops on the live DB. Defensive, per index:
+
+      1. PROBE: count duplicate key-groups under the index's scope. If any
+         exist, SKIP creation and log a WARNING naming the table + count —
+         the owner dedups first; we never delete data here.
+      2. CREATE: ``CREATE UNIQUE INDEX IF NOT EXISTS`` in its own transaction.
+
+    Everything is wrapped in try/except per index so a failure (race with a
+    concurrent write, unexpected schema state) logs which index failed and
+    moves on — this batch must never wedge startup.
+
+    ``bind`` lets tests run this against an isolated engine; defaults to the
+    module-level live engine.
+    """
+    target = bind if bind is not None else engine
+    inspector = inspect(target)
+    existing_tables = set(inspector.get_table_names())
+    for idx_name, table, probe_sql, create_sql, dedup_hint in _PENDING_UNIQUE_INDEXES:
+        if table not in existing_tables:
+            continue
+        try:
+            with target.begin() as conn:
+                dup_groups = conn.execute(text(probe_sql)).scalar() or 0
+            if dup_groups:
+                log.warning(
+                    "Unique index %s SKIPPED — table %s has %d duplicate "
+                    "key-group(s); dedup needed before the backstop can be "
+                    "created: %s",
+                    idx_name, table, dup_groups, dedup_hint,
+                )
+                continue
+            with target.begin() as conn:
+                conn.execute(text(create_sql))
+        except Exception as exc:  # noqa: BLE001 — backstop must never brick startup
+            log.warning(
+                "Unique index %s on %s NOT created (%s) — dedup needed: %s",
+                idx_name, table, exc, dedup_hint,
+            )
+
+
 def init_db() -> None:
     # Importing __all_models__ is not dead code — the import side-effect registers
     # every model class with Base.metadata so create_all() can see all tables.
@@ -322,3 +450,4 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _apply_inline_migrations()
     _apply_index_migrations()
+    _apply_unique_index_migrations()

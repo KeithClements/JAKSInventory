@@ -14,11 +14,16 @@ from sqlalchemy.orm import Session
 
 from app.constants import ImportDisposition, ScrapedItemReviewStatus
 from app.deps import get_db, get_current_user_id
-from app.models.import_review import ImportBatch, ImportCandidate
+from app.models.import_review import (
+    ImportBatch, ImportCandidate, ImportMappingTemplate, ImportPendingUpload,
+)
 from app.models.product import Product, ProductCategory
 from app.services.base import PermissionDeniedError
 from app.services.import_review_service import (
     ImportReviewService, run_background_staging, IMPORT_ERROR_PREFIX,
+)
+from app.services.product_import_service import (
+    CANONICAL_IMPORT_FIELDS, ProductImportService,
 )
 
 router = APIRouter(prefix="/import-review", tags=["import-review"])
@@ -28,18 +33,41 @@ _RS = ScrapedItemReviewStatus
 _DISP = ImportDisposition
 
 
-# ── Landing: recent batches + upload ──────────────────────────────────────────
+# ── Landing: recent batches + upload + saved mapping templates ───────────────
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request, db: Session = Depends(get_db)):
     batches = db.query(ImportBatch).order_by(ImportBatch.id.desc()).limit(50).all()
-    return templates.TemplateResponse(request, "import_review/index.html", {"batches": batches})
+    mapping_templates = (db.query(ImportMappingTemplate)
+                         .order_by(ImportMappingTemplate.updated_at.desc(),
+                                   ImportMappingTemplate.id.desc()).limit(50).all())
+    # R3 — uploads parked in the needs-mapping state (unrecognized headers).
+    # Surfaced here with a "Map columns" link so a closed tab never strands one.
+    pending_uploads = (db.query(ImportPendingUpload)
+                       .order_by(ImportPendingUpload.id.desc()).limit(20).all())
+    return templates.TemplateResponse(request, "import_review/index.html",
+                                      {"batches": batches,
+                                       "mapping_templates": mapping_templates,
+                                       "pending_uploads": pending_uploads})
 
 
 @router.post("/upload")
 def upload(request: Request, background: BackgroundTasks, file: UploadFile = File(...),
-           source_app: str = Form(""), db: Session = Depends(get_db),
+           source_app: str = Form(""), use_mapping: str = Form(""),
+           db: Session = Depends(get_db),
            user_id: int = Depends(get_current_user_id)):
     text = file.file.read().decode("utf-8", "replace")
+    # R3 — recognized formats (PAI Shopify export / JAKS native) go straight to
+    # staging exactly as before. An UNRECOGNIZED header set (or an explicit
+    # "custom mapping" request) parks the file and routes to the mapping screen
+    # instead of silently importing SKU-less through the Shopify fallback parser.
+    known = ProductImportService.detect_known_format(text)
+    if known is None or use_mapping:
+        pending = ImportPendingUpload(
+            filename=(file.filename or ""), source_app=(source_app or "").strip(),
+            text=text, created_by_id=user_id)
+        db.add(pending)
+        db.commit()
+        return RedirectResponse(f"/import-review/mapping/{pending.id}", status_code=303)
     try:
         batch_id, rows = ImportReviewService(db, user_id).create_pending_batch(
             text, source_app=(source_app or "upload"), filename=(file.filename or ""))
@@ -55,6 +83,102 @@ def upload(request: Request, background: BackgroundTasks, file: UploadFile = Fil
     # queue page polls (candidate count vs total) until staging completes.
     background.add_task(run_background_staging, batch_id, rows, user_id)
     return RedirectResponse(f"/import-review/{batch_id}", status_code=303)
+
+
+# ── R3: column-mapping screen for unrecognized feeds ──────────────────────────
+def _render_mapping(request, db, pending: ImportPendingUpload, *, error: str = "",
+                    status_code: int = 200):
+    """Build the mapping screen: detected headers on one side, canonical-field
+    selects on the other, pre-filled from (a) a saved template matching the
+    source label, else (b) fuzzy header-name guesses."""
+    headers = ProductImportService.csv_headers(pending.text)
+    svc = ImportReviewService(db, None)
+    tpl = svc.find_template_for_source(pending.source_app)
+    prefill: dict[str, str] = {}
+    if tpl:
+        tpl_map = {str(h).strip().lower(): f for h, f in tpl.mapping.items()}
+        prefill = {h: tpl_map[h.lower()] for h in headers if h.lower() in tpl_map}
+    if not prefill:
+        tpl = None   # template matched no header — fall back to guesses
+        prefill = ProductImportService.guess_mapping(headers)
+    return templates.TemplateResponse(request, "import_review/mapping.html", {
+        "pending": pending, "headers": headers, "prefill": prefill,
+        "fields": CANONICAL_IMPORT_FIELDS, "template": tpl, "error": error,
+    }, status_code=status_code)
+
+
+@router.get("/mapping/{upload_id}", response_class=HTMLResponse)
+def mapping_screen(upload_id: int, request: Request, db: Session = Depends(get_db)):
+    pending = db.get(ImportPendingUpload, upload_id)
+    if pending is None:
+        return RedirectResponse("/import-review/", status_code=303)
+    return _render_mapping(request, db, pending)
+
+
+@router.post("/mapping/{upload_id}")
+async def mapping_confirm(upload_id: int, request: Request, background: BackgroundTasks,
+                          db: Session = Depends(get_db),
+                          user_id: int = Depends(get_current_user_id)):
+    """Confirm the column mapping: optionally save it as a per-vendor template,
+    parse the parked file through the generic mapped-CSV parser, and feed the
+    SAME staged-candidate pipeline as a recognized upload (all downstream guards
+    apply unchanged). SKU is the required minimum mapping."""
+    pending = db.get(ImportPendingUpload, upload_id)
+    if pending is None:
+        return RedirectResponse("/import-review/", status_code=303)
+    form = await request.form()
+    # Pairs: hidden header_{i} + select field_{i} ('' = ignore this column)
+    mapping: dict[str, str] = {}
+    i = 0
+    while f"header_{i}" in form:
+        header = str(form.get(f"header_{i}") or "").strip()
+        field = str(form.get(f"field_{i}") or "").strip()
+        if header and field:
+            mapping[header] = field
+        i += 1
+    if "sku" not in set(mapping.values()):
+        return _render_mapping(request, db, pending, status_code=400,
+                               error="Map a column to SKU / Part Number first — "
+                                     "imports without a part number are refused.")
+    pis = ProductImportService(db, user_id)
+    svc = ImportReviewService(db, user_id)
+    try:
+        rows = pis.parse_mapped_csv(pending.text, mapping)
+        if not rows:
+            return _render_mapping(request, db, pending, status_code=400,
+                                   error="No rows had a value in the mapped SKU "
+                                         "column — check the column choice.")
+        source_label = str(form.get("source_label") or "").strip() or pending.source_app
+        if form.get("save_template"):
+            name = str(form.get("template_name") or "").strip() or (
+                f"{source_label or 'Custom'} mapping")
+            svc.save_mapping_template(name, source_label, mapping)
+        batch_id = svc.create_pending_batch_from_rows(
+            rows, source_app=(source_label or "custom"),
+            filename=pending.filename,
+            label=pending.filename or source_label or "Mapped import")
+    except ValueError as e:
+        db.rollback()
+        return _render_mapping(request, db, pending, error=str(e), status_code=400)
+    svc.discard_pending_upload(upload_id)
+    background.add_task(run_background_staging, batch_id, rows, user_id)
+    return RedirectResponse(f"/import-review/{batch_id}", status_code=303)
+
+
+@router.post("/mapping/{upload_id}/discard")
+def mapping_discard(upload_id: int, request: Request, db: Session = Depends(get_db),
+                    user_id: int = Depends(get_current_user_id)):
+    """Cancel a parked upload from the mapping screen (drops the raw text)."""
+    ImportReviewService(db, user_id).discard_pending_upload(upload_id)
+    return RedirectResponse("/import-review/", status_code=303)
+
+
+@router.post("/mapping-template/{template_id}/delete")
+def mapping_template_delete(template_id: int, request: Request,
+                            db: Session = Depends(get_db),
+                            user_id: int = Depends(get_current_user_id)):
+    ImportReviewService(db, user_id).delete_mapping_template(template_id)
+    return RedirectResponse("/import-review/", status_code=303)
 
 
 # ── Candidate preview dock partial — registered BEFORE /{batch_id} ────────────

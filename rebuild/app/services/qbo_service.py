@@ -19,13 +19,21 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.constants import InvoiceStatus, LineType, PaymentStatus, QBOSyncStatus
+from app.constants import (
+    AuditAction, CreditMemoStatus, EntityType, InvoiceStatus, LineType,
+    PaymentStatus, QBOSyncStatus, VendorBillStatus,
+)
+from app.models.credit_memo import CreditMemo
 from app.models.customer import Customer
-from app.models.invoice import Invoice, Payment
+from app.models.invoice import Invoice, InvoiceLine, Payment
+from app.models.purchase_order import VendorBill
+from app.models.vendor import Vendor
+from app.services.base import BaseService
 from app.services.invoice_service import InvoiceService
 from app.services.payment_service import PaymentService
 from app.services.qbo_client import QBOClient, QBOError, QBONotConnected
@@ -56,8 +64,23 @@ _EXCLUDED_LINE_TYPES = {LineType.CC_SURCHARGE, LineType.TAX}
 DEFAULT_ITEM_NAMES = sorted(set(DEFAULT_ITEM_MAP.values()))
 # Invoice statuses we will push (finalized only — never a draft).
 _PUSHABLE_STATUSES = {InvoiceStatus.OPEN, InvoiceStatus.PARTIAL, InvoiceStatus.PAID}
+# Vendor-bill statuses we will push (3-way-match approved or already paid —
+# never a PENDING or DISCREPANCY bill).
+_PUSHABLE_BILL_STATUSES = {VendorBillStatus.APPROVED, VendorBillStatus.PAID}
 
 _FALLBACK_ITEM = "JAKS Parts Sales"
+# R3 — expense/COGS account vendor-bill lines post to (AccountBasedExpenseLine).
+# Owner override via the qbo_bill_expense_account setting; this is the QBO
+# default-chart name, same convention as _resolve_income_account's preference.
+DEFAULT_BILL_EXPENSE_ACCOUNT = "Cost of Goods Sold"
+
+# Audit actions for push outcomes. Success reuses the canonical
+# AuditAction.QBO_SYNCED; failure is a literal (the action column is a plain
+# string — messaging_service sets the same precedent for non-enum actions).
+_AUDIT_QBO_SYNC_FAILED = "qbo_sync_failed"
+# audit entity_type for vendor bills (EntityType has no VENDOR_BILL member yet;
+# lowercase-snake literal matches the house convention).
+_ENTITY_VENDOR_BILL = "vendor_bill"
 
 
 def _q(s: str) -> str:
@@ -65,9 +88,35 @@ def _q(s: str) -> str:
     return (s or "").replace("'", "''")
 
 
-class QBOSyncService:
-    def __init__(self, db: Session):
-        self.db = db
+class QBOSyncService(BaseService):
+    """R3 — inherits BaseService so pushes carry the REAL acting user
+    (self.current_user_id) into mark_synced/mark_sync_failed and into the
+    AuditLog rows written for every push outcome. Constructing with no user
+    (QBOSyncService(db)) still works and records a system event (user NULL)."""
+
+    def __init__(self, db: Session, current_user_id: int | None = None):
+        super().__init__(db, current_user_id=current_user_id)
+
+    # ── push audit trail (R3) ─────────────────────────────────────────────────
+    def _audit_push(self, entity_type: str, entity_id: int, *, ok: bool,
+                    detail: str) -> None:
+        """Record the push outcome (success AND failure) in the audit log,
+        attributed to self.current_user_id. NEVER raises — the audit is
+        bookkeeping ABOUT the push and must not break the fail-soft contract."""
+        try:
+            self.audit(
+                entity_type=entity_type,
+                entity_id=entity_id,
+                action=AuditAction.QBO_SYNCED if ok else _AUDIT_QBO_SYNC_FAILED,
+                notes=(detail or "")[:480],
+            )
+            self.db.commit()
+        except Exception:
+            log.exception("QBO push audit write failed for %s %s", entity_type, entity_id)
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
 
     # ── mapping config ────────────────────────────────────────────────────────
     def item_map(self) -> dict[str, str]:
@@ -104,18 +153,22 @@ class QBOSyncService:
             qbo_id = str(created.get("Id", "")).strip()
             if not qbo_id:
                 raise QBOError(f"QBO did not return an invoice Id: {created}")
-            InvoiceService(self.db, current_user_id=1).mark_synced(invoice_id, qbo_id)
+            InvoiceService(self.db, current_user_id=self.current_user_id).mark_synced(invoice_id, qbo_id)
+            self._audit_push(EntityType.INVOICE, invoice_id, ok=True,
+                             detail=f"Pushed to QBO as Invoice {qbo_id}")
             log.info("invoice %s pushed to QBO as %s", inv.invoice_number, qbo_id)
             return {"ok": True, "qbo_id": qbo_id}
         except QBONotConnected as exc:
+            self._audit_push(EntityType.INVOICE, invoice_id, ok=False, detail=str(exc))
             return {"ok": False, "error": str(exc)}
         except Exception as exc:  # QBOError or anything unexpected — record, don't raise
             msg = str(exc)[:480]
             log.exception("QBO push failed for invoice %s", invoice_id)
             try:
-                InvoiceService(self.db, current_user_id=1).mark_sync_failed(invoice_id, msg)
+                InvoiceService(self.db, current_user_id=self.current_user_id).mark_sync_failed(invoice_id, msg)
             except Exception:
                 self.db.rollback()
+            self._audit_push(EntityType.INVOICE, invoice_id, ok=False, detail=msg)
             return {"ok": False, "error": msg}
 
     def unsynced_invoice_ids(self) -> list[int]:
@@ -186,27 +239,32 @@ class QBOSyncService:
             qbo_id = str(created.get("Id", "")).strip()
             if not qbo_id:
                 raise QBOError(f"QBO did not return a payment Id: {created}")
-            PaymentService(self.db, current_user_id=1).mark_synced(payment_id, qbo_id)
+            PaymentService(self.db, current_user_id=self.current_user_id).mark_synced(payment_id, qbo_id)
+            self._audit_push(EntityType.PAYMENT, payment_id, ok=True,
+                             detail=f"Pushed to QBO as Payment {qbo_id}")
             log.info("payment %s pushed to QBO as %s", payment_id, qbo_id)
             return {"ok": True, "qbo_id": qbo_id}
         except QBONotConnected as exc:
+            self._audit_push(EntityType.PAYMENT, payment_id, ok=False, detail=str(exc))
             return {"ok": False, "error": str(exc)}
         except Exception as exc:  # QBOError or anything unexpected — record, don't raise
             msg = str(exc)[:480]
             log.exception("QBO push failed for payment %s", payment_id)
             try:
-                PaymentService(self.db, current_user_id=1).mark_sync_failed(payment_id, msg)
+                PaymentService(self.db, current_user_id=self.current_user_id).mark_sync_failed(payment_id, msg)
             except Exception:
                 self.db.rollback()
+            self._audit_push(EntityType.PAYMENT, payment_id, ok=False, detail=msg)
             return {"ok": False, "error": msg}
 
     def _refuse_payment(self, payment_id: int, msg: str) -> dict:
         """Pre-flight refusal: record the reason on the payment and return fail-soft.
         Never raises (a failed marking is rolled back and swallowed)."""
         try:
-            PaymentService(self.db, current_user_id=1).mark_sync_failed(payment_id, msg)
+            PaymentService(self.db, current_user_id=self.current_user_id).mark_sync_failed(payment_id, msg)
         except Exception:
             self.db.rollback()
+        self._audit_push(EntityType.PAYMENT, payment_id, ok=False, detail=msg)
         return {"ok": False, "error": msg}
 
     def _build_payment_payload(self, pmt: Payment, customer_ref: dict,
@@ -237,6 +295,235 @@ class QBOSyncService:
         if getattr(pmt, "check_number", ""):
             payload["PaymentRefNum"] = str(pmt.check_number)[:21]
         return payload
+
+    # ── vendor-bill push (R3) ─────────────────────────────────────────────────
+    def push_vendor_bill(self, bill_id: int) -> dict:
+        """Push one APPROVED/PAID vendor bill to QBO as a Bill (AP + expense/COGS
+        side — without this PAI invoices never enter the books). Best-effort;
+        never raises. Returns {"ok": bool, "qbo_id"|"error"|"skipped": ...}.
+
+        Mirrors push_invoice's structure and the money-path invariant: success →
+        synced stamp, failure → error stamp, and nothing here ever mutates the
+        bill's amounts, status, or 3-way-match state. The vendor is resolved (or
+        created) by DisplayName exactly like customers are, including the R2
+        multi-match refusal — auto-binding the first of several same-name QBO
+        vendors would post AP to the wrong account."""
+        bill = self.db.query(VendorBill).filter(VendorBill.id == bill_id).first()
+        if bill is None:
+            return {"ok": False, "error": f"Vendor bill {bill_id} not found"}
+        if bill.qbo_id:
+            return {"ok": True, "skipped": "already synced", "qbo_id": bill.qbo_id}
+        if bill.status not in _PUSHABLE_BILL_STATUSES:
+            return self._refuse_doc(
+                VendorBill, bill_id, _ENTITY_VENDOR_BILL,
+                f"Vendor bill is {bill.status}; only an APPROVED or PAID bill "
+                "can be pushed to QuickBooks.",
+            )
+
+        try:
+            client = QBOClient(self.db)
+            vendor = self.db.query(Vendor).filter(Vendor.id == bill.vendor_id).first()
+            vendor_ref = self._resolve_vendor(client, vendor)
+            account_id = self._resolve_bill_expense_account(client)
+            payload = self._build_bill_payload(bill, vendor_ref, account_id)
+            created = client.create("Bill", payload)
+            qbo_id = str(created.get("Id", "")).strip()
+            if not qbo_id:
+                raise QBOError(f"QBO did not return a bill Id: {created}")
+            self._mark_doc_synced(bill, qbo_id)
+            self._audit_push(_ENTITY_VENDOR_BILL, bill_id, ok=True,
+                             detail=f"Pushed to QBO as Bill {qbo_id}")
+            log.info("vendor bill %s pushed to QBO as %s", bill_id, qbo_id)
+            return {"ok": True, "qbo_id": qbo_id}
+        except QBONotConnected as exc:
+            self._audit_push(_ENTITY_VENDOR_BILL, bill_id, ok=False, detail=str(exc))
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:  # QBOError or anything unexpected — record, don't raise
+            msg = str(exc)[:480]
+            log.exception("QBO push failed for vendor bill %s", bill_id)
+            self._mark_doc_failed(VendorBill, bill_id, msg)
+            self._audit_push(_ENTITY_VENDOR_BILL, bill_id, ok=False, detail=msg)
+            return {"ok": False, "error": msg}
+
+    def _build_bill_payload(self, bill: VendorBill, vendor_ref: dict,
+                            account_id: str) -> dict:
+        """QBO Bill body: AccountBasedExpenseLine per bill line, all posting to
+        the configured expense/COGS account. Part # + description ride along in
+        each line's Description (same convention as the invoice push)."""
+        lines: list[dict] = []
+        for ln in bill.lines:
+            amount = round(float(ln.line_total), 2)
+            if amount == 0:
+                continue
+            desc = ""
+            pol = ln.po_line
+            if pol is not None:
+                desc = pol.description or ""
+                sku = getattr(pol.product, "sku", "") if pol.product else ""
+                if sku and sku not in desc:
+                    desc = f"{sku} — {desc}" if desc else sku
+            desc = desc or f"Vendor bill line (qty {ln.qty_billed})"
+            lines.append({
+                "DetailType": "AccountBasedExpenseLineDetail",
+                "Amount": amount,
+                "Description": desc[:1000],
+                "AccountBasedExpenseLineDetail": {
+                    "AccountRef": {"value": account_id},
+                },
+            })
+        if not lines:
+            raise QBOError(f"Vendor bill {bill.bill_number or bill.id} has no pushable lines")
+
+        payload: dict = {
+            "VendorRef": vendor_ref,
+            "Line": lines,
+            "PrivateNote": (
+                f"JAKS vendor bill #{bill.id}"
+                + (f" / PO {bill.po.po_number}" if bill.po else "")
+            ),
+        }
+        if bill.bill_number:
+            payload["DocNumber"] = str(bill.bill_number)[:21]
+        if bill.bill_date:
+            payload["TxnDate"] = bill.bill_date.strftime("%Y-%m-%d")
+        if bill.due_date:
+            payload["DueDate"] = bill.due_date.strftime("%Y-%m-%d")
+        return payload
+
+    # ── credit-memo push (R3) ─────────────────────────────────────────────────
+    def push_credit_memo(self, cm_id: int) -> dict:
+        """Push one customer credit memo to QBO as a CreditMemo against the
+        resolved customer, lines mapped through the same generic-item map as the
+        invoice push (incl. CORE_CHARGE via the credited line's original invoice
+        line). Best-effort; never raises. Refuses a REVERSED (void-like) CM and
+        fails soft when the customer can't be resolved unambiguously."""
+        cm = self.db.query(CreditMemo).filter(CreditMemo.id == cm_id).first()
+        if cm is None:
+            return {"ok": False, "error": f"Credit memo {cm_id} not found"}
+        if cm.qbo_id:
+            return {"ok": True, "skipped": "already synced", "qbo_id": cm.qbo_id}
+        if cm.status == CreditMemoStatus.REVERSED:
+            return self._refuse_doc(
+                CreditMemo, cm_id, EntityType.CREDIT_MEMO,
+                f"Credit memo {cm.cm_number} is reversed — it must not be pushed "
+                "to QuickBooks.",
+            )
+        if cm.customer is None:
+            return self._refuse_doc(
+                CreditMemo, cm_id, EntityType.CREDIT_MEMO,
+                f"Credit memo {cm.cm_number} has no customer — cannot push to QuickBooks.",
+            )
+
+        try:
+            client = QBOClient(self.db)
+            item_ids = self._resolve_items(client)
+            customer_ref = self._resolve_customer(client, cm.customer)
+            payload = self._build_credit_memo_payload(cm, customer_ref, item_ids)
+            created = client.create("CreditMemo", payload)
+            qbo_id = str(created.get("Id", "")).strip()
+            if not qbo_id:
+                raise QBOError(f"QBO did not return a credit memo Id: {created}")
+            self._mark_doc_synced(cm, qbo_id)
+            self._audit_push(EntityType.CREDIT_MEMO, cm_id, ok=True,
+                             detail=f"Pushed to QBO as CreditMemo {qbo_id}")
+            log.info("credit memo %s pushed to QBO as %s", cm.cm_number, qbo_id)
+            return {"ok": True, "qbo_id": qbo_id}
+        except QBONotConnected as exc:
+            self._audit_push(EntityType.CREDIT_MEMO, cm_id, ok=False, detail=str(exc))
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:  # QBOError or anything unexpected — record, don't raise
+            msg = str(exc)[:480]
+            log.exception("QBO push failed for credit memo %s", cm_id)
+            self._mark_doc_failed(CreditMemo, cm_id, msg)
+            self._audit_push(EntityType.CREDIT_MEMO, cm_id, ok=False, detail=msg)
+            return {"ok": False, "error": msg}
+
+    def _build_credit_memo_payload(self, cm: CreditMemo, customer_ref: dict,
+                                   item_ids: dict[str, str]) -> dict:
+        """QBO CreditMemo body, mirroring _build_invoice_payload's line
+        conventions. CM lines have no line_type of their own — when a line
+        back-links to the invoice line it credits, that line's type drives the
+        item mapping (so a credited core charge lands on 'JAKS Core Charge');
+        otherwise it maps as a PRODUCT line."""
+        imap = self.item_map()
+        push_tax = get_setting_value_db(self.db, "qbo_push_tax", "true").strip().lower() == "true"
+
+        lines: list[dict] = []
+        for ln in cm.lines:
+            amount = round(
+                float(ln.qty) * float(ln.unit_price) * (1 - (ln.discount_pct or 0) / 100), 2
+            )
+            if amount == 0:
+                continue
+            line_type = LineType.PRODUCT
+            if ln.original_invoice_line_id:
+                src = (
+                    self.db.query(InvoiceLine)
+                    .filter(InvoiceLine.id == ln.original_invoice_line_id)
+                    .first()
+                )
+                if src is not None and src.line_type:
+                    line_type = src.line_type
+            item_name = imap.get(line_type, _FALLBACK_ITEM)
+            item_id = item_ids.get(item_name) or item_ids.get(_FALLBACK_ITEM)
+            desc = ln.description or item_name
+            lines.append({
+                "DetailType": "SalesItemLineDetail",
+                "Amount": amount,
+                "Description": desc[:1000],
+                "SalesItemLineDetail": {
+                    "ItemRef": {"value": item_id},
+                    "Qty": ln.qty,
+                    "UnitPrice": round(float(ln.unit_price), 2),
+                    "TaxCodeRef": {"value": "TAX" if ln.is_taxable else "NON"},
+                },
+            })
+        if not lines:
+            raise QBOError(f"Credit memo {cm.cm_number} has no pushable lines")
+
+        payload: dict = {
+            "CustomerRef": customer_ref,
+            "Line": lines,
+            "DocNumber": (cm.cm_number or "")[:21],
+            "PrivateNote": f"JAKS {cm.cm_number} (id={cm.id})",
+            "GlobalTaxCalculation": "TaxExcluded",
+        }
+        tax_amount = round(float(cm.tax_amount or 0), 2)
+        if push_tax and tax_amount > 0:
+            payload["TxnTaxDetail"] = {"TotalTax": tax_amount}
+        return payload
+
+    # ── shared sync-stamp helpers for QBOSyncMixin docs with a `qbo_id` column ─
+    def _mark_doc_synced(self, doc, qbo_id: str) -> None:
+        """Same semantics as InvoiceService/PaymentService.mark_synced for
+        documents whose entity-id column is the generic `qbo_id` (VendorBill,
+        CreditMemo)."""
+        doc.qbo_id = qbo_id
+        doc.qbo_sync_status = QBOSyncStatus.SYNCED
+        doc.qbo_last_synced_at = datetime.utcnow()
+        doc.qbo_sync_error = None
+        self.db.commit()
+
+    def _mark_doc_failed(self, model, doc_id: int, error: str) -> None:
+        """Same semantics as mark_sync_failed; never raises (a failed marking is
+        rolled back and swallowed — the fail-soft contract)."""
+        try:
+            doc = self.db.query(model).filter(model.id == doc_id).first()
+            if doc is None:
+                return
+            doc.qbo_sync_status = QBOSyncStatus.ERROR
+            doc.qbo_sync_error = error
+            doc.qbo_sync_retry_count += 1
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+
+    def _refuse_doc(self, model, doc_id: int, entity_type: str, msg: str) -> dict:
+        """Pre-flight refusal for VendorBill/CreditMemo pushes: record the reason
+        on the document + audit it, return fail-soft. Mirrors _refuse_payment."""
+        self._mark_doc_failed(model, doc_id, msg)
+        self._audit_push(entity_type, doc_id, ok=False, detail=msg)
+        return {"ok": False, "error": msg}
 
     # ── helpers ───────────────────────────────────────────────────────────────
     def _resolve_items(self, client: QBOClient) -> dict[str, str]:
@@ -294,6 +581,67 @@ class QBOSyncService:
         customer.qbo_customer_id = qbo_id
         self.db.commit()
         return {"value": qbo_id}
+
+    def _resolve_vendor(self, client: QBOClient, vendor: Vendor | None) -> dict:
+        """Return a QBO VendorRef {"value": id} — the vendor-side twin of
+        _resolve_customer: match by DisplayName, else create. Applies the SAME
+        multi-match refusal: if more than one QBO vendor shares the name,
+        auto-binding the first silently posts AP to the wrong account.
+
+        The Vendor model has no qbo_vendor_id column yet, so the binding can't
+        be persisted — the name lookup re-runs per push (idempotent: 0 → create,
+        1 → reuse). Persist-when-possible is gated on hasattr so a future column
+        is picked up without code changes."""
+        if vendor is None:
+            raise QBOError("Vendor bill has no vendor")
+        stored = getattr(vendor, "qbo_vendor_id", "") or ""
+        if stored:
+            return {"value": stored}
+
+        name = vendor.name or f"Vendor {vendor.id}"
+        rows = client.query(
+            f"select Id, DisplayName from Vendor where DisplayName = '{_q(name)}'"
+        )
+        if len(rows) > 1:
+            raise QBOError(
+                f"Multiple QBO vendors match '{name}' — resolve manually "
+                "(rename one side so the match is unique), then retry."
+            )
+        qbo_id = str(rows[0]["Id"]) if rows and rows[0].get("Id") else ""
+
+        if not qbo_id:
+            payload: dict = {"DisplayName": name}
+            if getattr(vendor, "email", ""):
+                payload["PrimaryEmailAddr"] = {"Address": vendor.email}
+            if getattr(vendor, "phone", ""):
+                payload["PrimaryPhone"] = {"FreeFormNumber": vendor.phone}
+            created = client.create("Vendor", payload)
+            qbo_id = str(created.get("Id", "")).strip()
+            if not qbo_id:
+                raise QBOError(f"Failed to create QBO vendor '{name}'")
+
+        if hasattr(type(vendor), "qbo_vendor_id"):  # future column — persist binding
+            vendor.qbo_vendor_id = qbo_id
+            self.db.commit()
+        return {"value": qbo_id}
+
+    def _resolve_bill_expense_account(self, client: QBOClient) -> str:
+        """QBO Account id that vendor-bill expense lines post to. Owner override
+        via the qbo_bill_expense_account setting (same settings-driven pattern
+        as qbo_item_map / qbo_push_tax); default = the QBO chart's COGS account.
+        Does NOT create accounts — missing → actionable error, like _resolve_items."""
+        name = (
+            get_setting_value_db(self.db, "qbo_bill_expense_account", "").strip()
+            or DEFAULT_BILL_EXPENSE_ACCOUNT
+        )
+        rows = client.query(f"select Id, Name from Account where Name = '{_q(name)}'")
+        if rows and rows[0].get("Id"):
+            return str(rows[0]["Id"])
+        raise QBOError(
+            f"QBO expense account '{name}' doesn't exist. Create it in QuickBooks "
+            "(or point the qbo_bill_expense_account setting at an existing "
+            "expense/COGS account), then retry."
+        )
 
     def _build_invoice_payload(self, inv: Invoice, customer_ref: dict,
                                item_ids: dict[str, str]) -> dict:

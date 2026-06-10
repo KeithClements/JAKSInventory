@@ -25,6 +25,7 @@ from app.services.document_render import (
     vendor_address_lines,
 )
 from app.services.po_service import POService
+from app.services.serial_service import SerialService, parse_serials
 
 log = logging.getLogger(__name__)
 
@@ -604,6 +605,7 @@ async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)
 
     po_line_quantities: dict[int, int] = {}
     condition_notes_map: dict[int, str] = {}
+    serials_map: dict[int, list[str]] = {}
     for line in po.lines:
         raw = form.get(f"recv_{line.id}", "")
         qty = int(raw) if raw and str(raw).strip().isdigit() else 0
@@ -613,6 +615,12 @@ async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)
         cond = str(form.get(f"condition_{line.id}", "")).strip()
         if cond:
             condition_notes_map[line.id] = cond
+        # R3 — optional per-line serial numbers (serialized products only;
+        # textarea is comma/newline separated). Parsed here, recorded AFTER
+        # the receipt service call succeeds.
+        parsed_serials = parse_serials(str(form.get(f"serials_{line.id}", "") or ""))
+        if parsed_serials:
+            serials_map[line.id] = parsed_serials
 
     # R1-12 — qty inputs default to 0 so a careless submit can't fully receive
     # a partial delivery; an all-zero submit must not flash "received".
@@ -622,6 +630,7 @@ async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)
             status_code=303,
         )
 
+    receipt = None
     if po_line_quantities:
         try:
             svc = POService(db, current_user_id=user_id)
@@ -631,7 +640,7 @@ async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)
                 "notes": str(form.get("notes", "")).strip(),
                 "condition_notes_map": condition_notes_map,
             }
-            svc.create_receipt(
+            receipt = svc.create_receipt(
                 vendor_id=po.vendor_id,
                 po_line_quantities=po_line_quantities,
                 data=receipt_data,
@@ -650,6 +659,53 @@ async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)
                 status_code=303,
             )
 
+    # R3 — serial-number capture (fail-safe). The receipt above has already
+    # committed; serials are recorded in a follow-up transaction so a serial
+    # problem can never undo the goods receipt. Receiving with no serials is
+    # always allowed; count mismatches are allowed but flashed as an info note.
+    info_notes: list[str] = []
+    if serials_map and receipt is not None:
+        try:
+            serial_svc = SerialService(db, current_user_id=user_id)
+            receipt_line_by_po_line = {rl.po_line_id: rl for rl in receipt.lines}
+            line_by_id = {ln.id: ln for ln in po.lines}
+            for po_line_id, serials in serials_map.items():
+                line = line_by_id.get(po_line_id)
+                if line is None or not line.product_id:
+                    continue
+                product = line.product
+                if not product or not product.has_serial_number:
+                    continue  # serials only tracked for serialized products
+                label = product.sku or f"line {po_line_id}"
+                qty_received = po_line_quantities.get(po_line_id, 0)
+                if qty_received <= 0:
+                    info_notes.append(
+                        f"{label}: serial numbers entered but the line was not received — not recorded."
+                    )
+                    continue
+                receipt_line = receipt_line_by_po_line.get(po_line_id)
+                result = serial_svc.record_received_serials(
+                    product_id=line.product_id,
+                    serials=serials,
+                    po_receipt_line_id=receipt_line.id if receipt_line else None,
+                )
+                if result["skipped"]:
+                    info_notes.append(
+                        f"{label}: {len(result['skipped'])} duplicate serial(s) skipped "
+                        f"({', '.join(result['skipped'][:5])})."
+                    )
+                if len(serials) != qty_received:
+                    info_notes.append(
+                        f"{label}: {len(serials)} serial(s) entered for {qty_received} unit(s) received."
+                    )
+            db.commit()
+        except Exception:
+            db.rollback()
+            log.exception(
+                "Serial capture failed for PO %s — receipt itself was already recorded", po_id
+            )
+            info_notes = ["Serial numbers could not be recorded — the goods receipt itself was saved."]
+
     _t_svc = time.perf_counter()
     _form_ms  = (_t_form - _t0) * 1000
     _svc_ms   = (_t_svc - _t_form) * 1000
@@ -658,7 +714,10 @@ async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)
         "TIMING po_receive po=%s  total=%.1fms  form=%.1fms  svc=%.1fms",
         po_id, _total_ms, _form_ms, _svc_ms,
     )
-    resp = RedirectResponse(f"/purchase-orders/{po_id}?ok=received", status_code=303)
+    _redirect_url = f"/purchase-orders/{po_id}?ok=received"
+    if info_notes:
+        _redirect_url += f"&info={url_quote(' '.join(info_notes))}"
+    resp = RedirectResponse(_redirect_url, status_code=303)
     resp.headers["Server-Timing"] = (
         f"form;dur={_form_ms:.1f},svc;dur={_svc_ms:.1f},total;dur={_total_ms:.1f}"
     )

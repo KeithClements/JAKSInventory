@@ -15,6 +15,7 @@ Phase A — Transaction Workspace rules:
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
 from app.constants import (
@@ -29,6 +30,8 @@ from app.models.invoice import Invoice, InvoiceLine
 from app.models.product import Product
 from app.settings_utils import bump_counter, get_setting_value_db
 from app.services.base import BaseService, apply_product_line_defaults
+
+log = logging.getLogger(__name__)
 
 
 # Line types treated as freight/delivery. Aliases the canonical
@@ -674,6 +677,21 @@ class InvoiceService(BaseService):
                     vendor_unit_charge=core_ln.unit_cost,
                 )
 
+        # R3 — serial-number auto-assignment for serialized product lines
+        # (warranty/liability traceability). FIFO-assigns available IN_STOCK
+        # serials to each has_serial_number product line; tolerant when fewer
+        # serials exist than qty (assigns what's there). FAIL-SAFE BY DESIGN:
+        # a serial problem must NEVER block finalize — the money/inventory work
+        # above is already staged in this transaction; log and continue.
+        try:
+            from app.services.serial_service import SerialService
+            SerialService(self.db, self.current_user_id).assign_serials_for_invoice(invoice)
+        except Exception:
+            log.exception(
+                "Serial auto-assignment failed for invoice %s — finalize continues",
+                invoice_id,
+            )
+
         invoice.status = InvoiceStatus.OPEN
         invoice.qbo_sync_status = QBOSyncStatus.PENDING
         # Lock immediately on finalize — EOD job skips invoices with locked_at set,
@@ -1020,6 +1038,18 @@ class InvoiceService(BaseService):
 
         for allocation in invoice.allocations:
             allocation.is_reversed = True
+
+        # R3 — release serial numbers sold on this invoice (mirror of the
+        # inventory restore above): status back to IN_STOCK, invoice-line link
+        # cleared. Fail-safe: a serial problem must never block the void.
+        try:
+            from app.services.serial_service import SerialService
+            SerialService(self.db, self.current_user_id).release_for_invoice(invoice)
+        except Exception:
+            log.exception(
+                "Serial release failed while voiding invoice %s — void continues",
+                invoice_id,
+            )
 
         # Roll the linked sales order back to un-invoiced. Voiding means "this
         # invoice never happened", so the qty it fulfilled/invoiced must return

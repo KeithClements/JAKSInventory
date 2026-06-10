@@ -20,6 +20,7 @@ service only refines below that and never fabricates a category.
 """
 from __future__ import annotations
 
+import re
 from collections import Counter
 
 from app.models.product import ProductCategory
@@ -60,16 +61,20 @@ class ClassificationService(BaseService):
 
     def __init__(self, db, current_user_id=None) -> None:
         super().__init__(db, current_user_id)
-        self._rules_cache: list[tuple[int, str, int, list[str]]] | None = None
+        self._rules_cache: list[tuple[int, str, int, list[tuple[str, re.Pattern]]]] | None = None
 
-    def _category_rules(self) -> list[tuple[int, str, int, list[str]]]:
-        """(category_id, name, level, keywords) for every ACTIVE category that has
-        import_keywords, sorted DEEPEST level first so a Product-Family match beats a
-        Category match. Built once per service instance. Stores PLAIN VALUES, not ORM
-        objects, so the cache survives the periodic commits of a large import without
-        a DetachedInstanceError when a keyword later hits."""
+    def _category_rules(self) -> list[tuple[int, str, int, list[tuple[str, re.Pattern]]]]:
+        """(category_id, name, level, [(keyword, compiled word-boundary pattern)])
+        for every ACTIVE category that has import_keywords, sorted DEEPEST level
+        first so a Product-Family match beats a Category match. Built once per
+        service instance. Stores PLAIN VALUES, not ORM objects, so the cache
+        survives the periodic commits of a large import without a
+        DetachedInstanceError when a keyword later hits. Keywords are lowercased
+        here and matched against the lowercased haystack; patterns are
+        \\b-anchored (R3-3) so 'head' no longer matches 'overhead' — multi-word
+        keywords still work (\\b anchors at each end of the phrase)."""
         if self._rules_cache is None:
-            rules: list[tuple[int, str, int, list[str]]] = []
+            rules: list[tuple[int, str, int, list[tuple[str, re.Pattern]]]] = []
             cats = (
                 self.db.query(ProductCategory)
                 .filter(ProductCategory.is_active == True)  # noqa: E712
@@ -80,7 +85,8 @@ class ClassificationService(BaseService):
                 kws = [t.strip().lower() for t in raw.split(",")]
                 kws = [k for k in kws if len(k) >= _MIN_KEYWORD_LEN]
                 if kws:
-                    rules.append((c.id, c.name, c.level, kws))
+                    pats = [(k, re.compile(r"\b" + re.escape(k) + r"\b")) for k in kws]
+                    rules.append((c.id, c.name, c.level, pats))
             rules.sort(key=lambda r: r[2], reverse=True)
             self._rules_cache = rules
         return self._rules_cache
@@ -113,8 +119,9 @@ class ClassificationService(BaseService):
         # ── Category refinement via keyword rules (deepest match wins) ──────────
         haystack = " ".join([title or "", tags or "", extra_text or ""]).lower()
         matched: tuple[int, str, int] | None = None
-        for cid, cname, clevel, kws in self._category_rules():
-            hit = next((k for k in kws if k in haystack), None)
+        for cid, cname, clevel, pats in self._category_rules():
+            # R3-3: word-boundary match — 'head' must NOT match 'overhead'.
+            hit = next((k for k, pat in pats if pat.search(haystack)), None)
             if hit:
                 matched = (cid, cname, clevel)
                 reasons.append(f"category '{cname}' ← keyword '{hit}'")

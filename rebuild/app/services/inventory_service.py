@@ -287,32 +287,42 @@ class InventoryService(BaseService):
         product: Product,
         qty_received: int,
         receipt_unit_cost: float,
+        freight_adder: float = 0.0,
     ) -> None:
         """
         R11 — Update product.cost via moving weighted average; set product.last_cost.
 
+        R3 — ``freight_adder`` is the allocated freight-in cost PER UNIT for this
+        receipt (computed by POService._compute_freight_adders from the PO's
+        freight_in_cost). The average absorbs the LANDED unit cost
+        (receipt_unit_cost + freight_adder) so product.cost / COGS reflects what
+        the unit actually cost to put on the shelf. The default of 0.0 keeps
+        every pre-R3 call path bit-for-bit identical (landed == receipt cost).
+
         Formula:
-          new_avg = ((qty_on_hand × current_avg) + (qty_received × receipt_unit_cost))
-                    / (qty_on_hand + qty_received)
+          landed    = receipt_unit_cost + freight_adder
+          new_avg   = ((qty_on_hand × current_avg) + (qty_received × landed))
+                      / (qty_on_hand + qty_received)
 
         Called WITH qty_on_hand AFTER it has been incremented (so we subtract back
         qty_received to get the pre-receipt qty for the weighting).
         """
-        if qty_received <= 0 or receipt_unit_cost <= 0:
+        landed_unit_cost = receipt_unit_cost + freight_adder
+        if qty_received <= 0 or landed_unit_cost <= 0:
             return
 
         # qty_on_hand has already been incremented at this point
         qty_before = max(0, product.qty_on_hand - qty_received)
         current_avg = product.cost or 0.0
 
-        # If we had no stock, the new cost IS the receipt cost
+        # If we had no stock, the new cost IS the (landed) receipt cost
         if qty_before <= 0:
-            product.cost = round(receipt_unit_cost, 4)
+            product.cost = round(landed_unit_cost, 4)
         else:
             new_avg = (
-                (qty_before * current_avg) + (qty_received * receipt_unit_cost)
+                (qty_before * current_avg) + (qty_received * landed_unit_cost)
             ) / (qty_before + qty_received)
             product.cost = round(new_avg, 4)
 
-        product.last_cost = round(receipt_unit_cost, 4)
+        product.last_cost = round(landed_unit_cost, 4)
         product.cost_source = "receipt"   # R11 Option A — only valid writer of product.cost

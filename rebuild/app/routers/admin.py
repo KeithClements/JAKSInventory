@@ -12,21 +12,114 @@ reads. While a run is in flight the page auto-refreshes.
 """
 from __future__ import annotations
 
+import logging
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy.orm import Session
+
+from app.deps import get_db, require_admin
+from app.models.product import Product
+from app.services.product_service import ProductService
 
 # tests/ is importable from the repo root (the dev server runs from there).
 from tests.smoke import report as smoke_report
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 templates = Jinja2Templates(directory="app/templates")
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+# ── R3 — Inventory cache resync (ledger = source of truth) ────────────────────
+# Product.qty_on_hand is a cache over the InventoryTransaction ledger. Bugs or
+# ORM-bypassing writes can drift it with no recovery path short of a manual
+# adjustment (which WRITES a ledger row, polluting history). These admin-only
+# routes recompute the cache FROM the ledger and write it back — the corrective
+# tool the audit found missing. Commitment rows (SO_COMMITTED / SO_RELEASED)
+# are excluded by ProductService.get_qty_on_hand by design: committed stock is
+# still physically on hand until the INVOICE_SALE row lands.
+
+@router.post("/inventory/resync/{product_id}")
+def inventory_resync_product(
+    product_id: int,
+    db: Session = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    """Recompute one product's qty_on_hand from the ledger and write the cache
+    back. Returns old → new so the caller sees exactly what changed."""
+    service = ProductService(db, current_user_id=admin.id)
+    try:
+        old_qty, new_qty = service.resync_qty_on_hand(product_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Product {product_id} not found")
+    db.commit()
+    log.info(
+        "Inventory resync: product %s qty_on_hand %s -> %s (delta %s) by user %s",
+        product_id, old_qty, new_qty, new_qty - old_qty, admin.id,
+    )
+    return {
+        "product_id": product_id,
+        "old_qty_on_hand": old_qty,
+        "new_qty_on_hand": new_qty,
+        "delta": new_qty - old_qty,
+    }
+
+
+@router.post("/inventory/resync-all")
+def inventory_resync_all(
+    limit: int = 500,
+    db: Session = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    """Recompute qty_on_hand from the ledger for up to ``limit`` active
+    products (ordered by id, default 500 — a SQLite full-catalog pass over 13k
+    parts is heavy enough to deserve explicit batching). Logs old → new per
+    drifted product and returns a summary."""
+    limit = max(1, min(int(limit), 5000))
+    service = ProductService(db, current_user_id=admin.id)
+    product_ids = [
+        row[0]
+        for row in (
+            db.query(Product.id)
+            .filter(Product.is_active == True)  # noqa: E712
+            .order_by(Product.id)
+            .limit(limit)
+            .all()
+        )
+    ]
+    corrected: list[dict] = []
+    for pid in product_ids:
+        old_qty, new_qty = service.resync_qty_on_hand(pid)
+        if new_qty != old_qty:
+            log.info(
+                "Inventory resync-all: product %s qty_on_hand %s -> %s (delta %s)",
+                pid, old_qty, new_qty, new_qty - old_qty,
+            )
+            corrected.append({
+                "product_id": pid,
+                "old_qty_on_hand": old_qty,
+                "new_qty_on_hand": new_qty,
+                "delta": new_qty - old_qty,
+            })
+    db.commit()
+    log.info(
+        "Inventory resync-all: checked %d product(s), corrected %d (limit %d) by user %s",
+        len(product_ids), len(corrected), limit, admin.id,
+    )
+    return {
+        "checked": len(product_ids),
+        "corrected": len(corrected),
+        "limit": limit,
+        "corrections": corrected,
+    }
 
 
 @router.get("/smoke-tests", response_class=HTMLResponse)

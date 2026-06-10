@@ -28,6 +28,17 @@ router = APIRouter(prefix="/line-items", tags=["line-items"])
 MIN_QUERY_LEN = 2
 DEFAULT_LIMIT = 8
 
+# match_type → result-chip label shown in every line adder.  R3: 'competitor'
+# (R2 SearchService match on CompetitorPrice.competitor_part_number) gets its
+# own COMP badge instead of falling back to the default PART chip.
+MATCH_TYPE_LABELS = {
+    "part_number": "PART",
+    "cross_ref": "OEM",
+    "vendor_sku": "VEND",
+    "competitor": "COMP",
+    "description": "DESC",
+}
+
 
 def serialize_product_result(r: ProductSearchResult, product: Product | None = None) -> dict:
     """
@@ -54,7 +65,8 @@ def serialize_product_result(r: ProductSearchResult, product: Product | None = N
         "qty_on_hand": r.qty_on_hand,
         "qty_available": product.qty_available if product is not None else r.qty_on_hand,
         "vendor_name": r.vendor_name,
-        "match_type": r.match_type,            # part_number | cross_ref | vendor_sku | description
+        "match_type": r.match_type,            # part_number | cross_ref | vendor_sku | competitor | description
+        "match_label": MATCH_TYPE_LABELS.get(r.match_type, "PART"),
         "cross_ref_number": r.cross_ref_number,
         "last_sold_price": r.last_sold_price,
         "last_sold_date": r.last_sold_date,

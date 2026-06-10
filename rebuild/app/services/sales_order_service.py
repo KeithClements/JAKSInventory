@@ -446,16 +446,28 @@ class SalesOrderService(BaseService):
                             notes=f"Fulfill SO {so.so_number} → invoice",
                         )
 
-            inv_lines.append({
-                "product_id": line.product_id,
-                "so_line_id": line.id,
-                "line_type": line.line_type,
-                "description": line.description,
-                "qty": qty,
-                "unit_price": line.unit_price,
-                "unit_cost": line.unit_cost,
-                "discount_pct": line.discount_pct,
-            })
+            # R3 E2E bug: do NOT forward the SO's auto-generated CORE_CHARGE
+            # child — InvoiceService.create_invoice re-derives a core child for
+            # the core-bearing PRODUCT line (same exclusion rule as the quote
+            # converters), so forwarding it double-bills the deposit. Its
+            # fulfillment bookkeeping below still advances so the SO reaches
+            # INVOICED instead of stranding at PARTIAL. Standalone manual
+            # CORE_CHARGE lines (no parent) still carry — nothing re-derives those.
+            is_derived_core = (
+                line.line_type == LineType.CORE_CHARGE
+                and (line.is_auto_generated or line.parent_line_id)
+            )
+            if not is_derived_core:
+                inv_lines.append({
+                    "product_id": line.product_id,
+                    "so_line_id": line.id,
+                    "line_type": line.line_type,
+                    "description": line.description,
+                    "qty": qty,
+                    "unit_price": line.unit_price,
+                    "unit_cost": line.unit_cost,
+                    "discount_pct": line.discount_pct,
+                })
 
             line.qty_fulfilled += qty
             line.qty_invoiced += qty

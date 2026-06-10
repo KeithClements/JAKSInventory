@@ -17,13 +17,16 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.constants import CrossRefType, SuggestedSellType
 from app.deps import get_db, get_current_user_id, require_admin
+from app.models.competitor import CompetitorPrice
 from app.models.product import (
     CrossReference, Product, ProductImage, ProductVendorSource, SuggestedSell,
 )
 from app.models.vendor import Vendor
 from app.services.product_service import ProductService
+from app.services.search_service import _norm_col
 from app.services.suggested_sell_service import SuggestedSellService
 from app.settings_utils import get_setting_value_db
+from app.utils import normalize_part
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -79,6 +82,68 @@ def _descendant_category_ids(db: Session, root_id: int) -> list[int]:
     return out
 
 
+def _product_search_filter(db: Session, q: str):
+    """R3 — boolean predicate for the products-list search box.
+
+    Keeps the original sku/title/manufacturer/brand ``ilike`` (plus the
+    de-dashed SKU branch) AND adds EXISTS subqueries against the same
+    normalized part-number surfaces the line adder's SearchService searches:
+    ``cross_references.ref_number`` (OEM / competitor / vendor-alt),
+    ``product_vendor_sources.vendor_part_number`` / ``vendor_sku``, and
+    ``competitor_prices.competitor_part_number``.  Normalization is SHARED
+    (``search_service._norm_col`` + ``utils.normalize_part``) so separators
+    and parens match exactly like the quote line adder — "3683512(C)" stored
+    matches the query "3683512C" and vice versa.
+    """
+    like = f"%{q}%"
+    _filter = (
+        Product.sku.ilike(like)
+        | Product.title.ilike(like)
+        | Product.manufacturer.ilike(like)
+        | Product.brand.ilike(like)
+    )
+    # De-dashed SKU branch so "141234" finds "14-1234" and "ok1" finds "OK-1".
+    _q_clean = re.sub(r"[^a-zA-Z0-9]", "", q)
+    if _q_clean:
+        _dedashed_sku = func.replace(func.replace(Product.sku, "-", ""), " ", "")
+        _filter = _filter | _dedashed_sku.ilike(f"%{_q_clean}%")
+
+    # Normalized part-number lookups (correlated EXISTS — predicate only, no
+    # SearchService result pipeline: the list needs a filter, not ranking).
+    nq = normalize_part(q)
+    if nq:
+        nlike = f"%{nq}%"
+        _xref_hit = (
+            db.query(CrossReference.id)
+            .filter(
+                CrossReference.product_id == Product.id,
+                _norm_col(CrossReference.ref_number).like(nlike),
+            )
+            .exists()
+        )
+        _pvs_hit = (
+            db.query(ProductVendorSource.id)
+            .filter(
+                ProductVendorSource.product_id == Product.id,
+                ProductVendorSource.is_active == True,  # noqa: E712
+                _norm_col(ProductVendorSource.vendor_part_number).like(nlike)
+                | _norm_col(ProductVendorSource.vendor_sku).like(nlike),
+            )
+            .exists()
+        )
+        _comp_hit = (
+            db.query(CompetitorPrice.id)
+            .filter(
+                CompetitorPrice.product_id == Product.id,
+                CompetitorPrice.is_active == True,  # noqa: E712
+                _norm_col(CompetitorPrice.competitor_part_number).like(nlike),
+            )
+            .exists()
+        )
+        _filter = _filter | _xref_hit | _pvs_hit | _comp_hit
+    return _filter
+
+
 # ── List ─────────────────────────────────────────────────────────────────────
 
 @router.get("/", response_class=HTMLResponse)
@@ -116,21 +181,14 @@ def product_list(
     else:
         query = base
 
-    # Search
+    # Search — R3: sku/title/manufacturer/brand PLUS OEM cross-refs, vendor
+    # part #/SKU, and competitor part numbers (normalized like the line adder).
     if q:
-        like = f"%{q}%"
-        _filter = (
-            Product.sku.ilike(like)
-            | Product.title.ilike(like)
-            | Product.manufacturer.ilike(like)
-            | Product.brand.ilike(like)
-        )
-        # De-dashed SKU branch so "141234" finds "14-1234" and "ok1" finds "OK-1".
-        _q_clean = re.sub(r"[^a-zA-Z0-9]", "", q)
-        if _q_clean:
-            _dedashed_sku = func.replace(func.replace(Product.sku, "-", ""), " ", "")
-            _filter = _filter | _dedashed_sku.ilike(f"%{_q_clean}%")
-        query = query.filter(_filter)
+        _search = _product_search_filter(db, q)
+        query = query.filter(_search)
+        # Tab counts must reflect the search too — keep them consistent with
+        # the filtered list (base feeds every count query below).
+        base = base.filter(_search)
 
     # §18 — structured filters (category incl. descendants · manufacturer · brand)
     if category_id:
@@ -180,7 +238,8 @@ def product_list(
     page_start = (offset + 1) if total else 0
     page_end = min(offset + PAGE_SIZE, total)
 
-    # Tab counts (always based on full active set, ignoring current tab/search)
+    # Tab counts — full active set ignoring the current tab, but honoring the
+    # search (R3: base is search-filtered above so counts match the list).
     counts = {
         "all": base.count(),
         "in_stock": base.filter(Product.qty_on_hand > 0).count(),

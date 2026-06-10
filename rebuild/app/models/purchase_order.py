@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from sqlalchemy import String, Text, Float, Integer, Boolean, ForeignKey, DateTime, Index, func
+from sqlalchemy import String, Text, Float, Integer, Boolean, ForeignKey, DateTime, Index, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 from app.models.mixins import QBOSyncMixin
@@ -225,6 +225,17 @@ class VendorBill(QBOSyncMixin, Base):
     __tablename__ = "vendor_bills"
     __table_args__ = (
         Index("ix_vendor_bills_qbo_sync_status", "qbo_sync_status"),
+        # R3 — DB backstop behind the R1-5 service guard: the same vendor may
+        # not have two bills with the same bill_number (double-payment risk).
+        # Partial: NULL / blank bill numbers repeat freely. Name must match
+        # _PENDING_UNIQUE_INDEXES in app/database.py (defensive live-DB path).
+        # NOTE: narrower than the service guard, which is also case/whitespace-
+        # insensitive — the index catches only exact-string duplicates.
+        Index(
+            "uq_vendor_bills_vendor_bill_number", "vendor_id", "bill_number",
+            unique=True,
+            sqlite_where=text("bill_number IS NOT NULL AND bill_number != ''"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

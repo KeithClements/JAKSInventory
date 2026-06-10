@@ -121,6 +121,30 @@ async def category_delete(cat_id: int, db: Session = Depends(get_db), user_id: i
     return _back(ok=f"Category {action}.")
 
 
+# ══ R3 — reparent / merge tools ════════════════════════════════════════════════
+@router.post("/category/{cat_id}/reparent")
+async def category_reparent(cat_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    form = await request.form()
+    try:
+        cat = _svc(db, user_id).reparent_category(cat_id, _int(form.get("parent_id")))
+    except ValueError as exc:
+        return _back(error=str(exc))
+    return _back(ok=f"Moved '{cat.name}'.")
+
+
+@router.post("/category/{src_id}/merge-into/{dest_id}")
+async def category_merge(src_id: int, dest_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    try:
+        result = _svc(db, user_id).merge_category(src_id, dest_id)
+    except ValueError as exc:
+        return _back(error=str(exc))
+    return _back(ok=(
+        f"Merged into '{result['dest_name']}' — {result['products_moved']} product(s) moved"
+        + (f", {result['children_adopted']} child node(s) adopted" if result["children_adopted"] else "")
+        + ". Source deactivated."
+    ))
+
+
 # ══ Brand CRUD ═════════════════════════════════════════════════════════════════
 @router.post("/brand/create")
 async def brand_create(request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):

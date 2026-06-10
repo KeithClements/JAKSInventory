@@ -85,7 +85,7 @@ def qbo_push_invoice(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    result = QBOSyncService(db).push_invoice(invoice_id)
+    result = QBOSyncService(db, current_user_id=user_id).push_invoice(invoice_id)
     if result.get("ok"):
         if result.get("skipped"):
             msg = "Invoice is already synced to QuickBooks."
@@ -107,7 +107,7 @@ def qbo_push_payment(
     """One-click push of a customer payment to QuickBooks (links to its already-
     synced invoice(s)). Fail-soft like the invoice push — flashes the error, never
     500s, and never touches the money path."""
-    result = QBOSyncService(db).push_payment(payment_id)
+    result = QBOSyncService(db, current_user_id=user_id).push_payment(payment_id)
     if result.get("ok"):
         if result.get("skipped"):
             msg = "Payment is already synced to QuickBooks."
@@ -116,6 +116,56 @@ def qbo_push_payment(
         return RedirectResponse(f"/payments/{payment_id}?ok={url_quote(msg)}", status_code=303)
     return RedirectResponse(
         f"/payments/{payment_id}?error={url_quote('QBO push failed: ' + result.get('error', ''))}",
+        status_code=303,
+    )
+
+
+@router.post("/push-bill/{bill_id}")
+def qbo_push_bill(
+    bill_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """R3 — one-click push of an APPROVED/PAID vendor bill to QuickBooks as a
+    Bill (AP/COGS side). Fail-soft like every other push: success → synced stamp,
+    failure → error stamp + flash, never 500s, never touches the money path.
+    Redirects back to the bill's PO workspace (bills live there)."""
+    from app.models.purchase_order import VendorBill
+
+    bill = db.query(VendorBill).filter(VendorBill.id == bill_id).first()
+    back = f"/purchase-orders/{bill.po_id}" if (bill and bill.po_id) else "/purchase-orders/"
+
+    result = QBOSyncService(db, current_user_id=user_id).push_vendor_bill(bill_id)
+    if result.get("ok"):
+        if result.get("skipped"):
+            msg = "Vendor bill is already synced to QuickBooks."
+        else:
+            msg = f"Vendor bill pushed to QuickBooks (id {result.get('qbo_id', '')})."
+        return RedirectResponse(f"{back}?ok={url_quote(msg)}", status_code=303)
+    return RedirectResponse(
+        f"{back}?error={url_quote('QBO push failed: ' + result.get('error', ''))}",
+        status_code=303,
+    )
+
+
+@router.post("/push-credit-memo/{cm_id}")
+def qbo_push_credit_memo(
+    cm_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """R3 — one-click push of a credit memo to QuickBooks as a CreditMemo against
+    the synced customer. Fail-soft, same contract as the invoice/payment/bill
+    pushes; flashes the outcome on the credit-memo detail page."""
+    result = QBOSyncService(db, current_user_id=user_id).push_credit_memo(cm_id)
+    if result.get("ok"):
+        if result.get("skipped"):
+            msg = "Credit memo is already synced to QuickBooks."
+        else:
+            msg = f"Credit memo pushed to QuickBooks (id {result.get('qbo_id', '')})."
+        return RedirectResponse(f"/credit-memos/{cm_id}?ok={url_quote(msg)}", status_code=303)
+    return RedirectResponse(
+        f"/credit-memos/{cm_id}?error={url_quote('QBO push failed: ' + result.get('error', ''))}",
         status_code=303,
     )
 
@@ -161,7 +211,7 @@ async def qbo_push_batch(
     QBOSyncService.push_invoice (which commits / marks per invoice) — there is no
     shared transaction, so one failure never rolls back the others. Returns
     per-invoice results: {id, ok, qbo_id|error}."""
-    svc = QBOSyncService(db)
+    svc = QBOSyncService(db, current_user_id=user_id)
     ids, mode = await _parse_batch_request(request)
     if mode in _ALL_UNSYNCED_MODES:
         ids = svc.unsynced_invoice_ids()

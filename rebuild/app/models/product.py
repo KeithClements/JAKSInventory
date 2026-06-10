@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from sqlalchemy import String, Text, Float, Integer, Boolean, ForeignKey, DateTime, Index, func
+from sqlalchemy import String, Text, Float, Integer, Boolean, ForeignKey, DateTime, Index, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 from app.constants import (
@@ -357,6 +357,14 @@ class ProductVendorSource(Base):
         Index("ix_pvs_product_id", "product_id"),
         Index("ix_pvs_product_id_preferred", "product_id", "is_preferred"),
         Index("ix_pvs_vendor_id", "vendor_id"),
+        # R3 — DB backstop: at most ONE active source per (product, vendor).
+        # Partial: deactivated history rows may legitimately repeat the pair.
+        # Name must match _PENDING_UNIQUE_INDEXES in app/database.py (live-DB
+        # creation path is defensive there; create_all() handles fresh DBs).
+        Index(
+            "uq_pvs_product_vendor_active", "product_id", "vendor_id",
+            unique=True, sqlite_where=text("is_active = 1"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -406,6 +414,13 @@ class CrossReference(Base):
         # ref_number is the quote-screen hot-path search — indexed first
         Index("ix_cross_references_ref_number", "ref_number"),
         Index("ix_cross_references_product_id", "product_id"),
+        # R3 — DB backstop: the same reference number may not repeat for one
+        # product+type. Name must match _PENDING_UNIQUE_INDEXES in app/database.py.
+        Index(
+            "uq_cross_references_product_type_number",
+            "product_id", "ref_type", "ref_number",
+            unique=True,
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

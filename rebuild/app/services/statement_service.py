@@ -15,7 +15,9 @@ Typical use: monthly statements for net-terms customers.
 """
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta
+from types import SimpleNamespace
 from typing import TypedDict
 
 from sqlalchemy import func
@@ -25,7 +27,9 @@ from app.constants import CoreDirection, CoreStatus, InvoiceStatus
 from app.models.core import CoreCharge
 from app.models.customer import Customer
 from app.models.invoice import Invoice, Payment
-from app.services.ar_aging_utils import as_date, zero_buckets, bucket_for
+from app.models.statement import CustomerStatement
+from app.services.ar_aging_utils import AGING_BUCKETS, as_date, zero_buckets, bucket_for
+from app.settings_utils import bump_counter
 
 
 class StatementLine(TypedDict):
@@ -193,6 +197,163 @@ class StatementService:
             total_charges=total_charges,
             total_credits=total_credits,
         )
+
+    # ── R3 — Statement persistence (immutable record of what was sent) ────────
+
+    def persist_statement(
+        self,
+        stmt: StatementData,
+        generated_by_user_id: int | None = None,
+    ) -> CustomerStatement:
+        """
+        Persist a CustomerStatement row recording exactly what `stmt` showed.
+
+        Called at the print / PDF moment — the point a statement is considered
+        "sent to the customer" — so a disputed statement can be re-rendered
+        from its stored snapshot even after the underlying invoices and
+        payments change.
+
+        IDEMPOTENCY RULE: regenerating the SAME customer + SAME period
+        (period_start AND period_end both equal) on the SAME calendar day
+        reuses and refreshes the existing row — repeated print/PDF clicks do
+        not mint duplicate statement numbers. A different period (either
+        bound) or a new calendar day mints a fresh number from the
+        next_statement_number counter (ST-YYYY-NNNN).
+
+        Commits — callers are GET print/PDF routes that otherwise never commit.
+        """
+        customer = stmt["customer"]
+        today = date.today()
+        aging = stmt["aging"]
+
+        row = (
+            self.db.query(CustomerStatement)
+            .filter(
+                CustomerStatement.customer_id == customer.id,
+                CustomerStatement.date_range_start == stmt["period_start"],
+                CustomerStatement.date_range_end == stmt["period_end"],
+                func.date(CustomerStatement.generated_at) == today.isoformat(),
+            )
+            .order_by(CustomerStatement.id.desc())
+            .first()
+        )
+        if row is None:
+            number = bump_counter(self.db, "next_statement_number", "ST", today.year)
+            row = CustomerStatement(
+                statement_number=number,
+                customer_id=customer.id,
+                date_range_start=stmt["period_start"],
+                date_range_end=stmt["period_end"],
+            )
+            self.db.add(row)
+
+        row.generated_at = datetime.now()
+        if generated_by_user_id is not None:
+            row.generated_by_user_id = generated_by_user_id
+        row.opening_balance = stmt["opening_balance"]
+        row.closing_balance = stmt["closing_balance"]
+        row.total_invoiced = stmt["total_charges"]
+        row.total_paid = stmt["total_credits"]
+        # Bucket keys follow ar_aging_utils.AGING_BUCKETS; the model's legacy
+        # due_120 column is dead (see app/models/statement.py) — over_90 is
+        # the terminal bucket.
+        row.current_due = float(aging.get("current", 0.0))
+        row.due_30 = float(aging.get("1_30", 0.0))
+        row.due_60 = float(aging.get("31_60", 0.0))
+        row.due_90 = float(aging.get("61_90", 0.0))
+        row.over_90 = float(aging.get("over_90", 0.0))
+        row.snapshot_json = json.dumps(self._snapshot_payload(stmt), sort_keys=True)
+        self.db.commit()
+        self.db.refresh(row)
+        return row
+
+    @staticmethod
+    def _snapshot_payload(stmt: StatementData) -> dict:
+        """JSON-safe copy of the full statement (dates → isoformat strings)."""
+        c = stmt["customer"]
+        return {
+            "customer": {
+                "id": c.id,
+                "company_name": c.company_name,
+                "address_line1": getattr(c, "address_line1", None),
+                "address_line2": getattr(c, "address_line2", None),
+                "city": getattr(c, "city", None),
+                "state": getattr(c, "state", None),
+                "zip_code": getattr(c, "zip_code", None),
+                "phone": getattr(c, "phone", None),
+            },
+            "as_of": stmt["as_of"].isoformat(),
+            "period_start": stmt["period_start"].isoformat(),
+            "period_end": stmt["period_end"].isoformat(),
+            "opening_balance": stmt["opening_balance"],
+            "closing_balance": stmt["closing_balance"],
+            "total_charges": stmt["total_charges"],
+            "total_credits": stmt["total_credits"],
+            "aging": {k: float(stmt["aging"].get(k, 0.0)) for k in AGING_BUCKETS},
+            "lines": [
+                {
+                    "txn_date": ln["txn_date"].isoformat(),
+                    "txn_type": ln["txn_type"],
+                    "reference": ln["reference"],
+                    "charges": ln["charges"],
+                    "credits": ln["credits"],
+                    "running_balance": ln["running_balance"],
+                }
+                for ln in stmt["lines"]
+            ],
+        }
+
+    def get_statement(self, statement_id: int) -> dict | None:
+        """Parsed snapshot of a persisted statement (R3 re-print path).
+
+        Returns the statement_print.html-shaped ctx rebuilt from the stored
+        snapshot_json — i.e. exactly what was sent, regardless of how the
+        underlying invoices/payments have changed since. None if the row
+        doesn't exist or predates snapshots (legacy rows)."""
+        row = self.db.get(CustomerStatement, statement_id)
+        if row is None:
+            return None
+        return self.snapshot_to_render_ctx(row)
+
+    def get_statement_history(
+        self, customer_id: int, limit: int = 24
+    ) -> list[CustomerStatement]:
+        """Saved statements for a customer, newest first (history panel)."""
+        return (
+            self.db.query(CustomerStatement)
+            .filter(CustomerStatement.customer_id == customer_id)
+            .order_by(CustomerStatement.generated_at.desc(), CustomerStatement.id.desc())
+            .limit(limit)
+            .all()
+        )
+
+    @staticmethod
+    def snapshot_to_render_ctx(row: CustomerStatement) -> dict | None:
+        """
+        Rebuild a statement_print.html-shaped dict from a saved snapshot.
+
+        READ-ONLY: never touches live invoice/payment data — this is the
+        dispute-resolution view of exactly what was sent. Returns None for
+        legacy rows persisted without a snapshot.
+        """
+        if not row.snapshot_json:
+            return None
+        snap = json.loads(row.snapshot_json)
+        return {
+            "customer": SimpleNamespace(**snap.get("customer", {})),
+            "as_of": date.fromisoformat(snap["as_of"]),
+            "period_start": date.fromisoformat(snap["period_start"]),
+            "period_end": date.fromisoformat(snap["period_end"]),
+            "opening_balance": snap["opening_balance"],
+            "closing_balance": snap["closing_balance"],
+            "total_charges": snap["total_charges"],
+            "total_credits": snap["total_credits"],
+            "aging": snap["aging"],
+            "lines": [
+                {**ln, "txn_date": date.fromisoformat(ln["txn_date"])}
+                for ln in snap["lines"]
+            ],
+        }
 
     # ── Customer balance summary (used by Quote + Invoice workspace headers) ──
 

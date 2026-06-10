@@ -1020,8 +1020,38 @@ Add only — **no structure editing here**:
 > receipts now credit $0 (by rule — receive-form qty records what came back); line-adder badge for
 > competitor matches falls back to 'PART'.
 
-### 19.4 — SPRINT R3 "Make it solid"
-Category merge + reparent tools · DB uniqueness batch via inline migrations (ProductVendorSource (product,vendor), cross-ref grain, account_number, (vendor,bill_number)) · freight landed-cost into moving-average COGS · serial capture at receive / consume at finalize (cylinder heads) · statement persistence (+ rename `due_120`→`over_90` BEFORE persisting) · QBO vendor-bill/credit-memo push + AST detection + retry worker · word-boundary classifier · import column-mapping UI w/ saved per-vendor templates · admin inventory resync route (fix `get_qty_on_hand` SO_COMMITTED handling first) · one full-chain E2E test (quote→SO→PO→receive→fulfill→invoice→pay→core return).
+### 19.4 — SPRINT R3 "Make it solid" — ✅ **IMPLEMENTED 2026-06-10/11** (9 agents)
+
+> **SHIPPED:** category REPARENT + MERGE (subtree level recompute, cycle/depth guards, keyword
+> union, descendant-inclusive tree counts) + word-boundary classifier · DB unique-index batch
+> at startup (PVS (product,vendor) WHERE active, cross-ref grain, account_number, (vendor,bill#)
+> — each probed for pre-existing dupes first: skip+WARN, never wedge boot, never delete) ·
+> admin inventory resync routes (/admin/inventory/resync{,-all}; ledger recompute correctly
+> treats SO commitments as still-on-hand) · products-LIST search now finds OEM/vendor/competitor
+> numbers (same normalization as the line adder; tab counts honor ?q=) + amber COMP badge in the
+> line adder · **freight landed-cost**: PO.freight_in_cost allocated per ordered unit by line
+> value at receipt, folded into moving-average COGS + ProductCostHistory; zero-freight =
+> bit-identical; vendor_cost never polluted · **serial numbers live**: capture textarea at PO
+> receive (SerialService, fail-safe) → FIFO auto-assign at invoice finalize → release on void ·
+> **statement persistence**: ST-YYYY-NNNN minted (flush-not-commit), bucket cols match
+> ar_aging_utils (over_90; due_120 dead-legacy), snapshot_json archive re-renders ORIGINAL
+> numbers after edits, history card on the statement page · **QBO AP/AR-credit legs**:
+> push_vendor_bill (APPROVED/PAID-gated, vendor resolve w/ multi-match refusal + auto-create,
+> COGS expense lines, freight line) + push_credit_memo (invoice item map) + real user attribution
+> + AuditLog rows on every push success/failure + buttons w/ chips on PO-workspace bills + CM
+> detail · **import column-mapping**: unknown headers park as NEEDS_MAPPING → mapping screen w/
+> fuzzy prefill + saved per-vendor ImportMappingTemplates (upsert by name) → feeds the unchanged
+> stage→review→apply pipeline (all R1 guards intact); known Shopify/JAKS feeds = zero change ·
+> **full-chain E2E** (10 ordered steps, money to the cent: quote→SO→PO+freight→receive→fulfill→
+> finalize→card pay w/ surcharge→core return→shortfall chargeback→ledger sweep).
+> **THE E2E CAUGHT + WE FIXED a real money bug:** `fulfill_and_invoice` forwarded the SO's
+> auto-generated CORE_CHARGE child AND create_invoice re-derived one → core deposit
+> double-billed on every SO fulfillment of a core product. Fixed in sales_order_service
+> (derived core children not forwarded; bookkeeping still advances so SOs reach INVOICED).
+> **Deferred:** QBO AST detection + background retry worker (needs scheduler — Phase 3);
+> Create-PO-from-low-stock bulk action; Vendor.qbo_vendor_id persistence (re-resolves per push,
+> hasattr-gated to auto-persist if the column lands); qbo drift entries for vendor_bills/
+> credit_memos only needed on pre-mixin DBs (live DB verified to have them).
 
 ### 19.5 — Brand alignment workstream (parallel, low-risk)
 Customer-facing print docs (quote/invoice/statement/core slip) adopt the JAK'S brand kit

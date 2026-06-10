@@ -100,7 +100,7 @@
       <div class="rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
         {% for row in tree %}
         {% set cat = row.cat %}
-        <div x-data="{ edit: false }" class="bg-white">
+        <div x-data="{ edit: false, tools: false }" class="bg-white">
 
           {# Display row #}
           <div class="flex items-center gap-3 px-4 py-3 hover:bg-gray-50/70 transition-colors">
@@ -125,7 +125,10 @@
 
             {# Meta columns #}
             <div class="hidden sm:flex items-center gap-5 text-xs text-gray-500 tabular-nums shrink-0">
-              <span title="Products in this category">{{ row.product_count }} item{{ '' if row.product_count == 1 else 's' }}</span>
+              <span title="Products directly in this category{% if row.total_count > row.product_count %}, plus products in its subcategories{% endif %}">
+                {{- row.product_count }} item{{ '' if row.product_count == 1 else 's' }}
+                {%- if row.total_count > row.product_count %} <span class="text-gray-400">(+{{ row.total_count - row.product_count }} below)</span>{% endif -%}
+              </span>
               <span title="Sort order">sort {{ cat.sort_order }}</span>
               <span title="Default markup">{{ "%.1f"|format(cat.default_markup_pct) ~ '%' if cat.default_markup_pct is not none else '—' }}</span>
             </div>
@@ -135,6 +138,10 @@
               <button type="button" @click="edit = !edit"
                       class="btn-ghost"
                       :class="edit ? 'text-brand-700 bg-brand-50' : ''">Edit</button>
+
+              <button type="button" @click="tools = !tools"
+                      class="btn-ghost"
+                      :class="tools ? 'text-brand-700 bg-brand-50' : ''">Move/Merge</button>
 
               <form method="post" action="/categories/category/{{ cat.id }}/toggle" class="inline">
                 <input type="hidden" name="active" value="{{ '0' if cat.is_active else '1' }}" />
@@ -180,6 +187,55 @@
                 <button type="submit" class="btn-primary btn-sm">Save</button>
               </div>
             </form>
+          </div>
+
+          {# R3 — Move / Merge tools #}
+          <div x-show="tools" x-cloak class="px-4 pb-4 pt-3 bg-gray-50/60 border-t border-gray-100 space-y-3"
+               style="padding-left: {{ (row.depth * 1.5 + 1.0) }}rem;">
+
+            {# Move to… (reparent — whole subtree moves, levels recompute) #}
+            {% if row.reparent_targets or cat.parent_id %}
+            <form method="post" action="/categories/category/{{ cat.id }}/reparent"
+                  class="flex flex-wrap items-end gap-3">
+              <div class="flex-1 min-w-[14rem]">
+                <label class="form-label">Move to&hellip;</label>
+                <select name="parent_id" class="form-select">
+                  {% if cat.parent_id %}
+                  <option value="">&mdash; Top level (Category) &mdash;</option>
+                  {% endif %}
+                  {% for t in row.reparent_targets %}
+                  <option value="{{ t.id }}">{{ t.full_path }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <button type="submit" class="btn-secondary btn-sm">Move</button>
+            </form>
+            {% endif %}
+
+            {# Merge into… (products + keywords + children → destination, then deactivate) #}
+            {% if row.merge_targets %}
+            <form method="post" id="merge-form-{{ cat.id }}" x-data="{ dest: '' }"
+                  :action="'/categories/category/{{ cat.id }}/merge-into/' + dest"
+                  class="flex flex-wrap items-end gap-3">
+              <div class="flex-1 min-w-[14rem]">
+                <label class="form-label">Merge into&hellip;</label>
+                <select x-model="dest" class="form-select">
+                  <option value="">&mdash; Choose destination &mdash;</option>
+                  {% for t in row.merge_targets %}
+                  <option value="{{ t.id }}">{{ t.full_path }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <button type="button" :disabled="!dest"
+                      @click="window.jakConfirm({
+                        formId: 'merge-form-{{ cat.id }}',
+                        title: 'Merge this category?',
+                        body: 'All its products move to the destination, import keywords are combined, children are adopted, and this category is deactivated.',
+                        cta: 'Merge', danger: true,
+                      })"
+                      class="btn-secondary btn-sm text-red-600 hover:text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:pointer-events-none">Merge</button>
+            </form>
+            {% endif %}
           </div>
         </div>
         {% endfor %}
