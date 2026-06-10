@@ -658,8 +658,9 @@ def product_import_page(request: Request, _admin=Depends(require_admin)):
 async def product_import_run(
     file: UploadFile = File(...),
     mode: str = Form("full"),                # full | pricing
-    source_type: str = Form("pai_cost"),     # pricing: pai_cost | competitor
+    source_type: str = Form("pai_cost"),     # pricing: sell | pai_cost | competitor
     dry_run: bool = Form(True),
+    max_change_pct: float | None = Form(None),  # sell mode safety rail (e.g. 50.0)
     import_images: bool = Form(True),
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
@@ -673,6 +674,9 @@ async def product_import_run(
         return svc.full_import(text, dry_run=dry_run, import_images=import_images)
     if mode == "pricing" and source_type == "competitor":
         return svc.pricing_update_competitor(text, dry_run=dry_run)
+    if mode == "pricing" and source_type == "sell":
+        return svc.pricing_update_sell(text, dry_run=dry_run,
+                                       max_change_pct=max_change_pct)
     if mode == "pricing":
         return svc.pricing_update_pai_cost(text, dry_run=dry_run)
     return {"error": f"unknown mode {mode!r}"}

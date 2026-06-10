@@ -753,6 +753,129 @@ class ProductImportService(BaseService):
         self.db.commit() if not dry_run else self.db.rollback()
         return summary
 
+    # ══ Mode 2c: PRICING UPDATE — sell price (scraper Shopify export) ═════════
+    def pricing_update_sell(
+        self,
+        text: str,
+        *,
+        dry_run: bool = True,
+        max_change_pct: float | None = None,
+    ) -> dict:
+        """
+        Update OUR sell price + compare-at price on EXISTING products from the
+        scraper's standard Shopify export (Variant SKU / Variant Price /
+        Variant Compare At Price). NEVER creates products, NEVER touches cost
+        or vendor sources, NEVER touches competitor prices.
+
+        The Shopify export emits multiple rows per Handle (image rows after
+        the first carry no price data) — those rows are detected by the
+        absence of price/compare-at AND skipped silently as "image rows", not
+        counted against skipped_no_price.
+
+        max_change_pct (optional, e.g. 50.0 for 50%) is a safety rail: any
+        product whose new sell price would move more than that % from its
+        current price_override is recorded into the summary and SKIPPED on
+        commit (still shown in dry-run sample). Lets the owner catch a bad
+        scraper run before it rewrites the catalog.
+        """
+        reader = list(csv.DictReader(io.StringIO(text)))
+        summary = {
+            "mode": "pricing_update", "source": "sell", "dry_run": dry_run,
+            "rows": len(reader), "image_rows_skipped": 0,
+            "skipped_no_sku": 0, "skipped_no_product": 0, "skipped_no_price": 0,
+            "matched": 0, "prices_updated": 0, "compare_updated": 0,
+            "unchanged": 0, "over_threshold_skipped": 0,
+            "sample": [], "over_threshold_sample": [],
+        }
+        sku_to_id = self._sku_to_id_map()
+        _PRICE_KEYS = ("variant price", "price", "sell_price", "sell price",
+                       "selling_price", "retail_price", "retail price")
+        _COMPARE_KEYS = ("variant compare at price", "compare_at_price",
+                         "compare at price", "msrp", "compare_at")
+        seen_handles: set[str] = set()
+        for raw in reader:
+            row = {_norm(k): v for k, v in raw.items()}
+            sku = _get(row, *_SKU_KEYS)
+            price_raw = _get(row, *_PRICE_KEYS)
+            compare_raw = _get(row, *_COMPARE_KEYS)
+
+            # Shopify image-only rows: SKU blank AND no price columns. The
+            # Handle column links them to the parent — count, never warn.
+            if not sku and not price_raw and not compare_raw:
+                summary["image_rows_skipped"] += 1
+                continue
+            if not sku:
+                summary["skipped_no_sku"] += 1
+                continue
+            pid = sku_to_id.get(_norm(sku))
+            if pid is None:
+                summary["skipped_no_product"] += 1
+                continue
+            # Same-SKU repeats (rare — Shopify variant rows): act once.
+            if sku in seen_handles:
+                continue
+            seen_handles.add(sku)
+
+            new_price = _to_float(price_raw)
+            new_compare = _to_float(compare_raw)
+            if new_price is None and new_compare is None:
+                summary["skipped_no_price"] += 1
+                continue
+            summary["matched"] += 1
+
+            product = self.db.get(Product, pid)
+            if product is None:
+                summary["skipped_no_product"] += 1
+                continue
+
+            old_price = product.price_override
+            old_compare = product.compare_at_price
+
+            price_change = (new_price is not None
+                            and (old_price is None
+                                 or abs((old_price or 0.0) - new_price) >= 0.005))
+            compare_change = (new_compare is not None
+                              and (old_compare is None
+                                   or abs((old_compare or 0.0) - new_compare) >= 0.005))
+
+            # Threshold rail — applies only to price_override moves where
+            # there IS a prior price to compare against.
+            if (price_change and max_change_pct is not None
+                    and old_price is not None and old_price > 0):
+                pct = abs(new_price - old_price) / old_price * 100.0
+                if pct > max_change_pct:
+                    summary["over_threshold_skipped"] += 1
+                    if len(summary["over_threshold_sample"]) < 10:
+                        summary["over_threshold_sample"].append({
+                            "sku": sku, "old_price": old_price,
+                            "new_price": new_price, "change_pct": round(pct, 1),
+                        })
+                    continue
+
+            if not price_change and not compare_change:
+                summary["unchanged"] += 1
+                continue
+
+            if price_change:
+                summary["prices_updated"] += 1
+            if compare_change:
+                summary["compare_updated"] += 1
+            if len(summary["sample"]) < 10:
+                summary["sample"].append({
+                    "sku": sku,
+                    "old_price": old_price, "new_price": new_price,
+                    "old_compare": old_compare, "new_compare": new_compare,
+                })
+
+            if not dry_run:
+                if price_change:
+                    product.price_override = new_price
+                if compare_change:
+                    product.compare_at_price = new_compare
+
+        self.db.commit() if not dry_run else self.db.rollback()
+        return summary
+
     # ══ Mode 2b: PRICING UPDATE — competitor ═══════════════════════════════════
     def pricing_update_competitor(self, text: str, *, dry_run: bool = True) -> dict:
         reader = list(csv.DictReader(io.StringIO(text)))

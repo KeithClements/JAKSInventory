@@ -37,19 +37,38 @@
       {# Pricing source (only for pricing mode) #}
       <div x-show="mode==='pricing'" x-cloak>
         <label class="form-label">Pricing source</label>
-        <div class="flex gap-4">
+        <div class="flex flex-col gap-2">
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="radio" name="source_type" value="sell" x-model="sourceType" class="form-checkbox"/>
+            <span class="text-sm text-gray-700"><strong>Sell price</strong> (scraper Shopify export) → <code>price_override</code> + <code>compare_at_price</code></span>
+          </label>
           <label class="flex items-center gap-1.5 cursor-pointer">
             <input type="radio" name="source_type" value="pai_cost" x-model="sourceType" class="form-checkbox"/>
-            <span class="text-sm text-gray-700">PAI cost → vendor_cost (+ cost history)</span>
+            <span class="text-sm text-gray-700">PAI cost → <code>vendor_cost</code> (+ cost history)</span>
           </label>
           <label class="flex items-center gap-1.5 cursor-pointer">
             <input type="radio" name="source_type" value="competitor" x-model="sourceType" class="form-checkbox"/>
             <span class="text-sm text-gray-700">Competitor prices (+ price history)</span>
           </label>
         </div>
-        <div class="mt-2 text-xs text-gray-500">
-          <p x-show="sourceType==='pai_cost'">Needs a SKU column + a true cost column (<code>pai_cost</code>, <code>vendor_cost</code>, or <code>cost</code>). Updates the PAI vendor_cost and appends cost history. (Note: the Shopify export has no cost column — it's sell price only.)</p>
+        <div class="mt-2 text-xs text-gray-500 space-y-2">
+          <p x-show="sourceType==='sell'">
+            Re-runs the scraper's standard Shopify CSV (<code>Variant SKU</code> + <code>Variant Price</code> + <code>Variant Compare At Price</code>) against existing products. Updates OUR sell + compare-at only — never cost, never creates. Shopify image-only rows are silently skipped.
+          </p>
+          <p x-show="sourceType==='pai_cost'">Needs a SKU column + a true cost column (<code>pai_cost</code>, <code>vendor_cost</code>, or <code>cost</code>). Updates the PAI vendor_cost and appends cost history. (The Shopify export has no cost column — use <em>Sell price</em> for that.)</p>
           <p x-show="sourceType==='competitor'">Columns: <code>sku</code>, <code>competitor_name</code>, <code>competitor_part_number</code>, <code>competitor_brand</code>, <code>price</code>, <code>shipping_price</code>, <code>core_charge</code>, <code>availability_status</code>, <code>url</code>, <code>source</code>, <code>confidence</code>, <code>notes</code>. Updates competitor_prices + appends price history.</p>
+        </div>
+
+        {# Sell-mode safety rail #}
+        <div x-show="sourceType==='sell'" class="mt-3 flex items-center gap-2">
+          <label class="flex items-center gap-1.5 text-sm text-gray-700">
+            <input type="checkbox" x-model="useThreshold" class="form-checkbox"/>
+            Cap per-product change at
+          </label>
+          <input type="number" min="1" max="500" step="1" x-model.number="maxChangePct"
+                 :disabled="!useThreshold" class="form-input w-20 text-sm" />
+          <span class="text-sm text-gray-500">%</span>
+          <span class="text-xs text-gray-400 ml-2">Bad scraper run → big swings are skipped + listed.</span>
         </div>
       </div>
 
@@ -128,7 +147,8 @@
 <script>
 function productImport() {
   return {
-    mode: 'full', sourceType: 'pai_cost', importImages: true,
+    mode: 'full', sourceType: 'sell', importImages: true,
+    useThreshold: true, maxChangePct: 50,
     busy: false, result: null, error: null, lastDryRun: true, confirming: false,
     async run(dryRun) {
       const fileEl = this.$refs.file;
@@ -140,6 +160,10 @@ function productImport() {
       fd.append('source_type', this.sourceType);
       fd.append('dry_run', dryRun ? 'true' : 'false');
       fd.append('import_images', this.importImages ? 'true' : 'false');
+      if (this.mode === 'pricing' && this.sourceType === 'sell'
+          && this.useThreshold && this.maxChangePct > 0) {
+        fd.append('max_change_pct', String(this.maxChangePct));
+      }
       try {
         const resp = await fetch('/products/import-run', { method: 'POST', body: fd });
         if (!resp.ok) { this.error = 'Import failed (HTTP ' + resp.status + ').'; }
