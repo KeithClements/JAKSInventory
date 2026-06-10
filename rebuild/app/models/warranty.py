@@ -40,6 +40,9 @@ class WarrantyClaim(Base):
     warranty_type: Mapped[str] = mapped_column(
         String(20), nullable=False, default=WarrantyType.VENDOR
     )
+    # R2 — engine serial number. PAI / Interstate-McBee reject claims without the
+    # ESN, so it lives on the claim itself (ESNLookup below stays a Phase-3 stub).
+    esn: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     failure_description: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
     # ── Vendor Submission & Decision ──────────────────────────────────────────

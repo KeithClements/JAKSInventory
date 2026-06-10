@@ -1081,3 +1081,72 @@ def po_pdf(po_id: int, request: Request, db: Session = Depends(get_db)):
         fallback_print_url=f"/purchase-orders/{po_id}/print",
         download_filename=po.po_number,
     )
+
+
+@router.get("/{po_id}/receiving-slip", response_class=HTMLResponse)
+def po_receiving_slip(po_id: int, request: Request, db: Session = Depends(get_db)):
+    """R2 — warehouse receiving slip (dock check-off sheet).
+
+    Print-styled internal document for checking a delivery against the PO:
+    one row per line with SKU, title, vendor part #, qty ordered, qty received
+    so far, qty outstanding, and a blank write-in check-off column. No money
+    columns — the dock doesn't need costs. Opened in a new tab from the
+    Receiving Queue (same idiom as the PO print button).
+    """
+    po = (
+        db.query(PurchaseOrder)
+        .options(
+            joinedload(PurchaseOrder.vendor),
+            joinedload(PurchaseOrder.lines).joinedload(POLine.product),
+        )
+        .filter(PurchaseOrder.id == po_id)
+        .first()
+    )
+    if po is None:
+        return RedirectResponse("/purchase-orders/", status_code=303)
+
+    company = get_company_dict(db)
+    company_addr_lines = [
+        ln.strip() for ln in (company.get("address") or "").splitlines() if ln.strip()
+    ]
+    if company.get("phone"):
+        company_addr_lines.append(company["phone"])
+
+    # Vendor part numbers: prefer the active source for THIS PO's vendor,
+    # fall back to the product's preferred source. Keyed by product_id.
+    from app.models.product import ProductVendorSource
+
+    product_ids = [ln.product_id for ln in po.lines if ln.product_id]
+    vendor_part_map: dict[int, str] = {}
+    if product_ids:
+        sources = (
+            db.query(ProductVendorSource)
+            .filter(
+                ProductVendorSource.product_id.in_(product_ids),
+                ProductVendorSource.vendor_id == po.vendor_id,
+                ProductVendorSource.is_active == True,  # noqa: E712
+            )
+            .all()
+        )
+        vendor_part_map = {
+            s.product_id: s.vendor_part_number
+            for s in sources
+            if s.vendor_part_number
+        }
+        for ln in po.lines:
+            if ln.product_id and ln.product_id not in vendor_part_map and ln.product:
+                src = ln.product.preferred_vendor_source
+                if src and src.vendor_part_number:
+                    vendor_part_map[ln.product_id] = src.vendor_part_number
+
+    return templates.TemplateResponse(
+        request,
+        "purchase_orders/receiving_slip_print.html",
+        {
+            "po": po,
+            "company": company,
+            "company_addr_lines": company_addr_lines,
+            "vendor_addr_lines": vendor_address_lines(po.vendor),
+            "vendor_part_map": vendor_part_map,
+        },
+    )

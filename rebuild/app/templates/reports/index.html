@@ -97,6 +97,16 @@
       </div>
     </a>
 
+    <a href="/reports/low-stock" class="card hover:shadow-md transition-shadow">
+      <div class="card-body">
+        <p class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Inventory</p>
+        <p class="mt-1 text-base font-semibold text-gray-900">Low Stock / Reorder</p>
+        <p class="mt-1 text-sm text-gray-500">
+          {{ low_stock_count }} item{{ 's' if low_stock_count != 1 }} at or below reorder point — est. ${{ '%.2f' % low_stock_order_cost }} to restock. Printable reorder list with vendor part #s.
+        </p>
+      </div>
+    </a>
+
     <a href="/reports/open-pos" class="card hover:shadow-md transition-shadow">
       <div class="card-body">
         <p class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Purchasing</p>

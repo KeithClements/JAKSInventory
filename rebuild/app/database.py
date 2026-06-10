@@ -251,6 +251,10 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     # create_all DB). Defaults match the model (pack_qty=1, is_reman=False).
     ("products",           "pack_qty",      "INTEGER NOT NULL DEFAULT 1"),
     ("products",           "is_reman",      "BOOLEAN NOT NULL DEFAULT 0"),
+
+    # ── R2 — warranty claim ESN (PAI / Interstate-McBee reject claims without
+    #    the engine serial number; column on the claim, ESNLookup stays Phase-3) ─
+    ("warranty_claims", "esn", "VARCHAR(100) NOT NULL DEFAULT ''"),
 ]
 
 

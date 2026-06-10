@@ -3,6 +3,41 @@
 {% block heading %}Payment #{{ payment.id }}{% endblock %}
 
 {% block header_actions %}
+  {# ── Phase 1B — QuickBooks payment push ──
+     Gate (mirrors the invoice workspace's sync-status idiom): only an APPLIED
+     payment whose every active allocation targets an already-synced invoice
+     (qbo_invoice_id present) can be pushed — the QBO Payment links to those
+     invoices' QBO ids, so the invoice must be in QuickBooks first. Connectivity
+     is handled fail-soft by the route (an unconnected push just flashes an error),
+     the same as the invoice push. #}
+  {% set ns = namespace(all_synced=true, has_alloc=false) %}
+  {% for alloc in active_allocations %}
+    {% set ns.has_alloc = true %}
+    {% if not (alloc.invoice and alloc.invoice.qbo_invoice_id) %}{% set ns.all_synced = false %}{% endif %}
+  {% endfor %}
+
+  {% if payment.qbo_payment_id %}
+    <span class="inline-flex items-center gap-1 rounded-md bg-green-50 border border-green-200 text-green-700 px-2.5 py-1 text-xs font-medium"
+          title="Synced to QuickBooks (id {{ payment.qbo_payment_id }})">
+      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+      </svg>
+      QBO Synced
+    </span>
+  {% elif payment.status == PaymentStatus.APPLIED and ns.has_alloc and ns.all_synced %}
+    <form method="post" action="/qbo/push-payment/{{ payment.id }}" class="inline">
+      <button type="submit" class="btn-secondary btn-sm"
+        {% if payment.qbo_sync_status == 'error' and payment.qbo_sync_error %}title="Last error: {{ payment.qbo_sync_error }}"{% endif %}>
+        {% if payment.qbo_sync_status == 'error' %}Retry QBO push{% else %}Push to QBO{% endif %}
+      </button>
+    </form>
+  {% elif payment.status == PaymentStatus.APPLIED and ns.has_alloc and not ns.all_synced %}
+    <span class="inline-flex items-center gap-1 rounded-md bg-gray-50 border border-gray-200 text-gray-500 px-2.5 py-1 text-xs font-medium"
+          title="Push the applied invoice(s) to QuickBooks first — the payment links to them.">
+      Sync invoice(s) to QBO first
+    </span>
+  {% endif %}
+
   <a href="/payments/" class="btn-secondary btn-sm">← Payments</a>
 {% endblock %}
 

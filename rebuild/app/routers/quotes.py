@@ -421,6 +421,7 @@ async def workspace(
             # P2-D7 — structured Mark-Lost reason picker (UI wires the dropdown).
             "lost_reasons": list(LostReason),
             "lost_reason_labels": LOST_REASON_LABELS,
+            "LostReason": LostReason,
             # Standardized engine make/model cascading picker (header).
             "engine_makes": ENGINE_MAKES,
             "engine_models_by_make": ENGINE_MODELS_BY_MAKE,
@@ -1016,18 +1017,26 @@ async def mark_lost(
     lost_reason: str = Form(""),
     note: str = Form(""),
     competitor_name: str = Form(""),
-    competitor_price: float | None = Form(None),
+    competitor_price: str = Form(""),
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
     # P2-D7 — structured lost-reason picker (reason + optional note; competitor
     # name/price when reason = competitor). Free text still tolerated (→ OTHER).
+    # competitor_price arrives as a raw form string: a blank <input type=number>
+    # submits "" which a `float | None` param would 422 on — coerce here instead.
+    try:
+        comp_price: float | None = (
+            float(competitor_price) if competitor_price.strip() else None
+        )
+    except ValueError:
+        comp_price = None
     QuoteService(db, user_id).mark_lost(
         quote_id,
         lost_reason or "No reason given",
         note=note,
         competitor_name=competitor_name or None,
-        competitor_price=competitor_price,
+        competitor_price=comp_price,
     )
     return RedirectResponse(f"/quotes/{quote_id}", status_code=303)
 
@@ -1040,6 +1049,20 @@ async def reactivate_quote(
 ):
     QuoteService(db, user_id).reactivate(quote_id)
     return RedirectResponse(f"/quotes/{quote_id}", status_code=303)
+
+
+@router.post("/{quote_id}/duplicate")
+async def duplicate_quote(
+    quote_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    # R2 — re-quote the same job: copy all lines into a fresh DRAFT quote.
+    # Allowed from any status (duplicating a converted/declined/expired quote
+    # into a fresh one is the whole point); the service owns numbering + cloning.
+    dup = QuoteService(db, user_id).duplicate_quote(quote_id)
+    # ?created=1 → base.html renders the green "Record created" flash banner.
+    return RedirectResponse(f"/quotes/{dup.id}?created=1", status_code=303)
 
 
 # ── Conversions ───────────────────────────────────────────────────────────────

@@ -15,8 +15,13 @@ Phase 2 — product catalog importer with TWO explicit modes (owner-locked):
                              ProductCostHistory when it changes.
        • source=competitor → upsert competitor_prices and append
                              competitor_price_history when price/shipping/core moves.
-     Never touches identity, name, category, description, images, cross-refs,
-     applications, warranty, or notes.
+                             ALSO upserts a competitor CrossReference per part #
+                             (R2 — competitor numbers must be searchable) with a
+                             GLOBAL collision guard: a normalized ref_number that
+                             already exists on a DIFFERENT product is skipped and
+                             counted (cross_ref_collisions), never duplicated.
+     Never touches identity, name, category, description, images, applications,
+     warranty, or notes (competitor cross-refs above are the one R2 exception).
 
 LOCKED RULES (do not violate):
   • Variant Price is OUR SELL price — never PAI cost.
@@ -37,7 +42,7 @@ from datetime import datetime
 
 from sqlalchemy import func
 
-from app.constants import CrossRefType, ProductStatus
+from app.constants import CrossRefStatus, CrossRefType, ProductStatus
 from app.services.classification_service import ClassificationService
 from app.services.sku_service import assemble_sku, derive_category_code, engine_code as _engine_code
 from app.models.product import (
@@ -47,6 +52,7 @@ from app.models.product import (
 from app.models.competitor import CompetitorPrice, CompetitorPriceHistory
 from app.models.vendor import Vendor
 from app.services.base import BaseService
+from app.utils import normalize_part
 
 _PAI_VENDOR_NAME = "PAI Industries"
 _PAI_VENDOR_CODE = "PAI"
@@ -528,9 +534,21 @@ class ProductImportService(BaseService):
             "mode": "pricing_update", "source": "competitor", "dry_run": dry_run,
             "rows": len(reader), "matched": 0, "skipped_no_sku": 0,
             "skipped_no_product": 0, "created": 0, "updated": 0, "unchanged": 0,
-            "history_appended": 0, "sample": [],
+            "history_appended": 0, "cross_refs_created": 0,
+            "cross_ref_collisions": 0, "cross_ref_collision_sample": [],
+            "sample": [],
         }
         sku_to_id = self._sku_to_id_map()
+        # R2 — competitor numbers must be searchable. Snapshot ALL existing
+        # cross-ref numbers (normalized → owning product ids) once per run for
+        # the global collision check; also dedupes within this file/run.
+        xref_owners: dict[str, set[int]] = {}
+        for _xpid, _xnum in self.db.query(
+            CrossReference.product_id, CrossReference.ref_number
+        ).all():
+            _nrn = normalize_part(_xnum or "")
+            if _nrn:
+                xref_owners.setdefault(_nrn, set()).add(_xpid)
         for raw in reader:
             row = {_norm(k): v for k, v in raw.items()}
             sku = _get(row, *_SKU_KEYS)
@@ -549,6 +567,34 @@ class ProductImportService(BaseService):
             part = _get(row, "competitor_part_number", "competitor_part", "their_part")
             ship = _to_float(_get(row, "shipping_price", "shipping")) or 0.0
             core = _to_float(_get(row, "core_charge", "core")) or 0.0
+
+            # R2 — upsert a competitor CrossReference for this part # so the
+            # quote-screen search finds the product by the competitor's number.
+            # Global collision guard: if the normalized number already exists on
+            # a DIFFERENT product, skip + count (no silent cross-product dupes).
+            # Already-on-this-product → no-op, so re-runs are idempotent.
+            npart = normalize_part(part)
+            if npart:
+                owners = xref_owners.get(npart)
+                if owners and pid not in owners:
+                    summary["cross_ref_collisions"] += 1
+                    if len(summary["cross_ref_collision_sample"]) < 5:
+                        summary["cross_ref_collision_sample"].append({
+                            "sku": sku, "competitor_part_number": part,
+                            "existing_product_ids": sorted(owners),
+                        })
+                elif not owners:
+                    summary["cross_refs_created"] += 1
+                    xref_owners.setdefault(npart, set()).add(pid)
+                    if not dry_run:
+                        self.db.add(CrossReference(
+                            product_id=pid, ref_type=CrossRefType.COMPETITOR,
+                            ref_number=part,
+                            brand=_get(row, "competitor_brand", "brand") or name,
+                            status=CrossRefStatus.FOUND,
+                            notes="Competitor pricing import",
+                        ))
+
             existing = self.db.query(CompetitorPrice).filter(
                 CompetitorPrice.product_id == pid,
                 CompetitorPrice.competitor_name == name,

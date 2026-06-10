@@ -15,6 +15,7 @@ Canonical routes (Series 1):
   GET /reports/open-pos              — POs not fully received
   GET /reports/outstanding-cores     — customer-owed cores still out
   GET /reports/lost-sales            — lost-sale log entries with competitor data
+  GET /reports/low-stock             — reorder worklist (at/below reorder point)
 
 Back-compat redirects from the previous URL shape are at the bottom of the file
 so existing sidebar/bookmark links keep working.
@@ -111,6 +112,8 @@ def reports_index(request: Request, db: Session = Depends(get_db)):
     overdue_count = 0
     mtd_tax_collected = 0.0
     lost_count = 0
+    low_stock_count = 0
+    low_stock_order_cost = 0.0
 
     try:
         ar = svc.get_ar_aging()
@@ -136,6 +139,9 @@ def reports_index(request: Request, db: Session = Depends(get_db)):
         mtd_tax_collected = tax_data["totals"]["tax_collected"]
         lost_mtd = svc.get_lost_sales(month_start, today)
         lost_count = lost_mtd["totals"]["count"]
+        low_stock = svc.get_low_stock()
+        low_stock_count = low_stock["totals"]["item_count"]
+        low_stock_order_cost = low_stock["totals"]["total_order_cost"]
     except Exception:
         log.exception("reports_index: ReportService failed")
         error_message = "Could not load report snapshot. Check server logs for details."
@@ -162,6 +168,8 @@ def reports_index(request: Request, db: Session = Depends(get_db)):
             "overdue_count":      overdue_count,
             "mtd_tax_collected":  mtd_tax_collected,
             "lost_count":         lost_count,
+            "low_stock_count":      low_stock_count,
+            "low_stock_order_cost": low_stock_order_cost,
         },
     )
 
@@ -539,6 +547,67 @@ def reports_lost_sales(
             "totals": totals,
             "error_message": error_message,
         },
+    )
+
+
+# ── Low Stock / Reorder ──────────────────────────────────────────────────────
+
+@router.get("/low-stock", response_class=HTMLResponse)
+def reports_low_stock(request: Request, db: Session = Depends(get_db)):
+    error_message = None
+    today = date.today()
+    rows: list = []
+    totals = {"item_count": 0, "stockout_count": 0, "total_suggested_qty": 0,
+              "total_order_cost": 0.0, "no_vendor_count": 0}
+    try:
+        data = ReportService(db).get_low_stock()
+        today = data["as_of"]
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_low_stock failed")
+        error_message = "Could not load low stock data. Check server logs for details."
+
+    return templates.TemplateResponse(
+        request,
+        "reports/low_stock.html",
+        {
+            "today": today,
+            "rows": rows,
+            "totals": totals,
+            "error_message": error_message,
+        },
+    )
+
+
+@router.get("/low-stock/export.csv")
+def reports_low_stock_export(db: Session = Depends(get_db)):
+    data = ReportService(db).get_low_stock()
+    return _csv_response(
+        ["sku", "title", "category", "qty_on_hand", "qty_committed",
+         "qty_available", "qty_on_order", "reorder_point", "max_stock_level",
+         "suggested_order_qty", "vendor", "vendor_part_number", "vendor_cost",
+         "est_order_cost"],
+        [
+            [
+                r["sku"],
+                r["title"],
+                r["category"],
+                r["qty_on_hand"],
+                r["qty_committed"],
+                r["qty_available"],
+                r["qty_on_order"],
+                r["reorder_point"],
+                r["max_stock_level"] if r["max_stock_level"] is not None else "",
+                r["suggested_qty"],
+                r["vendor_name"] or "",
+                r["vendor_part_number"] or "",
+                f"{r['vendor_cost']:.2f}" if r["vendor_cost"] is not None else "",
+                f"{r['est_order_cost']:.2f}",
+            ]
+            for r in data["rows"]
+        ],
+        f"low_stock_{data['as_of'].isoformat()}.csv",
     )
 
 

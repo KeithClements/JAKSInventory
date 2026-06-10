@@ -49,6 +49,13 @@
               <option value="{{ PaymentMethod.CREDIT_CARD }}">Credit Card</option>
               <option value="{{ PaymentMethod.ACH }}">ACH / Wire</option>
             </select>
+            {# R2 — card deposits on surcharge-flagged customers collect the fee
+               (same R1-3 rule as invoice payments). Disclose it up front. #}
+            {% if so.customer and (so.customer.card_surcharge_pct or 0) > 0 %}
+            <p class="text-[11px] text-gray-400 mt-1">
+              Credit card adds a {{ '%g' % so.customer.card_surcharge_pct }}% surcharge.
+            </p>
+            {% endif %}
           </div>
           <button type="submit" class="btn-primary w-full justify-center">Record Deposit</button>
         </form>
@@ -157,6 +164,7 @@
 
 {% block content %}
 {% from "macros/linked_docs.html" import linked_strip %}
+{% from "macros/engine_picker.html" import engine_picker %}
 {% import "macros/customer_flags.html" as flagmacro %}
 {% import "macros/credit_status.html" as creditmacro %}
 <div class="max-w-6xl space-y-3"
@@ -300,24 +308,23 @@
             <span class="text-sm text-gray-700">{{ so.esn or '—' }}</span>
             {% endif %}
           </div>
+          {% if editable %}
+          {# Engine Make / Model — standardized cascading dropdowns (replaces free
+             text; same macro as the quote workspace). Renders two grid cells via
+             display:contents and submits engine_manufacturer / engine_model
+             exactly as before, so the header autosave + carry-forward stay
+             unchanged. Legacy free-text values are preserved as "Other". #}
+          {{ engine_picker(so.engine_manufacturer, so.engine_model, engine_makes, engine_models_by_make) }}
+          {% else %}
           <div>
             <label class="form-label text-xs">Engine Make</label>
-            {% if editable %}
-            <input type="text" name="engine_manufacturer" value="{{ so.engine_manufacturer or '' }}" placeholder="Cummins, DD, etc."
-                   class="form-input text-sm" />
-            {% else %}
             <span class="text-sm text-gray-700">{{ so.engine_manufacturer or '—' }}</span>
-            {% endif %}
           </div>
           <div>
             <label class="form-label text-xs">Engine Model</label>
-            {% if editable %}
-            <input type="text" name="engine_model" value="{{ so.engine_model or '' }}" placeholder="ISX15, S60, etc."
-                   class="form-input text-sm" />
-            {% else %}
             <span class="text-sm text-gray-700">{{ so.engine_model or '—' }}</span>
-            {% endif %}
           </div>
+          {% endif %}
           <div>
             <label class="form-label text-xs">Job #</label>
             {% if editable %}

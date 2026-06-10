@@ -104,6 +104,7 @@
 
 {% block content %}
 {% from "macros/linked_docs.html" import linked_strip %}
+{% from "macros/engine_picker.html" import engine_picker %}
 {% import "macros/customer_flags.html" as flagmacro %}
 {% import "macros/credit_status.html" as creditmacro %}
 {% import "macros/intelligence.html" as intel %}
@@ -340,22 +341,23 @@
             <p class="text-sm text-gray-700">{{ invoice.esn or '—' }}</p>
             {% endif %}
           </div>
+          {% if editable %}
+          {# Engine Make / Model — standardized cascading dropdowns (replaces free
+             text; same macro as the quote workspace). Renders two grid cells via
+             display:contents and submits engine_manufacturer / engine_model
+             exactly as before, so the header autosave + carry-forward stay
+             unchanged. Legacy free-text values are preserved as "Other". #}
+          {{ engine_picker(invoice.engine_manufacturer, invoice.engine_model, engine_makes, engine_models_by_make) }}
+          {% else %}
           <div>
             <label class="form-label">Engine Make</label>
-            {% if editable %}
-            <input type="text" name="engine_manufacturer" value="{{ invoice.engine_manufacturer or '' }}" class="form-input text-sm"/>
-            {% else %}
             <p class="text-sm text-gray-700">{{ invoice.engine_manufacturer or '—' }}</p>
-            {% endif %}
           </div>
           <div>
             <label class="form-label">Engine Model</label>
-            {% if editable %}
-            <input type="text" name="engine_model" value="{{ invoice.engine_model or '' }}" class="form-input text-sm"/>
-            {% else %}
             <p class="text-sm text-gray-700">{{ invoice.engine_model or '—' }}</p>
-            {% endif %}
           </div>
+          {% endif %}
           <div>
             <label class="form-label">Truck / Job</label>
             {% if editable %}

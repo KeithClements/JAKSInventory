@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 
 from app.constants import (
     AuditAction, EntityType, FulfillmentSource, InventoryTxnType,
-    LineType, PaymentTerms, Permission, POStatus, SOLineSource, SOLineStatus, SOPaymentMode, SOStatus,
+    LineType, PaymentMethod, PaymentTerms, Permission, POStatus, SOLineSource, SOLineStatus, SOPaymentMode, SOStatus,
 )
 from app.models.inventory import InventoryTransaction
 from app.models.product import Product
@@ -815,6 +815,17 @@ class SalesOrderService(BaseService):
             raise ValueError(f"Cannot collect deposit on a cancelled sales order")
 
         pay_svc = PaymentService(self.db, self.current_user_id)
+        # R2 — card deposits collect the CC surcharge exactly like invoice
+        # payments do (R1-3: card method + flagged). The SO has no
+        # apply_cc_surcharge column, so the flag derives from the customer the
+        # same way invoice creation seeds it (O6 — customer.card_surcharge_pct):
+        # a customer-level pct > 0 means "surcharge this customer's card
+        # payments" at that pct; NULL (no override — invoices likewise default
+        # apply_cc_surcharge=False) or 0.0 (explicitly disabled) → no surcharge.
+        _cust_pct = so.customer.card_surcharge_pct if so.customer else None
+        apply_surcharge = (
+            payment_method == PaymentMethod.CREDIT_CARD and (_cust_pct or 0.0) > 0
+        )
         payment = pay_svc.record_payment(
             customer_id=so.customer_id,
             amount_received=amount,
@@ -822,6 +833,8 @@ class SalesOrderService(BaseService):
             data={"notes": f"Deposit for SO {so.so_number}"},
             invoice_ids=None,  # unapplied — will be applied when invoice is generated
             sales_order_id=so.id,  # R3 — link payment to SO for fulfill-time allocation
+            apply_surcharge=apply_surcharge,
+            surcharge_pct=_cust_pct if apply_surcharge else None,
         )
         # PaymentService committed above; now update SO and commit separately.
         so.deposit_amount += amount
@@ -833,6 +846,7 @@ class SalesOrderService(BaseService):
                 "deposit_amount": amount,
                 "payment_method": payment_method,
                 "payment_id": payment.id,
+                "surcharge_amount": payment.surcharge_amount,
                 "running_deposit_total": so.deposit_amount,
             },
             notes=f"Deposit collected for SO {so.so_number}",

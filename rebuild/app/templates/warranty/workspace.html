@@ -95,6 +95,16 @@
             <a href="/vendors/{{ claim.vendor.id }}" class="text-xs link">{{ claim.vendor.name }}</a>
           </div>
           {% endif %}
+          <div class="flex gap-3">
+            <span class="text-gray-400 w-24 shrink-0 text-xs">Type</span>
+            <span class="text-xs text-gray-700">{{ claim.warranty_type | replace('_', ' ') | title }}</span>
+          </div>
+          {% if claim.esn %}
+          <div class="flex gap-3">
+            <span class="text-gray-400 w-24 shrink-0 text-xs">ESN</span>
+            <span class="font-mono text-xs text-gray-700">{{ claim.esn }}</span>
+          </div>
+          {% endif %}
           <div class="flex items-center gap-3">
             <span class="text-gray-400 w-24 shrink-0 text-xs">Status</span>
             <span class="{{ status_badges.get(claim.status, 'badge-gray') }}">
@@ -281,6 +291,36 @@
     </div>
     {% endif %}
   </div>
+
+  {# ── Record vendor credit (VENDOR_APPROVED) — what the vendor actually paid ── #}
+  {% if claim.status == WarrantyStatus.VENDOR_APPROVED and claim.vendor %}
+  <div class="card" x-data="{ open: false }">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Vendor Credit (JAKS Side)</h2>
+        <p class="text-xs text-gray-400 mt-0.5">
+          Record the credit {{ claim.vendor.name }} actually issued to JAKS — independent of the customer credit.
+        </p>
+      </div>
+      <button type="button" @click="open = !open"
+              class="text-sm text-brand-600 hover:text-brand-700 font-medium transition-colors"
+              x-text="open ? 'Cancel' : 'Record Vendor Credit'">
+      </button>
+    </div>
+    <form x-show="open" style="display:none" method="post" action="/warranty/{{ claim.id }}/vendor-credit"
+          class="px-5 py-3 border-t border-gray-100 flex items-center gap-3">
+      <input type="number" name="credit_amount" step="0.01" min="0.01" required
+             value="{{ '%.2f' % claim.total_credit_amount if claim.total_credit_amount > 0 else '' }}"
+             placeholder="Amount ($)"
+             class="w-32 border border-gray-300 rounded-lg px-3 py-2 text-sm text-right font-mono
+                    focus:outline-none focus:ring-1 focus:ring-brand-400" />
+      <input type="text" name="reference" placeholder="Vendor credit memo # / reference (optional)"
+             class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm
+                    focus:outline-none focus:ring-1 focus:ring-brand-400" />
+      <button type="submit" class="btn-primary shrink-0">Record Credit</button>
+    </form>
+  </div>
+  {% endif %}
 
   {# ── Deny notification (VENDOR_DENIED) ── #}
   {% if claim.status == WarrantyStatus.VENDOR_DENIED %}

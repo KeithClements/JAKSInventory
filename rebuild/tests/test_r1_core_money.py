@@ -284,19 +284,63 @@ def test_credit_difference_charged_to_customer_reverses_once(db):
     _accepted_return(db, core, qty=2)   # credit issued: 2 × 50 = 100
     svc.submit_to_vendor(core.id, tracking_number="1Z-R1-4")
 
-    # expected vendor credit 60, vendor paid 0 — staff charges the customer
+    # expected vendor credit 60, vendor paid 0 — shortfall 60 passes to the
+    # customer (owner decision 2026-06-10: charge the shortfall, never the
+    # whole credit) — customer keeps 100 - 60 = 40 of the issued credit
     svc.process_vendor_credit_difference(
         core.id, actual_credit=0.0,
         resolution=CoreDenialResolution.CHARGED_TO_CUSTOMER)
     db.refresh(cust)
-    assert cust.credit_balance == start  # full issued credit reversed
+    assert cust.credit_balance == start + 40.0
 
     # second call — idempotent
     svc.process_vendor_credit_difference(
         core.id, actual_credit=0.0,
         resolution=CoreDenialResolution.CHARGED_TO_CUSTOMER)
     db.refresh(cust)
-    assert cust.credit_balance == start
+    assert cust.credit_balance == start + 40.0
+
+
+def test_partial_shortfall_charges_only_the_shortfall(db):
+    """Vendor pays 40 of the expected 60 — only the $20 shortfall is pulled
+    back from the customer's issued credit; an outright denial via
+    record_vendor_denial still reverses in full (covered elsewhere)."""
+    from app.constants import CoreDenialResolution
+    cust = _customer(db); ven = _vendor(db); prod = _product(db)
+    core = _make_core(db, customer=cust, vendor=ven, product=prod, qty=2,
+                      cust_charge=50.0, vend_charge=30.0)
+    start = cust.credit_balance
+
+    svc = _svc(db)
+    _accepted_return(db, core, qty=2)   # credit issued: 2 × 50 = 100
+    svc.submit_to_vendor(core.id, tracking_number="1Z-R1-SF-1")
+
+    svc.process_vendor_credit_difference(
+        core.id, actual_credit=40.0,
+        resolution=CoreDenialResolution.CHARGED_TO_CUSTOMER)
+    db.refresh(cust)
+    assert cust.credit_balance == start + 80.0, \
+        "only the 20.00 vendor shortfall comes back from the customer"
+
+
+def test_no_shortfall_means_no_chargeback(db):
+    """Vendor paid in full — CHARGED_TO_CUSTOMER has nothing to pass on."""
+    from app.constants import CoreDenialResolution
+    cust = _customer(db); ven = _vendor(db); prod = _product(db)
+    core = _make_core(db, customer=cust, vendor=ven, product=prod,
+                      cust_charge=50.0, vend_charge=30.0)
+    start = cust.credit_balance
+
+    svc = _svc(db)
+    _accepted_return(db, core)
+    svc.submit_to_vendor(core.id, tracking_number="1Z-R1-SF-2")
+
+    svc.process_vendor_credit_difference(
+        core.id, actual_credit=30.0,
+        resolution=CoreDenialResolution.CHARGED_TO_CUSTOMER)
+    db.refresh(cust)
+    assert cust.credit_balance == start + 50.0, \
+        "no shortfall → customer keeps the full issued credit"
 
 
 def test_check_refund_not_auto_reversed(db):

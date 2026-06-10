@@ -33,7 +33,7 @@ from datetime import datetime
 from app.constants import (
     AuditAction, EntityType,
     VendorCreditStatus, VendorCreditType,
-    WarrantyDecision, WarrantyResolution, WarrantyStatus,
+    WarrantyDecision, WarrantyResolution, WarrantyStatus, WarrantyType,
 )
 from app.models.warranty import WarrantyClaim, WarrantyClaimLine
 from app.settings_utils import bump_counter
@@ -52,14 +52,19 @@ class WarrantyService(BaseService):
         failure_description: str,
         lines: list[dict],
         notes: str = "",
+        warranty_type: str = WarrantyType.VENDOR,
+        esn: str = "",
     ) -> WarrantyClaim:
         """
         Create a warranty claim in DRAFT status. Generates WC-YEAR-NNNN.
         lines: list of {invoice_line_id?, product_id?, qty_claimed, credit_amount?}
         At least one line is required.
+        esn: engine serial number — required by PAI/Interstate-McBee on submission.
         """
         if not lines:
             raise ValueError("Warranty claim must have at least one line")
+        if warranty_type not in (WarrantyType.VENDOR, WarrantyType.JAKS_EXTENDED):
+            warranty_type = WarrantyType.VENDOR
 
         year = datetime.utcnow().year
         claim_number = bump_counter(self.db, "next_warranty_number", "WC", year)
@@ -70,6 +75,8 @@ class WarrantyService(BaseService):
             invoice_id=invoice_id,
             vendor_id=vendor_id,
             status=WarrantyStatus.DRAFT,
+            warranty_type=warranty_type,
+            esn=(esn or "").strip(),
             failure_description=failure_description,
             vendor_decision=WarrantyDecision.PENDING,
             total_credit_amount=0.0,
@@ -90,6 +97,8 @@ class WarrantyService(BaseService):
                 "customer_id": customer_id,
                 "invoice_id": invoice_id,
                 "vendor_id": vendor_id,
+                "warranty_type": warranty_type,
+                "esn": claim.esn,
                 "line_count": len(lines),
             },
         )
@@ -124,6 +133,13 @@ class WarrantyService(BaseService):
         if not claim.claim_lines:
             raise ValueError(
                 f"Claim {claim.claim_number} has no lines — add at least one before submitting"
+            )
+        # R2 — a vendor-warranty claim with no vendor has nobody to submit to.
+        # (JAKS-extended claims are absorbed in-house, so no vendor is required.)
+        if claim.warranty_type == WarrantyType.VENDOR and not claim.vendor_id:
+            raise ValueError(
+                f"Claim {claim.claim_number} has no vendor assigned — "
+                "assign a vendor before submitting"
             )
 
         old_status = claim.status

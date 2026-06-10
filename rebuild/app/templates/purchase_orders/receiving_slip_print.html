@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ po.po_number }} — Receiving Slip</title>
+  {% include "documents/_styles.html" %}
+  <style>
+    /* Blank write-in line for the dock check-off column */
+    .checkoff-line {
+      display: inline-block;
+      width: 52px;
+      border-bottom: 1px solid #6b7280;
+      line-height: 1.1;
+    }
+    .checkoff-cell { white-space: nowrap; color: #6b7280; font-size: 8.5pt; }
+  </style>
+</head>
+<body>
+
+{% include "documents/_controls.html" %}
+
+<div class="page-shell">
+
+  {# ── Header ──────────────────────────────────────────────────────────── #}
+  <div class="doc-header">
+    {% include "documents/_company_header.html" %}
+    <div class="doc-right">
+      <div class="doc-label">Receiving Slip</div>
+      <div class="doc-number">{{ po.po_number }}</div>
+      <div class="doc-dates">
+        {% if po.ordered_at %}
+          <strong>Ordered:</strong> {{ po.ordered_at.strftime('%B %d, %Y') }}<br>
+        {% else %}
+          <strong>Date:</strong> {{ po.created_at.strftime('%B %d, %Y') }}<br>
+        {% endif %}
+        {% if po.expected_at %}
+          <strong>Expected:</strong> {{ po.expected_at.strftime('%B %d, %Y') }}<br>
+        {% endif %}
+        {% with status_class=po.status, status_label=(po.status|upper|replace('_', ' ')) %}
+          {% include "documents/_status_pill.html" %}
+        {% endwith %}
+      </div>
+    </div>
+  </div>
+
+  {# ── Vendor + Deliver-To ─────────────────────────────────────────────── #}
+  <div class="party-row">
+    {% with party_label="Vendor",
+            party_name=(po.vendor.name if po.vendor else "—"),
+            party_lines=vendor_addr_lines,
+            party_contact=None,
+            party_anonymous=False %}
+      {% include "documents/_party_block.html" %}
+    {% endwith %}
+    {% with party_label="Deliver To",
+            party_name=(company.name or "JAKS Parts"),
+            party_lines=company_addr_lines,
+            party_contact=None,
+            party_anonymous=False %}
+      {% include "documents/_party_block.html" %}
+    {% endwith %}
+  </div>
+
+  {# ── Reference ───────────────────────────────────────────────────────── #}
+  {% if po.vendor_confirmation_number or po.is_drop_ship %}
+  <div style="margin-bottom:18px;">
+    <div class="party-label">Reference</div>
+    <div class="ref-block">
+      {% if po.vendor_confirmation_number %}
+      <div class="ref-row">
+        <span class="ref-label">Vendor Confirm #</span>
+        <span class="ref-val">{{ po.vendor_confirmation_number }}</span>
+      </div>
+      {% endif %}
+      {% if po.is_drop_ship %}
+      <div class="ref-row">
+        <span class="ref-label">Order Type</span>
+        <span class="ref-val">Drop Ship</span>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Line items — no money columns, dock use only ────────────────────── #}
+  <table class="lines">
+    <thead>
+      <tr>
+        <th class="ctr" style="width:28px">#</th>
+        <th class="lft" style="width:110px">SKU</th>
+        <th class="lft">Item</th>
+        <th class="lft" style="width:110px">Vendor Part #</th>
+        <th class="rgt" style="width:58px">Ordered</th>
+        <th class="rgt" style="width:62px">Received</th>
+        <th class="rgt" style="width:74px">Outstanding</th>
+        <th class="ctr" style="width:92px">Check-Off</th>
+      </tr>
+    </thead>
+    <tbody>
+      {%- set ns = namespace(row=0) -%}
+      {% for line in po.lines %}
+        {%- if line.qty_cancelled and line.qty_cancelled >= line.qty_ordered -%}
+          {# skip fully cancelled lines — nothing to receive #}
+        {%- else -%}
+          {%- set ns.row = ns.row + 1 -%}
+          <tr{% if ns.row % 2 == 0 %} class="even-row"{% endif %}>
+            <td class="td-num">{{ ns.row }}</td>
+            <td>
+              <span style="font-family:monospace;font-size:9pt;color:#374151;">
+                {{ (line.product.sku if line.product and line.product.sku else "—") }}
+              </span>
+            </td>
+            <td>
+              {{ line.description or (line.product.title if line.product else "—") }}
+              {% if line.qty_cancelled %}
+              <span class="badge badge-bo" style="margin-top:2px;">
+                {{ line.qty_cancelled }} cancelled
+              </span>
+              {% endif %}
+            </td>
+            <td>
+              <span style="font-family:monospace;font-size:8.5pt;color:#374151;">
+                {{ vendor_part_map.get(line.product_id, '') or "—" }}
+              </span>
+            </td>
+            <td class="td-rgt">{{ line.qty_ordered }}</td>
+            <td class="td-rgt">{{ line.qty_received }}</td>
+            <td class="td-rgt" {% if line.qty_outstanding > 0 %}style="font-weight:700;"{% endif %}>
+              {{ line.qty_outstanding }}
+            </td>
+            <td class="td-ctr checkoff-cell"><span class="checkoff-line">&nbsp;</span> received</td>
+          </tr>
+        {%- endif -%}
+      {% else %}
+        <tr><td colspan="8" class="td-empty">No line items.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {# ── Unit totals (no money) ──────────────────────────────────────────── #}
+  <div class="totals-wrap">
+    <div class="totals-inner">
+      <div class="t-row">
+        <span class="lbl">Units Ordered</span>
+        <span class="val">{{ po.lines | sum(attribute='qty_ordered') }}</span>
+      </div>
+      <div class="t-row">
+        <span class="lbl">Units Received</span>
+        <span class="val">{{ po.lines | sum(attribute='qty_received') }}</span>
+      </div>
+      <div class="t-row grand">
+        <span class="lbl">Units Outstanding</span>
+        <span class="val">{{ po.lines | sum(attribute='qty_outstanding') }}</span>
+      </div>
+    </div>
+  </div>
+
+  {# ── Notes ───────────────────────────────────────────────────────────── #}
+  {% if po.notes and po.notes.strip() %}
+  <div class="notes-section">
+    <div class="sec-label">Notes</div>
+    <div class="notes-body">{{ po.notes.strip() }}</div>
+  </div>
+  {% endif %}
+
+  {# ── Sign-off ────────────────────────────────────────────────────────── #}
+  <div class="sig-row">
+    <div class="sig-cell">
+      <div class="sig-line">Received by</div>
+    </div>
+    <div class="sig-cell">
+      <div class="sig-line">Date</div>
+    </div>
+    <div class="sig-cell">
+      <div class="sig-line">Carrier / Tracking #</div>
+    </div>
+  </div>
+
+  <div class="doc-footer">
+    Internal receiving document — verify counts against packing slip, then record
+    receipt on PO {{ po.po_number }}.
+  </div>
+
+</div>{# /page-shell #}
+
+{% include "documents/_auto_print.html" %}
+</body>
+</html>

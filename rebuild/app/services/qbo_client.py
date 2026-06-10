@@ -12,13 +12,22 @@ SAFETY: nothing here is called during invoice finalize/payment. It is only invok
 explicitly (OAuth routes + one-click push). Reads are lazy, so an unconfigured /
 disconnected QBO never affects app startup or the money paths.
 
-Token encryption is a deliberate follow-up: `cryptography` is not installed, and
-`qbo_client_secret` is already stored in settings in clear on this 2-user LAN box.
-Flagged in the morning report — add Fernet-at-rest before this touches production.
+Token encryption at rest (Fernet): secrets (qbo_access_token / qbo_refresh_token,
+and any qbo_client_secret written elsewhere) are encrypted in the settings table
+with a key taken from the ``JAKS_FERNET_KEY`` env var. The scheme is backward- AND
+forward-compatible:
+  * On WRITE — encrypt only when the key is set; otherwise store plaintext and log a
+    one-line warning (so behaviour is unchanged on a box that never sets the key).
+  * On READ — an ``enc:`` prefix means Fernet-decrypt; anything else is treated as
+    legacy plaintext. Reads are therefore deterministic (prefix-driven), not
+    exception-driven, and a decrypt failure falls back to plaintext rather than
+    crashing. None of this is on a money path.
 """
 from __future__ import annotations
 
 import base64
+import logging
+import os
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -27,6 +36,72 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.settings_utils import get_setting_value_db, set_setting_value_db
+
+log = logging.getLogger(__name__)
+
+# ── Fernet token encryption at rest ─────────────────────────────────────────────
+_FERNET_ENV = "JAKS_FERNET_KEY"
+_ENC_PREFIX = "enc:"          # marks a stored value as Fernet-encrypted
+_warned_no_key = False        # so the "no key → plaintext" warning logs once, not per-call
+
+
+def _fernet():
+    """Return a Fernet instance from JAKS_FERNET_KEY, or None when the env var is
+    unset/invalid. An invalid key degrades to plaintext with a warning rather than
+    raising — a bad key must never take down OAuth or a push."""
+    key = os.environ.get(_FERNET_ENV, "").strip()
+    if not key:
+        return None
+    try:
+        from cryptography.fernet import Fernet
+        return Fernet(key.encode())
+    except Exception:
+        log.warning(
+            "%s is set but is not a valid Fernet key (urlsafe-base64, 32 bytes) — "
+            "QBO secrets will be stored in PLAINTEXT.", _FERNET_ENV
+        )
+        return None
+
+
+def _encrypt(value: str) -> str:
+    """Encrypt a secret for storage when a key is configured; else return it
+    unchanged (logging a one-time warning). Idempotent: an already-``enc:`` value
+    is never double-wrapped."""
+    global _warned_no_key
+    if not value or value.startswith(_ENC_PREFIX):
+        return value
+    f = _fernet()
+    if f is None:
+        if not _warned_no_key:
+            log.warning(
+                "%s is not set — QBO tokens are stored in PLAINTEXT in the settings "
+                "table. Set it to encrypt secrets at rest.", _FERNET_ENV
+            )
+            _warned_no_key = True
+        return value
+    return _ENC_PREFIX + f.encrypt(value.encode()).decode()
+
+
+def _decrypt(value: str) -> str:
+    """Resolve a stored secret to plaintext. ``enc:``-prefixed values are
+    Fernet-decrypted; everything else is treated as legacy plaintext. A decrypt
+    failure (wrong/rotated key, corrupt value) falls back to the raw stored string
+    instead of raising."""
+    if not value or not value.startswith(_ENC_PREFIX):
+        return value  # legacy plaintext — deterministic, no exception path
+    f = _fernet()
+    if f is None:
+        log.warning("Found an encrypted QBO secret but %s is not set — cannot decrypt.", _FERNET_ENV)
+        return value
+    try:
+        from cryptography.fernet import InvalidToken
+        try:
+            return f.decrypt(value[len(_ENC_PREFIX):].encode()).decode()
+        except InvalidToken:
+            log.warning("A QBO secret failed Fernet decryption — treating it as legacy plaintext.")
+            return value
+    except Exception:
+        return value
 
 # ── Intuit endpoints ──────────────────────────────────────────────────────────
 AUTHORIZE_URL = "https://appcenter.intuit.com/connect/oauth2"
@@ -79,14 +154,16 @@ class QBOConfig:
 
 def load_config(db: Session) -> QBOConfig:
     g = lambda k, d="": get_setting_value_db(db, k, d)  # noqa: E731
+    # Secrets are decrypt-on-read (enc: → Fernet, else legacy plaintext); the
+    # non-secret config (ids, realm, environment, redirect) stays plaintext.
     return QBOConfig(
         client_id=g("qbo_client_id").strip(),
-        client_secret=g("qbo_client_secret").strip(),
+        client_secret=_decrypt(g("qbo_client_secret")).strip(),
         realm_id=g("qbo_realm_id").strip(),
         environment=(g("qbo_environment", "sandbox").strip().lower() or "sandbox"),
         redirect_uri=(g("qbo_redirect_uri", DEFAULT_REDIRECT_URI).strip() or DEFAULT_REDIRECT_URI),
-        access_token=g("qbo_access_token").strip(),
-        refresh_token=g("qbo_refresh_token").strip(),
+        access_token=_decrypt(g("qbo_access_token")).strip(),
+        refresh_token=_decrypt(g("qbo_refresh_token")).strip(),
         token_expires_at=g("qbo_token_expires_at").strip(),
     )
 
@@ -130,9 +207,11 @@ def _store_tokens(db: Session, payload: dict) -> None:
     refresh = payload.get("refresh_token", "")
     expires_in = int(payload.get("expires_in", 3600) or 3600)
     expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat(timespec="seconds")
-    set_setting_value_db(db, "qbo_access_token", access, "QBO Access Token")
+    # Encrypt-on-write when a Fernet key is configured; plaintext (with a one-line
+    # warning) otherwise, so an unconfigured box behaves exactly as before.
+    set_setting_value_db(db, "qbo_access_token", _encrypt(access), "QBO Access Token")
     if refresh:  # Intuit rotates refresh tokens; keep the latest, never blank it
-        set_setting_value_db(db, "qbo_refresh_token", refresh, "QBO Refresh Token")
+        set_setting_value_db(db, "qbo_refresh_token", _encrypt(refresh), "QBO Refresh Token")
     set_setting_value_db(db, "qbo_token_expires_at", expires_at, "QBO access token expiry (ISO)")
 
 

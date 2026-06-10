@@ -54,7 +54,45 @@ class ReturnAuthorization(Base):
 
     # ── Computed ──────────────────────────────────────────────────────────────
     @property
+    def goods_received(self) -> bool:
+        """True once RAService.receive_goods has recorded a receipt on any line.
+
+        receive_goods stamps ``inspected_at`` on every line it processes in the
+        same transaction that flips status to RECEIVED, so this is the reliable
+        "goods actually came back" signal — unlike ``status``, it stays False
+        for an RA closed straight from OPEN (authorized but never received).
+        """
+        return any(ln.inspected_at is not None for ln in self.lines)
+
+    @property
     def total_credit(self) -> float:
+        """Credit due to the customer for this return — EXPECTED vs ACTUAL.
+
+        • Before goods come back (DRAFT/OPEN — no receive recorded on any
+          line): the EXPECTED credit, full authorized qty per line:
+              sum(unit_price * qty - restocking_fee)
+        • Once goods have been received (``goods_received`` — the RA reached
+          RECEIVED/CLOSED via receive_goods): the ACTUAL credit, counting only
+          what physically came back per line:
+              sum(max(0, unit_price * max(qty_returned_to_stock, 0)
+                         - restocking_fee))
+          A customer who returns 2 of 5 authorized items is credited for 2,
+          not 5. A line with nothing returned contributes $0 (its restocking
+          fee is not charged as negative credit), and a restocking fee can
+          never push a line negative.
+
+        An RA closed directly from OPEN (no receive step) keeps the expected
+        total — that path intentionally credits the full authorization.
+        RAService.close_ra applies the same rule when building the credit memo.
+        """
+        if self.goods_received:
+            total = 0.0
+            for ln in self.lines:
+                qty = max(ln.qty_returned_to_stock or 0, 0)
+                if qty <= 0:
+                    continue
+                total += max(0.0, (ln.unit_price * qty) - ln.restocking_fee)
+            return round(total, 2)
         return round(
             sum((ln.unit_price * ln.qty) - ln.restocking_fee for ln in self.lines), 2
         )
@@ -93,6 +131,17 @@ class ReturnLine(Base):
 
     @property
     def line_credit(self) -> float:
+        """Per-line credit — EXPECTED vs ACTUAL (mirrors RA.total_credit).
+
+        Once this line has a receive recorded (``inspected_at`` set by
+        RAService.receive_goods), only ``qty_returned_to_stock`` earns credit;
+        before that, the full authorized qty is the expected credit.
+        """
+        if self.inspected_at is not None:
+            qty = max(self.qty_returned_to_stock or 0, 0)
+            if qty <= 0:
+                return 0.0
+            return round(max(0.0, (self.unit_price * qty) - self.restocking_fee), 2)
         return round((self.unit_price * self.qty) - self.restocking_fee, 2)
 
 

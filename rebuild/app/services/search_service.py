@@ -6,7 +6,8 @@ Global search — the quote screen's live search bar hits this.
 Search priority (from quoting_requirements.md):
   1. JAKS part number (exact prefix match)
   2. OEM / cross-reference numbers (CrossReference table)
-  3. Competitor part numbers (CrossReference table, ref_type='competitor')
+  3. Competitor part numbers (CrossReference table, ref_type='competitor';
+     plus CompetitorPrice.competitor_part_number — R2)
   4. Description keyword (LIKE search, lower priority)
   5. Vendor part numbers (ProductVendorSource.vendor_part_number)
 
@@ -25,6 +26,7 @@ from sqlalchemy import or_
 from sqlalchemy import desc as sa_desc
 from sqlalchemy import func as sa_func
 
+from app.models.competitor import CompetitorPrice
 from app.models.customer import Customer
 from app.models.invoice import Invoice, InvoiceLine
 from app.models.product import CrossReference, Product, ProductVendorSource
@@ -38,7 +40,10 @@ from app.utils import calc_sell_price, normalize_part
 # SKU/cross-ref stored as "OK1", "ok 1", "OK.1", etc.  This is the ONE place the
 # app normalizes part numbers — it supersedes the per-endpoint de-dash patches
 # once screens move to /line-items/product-search.
-_NORM_SEPARATORS = ("-", " ", ".", "/", "_")
+# R2: also strips ( ) + # % so the column side agrees with the query side
+# (utils.normalize_part strips ALL non-alphanumerics) on the common cases —
+# a stored "3683512(C)" must match the query "3683512C".
+_NORM_SEPARATORS = ("-", " ", ".", "/", "_", "(", ")", "+", "#", "%")
 
 
 def _norm_col(col):
@@ -60,7 +65,7 @@ class ProductSearchResult:
     qty_on_hand: int
     vendor_name: str | None
     status: str
-    match_type: str          # "part_number" | "cross_ref" | "description" | "vendor_sku"
+    match_type: str          # "part_number" | "cross_ref" | "competitor" | "vendor_sku" | "description"
     cross_ref_number: str | None = None
     last_sold_price: float | None = None   # most recent invoice line price for this product
     last_sold_date: str | None = None      # formatted date of that sale (MM/DD/YY)
@@ -199,7 +204,28 @@ class SearchService(BaseService):
                     if len(results) >= limit:
                         break
 
-        # 5. Description keyword (lowest priority — raw prose, not part-normalized)
+            # 5. Competitor part number (CompetitorPrice table), normalized —
+            #    R2: a customer calling with an HHP/ATL/IMB number finds our part
+            #    even when no CrossReference row exists yet. Surfaces the matched
+            #    number the same way cross-ref matches do (cross_ref_number).
+            if len(results) < limit:
+                comp_hits = (
+                    self.db.query(CompetitorPrice, Product)
+                    .join(Product, CompetitorPrice.product_id == Product.id)
+                    .filter(_norm_col(CompetitorPrice.competitor_part_number).like(f"%{nq}%"))
+                    .filter(CompetitorPrice.is_active == True)  # noqa: E712
+                    .filter(Product.is_active == True if not include_inactive else True)  # noqa: E712
+                    .limit(limit)
+                    .all()
+                )
+                for cp, p in comp_hits:
+                    if p.id not in seen:
+                        seen.add(p.id)
+                        results.append(_to_result(p, "competitor", cross_ref_number=cp.competitor_part_number))
+                    if len(results) >= limit:
+                        break
+
+        # 6. Description keyword (lowest priority — raw prose, not part-normalized)
         if len(results) < limit:
             desc_hits = (
                 base_q.filter(

@@ -67,6 +67,12 @@
           <span class="ref-label">Type</span>
           <span class="ref-val">{{ claim.warranty_type | replace('_', ' ') | title }}</span>
         </div>
+        {% if claim.esn %}
+        <div class="ref-row">
+          <span class="ref-label">ESN</span>
+          <span class="ref-val">{{ claim.esn }}</span>
+        </div>
+        {% endif %}
         {% if invoice %}
         <div class="ref-row">
           <span class="ref-label">Invoice</span>

@@ -974,9 +974,10 @@ Add only — **no structure editing here**:
 > tile filters `credit_amount > 0` to stay gross). Tests **1307 → 1438 green** (+131; only
 > red = pre-existing W-4 template test). DEFERRED to R2: Fernet QBO-token encryption
 > (`cryptography` not in venv) and SO-deposit card surcharge (sales_order_service.py:818).
-> **OWNER DECISION open:** partial vendor core-shortfall resolved CHARGED_TO_CUSTOMER
-> reverses the FULL issued credit, not just the shortfall — aggressive; say the word to
-> make it shortfall-only.
+> **OWNER DECISION resolved 2026-06-10 ("shortfall"):** partial vendor core-shortfall
+> resolved CHARGED_TO_CUSTOMER now claws back only the shortfall (expected − actual),
+> capped at the remaining issued credit; outright denials still reverse in full.
+> `_charge_back_customer_credit(max_amount=…)` + 2 tests.
 
 | # | Fix | Where | Why (confirmed) |
 |---|---|---|---|
@@ -997,8 +998,27 @@ Add only — **no structure editing here**:
 | R1-15 | Security: session secret → env var (DB fallback); gate `JAKS_SKIP_AUTH`; **Fernet QBO tokens before connecting the real company** | `main.py:67`, `qbo_client.py` | Secret stored in the DB it protects; bare env var kills all auth |
 | R1-16 | Block non-PAI feeds in `full_import` until vendor w/ confirmed digit exists; filter DUPLICATE rows in `apply_approved` | `product_import_service.py:589`, `import_review_service.py:367` | Vendor digit '9' SKU corruption; wedged batches never reach APPLIED |
 
-### 19.3 — SPRINT R2 "Close the loops" (after R1)
-VCR batch UI (create/add-cores/vendor-decision — model+prints exist) · ESN field on warranty claims (PAI rejects without it) + warranty_type select + record-vendor-credit route · QBO `push_payment` + refuse auto-bind on multiple DisplayName hits + audit rows/real user_id · engine picker on SO/invoice/product forms · products-list OEM search via SearchService · competitor part numbers → `cross_references` at import + search strategy (**must land before scraper competitor data loads**) · low-stock reorder report + "Create PO from low stock" · Duplicate Quote route (service is dead code) · structured Mark Lost w/ competitor fields · RA `total_credit` uses `qty_returned_to_stock` · receiving-slip print · invoice list joinedload(allocations) + column sort.
+### 19.3 — SPRINT R2 "Close the loops" — ✅ **MOSTLY IMPLEMENTED 2026-06-10** (8 agents, same day as R1)
+
+> **SHIPPED:** VCR batch UI (create/ship/vendor-decision routes + cores-queue batching + open-VCRs card
+> + the dark §5.4 dollar tiles now rendered; reuses R1-9 chargeback/double-credit guards per core) ·
+> warranty ESN column+input+print+migration + warranty_type select + POST /warranty/{id}/vendor-credit
+> + vendor-less-submit guard (type-gated: JAKS_EXTENDED submits vendor-less) · QBO `push_payment`
+> (refuses unsynced-invoice/reversed/NSF, fail-soft) + Fernet token-encryption-at-rest behind
+> `JAKS_FERNET_KEY` (`cryptography` 48.0.1 installed+pinned; legacy plaintext reads fine; no key =
+> unchanged) + multi-DisplayName auto-bind refusal + Push-to-QBO on payment detail · engine picker on
+> SO+invoice workspaces · **SO-deposit card surcharge** (derives from customer.card_surcharge_pct) ·
+> competitor-number search strategy + import now mints competitor cross_references w/ GLOBAL collision
+> guard + `_norm_col` widened to ()+#% (ready for scraper competitor loads) · low-stock reorder report
+> + CSV + index card + nav tab · Duplicate Quote route + More-menu (any status) · structured Mark Lost
+> (LostReason select + conditional competitor name/price) · RA expected-vs-actual credit (partial
+> returns credit only `qty_returned_to_stock`; also fixed a latent restocking-fee mispairing in
+> close_ra) · receiving-slip print route + queue button · invoice list selectinload + sortable
+> number/customer/due_date/total/balance. **Owner shortfall decision implemented** (§19.2 note).
+> **NOT done from this list:** products-list OEM search via SearchService (R3), "Create PO from low
+> stock" action (report ships without it), QBO audit rows/real user_id. Watch items: SCRAP/QUARANTINE
+> receipts now credit $0 (by rule — receive-form qty records what came back); line-adder badge for
+> competitor matches falls back to 'PART'.
 
 ### 19.4 — SPRINT R3 "Make it solid"
 Category merge + reparent tools · DB uniqueness batch via inline migrations (ProductVendorSource (product,vendor), cross-ref grain, account_number, (vendor,bill_number)) · freight landed-cost into moving-average COGS · serial capture at receive / consume at finalize (cylinder heads) · statement persistence (+ rename `due_120`→`over_90` BEFORE persisting) · QBO vendor-bill/credit-memo push + AST detection + retry worker · word-boundary classifier · import column-mapping UI w/ saved per-vendor templates · admin inventory resync route (fix `get_qty_on_hand` SO_COMMITTED handling first) · one full-chain E2E test (quote→SO→PO→receive→fulfill→invoice→pay→core return).

@@ -30,7 +30,10 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from app.constants import LineType, PaymentMethod, SOPaymentMode, SOStatus
+from app.constants import (
+    ENGINE_MAKES, ENGINE_MODELS_BY_MAKE,
+    LineType, PaymentMethod, SOPaymentMode, SOStatus,
+)
 from app.deps import get_current_user_id, get_db
 from app.models.customer import Customer, CustomerAddress
 from app.models.product import Product
@@ -72,6 +75,10 @@ def _workspace_ctx(request: Request, so: SalesOrder) -> dict:
         "SOPaymentMode": SOPaymentMode,
         "PaymentMethod": PaymentMethod,
         "LineType": LineType,
+        # Standardized engine make/model cascading picker (header vehicle block —
+        # same wiring as the quote workspace).
+        "engine_makes": ENGINE_MAKES,
+        "engine_models_by_make": ENGINE_MODELS_BY_MAKE,
     }
 
 

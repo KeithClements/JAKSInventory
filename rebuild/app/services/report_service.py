@@ -16,6 +16,7 @@ Method index:
   get_inventory_valuation()
   get_open_pos()
   get_core_charges_outstanding()
+  get_low_stock()
 """
 from __future__ import annotations
 
@@ -1122,3 +1123,128 @@ class ReportService(BaseService):
             "rows":       rows,
             "totals":     totals,
         }
+
+    # ── 10. Low Stock / Reorder ──────────────────────────────────────────────
+
+    def get_low_stock(self) -> dict[str, Any]:
+        """
+        R2 — printable morning reorder worklist: every active product whose
+        stock sits at or below its reorder point, with vendor ordering info.
+
+        Filter (same threshold as the dashboard low-stock counter and the
+        products-list "Low stock" tab):
+          - is_active
+          - reorder_point > 0      (no reorder point set = unmanaged → excluded)
+          - qty_on_hand <= reorder_point
+        Unlike the products-list tab (which adds qty_on_hand > 0 because full
+        stockouts live under its separate "Out of stock" tab), stockouts ARE
+        included here — a managed part at zero on-hand is the most urgent
+        reorder of all.
+
+        Suggested order qty (documented rule):
+          - target = max_stock_level when set (> 0), else reorder_point
+            (no max ⇒ restock at least back up to the reorder threshold)
+          - suggested = max(target - qty_on_hand - qty_on_order, 0)
+            (inbound PO qty counts toward the target; never suggest negative)
+
+        Estimated order cost per row = suggested_qty × estimated unit cost,
+        using the same fallback order as the sales reports
+        (_fallback_unit_cost: preferred-vendor vendor_cost, then last_cost,
+        else 0 — rows costed at 0 understate the Est. Order Cost total).
+
+        Returns:
+          {
+            "as_of": date,
+            "rows": [
+              {
+                "product": Product, "sku": str, "title": str,
+                "category": str,                       # "" when uncategorized
+                "qty_on_hand": int, "qty_committed": int,
+                "qty_available": int, "qty_on_order": int,
+                "reorder_point": int, "max_stock_level": int | None,
+                "suggested_qty": int,
+                "vendor_name": str | None,             # preferred ACTIVE source
+                "vendor_part_number": str | None,
+                "vendor_cost": float | None,
+                "est_unit_cost": float,
+                "est_order_cost": float,
+              }, ...
+            ],
+            "totals": {
+              "item_count": int, "stockout_count": int,
+              "total_suggested_qty": int, "total_order_cost": float,
+              "no_vendor_count": int,
+            },
+          }
+          Rows sorted most-negative availability first (deepest hole on top).
+        """
+        from app.models.product import ProductVendorSource
+
+        as_of = date.today()
+
+        products = (
+            self.db.query(Product)
+            .options(
+                # Bulk-load sources + their vendors so preferred_vendor_source
+                # (a Python property over vendor_sources) never lazy-loads N+1.
+                joinedload(Product.vendor_sources)
+                .joinedload(ProductVendorSource.vendor),
+                joinedload(Product.category),
+            )
+            .filter(
+                Product.is_active == True,  # noqa: E712
+                Product.reorder_point > 0,
+                Product.qty_on_hand <= Product.reorder_point,
+            )
+            .order_by(Product.sku)
+            .all()
+        )
+
+        rows: list[dict[str, Any]] = []
+        for p in products:
+            qty_on_hand = p.qty_on_hand
+            qty_on_order = p.qty_on_order or 0
+
+            # Suggested order qty — see docstring for the rule.
+            target = (
+                p.max_stock_level
+                if (p.max_stock_level or 0) > 0
+                else p.reorder_point
+            )
+            suggested = max(target - qty_on_hand - qty_on_order, 0)
+
+            src = p.preferred_vendor_source  # active+preferred only (§8N)
+            est_unit_cost = self._fallback_unit_cost(p)
+
+            rows.append({
+                "product": p,
+                "sku": p.sku,
+                "title": p.title,
+                "category": p.category.name if p.category else "",
+                "qty_on_hand": qty_on_hand,
+                "qty_committed": p.qty_committed,
+                "qty_available": p.qty_available,
+                "qty_on_order": qty_on_order,
+                "reorder_point": p.reorder_point,
+                "max_stock_level": p.max_stock_level,
+                "suggested_qty": suggested,
+                "vendor_name": src.vendor.name if src and src.vendor else None,
+                "vendor_part_number": src.vendor_part_number if src else None,
+                "vendor_cost": src.vendor_cost if src else None,
+                "est_unit_cost": est_unit_cost,
+                "est_order_cost": round(suggested * est_unit_cost, 2),
+            })
+
+        # Most-negative availability first — committed-beyond-stock parts are
+        # the most urgent; ties broken by SKU for a stable printable order.
+        rows.sort(key=lambda r: (r["qty_available"], r["sku"]))
+
+        totals = {
+            "item_count":          len(rows),
+            "stockout_count":      sum(1 for r in rows if r["qty_on_hand"] <= 0),
+            "total_suggested_qty": sum(r["suggested_qty"] for r in rows),
+            "total_order_cost":    round(sum(r["est_order_cost"] for r in rows), 2),
+            "no_vendor_count":     sum(1 for r in rows if r["vendor_name"] is None),
+        }
+
+        return {"as_of": as_of, "rows": rows, "totals": totals}

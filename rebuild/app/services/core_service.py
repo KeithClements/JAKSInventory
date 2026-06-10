@@ -23,9 +23,12 @@ from datetime import datetime, timedelta
 from app.constants import (
     AuditAction, CoreCreditMethod, CoreDenialResolution, CoreDirection,
     CoreInspectionOutcome, CoreStatus, CoreVendorStatus, EntityType,
-    NotificationSeverity, NotificationType,
+    NotificationSeverity, NotificationType, Permission, VCRLineOutcome, VCRStatus,
 )
-from app.models.core import CoreCharge, CoreLocation, CoreLocationMovement, CoreReturnEvent, CoreSlip
+from app.models.core import (
+    CoreCharge, CoreLocation, CoreLocationMovement, CoreReturnEvent, CoreSlip,
+    VendorCoreReturn, VendorCoreReturnLine,
+)
 from app.models.customer import Customer
 from app.models.notification import Notification
 from app.settings_utils import get_setting_value_db as _get_setting, bump_counter
@@ -47,6 +50,17 @@ _LOC_SCRAP             = "Scrap Core"
 # value on purpose — it marks "credit no longer outstanding" and makes the
 # chargeback idempotent (a second chargeback sees != ACCOUNT_CREDIT and no-ops).
 _CREDIT_METHOD_CHARGED_BACK = "charged_back"
+
+# R2 — VCR statuses still in flight (mirrors CoreMetricsService._VCR_OPEN).
+# A core linked to a VCR in one of these statuses cannot be batched again.
+VCR_OPEN_STATUSES = (
+    VCRStatus.DRAFT, VCRStatus.SHIPPED, VCRStatus.VENDOR_REVIEW, VCRStatus.DISPUTED,
+)
+
+# R2 — audit entity tag for VendorCoreReturn rows (no EntityType member exists;
+# the audit column is a plain string — matches the literal "core_charge" tags
+# already used for Notification rows in this file).
+_ENTITY_VCR = "vendor_core_return"
 
 
 class CoreService(BaseService):
@@ -427,6 +441,295 @@ class CoreService(BaseService):
 
         self.db.commit()
 
+    # ── Vendor Core Return batches (R2) ──────────────────────────────────────
+
+    def create_vcr(
+        self,
+        vendor_id: int,
+        core_charge_ids: list[int],
+        notes: str = "",
+    ) -> VendorCoreReturn:
+        """
+        R2 — Batch ready-to-ship cores into one VendorCoreReturn (VCR-YYYY-XXXX)
+        so 10-20 cores go back to the vendor in one box with one document.
+
+        Validates every core is in the ready-to-ship stage (RETURNED + vendor
+        PENDING + not HOLD — the exact cores-list/metrics filter), belongs to
+        this vendor (cores with no vendor_id adopt it — customer cores are
+        created without one), and is not already on an open VCR. Snapshots one
+        VendorCoreReturnLine per core (the print doc renders vcr.lines) and
+        computes expected_credit = Σ vendor_unit_charge × qty_returned.
+
+        Cores stay status=RETURNED until ship_vcr(); the cores list hides
+        open-VCR cores from the ready-to-ship checklist instead.
+        """
+        self.assert_can(Permission.ISSUE_CREDIT_MEMO)
+
+        from app.models.vendor import Vendor
+        vendor = self.db.query(Vendor).filter(Vendor.id == vendor_id).first()
+        if vendor is None:
+            raise ValueError(f"Vendor {vendor_id} not found")
+        if not core_charge_ids:
+            raise ValueError("Select at least one core to batch")
+
+        # Dedupe while preserving submission order (double-posted checkboxes)
+        cores: list[CoreCharge] = []
+        seen: set[int] = set()
+        for cid in core_charge_ids:
+            if cid in seen:
+                continue
+            seen.add(cid)
+            core = self._get_or_404(cid)
+            if (
+                core.direction != CoreDirection.CUSTOMER_OWES_RETURN
+                or core.status != CoreStatus.RETURNED
+                or core.vendor_status != CoreVendorStatus.PENDING
+                or core.inspection_outcome == CoreInspectionOutcome.HOLD
+            ):
+                raise ValueError(
+                    f"Core #{core.id} is not ready to ship — cannot batch it onto a VCR"
+                )
+            if core.vendor_id is not None and core.vendor_id != vendor_id:
+                raise ValueError(
+                    f"Core #{core.id} belongs to a different vendor — one VCR per vendor"
+                )
+            if core.vcr_id is not None:
+                linked = (
+                    self.db.query(VendorCoreReturn)
+                    .filter(VendorCoreReturn.id == core.vcr_id)
+                    .first()
+                )
+                if linked is not None and linked.status in VCR_OPEN_STATUSES:
+                    raise ValueError(
+                        f"Core #{core.id} is already batched on open VCR {linked.vcr_number}"
+                    )
+            cores.append(core)
+
+        year = datetime.utcnow().year
+        vcr_number = bump_counter(self.db, "next_vcr_number", "VCR", year)
+        vcr = VendorCoreReturn(
+            vcr_number=vcr_number,
+            vendor_id=vendor_id,
+            status=VCRStatus.DRAFT,
+            expected_credit=0.0,
+            # No dedicated notes column — creation notes live in resolution_notes
+            # (free text; the vendor decision appends rather than overwrites).
+            resolution_notes=(notes or "").strip(),
+            created_by_id=self.current_user_id,
+        )
+        self.db.add(vcr)
+        self.db.flush()  # get vcr.id for the lines + core links
+
+        expected_total = 0.0
+        for core in cores:
+            qty = core.qty_returned  # ready-to-ship = fully returned
+            unit = core.vendor_unit_charge or 0.0
+            expected_total += qty * unit
+            product = core.product
+            # Vendor-facing part #: prefer their own part number, fall back to SKU
+            pvs = product.preferred_vendor_source if product else None
+            part_number = (
+                (pvs.vendor_part_number if pvs else "") or (product.sku if product else "")
+            )
+            self.db.add(VendorCoreReturnLine(
+                vcr_id=vcr.id,
+                core_charge_id=core.id,
+                part_number=part_number or "",
+                description=(product.title if product else "") or "",
+                qty=qty,
+                expected_unit_credit=unit,
+                actual_unit_credit=0.0,
+                vendor_outcome=VCRLineOutcome.PENDING,
+            ))
+            core.vcr_id = vcr.id
+            if core.vendor_id is None:
+                core.vendor_id = vendor_id
+
+        vcr.expected_credit = round(expected_total, 2)
+
+        self.audit(
+            entity_type=_ENTITY_VCR,
+            entity_id=vcr.id,
+            action=AuditAction.CREATED,
+            new_value={
+                "vcr_number": vcr_number,
+                "vendor_id": vendor_id,
+                "core_charge_ids": [c.id for c in cores],
+                "expected_credit": vcr.expected_credit,
+            },
+            notes=notes or None,
+        )
+        self.db.commit()
+        self.db.refresh(vcr)
+        return vcr
+
+    def ship_vcr(
+        self,
+        vcr_id: int,
+        tracking_number: str = "",
+        rma_number: str = "",
+    ) -> VendorCoreReturn:
+        """
+        R2 — Mark the batch physically shipped: DRAFT → SHIPPED, stamps
+        shipped_at/tracking/RMA, and moves every core through the same
+        transition submit_to_vendor() applies (SHIPPED_TO_VENDOR + In Transit
+        location) — but in ONE transaction for the whole box.
+        """
+        self.assert_can(Permission.ISSUE_CREDIT_MEMO)
+
+        vcr = self._get_vcr_or_404(vcr_id)
+        if vcr.status != VCRStatus.DRAFT:
+            raise ValueError(
+                f"VCR {vcr.vcr_number} has already shipped (status: {vcr.status})"
+            )
+
+        tracking = (tracking_number or "").strip()
+        vcr.tracking_number = tracking
+        if (rma_number or "").strip():
+            vcr.rma_number = rma_number.strip()
+        vcr.status = VCRStatus.SHIPPED
+        vcr.shipped_at = datetime.utcnow()
+
+        for core in vcr.core_charges:
+            # Mirrors submit_to_vendor() field-for-field; kept inline so a
+            # failure mid-batch rolls the whole shipment back atomically.
+            core.core_tracking_number = tracking or None
+            core.vendor_status = CoreVendorStatus.PENDING
+            core.status = CoreStatus.SHIPPED_TO_VENDOR
+            self._move_to_location_by_name(
+                core, _LOC_IN_TRANSIT_VENDOR,
+                reason="shipped_to_vendor_vcr",
+                note=f"VCR {vcr.vcr_number} — tracking: {tracking or 'unknown'}",
+            )
+
+        self.audit(
+            entity_type=_ENTITY_VCR,
+            entity_id=vcr.id,
+            action=AuditAction.STATUS_CHANGED,
+            new_value={
+                "vcr_number": vcr.vcr_number,
+                "status": VCRStatus.SHIPPED,
+                "tracking_number": tracking,
+                "core_count": len(vcr.core_charges),
+            },
+        )
+        self.db.commit()
+        return vcr
+
+    def record_vcr_vendor_decision(
+        self,
+        vcr_id: int,
+        actual_credit: float,
+        denied_core_ids: list[int] | None = None,
+        denial_reason: str = "",
+        denial_resolution: str = CoreDenialResolution.ABSORBED_BY_JAKS,
+        notes: str = "",
+    ) -> VendorCoreReturn:
+        """
+        R2 — Record the vendor's decision on a shipped batch.
+
+        Per-core money flows REUSE the single-core paths so their guards stay
+        the single source of truth:
+          - cores NOT in denied_core_ids → record_vendor_acceptance() (one
+            VendorCredit row each, at the expected per-core amount);
+          - denied cores → record_vendor_denial() (R1-9 chargeback fires once
+            when denial_resolution=CHARGED_TO_CUSTOMER; idempotent).
+        Cores already decided individually (vendor_status != PENDING) are
+        skipped — never double-credited or double-charged.
+
+        actual_credit is the lump credit the vendor actually issued for the
+        batch; the shortfall lands in credit_difference for reconciliation.
+        Final status: DISPUTED when denials are being disputed with the vendor,
+        otherwise CREDITED (settled — including absorbed/charged-back denials).
+        """
+        self.assert_can(Permission.ISSUE_CREDIT_MEMO)
+
+        vcr = self._get_vcr_or_404(vcr_id)
+        if vcr.status == VCRStatus.DRAFT:
+            raise ValueError(
+                f"VCR {vcr.vcr_number} has not shipped yet — ship it before recording a decision"
+            )
+        if vcr.status in (VCRStatus.CREDITED, VCRStatus.CLOSED):
+            raise ValueError(
+                f"VCR {vcr.vcr_number} is already settled (status: {vcr.status})"
+            )
+
+        valid_resolutions = {
+            CoreDenialResolution.ABSORBED_BY_JAKS,
+            CoreDenialResolution.CHARGED_TO_CUSTOMER,
+            CoreDenialResolution.DISPUTED,
+        }
+        if denial_resolution not in valid_resolutions:
+            raise ValueError(
+                f"Invalid denial_resolution '{denial_resolution}'. "
+                f"Must be one of {sorted(valid_resolutions)}"
+            )
+
+        denied = {int(i) for i in (denied_core_ids or [])}
+        reason = (denial_reason or "").strip() or f"Denied by vendor on {vcr.vcr_number}"
+        lines_by_core = {ln.core_charge_id: ln for ln in vcr.lines}
+
+        accepted_n = denied_n = 0
+        for core in list(vcr.core_charges):
+            if core.vendor_status != CoreVendorStatus.PENDING:
+                continue  # already decided (e.g. single-core flow) — don't double-handle
+            line = lines_by_core.get(core.id)
+            if core.id in denied:
+                self.record_vendor_denial(
+                    core_charge_id=core.id,
+                    denial_reason=reason,
+                    resolution=denial_resolution,
+                    notes=notes or None,
+                )
+                if line is not None:
+                    line.vendor_outcome = VCRLineOutcome.REJECTED
+                    line.actual_unit_credit = 0.0
+                denied_n += 1
+            else:
+                expected = round((core.vendor_unit_charge or 0.0) * core.qty_returned, 2)
+                self.record_vendor_acceptance(
+                    core_charge_id=core.id, credit_amount=expected,
+                )
+                if line is not None:
+                    line.vendor_outcome = VCRLineOutcome.ACCEPTED
+                    line.actual_unit_credit = core.vendor_unit_charge or 0.0
+                accepted_n += 1
+
+        vcr.actual_credit = round(float(actual_credit or 0.0), 2)
+        vcr.credit_difference = round(
+            (vcr.expected_credit or 0.0) - vcr.actual_credit, 2
+        )
+        vcr.vendor_decision_at = datetime.utcnow()
+        vcr.resolution = denial_resolution if denied_n else None
+        if (notes or "").strip():
+            vcr.resolution_notes = (
+                (vcr.resolution_notes or "") + "\n" + notes.strip()
+            ).strip()
+        vcr.status = (
+            VCRStatus.DISPUTED
+            if (denied_n and denial_resolution == CoreDenialResolution.DISPUTED)
+            else VCRStatus.CREDITED
+        )
+
+        self.audit(
+            entity_type=_ENTITY_VCR,
+            entity_id=vcr.id,
+            action=AuditAction.STATUS_CHANGED,
+            new_value={
+                "vcr_number": vcr.vcr_number,
+                "status": vcr.status,
+                "actual_credit": vcr.actual_credit,
+                "credit_difference": vcr.credit_difference,
+                "accepted": accepted_n,
+                "denied": denied_n,
+                "denial_resolution": denial_resolution if denied_n else None,
+            },
+            notes=notes or None,
+        )
+        self.db.commit()
+        self.db.refresh(vcr)
+        return vcr
+
     # ── Queries ───────────────────────────────────────────────────────────────
 
     def get_outstanding_cores(self, customer_id: int | None = None) -> list[CoreCharge]:
@@ -631,8 +934,9 @@ class CoreService(BaseService):
         Records the actual_credit value and the user's chosen resolution:
           - absorbed_by_jaks: JAKS eats the loss (default)
           - charged_to_customer: pull back from customer — reverses the account
-            credit issued for this core (R1-9). A chargeback invoice line for
-            credits already spent is still Phase 2.
+            credit issued for this core, CAPPED at the vendor shortfall
+            (expected − actual; owner decision 2026-06-10). A chargeback
+            invoice line for credits already spent is still Phase 2.
           - disputed: open dispute with vendor (status flag for follow-up)
           - write_off: bookkeeping write-off
 
@@ -658,12 +962,14 @@ class CoreService(BaseService):
         core.denial_notes = notes or core.denial_notes
         core.vendor_decision_at = datetime.utcnow()
 
-        # R1-9 — claw back the customer's account credit. Idempotent no-op when
+        # R1-9 — claw back the customer's account credit, CAPPED AT THE
+        # SHORTFALL (owner decision 2026-06-10): the customer is charged what
+        # the vendor shorted us, not the whole credit. Idempotent no-op when
         # none was issued or it was already charged back (e.g. via a prior
         # record_vendor_denial with the same resolution).
         charged_back = 0.0
         if resolution == CoreDenialResolution.CHARGED_TO_CUSTOMER:
-            charged_back = self._charge_back_customer_credit(core)
+            charged_back = self._charge_back_customer_credit(core, max_amount=difference)
 
         # If there's a shortfall, notify the user for follow-up
         if difference > 0.001:
@@ -818,10 +1124,17 @@ class CoreService(BaseService):
 
     # ── Private ───────────────────────────────────────────────────────────────
 
-    def _charge_back_customer_credit(self, core: CoreCharge) -> float:
+    def _charge_back_customer_credit(
+        self, core: CoreCharge, max_amount: float | None = None
+    ) -> float:
         """
         R1-9 — Reverse the customer account credit previously issued for this
         core when a vendor denial/shortfall is resolved CHARGED_TO_CUSTOMER.
+
+        max_amount caps the reversal: a PARTIAL vendor shortfall passes the
+        shortfall through (owner decision 2026-06-10 — charge the customer
+        what the vendor shorted us, never the whole credit), while an outright
+        denial (record_vendor_denial) omits it and reverses the full credit.
 
         Idempotent: only fires when an ACCOUNT_CREDIT was actually issued
         (credit_issued_at stamped AND credit_method == ACCOUNT_CREDIT); after
@@ -851,6 +1164,8 @@ class CoreService(BaseService):
             gross = round(core.qty_returned * core.customer_unit_charge, 2)
         already_reversed = round(-sum(e.credit_amount for e in events if e.credit_amount < 0), 2)
         issued = round(gross - already_reversed, 2)
+        if max_amount is not None:
+            issued = round(min(issued, max(0.0, max_amount)), 2)
         if issued <= 0:
             return 0.0
 
@@ -890,6 +1205,16 @@ class CoreService(BaseService):
         if core is None:
             raise ValueError(f"CoreCharge {core_charge_id} not found")
         return core
+
+    def _get_vcr_or_404(self, vcr_id: int) -> VendorCoreReturn:
+        vcr = (
+            self.db.query(VendorCoreReturn)
+            .filter(VendorCoreReturn.id == vcr_id)
+            .first()
+        )
+        if vcr is None:
+            raise ValueError(f"VendorCoreReturn {vcr_id} not found")
+        return vcr
 
     def _location_by_name(self, name: str) -> CoreLocation | None:
         return (

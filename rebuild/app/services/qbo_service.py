@@ -23,10 +23,11 @@ import logging
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.constants import InvoiceStatus, LineType, QBOSyncStatus
+from app.constants import InvoiceStatus, LineType, PaymentStatus, QBOSyncStatus
 from app.models.customer import Customer
-from app.models.invoice import Invoice
+from app.models.invoice import Invoice, Payment
 from app.services.invoice_service import InvoiceService
+from app.services.payment_service import PaymentService
 from app.services.qbo_client import QBOClient, QBOError, QBONotConnected
 from app.settings_utils import get_setting_value_db
 
@@ -132,6 +133,111 @@ class QBOSyncService:
             )
         ]
 
+    # ── payment push ────────────────────────────────────────────────────────
+    def push_payment(self, payment_id: int) -> dict:
+        """Push one customer payment to QBO as a QBO Payment that LINKS to the
+        already-synced invoice(s) it was applied to. Best-effort; never raises.
+        Returns {"ok": bool, "qbo_id"|"error"|"skipped": ...}.
+
+        Refuses (fail-soft, recorded via PaymentService.mark_sync_failed) when the
+        payment is reversed/NSF, has no active allocations, or targets an invoice
+        that is not yet in QBO — in that last case the operator must push the
+        invoice FIRST, because the QBO Payment LinkedTxn needs the invoice's
+        qbo_invoice_id. Mirrors push_invoice's request/marking structure and the
+        money-path invariant: success → mark_synced, failure → mark_sync_failed,
+        and nothing here ever mutates the payment's amount, status, or allocations.
+        """
+        pmt = self.db.query(Payment).filter(Payment.id == payment_id).first()
+        if pmt is None:
+            return {"ok": False, "error": f"Payment {payment_id} not found"}
+        if pmt.qbo_payment_id:
+            return {"ok": True, "skipped": "already synced", "qbo_id": pmt.qbo_payment_id}
+        if pmt.status != PaymentStatus.APPLIED:
+            return self._refuse_payment(
+                payment_id,
+                f"Payment is {pmt.status}; only an APPLIED payment can be pushed to QuickBooks.",
+            )
+
+        active = [a for a in pmt.allocations if not a.is_reversed]
+        if not active:
+            return self._refuse_payment(
+                payment_id,
+                "Payment has no active invoice allocations to link — apply it to an "
+                "invoice before pushing to QuickBooks.",
+            )
+        not_in_qbo = [
+            (a.invoice.invoice_number if a.invoice else f"invoice {a.invoice_id}")
+            for a in active
+            if not (a.invoice and a.invoice.qbo_invoice_id)
+        ]
+        if not_in_qbo:
+            return self._refuse_payment(
+                payment_id,
+                "Push the invoice(s) to QuickBooks first — not yet synced: "
+                + ", ".join(not_in_qbo) + ".",
+            )
+        linked = [(a.invoice.qbo_invoice_id, a.amount_applied) for a in active]
+
+        try:
+            client = QBOClient(self.db)
+            customer_ref = self._resolve_customer(client, pmt.customer)
+            payload = self._build_payment_payload(pmt, customer_ref, linked)
+            created = client.create("Payment", payload)
+            qbo_id = str(created.get("Id", "")).strip()
+            if not qbo_id:
+                raise QBOError(f"QBO did not return a payment Id: {created}")
+            PaymentService(self.db, current_user_id=1).mark_synced(payment_id, qbo_id)
+            log.info("payment %s pushed to QBO as %s", payment_id, qbo_id)
+            return {"ok": True, "qbo_id": qbo_id}
+        except QBONotConnected as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:  # QBOError or anything unexpected — record, don't raise
+            msg = str(exc)[:480]
+            log.exception("QBO push failed for payment %s", payment_id)
+            try:
+                PaymentService(self.db, current_user_id=1).mark_sync_failed(payment_id, msg)
+            except Exception:
+                self.db.rollback()
+            return {"ok": False, "error": msg}
+
+    def _refuse_payment(self, payment_id: int, msg: str) -> dict:
+        """Pre-flight refusal: record the reason on the payment and return fail-soft.
+        Never raises (a failed marking is rolled back and swallowed)."""
+        try:
+            PaymentService(self.db, current_user_id=1).mark_sync_failed(payment_id, msg)
+        except Exception:
+            self.db.rollback()
+        return {"ok": False, "error": msg}
+
+    def _build_payment_payload(self, pmt: Payment, customer_ref: dict,
+                               linked: list[tuple[str, float]]) -> dict:
+        """Build the QBO Payment body: one Line per applied invoice, each carrying a
+        LinkedTxn to that invoice's QBO id. TotalAmt is the principal applied (R1 —
+        the card surcharge is never part of the invoice/payment principal)."""
+        lines: list[dict] = []
+        total = 0.0
+        for inv_qbo_id, amount in linked:
+            amt = round(float(amount), 2)
+            if amt == 0:
+                continue
+            total += amt
+            lines.append({
+                "Amount": amt,
+                "LinkedTxn": [{"TxnId": str(inv_qbo_id), "TxnType": "Invoice"}],
+            })
+        if not lines:
+            raise QBOError(f"Payment {pmt.id} has no non-zero allocations to push")
+
+        payload: dict = {
+            "CustomerRef": customer_ref,
+            "TotalAmt": round(total, 2),
+            "Line": lines,
+            "PrivateNote": f"JAKS payment #{pmt.id} ({pmt.payment_method})",
+        }
+        if getattr(pmt, "check_number", ""):
+            payload["PaymentRefNum"] = str(pmt.check_number)[:21]
+        return payload
+
     # ── helpers ───────────────────────────────────────────────────────────────
     def _resolve_items(self, client: QBOClient) -> dict[str, str]:
         """Return {item_name: qbo_item_id} for every generic item we map to.
@@ -160,6 +266,18 @@ class QBOSyncService:
 
         name = customer.company_name or customer.contact_name or f"Customer {customer.id}"
         rows = client.query(f"select Id, DisplayName from Customer where DisplayName = '{_q(name)}'")
+
+        # Same-name fleet accounts: if more than one QBO customer shares this
+        # DisplayName, auto-binding the FIRST one silently posts AR to the wrong
+        # account and the wrong-customer binding is then permanent. Refuse instead
+        # — fail soft and tell the operator to resolve it manually (set the right
+        # qbo_customer_id, or rename one side so the match is unambiguous).
+        if len(rows) > 1:
+            raise QBOError(
+                f"Multiple QBO customers match '{name}' — resolve manually "
+                "(link the correct QuickBooks customer to this account, or rename "
+                "one so the match is unique), then retry."
+            )
         qbo_id = str(rows[0]["Id"]) if rows and rows[0].get("Id") else ""
 
         if not qbo_id:

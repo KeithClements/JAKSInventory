@@ -98,6 +98,28 @@ def qbo_push_invoice(
     )
 
 
+@router.post("/push-payment/{payment_id}")
+def qbo_push_payment(
+    payment_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """One-click push of a customer payment to QuickBooks (links to its already-
+    synced invoice(s)). Fail-soft like the invoice push — flashes the error, never
+    500s, and never touches the money path."""
+    result = QBOSyncService(db).push_payment(payment_id)
+    if result.get("ok"):
+        if result.get("skipped"):
+            msg = "Payment is already synced to QuickBooks."
+        else:
+            msg = f"Payment pushed to QuickBooks (id {result.get('qbo_id', '')})."
+        return RedirectResponse(f"/payments/{payment_id}?ok={url_quote(msg)}", status_code=303)
+    return RedirectResponse(
+        f"/payments/{payment_id}?error={url_quote('QBO push failed: ' + result.get('error', ''))}",
+        status_code=303,
+    )
+
+
 _ALL_UNSYNCED_MODES = {"all_unsynced", "all", "unsynced"}
 
 

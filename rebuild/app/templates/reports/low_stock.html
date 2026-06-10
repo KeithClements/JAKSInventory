@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}Low Stock — JAKS Inventory{% endblock %}
+{% block heading %}Low Stock / Reorder{% endblock %}
+
+{% block content %}
+{% set active_report = 'low-stock' %}
+<div class="max-w-6xl space-y-4">
+  {% include "reports/_nav.html" %}
+
+  {# ── Actions row ──────────────────────────────────────────────────────── #}
+  <div class="flex flex-wrap items-center gap-3 bg-white border border-gray-200 rounded-xl p-3">
+    <p class="text-sm text-gray-500">
+      Active products at or below their reorder point, worst availability first.
+      Suggested qty restocks to max stock level (or back to the reorder point when no max is set), net of on-order.
+    </p>
+    <div class="flex-1"></div>
+    <a href="/reports/low-stock/export.csv" class="btn-secondary btn-sm">Export CSV</a>
+  </div>
+
+  <p class="text-xs text-gray-400">As of {{ today.strftime('%B %d, %Y') }}</p>
+
+  {# ── Summary tiles ────────────────────────────────────────────────────── #}
+  <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
+    <div class="stat-card-brand">
+      <p class="stat-label">Items to Reorder</p>
+      <p class="stat-value text-brand-700">{{ totals.item_count }}</p>
+    </div>
+    <div class="stat-card {% if totals.stockout_count > 0 %}stat-card-red{% endif %}">
+      <p class="stat-label">Stockouts</p>
+      <p class="stat-value {% if totals.stockout_count > 0 %}text-red-700{% else %}text-gray-400{% endif %}">{{ totals.stockout_count }}</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Suggested Units</p>
+      <p class="stat-value text-gray-700">{{ totals.total_suggested_qty }}</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Est. Order Cost</p>
+      <p class="stat-value text-brand-700">${{ '%.2f' % totals.total_order_cost }}</p>
+    </div>
+    <div class="stat-card {% if totals.no_vendor_count > 0 %}stat-card-amber{% endif %}">
+      <p class="stat-label">No Preferred Vendor</p>
+      <p class="stat-value {% if totals.no_vendor_count > 0 %}text-amber-600{% else %}text-gray-400{% endif %}">{{ totals.no_vendor_count }}</p>
+    </div>
+  </div>
+
+  {# ── Reorder table ────────────────────────────────────────────────────── #}
+  {% if rows %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Reorder List</h2>
+      <span class="text-xs text-gray-400">{{ rows | length }} item{{ 's' if rows | length != 1 }}</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">SKU</th>
+            <th class="tbl-th">Title</th>
+            <th class="tbl-th">Category</th>
+            <th class="tbl-th-r">On Hand</th>
+            <th class="tbl-th-r">Committed</th>
+            <th class="tbl-th-r">Available</th>
+            <th class="tbl-th-r">On Order</th>
+            <th class="tbl-th-r">Reorder Pt</th>
+            <th class="tbl-th-r">Max</th>
+            <th class="tbl-th-r font-bold">Suggested</th>
+            <th class="tbl-th">Vendor</th>
+            <th class="tbl-th">Vendor Part #</th>
+            <th class="tbl-th-r">Vendor Cost</th>
+            <th class="tbl-th-r">Est. Cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr class="tbl-row">
+            <td class="tbl-td font-medium text-gray-900">
+              <a href="/products/{{ row.product.id }}" class="tbl-link text-sm">{{ row.sku }}</a>
+            </td>
+            <td class="tbl-td text-gray-700">{{ row.title }}</td>
+            <td class="tbl-td text-gray-500">{{ row.category or '—' }}</td>
+            <td class="tbl-td-r {% if row.qty_on_hand <= 0 %}text-red-700 font-bold{% else %}text-gray-700{% endif %}">{{ row.qty_on_hand }}</td>
+            <td class="tbl-td-r text-gray-500">{{ row.qty_committed }}</td>
+            <td class="tbl-td-r {% if row.qty_available < 0 %}text-red-700 font-bold{% else %}text-gray-700{% endif %}">{{ row.qty_available }}</td>
+            <td class="tbl-td-r text-gray-500">{{ row.qty_on_order }}</td>
+            <td class="tbl-td-r text-gray-500">{{ row.reorder_point }}</td>
+            <td class="tbl-td-r text-gray-500">{{ row.max_stock_level if row.max_stock_level is not none else '—' }}</td>
+            <td class="tbl-td-r font-bold text-brand-700">{{ row.suggested_qty }}</td>
+            <td class="tbl-td">
+              {% if row.vendor_name %}{{ row.vendor_name }}{% else %}<span class="text-amber-600">No vendor</span>{% endif %}
+            </td>
+            <td class="tbl-td text-gray-500">{{ row.vendor_part_number or '—' }}</td>
+            <td class="tbl-td-r text-gray-500">
+              {% if row.vendor_cost is not none %}${{ '%.2f' % row.vendor_cost }}{% else %}—{% endif %}
+            </td>
+            <td class="tbl-td-r text-gray-700">${{ '%.2f' % row.est_order_cost }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="border-t-2 border-gray-200 bg-gray-50">
+          <tr>
+            <td class="px-4 py-3 text-sm font-bold text-gray-700" colspan="9">Totals</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-brand-700 tabular-nums">{{ totals.total_suggested_qty }}</td>
+            <td class="px-4 py-3" colspan="3"></td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-brand-700 tabular-nums">${{ '%.2f' % totals.total_order_cost }}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="card flex flex-col items-center justify-center py-16">
+    <svg class="w-12 h-12 text-green-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    </svg>
+    <p class="text-gray-500 font-medium">Nothing to reorder</p>
+    <p class="text-gray-400 text-sm mt-1">No active products are at or below their reorder point.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

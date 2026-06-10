@@ -23,11 +23,16 @@ from sqlalchemy.orm import Session
 
 from datetime import timedelta
 
-from app.constants import CoreDirection, CoreDenialResolution, CoreInspectionOutcome, CoreStatus, CoreVendorStatus
+from app.constants import (
+    CoreDirection, CoreDenialResolution, CoreInspectionOutcome, CoreStatus,
+    CoreVendorStatus, VCRStatus,
+)
 from app.deps import get_current_user_id, get_db
 from app.models.core import CoreCharge, CoreSlip, VendorCoreReturn
 from app.models.invoice import Invoice
+from app.models.vendor import Vendor
 from app.services.core_metrics_service import CoreMetricsService
+from app.services.core_service import VCR_OPEN_STATUSES
 from app.services.document_render import (
     customer_address_lines,
     get_company_dict,
@@ -93,6 +98,33 @@ def cores_list(request: Request, q: str = "", db: Session = Depends(get_db)):
         .all()
     )
 
+    # ── R2: open VCR batches (draft → shipped → review/disputed) ─────────────
+    open_vcrs = (
+        db.query(VendorCoreReturn)
+        .filter(VendorCoreReturn.status.in_(VCR_OPEN_STATUSES))
+        .order_by(VendorCoreReturn.created_at.desc())
+        .all()
+    )
+    open_vcr_ids = {v.id for v in open_vcrs}
+    # Cores already on an open VCR are managed from the Open VCRs card —
+    # drop them from the ready-to-ship checklist (draft batches) and from the
+    # single-core vendor-decision stage (shipped batches) so the same core
+    # can't be handled on two surfaces at once.
+    pending_vendor_ship = [c for c in pending_vendor_ship if c.vcr_id not in open_vcr_ids]
+    awaiting_vendor = [c for c in awaiting_vendor if c.vcr_id not in open_vcr_ids]
+
+    vendors = db.query(Vendor).filter(Vendor.is_active == True).order_by(Vendor.name).all()  # noqa: E712
+    vendor_by_id = {v.id: v for v in vendors}
+    vcr_rows = [
+        {
+            "vcr": v,
+            "vendor": vendor_by_id.get(v.vendor_id)
+            or db.query(Vendor).filter(Vendor.id == v.vendor_id).first(),
+            "cores": list(v.core_charges),
+        }
+        for v in open_vcrs
+    ]
+
     # ── Assemble the QB2 board: one row per open core, tagged with its stage ──
     # (Queue-route assembly is UI-builder scope per the §6 queue-board precedent.)
     def _match(c):
@@ -132,8 +164,12 @@ def cores_list(request: Request, q: str = "", db: Session = Depends(get_db)):
             "metrics": metrics,
             "total": len(rows),
             "q": q,
+            "vendors": vendors,
+            "vcr_rows": vcr_rows,
             "CoreDenialResolution": CoreDenialResolution,
             "CoreInspectionOutcome": CoreInspectionOutcome,
+            "CoreVendorStatus": CoreVendorStatus,
+            "VCRStatus": VCRStatus,
         },
     )
 
@@ -460,6 +496,118 @@ async def vendor_credit_difference(
             status_code=303,
         )
     return RedirectResponse(f"/cores/?ok={url_quote('Vendor credit difference recorded.')}", status_code=303)
+
+
+# ── Vendor Core Return batches (R2) ───────────────────────────────────────────
+
+@router.post("/vcr/create", response_class=RedirectResponse)
+async def vcr_create(
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Batch the checked ready-to-ship cores into one VCR for the vendor."""
+    from app.services.core_service import CoreService
+
+    form = await request.form()
+    try:
+        vendor_id = int(form.get("vendor_id") or 0)
+        core_ids = [int(i) for i in form.getlist("core_ids")]
+        notes = str(form.get("notes", "")).strip()
+        vcr = CoreService(db, user_id).create_vcr(
+            vendor_id=vendor_id,
+            core_charge_ids=core_ids,
+            notes=notes,
+        )
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        return RedirectResponse(f"/cores/?error={url_quote(str(exc))}", status_code=303)
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error creating VCR for vendor %s", form.get("vendor_id"))
+        return RedirectResponse(
+            f"/cores/?error={url_quote('Unexpected error — the VCR was not created.')}",
+            status_code=303,
+        )
+    n = len(vcr.core_charges)
+    return RedirectResponse(
+        f"/cores/?ok={url_quote(f'{vcr.vcr_number} created — {n} core(s) batched, expected credit ${vcr.expected_credit:.2f}.')}",
+        status_code=303,
+    )
+
+
+@router.post("/vcr/{vcr_id}/ship", response_class=RedirectResponse)
+async def vcr_ship(
+    vcr_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Mark the whole VCR batch as shipped — opens the print doc for the box."""
+    from app.services.core_service import CoreService
+
+    form = await request.form()
+    try:
+        CoreService(db, user_id).ship_vcr(
+            vcr_id=vcr_id,
+            tracking_number=str(form.get("tracking_number", "")).strip(),
+            rma_number=str(form.get("rma_number", "")).strip(),
+        )
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        return RedirectResponse(f"/cores/?error={url_quote(str(exc))}", status_code=303)
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error shipping VCR %s", vcr_id)
+        return RedirectResponse(
+            f"/cores/?error={url_quote('Unexpected error — the VCR was not marked shipped.')}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/cores/vcr/{vcr_id}/print", status_code=303)
+
+
+@router.post("/vcr/{vcr_id}/vendor-decision", response_class=RedirectResponse)
+async def vcr_vendor_decision(
+    vcr_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """
+    Record the vendor's decision on a shipped batch: unchecked cores are
+    accepted (vendor credit each), checked cores are denied with one shared
+    reason/resolution (per-core money flows reuse the single-core service paths).
+    """
+    from app.services.core_service import CoreService
+
+    form = await request.form()
+    try:
+        actual_credit = float(form.get("actual_credit") or 0)
+        denied_ids = [int(i) for i in form.getlist("denied_core_ids")]
+        vcr = CoreService(db, user_id).record_vcr_vendor_decision(
+            vcr_id=vcr_id,
+            actual_credit=actual_credit,
+            denied_core_ids=denied_ids,
+            denial_reason=str(form.get("denial_reason", "")).strip(),
+            denial_resolution=str(
+                form.get("resolution", CoreDenialResolution.ABSORBED_BY_JAKS)
+            ).strip(),
+            notes=str(form.get("notes", "")).strip(),
+        )
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        return RedirectResponse(f"/cores/?error={url_quote(str(exc))}", status_code=303)
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error recording vendor decision for VCR %s", vcr_id)
+        return RedirectResponse(
+            f"/cores/?error={url_quote('Unexpected error — the vendor decision was not recorded.')}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        f"/cores/?ok={url_quote(f'{vcr.vcr_number} settled — vendor credit ${vcr.actual_credit:.2f} recorded.')}",
+        status_code=303,
+    )
 
 
 # ── Core Slip Print (customer receipt when core returned) ─────────────────────

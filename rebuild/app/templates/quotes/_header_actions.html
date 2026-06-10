@@ -104,8 +104,9 @@
   {# Print / Save PDF — first-class on every status (promoted out of the More menu) #}
   <a href="/quotes/{{ quote.id }}/print?auto=1" target="_blank" rel="noopener" class="btn-secondary btn-sm">Print / PDF</a>
 
-  {# Overflow: convert + mark lost (DRAFT / SENT only — others have no overflow items) #}
-  {% if quote.status in (QuoteStatus.DRAFT, QuoteStatus.SENT) %}
+  {# Overflow: convert + duplicate + mark lost. Rendered on EVERY status —
+     Duplicate Quote is the universal item (R2: re-quoting a converted/declined/
+     expired quote into a fresh draft is a daily counter operation). #}
   <div class="relative inline-block">
     <button type="button" @click="moreOpen = !moreOpen" class="btn-secondary btn-sm">
       More ▾
@@ -113,11 +114,21 @@
     <div x-show="moreOpen" x-cloak @click.away="moreOpen = false"
          class="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 py-1 min-w-[11rem]">
 
+      {% if quote.status in (QuoteStatus.DRAFT, QuoteStatus.SENT) %}
       <form id="quote-convert-invoice-form" action="/quotes/{{ quote.id }}/convert-to-invoice" method="post">
         <button type="button"
                 @click="moreOpen = false; jakConfirm({ title: 'Convert to invoice?', body: 'Convert{% if quote.status == QuoteStatus.DRAFT %} this quote directly{% endif %} to an invoice?', cta: 'Convert to Invoice', danger: false, formId: 'quote-convert-invoice-form' })"
                 class="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">
           → Invoice
+        </button>
+      </form>
+      {% endif %}
+
+      {# R2 — copy all lines into a fresh DRAFT quote (service allows any status) #}
+      <form action="/quotes/{{ quote.id }}/duplicate" method="post">
+        <button type="submit"
+                class="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">
+          Duplicate Quote
         </button>
       </form>
 
@@ -129,22 +140,39 @@
       {% endif %}
     </div>
   </div>
-  {% endif %}
 
-  {# Mark Lost popover (sent only) #}
+  {# Mark Lost popover (sent only) — structured reason picker (P2-D7).
+     `reason` drives both the submit gate and the competitor-intel reveal;
+     competitor name/price only post for the COMPETITOR reason (the route
+     tolerates the blank "" a number input submits otherwise). #}
   {% if quote.status == QuoteStatus.SENT %}
   <div x-show="showLost" x-cloak @click.away="showLost = false"
        class="fixed inset-0 z-[60] flex items-start justify-center pt-24 px-4 bg-black/30"
        @keydown.escape.window="showLost = false">
     <div class="bg-white border border-gray-200 rounded-xl shadow-xl p-4 w-full max-w-sm" @click.stop>
       <p class="text-sm font-semibold text-gray-800 mb-2">Why was this quote lost?</p>
-      <input x-model="reason" type="text" placeholder="Competitor price, timing, no decision…"
-             class="form-input mb-3"
-             @keydown.enter.prevent="if(reason.trim()) $el.closest('div').querySelector('form').submit()" />
-      <form action="/quotes/{{ quote.id }}/mark-lost" method="post" class="flex gap-2 justify-end">
-        <input type="hidden" name="lost_reason" :value="reason" />
-        <button type="button" @click="showLost = false" class="btn-secondary btn-sm">Cancel</button>
-        <button type="submit" :disabled="!reason.trim()" class="btn-danger btn-sm">Confirm: Mark Lost</button>
+      <form action="/quotes/{{ quote.id }}/mark-lost" method="post" class="space-y-3">
+        <select name="lost_reason" x-model="reason" class="form-select w-full">
+          <option value="">Select a reason…</option>
+          {% for r in lost_reasons %}
+          <option value="{{ r }}">{{ lost_reason_labels[r] }}</option>
+          {% endfor %}
+        </select>
+
+        {# Competitor intel — the highest-value lost-sale signal #}
+        <div x-show="reason === '{{ LostReason.COMPETITOR }}'" x-cloak class="space-y-2">
+          <input type="text" name="competitor_name" placeholder="Competitor name"
+                 class="form-input" />
+          <input type="number" name="competitor_price" step="0.01" min="0"
+                 inputmode="decimal" placeholder="Their price ($)" class="form-input" />
+        </div>
+
+        <input type="text" name="note" placeholder="Notes (optional)" class="form-input" />
+
+        <div class="flex gap-2 justify-end">
+          <button type="button" @click="showLost = false" class="btn-secondary btn-sm">Cancel</button>
+          <button type="submit" :disabled="!reason" class="btn-danger btn-sm">Confirm: Mark Lost</button>
+        </div>
       </form>
     </div>
   </div>

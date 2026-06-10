@@ -42,6 +42,22 @@ x-init="lines = JSON.parse(document.getElementById('wty-seed-lines').textContent
       </select>
     </div>
 
+    <div class="grid grid-cols-2 gap-3">
+      <div>
+        <label class="form-label">Warranty Type</label>
+        <select name="warranty_type" class="form-select">
+          <option value="{{ WarrantyType.VENDOR }}">Vendor (vendor reimburses)</option>
+          <option value="{{ WarrantyType.JAKS_EXTENDED }}">JAKS Extended (JAKS absorbs)</option>
+        </select>
+      </div>
+      <div>
+        <label class="form-label">Engine Serial # (ESN)</label>
+        <input type="text" name="esn" maxlength="100"
+               placeholder="Required by PAI / vendor"
+               class="form-input" />
+      </div>
+    </div>
+
     <div>
       <label class="form-label">Failure Description <span class="text-red-500">*</span></label>
       <textarea name="failure_description" required rows="2"

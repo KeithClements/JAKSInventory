@@ -22,7 +22,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
-from app.constants import LineType, WarrantyDecision, WarrantyResolution, WarrantyStatus
+from app.constants import (
+    LineType, WarrantyDecision, WarrantyResolution, WarrantyStatus, WarrantyType,
+)
 from app.deps import get_current_user_id, get_db
 from app.models.customer import Customer
 from app.models.invoice import Invoice
@@ -202,6 +204,7 @@ def warranty_new(
             "selected_customer": selected_customer,
             "selected_invoice": selected_invoice,
             "seed_lines": seed_lines,
+            "WarrantyType": WarrantyType,
         },
     )
 
@@ -223,6 +226,11 @@ async def warranty_create(
 
     failure_description = str(form.get("failure_description", "")).strip()
     notes = str(form.get("notes", "")).strip()
+    esn = str(form.get("esn", "")).strip()
+
+    # R2 — warranty type select; anything unexpected falls back to VENDOR
+    # (the pre-R2 implicit default), service validates again.
+    warranty_type = str(form.get("warranty_type", "")).strip() or WarrantyType.VENDOR
 
     # Optional invoice and vendor links
     inv_raw = str(form.get("invoice_number", "")).strip()
@@ -263,6 +271,8 @@ async def warranty_create(
             failure_description=failure_description,
             lines=lines,
             notes=notes,
+            warranty_type=warranty_type,
+            esn=esn,
         )
     except ValueError as exc:
         db.rollback()
@@ -402,6 +412,62 @@ def warranty_credit_customer(
             status_code=303,
         )
     return RedirectResponse(f"/warranty/{claim_id}", status_code=303)
+
+
+# ── Record Vendor Credit ──────────────────────────────────────────────────────
+
+@router.post("/{claim_id}/vendor-credit", response_class=RedirectResponse)
+async def warranty_vendor_credit(
+    claim_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """R2 — record the credit the vendor actually issued to JAKS (VendorCredit
+    ledger entry, type=WARRANTY). Independent of the customer-side credit."""
+    from app.services.warranty_service import WarrantyService
+
+    form = await request.form()
+
+    claim = db.query(WarrantyClaim).filter(WarrantyClaim.id == claim_id).first()
+    if not claim:
+        return RedirectResponse("/warranty/", status_code=303)
+    if not claim.vendor_id:
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error="
+            f"{url_quote('No vendor on this claim — a vendor credit needs a vendor.')}",
+            status_code=303,
+        )
+
+    try:
+        credit_amount = float(str(form.get("credit_amount", "")).strip() or 0.0)
+    except ValueError:
+        credit_amount = 0.0
+    reference = str(form.get("reference", "")).strip() or None
+
+    try:
+        WarrantyService(db, user_id).record_vendor_credit(
+            claim_id=claim_id,
+            vendor_id=claim.vendor_id,
+            credit_amount=credit_amount,
+            reference=reference,
+        )
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error={url_quote(str(exc))}", status_code=303
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error recording vendor credit for claim %s", claim_id)
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error={url_quote('Unexpected error — vendor credit was not recorded.')}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        f"/warranty/{claim_id}?ok={url_quote('Vendor credit recorded.')}",
+        status_code=303,
+    )
 
 
 # ── Notify Customer of Denial ─────────────────────────────────────────────────

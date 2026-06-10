@@ -25,7 +25,10 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
-from app.constants import InvoiceStatus, LineType, PaymentMethod, QBOSyncStatus
+from app.constants import (
+    ENGINE_MAKES, ENGINE_MODELS_BY_MAKE,
+    InvoiceStatus, LineType, PaymentMethod, QBOSyncStatus,
+)
 from app.deps import get_current_user_id, get_db
 from app.services.document_render import get_company_dict, get_prepared_by
 from app.models.customer import Customer
@@ -174,6 +177,10 @@ def _workspace_context(
         "InvoiceStatus": InvoiceStatus,
         "LineType": LineType,
         "PaymentMethod": PaymentMethod,
+        # Standardized engine make/model cascading picker (header vehicle block —
+        # same wiring as the quote workspace).
+        "engine_makes": ENGINE_MAKES,
+        "engine_models_by_make": ENGINE_MODELS_BY_MAKE,
         # Customer balance chips
         "cust_open_balance": bal["open_balance"],
         "cust_overdue_balance": bal["overdue_balance"],
@@ -361,23 +368,45 @@ def invoice_list(
         "modified_since_sync": modified_since_sync_count,
     }
 
-    # Filtered query
-    from sqlalchemy.orm import joinedload
+    # Filtered query.
+    # Eager-load everything each row renders: Total / Balance Due walk
+    # inv.lines (totals engine) + inv.allocations (amount_paid), and the
+    # source-document sub-line walks inv.sales_order — without these options a
+    # 200-row page fires ~3 lazy SELECTs per row (N+1).
+    from sqlalchemy.orm import joinedload, selectinload
     query = (
         db.query(Invoice)
         .join(Customer)
-        .options(joinedload(Invoice.customer))
+        .options(
+            joinedload(Invoice.customer),
+            selectinload(Invoice.lines),
+            selectinload(Invoice.allocations),
+            joinedload(Invoice.sales_order),
+        )
     )
     query = _apply_invoice_list_filters(db, query, tab, q, now)
-    # Sort (#4 — whitelisted keys, asc/desc).
+    # Sort (#4 — whitelisted keys, asc/desc). total/balance are computed
+    # properties (the totals engine), not columns — they are ordered in Python
+    # after .all() per the plan's non-column-sort rule (mirrors the quotes
+    # list's "margin" sort).
     _INV_SORT = {
-        "created": Invoice.created_at,
-        "number":  Invoice.invoice_number,
-        "due":     Invoice.due_date,
+        "created":  Invoice.created_at,
+        "number":   Invoice.invoice_number,
+        "due":      Invoice.due_date,   # legacy alias (pre-R2 links)
+        "due_date": Invoice.due_date,
         "customer": Customer.company_name,
     }
-    query, sort, direction = apply_sort(query, _INV_SORT, sort, direction, default="created")
+    _computed_sort = sort if sort in ("total", "balance") else None
+    query, sort, direction = apply_sort(
+        query, _INV_SORT, (None if _computed_sort else sort), direction, default="created"
+    )
     invoices = query.limit(200).all()
+    if _computed_sort:
+        sort = _computed_sort  # echo the active key back to the sort headers
+        invoices.sort(
+            key=(lambda i: i.total) if _computed_sort == "total" else (lambda i: i.balance_due),
+            reverse=(direction == "desc"),
+        )
     return templates.TemplateResponse(
         request,
         "invoices/list.html",
