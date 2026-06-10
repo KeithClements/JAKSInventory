@@ -300,6 +300,60 @@ def test_apply_is_idempotent(db):
     assert count == 1
 
 
+def test_apply_only_ids_narrows_the_run(db):
+    """only_ids applies exactly the named ACCEPTED candidates and leaves the other
+    accepted rows unapplied (per-row / selected-rows 'Approve & Add to Catalog')."""
+    svc = ImportReviewService(db, None)
+    batch = svc.analyze_feed(_csv([
+        _prod_row("APPLY-ONLY-1", oem=""),
+        _prod_row("APPLY-ONLY-2", oem=""),
+    ]))
+    c1, c2 = _cands(db, batch)
+    svc.set_review_status(c1.id, ScrapedItemReviewStatus.ACCEPTED)
+    svc.set_review_status(c2.id, ScrapedItemReviewStatus.ACCEPTED)
+
+    result = svc.apply_approved(batch.id, only_ids=[c1.id])
+
+    assert result["applied"] == 1 and result["created"] == 1
+    db.refresh(c1); db.refresh(c2); db.refresh(batch)
+    assert c1.applied_product_id is not None
+    assert c2.applied_product_id is None          # untouched — not in only_ids
+    # Batch must NOT be finalized as APPLIED while accepted rows remain unapplied
+    assert batch.status == ImportBatchStatus.STAGED
+
+    # The remaining row applies on a later full run
+    result2 = svc.apply_approved(batch.id)
+    assert result2["applied"] == 1
+    db.refresh(c2)
+    assert c2.applied_product_id is not None
+
+
+def test_apply_new_carries_reviewer_corrections(db):
+    """Reviewer corrections made on the CANDIDATE (price / category / engine) must
+    land on a NEWLY CREATED product. _apply_new builds the product from raw_json,
+    so apply_approved re-applies the corrected candidate fields afterwards."""
+    cat = ProductCategory(name="Corrected Cat", level=1)
+    db.add(cat)
+    db.commit()
+
+    svc = ImportReviewService(db, None)
+    batch = svc.analyze_feed(_csv([_prod_row("APPLY-CORR-001", price="10.99", oem="")]))
+    c = _cands(db, batch)[0]
+    svc.update_candidate(c.id, {"new_price": 12.49,
+                                "resolved_category_id": cat.id,
+                                "engine_manufacturer": "Cummins"})
+    svc.set_review_status(c.id, ScrapedItemReviewStatus.ACCEPTED)
+
+    result = svc.apply_approved(batch.id)
+    assert result["created"] == 1 and result["errors"] == []
+
+    db.refresh(c)
+    product = db.get(Product, c.applied_product_id)
+    assert product.price_override == 12.49          # corrected price wins over feed price
+    assert product.category_id == cat.id            # reviewer category overrides classifier
+    assert product.engine_manufacturer == "Cummins" # reviewer engine make applied
+
+
 def test_apply_skips_non_accepted(db):
     """PENDING and REJECTED candidates must not be applied (only ACCEPTED rows
     with applied_product_id IS NULL are eligible)."""

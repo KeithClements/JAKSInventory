@@ -258,8 +258,11 @@ def apply_batch(batch_id: int, request: Request, db: Session = Depends(get_db),
 def review(batch_id: int, request: Request, action: str = Form(...),
            candidate_ids: list[int] = Form([]), tab: str = Form("all"),
            db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
-    target = {"approve": _RS.ACCEPTED, "reject": _RS.REJECTED,
-              "ignore": _RS.IGNORED}.get(action)
+    """Selected-rows review. ``approve_apply`` = approve the selected rows AND
+    immediately write exactly those rows to the catalog (only_ids), so one click
+    moves a checked set of candidates all the way into Products."""
+    target = {"approve": _RS.ACCEPTED, "approve_apply": _RS.ACCEPTED,
+              "reject": _RS.REJECTED, "ignore": _RS.IGNORED}.get(action)
     if target and candidate_ids:
         svc = ImportReviewService(db, user_id)
         for cid in candidate_ids:
@@ -267,7 +270,60 @@ def review(batch_id: int, request: Request, action: str = Form(...),
                 svc.set_review_status(cid, target)
             except ValueError:
                 continue
+    if action == "approve_apply" and candidate_ids:
+        try:
+            summary = ImportReviewService(db, user_id).apply_approved(
+                batch_id, only_ids=candidate_ids)
+            return RedirectResponse(
+                f"/import-review/{batch_id}?tab={tab}"
+                f"&apply_created={summary.get('created', 0)}"
+                f"&apply_updated={summary.get('updated', 0)}"
+                f"&apply_errors={len(summary.get('errors', []))}",
+                status_code=303)
+        except PermissionDeniedError:
+            return HTMLResponse(
+                '<div style="max-width:40rem;margin:3rem auto;font-family:system-ui">'
+                '<h2 style="color:#b91c1c">Not allowed</h2>'
+                '<p>Adding products to the catalog requires admin access.</p>'
+                f'<p><a href="/import-review/{batch_id}">&larr; Back to the queue</a></p></div>',
+                status_code=403)
     return RedirectResponse(f"/import-review/{batch_id}?tab={tab}", status_code=303)
+
+
+# ── Per-candidate decision from the preview dock ───────────────────────────────
+@router.post("/candidate/{candidate_id}/decide")
+def candidate_decide(candidate_id: int, request: Request, action: str = Form(...),
+                     db: Session = Depends(get_db),
+                     user_id: int = Depends(get_current_user_id)):
+    """Approve / reject / approve-and-add-to-catalog a SINGLE candidate from the
+    preview dock. Regular form post (no HTMX) — the redirect reloads the queue so
+    the row's status chip, tab counts, and Apply button all refresh together."""
+    c = db.get(ImportCandidate, candidate_id)
+    if not c:
+        return RedirectResponse("/import-review/", status_code=303)
+    batch_id = c.batch_id
+    svc = ImportReviewService(db, user_id)
+    target = {"approve": _RS.ACCEPTED, "approve_apply": _RS.ACCEPTED,
+              "reject": _RS.REJECTED, "ignore": _RS.IGNORED}.get(action)
+    if target:
+        svc.set_review_status(candidate_id, target)
+    if action == "approve_apply":
+        try:
+            summary = svc.apply_approved(batch_id, only_ids=[candidate_id])
+            return RedirectResponse(
+                f"/import-review/{batch_id}"
+                f"?apply_created={summary.get('created', 0)}"
+                f"&apply_updated={summary.get('updated', 0)}"
+                f"&apply_errors={len(summary.get('errors', []))}",
+                status_code=303)
+        except PermissionDeniedError:
+            return HTMLResponse(
+                '<div style="max-width:40rem;margin:3rem auto;font-family:system-ui">'
+                '<h2 style="color:#b91c1c">Not allowed</h2>'
+                '<p>Adding products to the catalog requires admin access.</p>'
+                f'<p><a href="/import-review/{batch_id}">&larr; Back to the queue</a></p></div>',
+                status_code=403)
+    return RedirectResponse(f"/import-review/{batch_id}", status_code=303)
 
 
 # ── Bulk approve/reject for a WHOLE batch (no per-row selection) ──────────────

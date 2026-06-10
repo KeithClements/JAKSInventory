@@ -334,9 +334,12 @@ class ImportReviewService(BaseService):
         return q.order_by(ImportCandidate.id).all()
 
     # ── Apply (Phase C) ───────────────────────────────────────────────────────
-    def apply_approved(self, batch_id: int) -> dict:
+    def apply_approved(self, batch_id: int, only_ids: list[int] | None = None) -> dict:
         """Apply every ACCEPTED, not-yet-applied candidate in a batch to the catalog
         through the ERP's OWN create/update path. Idempotent (skips applied ones).
+        ``only_ids`` narrows the run to specific candidates (the per-row and
+        selected-rows "Approve & Add to Catalog" actions); rows must still be
+        ACCEPTED + unapplied to be written.
 
           NEW            -> create via the locked full_import path (rows=[p]), which
                             mints the JAKS SKU + vendor source + cross-refs + apps +
@@ -361,11 +364,14 @@ class ImportReviewService(BaseService):
         batch.status = ImportBatchStatus.APPLYING
         self.db.commit()
 
-        cands = self.db.query(ImportCandidate).filter(
+        cand_q = self.db.query(ImportCandidate).filter(
             ImportCandidate.batch_id == batch_id,
             ImportCandidate.review_status == ScrapedItemReviewStatus.ACCEPTED,
             ImportCandidate.applied_product_id.is_(None),
-        ).order_by(ImportCandidate.id).all()
+        )
+        if only_ids:
+            cand_q = cand_q.filter(ImportCandidate.id.in_(only_ids))
+        cands = cand_q.order_by(ImportCandidate.id).all()
 
         pis = ProductImportService(self.db, self.current_user_id)
         psvc = ProductService(self.db, self.current_user_id)
@@ -375,7 +381,9 @@ class ImportReviewService(BaseService):
         for c in cands:
             try:
                 p = json.loads(c.raw_json) if c.raw_json else {}
-                if c.disposition == ImportDisposition.NEW and not c.matched_product_id:
+                created_now = (c.disposition == ImportDisposition.NEW
+                               and not c.matched_product_id)
+                if created_now:
                     product_id = self._apply_new(pis, p)
                     summary["created"] += 1
                 else:
@@ -390,13 +398,27 @@ class ImportReviewService(BaseService):
                     summary["applied"] += 1
                     # A human approved this candidate → clear needs_review on
                     # the product so it no longer appears in the Products "Needs
-                    # Review" tab, and apply any AI-generated fields.
+                    # Review" tab, and apply any AI-generated fields. Reviewer
+                    # corrections on the CANDIDATE (price / category / engine) are
+                    # authoritative: _apply_new builds the product from raw_json,
+                    # so corrected fields must be re-applied here or a reviewer's
+                    # edit would silently vanish on newly created products.
                     prod_obj = self.db.get(Product, product_id)
                     if prod_obj:
                         prod_obj.needs_review = False
-                        # Apply resolved category if product still has none
-                        if not prod_obj.category_id and c.resolved_category_id:
+                        # Price: the candidate's price is competitor-matched (and
+                        # possibly reviewer-corrected) — it always wins.
+                        if c.new_price is not None and c.new_price > 0:
+                            prod_obj.price_override = c.new_price
+                        # Category: on a just-created product the candidate's
+                        # resolved category overrides the classifier's guess; on
+                        # an existing product it only fills a blank.
+                        if c.resolved_category_id and (created_now or not prod_obj.category_id):
                             prod_obj.category_id = c.resolved_category_id
+                        # Engine make: same rule — authoritative on create,
+                        # fill-if-blank on update.
+                        if c.engine_manufacturer and (created_now or not prod_obj.engine_manufacturer):
+                            prod_obj.engine_manufacturer = c.engine_manufacturer
                         # Apply AI-generated description and tags if product
                         # was created without them (full_import leaves these blank).
                         try:
