@@ -29,6 +29,19 @@
     {{ start_date.strftime('%b %d, %Y') }} – {{ end_date.strftime('%b %d, %Y') }} · Finalized invoices only (drafts and voids excluded)
   </p>
 
+  {# ── R1-14 estimated/missing-cost warning ──────────────────────────────── #}
+  {% if (cost_estimated_lines | default(0)) > 0 or (zero_cost_lines | default(0)) > 0 %}
+  <div class="rounded-xl bg-amber-50 border border-amber-200 px-5 py-3 text-sm text-amber-800">
+    <span class="font-semibold">Margin is partly estimated:</span>
+    {% if (cost_estimated_lines | default(0)) > 0 %}
+    {{ cost_estimated_lines }} line{{ 's' if cost_estimated_lines != 1 }} had no recorded cost at time of sale — vendor/receipt cost was used instead.
+    {% endif %}
+    {% if (zero_cost_lines | default(0)) > 0 %}
+    {{ zero_cost_lines }} line{{ 's' if zero_cost_lines != 1 }} have no cost data at all, so margin is overstated for those.
+    {% endif %}
+  </div>
+  {% endif %}
+
   {# ── Summary tiles ─────────────────────────────────────────────────────── #}
   <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
     <div class="stat-card-brand">

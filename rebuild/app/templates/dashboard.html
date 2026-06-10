@@ -25,12 +25,21 @@
 {% block content %}
 
 {% if admin_pw_default %}
-<div class="mb-4 flex items-center gap-2 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-800">
+<div x-data="{ show: sessionStorage.getItem('jaks_pw_warning_dismissed') !== '1' }" x-show="show" x-cloak
+     class="mb-4 flex items-center gap-2 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-800">
   <svg class="w-5 h-5 shrink-0 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
     <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3L13.74 5a2 2 0 00-3.48 0L3.19 16a2 2 0 001.74 3z"/>
   </svg>
-  <span><strong>Security:</strong> the admin account is still using the default password. Change it at
+  <span class="flex-1"><strong>Security:</strong> the admin account is still using the default password. Change it at
     <a href="/account" class="font-semibold underline hover:text-red-900">Account settings</a> before going live with real data.</span>
+  <button type="button"
+          @click="show = false; sessionStorage.setItem('jaks_pw_warning_dismissed', '1')"
+          class="shrink-0 text-red-400 hover:text-red-700 transition-colors"
+          title="Dismiss until next sign-in" aria-label="Dismiss security warning">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+    </svg>
+  </button>
 </div>
 {% endif %}
 
@@ -38,7 +47,7 @@
 <div class="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7 mb-5">
 
   {# Today's Cash #}
-  <div class="stat-card-green">
+  <div class="stat-card-green" title="Total customer payments received today, across all methods">
     <div class="flex items-start justify-between mb-1">
       <p class="stat-label">Today's Cash</p>
       <div class="w-8 h-8 rounded-lg bg-green-100 flex items-center justify-center shrink-0">
@@ -52,7 +61,7 @@
   </div>
 
   {# AR Balance #}
-  <div class="stat-card-brand">
+  <div class="stat-card-brand" title="Total outstanding balance across all open customer invoices (Accounts Receivable)">
     <div class="flex items-start justify-between mb-1">
       <p class="stat-label">AR Balance</p>
       <div class="w-8 h-8 rounded-lg bg-brand-100 flex items-center justify-center shrink-0">
@@ -66,7 +75,7 @@
   </div>
 
   {# Overdue #}
-  <div class="{% if overdue_count > 0 %}stat-card-red{% else %}stat-card-brand{% endif %}">
+  <div class="{% if overdue_count > 0 %}stat-card-red{% else %}stat-card-brand{% endif %}" title="Open or partially-paid invoices now past their due date">
     <div class="flex items-start justify-between mb-1">
       <p class="stat-label">Overdue</p>
       <div class="w-8 h-8 rounded-lg {% if overdue_count > 0 %}bg-red-100{% else %}bg-brand-100{% endif %} flex items-center justify-center shrink-0">
@@ -80,7 +89,7 @@
   </div>
 
   {# Open Quotes #}
-  <div class="{% if open_quotes > 0 %}stat-card-amber{% else %}stat-card-brand{% endif %}">
+  <div class="{% if open_quotes > 0 %}stat-card-amber{% else %}stat-card-brand{% endif %}" title="Quotes still in draft — not yet sent, won, or lost">
     <div class="flex items-start justify-between mb-1">
       <p class="stat-label">Open Quotes</p>
       <div class="w-8 h-8 rounded-lg {% if open_quotes > 0 %}bg-amber-100{% else %}bg-brand-100{% endif %} flex items-center justify-center shrink-0">
@@ -94,7 +103,7 @@
   </div>
 
   {# Sales Orders #}
-  <div class="{% if open_sos > 0 %}stat-card-blue{% else %}stat-card-brand{% endif %}">
+  <div class="{% if open_sos > 0 %}stat-card-blue{% else %}stat-card-brand{% endif %}" title="Sales orders open, partial, or on hold — not yet fully invoiced">
     <div class="flex items-start justify-between mb-1">
       <p class="stat-label">Sales Orders</p>
       <div class="w-8 h-8 rounded-lg {% if open_sos > 0 %}bg-blue-100{% else %}bg-brand-100{% endif %} flex items-center justify-center shrink-0">
@@ -108,7 +117,7 @@
   </div>
 
   {# POs Open #}
-  <div class="{% if open_pos > 0 %}stat-card-blue{% else %}stat-card-brand{% endif %}">
+  <div class="{% if open_pos > 0 %}stat-card-blue{% else %}stat-card-brand{% endif %}" title="Purchase orders placed but not yet fully received">
     <div class="flex items-start justify-between mb-1">
       <p class="stat-label">POs Open</p>
       <div class="w-8 h-8 rounded-lg {% if open_pos > 0 %}bg-blue-100{% else %}bg-brand-100{% endif %} flex items-center justify-center shrink-0">
@@ -122,7 +131,7 @@
   </div>
 
   {# Open Cores #}
-  <div class="{% if open_cores > 0 %}stat-card-amber{% else %}stat-card-brand{% endif %}">
+  <div class="{% if open_cores > 0 %}stat-card-amber{% else %}stat-card-brand{% endif %}" title="Core deposits awaiting customer return — count and outstanding dollar liability">
     <div class="flex items-start justify-between mb-1">
       <p class="stat-label">Open Cores</p>
       <div class="w-8 h-8 rounded-lg {% if open_cores > 0 %}bg-amber-100{% else %}bg-brand-100{% endif %} flex items-center justify-center shrink-0">
@@ -132,6 +141,7 @@
       </div>
     </div>
     <p class="stat-value {% if open_cores > 0 %}text-amber-600{% endif %}">{{ open_cores }}</p>
+    <p class="stat-sub">${{ "{:,.0f}".format(open_cores_value) }} outstanding</p>
     <a href="/reports/outstanding-cores" class="text-xs link mt-auto">Cores report →</a>
   </div>
 
@@ -146,7 +156,15 @@
       <div class="card-header">
         <div>
           <h2 class="card-title">Monthly Revenue</h2>
-          <p class="text-xs text-gray-500 mt-0.5">Invoiced — last 6 months</p>
+          <div class="flex items-center gap-2 mt-1">
+            <span class="text-xs text-gray-500 shrink-0">Invoiced — {{ period_label }}</span>
+            <div class="hidden sm:flex items-center gap-0.5 bg-gray-100 rounded-lg p-0.5">
+              {% for slug, lbl in [('3m','3M'), ('6m','6M'), ('ytd','YTD'), ('12m','12M')] %}
+              <a href="/?period={{ slug }}{% if inv_mode == 'all' %}&inv=all{% endif %}"
+                 class="px-2 py-0.5 text-xs font-semibold rounded-md transition-colors {% if period == slug %}bg-white text-brand-700 shadow-sm{% else %}text-gray-500 hover:text-gray-800{% endif %}">{{ lbl }}</a>
+              {% endfor %}
+            </div>
+          </div>
         </div>
         <div class="flex items-center gap-4">
           <div class="text-right">
@@ -168,7 +186,10 @@
     {# Top Customers (§8T-1) — ctx top_customers = [{customer, lifetime_sales}] #}
     <div class="card">
       <div class="card-header">
-        <h2 class="card-title">Top Customers</h2>
+        <div>
+          <h2 class="card-title">Top Customers</h2>
+          <p class="text-xs text-gray-500 mt-0.5">By lifetime sales</p>
+        </div>
         <a href="/customers/" class="text-xs link shrink-0">All →</a>
       </div>
       {% if top_customers %}
@@ -186,33 +207,6 @@
       {% else %}
       <div class="px-5 py-4 text-sm text-gray-400">No invoice data yet.</div>
       {% endif %}
-    </div>
-
-    {# Open Follow-Ups (§8T-1) — ctx open_followups {status: count}; reuse the quote follow-up taxonomy #}
-    {% set ofu_badges = {'called':'badge-blue','emailed':'badge-amber','left_vm':'badge-purple','interested':'badge-red','pending':'badge-gray'} %}
-    {% set ofu_labels = {'called':'Call Back','emailed':'Waiting','left_vm':'Left VM','interested':'🔴 Truck Down','pending':'Pending'} %}
-    <div class="card">
-      <div class="card-header">
-        <div>
-          <h2 class="card-title">Follow-Ups</h2>
-          {% if open_followups_total %}<p class="text-xs font-semibold text-amber-600 mt-0.5">{{ open_followups_total }} open</p>{% endif %}
-        </div>
-        <a href="/quotes/?follow_up=due" class="text-xs link shrink-0">View →</a>
-      </div>
-      <div class="px-5 py-4">
-        {% if open_followups_total and open_followups_total > 0 %}
-        <div class="flex flex-wrap gap-2">
-          {% for status, count in open_followups.items() %}
-          <span class="{{ ofu_badges.get(status, 'badge-gray') }}">{{ ofu_labels.get(status, status | replace('_', ' ') | title) }}: {{ count }}</span>
-          {% endfor %}
-        </div>
-        {% else %}
-        <div class="flex items-center gap-2 text-sm text-green-700 font-medium">
-          <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-          All caught up
-        </div>
-        {% endif %}
-      </div>
     </div>
 
   </div>
@@ -305,9 +299,17 @@
       <div class="card-header">
         <div>
           <h2 class="card-title">Recent Invoices</h2>
-          <p class="text-xs text-gray-500 mt-0.5">Last 10</p>
+          <p class="text-xs text-gray-500 mt-0.5">Last 10 · {% if inv_mode == 'all' %}all{% else %}excludes drafts{% endif %}</p>
         </div>
-        <a href="/invoices/" class="text-xs link">All invoices →</a>
+        <div class="flex items-center gap-3">
+          <div class="hidden sm:flex items-center gap-0.5 bg-gray-100 rounded-lg p-0.5">
+            <a href="/?inv=active&period={{ period }}"
+               class="px-2 py-0.5 text-xs font-semibold rounded-md transition-colors {% if inv_mode != 'all' %}bg-white text-brand-700 shadow-sm{% else %}text-gray-500 hover:text-gray-800{% endif %}">Active</a>
+            <a href="/?inv=all&period={{ period }}"
+               class="px-2 py-0.5 text-xs font-semibold rounded-md transition-colors {% if inv_mode == 'all' %}bg-white text-brand-700 shadow-sm{% else %}text-gray-500 hover:text-gray-800{% endif %}">All</a>
+          </div>
+          <a href="/invoices/" class="text-xs link shrink-0">All invoices →</a>
+        </div>
       </div>
 
       {% if recent_invoices %}
@@ -327,14 +329,21 @@
               <th class="tbl-th hidden sm:table-cell">Date</th>
               <th class="tbl-th-r">Total</th>
               <th class="tbl-th-r">Balance</th>
+              <th class="tbl-th-r" x-show="showMargin" x-cloak>Margin</th>
               <th class="tbl-th text-center">Status</th>
             </tr>
           </thead>
           <tbody>
             {% for inv in recent_invoices %}
+            {% set m = recent_margin.get(inv.id) %}
             <tr class="tbl-row cursor-pointer" onclick="location.href='/invoices/{{ inv.id }}'">
               <td class="tbl-td">
                 <a href="/invoices/{{ inv.id }}" class="tbl-link font-mono text-xs font-bold" onclick="event.stopPropagation()">{{ inv.invoice_number }}</a>
+                {% if inv.status == 'draft' or inv.total == 0 %}
+                <span class="ml-1 align-middle inline-flex" title="Draft / $0 — not finalized">
+                  <svg class="w-3.5 h-3.5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3L13.74 5a2 2 0 00-3.48 0L3.19 16a2 2 0 001.74 3z"/></svg>
+                </span>
+                {% endif %}
               </td>
               <td class="tbl-td">
                 <span class="text-sm font-medium text-gray-800">{{ inv.customer.company_name }}</span>
@@ -350,6 +359,13 @@
                 </span>
                 {% else %}
                 <span class="text-gray-300 text-xs">paid</span>
+                {% endif %}
+              </td>
+              <td class="tbl-td-r" x-show="showMargin" x-cloak>
+                {% if m is none %}
+                <span class="text-gray-300 text-xs">—</span>
+                {% else %}
+                <span class="font-semibold tabular-nums {% if m >= 30 %}text-green-600{% elif m >= 15 %}text-amber-600{% else %}text-red-600{% endif %}">{{ m }}%</span>
                 {% endif %}
               </td>
               <td class="tbl-td text-center">
@@ -423,14 +439,15 @@
   {# ── Right sidebar ────────────────────────────────────────────────────── #}
   <div class="flex flex-col gap-4">
 
-    {# Follow-Ups Due #}
+    {# Follow-Ups — consolidated: due-now list inline + open-total context (§8 dedupe) #}
     <div class="card">
       <div class="card-header">
         <div>
-          <h2 class="card-title">Follow-Ups Due</h2>
-          {% if overdue_followups %}
-          <p class="text-xs font-semibold text-amber-600 mt-0.5">{{ overdue_followups | length }} need attention</p>
-          {% endif %}
+          <h2 class="card-title">Follow-Ups</h2>
+          <p class="text-xs mt-0.5">
+            {% if overdue_followups %}<span class="font-semibold text-amber-600">{{ overdue_followups | length }} due now</span>{% else %}<span class="font-semibold text-green-600">none due</span>{% endif %}
+            {% if open_followups_total %}<span class="text-gray-400">· {{ open_followups_total }} open</span>{% endif %}
+          </p>
         </div>
         <a href="/quotes/?follow_up=due" class="text-xs link shrink-0">All →</a>
       </div>

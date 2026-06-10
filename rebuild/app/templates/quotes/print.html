@@ -362,7 +362,7 @@
             {% endif %}
           </td>
 
-          <td class="td-rgt">{{ line.qty }}</td>
+          <td class="td-rgt">{{ line.qty }}{% if line.product and line.product.unit_of_measure and line.product.unit_of_measure != 'EA' %} {{ line.product.unit_of_measure }}{% endif %}</td>
           <td class="td-rgt">${{ "%.2f"|format(line.unit_price) }}</td>
           <td class="td-disc">
             {% if line.discount_pct %}{{ "%.0f"|format(line.discount_pct) }}%{% else %}—{% endif %}
@@ -448,7 +448,7 @@
               <span class="part-num">{{ part_no }}</span>
             {% endif %}
           </td>
-          <td class="td-rgt">{{ line.qty }}</td>
+          <td class="td-rgt">{{ line.qty }}{% if line.product and line.product.unit_of_measure and line.product.unit_of_measure != 'EA' %} {{ line.product.unit_of_measure }}{% endif %}</td>
           <td class="td-rgt">${{ "%.2f"|format(line.unit_price) }}</td>
           <td class="td-disc">
             {% if line.discount_pct %}{{ "%.0f"|format(line.discount_pct) }}%{% else %}—{% endif %}
@@ -491,7 +491,7 @@
             {{ line.description }}
             {% set part_no = line_part_no(line.product) %}{% if part_no %}<span class="part-num">{{ part_no }}</span>{% endif %}
           </td>
-          <td class="td-rgt">{{ line.qty }}</td>
+          <td class="td-rgt">{{ line.qty }}{% if line.product and line.product.unit_of_measure and line.product.unit_of_measure != 'EA' %} {{ line.product.unit_of_measure }}{% endif %}</td>
           <td class="td-rgt">${{ "%.2f"|format(line.unit_price) }}</td>
           <td class="td-disc">{% if line.discount_pct %}{{ "%.0f"|format(line.discount_pct) }}%{% else %}—{% endif %}</td>
           <td class="td-total">${{ "%.2f"|format(line.line_total) }}</td>

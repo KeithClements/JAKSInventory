@@ -293,7 +293,10 @@ class Payment(QBOSyncMixin, Base):
 
     @property
     def amount_allocated(self) -> float:
-        return round(sum(a.amount_applied for a in self.allocations), 2)
+        # Mirror Invoice.amount_paid — exclude reversed allocations so an NSF /
+        # stop-payment reversal releases the funds back to amount_unallocated
+        # instead of stranding them (allocated-but-not-counted-as-paid).
+        return round(sum(a.amount_applied for a in self.allocations if not a.is_reversed), 2)
 
     @property
     def amount_unallocated(self) -> float:

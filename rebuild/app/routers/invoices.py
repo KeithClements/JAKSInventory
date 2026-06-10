@@ -13,13 +13,15 @@ All mutations go through InvoiceService (sole owner of invoice.status).
 """
 from __future__ import annotations
 
+import csv
+import io
 import logging
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote as url_quote
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
@@ -228,6 +230,58 @@ _FINALIZED_STATUSES = [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL, InvoiceStatus.
 _QBO_TAB_SLUGS = ("not_synced", "sync_failed", "modified_since_sync")
 
 
+def _apply_invoice_list_filters(db: Session, query, tab: str, q: str, now: datetime):
+    """Tab + search filtering shared by the list view and the CSV export so
+    "export what I see" matches the list exactly."""
+    from sqlalchemy import or_, func
+
+    if tab in _QBO_TAB_SLUGS:
+        if tab == "not_synced":
+            query = query.filter(Invoice.status.in_(_FINALIZED_STATUSES),
+                                 Invoice.qbo_invoice_id.is_(None))
+        elif tab == "sync_failed":
+            query = query.filter(Invoice.qbo_sync_status == QBOSyncStatus.ERROR)
+        else:  # modified_since_sync
+            query = query.filter(Invoice.qbo_last_synced_at.isnot(None),
+                                 Invoice.updated_at > Invoice.qbo_last_synced_at)
+    else:
+        statuses = INV_TAB_GROUPS.get(tab, INV_TAB_GROUPS["all"])
+        query = query.filter(Invoice.status.in_(statuses))
+        if tab == "overdue":
+            query = query.filter(Invoice.due_date.isnot(None), Invoice.due_date < now)
+    if q:
+        like = f"%{q.strip()}%"
+        # Line-based matches via id-subqueries (no row duplication): product SKU /
+        # cross-ref number on any line, and sold-serial on any line.
+        line_match = (
+            db.query(InvoiceLine.invoice_id)
+            .join(Product, InvoiceLine.product_id == Product.id)
+            .outerjoin(CrossReference, CrossReference.product_id == Product.id)
+            .filter(or_(Product.sku.ilike(like), CrossReference.ref_number.ilike(like)))
+        )
+        serial_match = (
+            db.query(InvoiceLine.invoice_id)
+            .join(ProductSerialNumber, ProductSerialNumber.invoice_line_id == InvoiceLine.id)
+            .filter(ProductSerialNumber.serial_number.ilike(like))
+        )
+        query = query.filter(
+            or_(
+                Invoice.invoice_number.ilike(like),
+                # de-dash so "inv20260021" still finds "INV-2026-0021"
+                func.replace(func.replace(Invoice.invoice_number, "-", ""), " ", "").ilike(
+                    "%" + q.replace("-", "").replace(" ", "") + "%"),
+                Customer.company_name.ilike(like),
+                Customer.account_number.ilike(like),   # #5
+                Customer.phone.ilike(like),
+                Invoice.customer_po_number.ilike(like),
+                Invoice.esn.ilike(like),            # ESN already matched — kept
+                Invoice.id.in_(line_match),
+                Invoice.id.in_(serial_match),
+            )
+        )
+    return query
+
+
 # ── List ──────────────────────────────────────────────────────────────────────
 #
 # L2 — Operational List Screen Standard (JAKS_UI_Change_Plan.md §2).
@@ -246,7 +300,7 @@ def invoice_list(
     status: str = "",
     db: Session = Depends(get_db),
 ):
-    from sqlalchemy import or_, func
+    from sqlalchemy import func
     from app.utils import apply_sort
 
     # Backward-compat: ?status=open → ?tab=open, etc.
@@ -314,50 +368,7 @@ def invoice_list(
         .join(Customer)
         .options(joinedload(Invoice.customer))
     )
-    if tab in _QBO_TAB_SLUGS:
-        if tab == "not_synced":
-            query = query.filter(Invoice.status.in_(_FINALIZED_STATUSES),
-                                 Invoice.qbo_invoice_id.is_(None))
-        elif tab == "sync_failed":
-            query = query.filter(Invoice.qbo_sync_status == QBOSyncStatus.ERROR)
-        else:  # modified_since_sync
-            query = query.filter(Invoice.qbo_last_synced_at.isnot(None),
-                                 Invoice.updated_at > Invoice.qbo_last_synced_at)
-    else:
-        statuses = INV_TAB_GROUPS.get(tab, INV_TAB_GROUPS["all"])
-        query = query.filter(Invoice.status.in_(statuses))
-        if tab == "overdue":
-            query = query.filter(Invoice.due_date.isnot(None), Invoice.due_date < now)
-    if q:
-        like = f"%{q.strip()}%"
-        # Line-based matches via id-subqueries (no row duplication): product SKU /
-        # cross-ref number on any line, and sold-serial on any line.
-        line_match = (
-            db.query(InvoiceLine.invoice_id)
-            .join(Product, InvoiceLine.product_id == Product.id)
-            .outerjoin(CrossReference, CrossReference.product_id == Product.id)
-            .filter(or_(Product.sku.ilike(like), CrossReference.ref_number.ilike(like)))
-        )
-        serial_match = (
-            db.query(InvoiceLine.invoice_id)
-            .join(ProductSerialNumber, ProductSerialNumber.invoice_line_id == InvoiceLine.id)
-            .filter(ProductSerialNumber.serial_number.ilike(like))
-        )
-        query = query.filter(
-            or_(
-                Invoice.invoice_number.ilike(like),
-                # de-dash so "inv20260021" still finds "INV-2026-0021"
-                func.replace(func.replace(Invoice.invoice_number, "-", ""), " ", "").ilike(
-                    "%" + q.replace("-", "").replace(" ", "") + "%"),
-                Customer.company_name.ilike(like),
-                Customer.account_number.ilike(like),   # #5
-                Customer.phone.ilike(like),
-                Invoice.customer_po_number.ilike(like),
-                Invoice.esn.ilike(like),            # ESN already matched — kept
-                Invoice.id.in_(line_match),
-                Invoice.id.in_(serial_match),
-            )
-        )
+    query = _apply_invoice_list_filters(db, query, tab, q, now)
     # Sort (#4 — whitelisted keys, asc/desc).
     _INV_SORT = {
         "created": Invoice.created_at,
@@ -381,6 +392,66 @@ def invoice_list(
             "InvoiceStatus": InvoiceStatus,
             "now": now,
         },
+    )
+
+
+# ── Export CSV — MUST be before /{invoice_id} ────────────────────────────────
+
+@router.get("/export.csv")
+def invoice_export_csv(
+    tab: str = "all",
+    q: str = "",
+    # `status` kept for backward-compat with old links (?status=open).
+    status: str = "",
+    db: Session = Depends(get_db),
+):
+    """
+    Stream the current filtered invoice list as a CSV download.
+    Respects the same tab/q filters as the list view so "export what I see" works.
+    """
+    from sqlalchemy.orm import joinedload
+
+    if status and tab == "all":
+        tab = _INV_STATUS_TO_TAB.get(status, "all")
+    now = datetime.utcnow()
+
+    query = (
+        db.query(Invoice)
+        .join(Customer)
+        .options(joinedload(Invoice.customer))
+    )
+    query = _apply_invoice_list_filters(db, query, tab, q, now)
+    invoices = query.order_by(Invoice.created_at.desc()).all()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "invoice_number", "status", "customer", "customer_po_number", "esn",
+        "created", "due_date", "subtotal", "tax", "total",
+        "amount_paid", "balance_due", "overdue",
+    ])
+    for inv in invoices:
+        writer.writerow([
+            inv.invoice_number,
+            inv.status,
+            inv.customer.company_name if inv.customer else "",
+            inv.customer_po_number or "",
+            inv.esn or "",
+            inv.created_at.strftime("%Y-%m-%d") if inv.created_at else "",
+            inv.due_date.strftime("%Y-%m-%d") if inv.due_date else "",
+            f"{inv.subtotal:.2f}",
+            f"{inv.tax_amount:.2f}",
+            f"{inv.total:.2f}",
+            f"{inv.amount_paid:.2f}",
+            f"{inv.balance_due:.2f}",
+            "yes" if inv.is_overdue else "no",
+        ])
+
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=invoices.csv"},
     )
 
 
@@ -930,12 +1001,20 @@ async def invoice_payment(
             "check_number": str(form.get("check_number", "")).strip() or None,
             "notes": str(form.get("notes", "")).strip(),
         }
+        # R1-3 — collect the card surcharge at payment time: card method AND the
+        # invoice is flagged. Pct comes from the invoice's R1 snapshot (already
+        # resolved from customer override / system default at creation).
+        apply_surcharge = (
+            payment_method == PaymentMethod.CREDIT_CARD and inv.apply_cc_surcharge
+        )
         PaymentService(db, user_id).record_payment(
             customer_id=inv.customer_id,
             amount_received=amount,
             payment_method=payment_method,
             data=data,
             invoice_ids=[invoice_id],
+            apply_surcharge=apply_surcharge,
+            surcharge_pct=inv.cc_surcharge_pct if apply_surcharge else None,
         )
     except ValueError as exc:
         db.rollback()

@@ -173,14 +173,116 @@ class ProductImportService(BaseService):
                 })
         return [p for p in products.values() if p.get("sku")]
 
+    # ══ JAKS ERP native format parser (SCRAPER_EXPORT_SPEC.md v1) ═════════════
+    def parse_jaks_export_csv(self, text: str) -> list[dict]:
+        """Parse the one-row-per-product JAKS ERP native CSV (new spec, 2026-06-08).
+
+        Pipe-delimited multi-values; cost is a real vendor cost (not 0.0).
+        Returns the same intermediate dict shape as parse_shopify_csv() so
+        full_import() can consume either format without modification.
+        """
+        reader = csv.DictReader(io.StringIO(text))
+        rows: list[dict] = []
+        for raw in reader:
+            r = {k.strip().lower(): (v or "").strip() for k, v in raw.items()}
+            sku = r.get("pai_part_no", "").strip()
+            if not sku:
+                continue
+
+            # OEM refs: "BRAND:NUMBER|BRAND:NUMBER" → ["BRAND NUMBER", ...]
+            # _split_two() in full_import expects space-separated "BRAND NUMBER"
+            oem: list[str] = []
+            for item in (r.get("oem_refs") or "").split("|"):
+                item = item.strip()
+                if not item:
+                    continue
+                if ":" in item:
+                    brand_str, _, num = item.partition(":")
+                    if num.strip():
+                        oem.append(f"{brand_str.strip()} {num.strip()}")
+                else:
+                    oem.append(item)
+
+            # Applications: engine_make + pipe-list of models → ["MAKE MODEL", ...]
+            engine_make = r.get("engine_make", "").strip().upper()
+            apps: list[str] = []
+            for model in (r.get("engine_models") or "").split("|"):
+                model = model.strip().upper()
+                if model:
+                    apps.append(f"{engine_make} {model}".strip() if engine_make else model)
+            if not apps and engine_make:
+                apps.append(engine_make)
+
+            # Images: pipe-list → [{url, alt}, ...]
+            title = r.get("title", "").strip()
+            images = [
+                {"url": u.strip(), "alt": title}
+                for u in (r.get("image_urls") or "").split("|")
+                if u.strip()
+            ]
+
+            # warranty_years → months
+            try:
+                w_months = int(round(float(r.get("warranty_years") or 0) * 12))
+            except (TypeError, ValueError):
+                w_months = 0
+
+            # weight_grams → lbs (full_import stores as lbs)
+            grams_raw = r.get("weight_grams", "").strip()
+
+            # Core charge, is_reman, unit_of_measure, pack_qty (new 2026-06-08)
+            core_charge = _to_float(r.get("core_charge")) or 0.0
+            is_reman_raw = (r.get("is_reman") or "0").strip()
+            is_reman = is_reman_raw in ("1", "true", "yes")
+            unit_of_measure = (r.get("unit_of_measure") or "EA").strip().upper() or "EA"
+            try:
+                pack_qty = max(1, int(r.get("pack_qty") or 1))
+            except (TypeError, ValueError):
+                pack_qty = 1
+
+            rows.append({
+                "sku":            sku,           # raw PAI part number → vendor_sku dedup key
+                "title":          title,
+                "type":           r.get("category", "").strip(),
+                "tags":           engine_make,
+                "price":          r.get("sell_price", "").strip(),   # → price_override
+                "compare_at":     "",
+                "cost":           r.get("cost", "").strip(),         # → vendor_cost
+                "barcode":        "",
+                "grams":          grams_raw,
+                "status":         r.get("status", "active").strip() or "active",
+                "pai_part":       sku,                               # raw PAI # for traceability
+                "oem":            oem,
+                "apps":           apps,
+                "images":         images,
+                "warranty_months": w_months,
+                "handle":         sku.lower(),
+                "core_charge":    core_charge,
+                "is_reman":       is_reman,
+                "unit_of_measure": unit_of_measure,
+                "pack_qty":       pack_qty,
+            })
+        return rows
+
+    @staticmethod
+    def detect_format(text: str) -> str:
+        """Return 'jaks' if the CSV header matches SCRAPER_EXPORT_SPEC.md v1,
+        else 'shopify' (the Shopify multi-row format)."""
+        first = text.split("\n", 1)[0].lower()
+        return "jaks" if "pai_part_no" in first else "shopify"
+
     # ══ Mode 1: FULL PRODUCT IMPORT ════════════════════════════════════════════
     def full_import(self, text: str = "", *, dry_run: bool = True,
                     import_images: bool = True, limit: int | None = None,
                     rows: list | None = None) -> dict:
-        # `rows` lets a caller (Phase C apply) feed pre-parsed row dicts directly,
-        # reusing the exact create/idempotency/SKU-mint path without re-serializing
-        # to CSV. Existing callers pass `text` -> rows=None -> parse as before.
-        rows = rows if rows is not None else self.parse_shopify_csv(text)
+        # `rows` lets a caller (Phase C apply) feed pre-parsed row dicts directly.
+        # When text is provided, auto-detect format: JAKS native (pai_part_no header)
+        # or legacy Shopify multi-row.
+        if rows is None:
+            if text and self.detect_format(text) == "jaks":
+                rows = self.parse_jaks_export_csv(text)
+            else:
+                rows = self.parse_shopify_csv(text)
         if limit:
             rows = rows[:limit]
         summary = {
@@ -199,9 +301,22 @@ class ProductImportService(BaseService):
         # would re-create everything on the next import.)
         existing = {s.strip().lower() for (s,) in self.db.query(ProductVendorSource.vendor_sku).all() if s}
         cat_cache = {c.name.strip().lower(): c.id for c in self.db.query(ProductCategory).all()}
-        pai_id = self._resolve_pai_vendor(dry_run)
-        pai_vendor = self.db.query(Vendor).filter(Vendor.id == pai_id).first() if pai_id else None
-        pai_digit = (pai_vendor.vendor_number or "").strip() if pai_vendor else "9"
+        # SKU-scheme guardrail (owner-locked 2026-06-06: ONE digit per vendor):
+        # the vendor digit comes from the owner-set Vendor.vendor_number — never
+        # auto-created or defaulted, or every feed would mint SKUs in another
+        # vendor's namespace. Missing vendor/digit → fail cleanly, write nothing.
+        pai_vendor = self._resolve_pai_vendor()
+        pai_digit = (pai_vendor.vendor_number or "").strip() if pai_vendor else ""
+        if not pai_digit:
+            problem = ("has no vendor digit (SKU #) set" if pai_vendor
+                       else "does not exist")
+            summary["error"] = (
+                f"Import aborted: vendor '{_PAI_VENDOR_NAME}' {problem}. "
+                f"Create vendor '{_PAI_VENDOR_NAME}' with its vendor digit first "
+                "(Inventory → Vendors → SKU #), then re-run the import."
+            )
+            return summary
+        pai_id = pai_vendor.id
         classifier = ClassificationService(self.db)   # §18.6 — rules cache built once
         # JAKS SKU scheme: mint JAKS-[ENGINE]-[CATEGORY]-[V][NNNN] at import time.
         # Seed the per-(engine,category) sequence counters from the DB so re-imports
@@ -268,6 +383,12 @@ class ProductImportService(BaseService):
             if dry_run:
                 continue
 
+            # Core / reman fields — present in JAKS native format, absent (default 0)
+            # in legacy Shopify format.
+            p_core_charge = _to_float(p.get("core_charge")) or 0.0
+            p_is_reman    = bool(p.get("is_reman", False))
+            p_uom         = (p.get("unit_of_measure") or "EA") or "EA"
+
             product = Product(
                 sku=new_sku,                                     # JAKS scheme SKU (raw CSV sku parked on the vendor source)
                 engine_code=ecode, category_code=ccode, part_seq=new_seq,
@@ -292,8 +413,18 @@ class ProductImportService(BaseService):
                 search_keywords=p["tags"],
                 price_override=_to_float(p["price"]),          # OUR sell price
                 compare_at_price=_to_float(p["compare_at"]),   # marketing compare-at
-                enrichment_source="PAI scraper (Shopify export)",
+                enrichment_source="PAI scraper (JAKS export)" if p.get("core_charge") is not None
+                                  else "PAI scraper (Shopify export)",
                 last_enriched_at=datetime.utcnow(),
+                # Core charge — vendor and customer default to the scraped amount.
+                # is_reman alone (no dollar amount) still sets has_core=True so the
+                # core-return lifecycle activates; owner sets the amount on the product.
+                has_core=p_core_charge > 0 or p_is_reman,
+                vendor_core_charge=p_core_charge,
+                customer_core_charge=p_core_charge,
+                is_reman=p_is_reman,
+                unit_of_measure=p_uom,
+                pack_qty=p.get("pack_qty") or 1,
             )
             self.db.add(product)
             self.db.flush()
@@ -302,7 +433,7 @@ class ProductImportService(BaseService):
                 self.db.add(ProductVendorSource(
                     product_id=product.id, vendor_id=pai_id,
                     vendor_part_number=p["pai_part"], vendor_sku=sku,
-                    vendor_cost=0.0,        # BLANK — no true PAI cost in this file
+                    vendor_cost=_to_float(p.get("cost")) or 0.0,
                     is_preferred=True,
                 ))
             for it in p["oem"]:
@@ -468,23 +599,15 @@ class ProductImportService(BaseService):
         return summary
 
     # ══ helpers ════════════════════════════════════════════════════════════════
-    def _resolve_pai_vendor(self, dry_run: bool) -> int | None:
-        v = self.db.query(Vendor).filter(
+    def _resolve_pai_vendor(self) -> Vendor | None:
+        """The EXISTING import vendor record, or None. NEVER auto-creates: the
+        vendor digit (Vendor.vendor_number) is owner-assigned, one digit per
+        vendor, so a hard-coded default would mint colliding SKUs in the JAKS
+        namespace (R1-16). full_import fails cleanly when this returns None or
+        the record has no digit set."""
+        return self.db.query(Vendor).filter(
             (Vendor.vendor_code == _PAI_VENDOR_CODE) | (Vendor.name == _PAI_VENDOR_NAME)
         ).first()
-        if v:
-            return v.id
-        if dry_run:
-            return None
-        # SKU scheme: give PAI a default 1-digit SKU number ("9") so the
-        # backfill (scripts/backfill_sku_scheme.py) can mint JAKS-…-9NNNN SKUs
-        # right after a fresh import without manual vendor setup. Owner can
-        # change it on the vendor record (Inventory → Vendors → SKU #).
-        v = Vendor(name=_PAI_VENDOR_NAME, vendor_code=_PAI_VENDOR_CODE,
-                   vendor_number="9", is_active=True)
-        self.db.add(v)
-        self.db.flush()
-        return v.id
 
     def _resolve_category(self, type_name: str, cache: dict, summary: dict, dry_run: bool) -> int | None:
         name = (type_name or "").strip()

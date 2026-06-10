@@ -92,9 +92,10 @@
           class="text-xs font-medium text-brand-700 hover:text-brand-900 transition-colors">
     Sync Selected to QBO
   </button>
-  <button disabled title="CSV export — coming soon" class="text-xs font-medium text-gray-400 cursor-not-allowed">
+  <a href="/invoices/export.csv?tab={{ tab }}&q={{ q|urlencode }}"
+     class="text-xs font-medium text-brand-700 hover:text-brand-900 transition-colors">
     Export CSV
-  </button>
+  </a>
 {% endcall %}
 
 {# ══════════════════════════════════════════════════════════════════════════════

@@ -63,6 +63,19 @@ def fresh_engine():
     return engine
 
 
+def bare_engine():
+    """Create a raw in-memory engine with NO tables.
+
+    For tests that control their own schema (e.g. schema-drift tests that
+    need a minimal pre-migration database). Does NOT call create_all().
+    """
+    return create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+
 def activate(engine):
     """Point the app's DB globals + the ``get_db`` override at ``engine``.
 

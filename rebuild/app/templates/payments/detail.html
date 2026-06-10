@@ -194,7 +194,7 @@
   </div>
 
   {# ── Apply unapplied balance to an invoice ── #}
-  {% if payment.amount_unallocated > 0.005 and payment.status != PaymentStatus.REVERSED %}
+  {% if payment.amount_unallocated > 0.005 and payment.status not in (PaymentStatus.REVERSED, PaymentStatus.NSF) %}
   <div class="card border-brand-100">
     <div class="card-header">
       <div>

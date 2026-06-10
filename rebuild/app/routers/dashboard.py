@@ -18,6 +18,7 @@ from app.models.core import CoreCharge
 from app.models.product import Product
 from app.models.customer import Customer, CustomerCallLog
 from app.services.report_service import ReportService
+from app.services.invoice_metrics_service import InvoiceMetricsService
 
 router = APIRouter(tags=["dashboard"])
 templates = Jinja2Templates(directory="app/templates")
@@ -40,13 +41,15 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     except Exception:
         ar_balance = 0.0
 
-    # Overdue invoices — simple count: open/partial invoices past their due date
+    # Overdue invoices — simple count: open/partial invoices past their due date.
+    # Date-level compare (not utcnow) so this agrees with the AR/overdue reports:
+    # an invoice due today is not overdue until tomorrow.
     overdue_count = (
         db.query(func.count(Invoice.id))
         .filter(
             Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL]),
             Invoice.due_date.isnot(None),
-            Invoice.due_date < datetime.utcnow(),
+            func.date(Invoice.due_date) < today,
         )
         .scalar() or 0
     )
@@ -75,14 +78,21 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     )
 
     # Core charges awaiting customer return — same filter as ReportService
-    # (OPEN/PARTIAL status + customer direction only, not vendor cores)
-    open_cores = (
-        db.query(func.count(CoreCharge.id))
+    # (OPEN/PARTIAL status + customer direction only, not vendor cores). Fetch the
+    # rows once so we can surface both the count AND the outstanding $ liability
+    # (customer_unit_charge × qty_outstanding) — mirrors CoreMetricsService.
+    _open_core_rows = (
+        db.query(CoreCharge)
         .filter(
             CoreCharge.status.in_([CoreStatus.OPEN, CoreStatus.PARTIAL]),
             CoreCharge.direction == CoreDirection.CUSTOMER_OWES_RETURN,
         )
-        .scalar() or 0
+        .all()
+    )
+    open_cores = len(_open_core_rows)
+    open_cores_value = sum(
+        (c.customer_unit_charge or 0.0) * (c.qty_outstanding or 0)
+        for c in _open_core_rows
     )
 
     # Low stock products (on_hand <= reorder_point, reorder_point > 0)
@@ -98,14 +108,25 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         .all()
     )
 
-    # Recent invoices (last 10, excluding void)
-    recent_invoices = (
+    # Recent invoices (last 10). Default view hides empty DRAFTs (the $0 noise);
+    # ?inv=all includes them. VOID is always excluded. Lines are eager-loaded so the
+    # per-invoice margin below (and the customer name) cost no extra queries.
+    inv_mode = (request.query_params.get("inv") or "active").lower()
+    if inv_mode not in ("active", "all"):
+        inv_mode = "active"
+    _recent_q = (
         db.query(Invoice)
+        .options(joinedload(Invoice.lines), joinedload(Invoice.customer))
         .filter(Invoice.status != InvoiceStatus.VOID)
-        .order_by(Invoice.created_at.desc())
-        .limit(10)
-        .all()
     )
+    if inv_mode == "active":
+        _recent_q = _recent_q.filter(Invoice.status != InvoiceStatus.DRAFT)
+    recent_invoices = _recent_q.order_by(Invoice.created_at.desc()).limit(10).all()
+
+    # Per-invoice goods margin % for the (Margin-toggle-gated) column. None = no
+    # parts revenue, so the template shows '—' rather than a misleading 0%.
+    _inv_metrics = InvoiceMetricsService(db)
+    recent_margin = {inv.id: _inv_metrics.margin_pct_for(inv) for inv in recent_invoices}
 
     # Recent call logs
     recent_calls = (
@@ -146,11 +167,22 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         .all()
     )
 
-    # Monthly revenue (last 6 months) — sum invoice_lines since Invoice.total is a @property
-    # Formula: unit_price * qty * (1 - discount_pct / 100), grouped by invoice month.
+    # Monthly revenue — period selectable via ?period= (3m / 6m / ytd / 12m). Sum
+    # invoice_lines since Invoice.total is a @property. Formula: unit_price * qty *
+    # (1 - discount_pct / 100), grouped by invoice month.
+    period = (request.query_params.get("period") or "6m").lower()
+    if period not in ("3m", "6m", "ytd", "12m"):
+        period = "6m"
+    n_months = {"3m": 3, "6m": 6, "12m": 12}.get(period, today.month if period == "ytd" else 6)
+    period_label = {
+        "3m": "last 3 months",
+        "6m": "last 6 months",
+        "ytd": "year to date",
+        "12m": "last 12 months",
+    }[period]
     monthly_labels: list[str] = []
     monthly_totals: list[float] = []
-    for i in range(5, -1, -1):
+    for i in range(n_months - 1, -1, -1):
         m = today.month - i
         y = today.year
         while m <= 0:
@@ -250,8 +282,11 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         "open_sos": open_sos,
         "open_pos": open_pos,
         "open_cores": open_cores,
+        "open_cores_value": open_cores_value,
         "low_stock": low_stock,
         "recent_invoices": recent_invoices,
+        "recent_margin": recent_margin,
+        "inv_mode": inv_mode,
         "recent_calls": recent_calls,
         "overdue_followups": overdue_followups,
         "research_queue": research_queue,
@@ -262,4 +297,6 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         "monthly_labels_json": json.dumps(monthly_labels),
         "monthly_totals_json": json.dumps(monthly_totals),
         "monthly_current": monthly_totals[-1] if monthly_totals else 0.0,
+        "period": period,
+        "period_label": period_label,
     })

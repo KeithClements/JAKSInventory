@@ -29,22 +29,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 # ── Patch BEFORE any app.* imports ──────────────────────────────────────────
 import app.database as _appdb
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
-_TEST_ENGINE = create_engine(
-    "sqlite:///:memory:",
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
-_appdb.engine = _TEST_ENGINE
-_appdb.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_TEST_ENGINE)
+from tests.conftest import activate, fresh_engine
 
 from app.models import __all_models__  # noqa: F401
-from app.database import Base
-
-Base.metadata.create_all(bind=_TEST_ENGINE)
 
 # ── App imports (safe after patch) ────────────────────────────────────────────
 import pytest
@@ -62,32 +49,18 @@ _UID = 1
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
-@pytest.fixture(autouse=True, scope="module")
-def _activate_db():
-    from tests.conftest import activate
-    activate(_TEST_ENGINE)
-    yield
-
-
 @pytest.fixture()
-def db(_activate_db):
-    session = _appdb.SessionLocal()
-    yield session
-    session.close()
-
-
-@pytest.fixture(autouse=True, scope="module")
-def _seed_admin_user(_activate_db):
-    session = _appdb.SessionLocal()
+def db():
+    activate(fresh_engine())
+    s = _appdb.SessionLocal()
+    if not s.query(User).filter(User.id == 1).first():
+        s.add(User(id=1, name="Test Admin", username="admin_d1",
+                   password_hash="[test-no-auth]", role=UserRole.ADMIN))
+        s.commit()
     try:
-        if not session.query(User).filter(User.id == 1).first():
-            session.add(User(
-                id=1, name="Test Admin", username="admin_d1",
-                password_hash="[test-no-auth]", role=UserRole.ADMIN,
-            ))
-            session.commit()
+        yield s
     finally:
-        session.close()
+        s.close()
 
 
 # ── Builders ────────────────────────────────────────────────────────────────

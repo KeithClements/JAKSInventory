@@ -140,6 +140,12 @@ class PaymentService(BaseService):
         Auto-locks invoice if fully paid after allocation.
         """
         payment = self._get_payment_or_404(payment_id)
+        # Reversed/NSF funds were never collected — amount_unallocated reads as
+        # the full amount after reversal, but it is not allocatable money.
+        if payment.status in (PaymentStatus.REVERSED, PaymentStatus.NSF):
+            raise ValueError(
+                f"Payment {payment_id} is {payment.status} and cannot be allocated"
+            )
         invoice = self.db.query(Invoice).filter(Invoice.id == invoice_id).first()
         if invoice is None:
             raise ValueError(f"Invoice {invoice_id} not found")

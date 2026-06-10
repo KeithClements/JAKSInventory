@@ -95,8 +95,12 @@ class CoreMetricsService(BaseService):
         ) or 0
 
         # ── Core credits issued to customers (all-time) ───────────────────────
+        # Gross: chargebacks are recorded as NEGATIVE return events (R1-9) and
+        # would silently net this tile down — "issued" means issued.
         core_credits_issued = (
-            self.db.query(func.sum(CoreReturnEvent.credit_amount)).scalar()
+            self.db.query(func.sum(CoreReturnEvent.credit_amount))
+            .filter(CoreReturnEvent.credit_amount > 0)
+            .scalar()
         ) or 0.0
 
         # ── Vendor recoveries — outstanding expected credit on open VCRs ──────

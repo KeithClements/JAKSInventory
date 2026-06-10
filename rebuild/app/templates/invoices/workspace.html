@@ -85,6 +85,19 @@
     {% endif %}
   {% endif %}
 
+  {# ── Issue Credit Memo (finalized, non-void: OPEN / PARTIAL / PAID) — R8 ── #}
+  {% if invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL, InvoiceStatus.PAID] %}
+  <button type="button" class="btn-secondary btn-sm"
+          @click="$dispatch('open-credit-memo')"
+          title="Issue a customer credit memo against this invoice">
+    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h14a2 2 0 012 2v14a2 2 0 01-2 2z"/>
+    </svg>
+    Issue Credit Memo
+  </button>
+  {% endif %}
+
   <a href="/invoices/" class="text-sm text-gray-500 hover:text-gray-700">← Invoices</a>
 {% endblock %}
 
@@ -92,6 +105,7 @@
 {% block content %}
 {% from "macros/linked_docs.html" import linked_strip %}
 {% import "macros/customer_flags.html" as flagmacro %}
+{% import "macros/credit_status.html" as creditmacro %}
 {% import "macros/intelligence.html" as intel %}
 {% import "macros/motion.html" as motion %}
 <div class="max-w-6xl space-y-3"
@@ -101,6 +115,7 @@
        voidOpen: false,
        finalizeOpen: false,
        changeCustomerOpen: false,
+       creditMemoOpen: false,
        lineConfirmOpen: false,
        lineConfirmUrl: '',
        lineConfirmMsg: ''
@@ -109,8 +124,9 @@
      @open-void.window="voidOpen = true"
      @open-finalize.window="finalizeOpen = true"
      @open-change-customer.window="changeCustomerOpen = true"
+     @open-credit-memo.window="creditMemoOpen = true"
      @inv-line-confirm.window="lineConfirmUrl = $event.detail.url; lineConfirmMsg = $event.detail.msg; lineConfirmOpen = true"
-     @keydown.escape.window="paymentOpen = false; voidOpen = false; finalizeOpen = false; changeCustomerOpen = false; lineConfirmOpen = false">
+     @keydown.escape.window="paymentOpen = false; voidOpen = false; finalizeOpen = false; changeCustomerOpen = false; creditMemoOpen = false; lineConfirmOpen = false">
 
   {# ── Linked documents (cross-document navigation strip) ── #}
   {{ linked_strip(linked_documents|default([])) }}
@@ -132,6 +148,9 @@
     <div class="flex-1">{{ request.query_params.get('error') }}</div>
   </div>
   {% endif %}
+
+  {# ── §4.5 credit warn (WARN-ONLY) — on_hold / over_limit banner ─────────── #}
+  {{ creditmacro.credit_warn(credit_status | default({})) }}
 
   {# ── Lock banner — shown for ALL OPEN/PARTIAL invoices (content is read-only) #}
   {% if invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL] %}
@@ -891,6 +910,74 @@
             Confirm
           </button>
         </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ════════════════════════════════════════════════════════════════════════
+     ISSUE CREDIT MEMO MODAL (OPEN/PARTIAL/PAID) — §3 Modal standard
+     Posts to /invoices/{id}/issue-credit-memo. A credit memo is an independent
+     document — it does NOT modify this locked invoice. Defaults to crediting the
+     full invoice; the override credits a custom amount (a single CM line).
+  ═══════════════════════════════════════════════════════════════════════════ #}
+  {% if invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL, InvoiceStatus.PAID] %}
+  <div x-data="{ reason: '', useOverride: false }">
+    {# Backdrop #}
+    <div x-show="creditMemoOpen" x-cloak
+         @click="creditMemoOpen = false"
+         class="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm"
+         {{ motion.backdrop_fade() }}></div>
+    {# Panel #}
+    <div x-show="creditMemoOpen" x-cloak
+         class="fixed inset-0 z-[60] flex items-center justify-center p-4"
+         {{ motion.modal_scale() }}>
+      <div @click.stop class="w-full max-w-lg rounded-2xl bg-white shadow-2xl overflow-hidden">
+        <form method="post" action="/invoices/{{ invoice.id }}/issue-credit-memo">
+          {# Header #}
+          <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+            <h2 class="font-semibold text-sm text-gray-900">Issue Credit Memo</h2>
+            <button type="button" @click="creditMemoOpen = false"
+                    class="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
+          {# Body #}
+          <div class="px-6 py-6 space-y-4">
+            <p class="text-xs text-gray-600 bg-gray-50 border border-gray-100 rounded-lg p-3">
+              A credit memo is an <strong>independent</strong> financial document — it does not change
+              this locked invoice. By default it credits the full invoice
+              (<span class="font-semibold tabular-nums">${{ "%.2f"|format(invoice.total) }}</span>).
+            </p>
+            <div>
+              <label class="form-label">Reason (required)</label>
+              <input type="text" name="reason" x-model="reason" required
+                     placeholder="e.g. overcharge, pricing correction, goodwill credit"
+                     @keydown.enter.prevent
+                     class="form-input"/>
+            </div>
+            <label class="flex items-center gap-2 text-sm text-gray-700">
+              <input type="checkbox" x-model="useOverride"
+                     class="rounded border-gray-300 text-brand-600 focus:ring-brand-400"/>
+              Credit a custom amount instead of the full invoice
+            </label>
+            <div x-show="useOverride" x-cloak>
+              <label class="form-label">Credit Amount</label>
+              <input type="number" name="amount" step="0.01" min="0.01"
+                     :disabled="!useOverride" :required="useOverride"
+                     value="{{ "%.2f"|format(invoice.total) }}"
+                     class="form-input w-40 text-right disabled:bg-gray-50 disabled:text-gray-400"/>
+            </div>
+          </div>
+          {# Footer #}
+          <div class="px-6 py-4 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
+            <button type="button" class="btn-secondary btn-sm"
+                    @click="creditMemoOpen = false">Cancel</button>
+            <button type="submit" class="btn-primary btn-sm" :disabled="!reason.trim()">Issue Credit Memo</button>
+          </div>
+        </form>
       </div>
     </div>
   </div>

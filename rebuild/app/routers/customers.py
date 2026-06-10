@@ -395,6 +395,102 @@ def customer_list(
     )
 
 
+# ── Export CSV — MUST be before /{customer_id} ───────────────────────────────
+
+@router.get("/export.csv")
+def customer_export_csv(
+    tab: str = "all",
+    q: str = "",
+    db: Session = Depends(get_db),
+):
+    """
+    Stream the current filtered customer list as a CSV download.
+    Mirrors the list view's tab/q filters so "export what I see" matches exactly
+    (same pattern as /products/export.csv).
+    """
+    from fastapi.responses import StreamingResponse
+
+    valid_tabs = {t[0] for t in _CUST_TABS}
+    if tab not in valid_tabs:
+        tab = "all"
+
+    if tab == "inactive":
+        pool = db.query(Customer).filter(Customer.is_active == False).all()  # noqa: E712
+    else:
+        pool = db.query(Customer).filter(Customer.is_active == True).all()  # noqa: E712
+        ids = [c.id for c in pool]
+        if tab == "open_invoices" and ids:
+            with_inv = {
+                cid for (cid,) in db.query(Invoice.customer_id)
+                .filter(
+                    Invoice.customer_id.in_(ids),
+                    Invoice.status.in_(_OPEN_INVOICE_STATUSES),
+                )
+                .distinct()
+            }
+            pool = [c for c in pool if c.id in with_inv]
+        elif tab == "open_quotes" and ids:
+            with_q = {
+                cid for (cid,) in db.query(Quote.customer_id)
+                .filter(
+                    Quote.customer_id.in_(ids),
+                    Quote.status.notin_(_CLOSED_QUOTE_STATUSES),
+                )
+                .distinct()
+            }
+            pool = [c for c in pool if c.id in with_q]
+        elif tab == "terms":
+            pool = [c for c in pool if (c.payment_terms or "") in _TERMS_VALUES]
+
+    if q:
+        q_lower = q.lower()
+        q_digits = _digits(q)
+        pool = [
+            c for c in pool
+            if (
+                (c.company_name and q_lower in c.company_name.lower())
+                or (c.contact_name and q_lower in c.contact_name.lower())
+                or (c.email and q_lower in c.email.lower())
+                or (c.account_number and q_lower in c.account_number.lower())
+                or (q_digits and c.phone and q_digits in _digits(c.phone))
+            )
+        ]
+
+    pool.sort(key=lambda c: (c.company_name or "").lower())
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "company_name", "contact_name", "account_number", "phone", "email",
+        "city", "state", "zip_code", "payment_terms", "pricing_tier",
+        "credit_limit", "discount_pct", "is_tax_exempt", "is_active",
+    ])
+    for c in pool:
+        writer.writerow([
+            c.company_name,
+            c.contact_name,
+            c.account_number,
+            c.phone,
+            c.email,
+            c.city,
+            c.state,
+            c.zip_code,
+            c.payment_terms,
+            c.pricing_tier,
+            f"{c.credit_limit:.2f}" if c.credit_limit else "",
+            f"{c.discount_pct:.2f}" if c.discount_pct else "",
+            "yes" if c.is_tax_exempt else "no",
+            "yes" if c.is_active else "no",
+        ])
+
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=customers.csv"},
+    )
+
+
 # ── Customer preview panel (HTMX dock) ───────────────────────────────────────
 # IMPORTANT: must be registered BEFORE /{customer_id} to avoid the int route
 # capturing "preview" as a customer_id parameter.

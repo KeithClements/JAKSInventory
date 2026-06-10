@@ -127,12 +127,32 @@ async def create_payment(
             except (ValueError, TypeError):
                 pass
 
+        # R1-3 — collect the card surcharge at payment time: card method AND
+        # every selected invoice flagged (a mixed selection would surcharge
+        # principal destined for non-flagged invoices). Pct = LOWEST invoice
+        # R1 snapshot (normally identical — all resolve from the same
+        # customer override / system default; when they differ, the lowest
+        # rate can never overcharge the lower-pct invoice's portion).
+        apply_surcharge = False
+        surcharge_pct: float | None = None
+        if payment_method == PaymentMethod.CREDIT_CARD and invoice_ids:
+            sel_invoices = (
+                db.query(Invoice)
+                .filter(Invoice.id.in_(invoice_ids), Invoice.customer_id == customer_id)
+                .all()
+            )
+            if sel_invoices and all(i.apply_cc_surcharge for i in sel_invoices):
+                apply_surcharge = True
+                surcharge_pct = min(i.cc_surcharge_pct for i in sel_invoices)
+
         pmt = PaymentService(db, user_id).record_payment(
             customer_id=customer_id,
             amount_received=amount,
             payment_method=payment_method,
             data=data,
             invoice_ids=invoice_ids or None,
+            apply_surcharge=apply_surcharge,
+            surcharge_pct=surcharge_pct,
         )
     except ValueError as exc:
         db.rollback()

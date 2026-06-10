@@ -80,6 +80,13 @@ def db():
     # test reads, never the prior module's engine. See conftest docstring.
     activate(fresh_engine())
     s = appdb.SessionLocal()
+    # R1-16: full_import (used by apply_approved's NEW path) no longer auto-
+    # creates the vendor (vendor digit is owner-assigned) — seed PAI the way
+    # the live DB has it.
+    from app.models.vendor import Vendor
+    s.add(Vendor(name="PAI Industries", vendor_code="PAI",
+                 vendor_number="9", is_active=True))
+    s.commit()
     try:
         yield s
     finally:

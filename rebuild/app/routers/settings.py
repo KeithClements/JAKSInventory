@@ -69,6 +69,7 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     "shopify_store_url":           ("",        "Shopify Store URL"),
     "shopify_api_key":             ("",        "Shopify API Key"),
     "shopify_api_secret":          ("",        "Shopify API Secret"),
+    "shopify_access_token":        ("",        "Shopify Admin API Access Token (custom app)"),
 
     # ── TaxJar integration ────────────────────────────────────────────────────
     "taxjar_api_key":              ("",        "TaxJar API Key"),
@@ -197,7 +198,7 @@ VISIBLE_KEYS = [
     # Integrations
     "qbo_client_id", "qbo_client_secret", "qbo_environment", "qbo_redirect_uri",
     "qbo_push_tax",
-    "shopify_store_url", "shopify_api_key", "shopify_api_secret",
+    "shopify_store_url", "shopify_api_key", "shopify_api_secret", "shopify_access_token",
     "taxjar_api_key",
     "anthropic_api_key",
     # §5.12 — document branding (logo itself is set via POST /settings/logo)

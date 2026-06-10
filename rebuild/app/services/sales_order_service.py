@@ -230,6 +230,16 @@ class SalesOrderService(BaseService):
         # Freeze at what's already invoiced — remaining qty is gone
         line.qty_ordered = line.qty_invoiced
 
+        # R1-10 — cascade to auto-generated children (the CORE_CHARGE child line
+        # derived by _maybe_add_core_line). Without this the child survives with
+        # qty_ordered > 0, leaving a phantom core deposit in the SO subtotal for
+        # a part that is no longer being sold. Same freeze semantics as the parent.
+        for child in line.children:
+            if not (child.is_auto_generated and child.is_locked_to_parent):
+                continue
+            self._release_line_commitment(child, so.so_number)
+            child.qty_ordered = child.qty_invoiced
+
         # Recompute SO status. Cancelling the backordered remainder of an order
         # whose other lines are already invoiced must not leave the SO stranded in
         # OPEN/PARTIAL forever (it would otherwise linger in the Open tab and the
@@ -1032,21 +1042,40 @@ class SalesOrderService(BaseService):
         return mapping.get(fulfillment_source, SOLineStatus.STOCK)
 
     def _release_line_commitment(self, line: SOLine, so_number: str) -> None:
-        """Release the committed inventory for a single line (cancel or cancel_order)."""
-        if line.line_type == LineType.PRODUCT and line.product_id and line.qty_committed > 0:
-            product = self.db.query(Product).filter(Product.id == line.product_id).first()
-            if product:
-                released = line.qty_committed
-                product.qty_committed = max(0, product.qty_committed - released)
-                self._write_so_txn(
-                    product_id=product.id,
-                    txn_type=InventoryTxnType.SO_RELEASED,
-                    qty_change=released,   # positive = back to available
-                    qty_after=product.qty_on_hand,
-                    so_id=line.so_id,
-                    notes=f"SO {so_number} cancelled",
-                )
-                line.qty_committed = 0
+        """Release the committed inventory for a single line (cancel or cancel_order).
+
+        R1-10 — also releases backorder demand: a BACKORDER-source line bumped
+        product.qty_backordered at add time and the only other decrement is the
+        PO-receipt allocation path, so cancellation must give back the
+        un-fulfilled remainder or the product's backorder count stays inflated
+        forever.
+        """
+        if line.line_type != LineType.PRODUCT or not line.product_id:
+            return
+        product = self.db.query(Product).filter(Product.id == line.product_id).first()
+        if product is None:
+            return
+
+        # Backorder release — must compute BEFORE qty_committed is zeroed below:
+        # any committed portion was already decremented from qty_backordered at
+        # PO-receipt allocation time, and fulfilled qty is no longer demand.
+        if line.fulfillment_source == FulfillmentSource.BACKORDER:
+            remainder = line.qty_ordered - line.qty_fulfilled - line.qty_committed
+            if remainder > 0:
+                product.qty_backordered = max(0, product.qty_backordered - remainder)
+
+        if line.qty_committed > 0:
+            released = line.qty_committed
+            product.qty_committed = max(0, product.qty_committed - released)
+            self._write_so_txn(
+                product_id=product.id,
+                txn_type=InventoryTxnType.SO_RELEASED,
+                qty_change=released,   # positive = back to available
+                qty_after=product.qty_on_hand,
+                so_id=line.so_id,
+                notes=f"SO {so_number} cancelled",
+            )
+            line.qty_committed = 0
 
     def _write_so_txn(
         self,

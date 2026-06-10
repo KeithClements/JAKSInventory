@@ -42,6 +42,12 @@ _LOC_REJECTED          = "Rejected Core"
 _LOC_IN_TRANSIT_VENDOR = "In Transit to Vendor"
 _LOC_SCRAP             = "Scrap Core"
 
+# R1-9 — credit_method sentinel: the issued account credit was reversed
+# (charged back to the customer after a vendor denial). Not a CoreCreditMethod
+# value on purpose — it marks "credit no longer outstanding" and makes the
+# chargeback idempotent (a second chargeback sees != ACCOUNT_CREDIT and no-ops).
+_CREDIT_METHOD_CHARGED_BACK = "charged_back"
+
 
 class CoreService(BaseService):
 
@@ -90,6 +96,10 @@ class CoreService(BaseService):
             vendor_status=CoreVendorStatus.PENDING,
             return_deadline=deadline,
             grace_days_snapshot=return_days,
+            # R1-9 — link back to the originating invoice so printed core slips
+            # (CoreSlip.invoice_id is copied from this in create_core_slip)
+            # carry an invoice reference instead of always being NULL.
+            credit_invoice_id=invoice_id,
         )
         self.db.add(core)
         self.db.flush()
@@ -235,6 +245,11 @@ class CoreService(BaseService):
                     amount=credit_amount,
                     reason=f"Core return #{core_charge_id} (inspection passed)",
                 )
+                # BUG-4/R1-9 — stamp exactly like record_customer_return does so
+                # issue_core_credit won't double-credit and a later vendor-denial
+                # chargeback can find the issued account credit.
+                core.credit_issued_at = datetime.utcnow()
+                core.credit_method = CoreCreditMethod.ACCOUNT_CREDIT
             # Status stays RETURNED — normal progression to vendor shipment
             # R10 — accepted-after-hold moves to Core Shelf
             self._move_to_location_by_name(
@@ -387,6 +402,12 @@ class CoreService(BaseService):
         core.vendor_denial_reason = denial_reason
         core.denial_resolution = resolution
         core.denial_notes = notes or ""
+
+        # R1-9 — staff chose to pass the loss to the customer: claw back the
+        # account credit issued when the core was returned/accepted. Idempotent
+        # no-op when no credit was ever issued or it was already charged back.
+        if resolution == CoreDenialResolution.CHARGED_TO_CUSTOMER:
+            self._charge_back_customer_credit(core)
 
         if physical_core_returned:
             # Disputed cores live in Questionable until resolved; otherwise Rejected.
@@ -609,8 +630,9 @@ class CoreService(BaseService):
 
         Records the actual_credit value and the user's chosen resolution:
           - absorbed_by_jaks: JAKS eats the loss (default)
-          - charged_to_customer: pull back from customer (Phase 2 will auto-create
-            a chargeback invoice line; Phase 1 just records the intent)
+          - charged_to_customer: pull back from customer — reverses the account
+            credit issued for this core (R1-9). A chargeback invoice line for
+            credits already spent is still Phase 2.
           - disputed: open dispute with vendor (status flag for follow-up)
           - write_off: bookkeeping write-off
 
@@ -635,6 +657,13 @@ class CoreService(BaseService):
         core.denial_resolution = resolution
         core.denial_notes = notes or core.denial_notes
         core.vendor_decision_at = datetime.utcnow()
+
+        # R1-9 — claw back the customer's account credit. Idempotent no-op when
+        # none was issued or it was already charged back (e.g. via a prior
+        # record_vendor_denial with the same resolution).
+        charged_back = 0.0
+        if resolution == CoreDenialResolution.CHARGED_TO_CUSTOMER:
+            charged_back = self._charge_back_customer_credit(core)
 
         # If there's a shortfall, notify the user for follow-up
         if difference > 0.001:
@@ -661,6 +690,7 @@ class CoreService(BaseService):
                 "vendor_credit_actual": actual,
                 "difference": difference,
                 "resolution": resolution,
+                "charged_back_to_customer": charged_back,
                 "notes": notes,
             },
         )
@@ -787,6 +817,73 @@ class CoreService(BaseService):
         self.db.commit()
 
     # ── Private ───────────────────────────────────────────────────────────────
+
+    def _charge_back_customer_credit(self, core: CoreCharge) -> float:
+        """
+        R1-9 — Reverse the customer account credit previously issued for this
+        core when a vendor denial/shortfall is resolved CHARGED_TO_CUSTOMER.
+
+        Idempotent: only fires when an ACCOUNT_CREDIT was actually issued
+        (credit_issued_at stamped AND credit_method == ACCOUNT_CREDIT); after
+        reversal credit_method becomes _CREDIT_METHOD_CHARGED_BACK so a second
+        call no-ops. CHECK credits are NOT auto-reversed (the refund check
+        already went out — a chargeback invoice line is Phase 2). Deducts via
+        CRMService (sole owner of credit_balance), allowing the balance to go
+        negative when the customer already spent the credit — the negative
+        balance records that they owe it back.
+
+        Returns the amount charged back (0.0 when nothing to reverse).
+        """
+        if core.customer_id is None or core.credit_issued_at is None:
+            return 0.0
+        if core.credit_method != CoreCreditMethod.ACCOUNT_CREDIT:
+            return 0.0  # CHECK/HOLD credit, or already charged back
+
+        # Amount issued: positive ACCEPTED return events carry the exact
+        # credited amounts; complete_inspection/issue_core_credit credit
+        # qty_returned * unit without an event amount — fall back to that.
+        # Each chargeback writes a NEGATIVE event below, so a second
+        # return→denial cycle nets out what was already reversed instead of
+        # double-deducting round one.
+        events = list(core.return_events)
+        gross = round(sum(e.credit_amount for e in events if e.credit_amount > 0), 2)
+        if gross <= 0:
+            gross = round(core.qty_returned * core.customer_unit_charge, 2)
+        already_reversed = round(-sum(e.credit_amount for e in events if e.credit_amount < 0), 2)
+        issued = round(gross - already_reversed, 2)
+        if issued <= 0:
+            return 0.0
+
+        # Mark BEFORE deducting — deduct_credit commits, so the sentinel lands
+        # in the same transaction as the balance change (no re-entry window
+        # where the deduction is committed but the idempotency marker is not).
+        core.credit_method = _CREDIT_METHOD_CHARGED_BACK
+        self.db.add(CoreReturnEvent(
+            core_charge_id=core.id,
+            qty_returned=0,
+            credit_method=_CREDIT_METHOD_CHARGED_BACK,
+            credit_amount=-issued,
+            processed_by_id=self.current_user_id,
+            notes="Chargeback — vendor denial charged to customer",
+        ))
+        from app.services.crm_service import CRMService
+        CRMService(self.db, self.current_user_id).deduct_credit(
+            customer_id=core.customer_id,
+            amount=issued,
+            reason=f"Core charge #{core.id} chargeback — vendor denial charged to customer",
+            allow_negative=True,
+        )
+        self.audit(
+            entity_type=EntityType.CORE_CHARGE,
+            entity_id=core.id,
+            action=AuditAction.STATUS_CHANGED,
+            new_value={
+                "action": "customer_chargeback",
+                "amount": issued,
+                "resolution": CoreDenialResolution.CHARGED_TO_CUSTOMER,
+            },
+        )
+        return issued
 
     def _get_or_404(self, core_charge_id: int) -> CoreCharge:
         core = self.db.query(CoreCharge).filter(CoreCharge.id == core_charge_id).first()

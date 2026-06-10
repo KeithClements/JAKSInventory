@@ -1015,6 +1015,7 @@ class Permission(StrEnum):
     INVENTORY_TRANSFER          = "inventory_transfer"
     APPROVE_VENDOR_BILL         = "approve_vendor_bill"
     APPLY_IMPORT                = "apply_import"
+    PUBLISH_SHOPIFY             = "publish_shopify"
 
 
 # ─── Engine Make / Model catalog ─────────────────────────────────────────────

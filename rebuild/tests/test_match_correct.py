@@ -25,13 +25,10 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-import app.database as _appdb  # noqa: F401
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+import app.database as _appdb
+from tests.conftest import activate, fresh_engine
 
 from app.models import __all_models__  # noqa: F401
-from app.database import Base
 
 import pytest
 
@@ -45,28 +42,13 @@ from app.models.vendor import Vendor
 from app.services.base import PermissionDeniedError
 from app.services.po_service import POService
 
-# ── Test isolation (mirrors conftest / test_workflow_match_resolution pattern) ──
-
-_engine = create_engine(
-    "sqlite:///:memory:",
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
-Base.metadata.create_all(bind=_engine)
-_SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
-
 _counter = itertools.count(1)
-
-
-@pytest.fixture(autouse=True)
-def _activate_engine():
-    from tests.conftest import activate
-    activate(_engine)
 
 
 @pytest.fixture()
 def db():
-    session = _SessionLocal()
+    activate(fresh_engine())
+    session = _appdb.SessionLocal()
     try:
         yield session
     finally:

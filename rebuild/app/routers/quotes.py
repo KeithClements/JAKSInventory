@@ -140,15 +140,35 @@ async def list_quotes(
                 Customer.company_name.ilike(f"%{q}%"),
             )
         )
-    # Sort (#4 — whitelisted keys, asc/desc).
+    # Sort — whitelisted SQL keys + one computed key. "margin" is derived from the
+    # loaded lines (not a column), so it is ordered in Python after .all() per the
+    # plan's non-column-sort rule; created/number/customer/valid_until sort in SQL.
     _Q_SORT = {
         "created":  Quote.created_at,
         "number":   Quote.quote_number,
         "customer": Customer.company_name,
         "valid_until": Quote.valid_until,
     }
-    query, sort, direction = apply_sort(query, _Q_SORT, sort, direction, default="created")
+    _margin_sort = (sort == "margin")
+    query, sort, direction = apply_sort(
+        query, _Q_SORT, (None if _margin_sort else sort), direction, default="created"
+    )
     quotes = query.limit(150).all()
+    if _margin_sort:
+        sort = "margin"  # echo the active key back to the template's sort header
+
+        def _q_margin(qte):
+            sub = qte.subtotal or 0
+            if not sub:
+                return -1.0  # empty / zero-subtotal quotes sort to the bottom
+            cost = sum(
+                (ln.product.cost or 0) * ln.qty
+                for ln in qte.lines
+                if ln.product and ln.product.cost
+            )
+            return (sub - cost) / sub
+
+        quotes.sort(key=_q_margin, reverse=(direction == "desc"))
 
     # ── Bulk AR aggregate for visible customer set (no N+1) ───────────────
     from collections import defaultdict
@@ -368,11 +388,21 @@ async def workspace(
     from app.services.document_links import related_documents
     bal = StatementService(db).get_customer_balance_summary(quote.customer_id)
 
+    # §4.5 credit warn (WARN-ONLY) — same contract as SO / invoice workspaces.
+    # A quote's value is never in open AR (AR starts at invoicing), so the full
+    # quote subtotal is the prospective charge for the over-limit check.
+    from app.services.customer_service import CustomerService
+    credit_status = (
+        CustomerService(db).credit_status(quote.customer, quote.subtotal)
+        if quote.customer else None
+    )
+
     return templates.TemplateResponse(
         request,
         "quotes/workspace.html",
         {
             "quote": quote,
+            "credit_status": credit_status,
             "linked_documents": related_documents(db, quote),
             "sorted_lines": _tree_sort_lines(quote.lines),
             "QuoteStatus": QuoteStatus,

@@ -191,7 +191,7 @@ async def vendor_quick_create(
 ):
     form = await request.form()
     name = str(form.get("name", "")).strip()
-    vendor_code = str(form.get("vendor_code", "")).strip().upper()[:10]
+    vendor_code = str(form.get("vendor_code", "")).strip().upper()[:4]  # SKU contract: 4-char max, matches full create/update
     if not name or not vendor_code:
         return HTMLResponse(
             '<p class="text-sm text-red-600 font-medium px-5 py-3">Vendor name and code are required.</p>',

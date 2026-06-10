@@ -362,11 +362,16 @@ class QuoteService(BaseService):
         from app.services.sales_order_service import SalesOrderService
         quote = self._get_or_404(quote_id)
 
-        # Build SO line data — only included PRODUCT lines.
-        # Bug 1 fix: CORE_CHARGE quote lines are intentionally excluded here;
-        # SalesOrderService.create_sales_order re-derives discrete CORE_CHARGE
-        # child SOLines from the product's has_core / customer_core_charge fields.
-        # This mirrors convert_to_invoice and avoids double-counting.
+        # Build SO line data — every included line EXCEPT core charges, mirroring
+        # convert_to_invoice (R1-1 fix: the old PRODUCT-only filter silently
+        # dropped MISC/WARRANTY/freight/note revenue on the quote→SO path).
+        # Exclusions:
+        #   - CORE_CHARGE (Bug 1 fix): SalesOrderService.create_sales_order
+        #     re-derives discrete CORE_CHARGE child SOLines from the product's
+        #     has_core / customer_core_charge fields — carrying the quote's core
+        #     line would double-count the deposit.
+        #   - is_included=False: optional / upgrade-option lines the customer
+        #     did not opt into stay off the order.
         so_lines = [
             {
                 "product_id": ln.product_id,
@@ -378,7 +383,7 @@ class QuoteService(BaseService):
                 "discount_pct": ln.discount_pct,
             }
             for ln in sorted(quote.lines, key=lambda l: l.sort_order)
-            if ln.line_type == LineType.PRODUCT and ln.is_included
+            if ln.is_included and ln.line_type != LineType.CORE_CHARGE
         ]
 
         so_svc = SalesOrderService(self.db, self.current_user_id)

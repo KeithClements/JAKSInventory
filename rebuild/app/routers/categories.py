@@ -80,6 +80,7 @@ async def category_create(request: Request, db: Session = Depends(get_db), user_
             sort_order=_int(form.get("sort_order")) or 0,
             default_markup_pct=_opt_float(form.get("default_markup_pct")),
             import_keywords=str(form.get("import_keywords", "")),
+            code=str(form.get("code", "")),
         )
     except ValueError as exc:
         return _back(error=str(exc))
@@ -96,6 +97,7 @@ async def category_update(cat_id: int, request: Request, db: Session = Depends(g
             sort_order=_int(form.get("sort_order")),
             default_markup_pct=_opt_float(form.get("default_markup_pct")),
             import_keywords=str(form.get("import_keywords", "")),
+            code=str(form.get("code", "")),
         )
     except ValueError as exc:
         return _back(error=str(exc))

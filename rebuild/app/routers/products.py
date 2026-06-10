@@ -803,6 +803,10 @@ def vendor_source_remove(product_id: int, source_id: int, db: Session = Depends(
         .first()
     )
     if source:
+        # Soft-deleted sources must not linger as preferred (ghost vendor in
+        # search results / preview dock / CSV export).
+        if source.is_preferred:
+            source.is_preferred = False
         source.is_active = False
         db.commit()
     response = HTMLResponse("", status_code=200)

@@ -132,11 +132,18 @@ class Product(Base):
     unit_of_measure: Mapped[str] = mapped_column(
         String(10), nullable=False, default=UnitOfMeasure.EA
     )
+    # Pieces per sold unit (e.g. 6 for a 6-pack of seals). Works with
+    # unit_of_measure: UOM=EA + pack_qty=6 means "sold 6 at a time, priced per 6".
+    pack_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
     # ── Core Charges (separate vendor cost vs customer charge — cores are marked up) ──
     has_core: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     vendor_core_charge: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     customer_core_charge: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # is_reman: part is remanufactured (carries a core). Set by importer when
+    # scraper reports core_charge > 0 or description says "reman/remanufactured".
+    # Does NOT duplicate has_core (has_core = business intent; is_reman = sourcing fact).
+    is_reman: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # ── Inventory (CACHED values — InventoryTransaction ledger is source of truth) ──
     # These are updated by InventoryService whenever a transaction is written.
@@ -318,7 +325,9 @@ class Product(Base):
 
     @property
     def preferred_vendor_source(self) -> ProductVendorSource | None:
-        return next((s for s in self.vendor_sources if s.is_preferred), None)
+        # Only active sources count — mirrors ProductService._has_preferred_vendor
+        # (soft-deleted sources must never surface as the preferred vendor).
+        return next((s for s in self.vendor_sources if s.is_preferred and s.is_active), None)
 
     @property
     def primary_image(self) -> ProductImage | None:

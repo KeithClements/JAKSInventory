@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
 log = logging.getLogger(__name__)
@@ -16,6 +16,19 @@ engine = create_engine(
     connect_args={"check_same_thread": False},
     echo=False,
 )
+
+
+# ── SQLite hardening ──────────────────────────────────────────────────────────
+# SQLite ships with foreign-key enforcement OFF on every new connection. Without
+# this listener, every ForeignKey in the schema is documentation-only — a delete
+# or an ORM-bypassing write can silently orphan invoice lines, PO lines, core
+# charges, etc. Turn it ON for each pooled connection at connect time.
+@event.listens_for(engine, "connect")
+def _sqlite_enable_foreign_keys(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -232,6 +245,12 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     ("products",           "engine_code",   "TEXT NOT NULL DEFAULT ''"),
     ("products",           "category_code", "TEXT NOT NULL DEFAULT ''"),
     ("products",           "part_seq",      "INTEGER NULL"),
+    # pack_qty + is_reman were added to the Product model without a migration
+    # shim → a live "no such column: products.pack_qty" 500 on the dashboard
+    # against the existing data/jaks.db (tests passed: they use a fresh
+    # create_all DB). Defaults match the model (pack_qty=1, is_reman=False).
+    ("products",           "pack_qty",      "INTEGER NOT NULL DEFAULT 1"),
+    ("products",           "is_reman",      "BOOLEAN NOT NULL DEFAULT 0"),
 ]
 
 
@@ -266,9 +285,36 @@ def _apply_inline_migrations() -> None:
             _backfill_customer_status(conn)
 
 
+# ── Hot child-table FK indexes ────────────────────────────────────────────────
+# SQLite does NOT auto-index foreign keys, so every invoice / quote / SO / PO
+# total computation (a child-row lookup by parent id) was a full table scan. At
+# real volume that is counter-stalling latency. Idempotent — CREATE INDEX IF NOT
+# EXISTS. Append-only, same discipline as the column migrations above.
+_PENDING_INDEXES: list[tuple[str, str, str]] = [
+    ("ix_invoice_lines_invoice_id", "invoice_lines", "invoice_id"),
+    ("ix_quote_lines_quote_id",     "quote_lines",   "quote_id"),
+    ("ix_so_lines_so_id",           "so_lines",      "so_id"),
+    ("ix_po_lines_po_id",           "po_lines",      "po_id"),
+]
+
+
+def _apply_index_migrations() -> None:
+    """Create any missing hot child-table FK indexes. Idempotent."""
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    with engine.begin() as conn:
+        for idx_name, table, column in _PENDING_INDEXES:
+            if table not in existing_tables:
+                continue
+            conn.execute(text(
+                f"CREATE INDEX IF NOT EXISTS {idx_name} ON {table} ({column})"
+            ))
+
+
 def init_db() -> None:
     # Importing __all_models__ is not dead code — the import side-effect registers
     # every model class with Base.metadata so create_all() can see all tables.
     from app.models import __all_models__  # noqa: F401
     Base.metadata.create_all(bind=engine)
     _apply_inline_migrations()
+    _apply_index_migrations()

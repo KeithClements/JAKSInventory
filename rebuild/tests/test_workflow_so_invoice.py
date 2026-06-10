@@ -19,21 +19,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 # ── Patch BEFORE any app.* imports ──────────────────────────────────────────
 import app.database as _appdb
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
-_TEST_ENGINE = create_engine(
-    "sqlite:///:memory:",
-    connect_args={"check_same_thread": False},
-)
-_appdb.engine = _TEST_ENGINE
-_appdb.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_TEST_ENGINE)
+from tests.conftest import activate, fresh_engine
 
 # Register all models and create tables
 from app.models import __all_models__  # noqa: F401
-from app.database import Base
-
-Base.metadata.create_all(bind=_TEST_ENGINE)
 
 # ── App imports (safe after patch) ────────────────────────────────────────────
 import pytest
@@ -133,20 +122,9 @@ def _make_so_line(
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
-@pytest.fixture(autouse=True, scope="module")
-def _activate_db():
-    """Re-point app DB globals + get_db at THIS module's engine at run time,
-    so the suite is immune to import order. See tests/conftest.py."""
-    from tests.conftest import activate
-    activate(_TEST_ENGINE)
-    yield
-
-
 @pytest.fixture()
-def db(_activate_db):
-    """Session backed by the module-level in-memory engine.
-    Tests create their own data with unique IDs; no rollback needed.
-    """
+def db():
+    activate(fresh_engine())
     session = _appdb.SessionLocal()
     yield session
     session.close()

@@ -42,11 +42,11 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from sqlalchemy import Column, MetaData, Table, create_engine, inspect, text
-from sqlalchemy.pool import StaticPool
+from sqlalchemy import Column, MetaData, Table, inspect, text
 
 from app.database import Base, _PENDING_COLUMN_ADDITIONS
 from app.models import __all_models__  # noqa: F401 — registers every model
+from tests.conftest import bare_engine
 
 
 # ---------------------------------------------------------------------------
@@ -116,11 +116,7 @@ def test_migration_roundtrip_covers_all_model_columns():
         if initial_cols:
             Table(table_name, min_meta, *initial_cols)
 
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
+    engine = bare_engine()
     min_meta.create_all(engine)
 
     # ── Step 2: apply migrations (mirror of _apply_inline_migrations logic) ─

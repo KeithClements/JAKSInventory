@@ -142,6 +142,12 @@
           {{ _rc[1] }}&nbsp;<span class="hidden sm:inline">{{ _rc[2] }}</span>
         </span>
       {% endif %}
+      {# Unit of measure — shown only when it's a non-default unit (not EA), so the
+         common "each" case stays uncluttered while ft/qt/kit/set/etc. are explicit. #}
+      {% if line.product and line.product.unit_of_measure and line.product.unit_of_measure != 'EA' %}
+      <span class="shrink-0 rounded bg-gray-100 px-1 text-[10px] font-semibold text-gray-500"
+            title="Unit of measure">{{ line.product.unit_of_measure }}</span>
+      {% endif %}
     </div>
   </td>
 
@@ -156,19 +162,42 @@
       {% set _qoh = line.product.qty_on_hand %}
       {% set _committed = line.product.qty_committed %}
       {% set _avail = line.product.qty_available %}
-      {% if _committed > 0 %}
-        {% set _qoh_title = _qoh ~ ' on hand · ' ~ _committed ~ ' committed to open orders · ' ~ (_avail if _avail > 0 else 0) ~ ' available to sell' %}
-      {% else %}
-        {% set _qoh_title = _qoh ~ ' on hand · available to sell' %}
-      {% endif %}
-      <div class="flex items-center justify-center gap-1" title="{{ _qoh_title }}">
-        <span class="inline-block w-2 h-2 rounded-full shrink-0
-               {% if _avail >= 2 %}bg-green-500{% elif _avail == 1 %}bg-amber-400{% else %}bg-red-500{% endif %}">
-        </span>
-        <span class="font-mono text-xs font-semibold tabular-nums
-               {% if _avail >= 2 %}text-green-700{% elif _avail == 1 %}text-amber-600{% else %}text-red-600{% endif %}">
-          {{ _qoh }}
-        </span>
+      {# Rich hover card with the full Available-to-Promise breakdown. Teleported to
+         <body> so it escapes the line table's overflow-x-auto clip (a plain absolute
+         popover would be cut off). The inline dot/number keep the availability-aware
+         color (green ≥2 · amber 1 · red 0 available-to-sell). #}
+      <div class="relative inline-flex justify-center"
+           x-data="{ hov: false, cx: 0, cy: 0 }"
+           @mouseenter="hov = true; let r = $el.getBoundingClientRect(); cx = r.left + r.width / 2; cy = r.top"
+           @mouseleave="hov = false">
+        <div class="flex items-center justify-center gap-1">
+          <span class="inline-block w-2 h-2 rounded-full shrink-0
+                 {% if _avail >= 2 %}bg-green-500{% elif _avail == 1 %}bg-amber-400{% else %}bg-red-500{% endif %}"></span>
+          <span class="font-mono text-xs font-semibold tabular-nums
+                 {% if _avail >= 2 %}text-green-700{% elif _avail == 1 %}text-amber-600{% else %}text-red-600{% endif %}">
+            {{ _qoh }}
+          </span>
+        </div>
+        <template x-teleport="body">
+          <div x-show="hov" x-cloak
+               :style="`left:${cx}px; top:${cy}px; transform:translate(-50%, calc(-100% - 10px))`"
+               class="fixed z-50 pointer-events-none w-56 rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-xs text-left shadow-xl">
+            <div class="mb-1.5 font-semibold text-gray-700">Stock · {{ line.product.sku }}</div>
+            <div class="flex items-center justify-between gap-4">
+              <span class="text-gray-500">On hand</span>
+              <span class="font-mono tabular-nums text-gray-800">{{ _qoh }}</span>
+            </div>
+            <div class="flex items-center justify-between gap-4">
+              <span class="text-gray-500">Committed to open orders</span>
+              <span class="font-mono tabular-nums {{ 'text-amber-600' if _committed > 0 else 'text-gray-400' }}">{{ _committed }}</span>
+            </div>
+            <div class="mt-1.5 flex items-center justify-between gap-4 border-t border-gray-100 pt-1.5">
+              <span class="font-medium text-gray-600">Available to promise</span>
+              <span class="font-mono font-bold tabular-nums
+                    {% if _avail >= 2 %}text-green-700{% elif _avail == 1 %}text-amber-600{% else %}text-red-600{% endif %}">{{ _avail if _avail > 0 else 0 }}</span>
+            </div>
+          </div>
+        </template>
       </div>
     {% else %}
       <span class="text-gray-200 text-xs">—</span>

@@ -18,10 +18,10 @@
     {{ quote.status | title }}{% if quote.is_expired and quote.status == 'sent' %} · Expired{% endif %}
   </span>
 
-  <span class="text-sm font-medium text-gray-700 hidden sm:inline max-w-[10rem] truncate"
-        title="{{ quote.customer.company_name }}">
-    {{ quote.customer.company_name }}
-  </span>
+  {# Customer name intentionally NOT shown here — it lives in the workspace customer
+     strip directly below (workspace.html). Per JAKS_UI_Change_Plan §8S-4/§8T-2 the
+     sticky header must stay lean so the workflow action buttons never overflow the
+     fixed-height bar at standard monitor widths. #}
 
   {% if quote.status == QuoteStatus.DRAFT %}
 

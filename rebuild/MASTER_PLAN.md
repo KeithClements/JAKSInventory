@@ -212,6 +212,42 @@ All 13 services in `/app/services/`:
 
 ## 9. Build Status — What Is NOT YET BUILT ❌
 
+> **🔍 2026-06-07 — FULL 16-SUBSYSTEM CODE AUDIT (16 auditors → adversarial risk verification → synthesis). Overall grade: C+. Verdict: "usable for daily parts ops AFTER a ~10-item fix list; QBO is Phase 1.1, not Phase 1." Full report: `STATUS_REPORT_2026-06-07.md`.**
+> Ground-truthed against the working tree (incl. dirty/untracked WIP), not plan prose. The money spine (quote→SO→PO→receive→invoice→payment) runs end-to-end with atomic finalize + real-ledger void rollback — it will NOT corrupt a clean transaction. What holds the grade at C+ is a cluster of *silent* correctness defects + an unloaded cost/SKU data layer.
+>
+> **Test reality corrected:** `4 failed, 1120 passed, 55 skipped` (NOT "2 reds"). The 2 unlisted reds are NEW + real: `test_s18_classification` ×2 — the smart-import classifier is genuinely broken, not just unwired. (Other 2 = AR-aging WIP + brittle W-4 do-not-chase.)
+>
+> **Fix-before-Phase-1 blockers (verified):**
+> 1. ✅ **LANDED 2026-06-07** — FK enforcement was OFF DB-wide + 4 child tables unindexed → `database.py` now sets `PRAGMA foreign_keys=ON` per connect + `_apply_index_migrations()` creates `ix_{invoice,quote,so,po}_lines_*`.
+> 2. ✅ **LANDED 2026-06-07** — deposit-cancel orphaned money (resolution `<select>` outside the form + hardcoded `leave_open`) → `sales_orders/workspace.html` OPEN **and** HOLD cancel forms now bind `deposit_resolution` via Alpine.
+> 3. ❌ Reports count CORE_CHARGE deposits as revenue+COGS (`report_service.py:229,346`) — every Sales-by-Customer/Product margin is wrong. *(file dirty — Backend lane.)*
+> 4. ❌ Suggested-sell chips quote retail to tiered customers (`_line_row.html:484,503` hardcode `unit_price` into hx-vals, bypassing PricingService). *(file dirty — UI lane.)*
+> 5. ❌ Product list/preview price uses hardcoded 30% (`product.py:300` `selling_price`) — disagrees with the quote's tier price.
+> 6. ❌ Credit-hold dual state machine (`customer_status` vs `CustomerFlag.CREDIT_HOLD`, unsynced) — a held account can read "clear" at the counter.
+> 7. ❌ Vendor/customer mutation+import routes have no role gate; `InvoiceService(db, 1)` hardcodes audit user (`invoices.py:104`).
+> 8. ❌ CDN-only Alpine/HTMX/Chart.js (`base.html:16-18`) — self-host + pin before go-live.
+> 9. ⏳ **DATA:** all 13k PAI parts `cost=0` (margin reads 100%, valuation ~$0) → run pricing-update `pai_cost`; no JAKS SKU until `scripts/backfill_sku_scheme.py --apply` is committed + run.
+> 10. ❌ AR aging bar never renders (`_balance_widget.html` keys `d1_30/d90_plus` vs backend `1_30/over_90`) — **folded into the in-flight AR-aging WIP; leave to that lane.**
+>
+> **In-flight (dirty/untracked — DO NOT re-dispatch or collide):** Credit-memo issuance UI is BUILT-uncommitted (`credit_memos.py` router + templates + `test_credit_memo_routes.py`, wired `main.py:341-342`) → the audit's "no credit-memo UI" is **REFUTED**. Smart-import **Apply route exists** (`import_review.py` `POST /{batch}/apply` → `apply_approved`, wired `main.py:341`) → "dead-end" is **REFUTED**; the classifier is still red. AR-aging consolidation (`ar_aging_utils.py`) in progress.
+>
+> **QBO = Phase 1.1, NOT Phase-1-done:** invoice push works, but **no payment push** (QBO AR stays open forever), CC surcharge dropped from QBO books, tokens plaintext (`qbo_client.py:15-17`). This supersedes the 2026-06-04 "QBO BUILT" framing *for go-live purposes* — the push exists, but the accounting is not yet trustworthy.
+>
+> *Verified-refuted over-claims — do NOT carry forward as blockers: "$0 quotes" (`price_override` carries a real sell price), "no CSRF = forgeable" (SameSite=Lax set + tested), "anonymous access" (login globally enforced — gap is role, not auth), "overpayment lost" (parks as `amount_unallocated` by design), PO "Approve Anyway dead end" / "Resolve UI absent" (forms exist).*
+>
+> *The render-wave banner below is retained as the prior milestone.*
+
+> **✅ 2026-06-07 — render wave COMPLETE · tier-pricing WIRED · product catalog live · LINT GATE GREEN. 1121 tests pass; 2 reds = 1 brittle W-4 (do-not-chase) + 1 in-flight AR-aging WIP (`test_ar_aging_buckets`, impl uncommitted).**
+> Ground-truthed against `HEAD` (`04df870`). The 5 `test_ui_lint` design-system reds were cleared by the §8W lint gate (`c6a30db`) + the motion.html macro; Returns + Warranty full state-machine lifecycle tests landed (`a892618`). **In flight (dirty tree, do not collide):** Import Review queue (`import_review_service` — real) + AR-aging bucket consolidation (`ar_aging_utils` — real) + customer §6 UI polish (`04df870`).
+> Earlier-in-day ground-truth (`fc57750`):
+> - **Tier-pricing is no longer cosmetic.** `customer.pricing_tier` is now read at line-add — `PricingService.tier_discount_pct()`/`sell_price_for_tier()` (`pricing_service.py:93/107`) read a per-tier discount from settings and are consulted in `quote_service.py:116/513/590` + `invoice_service.py:325` (`4f4b5db`); the confusing per-entry-form dropdown was removed (`9db732b`, owner decision); locked by `test_tier_pricing_and_demo_gate.py`. **The 2026-06-05 audit's one "real" item is CLOSED.** (Per-customer `discount_pct` auto-apply already worked.)
+> - **Demo-reset is now production-gated** — `JAKS_ENV=production` → 403 on GET+POST `/admin/demo/reset` (`4f4b5db`, same test). The audit's DB-wipe hardening note is closed.
+> - **The Phase-2 render wave is COMPLETE** (governance PASS `300fddd`): quote-workspace always-visible actions (`quotes/_header_actions.html`), quote intelligence chips, dashboard **Top-Customers + Open-Follow-Ups widgets + shrunk revenue chart** (`dashboard.html:143/168/191`), Prepared-By print render. The "Remaining UI consumes" notes in the banners below are SUPERSEDED.
+> - **Product catalog is live + organized:** 13k+ PAI parts imported + paginated (100/pg), product images + 2-col edit, schema-v2 pricing + competitor panel, Full/Pricing-Update importer, and the **vendor-independent JAKS SKU scheme** `JAKS-[ENGINE]-[CATEGORY]-[V][NNNN]` (`fc57750`). **Vendor Returns List upgraded L1→L2** (`6809b47`). `data/jaks.db` is throwaway/re-importable from the PAI CSV — restore via re-run Full Import, NOT demo reset.
+> - **The ONE gate left is owner-run, not code:** the §8 end-to-end acceptance (hand-run lifecycles A–E with real data) + a full pass of Cores/Returns/Warranty/Vendor-Returns/Reports (automated-proven, never owner-tested) + the operational cutover (one real backup→restore + strong admin pw).
+>
+> *The 2026-06-05 audit banner below is retained as the prior milestone.*
+
 > **🔍 2026-06-05 GO-LIVE AUDIT — reconciled (status-refresher). It scored 68/100 "not deployable," but 3 of its 4 blockers are already addressed in-tree; one is real.**
 > Ground-truthed each against the current code:
 > - ~~Ungated DB-wipe (`demo.py:73`)~~ → **admin-gated + confirmation** (`demo.py:76`, `require_admin`). Minor hardening only (could add a sandbox-env guard); NOT a deploy blocker.
@@ -289,16 +325,21 @@ invoice-list **QBO status column + bulk push + sortable/sticky headers** · **un
 tab** · sortable+sticky on customers/quotes/payments · **PDF branding** (formatted phone + Terms + one
 shared company dict across every print, `d8f33fa`) · customer **Acct # + 4-state Status + Timeline-first
 tabs** · dynamic customer preview dock · **products F2 shortcut + prominent margin** · cost-bracket
-**pricing grid** · tabbed Settings · quotes-list Open/Print/Email + follow-up colors. 966 tests green.
-**Remaining UI consumes (Backend seams in @`9f50216`):** quote-workspace always-visible actions +
-intelligence render, dashboard Top-Customers/Follow-Ups widgets, Prepared-By print render.
+**pricing grid** · tabbed Settings · quotes-list Open/Print/Email + follow-up colors.
+
+**Landed since (render wave + pricing + catalog, 2026-06-07):** render wave COMPLETE (governance
+PASS `300fddd`) — quote-workspace always-visible actions + intelligence chips, dashboard
+Top-Customers/Open-Follow-Ups widgets + shrunk revenue chart, Prepared-By print render · **tier-pricing
+wired** into quote/invoice line-add (`4f4b5db`) · **demo-reset production-gated** (`4f4b5db`) ·
+13k+ product catalog imported + paginated + images + schema-v2 pricing · **JAKS SKU scheme** (`fc57750`) ·
+**Vendor Returns List L1→L2** (`6809b47`) · 3-way match write-side correction (`test_match_correct`). **1079 tests green.**
 
 ### 9.1 — Genuinely not built / deferred (BACKEND)
 
 | Feature | Status | Notes |
 |---|---|---|
 | **Product categorization & classification system** | **✅ BUILT 2026-06-06** (see §18) | Dedicated **Inventory → Category Maintenance** screen (owns Category/Subcategory/Product-Family tree + sort order + active + default markup + import rules; also Brand & Manufacturer/Engine-Make lists). Products List gets **filters** (Category/Subcategory/Family/Manufacturer/Brand/Needs-Review/Uncategorized) + **bulk Assign Category/Manufacturer** + **Manage Categories** link only. Importer: Shopify **Type → top-level category only**; Title/Tags/Body-HTML/OEM/Applications → suggest subcategory/family/manufacturer; low-confidence → `needs_review` + **Import Review queue**. Enforces **Brand ≠ Vendor ≠ Manufacturer/Engine-Make** (today the importer hard-codes `brand`+`manufacturer` both to "PAI"). Full spec + 4 owner forks in **§18**. |
-| **🟡 UX — customer `pricing_tier` is a decorative label** | **DOWNGRADED 2026-06-06 (was "🔴 BUG")** | Per-customer pricing **does** work — `customer.discount_pct` auto-applies to quote lines (`quote_service.py:119-122`) + invoice draft, regression-locked by `tests/test_tier_pricing.py` (`1393ae6`). The `pricing_tier` dropdown (wholesale/fleet/dealer) is a label **no pricing logic reads** — not a mispricing bug, just a control that implies more than it does. Decide: relabel it "Customer Type", or wire tier→default-discount so picking a tier seeds `discount_pct`. |
+| ~~UX — customer `pricing_tier` decorative label~~ | **✅ RESOLVED 2026-06-07** | Both halves now done: (1) `customer.discount_pct` auto-applies to quote/invoice lines (already worked, `test_tier_pricing.py`); (2) `pricing_tier` is now **wired into price resolution** — `PricingService.tier_discount_pct()`/`sell_price_for_tier()` (`pricing_service.py:93/107`) read a per-tier discount from settings and are consulted at line-add in `quote_service.py:116/513/590` + `invoice_service.py:325` (`4f4b5db`); the confusing per-entry-form dropdown was removed (`9db732b`, owner decision). Locked by `test_tier_pricing_and_demo_gate.py`. No longer a gap. |
 | QBO OAuth + **invoice** push | **✅ BUILT 2026-06-04** | OAuth2 + REST client + accounting-summary invoice push + bulk sync + Settings/invoice-list/workspace UI; 17+ tests; owner-tested against the live sandbox. Fails-soft — never touches the money path. **Still deferred within 1B:** payments / vendor-bills / credit-memos push; Fernet token encryption; AST-tax reconcile (`qbo_push_tax` kill-switch). |
 | Vendor availability + ESN scrapers (PAI/HHP/ATL) | **REMOVED from ERP scope (P2-D9, 2026-06-02)** | The ERP never scrapes. `vendor_availability_service.py` / `esn_lookup_service.py` stubs + `scraper.py` models + scraper routes/seed are being deleted (Backend). Live pricing/catalog lives in the standalone PAI Info tool → Shopify. |
 | Product enrichment sync (cross-refs + CPL/ESN) | **✅ BUILT (`370820b`)** | One-way sync from the scraper's CSV export onto stocked products (match `jaks_sku`→`products.sku`; never creates products / touches cost/sell). `ProductApplication` model + `ProductEnrichmentService` + `POST /products/enrich-sync` + UI trigger; 9 tests. Spec: `PHASE_2_PLAN.md` §7.2. |
@@ -345,8 +386,10 @@ eBay listings · full TaxJar (multi-state) · ESN lookup scraper live · serial-
 > build order) and the 05-31 "current" items 1–5 all landed: cost-variance 3-way gate (`c36769c`/`bd65c69`),
 > O2-enforce (`07f7747`), O6 surcharge (`d098176`), Cores #16 / Returns #17 queues, CSV import phone/email
 > fix, and the owner's end-to-end acceptance of both spines — **signed off** (`PHASE_1_TEST_PLAN.md` §13).
-> The only Phase-1 carry-over is the **operational** data-safety cutover (one real backup→restore + set a
-> strong admin pw at `/account`) — not code.
+> The only Phase-1 carry-overs are **owner-run, not code**: **(a)** the §8 end-to-end acceptance —
+> hand-run lifecycles A–E with real data + a full pass of Cores/Returns/Warranty/Vendor-Returns/Reports
+> (automated-proven, never owner-tested); **(b)** the **operational** data-safety cutover (one real
+> backup→restore + set a strong admin pw at `/account`). Both are go-live gates the code already supports.
 >
 > **➡️ The live build queue is now `PHASE_2_PLAN.md` §8** (12 decisions locked 2026-06-02; build order
 > starts at Customer Notes+Flags). Everything below this line is Phase-1 history — kept for the record,
@@ -908,6 +951,72 @@ Add only — **no structure editing here**:
 
 ---
 
+## 19. System Review 2026-06-10 — Verified Findings & Daily-Use Sprint (AUTHORITATIVE punch list; supersedes §16.6/§17.2 ordering)
+
+> **Method:** 16 subsystem auditors read the real code; all 47 Critical/High claims adversarially
+> re-verified at `file:line` — **43 confirmed, 4 refuted**. Full report: `SYSTEM_REVIEW_2026-06-10.md`.
+> **Overall B− / daily-use readiness C+.** **DAILY USE STARTED 2026-06-10** → the §19.2 money leaks
+> are now bleeding real dollars and outrank everything else in §10/§17.
+
+### 19.1 — Do NOT re-litigate (verified-REFUTED claims)
+1. 13k imported parts do **NOT** quote at $0 (`price_override` populated).
+2. Backordered lines can **NOT** ship into negative inventory (finalize guard blocks).
+3. AI-categorize `output_config` **IS** the correct API param (feature works).
+4. Products list **IS** paginated (100/page server-side).
+
+### 19.2 — SPRINT R1 "Stop the bleeding" — ✅ **IMPLEMENTED 2026-06-10, same day** (all located, wiring-level)
+
+> **Status:** all 16 items below SHIPPED via 13 file-partitioned agents, each adversarially
+> verified (0 broken verdicts) + 5 orchestrator hardening patches from verifier edge findings
+> (multi-invoice surcharge uses `min()` of mixed pct snapshots; NaN rejected on CM apply;
+> NSF hidden from the payment allocate card; category code alnum-clamped to 6; chargeback
+> recorded as a NEGATIVE CoreReturnEvent so repeat return→denial cycles net out — metrics
+> tile filters `credit_amount > 0` to stay gross). Tests **1307 → 1438 green** (+131; only
+> red = pre-existing W-4 template test). DEFERRED to R2: Fernet QBO-token encryption
+> (`cryptography` not in venv) and SO-deposit card surcharge (sales_order_service.py:818).
+> **OWNER DECISION open:** partial vendor core-shortfall resolved CHARGED_TO_CUSTOMER
+> reverses the FULL issued credit, not just the shortfall — aggressive; say the word to
+> make it shortfall-only.
+
+| # | Fix | Where | Why (confirmed) |
+|---|---|---|---|
+| R1-1 | Quote→SO carries MISC/FREIGHT/NOTE/WARRANTY (exclude only CORE_CHARGE) | `quote_service.py:381` | Freight/warranty revenue silently dropped on the daily hot path — underbilling |
+| R1-2 | `is_reversed` filter in `Payment.amount_allocated` | `app/models/invoice.py:295` | NSF/reversal strands funds; allocate() blocks re-applying |
+| R1-3 | Pass `apply_surcharge`/`surcharge_pct` to `record_payment` | `invoices.py:932`, `payments.py:130` | Card surcharge displayed but never collected — JAKS eats every processing fee |
+| R1-4 | Credit-memo `apply` + `close` routes & detail-page buttons (services complete) | `app/routers/credit_memos.py` | Every CM issued is financially inert |
+| R1-5 | Duplicate (vendor_id, bill_number) guard + `mark_bill_paid` route | `po_service.py`, `purchase_orders.py` | Double-pay risk; PAID unreachable → AP can never close |
+| R1-6 | **CRITICAL:** manufacturer/brand rename cascade → `Product.engine_manufacturer`/`brand` | `category_service.py:220` | Rename splits the 13k catalog; parts vanish from engine-make filters |
+| R1-7 | Vendor quick-create code `[:10]`→`[:4]`; category `code` input on create/edit forms | `vendors.py:194`, `categories/index.html` | SKU-scheme corruption on every new vendor/category |
+| R1-8 | Clear `is_preferred` on vendor-source soft-delete + `is_active` filter in `preferred_vendor_source` | `products.py:806`, `product.py:327` | Ghost deleted vendor + stale cost in search/dock/exports |
+| R1-9 | Core money trio: CHARGED_TO_CUSTOMER chargeback; set `credit_invoice_id` at create; call `mark_overdue_cores()` at startup | `core_service.py`, `main.py` | JAKS eats denied cores; slips print NULL invoice; aging liability silent |
+| R1-10 | SO cancel hygiene: cascade-cancel CORE_CHARGE children; decrement `qty_backordered` | `sales_order_service.py` | Phantom core deposits inflate SO totals; demand metric drifts from day one |
+| R1-11 | Render `credit_warn` on quote/SO/invoice workspaces (ctx already computed) | 3 workspace templates + quote ctx | Credit-hold customers invoiced with zero warning |
+| R1-12 | Receive form qty defaults 0 + explicit "Receive All" | `purchase_orders/workspace.html` | One careless click marks partial deliveries fully received |
+| R1-13 | CSV exports: AR aging / overdue / sales-tax / invoices / customers | `reports.py`, `invoices.py`, `customers.py` | Collections + accountant blocker; 8 of 9 Export buttons are dead stubs |
+| R1-14 | Margin truth: `vendor_cost` fallback + zero-cost warning banner; sales-tax `taxable_revenue`→`line_total`; dashboard overdue `func.date()` | `report_service.py:239,357,897`, `dashboard.py:50` | Margins read ~100% (cost=0 catalog); tax base overstated; overdue counts disagree |
+| R1-15 | Security: session secret → env var (DB fallback); gate `JAKS_SKIP_AUTH`; **Fernet QBO tokens before connecting the real company** | `main.py:67`, `qbo_client.py` | Secret stored in the DB it protects; bare env var kills all auth |
+| R1-16 | Block non-PAI feeds in `full_import` until vendor w/ confirmed digit exists; filter DUPLICATE rows in `apply_approved` | `product_import_service.py:589`, `import_review_service.py:367` | Vendor digit '9' SKU corruption; wedged batches never reach APPLIED |
+
+### 19.3 — SPRINT R2 "Close the loops" (after R1)
+VCR batch UI (create/add-cores/vendor-decision — model+prints exist) · ESN field on warranty claims (PAI rejects without it) + warranty_type select + record-vendor-credit route · QBO `push_payment` + refuse auto-bind on multiple DisplayName hits + audit rows/real user_id · engine picker on SO/invoice/product forms · products-list OEM search via SearchService · competitor part numbers → `cross_references` at import + search strategy (**must land before scraper competitor data loads**) · low-stock reorder report + "Create PO from low stock" · Duplicate Quote route (service is dead code) · structured Mark Lost w/ competitor fields · RA `total_credit` uses `qty_returned_to_stock` · receiving-slip print · invoice list joinedload(allocations) + column sort.
+
+### 19.4 — SPRINT R3 "Make it solid"
+Category merge + reparent tools · DB uniqueness batch via inline migrations (ProductVendorSource (product,vendor), cross-ref grain, account_number, (vendor,bill_number)) · freight landed-cost into moving-average COGS · serial capture at receive / consume at finalize (cylinder heads) · statement persistence (+ rename `due_120`→`over_90` BEFORE persisting) · QBO vendor-bill/credit-memo push + AST detection + retry worker · word-boundary classifier · import column-mapping UI w/ saved per-vendor templates · admin inventory resync route (fix `get_qty_on_hand` SO_COMMITTED handling first) · one full-chain E2E test (quote→SO→PO→receive→fulfill→invoice→pay→core return).
+
+### 19.5 — Brand alignment workstream (parallel, low-risk)
+Customer-facing print docs (quote/invoice/statement/core slip) adopt the JAK'S brand kit
+(`D:\Work Folder\Website\JAK's Diesel Website (8)\brand-kit.html` + `assets/jaks.css`):
+military-green `#5a6630` + amber + steel palette, Oswald/Barlow/IBM Plex Mono, hazard divider motif.
+Route through the existing `documents/_company_header.html`/`_footer.html`/`_styles` partials +
+`get_company_dict()` seam — **print templates only; do NOT restyle the ERP app shell** (§3 design system stays locked).
+
+### 19.6 — Report card (2026-06-10 verified)
+Navigation B+ · Products B− · Inventory B · Purchasing B · Receiving B− · Quotes B− · Invoicing B− ·
+Customers B− · Cores C+ · QBO C+ · Reporting B− · UI/UX B− · **Readiness C+ → target A after R1+R2.**
+Grade path: R1 = stop money loss (C+→B), R2 = close vendor/QBO loops (B→A−), R3 + 2 weeks clean daily use = A.
+
+---
+
 *This document is the single source of truth for all JAKS Inventory build decisions.*
 *Update it as decisions change. All other planning documents are superseded.*
-*Last updated: 2026-06-06 — status-refresher pass: 983 tests verified green; tier-pricing downgraded from blocker to a label decision (money path proven real); real-data cutover (13,153-part catalog) recorded as the live operational gate; owner-acceptance breadth named as the one true status gap. See §17 banner. **Added §18 Product Categorization & Classification spec** (Inventory → Category Maintenance screen; Products-List filters/bulk-assign/Manage-Categories link; importer rules + Import Review queue; Brand/Vendor/Manufacturer-Engine-Make separation) — **BUILT & verified the same night** (increments 1–7; 1051 tests pass; backfill applied to the live 13,154-part catalog). Not yet git-committed. See §18 banner.*
+*Last updated: 2026-06-10 — **§19 added (verified system review, B−, authoritative punch list) and Sprint R1 §19.2 implemented the same day** (16/16 money/integrity fixes, adversarially verified, 1438 tests green). Next: §19.3 Sprint R2. Prior note (2026-06-06) — status-refresher pass: 983 tests verified green; tier-pricing downgraded from blocker to a label decision (money path proven real); real-data cutover (13,153-part catalog) recorded as the live operational gate; owner-acceptance breadth named as the one true status gap. See §17 banner. **Added §18 Product Categorization & Classification spec** (Inventory → Category Maintenance screen; Products-List filters/bulk-assign/Manage-Categories link; importer rules + Import Review queue; Brand/Vendor/Manufacturer-Engine-Make separation) — **BUILT & verified the same night** (increments 1–7; 1051 tests pass; backfill applied to the live 13,154-part catalog). Not yet git-committed. See §18 banner.*

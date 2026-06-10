@@ -75,13 +75,17 @@
     'received':     'Goods received and inventory updated.',
     'billed':       'Vendor bill created successfully.',
     'bill_approved':'Vendor bill approved.',
+    'bill_paid':    'Vendor bill marked paid.',
     'match_resolved':'Match line resolved.',
     'match_corrected':'Match corrected — PO and bill now reconcile. Bill is ready to approve.',
   } %}
   {% if request.query_params.get('ok') %}
+  {# Known slugs map to friendly copy; routes that already return human-readable
+     text (e.g. "Vendor credit VCM-… created") fall through and display as-is. #}
+  {% set ok_key = request.query_params.get('ok') %}
   <div class="rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800 flex items-center gap-2">
     <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
-    {{ ok_msg.get(request.query_params.get('ok'), 'Saved.') }}
+    {{ ok_msg.get(ok_key, ok_key) }}
   </div>
   {% endif %}
   {% if request.query_params.get('error') %}
@@ -279,6 +283,17 @@
     <div class="card-body">
       <form method="post" action="/purchase-orders/{{ po.id }}/receive" class="space-y-4">
 
+        {# R1-12 — qtys default to 0 so a careless submit can't fully receive a
+           partial delivery; "Receive All" fills each line's outstanding qty. #}
+        <div class="flex items-center justify-between gap-3">
+          <p class="text-xs text-gray-400">Enter the quantity actually received — lines left at 0 are skipped.</p>
+          <button type="button"
+                  class="text-xs font-semibold text-brand-700 hover:text-brand-800 underline shrink-0"
+                  @click="$el.closest('form').querySelectorAll('input[name^=recv_]').forEach(i => i.value = i.max)">
+            Receive All
+          </button>
+        </div>
+
         <div class="space-y-3">
           {% for line in unreceived_lines %}
           <div class="flex items-center gap-4 py-1">
@@ -291,7 +306,7 @@
             <span class="text-xs text-gray-400 shrink-0">{{ line.qty_outstanding }} outstanding</span>
             <div class="flex flex-col shrink-0 gap-1">
               <input type="number" name="recv_{{ line.id }}"
-                     min="0" max="{{ line.qty_outstanding }}" value="{{ line.qty_outstanding }}"
+                     min="0" max="{{ line.qty_outstanding }}" value="0"
                      class="w-20 form-input text-right" />
               <input type="text" name="condition_{{ line.id }}"
                      placeholder="Condition notes…"
@@ -531,7 +546,17 @@
             <td class="px-4 py-4 align-middle text-sm text-gray-700">
               {% if bill.status == 'paid' %}<span class="badge-green">Paid</span>
               {% elif bill.status == 'discrepancy' %}<span class="badge-red">Discrepancy</span>
-              {% elif bill.status == 'approved' %}<span class="badge-blue">Approved</span>
+              {% elif bill.status == 'approved' %}
+              <span class="badge-blue">Approved</span>
+              {# R1-12 — AP reconciliation: only APPROVED bills are payable. The hidden
+                 form is submitted by the confirm modal (askConfirm pattern). #}
+              <form id="pay-bill-{{ bill.id }}" method="post"
+                    action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/pay" class="hidden"></form>
+              <button type="button"
+                      @click="askConfirm('pay-bill-{{ bill.id }}', 'Mark bill paid?', 'This records the bill as paid for AP reconciliation — no money moves in JAKS.', 'Mark Paid', false)"
+                      class="ml-2 px-2 py-1 text-[11px] font-semibold text-green-700 border border-green-200 rounded-md hover:bg-green-50 transition-colors">
+                Mark Paid
+              </button>
               {% else %}<span class="badge-gray">Pending</span>{% endif %}
             </td>
           </tr>
@@ -549,7 +574,9 @@
                 <ul class="space-y-1.5 mb-3">
                   {% for bl in bill.lines if bl.has_discrepancy %}
                   {% set pol = bl.po_line %}
-                  <li x-data="{ open: false }" class="border border-red-100 rounded-lg bg-white/60 px-3 py-2">
+                  {# Suggested vendor-credit amount comes straight from the 3-way match compute. #}
+                  {% set sug = (match.rows | selectattr('line.id', 'equalto', pol.id) | map(attribute='suggested_credit') | first) if pol else None %}
+                  <li x-data="{ panel: '' }" class="border border-red-100 rounded-lg bg-white/60 px-3 py-2">
                     <div class="flex items-start justify-between gap-3">
                       <div class="leading-relaxed">
                         <span class="font-mono font-semibold text-gray-700">{{ pol.product.sku if pol and pol.product else '—' }}</span>
@@ -563,17 +590,114 @@
                         — unit cost differs
                         <span class="text-red-600 font-semibold">(billed ${{ '%.2f' | format(bl.unit_cost) }} vs PO ${{ '%.2f' | format(pol.unit_cost) }})</span>
                         {% endif %}
+                        {# Surface the current AP decision so re-deciding a line is unambiguous. #}
+                        {% if pol and pol.match_resolution and pol.match_resolution != 'unresolved' %}
+                        <span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide
+                                     {% if pol.match_resolution == 'rejected' %}bg-red-100 text-red-700{% else %}bg-gray-100 text-gray-600{% endif %}">
+                          {{ pol.match_resolution | replace('_', ' ') }}
+                        </span>
+                        {% endif %}
                       </div>
-                      {% if pol %}
-                      <button type="button" @click="open = !open"
-                              class="shrink-0 px-2.5 py-1 text-[11px] font-semibold text-brand-700 border border-brand-200 rounded-md hover:bg-brand-50 transition-colors"
-                              x-text="open ? 'Cancel' : 'Correct'"></button>
-                      {% endif %}
                     </div>
 
                     {% if pol %}
+                    {# ── AP resolution actions — wired to POST .../lines/{id}/resolve and .../create-credit ── #}
+                    <div class="mt-2 flex flex-wrap items-center gap-1.5">
+                      {# Accept — pay as billed; acknowledges the variance (no reason needed). #}
+                      <form id="resolve-accept-{{ pol.id }}" method="post"
+                            action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/lines/{{ pol.id }}/resolve" class="hidden">
+                        <input type="hidden" name="decision" value="accepted">
+                      </form>
+                      <button type="button"
+                              @click="askConfirm('resolve-accept-{{ pol.id }}', 'Accept variance?', 'This line will be paid as billed — the variance is acknowledged and accepted.', 'Accept', false)"
+                              class="px-2 py-1 text-[11px] font-semibold text-green-700 border border-green-200 rounded-md hover:bg-green-50 transition-colors">
+                        Accept
+                      </button>
+
+                      {# Reject — dispute the line; requires a reason (inline form). #}
+                      <button type="button" @click="panel = panel === 'reject' ? '' : 'reject'"
+                              class="px-2 py-1 text-[11px] font-semibold text-red-700 border border-red-200 rounded-md hover:bg-red-50 transition-colors"
+                              x-text="panel === 'reject' ? 'Cancel' : 'Reject'"></button>
+
+                      {# On-Hold — park pending more info (no reason needed). #}
+                      <form id="resolve-hold-{{ pol.id }}" method="post"
+                            action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/lines/{{ pol.id }}/resolve" class="hidden">
+                        <input type="hidden" name="decision" value="on_hold">
+                      </form>
+                      <button type="button"
+                              @click="askConfirm('resolve-hold-{{ pol.id }}', 'Put line on hold?', 'Parks this line pending more info. The bill stays flagged until you decide.', 'Put on hold', false)"
+                              class="px-2 py-1 text-[11px] font-semibold text-amber-700 border border-amber-200 rounded-md hover:bg-amber-50 transition-colors">
+                        On&#8209;Hold
+                      </button>
+
+                      {# Create Vendor Credit — issue a VCM for the overage (inline form). #}
+                      <button type="button" @click="panel = panel === 'credit' ? '' : 'credit'"
+                              class="px-2 py-1 text-[11px] font-semibold text-brand-700 border border-brand-200 rounded-md hover:bg-brand-50 transition-colors"
+                              x-text="panel === 'credit' ? 'Cancel' : 'Create Credit'"></button>
+
+                      {# Correct & Reconcile — edit the numbers so PO + bill match (inline form). #}
+                      <button type="button" @click="panel = panel === 'correct' ? '' : 'correct'"
+                              class="px-2 py-1 text-[11px] font-semibold text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+                              x-text="panel === 'correct' ? 'Cancel' : 'Correct'"></button>
+                    </div>
+
+                    {# ── Reject: dispute — reason required ── #}
+                    <form x-show="panel === 'reject'" x-cloak method="post"
+                          action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/lines/{{ pol.id }}/resolve"
+                          class="mt-2.5 pt-2.5 border-t border-red-100 space-y-2">
+                      <input type="hidden" name="decision" value="rejected">
+                      <p class="text-[11px] text-gray-500">
+                        Dispute this line — it stays flagged while you wait for a corrected bill or credit from the vendor.
+                      </p>
+                      <label class="block">
+                        <span class="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-0.5">Reason <span class="text-red-500">*</span></span>
+                        <textarea name="reason" required rows="2" maxlength="500"
+                                  placeholder="e.g. Billed qty exceeds what we received — disputed with vendor"
+                                  class="w-full px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-1 focus:ring-brand-400 focus:border-brand-400"></textarea>
+                      </label>
+                      <button type="submit"
+                              class="px-3 py-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors">
+                        Reject line
+                      </button>
+                    </form>
+
+                    {# ── Create Vendor Credit: amount (suggested from the variance) + reason ── #}
+                    <form x-show="panel === 'credit'" x-cloak method="post"
+                          action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/create-credit"
+                          class="mt-2.5 pt-2.5 border-t border-red-100 space-y-2.5">
+                      <input type="hidden" name="po_line_id" value="{{ pol.id }}">
+                      <p class="text-[11px] text-gray-500">
+                        Issue a vendor credit memo for the overage and mark this line credited.
+                      </p>
+                      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <label class="block">
+                          <span class="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-0.5">Credit amount</span>
+                          <input type="number" step="0.01" min="0.01" name="amount"
+                                 value="{{ '%.2f' | format(sug) if sug else '' }}"
+                                 placeholder="Leave blank to auto-compute"
+                                 class="w-full px-2 py-1 text-sm border border-gray-300 rounded-md tabular-nums focus:ring-1 focus:ring-brand-400 focus:border-brand-400">
+                          {% if sug %}<span class="block text-[10px] text-gray-400 mt-0.5">Suggested: ${{ '%.2f' | format(sug) }}</span>{% endif %}
+                        </label>
+                        <label class="block">
+                          <span class="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-0.5">Reason</span>
+                          <input type="text" name="reason" maxlength="500"
+                                 placeholder="e.g. Vendor overcharged — credit requested"
+                                 class="w-full px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-1 focus:ring-brand-400 focus:border-brand-400">
+                        </label>
+                      </div>
+                      <label class="flex items-center gap-1.5 text-[11px] text-gray-600">
+                        <input type="checkbox" name="apply_now" value="1"
+                               class="rounded border-gray-300 text-brand-600 focus:ring-brand-400">
+                        Apply the credit to this bill immediately
+                      </label>
+                      <button type="submit"
+                              class="px-3 py-1.5 text-xs font-semibold text-white bg-brand-700 hover:bg-brand-600 rounded-lg transition-colors">
+                        Create vendor credit
+                      </button>
+                    </form>
+
                     {# ── Correct & Reconcile — edit the side that's wrong so PO + bill match ── #}
-                    <form x-show="open" x-cloak method="post"
+                    <form x-show="panel === 'correct'" x-cloak method="post"
                           action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/lines/{{ pol.id }}/correct"
                           class="mt-2.5 pt-2.5 border-t border-red-100 space-y-2.5">
                       <p class="text-[11px] text-gray-500">
@@ -618,14 +742,30 @@
                   </li>
                   {% endfor %}
                 </ul>
-                <form id="approve-bill-{{ bill.id }}" method="post"
-                      action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/approve" class="hidden"></form>
-                <button type="button"
-                        @click="askConfirm('approve-bill-{{ bill.id }}', 'Approve bill with discrepancy?', 'This bill still differs from the PO (quantity and/or unit cost). Approving accepts the variance as-is.', 'Approve anyway', true)"
-                        class="px-3 py-1.5 text-xs font-semibold text-white bg-red-600
-                               hover:bg-red-700 rounded-lg transition-colors">
-                  Approve Anyway
-                </button>
+                {# ── Approve Anyway — override the discrepancy gate; reason required & audit-logged ── #}
+                <div x-data="{ open: false }" class="border-t border-red-100 pt-3 mt-1">
+                  <button type="button" @click="open = !open"
+                          class="px-3 py-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors"
+                          x-text="open ? 'Cancel override' : 'Approve Anyway'"></button>
+                  <form x-show="open" x-cloak method="post"
+                        action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/approve"
+                        class="mt-2.5 space-y-2 max-w-xl">
+                    <p class="text-[11px] text-gray-500">
+                      This bill still differs from the PO (quantity and/or unit cost). Approving accepts the
+                      variance as-is and posts it for payment. A reason is required and recorded in the audit trail.
+                    </p>
+                    <label class="block">
+                      <span class="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-0.5">Override reason <span class="text-red-500">*</span></span>
+                      <textarea name="override_reason" required rows="2" maxlength="500"
+                                placeholder="e.g. Vendor confirmed the price increase by phone — paying as billed"
+                                class="w-full px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-1 focus:ring-brand-400 focus:border-brand-400"></textarea>
+                    </label>
+                    <button type="submit"
+                            class="px-3 py-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors">
+                      Approve anyway
+                    </button>
+                  </form>
+                </div>
               </div>
             </td>
           </tr>

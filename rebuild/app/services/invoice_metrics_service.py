@@ -84,6 +84,24 @@ class InvoiceMetricsService(BaseService):
             "open_warranty_claims": self._open_warranty_claims(cust_id),
         }
 
+    def margin_pct_for(self, invoice):
+        """Goods-only margin % for one invoice (id or Invoice instance), or None
+        when there is no parts revenue (e.g. an empty draft) — so callers can show
+        '—' instead of a misleading 0%. Cheap: no extra queries when the invoice's
+        lines are already loaded. Reuses _profit_and_margin so the dashboard agrees
+        with the §5.8 intelligence panel."""
+        invc = (
+            invoice if isinstance(invoice, Invoice)
+            else self.db.query(Invoice).filter(Invoice.id == int(invoice)).first()
+        )
+        if invc is None:
+            return None
+        _, margin_pct = self._profit_and_margin(invc)
+        parts_revenue = sum(
+            ln.line_total for ln in invc.lines if ln.line_type in PARTS_LINE_TYPES
+        ) - (invc.discount_amount or 0.0)
+        return margin_pct if parts_revenue > 0 else None
+
     @staticmethod
     def _empty() -> dict:
         return {

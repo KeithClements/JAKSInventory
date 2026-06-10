@@ -21,12 +21,14 @@ so existing sidebar/bookmark links keep working.
 """
 from __future__ import annotations
 
+import csv
+import io
 import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
@@ -70,6 +72,20 @@ def _resolve_range(start: str | None, end: str | None) -> tuple[date, date]:
     if e is None:
         return s, today
     return s, e
+
+
+def _csv_response(header: list[str], data_rows: list[list], filename: str) -> StreamingResponse:
+    """Render rows as a text/csv attachment (same pattern as /products/export.csv)."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(header)
+    writer.writerows(data_rows)
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 # ── Landing ───────────────────────────────────────────────────────────────────
@@ -184,6 +200,32 @@ def reports_ar_aging(
     )
 
 
+@router.get("/ar-aging/export.csv")
+def reports_ar_aging_export(
+    as_of: str | None = None,
+    db: Session = Depends(get_db),
+):
+    as_of_date = _parse_date(as_of) or date.today()
+    data = ReportService(db).get_ar_aging(as_of_date)
+    return _csv_response(
+        ["customer", "invoice_count", "current", "1_30", "31_60", "61_90", "over_90", "total"],
+        [
+            [
+                r["customer"].company_name if r["customer"] else "",
+                r["invoice_count"],
+                f"{r['current']:.2f}",
+                f"{r['1_30']:.2f}",
+                f"{r['31_60']:.2f}",
+                f"{r['61_90']:.2f}",
+                f"{r['over_90']:.2f}",
+                f"{r['total']:.2f}",
+            ]
+            for r in data["rows"]
+        ],
+        f"ar_aging_{as_of_date.isoformat()}.csv",
+    )
+
+
 # ── Sales by Customer ─────────────────────────────────────────────────────────
 
 @router.get("/sales-by-customer", response_class=HTMLResponse)
@@ -198,10 +240,13 @@ def reports_sales_by_customer(
     rows: list = []
     totals = {"invoice_count": 0, "gross_sales": 0.0, "payments_received": 0.0,
               "balance_due": 0.0, "cost": 0.0, "margin": 0.0, "margin_pct": None}
+    cost_estimated_lines = zero_cost_lines = 0
     try:
         data = ReportService(db).get_sales_by_customer(start_date, end_date)
         rows = data["rows"]
         totals = data["totals"]
+        cost_estimated_lines = data["cost_estimated_lines"]
+        zero_cost_lines = data["zero_cost_lines"]
     except Exception:
         log.exception("reports_sales_by_customer failed (%s–%s)", start_date, end_date)
         error_message = "Could not load sales data. Check server logs for details."
@@ -214,6 +259,8 @@ def reports_sales_by_customer(
             "end_date": end_date,
             "rows": rows,
             "totals": totals,
+            "cost_estimated_lines": cost_estimated_lines,
+            "zero_cost_lines": zero_cost_lines,
             "error_message": error_message,
         },
     )
@@ -232,10 +279,13 @@ def reports_sales_by_product(
     error_message = None
     rows: list = []
     totals = {"qty_sold": 0, "revenue": 0.0, "cost": 0.0, "margin": 0.0, "margin_pct": None}
+    cost_estimated_lines = zero_cost_lines = 0
     try:
         data = ReportService(db).get_sales_by_product(start_date, end_date)
         rows = data["rows"]
         totals = data["totals"]
+        cost_estimated_lines = data["cost_estimated_lines"]
+        zero_cost_lines = data["zero_cost_lines"]
     except Exception:
         log.exception("reports_sales_by_product failed (%s–%s)", start_date, end_date)
         error_message = "Could not load product sales data. Check server logs for details."
@@ -248,6 +298,8 @@ def reports_sales_by_product(
             "end_date": end_date,
             "rows": rows,
             "totals": totals,
+            "cost_estimated_lines": cost_estimated_lines,
+            "zero_cost_lines": zero_cost_lines,
             "error_message": error_message,
         },
     )
@@ -370,6 +422,32 @@ def reports_overdue_invoices(
     )
 
 
+@router.get("/overdue-invoices/export.csv")
+def reports_overdue_invoices_export(
+    as_of: str | None = None,
+    db: Session = Depends(get_db),
+):
+    as_of_date = _parse_date(as_of) or date.today()
+    data = ReportService(db).get_overdue_invoices(as_of_date)
+    return _csv_response(
+        ["invoice_number", "customer", "due_date", "days_overdue",
+         "balance_due", "interest_accrued", "total_owed"],
+        [
+            [
+                r["invoice_number"],
+                r["customer"].company_name if r["customer"] else "",
+                r["due_date"].isoformat(),
+                r["days_overdue"],
+                f"{r['balance_due']:.2f}",
+                f"{r['interest_accrued']:.2f}",
+                f"{r['total_owed']:.2f}",
+            ]
+            for r in data["rows"]
+        ],
+        f"overdue_invoices_{as_of_date.isoformat()}.csv",
+    )
+
+
 # ── Sales Tax Collected ───────────────────────────────────────────────────────
 
 @router.get("/sales-tax", response_class=HTMLResponse)
@@ -401,6 +479,32 @@ def reports_sales_tax(
             "totals": totals,
             "error_message": error_message,
         },
+    )
+
+
+@router.get("/sales-tax/export.csv")
+def reports_sales_tax_export(
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+):
+    start_date, end_date = _resolve_range(start, end)
+    data = ReportService(db).get_sales_tax_collected(start_date, end_date)
+    return _csv_response(
+        ["invoice_number", "customer", "invoice_date",
+         "taxable_revenue", "tax_collected", "invoice_total"],
+        [
+            [
+                r["invoice_number"],
+                r["customer"].company_name if r["customer"] else "",
+                r["invoice_date"].isoformat(),
+                f"{r['taxable_revenue']:.2f}",
+                f"{r['tax_collected']:.2f}",
+                f"{r['invoice_total']:.2f}",
+            ]
+            for r in data["rows"]
+        ],
+        f"sales_tax_{start_date.isoformat()}_{end_date.isoformat()}.csv",
     )
 
 

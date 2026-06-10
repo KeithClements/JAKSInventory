@@ -25,14 +25,14 @@ from tests.conftest import activate, fresh_engine
 
 @pytest.fixture()
 def db():
-    # Per-test fresh engine via the shared isolation harness: StaticPool +
-    # activate() repoints app.database.engine/SessionLocal/get_db at THIS engine,
-    # so any global-session reach (routes, run_background_staging, future edits)
-    # hits the same in-memory DB the test reads — never the prior module's engine.
-    # (Was a raw create_engine(':memory:') with no activate() — the last of the
-    # three import-path modules that bypassed conftest; see conftest docstring.)
     activate(fresh_engine())
     s = appdb.SessionLocal()
+    # R1-16: full_import no longer auto-creates the vendor (vendor digit is
+    # owner-assigned) — seed PAI the way the live DB has it.
+    from app.models.vendor import Vendor
+    s.add(Vendor(name="PAI Industries", vendor_code="PAI",
+                 vendor_number="9", is_active=True))
+    s.commit()
     try:
         yield s
     finally:

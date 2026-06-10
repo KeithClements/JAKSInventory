@@ -18,20 +18,9 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import app.database as _appdb
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
-_TEST_ENGINE = create_engine(
-    "sqlite:///:memory:",
-    connect_args={"check_same_thread": False},
-)
-_appdb.engine = _TEST_ENGINE
-_appdb.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_TEST_ENGINE)
+from tests.conftest import activate, fresh_engine
 
 from app.models import __all_models__  # noqa: F401
-from app.database import Base
-
-Base.metadata.create_all(bind=_TEST_ENGINE)
 
 import pytest
 from app.constants import (
@@ -88,18 +77,14 @@ def _backordered_line(db, so, product, qty=2) -> SOLine:
     return line
 
 
-@pytest.fixture(autouse=True, scope="module")
-def _activate_db():
-    from tests.conftest import activate
-    activate(_TEST_ENGINE)
-    yield
-
-
 @pytest.fixture()
-def db(_activate_db):
+def db():
+    activate(fresh_engine())
     s = _appdb.SessionLocal()
-    yield s
-    s.close()
+    try:
+        yield s
+    finally:
+        s.close()
 
 
 def _numbers(links):

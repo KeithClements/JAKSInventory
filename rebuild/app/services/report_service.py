@@ -67,6 +67,44 @@ _AGING_BUCKETS = AGING_BUCKETS
 class ReportService(BaseService):
     """Read-only report queries. Inherits db + audit machinery but never writes."""
 
+    # ── Cost-estimation fallback (R1-14 margin truth) ────────────────────────
+
+    @staticmethod
+    def _fallback_unit_cost(product) -> float:
+        """
+        Estimated unit cost for invoice lines whose frozen unit_cost snapshot
+        is 0 (sold before the product was ever receipted — true for the whole
+        un-receipted imported catalog, which otherwise reports ~100% margin).
+
+        Order: preferred vendor source vendor_cost (the per-source vendor quote
+        is the source of truth for what we'd pay today, §8N), then last_cost
+        (most recent actual receipt cost). Returns 0.0 when no usable cost.
+        """
+        if product is None:
+            return 0.0
+        src = product.preferred_vendor_source
+        if src is not None and (src.vendor_cost or 0.0) > 0:
+            return src.vendor_cost
+        if (product.last_cost or 0.0) > 0:
+            return product.last_cost
+        return 0.0
+
+    def _resolve_line_cost(self, ln) -> tuple[float, bool, bool]:
+        """
+        Per-line COGS for sales reports: (unit_cost, estimated, zero_cost).
+
+        estimated  — snapshot was 0 but a fallback cost was substituted.
+        zero_cost  — no cost basis at all on a revenue-carrying line (margin
+                     overstated for that line).
+        """
+        unit_cost = ln.unit_cost or 0.0
+        if unit_cost > 0:
+            return unit_cost, False, False
+        est = self._fallback_unit_cost(ln.product)
+        if est > 0:
+            return est, True, False
+        return 0.0, False, ln.line_total != 0
+
     # ── 1. AR Aging ───────────────────────────────────────────────────────────
 
     def get_ar_aging(self, as_of_date: date | None = None) -> dict[str, Any]:
@@ -199,7 +237,7 @@ class ReportService(BaseService):
         invoices = (
             self.db.query(Invoice)
             .options(
-                joinedload(Invoice.lines),
+                joinedload(Invoice.lines).joinedload(InvoiceLine.product),
                 joinedload(Invoice.allocations),
                 joinedload(Invoice.customer),
             )
@@ -222,6 +260,12 @@ class ReportService(BaseService):
             "margin_pct": None,
         })
 
+        # R1-14 margin truth — lines sold before any receipt carry a frozen
+        # unit_cost of 0; fall back to vendor/receipt cost and count the
+        # substitutions so the UI can flag the margin as estimated.
+        cost_estimated_lines = 0
+        zero_cost_lines = 0
+
         for inv in invoices:
             row = by_customer[inv.customer_id]
             row["customer"] = inv.customer
@@ -236,10 +280,14 @@ class ReportService(BaseService):
             )
             row["balance_due"] = round(row["balance_due"] + inv.balance_due, 2)
             # Cost snapshot is per-line; exclude core-charge lines (deposit, not COGS).
-            line_cost = sum(
-                (ln.unit_cost or 0.0) * ln.qty for ln in inv.lines
-                if not ln.is_core_line
-            )
+            line_cost = 0.0
+            for ln in inv.lines:
+                if ln.is_core_line:
+                    continue
+                unit_cost, estimated, zero_cost = self._resolve_line_cost(ln)
+                line_cost += unit_cost * ln.qty
+                cost_estimated_lines += estimated
+                zero_cost_lines += zero_cost
             row["cost"] = round(row["cost"] + line_cost, 2)
 
         # Compute margin and margin_pct per row
@@ -270,6 +318,8 @@ class ReportService(BaseService):
             "end_date": end_date,
             "rows": rows,
             "totals": totals,
+            "cost_estimated_lines": cost_estimated_lines,
+            "zero_cost_lines": zero_cost_lines,
         }
 
     # ── 3. Sales by Product ──────────────────────────────────────────────────
@@ -333,6 +383,10 @@ class ReportService(BaseService):
             "margin_pct": None,
         })
 
+        # R1-14 margin truth — same estimated-cost fallback as Sales by Customer.
+        cost_estimated_lines = 0
+        zero_cost_lines = 0
+
         for ln in lines:
             # Core-charge lines are a deposit on part returns — exclude them from
             # revenue so the product revenue report shows earned income only.
@@ -352,11 +406,13 @@ class ReportService(BaseService):
                 row["sku"] = "—"
                 row["description"] = "(non-product lines)"
 
+            unit_cost, estimated, zero_cost = self._resolve_line_cost(ln)
+            cost_estimated_lines += estimated
+            zero_cost_lines += zero_cost
+
             row["qty_sold"] += ln.qty
             row["revenue"] = round(row["revenue"] + ln.line_total, 2)
-            row["cost"] = round(
-                row["cost"] + (ln.unit_cost or 0.0) * ln.qty, 2
-            )
+            row["cost"] = round(row["cost"] + unit_cost * ln.qty, 2)
 
         for row in by_product.values():
             row["margin"] = round(row["revenue"] - row["cost"], 2)
@@ -381,6 +437,8 @@ class ReportService(BaseService):
             "end_date": end_date,
             "rows": rows,
             "totals": totals,
+            "cost_estimated_lines": cost_estimated_lines,
+            "zero_cost_lines": zero_cost_lines,
         }
 
     # ── 4. Inventory Valuation ───────────────────────────────────────────────
@@ -891,10 +949,12 @@ class ReportService(BaseService):
             if tax_collected <= 0:
                 continue  # skip non-taxable invoices
 
-            # Taxable revenue = sum of line totals for taxable lines
+            # Taxable revenue = sum of line totals for taxable lines.
+            # line_total is net of the per-line discount — qty × unit_price
+            # would overstate the tax base on discounted lines (R1-14).
             taxable_revenue = round(
                 sum(
-                    ln.qty * ln.unit_price
+                    ln.line_total
                     for ln in inv.lines
                     if getattr(ln, "is_taxable", False)
                 ),

@@ -421,16 +421,26 @@ class CRMService(BaseService):
         )
         self.db.commit()
 
-    def deduct_credit(self, customer_id: int, amount: float, reason: str) -> None:
+    def deduct_credit(
+        self,
+        customer_id: int,
+        amount: float,
+        reason: str,
+        *,
+        allow_negative: bool = False,
+    ) -> None:
         """
         Deduct from customer.credit_balance.
-        Called by PaymentService (account_credit payment method).
-        Validates sufficient balance before deducting.
+        Called by PaymentService (account_credit payment method) and
+        CoreService (vendor-denial chargebacks).
+        Validates sufficient balance before deducting unless allow_negative —
+        a chargeback may pull back credit the customer already spent; the
+        negative balance records that they owe it back.
         """
         if amount <= 0:
             raise ValueError(f"Deduct amount must be positive, got {amount}")
         customer = self._get_customer_or_404(customer_id)
-        if customer.credit_balance < amount - 0.001:
+        if not allow_negative and customer.credit_balance < amount - 0.001:
             raise ValueError(
                 f"Insufficient credit balance ({customer.credit_balance}) for deduction of {amount}"
             )

@@ -80,6 +80,58 @@
     </div>
   </div>
 
+  {# ── Apply / Close (OPEN + PARTIAL only — credit still to give) ───────────── #}
+  {% if cm.status in (CreditMemoStatus.OPEN, CreditMemoStatus.PARTIAL) %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Use This Credit</h2>
+      <span class="text-xs text-gray-400">${{ '%.2f' % cm.unapplied_amount }} unapplied</span>
+    </div>
+    <div class="card-body py-3">
+      <div class="flex flex-wrap items-end gap-3">
+
+        {% if open_invoices %}
+        <form method="post" action="/credit-memos/{{ cm.id }}/apply"
+              class="flex flex-wrap items-end gap-3">
+          <div>
+            <label class="form-label" for="cm-apply-invoice">Apply to Invoice</label>
+            <select name="invoice_id" id="cm-apply-invoice" class="form-select min-w-[16rem]" required>
+              {% for inv in open_invoices %}
+              <option value="{{ inv.id }}">{{ inv.invoice_number }} — ${{ '%.2f' % inv.balance_due }} due</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label class="form-label" for="cm-apply-amount">Amount</label>
+            <input type="number" name="amount" id="cm-apply-amount" class="form-input w-32"
+                   step="0.01" min="0.01" max="{{ '%.2f' % cm.unapplied_amount }}"
+                   placeholder="auto">
+          </div>
+          <button type="submit" class="btn-primary btn-sm">Apply Credit</button>
+        </form>
+        {% else %}
+        <p class="text-sm text-gray-400">No open invoices for this customer.</p>
+        {% endif %}
+
+        {# Close — push the remainder to the customer's account credit #}
+        <div class="ml-auto">
+          <form id="cm-close-form" method="post" action="/credit-memos/{{ cm.id }}/close">
+            <button type="button" class="btn-secondary btn-sm"
+                    {# No server strings in the JS literal (Alpine injection footgun) — amount is %.2f-formatted, safe #}
+                    @click="jakConfirm({ title: 'Close credit memo?', body: 'The remaining ${{ '%.2f' % cm.unapplied_amount }} moves to the customer account credit and this credit memo is marked applied.', cta: 'Close Credit Memo', danger: false, formId: 'cm-close-form' })">
+              Close to Account Credit
+            </button>
+          </form>
+        </div>
+
+      </div>
+      <p class="text-xs text-gray-400 mt-2">
+        Leave Amount blank to apply as much as fits (the smaller of the unapplied credit and the invoice balance).
+      </p>
+    </div>
+  </div>
+  {% endif %}
+
   {# ── Lines ────────────────────────────────────────────────────────────────── #}
   <div class="card">
     <div class="card-header">

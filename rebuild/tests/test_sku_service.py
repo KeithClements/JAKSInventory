@@ -191,6 +191,9 @@ def test_e2e_import_then_backfill_produces_scheme_skus(db_session):
     db = db_session
     from app.services.product_import_service import ProductImportService
 
+    # R1-16: full_import no longer auto-creates the vendor (vendor digit is
+    # owner-assigned) — seed PAI the way the live DB has it.
+    _vendor(db, "PAI Industries", "PAI", "9")
     ProductImportService(db, None).full_import(_mini_shopify_csv(), dry_run=False)
     pai = db.query(Vendor).filter(Vendor.vendor_code == "PAI").first()
     assert pai.vendor_number == "9"

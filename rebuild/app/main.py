@@ -47,6 +47,7 @@ from app.routers import demo as demo_router
 from app.routers import qbo as qbo_router
 from app.routers import import_review as import_review_router
 from app.routers import credit_memos as credit_memos_router
+from app.routers import shopify as shopify_router
 
 log = logging.getLogger(__name__)
 
@@ -58,13 +59,17 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 # ── Auth enforcement (O2 — "A: enforce") ──────────────────────────────────────
 # Redirects every unauthenticated request to /login.
 # Set JAKS_SKIP_AUTH=1 to bypass (used by the test suite — tests are not
-# testing auth enforcement, they test business logic).
+# testing auth enforcement, they test business logic). R1-15: the bypass is
+# honored ONLY when the active engine is in-memory (deps._is_test_env) so a
+# stray JAKS_SKIP_AUTH in a production env can never disable auth on the file DB.
 _AUTH_EXEMPT = frozenset({"/login", "/logout"})
 
 @app.middleware("http")
 async def enforce_login(request: Request, call_next):
-    if os.getenv("JAKS_SKIP_AUTH"):                    # test bypass
-        return await call_next(request)
+    if os.getenv("JAKS_SKIP_AUTH"):
+        from app.deps import _is_test_env
+        if _is_test_env():                             # test bypass — in-memory engine only
+            return await call_next(request)
     path = request.url.path
     if path in _AUTH_EXEMPT or path.startswith("/static/"):
         return await call_next(request)
@@ -93,6 +98,7 @@ def on_startup() -> None:
         _warn_if_default_admin_password(db)
         _seed_core_locations(db)
         _lock_overdue_invoices(db)
+        _scan_overdue_cores(db)
         _startup_backup(db)
     finally:
         db.close()
@@ -314,6 +320,23 @@ def _lock_overdue_invoices(db: Session) -> None:
             svc.lock(inv.id, reason=InvoiceLockReason.END_OF_DAY)
 
 
+def _scan_overdue_cores(db: Session) -> None:
+    """
+    R1-9 — run the overdue-core scan on startup so core_overdue notifications
+    actually fire (CoreService.mark_overdue_cores previously had no caller).
+    Never raises — a scan failure must not block startup.
+    """
+    from app.services.core_service import CoreService
+
+    try:
+        # current_user_id=None → "system event" semantics (see BaseService).
+        counts = CoreService(db, current_user_id=None).mark_overdue_cores()
+        if counts.get("overdue") or counts.get("approaching"):
+            log.info("startup overdue-core scan: %s", counts)
+    except Exception:
+        log.exception("startup overdue-core scan failed (continuing startup)")
+
+
 app.include_router(dashboard.router)
 app.include_router(search_router.router)
 app.include_router(products.router)
@@ -341,3 +364,4 @@ app.include_router(demo_router.router)
 app.include_router(qbo_router.router)
 app.include_router(import_review_router.router)
 app.include_router(credit_memos_router.router)
+app.include_router(shopify_router.router)

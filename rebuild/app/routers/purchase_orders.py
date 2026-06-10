@@ -614,6 +614,14 @@ async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)
         if cond:
             condition_notes_map[line.id] = cond
 
+    # R1-12 — qty inputs default to 0 so a careless submit can't fully receive
+    # a partial delivery; an all-zero submit must not flash "received".
+    if not po_line_quantities:
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote('No receive quantities entered — lines left at 0 are skipped.')}",
+            status_code=303,
+        )
+
     if po_line_quantities:
         try:
             svc = POService(db, current_user_id=user_id)
@@ -776,11 +784,20 @@ async def po_create_bill(po_id: int, request: Request, db: Session = Depends(get
 
 
 @router.post("/{po_id}/bills/{bill_id}/approve", response_class=RedirectResponse)
-async def po_approve_bill(po_id: int, bill_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+async def po_approve_bill(
+    po_id: int, bill_id: int,
+    request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    # `override_reason` (optional) documents an "Approve Anyway" override when the
+    # bill is still in DISCREPANCY. Empty for a normal reconciled approval.
+    form = await request.form()
+    override_reason = str(form.get("override_reason", "")).strip()
+
     svc = POService(db, current_user_id=user_id)
     try:
-        svc.approve_bill(bill_id)
-    except ValueError as exc:
+        svc.approve_bill(bill_id, override_reason=override_reason)
+    except (ValueError, PermissionError) as exc:
         db.rollback()
         return RedirectResponse(
             f"/purchase-orders/{po_id}?error={url_quote(str(exc))}",
@@ -794,6 +811,32 @@ async def po_approve_bill(po_id: int, bill_id: int, db: Session = Depends(get_db
             status_code=303,
         )
     return RedirectResponse(f"/purchase-orders/{po_id}?ok=bill_approved", status_code=303)
+
+
+@router.post("/{po_id}/bills/{bill_id}/pay", response_class=RedirectResponse)
+def po_pay_bill(
+    po_id: int, bill_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    # R1-12 — AP reconciliation: records the bill as paid; no money moves here.
+    svc = POService(db, current_user_id=user_id)
+    try:
+        svc.mark_bill_paid(bill_id)
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote(str(exc))}",
+            status_code=303,
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error marking bill %s paid for PO %s", bill_id, po_id)
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote('Unexpected error — bill was not marked paid.')}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/purchase-orders/{po_id}?ok=bill_paid", status_code=303)
 
 
 @router.post("/{po_id}/bills/{bill_id}/lines/{line_id}/resolve", response_class=RedirectResponse)

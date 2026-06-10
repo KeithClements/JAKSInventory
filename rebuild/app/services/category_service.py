@@ -27,6 +27,13 @@ LEVEL_LABELS: dict[int, str] = {1: "Category", 2: "Subcategory", 3: "Product Fam
 MAX_LEVEL = 3
 
 
+def _clean_category_code(code) -> str:
+    """SKU [CATEGORY] segment hygiene: alnum-only uppercase, max 6 chars —
+    matches the charset of SkuService's derived fallback so a typed code can
+    never inject spaces/punctuation into assembled JAKS SKUs."""
+    return "".join(ch for ch in str(code or "").upper() if ch.isalnum())[:6]
+
+
 class CategoryService(BaseService):
 
     # ══ Category tree ══════════════════════════════════════════════════════════
@@ -71,6 +78,7 @@ class CategoryService(BaseService):
     def create_category(
         self, name: str, parent_id: int | None = None, sort_order: int = 0,
         default_markup_pct: float | None = None, import_keywords: str = "",
+        code: str = "",
     ) -> ProductCategory:
         name = (name or "").strip()
         if not name:
@@ -89,6 +97,8 @@ class CategoryService(BaseService):
             name=name[:200], parent_id=parent_id or None, level=level, is_active=True,
             sort_order=int(sort_order or 0), default_markup_pct=default_markup_pct,
             import_keywords=(import_keywords or "").strip(),
+            # SKU [CATEGORY] segment (R1-7b). Blank → SkuService derives a fallback.
+            code=_clean_category_code(code),
         )
         self.db.add(cat)
         self.db.commit()
@@ -107,6 +117,9 @@ class CategoryService(BaseService):
             cat.default_markup_pct = fields["default_markup_pct"]
         if fields.get("import_keywords") is not None:
             cat.import_keywords = str(fields["import_keywords"]).strip()
+        if fields.get("code") is not None:
+            # Blank clears the explicit code → SkuService falls back to derived.
+            cat.code = _clean_category_code(fields["code"])
         if fields.get("is_active") is not None:
             cat.is_active = bool(fields["is_active"])
         self.db.commit()
@@ -172,7 +185,14 @@ class CategoryService(BaseService):
             )
             if clash:
                 raise ValueError(f"Brand '{nm}' already exists.")
+            old_name = b.name
             b.name = nm[:200]
+            # R1-6: Product.brand is free-text (no FK) — cascade the rename so
+            # tagged parts stay attached to the brand (mirror of manufacturer).
+            if old_name and old_name != b.name:
+                self.db.query(Product).filter(
+                    Product.brand == old_name
+                ).update({"brand": b.name}, synchronize_session=False)
         if fields.get("sort_order") is not None:
             b.sort_order = int(fields["sort_order"])
         if fields.get("is_house_brand") is not None:
@@ -230,7 +250,15 @@ class CategoryService(BaseService):
             )
             if clash:
                 raise ValueError(f"Manufacturer '{nm}' already exists.")
+            old_name = m.name
             m.name = nm[:200]
+            # R1-6: Product.engine_manufacturer is free-text (no FK), so a rename
+            # here must cascade or every tagged part drops out of the engine-make
+            # filter. Exact-match update mirrors how the filter compares.
+            if old_name and old_name != m.name:
+                self.db.query(Product).filter(
+                    Product.engine_manufacturer == old_name
+                ).update({"engine_manufacturer": m.name}, synchronize_session=False)
         if fields.get("sort_order") is not None:
             m.sort_order = int(fields["sort_order"])
         if fields.get("is_active") is not None:

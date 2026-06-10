@@ -9,11 +9,17 @@
 {% block content %}
 {% from "macros/linked_docs.html" import linked_strip %}
 {% import "macros/customer_flags.html" as flagmacro %}
+{% import "macros/credit_status.html" as creditmacro %}
 {% from "macros/engine_picker.html" import engine_picker %}
 {% import "macros/motion.html" as motion %}
 
 {% if linked_documents %}
 <div class="mb-3">{{ linked_strip(linked_documents) }}</div>
+{% endif %}
+
+{# ── §4.5 credit warn (WARN-ONLY) — on_hold / over_limit banner ───────────── #}
+{% if (credit_status | default({})).get('warn') %}
+<div class="mb-3">{{ creditmacro.credit_warn(credit_status) }}</div>
 {% endif %}
 
 {# ── Quote header: info strip + balance chips + notes ─────────────────────── #}
@@ -297,15 +303,16 @@
 {# ── Sticky save bar (Save Standard v2) — honest dirty-state pill + manual Save + toast.
    saveState is driven by the autosave JS via window 'quote-save-state' events; the Save
    button force-flushes via 'quote-save-flush'. Green ONLY after a confirmed save. ── #}
-<div x-data="{ saveState: 'clean', toast: false }"
-     @quote-save-state.window="saveState = $event.detail"
+<div x-data="{ saveState: 'clean', toast: false, savedAt: '' }"
+     @quote-save-state.window="saveState = $event.detail; if ($event.detail === 'clean') savedAt = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })"
      @quote-saved-toast.window="toast = true; setTimeout(() => toast = false, 2200)"
      class="sticky bottom-0 z-20 mt-3 flex items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white/95 backdrop-blur px-4 py-2.5 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
   <span class="text-xs flex items-center gap-1.5"
         :class="{ 'text-amber-600': saveState==='dirty', 'text-gray-400': saveState==='clean'||saveState==='saving', 'text-red-600': saveState==='error' }">
     <span class="w-1.5 h-1.5 rounded-full"
           :class="{ 'bg-amber-400': saveState==='dirty', 'bg-green-400': saveState==='clean', 'bg-gray-300 animate-pulse': saveState==='saving', 'bg-red-500': saveState==='error' }"></span>
-    <span x-text="({clean:'Saved', dirty:'Unsaved changes', saving:'Saving…', error:'Save failed — retry'})[saveState]"></span>
+    {# Save Standard v2: pill shows the last-saved time once a save has confirmed this session (green ONLY when truly saved). #}
+    <span x-text="saveState==='clean' && savedAt ? ('Saved ' + savedAt) : ({clean:'Saved', dirty:'Unsaved changes', saving:'Saving…', error:'Save failed — retry'})[saveState]"></span>
   </span>
   <button type="button" @click="$dispatch('quote-save-flush')" class="btn-primary btn-sm">
     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/></svg>

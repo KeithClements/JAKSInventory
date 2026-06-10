@@ -102,6 +102,12 @@ def db():
     # See conftest docstring for the cross-module-leak this prevents.
     activate(fresh_engine())
     s = appdb.SessionLocal()
+    # R1-16: full_import no longer auto-creates the vendor (vendor digit is
+    # owner-assigned) — seed PAI the way the live DB has it.
+    from app.models.vendor import Vendor
+    s.add(Vendor(name="PAI Industries", vendor_code="PAI",
+                 vendor_number="9", is_active=True))
+    s.commit()
     try:
         yield s
     finally:

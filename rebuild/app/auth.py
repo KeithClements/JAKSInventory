@@ -11,8 +11,10 @@ go-live gate).  No external dependencies beyond itsdangerous (already vendored).
   carrying the user id.  No server-side session store needed for the cookie; the
   user_sessions table can layer on later if we want server-side revocation.
 
-The signing secret lives in the settings table (key ``session_secret_key``),
-auto-generated on first startup (see app/main.py) so cookies survive restarts.
+The signing secret comes from the ``JAKS_SESSION_SECRET`` env var when set
+(R1-15 — keeps the key out of the DB it protects); otherwise it lives in the
+settings table (key ``session_secret_key``), auto-generated on first startup
+(see app/main.py) so cookies survive restarts.
 """
 from __future__ import annotations
 
@@ -67,6 +69,13 @@ def verify_password(password: str, stored: str | None) -> bool:
 # ── Session token (signed cookie value) ───────────────────────────────────────
 
 def _get_secret() -> str:
+    # R1-15 — an operator-set JAKS_SESSION_SECRET env var takes precedence so the
+    # signing key need not live inside the SQLite DB it protects. Checked before
+    # the cache and never cached itself, so unsetting it falls straight back to
+    # the DB-stored secret (existing sessions signed with it keep working).
+    env_secret = os.environ.get("JAKS_SESSION_SECRET")
+    if env_secret:
+        return env_secret
     global _secret_cache
     if _secret_cache:
         return _secret_cache

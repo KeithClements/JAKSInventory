@@ -364,18 +364,32 @@ class ImportReviewService(BaseService):
         batch.status = ImportBatchStatus.APPLYING
         self.db.commit()
 
-        cand_q = self.db.query(ImportCandidate).filter(
+        # DUPLICATE (dup-in-feed) rows have nothing to apply: matched_product_id
+        # is None, so they'd fall into the update branch, no-op, never get an
+        # applied_product_id, and wedge the batch in STAGED forever (R1-16).
+        # The first occurrence of the SKU is the row that creates/updates.
+        base_filters = (
             ImportCandidate.batch_id == batch_id,
             ImportCandidate.review_status == ScrapedItemReviewStatus.ACCEPTED,
             ImportCandidate.applied_product_id.is_(None),
         )
+        cand_q = self.db.query(ImportCandidate).filter(
+            *base_filters,
+            ImportCandidate.disposition != ImportDisposition.DUPLICATE,
+        )
+        dup_q = self.db.query(ImportCandidate).filter(
+            *base_filters,
+            ImportCandidate.disposition == ImportDisposition.DUPLICATE,
+        )
         if only_ids:
             cand_q = cand_q.filter(ImportCandidate.id.in_(only_ids))
+            dup_q = dup_q.filter(ImportCandidate.id.in_(only_ids))
         cands = cand_q.order_by(ImportCandidate.id).all()
 
         pis = ProductImportService(self.db, self.current_user_id)
         psvc = ProductService(self.db, self.current_user_id)
         summary = {"applied": 0, "created": 0, "updated": 0,
+                   "skipped_duplicates": dup_q.count(),
                    "images_added": 0, "cross_refs_added": 0, "errors": []}
 
         for c in cands:
@@ -444,7 +458,11 @@ class ImportReviewService(BaseService):
     def _apply_new(self, pis, p) -> int | None:
         """Create a product from a parsed row via the locked full_import path, then
         resolve its id (the feed SKU is parked on the new product's vendor source)."""
-        pis.full_import(rows=[p], dry_run=False, import_images=True)
+        res = pis.full_import(rows=[p], dry_run=False, import_images=True)
+        if res.get("error"):
+            # e.g. import vendor missing its SKU digit — surface the actionable
+            # message in summary["errors"] instead of silently no-opping.
+            raise ValueError(res["error"])
         k = _norm(p.get("sku") or "")
         if not k:
             return None
@@ -519,12 +537,22 @@ class ImportReviewService(BaseService):
             ImportCandidate.batch_id == batch_id,
             ImportCandidate.applied_product_id.isnot(None),
         ).count()
+        # DUPLICATE rows are never applied (see apply_approved) — counting them
+        # as "remaining" would keep the batch STAGED forever. They count as
+        # skipped instead, so an apply run that only skipped dups still finalizes.
         remaining = self.db.query(ImportCandidate).filter(
             ImportCandidate.batch_id == batch_id,
             ImportCandidate.review_status == ScrapedItemReviewStatus.ACCEPTED,
             ImportCandidate.applied_product_id.is_(None),
+            ImportCandidate.disposition != ImportDisposition.DUPLICATE,
         ).count()
-        if remaining == 0 and batch.applied_count > 0:
+        dup_skipped = self.db.query(ImportCandidate).filter(
+            ImportCandidate.batch_id == batch_id,
+            ImportCandidate.review_status == ScrapedItemReviewStatus.ACCEPTED,
+            ImportCandidate.applied_product_id.is_(None),
+            ImportCandidate.disposition == ImportDisposition.DUPLICATE,
+        ).count()
+        if remaining == 0 and (batch.applied_count > 0 or dup_skipped > 0):
             batch.status = ImportBatchStatus.APPLIED
             batch.applied_at = datetime.utcnow()
         else:

@@ -492,8 +492,9 @@ class POService(BaseService):
     def cancel(self, po_id: int) -> None:
         """
         Cancel a PO. Raises ValueError if already BILLED (3-way match complete).
-        If PO was SENT, reverses the qty_on_order increments for all product lines
-        so inventory counts stay accurate.
+        If the PO had on-order stock outstanding (SENT, or PARTIAL with some goods
+        still unreceived), reverses the qty_on_order increment for the *outstanding*
+        portion of each product line so inventory counts stay accurate.
         Idempotent: calling on an already-CANCELLED PO is a no-op.
         """
         po = self._get_po_or_404(po_id)
@@ -506,13 +507,19 @@ class POService(BaseService):
 
         old_status = po.status
 
-        # Reverse on-order counts only if PO had already been sent to vendor
-        if old_status == POStatus.SENT:
+        # Reverse on-order counts for the still-outstanding qty. For a SENT PO with
+        # no receipts/cancellations this is the full qty_ordered; for a PARTIAL PO
+        # (some goods already received) only the unreceived remainder is reversed,
+        # since received qty already moved out of qty_on_order at receipt time.
+        if old_status in (POStatus.SENT, POStatus.PARTIAL):
             for line in po.lines:
-                if line.product_id and line.qty_ordered > 0:
+                if not line.product_id:
+                    continue
+                outstanding = line.qty_ordered - line.qty_received - line.qty_cancelled
+                if outstanding > 0:
                     product = self.db.query(Product).filter(Product.id == line.product_id).first()
                     if product:
-                        product.qty_on_order = max(0, product.qty_on_order - line.qty_ordered)
+                        product.qty_on_order = max(0, product.qty_on_order - outstanding)
 
         po.status = POStatus.CANCELLED
         self.audit(
@@ -610,7 +617,30 @@ class POService(BaseService):
         billed qty > PO-ordered qty (D-4b — over-receipt can't authorise paying
         beyond the order), or billed unit cost varying from the PO/receipt cost.
         Auto-approves only when no discrepancies.
+
+        R1-5 — rejects a duplicate bill_number for the same vendor (case/
+        whitespace-insensitive): the same vendor invoice entered twice would
+        otherwise create two approvable bills (double-payment risk).
         """
+        normalized_bill_no = (bill_number or "").strip().lower()
+        if normalized_bill_no:
+            existing_bills = (
+                self.db.query(VendorBill)
+                .filter(VendorBill.vendor_id == vendor_id)
+                .all()
+            )
+            dup = next(
+                (b for b in existing_bills
+                 if (b.bill_number or "").strip().lower() == normalized_bill_no),
+                None,
+            )
+            if dup:
+                raise ValueError(
+                    f"Bill #{dup.bill_number} already exists for this vendor "
+                    f"(status: {dup.status}). The same vendor invoice cannot be "
+                    "entered twice."
+                )
+
         bill = VendorBill(
             po_id=po_id,
             vendor_id=vendor_id,
@@ -711,28 +741,39 @@ class POService(BaseService):
         if all(ln.qty_billed >= ln.qty_received for ln in received_lines):
             po.status = POStatus.BILLED
 
-    def approve_bill(self, bill_id: int) -> None:
+    def approve_bill(self, bill_id: int, override_reason: str = "") -> None:
         """
         Approve vendor bill after discrepancy review. Marks for QBO sync.
 
         Gate rules:
         - Requires APPROVE_VENDOR_BILL permission.
-        - Bills in DISCREPANCY status cannot be approved: all flagged match lines
-          must first be resolved via resolve_match_line() or create_match_vendor_credit(),
-          which transitions the bill DISCREPANCY → PENDING when the gate opens.
+        - Bills in DISCREPANCY status cannot be approved through the normal path:
+          all flagged match lines must first be resolved via resolve_match_line()
+          or create_match_vendor_credit(), which transitions the bill
+          DISCREPANCY → PENDING when the gate opens.
         - Resolving lines opens the gate; it does NOT approve the bill.
+        - override_reason is the documented "approve anyway" escape hatch: a
+          DISCREPANCY bill may be approved as-is (accepting the variance) ONLY
+          when a non-empty reason is supplied. The override is recorded in the
+          audit trail. Without a reason, the discrepancy gate stands and the
+          existing error is raised.
         """
         self.assert_can(Permission.APPROVE_VENDOR_BILL)
 
         bill = self.db.query(VendorBill).filter(VendorBill.id == bill_id).first()
         if bill is None:
             raise ValueError(f"VendorBill {bill_id} not found")
+
+        override_reason = (override_reason or "").strip()
+        is_override = False
         if bill.status == VendorBillStatus.DISCREPANCY:
-            raise ValueError(
-                "This bill has unresolved match discrepancies. "
-                "Resolve each flagged line (accept, reject, credit, or clear) "
-                "before approving."
-            )
+            if not override_reason:
+                raise ValueError(
+                    "This bill has unresolved match discrepancies. "
+                    "Resolve each flagged line (accept, reject, credit, or clear) "
+                    "before approving."
+                )
+            is_override = True
         if bill.status in (VendorBillStatus.APPROVED, VendorBillStatus.PAID):
             raise ValueError(f"Bill is already {bill.status}.")
 
@@ -747,9 +788,48 @@ class POService(BaseService):
             entity_type=EntityType.PURCHASE_ORDER,
             entity_id=bill.po_id or 0,
             action=AuditAction.STATUS_CHANGED,
-            new_value={"bill_id": bill_id, "status": VendorBillStatus.APPROVED},
+            new_value={
+                "bill_id": bill_id,
+                "status": VendorBillStatus.APPROVED,
+                "discrepancy_override": is_override,
+                "override_reason": override_reason or None,
+            },
+            notes=(f"Approved over discrepancy: {override_reason}" if is_override else None),
         )
         self.db.commit()
+
+    def mark_bill_paid(self, bill_id: int) -> VendorBill:
+        """
+        Mark an APPROVED bill as PAID (R1-12 — AP reconciliation).
+
+        Records that the vendor was paid outside the system; no money moves
+        here. Only APPROVED bills are payable — PENDING/DISCREPANCY must clear
+        the approval gate first, and PAID is terminal. The model has no paid-at
+        column, so the payment timestamp lives in the audit row.
+        """
+        self.assert_can(Permission.APPROVE_VENDOR_BILL)
+
+        bill = self.db.query(VendorBill).filter(VendorBill.id == bill_id).first()
+        if bill is None:
+            raise ValueError(f"VendorBill {bill_id} not found")
+        if bill.status != VendorBillStatus.APPROVED:
+            raise ValueError(
+                f"Only approved bills can be marked paid (bill is {bill.status})."
+            )
+
+        bill.status = VendorBillStatus.PAID
+        self.audit(
+            entity_type=EntityType.PURCHASE_ORDER,
+            entity_id=bill.po_id or 0,
+            action=AuditAction.STATUS_CHANGED,
+            new_value={
+                "bill_id": bill_id,
+                "status": VendorBillStatus.PAID,
+                "paid_at": datetime.utcnow().isoformat(),
+            },
+        )
+        self.db.commit()
+        return bill
 
     # ── 3-Way Match: AP resolution ────────────────────────────────────────────
 
