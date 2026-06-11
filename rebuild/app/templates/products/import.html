@@ -53,7 +53,7 @@
         </div>
         <div class="mt-2 text-xs text-gray-500 space-y-2">
           <p x-show="sourceType==='sell'">
-            Re-runs the scraper's standard Shopify CSV (<code>Variant SKU</code> + <code>Variant Price</code> + <code>Variant Compare At Price</code>) against existing products. Updates OUR sell + compare-at only — never cost, never creates. Shopify image-only rows are silently skipped.
+            Re-runs the scraper's standard Shopify CSV against existing products. Reads <code>Variant SKU</code> + <code>Variant Price</code> + <code>Variant Compare At Price</code> always; <strong>also</strong> reads <code>Our Cost</code>/<code>pai_cost</code> and <code>Manufacturer</code> when the scraper emits them. Updates only what's present in the file — never creates products. Shopify image-only rows are silently skipped. See <code>SCRAPER_REQUIREMENTS.md</code> for the columns the scraper should emit.
           </p>
           <p x-show="sourceType==='pai_cost'">Needs a SKU column + a true cost column (<code>pai_cost</code>, <code>vendor_cost</code>, or <code>cost</code>). Updates the PAI vendor_cost and appends cost history. (The Shopify export has no cost column — use <em>Sell price</em> for that.)</p>
           <p x-show="sourceType==='competitor'">Columns: <code>sku</code>, <code>competitor_name</code>, <code>competitor_part_number</code>, <code>competitor_brand</code>, <code>price</code>, <code>shipping_price</code>, <code>core_charge</code>, <code>availability_status</code>, <code>url</code>, <code>source</code>, <code>confidence</code>, <code>notes</code>. Updates competitor_prices + appends price history.</p>

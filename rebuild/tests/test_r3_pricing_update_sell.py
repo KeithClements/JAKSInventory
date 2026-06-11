@@ -27,7 +27,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import app.database as appdb
 import app.models  # noqa: F401 — register all models
 from app.constants import ProductStatus
-from app.models.product import Product
+from app.models.product import Product, ProductCostHistory, ProductVendorSource
+from app.models.vendor import Vendor
 from app.services.product_import_service import ProductImportService
 from tests.conftest import activate, fresh_engine
 
@@ -85,12 +86,27 @@ def db():
         s.close()
 
 
-def _make_product(db, sku, *, price=10.00, compare=None, cost=4.50):
+def _make_product(db, sku, *, price=10.00, compare=None, cost=4.50,
+                  manufacturer=""):
     p = Product(sku=sku, title=sku, description=sku,
                 price_override=price, compare_at_price=compare,
-                cost=cost, status=ProductStatus.ACTIVE, is_active=True)
+                cost=cost, manufacturer=manufacturer,
+                status=ProductStatus.ACTIVE, is_active=True)
     db.add(p); db.commit(); db.refresh(p)
     return p
+
+
+def _seed_pai_with_source(db, product_id, *, vendor_cost=4.50):
+    v = db.query(Vendor).filter(Vendor.vendor_code == "PAI").first()
+    if v is None:
+        v = Vendor(name="PAI Industries", vendor_code="PAI",
+                   vendor_number="9", is_active=True)
+        db.add(v); db.commit(); db.refresh(v)
+    src = ProductVendorSource(product_id=product_id, vendor_id=v.id,
+                              vendor_cost=vendor_cost, is_active=True,
+                              is_preferred=True)
+    db.add(src); db.commit()
+    return v, src
 
 
 # ── Happy path ────────────────────────────────────────────────────────────────
@@ -203,25 +219,149 @@ def test_row_with_no_price_columns_skipped_no_price(db):
 
 # ── Invariants: never touch cost / never create ───────────────────────────────
 
-def test_cost_columns_in_row_are_ignored(db):
-    """Even if a future scraper export carries a stray cost-shaped column,
-    sell-mode must NOT touch product.cost or last_cost. Belt + suspenders."""
+def test_cost_column_with_pai_source_updates_vendor_cost(db):
+    """When a `pai_cost` (or `Our Cost`) column is present AND the product
+    has a PAI vendor source, sell-mode updates ProductVendorSource.vendor_cost
+    and writes a ProductCostHistory row. product.cost (moving-avg COGS) is
+    NOT touched — that's owned by receipts only."""
     p = _make_product(db, "JAKS-PAI-500", price=10.00, cost=4.50)
+    _, src = _seed_pai_with_source(db, p.id, vendor_cost=2.50)
     svc = ProductImportService(db, None)
 
-    # Append a phantom cost column — DictReader will ignore unknown headers
-    # via _get; the test guards that we don't add cost-keyed paths later.
     header_with_cost = _HEADER + ["pai_cost"]
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(header_with_cost)
-    w.writerow(_price_row("JAKS-PAI-500", "12.00") + ["999.00"])
+    w.writerow(_price_row("JAKS-PAI-500", "12.00") + ["3.75"])
 
     s = svc.pricing_update_sell(buf.getvalue(), dry_run=False)
     assert s["prices_updated"] == 1
-    db.refresh(p)
+    assert s["costs_updated"] == 1
+    assert s["skipped_no_pai_source"] == 0
+    db.refresh(p); db.refresh(src)
     assert p.price_override == 12.00
-    assert p.cost == 4.50, "sell mode must never touch cost"
+    assert p.cost == 4.50, "product.cost (COGS) only changes on receipt"
+    assert src.vendor_cost == 3.75
+    assert db.query(ProductCostHistory).filter_by(product_id=p.id).count() == 1
+
+
+def test_our_cost_header_label_recognized(db):
+    """Owner-facing form: the scraper-emitted column may be literally 'Our Cost'."""
+    p = _make_product(db, "JAKS-PAI-510", price=10.00)
+    _, src = _seed_pai_with_source(db, p.id, vendor_cost=0.00)
+    svc = ProductImportService(db, None)
+
+    header_with_cost = _HEADER + ["Our Cost"]
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(header_with_cost)
+    w.writerow(_price_row("JAKS-PAI-510", "10.00") + ["4.20"])
+
+    s = svc.pricing_update_sell(buf.getvalue(), dry_run=False)
+    assert s["costs_updated"] == 1
+    db.refresh(src)
+    assert src.vendor_cost == 4.20
+
+
+def test_cost_without_pai_source_skipped_and_counted(db):
+    """A `pai_cost` value with NO PAI source on the product can't land
+    anywhere safely — counted, never silently dropped."""
+    p = _make_product(db, "JAKS-PAI-520", price=10.00)
+    # Note: no _seed_pai_with_source — product has no PAI source yet.
+    svc = ProductImportService(db, None)
+
+    header_with_cost = _HEADER + ["pai_cost"]
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(header_with_cost)
+    w.writerow(_price_row("JAKS-PAI-520", "10.00") + ["3.50"])
+
+    s = svc.pricing_update_sell(buf.getvalue(), dry_run=False)
+    assert s["skipped_no_pai_source"] == 1
+    assert s["costs_updated"] == 0
+
+
+def test_manufacturer_canonicalized_case_insensitive(db):
+    """Scraper emits 'CUMMINS' / 'cummins' — both land as 'Cummins'."""
+    p1 = _make_product(db, "JAKS-PAI-600", price=10.00, manufacturer="")
+    p2 = _make_product(db, "JAKS-PAI-601", price=10.00, manufacturer="")
+    svc = ProductImportService(db, None)
+
+    header_with_mfg = _HEADER + ["Manufacturer"]
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(header_with_mfg)
+    w.writerow(_price_row("JAKS-PAI-600", "10.00") + ["CUMMINS"])
+    w.writerow(_price_row("JAKS-PAI-601", "10.00") + ["caterpillar"])
+
+    s = svc.pricing_update_sell(buf.getvalue(), dry_run=False)
+    assert s["manufacturer_updated"] == 2
+    assert s["manufacturer_unmapped_sample"] == []
+    db.refresh(p1); db.refresh(p2)
+    assert p1.manufacturer == "Cummins"
+    assert p2.manufacturer == "Caterpillar"
+
+
+def test_manufacturer_unmapped_passes_through_and_is_surfaced(db):
+    """An unrecognized make ('Paccar') is preserved verbatim AND surfaced
+    in manufacturer_unmapped_sample so the owner can add it to the list."""
+    p = _make_product(db, "JAKS-PAI-610", price=10.00, manufacturer="")
+    svc = ProductImportService(db, None)
+
+    header_with_mfg = _HEADER + ["Manufacturer"]
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(header_with_mfg)
+    w.writerow(_price_row("JAKS-PAI-610", "10.00") + ["Paccar"])
+
+    s = svc.pricing_update_sell(buf.getvalue(), dry_run=False)
+    assert s["manufacturer_updated"] == 1
+    assert len(s["manufacturer_unmapped_sample"]) == 1
+    assert s["manufacturer_unmapped_sample"][0]["sku"] == "JAKS-PAI-610"
+    db.refresh(p)
+    assert p.manufacturer == "Paccar"
+
+
+def test_manufacturer_unchanged_is_idempotent(db):
+    """Already-correct manufacturer — second pass shows no update."""
+    p = _make_product(db, "JAKS-PAI-620", price=10.00, manufacturer="Cummins")
+    svc = ProductImportService(db, None)
+
+    header_with_mfg = _HEADER + ["Manufacturer"]
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(header_with_mfg)
+    w.writerow(_price_row("JAKS-PAI-620", "10.00") + ["Cummins"])
+
+    s = svc.pricing_update_sell(buf.getvalue(), dry_run=False)
+    assert s["manufacturer_updated"] == 0
+    assert s["unchanged"] == 1
+
+
+def test_threshold_skip_does_not_block_independent_cost_or_mfg_writes(db):
+    """A runaway sell price gets skipped, but the cost and manufacturer
+    columns on the same row still land (they're independent fields and
+    a bad scrape of one shouldn't poison the others)."""
+    p = _make_product(db, "JAKS-PAI-630", price=10.00, manufacturer="")
+    _, src = _seed_pai_with_source(db, p.id, vendor_cost=1.00)
+    svc = ProductImportService(db, None)
+
+    header_ext = _HEADER + ["pai_cost", "Manufacturer"]
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(header_ext)
+    w.writerow(_price_row("JAKS-PAI-630", "100.00") + ["4.50", "Cummins"])
+
+    s = svc.pricing_update_sell(buf.getvalue(), dry_run=False,
+                                max_change_pct=50.0)
+    assert s["over_threshold_skipped"] == 1
+    assert s["prices_updated"] == 0
+    assert s["costs_updated"] == 1
+    assert s["manufacturer_updated"] == 1
+    db.refresh(p); db.refresh(src)
+    assert p.price_override == 10.00, "runaway price never committed"
+    assert src.vendor_cost == 4.50
+    assert p.manufacturer == "Cummins"
 
 
 def test_never_creates_products(db):

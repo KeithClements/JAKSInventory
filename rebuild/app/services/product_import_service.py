@@ -753,7 +753,7 @@ class ProductImportService(BaseService):
         self.db.commit() if not dry_run else self.db.rollback()
         return summary
 
-    # ══ Mode 2c: PRICING UPDATE — sell price (scraper Shopify export) ═════════
+    # ══ Mode 2c: PRICING UPDATE — sell + cost + manufacturer (scraper refresh) ═
     def pricing_update_sell(
         self,
         text: str,
@@ -762,22 +762,35 @@ class ProductImportService(BaseService):
         max_change_pct: float | None = None,
     ) -> dict:
         """
-        Update OUR sell price + compare-at price on EXISTING products from the
-        scraper's standard Shopify export (Variant SKU / Variant Price /
-        Variant Compare At Price). NEVER creates products, NEVER touches cost
-        or vendor sources, NEVER touches competitor prices.
+        Refresh sell price, compare-at, OUR cost, and manufacturer on EXISTING
+        products from the scraper's standard Shopify export. NEVER creates
+        products, NEVER touches competitor prices.
 
-        The Shopify export emits multiple rows per Handle (image rows after
-        the first carry no price data) — those rows are detected by the
-        absence of price/compare-at AND skipped silently as "image rows", not
-        counted against skipped_no_price.
+        Columns consumed (each independent — absent column = field not touched):
+          • Variant SKU           → dedup key (required)
+          • Variant Price         → product.price_override
+          • Variant Compare At    → product.compare_at_price
+          • pai_cost / Our Cost / vendor_cost / cost
+                                  → PAI ProductVendorSource.vendor_cost
+                                    (+ ProductCostHistory row); requires a PAI
+                                    vendor source on the product
+          • Manufacturer          → product.manufacturer, normalized
+                                    case-insensitively against the canonical
+                                    MANUFACTURERS list; unmapped values pass
+                                    through verbatim and are counted in
+                                    manufacturer_unmapped_sample for review.
 
-        max_change_pct (optional, e.g. 50.0 for 50%) is a safety rail: any
-        product whose new sell price would move more than that % from its
-        current price_override is recorded into the summary and SKIPPED on
-        commit (still shown in dry-run sample). Lets the owner catch a bad
-        scraper run before it rewrites the catalog.
+        Shopify image-only rows (blank SKU + blank everything) are silently
+        skipped as image_rows_skipped, not counted against skipped_no_sku.
+
+        max_change_pct (optional) caps per-product sell price moves — any
+        product whose new price would move more than that % from its current
+        price_override is surfaced into over_threshold_sample and SKIPPED for
+        the sell + compare changes (cost / manufacturer still apply, since
+        they're independent fields and a bad scrape of one need not poison the
+        others).
         """
+        from app.routers.products import MANUFACTURERS as _MFG_CANON
         reader = list(csv.DictReader(io.StringIO(text)))
         summary = {
             "mode": "pricing_update", "source": "sell", "dry_run": dry_run,
@@ -785,23 +798,38 @@ class ProductImportService(BaseService):
             "skipped_no_sku": 0, "skipped_no_product": 0, "skipped_no_price": 0,
             "matched": 0, "prices_updated": 0, "compare_updated": 0,
             "unchanged": 0, "over_threshold_skipped": 0,
+            "costs_updated": 0, "skipped_no_pai_source": 0,
+            "manufacturer_updated": 0, "manufacturer_unmapped_sample": [],
             "sample": [], "over_threshold_sample": [],
         }
         sku_to_id = self._sku_to_id_map()
+        # Resolve PAI vendor ONCE — cost updates need it.
+        pai_vendor = self.db.query(Vendor).filter(
+            (Vendor.vendor_code == _PAI_VENDOR_CODE)
+            | (Vendor.name == _PAI_VENDOR_NAME)
+        ).first()
         _PRICE_KEYS = ("variant price", "price", "sell_price", "sell price",
                        "selling_price", "retail_price", "retail price")
         _COMPARE_KEYS = ("variant compare at price", "compare_at_price",
                          "compare at price", "msrp", "compare_at")
+        _OUR_COST_KEYS = ("our cost", "our_cost") + _COST_KEYS  # adds our cost
+        _MFG_KEYS = ("manufacturer", "engine make", "engine_make",
+                     "engine_manufacturer", "make")
+        # Case-insensitive canonical mapping: "CUMMINS" / "cummins" → "Cummins"
+        _mfg_lookup = {m.lower(): m for m in _MFG_CANON}
         seen_handles: set[str] = set()
         for raw in reader:
             row = {_norm(k): v for k, v in raw.items()}
             sku = _get(row, *_SKU_KEYS)
             price_raw = _get(row, *_PRICE_KEYS)
             compare_raw = _get(row, *_COMPARE_KEYS)
+            cost_raw = _get(row, *_OUR_COST_KEYS)
+            mfg_raw = _get(row, *_MFG_KEYS)
 
-            # Shopify image-only rows: SKU blank AND no price columns. The
+            # Shopify image-only rows: SKU blank AND no useful columns. The
             # Handle column links them to the parent — count, never warn.
-            if not sku and not price_raw and not compare_raw:
+            if not sku and not price_raw and not compare_raw \
+                    and not cost_raw and not mfg_raw:
                 summary["image_rows_skipped"] += 1
                 continue
             if not sku:
@@ -818,7 +846,18 @@ class ProductImportService(BaseService):
 
             new_price = _to_float(price_raw)
             new_compare = _to_float(compare_raw)
-            if new_price is None and new_compare is None:
+            new_cost = _to_float(cost_raw)
+            # Manufacturer: trim, then canonicalize case-insensitively.
+            mfg_in = (mfg_raw or "").strip()
+            new_mfg = _mfg_lookup.get(mfg_in.lower()) if mfg_in else None
+            mfg_unmapped = bool(mfg_in) and new_mfg is None
+            if mfg_unmapped:
+                # Pass through verbatim — frees us to handle "Detroit" / "DDC"
+                # etc. without losing the data; surface for review.
+                new_mfg = mfg_in
+
+            if (new_price is None and new_compare is None
+                    and new_cost is None and not mfg_in):
                 summary["skipped_no_price"] += 1
                 continue
             summary["matched"] += 1
@@ -830,6 +869,7 @@ class ProductImportService(BaseService):
 
             old_price = product.price_override
             old_compare = product.compare_at_price
+            old_mfg = product.manufacturer
 
             price_change = (new_price is not None
                             and (old_price is None
@@ -837,34 +877,73 @@ class ProductImportService(BaseService):
             compare_change = (new_compare is not None
                               and (old_compare is None
                                    or abs((old_compare or 0.0) - new_compare) >= 0.005))
+            mfg_change = (new_mfg is not None
+                          and (old_mfg or "").strip() != new_mfg)
 
             # Threshold rail — applies only to price_override moves where
-            # there IS a prior price to compare against.
+            # there IS a prior price to compare against. Cost & manufacturer
+            # are independent: a bad scrape of one shouldn't suppress the
+            # others, so the gate only skips the price/compare writes.
+            over_threshold = False
             if (price_change and max_change_pct is not None
                     and old_price is not None and old_price > 0):
                 pct = abs(new_price - old_price) / old_price * 100.0
                 if pct > max_change_pct:
+                    over_threshold = True
                     summary["over_threshold_skipped"] += 1
                     if len(summary["over_threshold_sample"]) < 10:
                         summary["over_threshold_sample"].append({
                             "sku": sku, "old_price": old_price,
                             "new_price": new_price, "change_pct": round(pct, 1),
                         })
-                    continue
+                    price_change = False
+                    compare_change = False  # paired with price for sample-row sanity
 
-            if not price_change and not compare_change:
-                summary["unchanged"] += 1
+            # Cost change check — only meaningful when PAI source exists.
+            cost_src = None
+            cost_change = False
+            old_cost_val = None
+            if new_cost is not None and new_cost > 0:
+                if pai_vendor is None:
+                    summary["skipped_no_pai_source"] += 1
+                else:
+                    cost_src = self.db.query(ProductVendorSource).filter(
+                        ProductVendorSource.product_id == pid,
+                        ProductVendorSource.vendor_id == pai_vendor.id,
+                    ).first()
+                    if cost_src is None:
+                        summary["skipped_no_pai_source"] += 1
+                    else:
+                        old_cost_val = cost_src.vendor_cost or 0.0
+                        if abs(old_cost_val - new_cost) >= 0.005:
+                            cost_change = True
+
+            if (not price_change and not compare_change
+                    and not mfg_change and not cost_change):
+                # If only an over-threshold row landed here, we already counted it.
+                if not over_threshold:
+                    summary["unchanged"] += 1
                 continue
 
             if price_change:
                 summary["prices_updated"] += 1
             if compare_change:
                 summary["compare_updated"] += 1
+            if cost_change:
+                summary["costs_updated"] += 1
+            if mfg_change:
+                summary["manufacturer_updated"] += 1
+                if mfg_unmapped and len(summary["manufacturer_unmapped_sample"]) < 10:
+                    summary["manufacturer_unmapped_sample"].append({
+                        "sku": sku, "manufacturer": new_mfg,
+                    })
             if len(summary["sample"]) < 10:
                 summary["sample"].append({
                     "sku": sku,
                     "old_price": old_price, "new_price": new_price,
                     "old_compare": old_compare, "new_compare": new_compare,
+                    "old_cost": old_cost_val, "new_cost": new_cost if cost_change else None,
+                    "old_mfg": old_mfg, "new_mfg": new_mfg if mfg_change else None,
                 })
 
             if not dry_run:
@@ -872,6 +951,17 @@ class ProductImportService(BaseService):
                     product.price_override = new_price
                 if compare_change:
                     product.compare_at_price = new_compare
+                if mfg_change:
+                    product.manufacturer = new_mfg
+                if cost_change and cost_src is not None:
+                    cost_src.vendor_cost = new_cost
+                    cost_src.last_cost_updated_at = datetime.utcnow()
+                    self.db.add(ProductCostHistory(
+                        product_id=pid, vendor_id=pai_vendor.id,
+                        old_cost=old_cost_val, new_cost=new_cost,
+                        changed_by_id=self.current_user_id,
+                        notes="Scraper refresh (PAI cost)",
+                    ))
 
         self.db.commit() if not dry_run else self.db.rollback()
         return summary
