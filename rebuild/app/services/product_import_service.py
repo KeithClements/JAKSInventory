@@ -57,6 +57,17 @@ from app.utils import normalize_part
 _PAI_VENDOR_NAME = "PAI Industries"
 _PAI_VENDOR_CODE = "PAI"
 
+# Feed SKUs carry their vendor as a prefix per SCRAPER_REQUIREMENTS.md:
+# JAKS-PAI-<part#> / JAKS-IMB-<part#> → vendor_code PAI / IMB. One export file
+# may mix vendors; "Our Cost" always means THAT vendor's dealer price.
+_VENDOR_PREFIX_RE = re.compile(r"^JAKS-([A-Z0-9]{2,10})-", re.IGNORECASE)
+
+
+def _vendor_code_from_sku(sku: str) -> str | None:
+    """'JAKS-IMB-1832665' → 'IMB'; None when the SKU has no JAKS-<CODE>- prefix."""
+    m = _VENDOR_PREFIX_RE.match((sku or "").strip())
+    return m.group(1).upper() if m else None
+
 # SKU match aliases (header keys are lowercased before lookup)
 _SKU_KEYS = ("jaks_sku", "sku", "variant sku", "internal_sku", "part_number", "jaks_part")
 # True PAI cost columns (Pricing-Update pai_cost mode) — NOT "variant price" (that's sell)
@@ -777,9 +788,13 @@ class ProductImportService(BaseService):
           • Variant Price         → product.price_override
           • Variant Compare At    → product.compare_at_price
           • pai_cost / Our Cost / vendor_cost / cost
-                                  → PAI ProductVendorSource.vendor_cost
-                                    (+ ProductCostHistory row); requires a PAI
-                                    vendor source on the product
+                                  → vendor_cost (+ ProductCostHistory row) on
+                                    the source belonging to the vendor named by
+                                    the SKU prefix (JAKS-PAI-… → PAI,
+                                    JAKS-IMB-… → IMB; no prefix = legacy PAI).
+                                    Rows whose product lacks that vendor's
+                                    source land in skipped_no_vendor_source
+                                    (+ a per-vendor labeled count)
           • Manufacturer          → product.manufacturer, normalized
                                     case-insensitively against the canonical
                                     MANUFACTURERS list; unmapped values pass
@@ -804,16 +819,38 @@ class ProductImportService(BaseService):
             "skipped_no_sku": 0, "skipped_no_product": 0, "skipped_no_price": 0,
             "matched": 0, "prices_updated": 0, "compare_updated": 0,
             "unchanged": 0, "over_threshold_skipped": 0,
-            "costs_updated": 0, "skipped_no_pai_source": 0,
+            "costs_updated": 0, "skipped_no_vendor_source": 0,
             "manufacturer_updated": 0, "manufacturer_unmapped_sample": [],
             "sample": [], "over_threshold_sample": [],
         }
+
+        def _count_no_source(code: str | None) -> None:
+            """Aggregate + per-vendor labeled key so the owner can tell PAI
+            gaps from IMB gaps in the result panel."""
+            summary["skipped_no_vendor_source"] += 1
+            label = f"skipped_no_{(code or _PAI_VENDOR_CODE).lower()}_source"
+            summary[label] = summary.get(label, 0) + 1
         sku_to_id = self._sku_to_id_map()
-        # Resolve PAI vendor ONCE — cost updates need it.
-        pai_vendor = self.db.query(Vendor).filter(
-            (Vendor.vendor_code == _PAI_VENDOR_CODE)
-            | (Vendor.name == _PAI_VENDOR_NAME)
-        ).first()
+        # Multi-vendor feed (SCRAPER_REQUIREMENTS.md): the Variant SKU prefix
+        # names the vendor (JAKS-PAI-… / JAKS-IMB-…) and "Our Cost" is THAT
+        # vendor's dealer price. Vendors resolve lazily, cached per code; a
+        # prefix with NO matching vendor record is never silently re-routed to
+        # another vendor — those rows land in a per-vendor skipped count.
+        _vendor_cache: dict[str, Vendor | None] = {}
+
+        def _vendor_for(code: str | None) -> Vendor | None:
+            if code is None:
+                # No JAKS-<CODE>- prefix → legacy single-vendor feeds are PAI.
+                code = _PAI_VENDOR_CODE
+            code = code.upper()
+            if code not in _vendor_cache:
+                q = self.db.query(Vendor).filter(func.upper(Vendor.vendor_code) == code)
+                if code == _PAI_VENDOR_CODE:   # legacy PAI rows may match by name
+                    q = self.db.query(Vendor).filter(
+                        (func.upper(Vendor.vendor_code) == code)
+                        | (Vendor.name == _PAI_VENDOR_NAME))
+                _vendor_cache[code] = q.first()
+            return _vendor_cache[code]
         _PRICE_KEYS = ("variant price", "price", "sell_price", "sell price",
                        "selling_price", "retail_price", "retail price")
         _COMPARE_KEYS = ("variant compare at price", "compare_at_price",
@@ -905,20 +942,24 @@ class ProductImportService(BaseService):
                     price_change = False
                     compare_change = False  # paired with price for sample-row sanity
 
-            # Cost change check — only meaningful when PAI source exists.
+            # Cost change check — the SKU prefix names the vendor whose dealer
+            # price "Our Cost" is; the write targets THAT vendor's source.
             cost_src = None
+            cost_vendor = None
             cost_change = False
             old_cost_val = None
             if new_cost is not None and new_cost > 0:
-                if pai_vendor is None:
-                    summary["skipped_no_pai_source"] += 1
+                vcode = _vendor_code_from_sku(sku)
+                cost_vendor = _vendor_for(vcode)
+                if cost_vendor is None:
+                    _count_no_source(vcode)
                 else:
                     cost_src = self.db.query(ProductVendorSource).filter(
                         ProductVendorSource.product_id == pid,
-                        ProductVendorSource.vendor_id == pai_vendor.id,
+                        ProductVendorSource.vendor_id == cost_vendor.id,
                     ).first()
                     if cost_src is None:
-                        summary["skipped_no_pai_source"] += 1
+                        _count_no_source(vcode)
                     else:
                         old_cost_val = cost_src.vendor_cost or 0.0
                         if abs(old_cost_val - new_cost) >= 0.005:
@@ -963,10 +1004,10 @@ class ProductImportService(BaseService):
                     cost_src.vendor_cost = new_cost
                     cost_src.last_cost_updated_at = datetime.utcnow()
                     self.db.add(ProductCostHistory(
-                        product_id=pid, vendor_id=pai_vendor.id,
+                        product_id=pid, vendor_id=cost_vendor.id,
                         old_cost=old_cost_val, new_cost=new_cost,
                         changed_by_id=self.current_user_id,
-                        notes="Scraper refresh (PAI cost)",
+                        notes=f"Scraper refresh ({cost_vendor.vendor_code or cost_vendor.name} cost)",
                     ))
 
         self.db.commit() if not dry_run else self.db.rollback()

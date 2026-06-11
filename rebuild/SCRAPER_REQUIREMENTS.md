@@ -28,11 +28,21 @@ present in the row, so you can roll them in independently.
 
 ## Column 1: `Our Cost`
 
+> **Two-vendor files (2026-06-11):** one export may now mix PAI and
+> Interstate-McBee rows, distinguished by the Variant SKU prefix —
+> `JAKS-PAI-<part#>` vs `JAKS-IMB-<part#>`. `Our Cost` means the same thing
+> on every row: the authenticated dealer price from THAT vendor's portal
+> (scraper column `parts.your_cost`). The ERP resolves the vendor from the
+> SKU prefix and writes the cost to that vendor's source on the product —
+> a JAKS-XYZ- prefix with no matching vendor record is counted
+> (`skipped_no_xyz_source`), never re-routed to another vendor.
+
 ### Where to get it
-PAI's website shows the dealer cost only when logged in (the same login the scraper
-already uses for everything else). On the part page it's labeled "Dealer", "Net", or
-just shown next to a strikethrough MSRP. Whatever number drives your gross-margin
-column is the right number.
+The vendor's portal shows the dealer cost only when logged in (the same login the
+scraper already uses for everything else). On the part page it's labeled "Dealer",
+"Net", or just shown next to a strikethrough MSRP. Whatever number drives your
+gross-margin column (`parts.your_cost`) is the right number — for PAI rows it's
+the PAI dealer price, for IMB rows the Interstate-McBee dealer price.
 
 ### How to emit it
 - Header: literally `Our Cost` (with a space) or `pai_cost` — the ERP accepts either,
@@ -44,11 +54,15 @@ column is the right number.
   rows as image rows and silently skips them.
 
 ### What the ERP will do
-- For each row with `Our Cost > 0`, find the PAI `ProductVendorSource` on that product
-  and update `vendor_cost` + write a `ProductCostHistory` row (`notes = "Scraper
-  refresh (PAI cost)"`).
-- Products without a PAI vendor source are counted under `skipped_no_pai_source` —
-  not silently dropped.
+- For each row with `Our Cost > 0`, resolve the vendor from the SKU prefix
+  (`JAKS-PAI-` → PAI, `JAKS-IMB-` → Interstate-McBee; no prefix = legacy PAI),
+  find THAT vendor's `ProductVendorSource` on the product and update
+  `vendor_cost` + write a `ProductCostHistory` row (`notes = "Scraper refresh
+  (<VENDOR> cost)"`).
+- Products without that vendor's source are counted under
+  `skipped_no_vendor_source` plus a per-vendor labeled key
+  (`skipped_no_pai_source` / `skipped_no_imb_source`) so PAI gaps and IMB gaps
+  are distinguishable in the result panel — never silently dropped.
 - `product.cost` (moving-average COGS) is **not** touched. That field only changes on
   PO receipts. The vendor_cost feeds future receipt cost via the preferred-vendor
   seam, which is the correct accounting separation.

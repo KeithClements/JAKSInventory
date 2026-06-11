@@ -31,7 +31,7 @@ from app.services.base import BaseService
 from app.services.classification_service import ClassificationService
 from app.services.product_import_service import (
     ProductImportService, _split_two, _to_float, _norm,
-    _PAI_VENDOR_CODE, _PAI_VENDOR_NAME,
+    _PAI_VENDOR_CODE, _PAI_VENDOR_NAME, _vendor_code_from_sku,
 )
 
 
@@ -203,14 +203,21 @@ class ImportReviewService(BaseService):
                          Product.id, Product.price_override,
                          Product.compare_at_price, Product.manufacturer).all()}
         price_by_id = {pid: v[0] for pid, v in prod_info.items()}
-        pai = self.db.query(Vendor).filter(
-            (Vendor.vendor_code == _PAI_VENDOR_CODE) | (Vendor.name == _PAI_VENDOR_NAME)
-        ).first()
-        pai_cost_by_id: dict[int, float] = {}
-        if pai is not None:
-            pai_cost_by_id = dict(self.db.query(
-                ProductVendorSource.product_id, ProductVendorSource.vendor_cost
-            ).filter(ProductVendorSource.vendor_id == pai.id).all())
+        # Vendor-source costs keyed by (product_id, VENDOR_CODE) — the feed SKU
+        # prefix (JAKS-PAI-… / JAKS-IMB-…) names which vendor's "Our Cost" a
+        # row carries, so the diff must compare against THAT vendor's source.
+        # Key presence == "this product has a source for that vendor".
+        vendor_cost_map: dict[tuple[int, str], float] = {}
+        for vpid, vcost, vcode, vname in (
+                self.db.query(ProductVendorSource.product_id,
+                              ProductVendorSource.vendor_cost,
+                              Vendor.vendor_code, Vendor.name)
+                .join(Vendor, Vendor.id == ProductVendorSource.vendor_id).all()):
+            code = (vcode or "").strip().upper()
+            if not code and vname == _PAI_VENDOR_NAME:
+                code = _PAI_VENDOR_CODE
+            if code:
+                vendor_cost_map[(vpid, code)] = vcost or 0.0
         cat_names = {(n or "").strip().lower(): cid
                      for cid, n in self.db.query(ProductCategory.id, ProductCategory.name).all()}
         classifier = ClassificationService(self.db)
@@ -222,7 +229,7 @@ class ImportReviewService(BaseService):
                                      price_by_id, cat_names, classifier, seen,
                                      auto_accept_confident=auto_accept_confident,
                                      prod_info=prod_info,
-                                     pai_cost_by_id=pai_cost_by_id,
+                                     vendor_cost_map=vendor_cost_map,
                                      xref_sets=xref_sets,
                                      skip_unchanged=skip_unchanged)
             if cand is None:           # R4 — identical to the catalog: not staged
@@ -246,13 +253,13 @@ class ImportReviewService(BaseService):
                      price_by_id, cat_names, classifier, seen,
                      auto_accept_confident: bool = False,
                      prod_info: dict | None = None,
-                     pai_cost_by_id: dict | None = None,
+                     vendor_cost_map: dict | None = None,
                      xref_sets: dict | None = None,
                      skip_unchanged: bool = False) -> ImportCandidate | None:
         """Returns None (R4) when the row is a clean UPDATE of an existing product
         and every incoming value matches the catalog — nothing to review."""
         prod_info = prod_info or {}
-        pai_cost_by_id = pai_cost_by_id or {}
+        vendor_cost_map = vendor_cost_map or {}
         xref_sets = xref_sets or {}
         sku = (p.get("sku") or "").strip()
         k = _norm(sku)
@@ -332,10 +339,16 @@ class ImportReviewService(BaseService):
                              "old": cur_compare, "new": new_compare})
             new_cost = _to_float(p.get("cost"))
             if new_cost is not None and new_cost > 0:
-                cur_cost = pai_cost_by_id.get(matched_pid)
-                if cur_cost is None or abs((cur_cost or 0.0) - new_cost) >= 0.005:
-                    diff.append({"field": "our cost (PAI)",
-                                 "old": cur_cost, "new": new_cost})
+                # The SKU prefix names the vendor whose dealer price this is
+                # (JAKS-IMB-… → IMB; no prefix = legacy PAI). Diff only when
+                # the product HAS that vendor's source — apply can't write a
+                # cost anywhere else, and comparing against another vendor's
+                # cost would stage phantom changes.
+                vcode = _vendor_code_from_sku(sku) or _PAI_VENDOR_CODE
+                key = (matched_pid, vcode)
+                if key in vendor_cost_map and abs(vendor_cost_map[key] - new_cost) >= 0.005:
+                    diff.append({"field": f"our cost ({vcode})",
+                                 "old": vendor_cost_map[key], "new": new_cost})
             new_mfg = (p.get("manufacturer") or "").strip()
             if new_mfg and new_mfg.lower() != (cur_mfg or "").strip().lower():
                 diff.append({"field": "manufacturer",
@@ -679,23 +692,30 @@ class ImportReviewService(BaseService):
 
         new_cost = _to_float(p.get("cost"))
         if new_cost is not None and new_cost > 0:
-            pai = self.db.query(Vendor).filter(
-                (Vendor.vendor_code == _PAI_VENDOR_CODE)
-                | (Vendor.name == _PAI_VENDOR_NAME)).first()
+            # The feed SKU prefix names the vendor whose dealer price this is
+            # (JAKS-PAI-… / JAKS-IMB-…; no prefix = legacy PAI). Write to THAT
+            # vendor's source only — never re-route to another vendor.
+            vcode = _vendor_code_from_sku(p.get("sku") or "") or _PAI_VENDOR_CODE
+            vq = self.db.query(Vendor).filter(func.upper(Vendor.vendor_code) == vcode)
+            if vcode == _PAI_VENDOR_CODE:
+                vq = self.db.query(Vendor).filter(
+                    (func.upper(Vendor.vendor_code) == vcode)
+                    | (Vendor.name == _PAI_VENDOR_NAME))
+            vendor = vq.first()
             src = None
-            if pai is not None:
+            if vendor is not None:
                 src = self.db.query(ProductVendorSource).filter(
                     ProductVendorSource.product_id == product_id,
-                    ProductVendorSource.vendor_id == pai.id).first()
+                    ProductVendorSource.vendor_id == vendor.id).first()
             if src is not None and abs((src.vendor_cost or 0.0) - new_cost) >= 0.005:
                 old_cost = src.vendor_cost or 0.0
                 src.vendor_cost = new_cost
                 src.last_cost_updated_at = datetime.utcnow()
                 self.db.add(ProductCostHistory(
-                    product_id=product_id, vendor_id=pai.id,
+                    product_id=product_id, vendor_id=vendor.id,
                     old_cost=old_cost, new_cost=new_cost,
                     changed_by_id=self.current_user_id,
-                    notes="Smart Import refresh (PAI cost)",
+                    notes=f"Smart Import refresh ({vcode} cost)",
                 ))
                 got["cost_updated"] = True
 

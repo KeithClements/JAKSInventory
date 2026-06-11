@@ -96,17 +96,24 @@ def _make_product(db, sku, *, price=10.00, compare=None, cost=4.50,
     return p
 
 
-def _seed_pai_with_source(db, product_id, *, vendor_cost=4.50):
-    v = db.query(Vendor).filter(Vendor.vendor_code == "PAI").first()
+def _seed_vendor_with_source(db, product_id, *, code, name, vendor_number,
+                             vendor_cost=4.50):
+    v = db.query(Vendor).filter(Vendor.vendor_code == code).first()
     if v is None:
-        v = Vendor(name="PAI Industries", vendor_code="PAI",
-                   vendor_number="9", is_active=True)
+        v = Vendor(name=name, vendor_code=code,
+                   vendor_number=vendor_number, is_active=True)
         db.add(v); db.commit(); db.refresh(v)
     src = ProductVendorSource(product_id=product_id, vendor_id=v.id,
                               vendor_cost=vendor_cost, is_active=True,
                               is_preferred=True)
     db.add(src); db.commit()
     return v, src
+
+
+def _seed_pai_with_source(db, product_id, *, vendor_cost=4.50):
+    return _seed_vendor_with_source(db, product_id, code="PAI",
+                                    name="PAI Industries", vendor_number="9",
+                                    vendor_cost=vendor_cost)
 
 
 # ── Happy path ────────────────────────────────────────────────────────────────
@@ -237,7 +244,7 @@ def test_cost_column_with_pai_source_updates_vendor_cost(db):
     s = svc.pricing_update_sell(buf.getvalue(), dry_run=False)
     assert s["prices_updated"] == 1
     assert s["costs_updated"] == 1
-    assert s["skipped_no_pai_source"] == 0
+    assert s["skipped_no_vendor_source"] == 0
     db.refresh(p); db.refresh(src)
     assert p.price_override == 12.00
     assert p.cost == 4.50, "product.cost (COGS) only changes on receipt"
@@ -277,7 +284,8 @@ def test_cost_without_pai_source_skipped_and_counted(db):
     w.writerow(_price_row("JAKS-PAI-520", "10.00") + ["3.50"])
 
     s = svc.pricing_update_sell(buf.getvalue(), dry_run=False)
-    assert s["skipped_no_pai_source"] == 1
+    assert s["skipped_no_vendor_source"] == 1
+    assert s["skipped_no_pai_source"] == 1   # per-vendor labeled count
     assert s["costs_updated"] == 0
 
 
@@ -445,3 +453,83 @@ def test_real_scraper_export_shape(db):
     db.refresh(p)
     assert p.price_override == 2.90
     assert p.compare_at_price == 5.86
+
+
+# ── Multi-vendor feeds: SKU prefix names the vendor (SCRAPER_REQUIREMENTS.md) ──
+
+def _csv_with_cost(rows_with_cost):
+    """rows_with_cost: list of (sku, price, cost). Builds the Shopify header
+    + Our Cost column, like the two-vendor scraper export."""
+    header = _HEADER + ["Our Cost"]
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(header)
+    for sku, price, cost in rows_with_cost:
+        w.writerow(_price_row(sku, price) + [cost])
+    return buf.getvalue()
+
+
+def test_mixed_vendor_feed_writes_each_vendors_source(db):
+    """ACCEPTANCE: one JAKS-PAI row + one JAKS-IMB row, each product seeded
+    with its own vendor source — dry-run counts costs_updated=2 with zero
+    skipped; commit writes each cost to ITS vendor's source + history row."""
+    p1 = _make_product(db, "JAKS-PAI-800", price=10.00)
+    p2 = _make_product(db, "JAKS-IMB-801", price=10.00)
+    pai_v, s1 = _seed_pai_with_source(db, p1.id, vendor_cost=4.00)
+    imb_v, s2 = _seed_vendor_with_source(db, p2.id, code="IMB",
+                                         name="Interstate-McBee",
+                                         vendor_number="3", vendor_cost=7.00)
+    svc = ProductImportService(db, None)
+    text = _csv_with_cost([("JAKS-PAI-800", "10.00", "4.50"),
+                           ("JAKS-IMB-801", "10.00", "7.77")])
+
+    s = svc.pricing_update_sell(text, dry_run=True)
+    assert s["costs_updated"] == 2
+    assert s["skipped_no_vendor_source"] == 0
+
+    s = svc.pricing_update_sell(text, dry_run=False)
+    assert s["costs_updated"] == 2
+    db.refresh(s1); db.refresh(s2)
+    assert s1.vendor_cost == 4.50      # PAI row -> PAI source
+    assert s2.vendor_cost == 7.77      # IMB row -> IMB source
+    h1 = db.query(ProductCostHistory).filter_by(product_id=p1.id).one()
+    h2 = db.query(ProductCostHistory).filter_by(product_id=p2.id).one()
+    assert h1.vendor_id == pai_v.id and "PAI" in h1.notes
+    assert h2.vendor_id == imb_v.id and "IMB" in h2.notes
+
+
+def test_imb_row_without_imb_source_counted_per_vendor(db):
+    """ACCEPTANCE: an IMB-prefixed row whose product has only a PAI source is
+    counted per-vendor (skipped_no_imb_source) and NEVER writes the IMB
+    dealer price onto the PAI source."""
+    p = _make_product(db, "JAKS-IMB-810", price=10.00)
+    _, pai_src = _seed_pai_with_source(db, p.id, vendor_cost=4.00)
+    # IMB vendor record exists, but this product has no IMB source.
+    db.add(Vendor(name="Interstate-McBee", vendor_code="IMB",
+                  vendor_number="3", is_active=True))
+    db.commit()
+    svc = ProductImportService(db, None)
+
+    s = svc.pricing_update_sell(
+        _csv_with_cost([("JAKS-IMB-810", "10.00", "7.77")]), dry_run=False)
+    assert s["costs_updated"] == 0
+    assert s["skipped_no_vendor_source"] == 1
+    assert s["skipped_no_imb_source"] == 1
+    db.refresh(pai_src)
+    assert pai_src.vendor_cost == 4.00, "IMB cost must never land on the PAI source"
+
+
+def test_unknown_prefix_never_reroutes_to_another_vendor(db):
+    """A JAKS-XYZ- prefixed row claims vendor XYZ; if no such vendor exists
+    the cost is skipped (per-vendor count) rather than written to PAI."""
+    p = _make_product(db, "JAKS-XYZ-820", price=10.00)
+    _, pai_src = _seed_pai_with_source(db, p.id, vendor_cost=4.00)
+    svc = ProductImportService(db, None)
+
+    s = svc.pricing_update_sell(
+        _csv_with_cost([("JAKS-XYZ-820", "10.00", "9.99")]), dry_run=False)
+    assert s["costs_updated"] == 0
+    assert s["skipped_no_vendor_source"] == 1
+    assert s["skipped_no_xyz_source"] == 1
+    db.refresh(pai_src)
+    assert pai_src.vendor_cost == 4.00

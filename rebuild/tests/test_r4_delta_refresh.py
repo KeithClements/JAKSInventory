@@ -1,14 +1,14 @@
-"""
+﻿"""
 tests/test_r4_delta_refresh.py
 ==============================
-R4 — Smart Import delta-refresh + review-queue hygiene:
+R4 â€” Smart Import delta-refresh + review-queue hygiene:
 
 1. SKIP-UNCHANGED STAGING: re-running the full scraper export against a 13k
    catalog stages ONLY the rows where something material changed (price,
    compare-at, PAI cost, manufacturer, new images, new OEM refs). Identical
    UPDATE rows are tallied on the batch (unchanged_count), never staged.
    Changed rows carry a field-level diff_json the preview dock renders as
-   Current → Incoming.
+   Current â†’ Incoming.
 
 2. QUEUE HYGIENE: applying a candidate DELETES it (the catalog is the record;
    the batch header keeps the tallies); swept DUPLICATE rows leave too; a
@@ -118,10 +118,10 @@ def _cands(db, batch_id):
             .order_by(ImportCandidate.id).all())
 
 
-# ═══ 1 — skip-unchanged staging ════════════════════════════════════════════════
+# â•â•â• 1 â€” skip-unchanged staging â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def test_identical_update_row_not_staged(db):
-    """Same price, nothing new → no candidate; tallied as unchanged."""
+    """Same price, nothing new â†’ no candidate; tallied as unchanged."""
     _make_product(db, "JAKS-R4-100", price=10.99)
     svc = ImportReviewService(db, None)
 
@@ -135,7 +135,7 @@ def test_identical_update_row_not_staged(db):
 
 def test_mixed_feed_stages_only_the_changed_fraction(db):
     """The user's exact scenario: most of the catalog unchanged, a fraction
-    changed — only the changed rows land in the queue."""
+    changed â€” only the changed rows land in the queue."""
     for i in range(5):
         _make_product(db, f"JAKS-R4-2{i:02d}", price=10.99)
     svc = ImportReviewService(db, None)
@@ -164,10 +164,10 @@ def test_price_change_staged_with_diff(db):
 
 def test_cost_change_staged_with_diff(db):
     pai = _seed_pai(db)
-    _make_product(db, "JAKS-R4-310", price=10.99, pai=pai, vendor_cost=4.00)
+    _make_product(db, "JAKS-PAI-310", price=10.99, pai=pai, vendor_cost=4.00)
     svc = ImportReviewService(db, None)
 
-    batch = svc.analyze_feed(_csv([_feed_row("JAKS-R4-310", cost="4.85")]))
+    batch = svc.analyze_feed(_csv([_feed_row("JAKS-PAI-310", cost="4.85")]))
     (c,) = _cands(db, batch.id)
     diff = json.loads(c.diff_json)
     assert any(d["field"] == "our cost (PAI)"
@@ -176,10 +176,10 @@ def test_cost_change_staged_with_diff(db):
 
 def test_unchanged_cost_does_not_stage(db):
     pai = _seed_pai(db)
-    _make_product(db, "JAKS-R4-311", price=10.99, pai=pai, vendor_cost=4.85)
+    _make_product(db, "JAKS-PAI-311", price=10.99, pai=pai, vendor_cost=4.85)
     svc = ImportReviewService(db, None)
 
-    batch = svc.analyze_feed(_csv([_feed_row("JAKS-R4-311", cost="4.85")]))
+    batch = svc.analyze_feed(_csv([_feed_row("JAKS-PAI-311", cost="4.85")]))
     assert _cands(db, batch.id) == []
     db.refresh(batch)
     assert batch.unchanged_count == 1
@@ -219,23 +219,23 @@ def test_skip_unchanged_off_stages_everything(db):
 
 
 def test_new_rows_never_skipped(db):
-    """NEW products always stage — skip-unchanged only prunes UPDATE rows."""
+    """NEW products always stage â€” skip-unchanged only prunes UPDATE rows."""
     svc = ImportReviewService(db, None)
     batch = svc.analyze_feed(_csv([_feed_row("JAKS-R4-NEW-1")]))
     (c,) = _cands(db, batch.id)
     assert c.disposition == ImportDisposition.NEW
 
 
-# ═══ 2 — apply writes the refreshed fields ═════════════════════════════════════
+# â•â•â• 2 â€” apply writes the refreshed fields â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def test_apply_update_writes_cost_compare_and_manufacturer(db):
     pai = _seed_pai(db)
-    p = _make_product(db, "JAKS-R4-400", price=10.99, manufacturer="",
+    p = _make_product(db, "JAKS-PAI-400", price=10.99, manufacturer="",
                       pai=pai, vendor_cost=4.00)
     svc = ImportReviewService(db, None)
 
     batch = svc.analyze_feed(_csv([
-        _feed_row("JAKS-R4-400", price="12.49", compare="19.99",
+        _feed_row("JAKS-PAI-400", price="12.49", compare="19.99",
                   cost="4.85", mfg="CUMMINS")]))
     (c,) = _cands(db, batch.id)
     svc.set_review_status(c.id, ScrapedItemReviewStatus.ACCEPTED)
@@ -247,13 +247,13 @@ def test_apply_update_writes_cost_compare_and_manufacturer(db):
     assert p.price_override == 12.49
     assert p.compare_at_price == 19.99
     assert p.manufacturer == "Cummins"          # canonicalized from CUMMINS
-    assert (p.cost or 0.0) == 0.0               # COGS untouched — receipts own it
+    assert (p.cost or 0.0) == 0.0               # COGS untouched â€” receipts own it
     src = db.query(ProductVendorSource).filter_by(product_id=p.id).first()
     assert src.vendor_cost == 4.85
     assert db.query(ProductCostHistory).filter_by(product_id=p.id).count() == 1
 
 
-# ═══ 3 — queue hygiene ═════════════════════════════════════════════════════════
+# â•â•â• 3 â€” queue hygiene â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def test_applied_candidate_leaves_the_queue(db):
     _make_product(db, "JAKS-R4-500", price=10.99)
@@ -311,3 +311,60 @@ def test_delete_batch_denied_for_non_admin(db):
         ImportReviewService(db, u.id).delete_batch(batch.id)
     db.expire_all()
     assert db.get(ImportBatch, batch.id) is not None
+
+
+
+# ═══ 4 — multi-vendor feeds (JAKS-IMB-… rows in the same file) ═════════════════
+
+def _seed_imb(db):
+    v = Vendor(name="Interstate-McBee", vendor_code="IMB",
+               vendor_number="3", is_active=True)
+    db.add(v); db.commit(); db.refresh(v)
+    return v
+
+
+def test_imb_cost_diff_compares_against_imb_source(db):
+    """An IMB-prefixed row's "Our Cost" diffs against the IMB source — and
+    applying writes it there, never to PAI."""
+    pai = _seed_pai(db)
+    imb = _seed_imb(db)
+    p = _make_product(db, "JAKS-IMB-600", price=10.99, pai=pai, vendor_cost=4.00)
+    db.add(ProductVendorSource(product_id=p.id, vendor_id=imb.id,
+                               vendor_sku="JAKS-IMB-600", vendor_cost=7.00,
+                               is_active=True, is_preferred=False))
+    db.commit()
+    svc = ImportReviewService(db, None)
+
+    batch = svc.analyze_feed(_csv([_feed_row("JAKS-IMB-600", cost="7.77")]))
+    (c,) = _cands(db, batch.id)
+    diff = json.loads(c.diff_json)
+    assert any(d["field"] == "our cost (IMB)"
+               and d["old"] == 7.00 and d["new"] == 7.77 for d in diff)
+
+    svc.set_review_status(c.id, ScrapedItemReviewStatus.ACCEPTED)
+    result = svc.apply_approved(batch.id)
+    assert result["errors"] == []
+    db.expire_all()
+    imb_src = (db.query(ProductVendorSource)
+               .filter_by(product_id=p.id, vendor_id=imb.id).one())
+    pai_src = (db.query(ProductVendorSource)
+               .filter_by(product_id=p.id, vendor_id=pai.id).one())
+    assert imb_src.vendor_cost == 7.77      # IMB row -> IMB source
+    assert pai_src.vendor_cost == 4.00      # PAI source untouched
+    hist = db.query(ProductCostHistory).filter_by(product_id=p.id).one()
+    assert hist.vendor_id == imb.id and "IMB" in hist.notes
+
+
+def test_imb_cost_without_imb_source_stages_no_phantom_change(db):
+    """An IMB row whose product only has a PAI source must not stage a cost
+    diff (apply couldn't write it) — same IMB cost vs PAI cost would otherwise
+    look like a permanent phantom change on every re-run."""
+    pai = _seed_pai(db)
+    _seed_imb(db)
+    _make_product(db, "JAKS-IMB-610", price=10.99, pai=pai, vendor_cost=4.00)
+    svc = ImportReviewService(db, None)
+
+    batch = svc.analyze_feed(_csv([_feed_row("JAKS-IMB-610", cost="7.77")]))
+    assert _cands(db, batch.id) == []       # nothing actionable -> unchanged
+    db.refresh(batch)
+    assert batch.unchanged_count == 1
