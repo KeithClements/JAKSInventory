@@ -593,6 +593,11 @@ class ProductImportService(BaseService):
                 "(Inventory → Vendors → SKU #), then re-run the import."
             )
             return summary
+        # Snapshot vendor ids + digits as plain values: the chunked commit below
+        # expunges the session every 500 rows, detaching these ORM instances.
+        vendor_ids_by_code = {c: v.id for c, v in vendors_by_code.items()}
+        digits_by_code = {c: (v.vendor_number or "").strip() for c, v in vendors_by_code.items()}
+        names_by_code = {c: v.name for c, v in vendors_by_code.items()}
         classifier = ClassificationService(self.db)   # §18.6 — rules cache built once
         # JAKS SKU scheme: mint JAKS-[ENGINE]-[CATEGORY]-[V][NNNN] at import time.
         # Seed the per-(engine,category) sequence counters from the DB so re-imports
@@ -620,9 +625,11 @@ class ProductImportService(BaseService):
             seen.add(k)
 
             # Per-row vendor: the feed-SKU prefix names it (no prefix = PAI).
+            # Plain values only — the 500-row chunk commit expunges the session,
+            # so touching the Vendor ORM objects here dies on feeds > 500 rows.
             row_code = _vendor_code_from_sku(sku) or _PAI_VENDOR_CODE
-            row_vendor = vendors_by_code[row_code]
-            row_digit = (row_vendor.vendor_number or "").strip()
+            row_vendor_id = vendor_ids_by_code[row_code]
+            row_digit = digits_by_code[row_code]
 
             cat_id = self._resolve_category(p["type"], cat_cache, summary, dry_run)
             # §18.6 — refine below the Shopify-Type category + derive engine make.
@@ -678,7 +685,7 @@ class ProductImportService(BaseService):
                 title=p["title"][:500],
                 # §18.2 — Brand = the parts brand (seeded Brand rows: PAI /
                 # Interstate-McBee / …), keyed off the row's vendor.
-                brand=_BRAND_BY_VENDOR_CODE.get(row_code, row_vendor.name),
+                brand=_BRAND_BY_VENDOR_CODE.get(row_code, names_by_code[row_code]),
                 # §18.2 / A1: do NOT set manufacturer to the vendor name. Manufacturer =
                 # engine make (engine_manufacturer), filled by the §18.6 classification
                 # pass. Left blank here so Brand != Vendor != Manufacturer stays clean.
@@ -716,14 +723,21 @@ class ProductImportService(BaseService):
             self.db.flush()
 
             self.db.add(ProductVendorSource(
-                product_id=product.id, vendor_id=row_vendor.id,
+                product_id=product.id, vendor_id=row_vendor_id,
                 vendor_part_number=p["pai_part"], vendor_sku=sku,
                 vendor_cost=_to_float(p.get("cost")) or 0.0,
                 is_preferred=True,
             ))
+            # Dedupe OEM refs on the number: feeds list the same part number under
+            # multiple brands (e.g. VOLVO + MACK share an OEM #), but the R3 unique
+            # index is (product_id, ref_type, ref_number) — the second insert would
+            # abort the whole import flush. First brand wins.
+            seen_oem: set[str] = set()
             for it in p["oem"]:
                 brand, num = _split_two(it)
-                if num:
+                nk = (num or "").strip().lower()
+                if num and nk not in seen_oem:
+                    seen_oem.add(nk)
                     self.db.add(CrossReference(
                         product_id=product.id, ref_type=CrossRefType.OEM,
                         ref_number=num, brand=brand, status="proven",

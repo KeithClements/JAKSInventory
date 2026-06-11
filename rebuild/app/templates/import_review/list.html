@@ -254,7 +254,8 @@
   <b>{{ request.query_params.get('apply_created','0') }}</b> product(s) created,
   <b>{{ request.query_params.get('apply_updated','0') }}</b> updated.
   {% if ap_errors and ap_errors != '0' %}
-  <span class="text-red-600 ml-1">{{ ap_errors }} error(s) — see console/logs for details.</span>
+  {% set ap_msg = request.query_params.get('apply_msg') %}
+  <span class="text-red-600 ml-1">{{ ap_errors }} error(s){% if ap_msg %}: {{ ap_msg }}{% else %} — see console/logs for details.{% endif %}</span>
   {% endif %}
   Find applied products via the <b>→ View in catalog</b> links on each row.
 </div>

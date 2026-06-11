@@ -375,6 +375,20 @@ def queue(batch_id: int, request: Request, q: str = "", tab: str = "all",
 
 
 # ── Apply approved candidates to the catalog (Phase C) ───────────────────────
+def _apply_qs(summary: dict) -> str:
+    """Build the apply-flash query string. The FIRST error message rides along
+    (truncated) so the banner can say WHY instead of just how many — '13,202
+    errors, see console' on a missing vendor was indistinguishable from a crash."""
+    from urllib.parse import quote
+    errs = summary.get("errors", [])
+    qs = (f"apply_created={summary.get('created', 0)}"
+          f"&apply_updated={summary.get('updated', 0)}"
+          f"&apply_errors={len(errs)}")
+    if errs:
+        qs += "&apply_msg=" + quote(str(errs[0])[:220])
+    return qs
+
+
 @router.post("/{batch_id}/apply")
 def apply_batch(batch_id: int, request: Request, db: Session = Depends(get_db),
                 user_id: int = Depends(get_current_user_id)):
@@ -383,12 +397,8 @@ def apply_batch(batch_id: int, request: Request, db: Session = Depends(get_db),
     catalog is gated (admin-only) — a denial returns 403, never silently applies."""
     try:
         summary = ImportReviewService(db, user_id).apply_approved(batch_id)
-        created  = summary.get("created", 0)
-        updated  = summary.get("updated", 0)
-        err_count = len(summary.get("errors", []))
         return RedirectResponse(
-            f"/import-review/{batch_id}?tab=accepted"
-            f"&apply_created={created}&apply_updated={updated}&apply_errors={err_count}",
+            f"/import-review/{batch_id}?tab=accepted&{_apply_qs(summary)}",
             status_code=303,
         )
     except PermissionDeniedError:
@@ -425,10 +435,7 @@ def review(batch_id: int, request: Request, action: str = Form(...),
             summary = ImportReviewService(db, user_id).apply_approved(
                 batch_id, only_ids=candidate_ids)
             return RedirectResponse(
-                f"/import-review/{batch_id}?tab={tab}"
-                f"&apply_created={summary.get('created', 0)}"
-                f"&apply_updated={summary.get('updated', 0)}"
-                f"&apply_errors={len(summary.get('errors', []))}",
+                f"/import-review/{batch_id}?tab={tab}&{_apply_qs(summary)}",
                 status_code=303)
         except PermissionDeniedError:
             return HTMLResponse(
@@ -461,10 +468,7 @@ def candidate_decide(candidate_id: int, request: Request, action: str = Form(...
         try:
             summary = svc.apply_approved(batch_id, only_ids=[candidate_id])
             return RedirectResponse(
-                f"/import-review/{batch_id}"
-                f"?apply_created={summary.get('created', 0)}"
-                f"&apply_updated={summary.get('updated', 0)}"
-                f"&apply_errors={len(summary.get('errors', []))}",
+                f"/import-review/{batch_id}?{_apply_qs(summary)}",
                 status_code=303)
         except PermissionDeniedError:
             return HTMLResponse(
@@ -504,12 +508,8 @@ def approve_and_apply(batch_id: int, request: Request,
     try:
         ImportReviewService(db, user_id).bulk_set_status(batch_id, _RS.ACCEPTED, scope=scope)
         summary = ImportReviewService(db, user_id).apply_approved(batch_id)
-        created   = summary.get("created", 0)
-        updated   = summary.get("updated", 0)
-        err_count = len(summary.get("errors", []))
         return RedirectResponse(
-            f"/import-review/{batch_id}?tab=accepted"
-            f"&apply_created={created}&apply_updated={updated}&apply_errors={err_count}",
+            f"/import-review/{batch_id}?tab=accepted&{_apply_qs(summary)}",
             status_code=303,
         )
     except PermissionDeniedError:

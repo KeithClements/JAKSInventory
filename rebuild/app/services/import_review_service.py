@@ -568,94 +568,144 @@ class ImportReviewService(BaseService):
             self.db.delete(d)
         self.db.commit()
 
+        # ── Split: NEW rows go through ONE bulk full_import call. The previous
+        # per-row full_import calls each re-queried every vendor_sku in the
+        # catalog (plus categories + sequence counters) — O(n²) at catalog
+        # scale; a 13k-row full-catalog apply effectively hung the request.
+        # Hold (id, sku, parsed_row) — NOT ORM objects: full_import's chunked
+        # commits expunge the whole session, which would detach the candidate
+        # (and batch) instances mid-run on feeds > 500 rows.
+        new_cands: list[tuple] = []   # (candidate_id, sku, parsed_row)
+        upd_cands: list[tuple] = []
         for c in cands:
             try:
                 p = json.loads(c.raw_json) if c.raw_json else {}
-                created_now = (c.disposition == ImportDisposition.NEW
-                               and not c.matched_product_id)
-                if created_now:
-                    product_id = self._apply_new(pis, p)
-                    summary["created"] += 1
-                else:
-                    product_id = c.matched_product_id
-                    got = self._apply_update(psvc, product_id, p, c)
-                    summary["images_added"] += got["images"]
-                    summary["cross_refs_added"] += got["cross_refs"]
-                    summary["updated"] += 1
+            except (ValueError, TypeError) as exc:
+                summary["errors"].append(f"candidate {c.id} ({c.sku}): bad raw_json: {exc}")
+                continue
+            if c.disposition == ImportDisposition.NEW and not c.matched_product_id:
+                new_cands.append((c.id, c.sku, p))
+            else:
+                upd_cands.append((c.id, c.sku, p))
+
+        def _finish(c, product_id: int, p: dict, *, created_now: bool) -> None:
+            """Shared post-apply: stamp the candidate, re-apply reviewer
+            corrections (authoritative — _apply paths build from raw_json, so a
+            reviewer's price/category/engine edit must be re-applied or it would
+            silently vanish), clear needs_review, tally, retire the row."""
+            c.applied_product_id = product_id
+            c.applied_at = datetime.utcnow()
+            summary["applied"] += 1
+            prod_obj = self.db.get(Product, product_id)
+            if prod_obj:
+                prod_obj.needs_review = False
+                # Price: the candidate's price is competitor-matched (and
+                # possibly reviewer-corrected) — it always wins.
+                if c.new_price is not None and c.new_price > 0:
+                    prod_obj.price_override = c.new_price
+                # Category: authoritative on create, fill-if-blank on update.
+                if c.resolved_category_id and (created_now or not prod_obj.category_id):
+                    prod_obj.category_id = c.resolved_category_id
+                # Engine make: same rule.
+                if c.engine_manufacturer and (created_now or not prod_obj.engine_manufacturer):
+                    prod_obj.engine_manufacturer = c.engine_manufacturer
+                # AI-generated description/tags fill blanks only.
+                if not prod_obj.description:
+                    ai_desc = (p.get("_ai_description") or "").strip()
+                    if ai_desc:
+                        prod_obj.description = ai_desc[:2000]
+                if not prod_obj.search_keywords:
+                    ai_tags = (p.get("_ai_tags") or "").strip()
+                    if ai_tags:
+                        prod_obj.search_keywords = ai_tags[:500]
+            # R4 queue hygiene: an applied candidate's job is done — its data
+            # now lives on the product. Tally on the batch header (history) and
+            # remove the row so the queue only holds work that still needs eyes.
+            batch.applied_count += 1
+            self.db.delete(c)
+
+        # ── NEW candidates → one bulk create via the locked full_import path
+        # (mints JAKS SKUs + vendor sources + cross-refs + apps + images, and is
+        # idempotent by vendor_sku — re-running after a partial apply is safe).
+        if new_cands:
+            try:
+                res = pis.full_import(rows=[p for _, _, p in new_cands],
+                                      dry_run=False, import_images=True)
+            except Exception as exc:  # noqa: BLE001 — surface, never 500 the queue
+                self.db.rollback()
+                res = {"error": f"bulk create failed: {exc}"}
+            if res.get("error"):
+                # e.g. the feed's vendor doesn't exist / has no SKU digit set.
+                # Nothing was written (full_import is atomic on this check) and
+                # the candidates stay ACCEPTED + unapplied, so fixing the vendor
+                # and clicking Apply again just works.
+                summary["errors"].append(res["error"])
+            else:
+                summary["created"] = res.get("created", 0)
+                # full_import's chunked commits expunged the session — re-bind
+                # the batch row before _finish touches applied_count.
+                batch = self.db.get(ImportBatch, batch_id)
+                # Resolve the created products by the parked feed SKU, chunked
+                # (vendor_sku first — product.sku is the minted JAKS SKU now).
+                keys = [_norm(p.get("sku") or "") for _, _, p in new_cands]
+                want = sorted({k for k in keys if k})
+                by_sku: dict[str, int] = {}
+                for i in range(0, len(want), 500):
+                    chunk = want[i:i + 500]
+                    for vsku, pid in (self.db.query(
+                            func.lower(ProductVendorSource.vendor_sku),
+                            ProductVendorSource.product_id)
+                            .filter(func.lower(ProductVendorSource.vendor_sku)
+                                    .in_(chunk)).all()):
+                        by_sku.setdefault(vsku, pid)
+                    for psku, pid in (self.db.query(func.lower(Product.sku), Product.id)
+                                      .filter(func.lower(Product.sku).in_(chunk)).all()):
+                        by_sku.setdefault(psku, pid)
+                done = 0
+                for (cid, csku, p), k in zip(new_cands, keys):
+                    try:
+                        c = self.db.get(ImportCandidate, cid)  # fresh post-expunge
+                        if c is None:
+                            continue
+                        product_id = by_sku.get(k)
+                        if product_id:
+                            _finish(c, product_id, p, created_now=True)
+                        else:
+                            summary["errors"].append(
+                                f"candidate {cid} ({csku}): created product "
+                                "not found by feed SKU")
+                        done += 1
+                        if done % 500 == 0:
+                            self.db.commit()
+                    except Exception as exc:  # noqa: BLE001 — never abort the batch
+                        self.db.rollback()
+                        batch = self.db.get(ImportBatch, batch_id)
+                        summary["errors"].append(f"candidate {cid} ({csku}): {exc}")
+                self.db.commit()
+
+        # ── UPDATE / CROSS_REF candidates → surgical per-product enrichment
+        for cid, csku, p in upd_cands:
+            try:
+                c = self.db.get(ImportCandidate, cid)
+                if c is None:
+                    continue
+                product_id = c.matched_product_id
+                got = self._apply_update(psvc, product_id, p, c)
+                summary["images_added"] += got["images"]
+                summary["cross_refs_added"] += got["cross_refs"]
+                summary["updated"] += 1
                 if product_id:
-                    c.applied_product_id = product_id
-                    c.applied_at = datetime.utcnow()
-                    summary["applied"] += 1
-                    # A human approved this candidate → clear needs_review on
-                    # the product so it no longer appears in the Products "Needs
-                    # Review" tab, and apply any AI-generated fields. Reviewer
-                    # corrections on the CANDIDATE (price / category / engine) are
-                    # authoritative: _apply_new builds the product from raw_json,
-                    # so corrected fields must be re-applied here or a reviewer's
-                    # edit would silently vanish on newly created products.
-                    prod_obj = self.db.get(Product, product_id)
-                    if prod_obj:
-                        prod_obj.needs_review = False
-                        # Price: the candidate's price is competitor-matched (and
-                        # possibly reviewer-corrected) — it always wins.
-                        if c.new_price is not None and c.new_price > 0:
-                            prod_obj.price_override = c.new_price
-                        # Category: on a just-created product the candidate's
-                        # resolved category overrides the classifier's guess; on
-                        # an existing product it only fills a blank.
-                        if c.resolved_category_id and (created_now or not prod_obj.category_id):
-                            prod_obj.category_id = c.resolved_category_id
-                        # Engine make: same rule — authoritative on create,
-                        # fill-if-blank on update.
-                        if c.engine_manufacturer and (created_now or not prod_obj.engine_manufacturer):
-                            prod_obj.engine_manufacturer = c.engine_manufacturer
-                        # Apply AI-generated description and tags if product
-                        # was created without them (full_import leaves these blank).
-                        try:
-                            raw = json.loads(c.raw_json) if c.raw_json else {}
-                            if not prod_obj.description:
-                                ai_desc = (raw.get("_ai_description") or "").strip()
-                                if ai_desc:
-                                    prod_obj.description = ai_desc[:2000]
-                            if not prod_obj.search_keywords:
-                                ai_tags = (raw.get("_ai_tags") or "").strip()
-                                if ai_tags:
-                                    prod_obj.search_keywords = ai_tags[:500]
-                        except (ValueError, TypeError):
-                            pass
-                    # R4 queue hygiene: an applied candidate's job is done — its
-                    # data now lives on the product. Tally on the batch header
-                    # (which survives as history) and remove the row, so the
-                    # review queue only ever holds work that still needs eyes.
-                    batch.applied_count += 1
-                    self.db.delete(c)
+                    _finish(c, product_id, p, created_now=False)
                 self.db.commit()
             except Exception as exc:  # noqa: BLE001 — one bad row never aborts the batch
                 self.db.rollback()
-                summary["errors"].append(f"candidate {c.id} ({c.sku}): {exc}")
+                batch = self.db.get(ImportBatch, batch_id)
+                summary["errors"].append(f"candidate {cid} ({csku}): {exc}")
 
         self._finalize_batch(
             batch_id,
             applied_or_skipped=summary["applied"] + summary["skipped_duplicates"])
         return summary
-
-    def _apply_new(self, pis, p) -> int | None:
-        """Create a product from a parsed row via the locked full_import path, then
-        resolve its id (the feed SKU is parked on the new product's vendor source)."""
-        res = pis.full_import(rows=[p], dry_run=False, import_images=True)
-        if res.get("error"):
-            # e.g. import vendor missing its SKU digit — surface the actionable
-            # message in summary["errors"] instead of silently no-opping.
-            raise ValueError(res["error"])
-        k = _norm(p.get("sku") or "")
-        if not k:
-            return None
-        vs = self.db.query(ProductVendorSource).filter(
-            func.lower(ProductVendorSource.vendor_sku) == k).first()
-        if vs:
-            return vs.product_id
-        prod = self.db.query(Product).filter(func.lower(Product.sku) == k).first()
-        return prod.id if prod else None
 
     def _apply_update(self, psvc, product_id, p, c) -> dict:
         """Enrich an existing matched product from the approved import candidate.
