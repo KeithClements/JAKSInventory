@@ -18,6 +18,13 @@
   </div>
   {% endif %}
 
+  {# Error flash — e.g. SKU # digit clash on save (nothing was written) #}
+  {% if request.query_params.get('error') %}
+  <div class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+    ⚠ {{ request.query_params.get('error') }}
+  </div>
+  {% endif %}
+
   {# Status-change forms live outside the main edit form to prevent nesting #}
   {% if vendor.is_active %}
   <form id="deactivate-form" method="post" action="/vendors/{{ vendor.id }}/deactivate"
@@ -46,8 +53,8 @@
 
           <div>
             <label class="form-label">
-              Vendor Code
-              <span class="font-normal text-gray-400 normal-case">(max 4 chars)</span>
+              Feed SKU Code
+              <span class="font-normal text-gray-400 normal-case">(matches JAKS-[CODE]- feed SKUs, e.g. PAI / IMB)</span>
             </label>
             <input name="vendor_code" value="{{ vendor.vendor_code }}" maxlength="4"
                    oninput="this.value=this.value.toUpperCase()"
@@ -57,11 +64,18 @@
           <div>
             <label class="form-label">
               SKU #
-              <span class="font-normal text-gray-400 normal-case">(1 digit — opaque vendor code baked into JAKS SKUs, e.g. PAI = 9)</span>
+              <span class="font-normal text-gray-400 normal-case">(opaque digit baked into JAKS SKUs — PAI = 9, IMB = 3)</span>
             </label>
-            <input name="vendor_number" value="{{ vendor.vendor_number }}" maxlength="2"
-                   inputmode="numeric" pattern="[0-9]*"
+            {% if digit_locked %}
+            <input value="{{ vendor.vendor_number }}" disabled
+                   class="form-input font-mono bg-gray-50 text-gray-500 cursor-not-allowed" />
+            <p class="mt-1 text-xs text-amber-600">Frozen — SKUs have been minted under this digit; changing it would split this vendor's SKU namespace.</p>
+            {% else %}
+            <input name="vendor_number" value="{{ vendor.vendor_number }}" maxlength="1"
+                   inputmode="numeric" pattern="[0-9]*" placeholder="auto"
                    class="form-input font-mono" />
+            <p class="mt-1 text-xs text-gray-400">Blank = auto-assign the next free digit. Changeable until this vendor's first SKU is minted, frozen after.</p>
+            {% endif %}
           </div>
 
           <div>

@@ -130,6 +130,38 @@ def assemble_sku(category_code: str, vendor_digit: str, part_seq: int,
     return "-".join(segs) + f"-{vendor_digit}{int(part_seq):0{SEQ_WIDTH}d}"
 
 
+# Auto-assign preference: 1-8 first, then 0, then 9 last (9 is PAI's by owner
+# convention — only handed out if PAI somehow never claimed it).
+_DIGIT_PREFERENCE = "123456780" + "9"
+
+
+def next_free_vendor_digit(db) -> str:
+    """R4 owner workflow: typing a vendor's feed code (PAI / IMB) on the vendor
+    form converts it to the next free 1-digit SKU vendor number automatically.
+    Returns '' when all ten digits are taken (the import guard still refuses
+    digit-less vendors, so nothing mints in a shared namespace)."""
+    from app.models.vendor import Vendor
+    taken = {(n or "").strip()
+             for (n,) in db.query(Vendor.vendor_number).all() if (n or "").strip()}
+    for d in _DIGIT_PREFERENCE:
+        if d not in taken:
+            return d
+    return ""
+
+
+def vendor_digit_locked(db, vendor_id: int) -> bool:
+    """The vendor digit is FROZEN once any product has been MINTED under it:
+    a scheme-minted product (part_seq stamped) carrying this vendor's source.
+    Changing it after that would split the vendor's SKU namespace — old SKUs
+    keep the old digit while new mints take the new one."""
+    from app.models.product import ProductVendorSource
+    return (db.query(ProductVendorSource.id)
+            .join(Product, Product.id == ProductVendorSource.product_id)
+            .filter(ProductVendorSource.vendor_id == vendor_id,
+                    Product.part_seq.isnot(None))
+            .first()) is not None
+
+
 # ── DB-aware service ────────────────────────────────────────────────────────────
 
 class SkuService(BaseService):

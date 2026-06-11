@@ -15,11 +15,34 @@ from app.deps import get_db, get_current_user_id
 from app.models.vendor import Vendor, VendorContact, VendorCredit
 from app.models.purchase_order import PurchaseOrder, VendorBill
 from app.models.product import ProductVendorSource
+from app.services.sku_service import next_free_vendor_digit, vendor_digit_locked
 
 router = APIRouter(prefix="/vendors", tags=["vendors"])
 templates = Jinja2Templates(directory="app/templates")
 
 PAYMENT_TERMS = list(PaymentTerms)
+
+
+def _resolve_vendor_digit(db: Session, submitted: str, *, current: str = "",
+                          vendor_id: int | None = None) -> tuple[str, str]:
+    """R4 owner workflow — the vendor form takes the FEED CODE (PAI / IMB) and
+    the SKU digit converts automatically: blank keeps the current digit or
+    auto-assigns the next free one; an explicit digit must be a single 0-9 and
+    unique across vendors (one digit per vendor, owner-locked SKU scheme).
+    Returns (digit, error) — error is '' when the digit is usable."""
+    submitted = (submitted or "").strip()
+    if submitted and (len(submitted) != 1 or not submitted.isdigit()):
+        return current, "SKU # must be a single digit 0-9."
+    digit = submitted or (current or "").strip() or next_free_vendor_digit(db)
+    if digit and digit != (current or "").strip():
+        clash_q = db.query(Vendor).filter(Vendor.vendor_number == digit)
+        if vendor_id:
+            clash_q = clash_q.filter(Vendor.id != vendor_id)
+        clash = clash_q.first()
+        if clash is not None:
+            return current, (f"SKU # {digit} is already assigned to "
+                             f"{clash.name} — one digit per vendor.")
+    return digit, ""
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -159,10 +182,19 @@ async def vendor_create(
 ):
     form = await request.form()
     vendor_code = str(form.get("vendor_code", "")).strip().upper()[:4]
+    # R4 — feed code → SKU digit conversion: blank digit auto-assigns the
+    # next free one; explicit digits are validated + uniqueness-checked.
+    digit, derr = _resolve_vendor_digit(db, str(form.get("vendor_number", "")))
+    if derr:
+        return templates.TemplateResponse(
+            request, "vendors/new.html",
+            {"payment_terms": PAYMENT_TERMS, "error": derr,
+             "form_data": {k: str(v) for k, v in form.items()}},
+            status_code=422)
     v = Vendor(
         name=str(form.get("name", "")).strip(),
         vendor_code=vendor_code,
-        vendor_number=str(form.get("vendor_number", "")).strip()[:2],  # 1-digit SKU vendor #
+        vendor_number=digit,
         account_number=str(form.get("account_number", "")).strip(),
         contact_name=str(form.get("contact_name", "")).strip(),
         phone=str(form.get("phone", "")).strip(),
@@ -200,6 +232,10 @@ async def vendor_quick_create(
     v = Vendor(
         name=name,
         vendor_code=vendor_code,
+        # R4 — quick-created vendors are import-ready immediately: the SKU
+        # digit auto-assigns from the next free one (changeable on the vendor
+        # page until the first SKU is minted under it).
+        vendor_number=next_free_vendor_digit(db),
         phone=str(form.get("phone", "")).strip(),
         account_number=str(form.get("account_number", "")).strip(),
     )
@@ -340,6 +376,8 @@ def vendor_detail(vendor_id: int, request: Request, db: Session = Depends(get_db
             "recent_pos": recent_pos,
             "product_count": product_count,
             "payment_terms": PAYMENT_TERMS,
+            # R4 — SKU digit frozen once products have minted under it
+            "digit_locked": vendor_digit_locked(db, v.id),
         },
     )
 
@@ -355,9 +393,22 @@ async def vendor_update(
     if not v:
         return RedirectResponse("/vendors/", status_code=303)
     form = await request.form()
+    # R4 — the digit is FROZEN once SKUs have been minted under it (changing
+    # it would split the vendor's SKU namespace); until then it behaves like
+    # create: blank keeps/auto-assigns, explicit digits validate + dedupe.
+    if vendor_digit_locked(db, v.id):
+        digit = v.vendor_number  # submitted value ignored — field is read-only
+    else:
+        digit, derr = _resolve_vendor_digit(
+            db, str(form.get("vendor_number", "")),
+            current=v.vendor_number or "", vendor_id=v.id)
+        if derr:
+            db.rollback()
+            return RedirectResponse(
+                f"/vendors/{vendor_id}?error={url_quote(derr)}", status_code=303)
     v.name = str(form.get("name", "")).strip()
     v.vendor_code = str(form.get("vendor_code", "")).strip().upper()[:4]
-    v.vendor_number = str(form.get("vendor_number", "")).strip()[:2]  # 1-digit SKU vendor #
+    v.vendor_number = digit
     v.account_number = str(form.get("account_number", "")).strip()
     v.contact_name = str(form.get("contact_name", "")).strip()
     v.phone = str(form.get("phone", "")).strip()
