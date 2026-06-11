@@ -139,9 +139,11 @@ def test_full_import_creates_products_and_relations(db):
     assert p.supplier_warranty_months == 24
     assert p.shopify_product_id == "jaks-pai-1"
     assert p.search_keywords == "CUMMINS"
-    # §18.2 — Brand / Vendor / Manufacturer kept separate (was conflated pre-§18)
+    # §18.2 — Brand / Vendor / Manufacturer kept separate (was conflated pre-§18).
+    # 2026-06-11 owner rule: Manufacturer = the ENGINE MAKE caught from the
+    # description (here the single CUMMINS signal) — never the vendor name.
     assert p.brand == "PAI"               # Brand = the parts brand
-    assert p.manufacturer == ""           # NOT "PAI Industries" (the vendor name)
+    assert p.manufacturer == "Cummins"    # detected — NOT "PAI Industries"
     # PAI vendor source created, vendor_cost BLANK
     src = db.query(ProductVendorSource).filter(ProductVendorSource.product_id == p.id).first()
     assert src is not None and src.is_preferred is True
@@ -235,16 +237,17 @@ def test_pricing_update_competitor_never_touches_product(db):
 # ── §18 — Categorization & classification foundation ─────────────────────────
 
 def test_full_import_does_not_conflate_brand_and_manufacturer(db):
-    """§18.2 / A1 — the importer must never write the vendor name into
-    product.manufacturer. Brand = 'PAI'; manufacturer is left blank for the
-    §18.6 classification pass (engine make). Regression guard."""
+    """§18.2 / A1 — the importer must never write the VENDOR name into
+    product.manufacturer. Brand = 'PAI'; manufacturer is the ENGINE MAKE
+    caught from the description (2026-06-11 owner rule) or blank for
+    multi-make/no-signal parts. Regression guard."""
     ProductImportService(db, None).full_import(_shopify_csv(), dry_run=False)
     products = db.query(Product).all()
     assert products
     for p in products:
         assert p.brand == "PAI"
-        assert p.manufacturer == ""               # was "PAI Industries" pre-§18
-        assert p.manufacturer != "PAI Industries"
+        assert p.manufacturer != "PAI"             # never the vendor
+        assert p.manufacturer != "PAI Industries"  # never the vendor name
 
 
 def test_category_has_maintenance_columns(db):

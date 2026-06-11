@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Import Products — JAKS Inventory{% endblock %}
+{% block title %}Import Products — Axle{% endblock %}
 {% block heading %}Import{% endblock %}
 
 {% block content %}
@@ -110,6 +110,32 @@
     </div>
   </div>
 
+  {# ── Utilities ───────────────────────────────────────────────────────────── #}
+  <div class="card" x-data="mfgBackfill()">
+    <div class="card-header"><h2 class="card-title">Catalog Utilities</h2></div>
+    <div class="card-body space-y-3">
+      <div>
+        <p class="text-sm font-semibold text-gray-800">Derive manufacturers from descriptions</p>
+        <p class="text-xs text-gray-500 mt-0.5">
+          Fills the blank Manufacturer field on existing products from what's already stored —
+          OEM reference brands, applications, title, keywords. One clear make wins; multi-make
+          parts stay blank; never overwrites a manufacturer you set by hand.
+        </p>
+      </div>
+      <div class="flex items-center gap-3">
+        <button type="button" @click="run(true)" :disabled="busy" class="btn-secondary btn-sm">
+          <span x-show="!busy">Preview</span><span x-show="busy" x-cloak>Working…</span>
+        </button>
+        <button type="button" @click="run(false)" :disabled="busy || !result" class="btn-primary btn-sm"
+                title="Preview first, then apply">Apply</button>
+        <span x-show="result" x-cloak class="text-xs text-gray-600"
+              x-text="result ? (result.dry_run ? 'Preview: ' : 'Applied: ') + result.filled + ' filled · '
+                      + result.multi_make_skipped + ' multi-make skipped · ' + result.no_signal + ' no signal' : ''"></span>
+      </div>
+      <div x-show="err" x-cloak class="text-xs text-red-600" x-text="err"></div>
+    </div>
+  </div>
+
   {# ── Errors ──────────────────────────────────────────────────────────────── #}
   <div x-show="error" x-cloak class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700" x-text="error"></div>
 
@@ -145,6 +171,23 @@
 </div>
 
 <script>
+function mfgBackfill() {
+  return {
+    busy: false, result: null, err: null,
+    async run(dryRun) {
+      this.busy = true; this.err = null;
+      const fd = new FormData();
+      fd.append('dry_run', dryRun ? 'true' : 'false');
+      try {
+        const resp = await fetch('/products/backfill-manufacturers', { method: 'POST', body: fd });
+        if (!resp.ok) { this.err = 'Failed (HTTP ' + resp.status + ').'; }
+        else { this.result = await resp.json(); }
+      } catch (e) { this.err = 'Error: ' + e; }
+      finally { this.busy = false; }
+    }
+  };
+}
+
 function productImport() {
   return {
     mode: 'full', sourceType: 'sell', importImages: true,

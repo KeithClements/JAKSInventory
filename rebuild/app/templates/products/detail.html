@@ -102,6 +102,12 @@
                     {% for m in manufacturers %}
                       <option value="{{ m }}" {% if product.manufacturer == m %}selected{% endif %}>{{ m }}</option>
                     {% endfor %}
+                    {# Legacy-preserving: a stored value outside the canonical
+                       list still shows selected instead of silently reading
+                       as blank (same pattern as the engine picker). #}
+                    {% if product.manufacturer and product.manufacturer not in manufacturers %}
+                      <option value="{{ product.manufacturer }}" selected>{{ product.manufacturer }}</option>
+                    {% endif %}
                   </select>
                 </div>
                 <div>

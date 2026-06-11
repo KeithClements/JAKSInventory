@@ -739,6 +739,14 @@ class ImportReviewService(BaseService):
             from app.routers.products import MANUFACTURERS as _MFG_CANON
             product.manufacturer = {m.lower(): m for m in _MFG_CANON}.get(
                 new_mfg.lower(), new_mfg)
+        elif not (product.manufacturer or "").strip():
+            # Owner rule: a make named in the imported description (OEM refs /
+            # applications / title / tags) fills a BLANK manufacturer — never
+            # overwrites one a human already set.
+            from app.services.product_import_service import derive_manufacturer
+            derived = derive_manufacturer(p)
+            if derived:
+                product.manufacturer = derived
 
         new_cost = _to_float(p.get("cost"))
         if new_cost is not None and new_cost > 0:

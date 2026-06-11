@@ -105,7 +105,12 @@ def test_full_import_applies_classification(db):
     assert p.engine_manufacturer == "Cummins"     # from the CUMMINS application
     assert p.category_id == fid                    # deeper match via "bolt"
     assert p.needs_review is False
-    assert p.brand == "PAI" and p.manufacturer == ""   # still de-conflated
+    # De-conflation guard, updated for the 2026-06-11 owner rule: Manufacturer
+    # = ENGINE MAKE caught from the description (never the vendor name);
+    # Brand stays the parts brand.
+    assert p.brand == "PAI"
+    assert p.manufacturer == "Cummins"       # from the CUMMINS application
+    assert p.manufacturer != p.brand          # Brand != Vendor != Manufacturer
 
 
 def test_full_import_flags_unclassifiable_as_needs_review(db):

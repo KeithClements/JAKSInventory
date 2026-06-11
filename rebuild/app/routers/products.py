@@ -35,6 +35,7 @@ templates = Jinja2Templates(directory="app/templates")
 
 MANUFACTURERS = [
     "Cummins", "Caterpillar", "Detroit Diesel", "Mack", "Volvo", "International",
+    "Paccar", "Mercedes",
 ]
 
 
@@ -680,6 +681,19 @@ async def product_import_run(
     if mode == "pricing":
         return svc.pricing_update_pai_cost(text, dry_run=dry_run)
     return {"error": f"unknown mode {mode!r}"}
+
+
+@router.post("/backfill-manufacturers")
+def product_backfill_manufacturers(
+    dry_run: bool = Form(True),
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+    _admin=Depends(require_admin),
+):
+    """Owner rule applied retroactively: fill BLANK manufacturers from each
+    product's stored OEM-ref brands / applications / title / keywords."""
+    from app.services.product_import_service import ProductImportService
+    return ProductImportService(db, user_id).backfill_manufacturers(dry_run=dry_run)
 
 
 # ── Detail / Update / Deactivate / Reactivate ─────────────────────────────────

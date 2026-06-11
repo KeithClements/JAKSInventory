@@ -77,6 +77,64 @@ _BRAND_BY_VENDOR_CODE: dict[str, str] = {
     "IMB": "Interstate-McBee",
 }
 
+# Canonical ENGINE_MAKES value (what classification/normalize_make emits) →
+# the product-form Manufacturer dropdown value (app/routers/products.py
+# MANUFACTURERS). The two vocabularies drifted ("CAT / Caterpillar" vs
+# "Caterpillar") — this is the single bridge between them.
+_MANUFACTURER_BY_ENGINE_MAKE: dict[str, str] = {
+    "Cummins": "Cummins",
+    "CAT / Caterpillar": "Caterpillar",
+    "Detroit": "Detroit Diesel",
+    "Mack": "Mack",
+    "Volvo": "Volvo",
+    "International / Navistar": "International",
+    "Paccar": "Paccar",
+    "Mercedes": "Mercedes",
+}
+
+
+def derive_manufacturer(p: dict, cls: dict | None = None) -> str:
+    """Owner expectation: if the manufacturer's name appears anywhere in the
+    imported description, the import catches it and fills the product-form
+    Manufacturer field. Priority:
+
+      1. The explicit Manufacturer column (SCRAPER_REQUIREMENTS.md), verbatim
+         when it isn't a known make (the unmapped-sample flow surfaces those).
+      2. The classifier's application-derived engine make.
+      3. A scan of every textual signal the feed carries — OEM-reference
+         brands, application makes, title, tags — for known make names.
+         Exactly ONE distinct make across the signals wins; several distinct
+         makes = a multi-fit part, deliberately left blank (picking one would
+         be wrong on a gasket that fits CAT, Cummins, and Mack).
+    """
+    from app.services.classification_service import normalize_make
+
+    explicit = (p.get("manufacturer") or "").strip()
+    if explicit:
+        canon = normalize_make(explicit)
+        return _MANUFACTURER_BY_ENGINE_MAKE.get(canon, explicit) if canon else explicit
+
+    if cls and cls.get("engine_manufacturer"):
+        mapped = _MANUFACTURER_BY_ENGINE_MAKE.get(cls["engine_manufacturer"])
+        if mapped:
+            return mapped
+
+    found: set[str] = set()
+    for it in (p.get("oem") or []):
+        canon = normalize_make(_split_two(it)[0])
+        if canon:
+            found.add(canon)
+    for it in (p.get("apps") or []):
+        canon = normalize_make(_split_two(it)[0])
+        if canon:
+            found.add(canon)
+    from app.services.classification_service import detect_makes_in_text
+    found |= detect_makes_in_text(p.get("title") or "")
+    found |= detect_makes_in_text(p.get("tags") or "")
+    if len(found) == 1:
+        return _MANUFACTURER_BY_ENGINE_MAKE.get(next(iter(found)), "")
+    return ""
+
 # SKU match aliases (header keys are lowercased before lookup)
 _SKU_KEYS = ("jaks_sku", "sku", "variant sku", "internal_sku", "part_number", "jaks_part")
 # True PAI cost columns (Pricing-Update pai_cost mode) — NOT "variant price" (that's sell)
@@ -686,9 +744,12 @@ class ProductImportService(BaseService):
                 # §18.2 — Brand = the parts brand (seeded Brand rows: PAI /
                 # Interstate-McBee / …), keyed off the row's vendor.
                 brand=_BRAND_BY_VENDOR_CODE.get(row_code, names_by_code[row_code]),
-                # §18.2 / A1: do NOT set manufacturer to the vendor name. Manufacturer =
-                # engine make (engine_manufacturer), filled by the §18.6 classification
-                # pass. Left blank here so Brand != Vendor != Manufacturer stays clean.
+                # §18.2 / A1: Manufacturer = ENGINE MAKE, never the vendor name.
+                # Owner rule (2026-06-11): a make named anywhere in the imported
+                # description (OEM refs / applications / title / tags) is caught
+                # at import and fills the product-form Manufacturer dropdown;
+                # multi-make parts stay blank on purpose.
+                manufacturer=derive_manufacturer(p, cls),
                 barcode=p["barcode"] or None,
                 category_id=cls["category_id"] or cat_id,        # §18.6 — deeper if confident, else Type
                 engine_manufacturer=cls["engine_manufacturer"],  # §18 A1 — Manufacturer = engine make
@@ -1177,6 +1238,68 @@ class ProductImportService(BaseService):
                 existing.shipping_price = ship
                 existing.core_charge = core
                 existing.seen_at = datetime.utcnow()
+        self.db.commit() if not dry_run else self.db.rollback()
+        return summary
+
+    # ══ Manufacturer backfill (owner rule, applied retroactively) ═══════════════
+    def backfill_manufacturers(self, *, dry_run: bool = True) -> dict:
+        """Fill BLANK Product.manufacturer from the signals each product already
+        carries — OEM cross-ref brands, application engine makes, the stored
+        engine_manufacturer, title, and search keywords. Same single-make rule
+        as import-time detection: exactly one distinct make wins; multi-make
+        parts stay blank (picking one would be wrong). NEVER overwrites a
+        manufacturer a human already set."""
+        from app.services.classification_service import detect_makes_in_text, normalize_make
+
+        summary = {"mode": "backfill_manufacturers", "dry_run": dry_run,
+                   "scanned": 0, "filled": 0, "multi_make_skipped": 0,
+                   "no_signal": 0, "sample": []}
+        blanks = (self.db.query(Product)
+                  .filter(Product.is_active == True,            # noqa: E712
+                          func.coalesce(Product.manufacturer, "") == "")
+                  .all())
+        if not blanks:
+            return summary
+        ids = [p.id for p in blanks]
+        ref_brands: dict[int, set[str]] = {}
+        for pid, brand in (self.db.query(CrossReference.product_id, CrossReference.brand)
+                           .filter(CrossReference.product_id.in_(ids)).all()):
+            canon = normalize_make(brand or "")
+            if canon:
+                ref_brands.setdefault(pid, set()).add(canon)
+        app_makes: dict[int, set[str]] = {}
+        for pid, make in (self.db.query(ProductApplication.product_id,
+                                        ProductApplication.engine_make)
+                          .filter(ProductApplication.product_id.in_(ids)).all()):
+            canon = normalize_make(make or "")
+            if canon:
+                app_makes.setdefault(pid, set()).add(canon)
+
+        for prod in blanks:
+            summary["scanned"] += 1
+            found: set[str] = set()
+            canon = normalize_make(prod.engine_manufacturer or "")
+            if canon:
+                found.add(canon)
+            found |= ref_brands.get(prod.id, set())
+            found |= app_makes.get(prod.id, set())
+            found |= detect_makes_in_text(prod.title or "")
+            found |= detect_makes_in_text(prod.search_keywords or "")
+            if not found:
+                summary["no_signal"] += 1
+                continue
+            if len(found) > 1:
+                summary["multi_make_skipped"] += 1
+                continue
+            mfg = _MANUFACTURER_BY_ENGINE_MAKE.get(next(iter(found)), "")
+            if not mfg:
+                summary["no_signal"] += 1
+                continue
+            summary["filled"] += 1
+            if len(summary["sample"]) < 10:
+                summary["sample"].append({"sku": prod.sku, "manufacturer": mfg})
+            if not dry_run:
+                prod.manufacturer = mfg
         self.db.commit() if not dry_run else self.db.rollback()
         return summary
 

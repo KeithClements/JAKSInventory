@@ -311,8 +311,9 @@ def test_manufacturer_canonicalized_case_insensitive(db):
 
 
 def test_manufacturer_unmapped_passes_through_and_is_surfaced(db):
-    """An unrecognized make ('Paccar') is preserved verbatim AND surfaced
-    in manufacturer_unmapped_sample so the owner can add it to the list."""
+    """An unrecognized make ('John Deere' — not in the dropdown list) is
+    preserved verbatim AND surfaced in manufacturer_unmapped_sample so the
+    owner can decide whether to add it to the list."""
     p = _make_product(db, "JAKS-PAI-610", price=10.00, manufacturer="")
     svc = ProductImportService(db, None)
 
@@ -320,14 +321,14 @@ def test_manufacturer_unmapped_passes_through_and_is_surfaced(db):
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(header_with_mfg)
-    w.writerow(_price_row("JAKS-PAI-610", "10.00") + ["Paccar"])
+    w.writerow(_price_row("JAKS-PAI-610", "10.00") + ["John Deere"])
 
     s = svc.pricing_update_sell(buf.getvalue(), dry_run=False)
     assert s["manufacturer_updated"] == 1
     assert len(s["manufacturer_unmapped_sample"]) == 1
     assert s["manufacturer_unmapped_sample"][0]["sku"] == "JAKS-PAI-610"
     db.refresh(p)
-    assert p.manufacturer == "Paccar"
+    assert p.manufacturer == "John Deere"
 
 
 def test_manufacturer_unchanged_is_idempotent(db):

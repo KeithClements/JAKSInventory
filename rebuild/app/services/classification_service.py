@@ -57,6 +57,25 @@ def normalize_make(raw: str) -> str:
     return ""
 
 
+# Word-boundary patterns for scanning FREE TEXT (titles, tags, descriptions).
+# normalize_make's substring match is safe on short make TOKENS but not on
+# prose — 'cat' would match inside 'LOCATING PIN'. \b anchors prevent that
+# while still catching the legitimate word ('CAT C15 HEAD BOLT KIT').
+_MAKE_TEXT_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(rf"\b{re.escape(k)}\b", re.IGNORECASE), v)
+    for k, v in _MAKE_NORMALIZE.items()
+]
+
+
+def detect_makes_in_text(text: str) -> set[str]:
+    """Every canonical Engine-Make whose name appears as a whole word in the
+    text. Used by the importer to catch a manufacturer named in the
+    title/tags/description without the substring false-positives."""
+    if not (text or "").strip():
+        return set()
+    return {canon for pat, canon in _MAKE_TEXT_PATTERNS if pat.search(text)}
+
+
 class ClassificationService(BaseService):
 
     def __init__(self, db, current_user_id=None) -> None:
