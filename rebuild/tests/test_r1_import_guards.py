@@ -1,11 +1,11 @@
-"""
+﻿"""
 tests/test_r1_import_guards.py
 ==============================
-R1-16 — import guardrails:
+R1-16 â€” import guardrails:
 
 1. full_import NEVER auto-creates the import vendor. The vendor digit
-   (Vendor.vendor_number) is owner-assigned — one digit per vendor (SKU scheme
-   owner-locked 2026-06-06) — so a missing vendor (or a vendor with no digit)
+   (Vendor.vendor_number) is owner-assigned â€” one digit per vendor (SKU scheme
+   owner-locked 2026-06-06) â€” so a missing vendor (or a vendor with no digit)
    fails the import cleanly with an actionable summary["error"], writes nothing,
    and creates no vendor row. With the vendor seeded (as the live DB has PAI),
    the import works and mints SKUs on that vendor's digit.
@@ -27,7 +27,7 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import app.database as appdb
-import app.models  # noqa: F401 — registers all models (incl. ImportBatch/ImportCandidate)
+import app.models  # noqa: F401 â€” registers all models (incl. ImportBatch/ImportCandidate)
 from app.constants import ImportBatchStatus, ImportDisposition, ScrapedItemReviewStatus
 from app.models.import_review import ImportCandidate
 from app.models.product import Product
@@ -91,7 +91,7 @@ def _cands(db, batch):
         ImportCandidate.batch_id == batch.id).order_by(ImportCandidate.id).all()
 
 
-# ── Guard 1: vendor digit — never auto-create ─────────────────────────────────
+# â”€â”€ Guard 1: vendor digit â€” never auto-create â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_full_import_without_vendor_fails_cleanly(db):
     summ = ProductImportService(db, None).full_import(
@@ -139,7 +139,7 @@ def test_full_import_with_seeded_vendor_works(db):
 
 
 def test_apply_approved_surfaces_missing_vendor_error(db):
-    # No vendor seeded: the NEW path's full_import fails → the batch apply must
+    # No vendor seeded: the NEW path's full_import fails â†’ the batch apply must
     # report the actionable error (not silently no-op) and create nothing.
     svc = ImportReviewService(db, None)
     batch = svc.analyze_feed(_csv([_prod_row("APPLY-NOVEND-1")]))
@@ -156,13 +156,13 @@ def test_apply_approved_surfaces_missing_vendor_error(db):
     assert batch.status == ImportBatchStatus.STAGED  # retryable once the vendor exists
 
 
-# ── Guard 2: DUPLICATE rows must not wedge a batch in STAGED ──────────────────
+# â”€â”€ Guard 2: DUPLICATE rows must not wedge a batch in STAGED â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_apply_with_approved_duplicates_reaches_applied(db):
     _seed_pai(db)
     svc = ImportReviewService(db, None)
-    r1 = _prod_row("JAKS-DUPAPL-1")
-    r2 = _prod_row("JAKS-DUPAPL-1", handle="jaks-dupapl-1-alt")  # same SKU → dup-in-feed
+    r1 = _prod_row("JAKS-PAI-DUPAPL1")
+    r2 = _prod_row("JAKS-PAI-DUPAPL1", handle="JAKS-PAI-DUPAPL1-alt")  # same SKU â†’ dup-in-feed
     batch = svc.analyze_feed(_csv([r1, r2]))
     first, dup = _cands(db, batch)
     assert first.disposition == ImportDisposition.NEW
@@ -184,7 +184,7 @@ def test_apply_with_approved_duplicates_reaches_applied(db):
     batch = db.get(type(batch), batch.id)
     assert batch.applied_count == 1
     assert batch.status == ImportBatchStatus.APPLIED  # the wedge: used to stay STAGED forever
-    # exactly one product — the dup row created nothing
+    # exactly one product â€” the dup row created nothing
     assert db.query(Product).count() == 1
 
 
@@ -194,8 +194,8 @@ def test_apply_run_that_only_skips_duplicates_still_finalizes(db):
     button used to stay lit forever)."""
     _seed_pai(db)
     svc = ImportReviewService(db, None)
-    r1 = _prod_row("JAKS-DUPONLY-1")
-    r2 = _prod_row("JAKS-DUPONLY-1", handle="jaks-duponly-1-alt")
+    r1 = _prod_row("JAKS-PAI-DUPONLY1")
+    r2 = _prod_row("JAKS-PAI-DUPONLY1", handle="JAKS-PAI-DUPONLY1-alt")
     batch = svc.analyze_feed(_csv([r1, r2]))
     first, dup = _cands(db, batch)
     svc.set_review_status(first.id, ScrapedItemReviewStatus.ACCEPTED)
@@ -208,3 +208,4 @@ def test_apply_run_that_only_skips_duplicates_still_finalizes(db):
     assert result["skipped_duplicates"] == 1
     db.refresh(batch)
     assert batch.status == ImportBatchStatus.APPLIED
+

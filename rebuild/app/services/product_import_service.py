@@ -68,6 +68,15 @@ def _vendor_code_from_sku(sku: str) -> str | None:
     m = _VENDOR_PREFIX_RE.match((sku or "").strip())
     return m.group(1).upper() if m else None
 
+
+# §18.2 — Brand = the PARTS brand (the seeded Brand rows), not the vendor's
+# legal name. Vendor codes map to their brand label; unmapped codes fall back
+# to the vendor record's name.
+_BRAND_BY_VENDOR_CODE: dict[str, str] = {
+    "PAI": "PAI",
+    "IMB": "Interstate-McBee",
+}
+
 # SKU match aliases (header keys are lowercased before lookup)
 _SKU_KEYS = ("jaks_sku", "sku", "variant sku", "internal_sku", "part_number", "jaks_part")
 # True PAI cost columns (Pricing-Update pai_cost mode) — NOT "variant price" (that's sell)
@@ -551,21 +560,39 @@ class ProductImportService(BaseService):
         existing = {s.strip().lower() for (s,) in self.db.query(ProductVendorSource.vendor_sku).all() if s}
         cat_cache = {c.name.strip().lower(): c.id for c in self.db.query(ProductCategory).all()}
         # SKU-scheme guardrail (owner-locked 2026-06-06: ONE digit per vendor):
-        # the vendor digit comes from the owner-set Vendor.vendor_number — never
-        # auto-created or defaulted, or every feed would mint SKUs in another
-        # vendor's namespace. Missing vendor/digit → fail cleanly, write nothing.
-        pai_vendor = self._resolve_pai_vendor()
-        pai_digit = (pai_vendor.vendor_number or "").strip() if pai_vendor else ""
-        if not pai_digit:
-            problem = ("has no vendor digit (SKU #) set" if pai_vendor
-                       else "does not exist")
+        # each row's vendor comes from its feed-SKU prefix (JAKS-PAI-… /
+        # JAKS-IMB-…; no prefix = legacy PAI) and the vendor digit from the
+        # owner-set Vendor.vendor_number — never auto-created or defaulted, or
+        # a feed would mint SKUs in another vendor's namespace. EVERY vendor
+        # the feed references must exist with its digit, else fail cleanly and
+        # write nothing (atomic — a half-imported mixed feed is worse).
+        feed_codes = {(_vendor_code_from_sku(p.get("sku", "")) or _PAI_VENDOR_CODE)
+                      for p in rows if p.get("sku")}
+        vendors_by_code: dict[str, Vendor] = {}
+        problems: list[str] = []
+        for code in sorted(feed_codes):
+            q = self.db.query(Vendor).filter(func.upper(Vendor.vendor_code) == code)
+            if code == _PAI_VENDOR_CODE:   # legacy PAI rows may match by name
+                q = self.db.query(Vendor).filter(
+                    (func.upper(Vendor.vendor_code) == code)
+                    | (Vendor.name == _PAI_VENDOR_NAME))
+            v = q.first()
+            label = _PAI_VENDOR_NAME if code == _PAI_VENDOR_CODE else (
+                v.name if v else code)
+            digit = (v.vendor_number or "").strip() if v else ""
+            if not digit:
+                problems.append(
+                    f"'{label}' " + ("has no vendor digit (SKU #) set" if v
+                                     else "does not exist"))
+            else:
+                vendors_by_code[code] = v
+        if problems:
             summary["error"] = (
-                f"Import aborted: vendor '{_PAI_VENDOR_NAME}' {problem}. "
-                f"Create vendor '{_PAI_VENDOR_NAME}' with its vendor digit first "
+                "Import aborted: vendor " + "; vendor ".join(problems) + ". "
+                "Create the vendor(s) with their vendor digit first "
                 "(Inventory → Vendors → SKU #), then re-run the import."
             )
             return summary
-        pai_id = pai_vendor.id
         classifier = ClassificationService(self.db)   # §18.6 — rules cache built once
         # JAKS SKU scheme: mint JAKS-[ENGINE]-[CATEGORY]-[V][NNNN] at import time.
         # Seed the per-(engine,category) sequence counters from the DB so re-imports
@@ -592,6 +619,11 @@ class ProductImportService(BaseService):
                 continue
             seen.add(k)
 
+            # Per-row vendor: the feed-SKU prefix names it (no prefix = PAI).
+            row_code = _vendor_code_from_sku(sku) or _PAI_VENDOR_CODE
+            row_vendor = vendors_by_code[row_code]
+            row_digit = (row_vendor.vendor_number or "").strip()
+
             cat_id = self._resolve_category(p["type"], cat_cache, summary, dry_run)
             # §18.6 — refine below the Shopify-Type category + derive engine make.
             cls = classifier.classify(
@@ -601,11 +633,13 @@ class ProductImportService(BaseService):
             )
             # JAKS SKU scheme — mint the customer-facing SKU now; the raw CSV SKU is
             # parked on the vendor source (vendor_sku, below) so it stays searchable.
+            # The (engine, category) sequence is SHARED across vendors by design —
+            # the same part from a 2nd vendor reads 90001 ↔ 30001 (twin rule).
             ecode = _engine_code(cls["engine_model"] or "")
             ccode = self._sku_cat_code(cls["category_id"] or cat_id, p["type"], cat_code_cache)
             new_seq = seq_counters.get((ecode, ccode), 0) + 1
             seq_counters[(ecode, ccode)] = new_seq
-            new_sku = assemble_sku(ccode, pai_digit, new_seq, engine_code=ecode)
+            new_sku = assemble_sku(ccode, row_digit, new_seq, engine_code=ecode)
             if cls["needs_review"]:
                 summary["needs_review"] += 1
             if cls["category_id"] or cls["engine_manufacturer"]:
@@ -642,7 +676,9 @@ class ProductImportService(BaseService):
                 sku=new_sku,                                     # JAKS scheme SKU (raw CSV sku parked on the vendor source)
                 engine_code=ecode, category_code=ccode, part_seq=new_seq,
                 title=p["title"][:500],
-                brand=_PAI_VENDOR_CODE,                          # §18.2 — Brand (correct)
+                # §18.2 — Brand = the parts brand (seeded Brand rows: PAI /
+                # Interstate-McBee / …), keyed off the row's vendor.
+                brand=_BRAND_BY_VENDOR_CODE.get(row_code, row_vendor.name),
                 # §18.2 / A1: do NOT set manufacturer to the vendor name. Manufacturer =
                 # engine make (engine_manufacturer), filled by the §18.6 classification
                 # pass. Left blank here so Brand != Vendor != Manufacturer stays clean.
@@ -662,8 +698,9 @@ class ProductImportService(BaseService):
                 search_keywords=p["tags"],
                 price_override=_to_float(p["price"]),          # OUR sell price
                 compare_at_price=_to_float(p["compare_at"]),   # marketing compare-at
-                enrichment_source="PAI scraper (JAKS export)" if p.get("core_charge") is not None
-                                  else "PAI scraper (Shopify export)",
+                enrichment_source=(f"{row_code} scraper (JAKS export)"
+                                   if p.get("core_charge") is not None
+                                   else f"{row_code} scraper (Shopify export)"),
                 last_enriched_at=datetime.utcnow(),
                 # Core charge — vendor and customer default to the scraped amount.
                 # is_reman alone (no dollar amount) still sets has_core=True so the
@@ -678,13 +715,12 @@ class ProductImportService(BaseService):
             self.db.add(product)
             self.db.flush()
 
-            if pai_id:
-                self.db.add(ProductVendorSource(
-                    product_id=product.id, vendor_id=pai_id,
-                    vendor_part_number=p["pai_part"], vendor_sku=sku,
-                    vendor_cost=_to_float(p.get("cost")) or 0.0,
-                    is_preferred=True,
-                ))
+            self.db.add(ProductVendorSource(
+                product_id=product.id, vendor_id=row_vendor.id,
+                vendor_part_number=p["pai_part"], vendor_sku=sku,
+                vendor_cost=_to_float(p.get("cost")) or 0.0,
+                is_preferred=True,
+            ))
             for it in p["oem"]:
                 brand, num = _split_two(it)
                 if num:
@@ -696,7 +732,7 @@ class ProductImportService(BaseService):
                 make, model = _split_two(it)
                 self.db.add(ProductApplication(
                     product_id=product.id, engine_make=make,
-                    engine_model=model, source="PAI",
+                    engine_model=model, source=row_code,
                 ))
             if import_images:
                 for i, im in enumerate(p["images"]):
@@ -1131,16 +1167,6 @@ class ProductImportService(BaseService):
         return summary
 
     # ══ helpers ════════════════════════════════════════════════════════════════
-    def _resolve_pai_vendor(self) -> Vendor | None:
-        """The EXISTING import vendor record, or None. NEVER auto-creates: the
-        vendor digit (Vendor.vendor_number) is owner-assigned, one digit per
-        vendor, so a hard-coded default would mint colliding SKUs in the JAKS
-        namespace (R1-16). full_import fails cleanly when this returns None or
-        the record has no digit set."""
-        return self.db.query(Vendor).filter(
-            (Vendor.vendor_code == _PAI_VENDOR_CODE) | (Vendor.name == _PAI_VENDOR_NAME)
-        ).first()
-
     def _resolve_category(self, type_name: str, cache: dict, summary: dict, dry_run: bool) -> int | None:
         name = (type_name or "").strip()
         if not name:
