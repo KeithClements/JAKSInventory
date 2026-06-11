@@ -261,6 +261,11 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     #    snapshot on customer_statements. ───────────────────────────────────────
     ("customer_statements", "over_90", "FLOAT NOT NULL DEFAULT 0"),
     ("customer_statements", "snapshot_json", "TEXT NOT NULL DEFAULT ''"),
+
+    # ── R4 — delta-refresh: skip-unchanged staging tally + the Current→Incoming
+    #    field diff the preview dock renders for UPDATE candidates. ─────────────
+    ("import_batches", "unchanged_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("import_candidates", "diff_json", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 

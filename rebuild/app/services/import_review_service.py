@@ -23,12 +23,15 @@ from app.models.import_review import (
     ImportBatch, ImportCandidate, ImportMappingTemplate, ImportPendingUpload,
 )
 from app.models.product import (
-    Product, ProductImage, ProductCategory, CrossReference, ProductVendorSource,
+    Product, ProductCostHistory, ProductImage, ProductCategory, CrossReference,
+    ProductVendorSource,
 )
+from app.models.vendor import Vendor
 from app.services.base import BaseService
 from app.services.classification_service import ClassificationService
 from app.services.product_import_service import (
     ProductImportService, _split_two, _to_float, _norm,
+    _PAI_VENDOR_CODE, _PAI_VENDOR_NAME,
 )
 
 
@@ -45,7 +48,7 @@ class ImportReviewService(BaseService):
     # ── Ingest + analyze ──────────────────────────────────────────────────────
     def analyze_feed(self, text: str, *, source_app: str = "", filename: str = "",
                      label: str = "", limit: int | None = None,
-                     dry_run: bool = False) -> ImportBatch:
+                     dry_run: bool = False, skip_unchanged: bool = True) -> ImportBatch:
         """Parse a Shopify-export feed and stage each product row as an
         ImportCandidate tagged against the 7 review questions. Returns the
         ImportBatch (committed unless dry_run).
@@ -55,7 +58,7 @@ class ImportReviewService(BaseService):
         immediately and the queue page fills in as rows are analyzed."""
         rows = self._parse_rows(text, limit)
         batch = self._new_batch(rows, label=label, source_app=source_app, filename=filename)
-        self._stage_rows(batch, rows, dry_run=dry_run)
+        self._stage_rows(batch, rows, dry_run=dry_run, skip_unchanged=skip_unchanged)
         return batch
 
     def create_pending_batch(self, text: str, *, source_app: str = "",
@@ -158,11 +161,17 @@ class ImportReviewService(BaseService):
         return batch
 
     def _stage_rows(self, batch: ImportBatch, rows: list, *, dry_run: bool = False,
-                    auto_accept_confident: bool = False) -> None:
+                    auto_accept_confident: bool = False,
+                    skip_unchanged: bool = True) -> None:
         """Analyze each row into an ImportCandidate, committing + expunging per chunk
         so a large feed never holds the SQLite write-lock or the whole feed in memory
         long enough to freeze the app. (dry_run stays in one transaction so the final
-        rollback undoes everything.)"""
+        rollback undoes everything.)
+
+        skip_unchanged (R4 delta-refresh): a re-run of the full 13k-part scraper
+        export typically changes a fraction of the catalog — UPDATE rows whose
+        incoming values match the product exactly are tallied on the batch
+        (unchanged_count) and never staged, so the queue holds only real work."""
         # one-pass lookups
         # Match the feed SKU against BOTH product.sku (manual products) AND
         # ProductVendorSource.vendor_sku (imported products mint an assembled
@@ -176,14 +185,32 @@ class ImportReviewService(BaseService):
                                      ProductVendorSource.vendor_sku).all():
             if vs:
                 sku_to_id.setdefault(_norm(vs), pid)
+        # xref_index: first-owner lookup (cross-ref matching for NEW rows).
+        # xref_sets: per-product normalized ref sets (R4 — "new OEM refs?" diff).
         xref_index: dict[str, int] = {}
+        xref_sets: dict[int, set[str]] = {}
         for pid, num in self.db.query(CrossReference.product_id, CrossReference.ref_number).all():
             key = _norm(num)
             if key:
                 xref_index.setdefault(key, pid)
+                xref_sets.setdefault(pid, set()).add(key)
         img_counts = dict(self.db.query(ProductImage.product_id, func.count(ProductImage.id))
                           .group_by(ProductImage.product_id).all())
-        price_by_id = dict(self.db.query(Product.id, Product.price_override).all())
+        # R4 — current values for the field-level diff: (price_override,
+        # compare_at_price, manufacturer) per product + the PAI vendor cost.
+        prod_info = {pid: (po, ca, (mfg or ""))
+                     for pid, po, ca, mfg in self.db.query(
+                         Product.id, Product.price_override,
+                         Product.compare_at_price, Product.manufacturer).all()}
+        price_by_id = {pid: v[0] for pid, v in prod_info.items()}
+        pai = self.db.query(Vendor).filter(
+            (Vendor.vendor_code == _PAI_VENDOR_CODE) | (Vendor.name == _PAI_VENDOR_NAME)
+        ).first()
+        pai_cost_by_id: dict[int, float] = {}
+        if pai is not None:
+            pai_cost_by_id = dict(self.db.query(
+                ProductVendorSource.product_id, ProductVendorSource.vendor_cost
+            ).filter(ProductVendorSource.vendor_id == pai.id).all())
         cat_names = {(n or "").strip().lower(): cid
                      for cid, n in self.db.query(ProductCategory.id, ProductCategory.name).all()}
         classifier = ClassificationService(self.db)
@@ -193,7 +220,14 @@ class ImportReviewService(BaseService):
         for p in rows:
             cand = self._analyze_row(p, batch.id, sku_to_id, xref_index, img_counts,
                                      price_by_id, cat_names, classifier, seen,
-                                     auto_accept_confident=auto_accept_confident)
+                                     auto_accept_confident=auto_accept_confident,
+                                     prod_info=prod_info,
+                                     pai_cost_by_id=pai_cost_by_id,
+                                     xref_sets=xref_sets,
+                                     skip_unchanged=skip_unchanged)
+            if cand is None:           # R4 — identical to the catalog: not staged
+                batch.unchanged_count += 1
+                continue
             self.db.add(cand)
             self._tally(batch, cand)
             pending.append(cand)
@@ -210,7 +244,16 @@ class ImportReviewService(BaseService):
 
     def _analyze_row(self, p, batch_id, sku_to_id, xref_index, img_counts,
                      price_by_id, cat_names, classifier, seen,
-                     auto_accept_confident: bool = False) -> ImportCandidate:
+                     auto_accept_confident: bool = False,
+                     prod_info: dict | None = None,
+                     pai_cost_by_id: dict | None = None,
+                     xref_sets: dict | None = None,
+                     skip_unchanged: bool = False) -> ImportCandidate | None:
+        """Returns None (R4) when the row is a clean UPDATE of an existing product
+        and every incoming value matches the catalog — nothing to review."""
+        prod_info = prod_info or {}
+        pai_cost_by_id = pai_cost_by_id or {}
+        xref_sets = xref_sets or {}
         sku = (p.get("sku") or "").strip()
         k = _norm(sku)
         flags: list[str] = []
@@ -270,6 +313,55 @@ class ImportReviewService(BaseService):
         if price_changed:
             flags.append("price change" if matched_pid else "price")
 
+        # 6b — R4 field-level diff for UPDATE rows: what exactly would change?
+        # Drives the preview dock's Current → Incoming table AND the
+        # skip-unchanged decision. Each entry: {"field", "old", "new"}.
+        diff: list[dict] = []
+        new_refs_count = 0
+        if matched_pid:
+            cur_price, cur_compare, cur_mfg = prod_info.get(
+                matched_pid, (old_price, None, ""))
+            if price_changed:
+                diff.append({"field": "sell price",
+                             "old": cur_price, "new": new_price})
+            new_compare = _to_float(p.get("compare_at"))
+            if new_compare is not None and (
+                    cur_compare is None
+                    or abs((cur_compare or 0.0) - new_compare) >= 0.005):
+                diff.append({"field": "compare-at price",
+                             "old": cur_compare, "new": new_compare})
+            new_cost = _to_float(p.get("cost"))
+            if new_cost is not None and new_cost > 0:
+                cur_cost = pai_cost_by_id.get(matched_pid)
+                if cur_cost is None or abs((cur_cost or 0.0) - new_cost) >= 0.005:
+                    diff.append({"field": "our cost (PAI)",
+                                 "old": cur_cost, "new": new_cost})
+            new_mfg = (p.get("manufacturer") or "").strip()
+            if new_mfg and new_mfg.lower() != (cur_mfg or "").strip().lower():
+                diff.append({"field": "manufacturer",
+                             "old": cur_mfg or None, "new": new_mfg})
+            existing_ref_set = xref_sets.get(matched_pid, set())
+            new_refs_count = sum(
+                1 for it in (p.get("oem") or [])
+                if _norm(_split_two(it)[1])
+                and _norm(_split_two(it)[1]) not in existing_ref_set)
+            if new_refs_count:
+                diff.append({"field": "OEM refs",
+                             "old": len(existing_ref_set),
+                             "new": f"+{new_refs_count} new"})
+            if has_new_images:
+                diff.append({"field": "images",
+                             "old": existing, "new": incoming})
+            if any(d["field"] != "sell price" for d in diff):
+                flags.append("field changes")
+
+        # R4 skip-unchanged: a clean UPDATE with ZERO differences is pure noise —
+        # nothing to apply, nothing to review. NEW / CROSS_REF / DUPLICATE rows
+        # are never skipped (creation and dup-detection still need eyes).
+        if (skip_unchanged and disposition == ImportDisposition.UPDATE
+                and matched_pid and not diff):
+            return None
+
         # 7 — needs review? (low-confidence classification OR an uncertain cross-ref)
         needs_review = bool(cls.get("needs_review")) or disposition == ImportDisposition.CROSS_REF
         if needs_review:
@@ -292,6 +384,7 @@ class ImportReviewService(BaseService):
             disposition=disposition, matched_product_id=matched_pid,
             incoming_image_count=incoming, has_new_images=has_new_images,
             price_changed=price_changed, old_price=old_price, new_price=new_price,
+            diff_json=(json.dumps(diff) if diff else ""),
             resolved_category_id=category_id, category_issue=category_issue,
             engine_manufacturer=cls.get("engine_manufacturer") or "",
             engine_model=cls.get("engine_model") or "",
@@ -451,9 +544,16 @@ class ImportReviewService(BaseService):
 
         pis = ProductImportService(self.db, self.current_user_id)
         psvc = ProductService(self.db, self.current_user_id)
+        # R4 queue hygiene: DUPLICATE rows are pure noise once the apply run
+        # starts (the first occurrence of the SKU does the work) — sweep them
+        # out of the queue instead of leaving dead rows behind.
+        dups = dup_q.all()
         summary = {"applied": 0, "created": 0, "updated": 0,
-                   "skipped_duplicates": dup_q.count(),
+                   "skipped_duplicates": len(dups),
                    "images_added": 0, "cross_refs_added": 0, "errors": []}
+        for d in dups:
+            self.db.delete(d)
+        self.db.commit()
 
         for c in cands:
             try:
@@ -510,12 +610,20 @@ class ImportReviewService(BaseService):
                                     prod_obj.search_keywords = ai_tags[:500]
                         except (ValueError, TypeError):
                             pass
+                    # R4 queue hygiene: an applied candidate's job is done — its
+                    # data now lives on the product. Tally on the batch header
+                    # (which survives as history) and remove the row, so the
+                    # review queue only ever holds work that still needs eyes.
+                    batch.applied_count += 1
+                    self.db.delete(c)
                 self.db.commit()
             except Exception as exc:  # noqa: BLE001 — one bad row never aborts the batch
                 self.db.rollback()
                 summary["errors"].append(f"candidate {c.id} ({c.sku}): {exc}")
 
-        self._finalize_batch(batch_id)
+        self._finalize_batch(
+            batch_id,
+            applied_or_skipped=summary["applied"] + summary["skipped_duplicates"])
         return summary
 
     def _apply_new(self, pis, p) -> int | None:
@@ -540,10 +648,12 @@ class ImportReviewService(BaseService):
         """Enrich an existing matched product from the approved import candidate.
 
         Always updates: price_override (imported prices are deliberately set to beat
-        competitors and must always win), description/tags if currently blank,
+        competitors and must always win), compare_at_price, manufacturer
+        (canonicalized), and the PAI vendor source's vendor_cost (+ cost history)
+        when the feed carries them; description/tags if currently blank,
         category if currently unset.
         Also adds: new images, new cross-refs/OEM refs.
-        Never touches: title, cost (COGS — set only on PO receipt)."""
+        Never touches: title, product.cost (moving-avg COGS — set only on PO receipt)."""
         got = {"images": 0, "cross_refs": 0}
         product = self.db.get(Product, product_id) if product_id else None
         if product is None:
@@ -553,6 +663,41 @@ class ImportReviewService(BaseService):
         if c.new_price is not None and c.new_price > 0:
             product.price_override = c.new_price
             got["price_updated"] = True
+
+        # ── R4 — compare-at, manufacturer, PAI cost (mirrors sell-mode semantics)
+        new_compare = _to_float(p.get("compare_at"))
+        if new_compare is not None and new_compare > 0:
+            product.compare_at_price = new_compare
+
+        new_mfg = (p.get("manufacturer") or "").strip()
+        if new_mfg:
+            # Canonicalize against the product-form dropdown list (case-
+            # insensitive); unknown makes pass through verbatim.
+            from app.routers.products import MANUFACTURERS as _MFG_CANON
+            product.manufacturer = {m.lower(): m for m in _MFG_CANON}.get(
+                new_mfg.lower(), new_mfg)
+
+        new_cost = _to_float(p.get("cost"))
+        if new_cost is not None and new_cost > 0:
+            pai = self.db.query(Vendor).filter(
+                (Vendor.vendor_code == _PAI_VENDOR_CODE)
+                | (Vendor.name == _PAI_VENDOR_NAME)).first()
+            src = None
+            if pai is not None:
+                src = self.db.query(ProductVendorSource).filter(
+                    ProductVendorSource.product_id == product_id,
+                    ProductVendorSource.vendor_id == pai.id).first()
+            if src is not None and abs((src.vendor_cost or 0.0) - new_cost) >= 0.005:
+                old_cost = src.vendor_cost or 0.0
+                src.vendor_cost = new_cost
+                src.last_cost_updated_at = datetime.utcnow()
+                self.db.add(ProductCostHistory(
+                    product_id=product_id, vendor_id=pai.id,
+                    old_cost=old_cost, new_cost=new_cost,
+                    changed_by_id=self.current_user_id,
+                    notes="Smart Import refresh (PAI cost)",
+                ))
+                got["cost_updated"] = True
 
         # ── Category — set if currently blank, or if AI/human resolved it
         if c.resolved_category_id and (product.category_id is None or c.category_issue is False):
@@ -592,35 +737,39 @@ class ImportReviewService(BaseService):
                 got["images"] += 1
         return got
 
-    def _finalize_batch(self, batch_id: int) -> None:
+    def _finalize_batch(self, batch_id: int, *, applied_or_skipped: int = 0) -> None:
+        """R4: applied candidates (and swept DUPLICATE rows) are DELETED by
+        apply_approved — batch.applied_count is accumulated there, never
+        recounted here. ``applied_or_skipped`` carries this run's activity so a
+        run that only swept duplicates still finalizes the batch."""
         batch = self.db.get(ImportBatch, batch_id)
         if batch is None:
             return
-        batch.applied_count = self.db.query(ImportCandidate).filter(
-            ImportCandidate.batch_id == batch_id,
-            ImportCandidate.applied_product_id.isnot(None),
-        ).count()
-        # DUPLICATE rows are never applied (see apply_approved) — counting them
-        # as "remaining" would keep the batch STAGED forever. They count as
-        # skipped instead, so an apply run that only skipped dups still finalizes.
         remaining = self.db.query(ImportCandidate).filter(
             ImportCandidate.batch_id == batch_id,
             ImportCandidate.review_status == ScrapedItemReviewStatus.ACCEPTED,
             ImportCandidate.applied_product_id.is_(None),
             ImportCandidate.disposition != ImportDisposition.DUPLICATE,
         ).count()
-        dup_skipped = self.db.query(ImportCandidate).filter(
-            ImportCandidate.batch_id == batch_id,
-            ImportCandidate.review_status == ScrapedItemReviewStatus.ACCEPTED,
-            ImportCandidate.applied_product_id.is_(None),
-            ImportCandidate.disposition == ImportDisposition.DUPLICATE,
-        ).count()
-        if remaining == 0 and (batch.applied_count > 0 or dup_skipped > 0):
+        if remaining == 0 and (batch.applied_count > 0 or applied_or_skipped > 0):
             batch.status = ImportBatchStatus.APPLIED
             batch.applied_at = datetime.utcnow()
         else:
             batch.status = ImportBatchStatus.STAGED   # errors left some unapplied — allow retry
         self.db.commit()
+
+    def delete_batch(self, batch_id: int) -> bool:
+        """R4 queue hygiene: remove a batch and every remaining candidate
+        (old/test uploads, fully-applied history nobody needs). Applied product
+        data is untouched — candidates are staging rows, the catalog is the
+        record. Gated like apply (writes to the staging tables)."""
+        self.assert_can(Permission.APPLY_IMPORT)
+        batch = self.db.get(ImportBatch, batch_id)
+        if batch is None:
+            return False
+        self.db.delete(batch)   # cascade="all, delete-orphan" sweeps candidates
+        self.db.commit()
+        return True
 
 
 # Stored in ImportBatch.notes when background staging fails, so the queue page can
@@ -628,7 +777,8 @@ class ImportReviewService(BaseService):
 IMPORT_ERROR_PREFIX = "IMPORT_ERROR:"
 
 
-def run_background_staging(batch_id: int, rows: list, user_id: int | None) -> None:
+def run_background_staging(batch_id: int, rows: list, user_id: int | None,
+                           skip_unchanged: bool = True) -> None:
     """Stage already-parsed rows into an existing batch on a FRESH DB session.
 
     A FastAPI BackgroundTask runs after the response is sent — by which point the
@@ -641,7 +791,8 @@ def run_background_staging(batch_id: int, rows: list, user_id: int | None) -> No
         if batch is None:
             return
         ImportReviewService(db, user_id)._stage_rows(batch, rows, dry_run=False,
-                                                     auto_accept_confident=True)
+                                                     auto_accept_confident=True,
+                                                     skip_unchanged=skip_unchanged)
     except Exception as exc:  # noqa: BLE001 — record the failure, let the UI stop polling
         db.rollback()
         b = db.get(ImportBatch, batch_id)

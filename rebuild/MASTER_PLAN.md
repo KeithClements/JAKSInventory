@@ -1053,6 +1053,28 @@ Add only — **no structure editing here**:
 > hasattr-gated to auto-persist if the column lands); qbo drift entries for vendor_bills/
 > credit_memos only needed on pre-mixin DBs (live DB verified to have them).
 
+### 19.4b — R4 "Scraper delta-refresh + queue hygiene" — ✅ IMPLEMENTED 2026-06-11
+
+> Owner ask: re-running the 13k-row scraper export should surface ONLY the ~2k rows
+> where cost/pricing actually changed, and applied candidates should leave the
+> review queue ("no reason to keep them there").
+> **SHIPPED:** (1) Pricing Update *sell* mode reads the scraper's Shopify CSV and
+> refreshes price_override + compare_at + PAI vendor_cost (+history) + manufacturer
+> (canonicalized vs the 6-make dropdown; unmapped surfaced) — `Our Cost` +
+> `Manufacturer` column contract documented in `SCRAPER_REQUIREMENTS.md` for the
+> scraper repo; 50% threshold rail on sell price only. (2) Smart Import skip-unchanged
+> staging: UPDATE rows identical to the catalog are tallied (`ImportBatch.unchanged_count`),
+> never staged; changed rows carry `ImportCandidate.diff_json` rendered as a
+> Current→Incoming table in the preview dock (closes the R1-audit "reviewers approve
+> updates blind" gap); toggle on the upload form (default ON). `_apply_update` now also
+> writes compare_at / PAI vendor_cost (+history) / canonical manufacturer — COGS still
+> receipt-only. (3) Queue hygiene: applied candidates are DELETED on apply (tallies live
+> on the batch header, which survives as history); swept DUPLICATEs leave too; new
+> admin-gated Delete-batch button + route (closes the "staging tables fill forever" gap).
+> Gotcha: `_finalize_batch` no longer recounts applied (accumulated in apply_approved);
+> parse_shopify_csv now emits optional `cost`/`manufacturer` keys → full_import seeds
+> vendor_cost on NEW products when the scraper provides it.
+
 ### 19.5 — Brand alignment workstream (parallel, low-risk)
 Customer-facing print docs (quote/invoice/statement/core slip) adopt the JAK'S brand kit
 (`D:\Work Folder\Website\JAK's Diesel Website (8)\brand-kit.html` + `assets/jaks.css`):

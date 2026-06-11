@@ -74,6 +74,39 @@
     </div>
   </div>
 
+  {# ── R4: Current → Incoming — exactly what applying will change ──────────── #}
+  {% if diff %}
+  <div class="border-t border-gray-100 pt-3">
+    <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">What will change</p>
+    <table class="w-full text-xs">
+      <thead>
+        <tr class="text-left text-[10px] text-gray-400 uppercase tracking-wide">
+          <th class="py-1 pr-3 font-semibold">Field</th>
+          <th class="py-1 pr-3 font-semibold">Current</th>
+          <th class="py-1 font-semibold">Incoming</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in diff %}
+        <tr class="border-t border-gray-50">
+          <td class="py-1 pr-3 font-medium text-gray-600">{{ d.field }}</td>
+          <td class="py-1 pr-3 text-gray-400">
+            {%- if d.old is none %}—
+            {%- elif d.old is number %}{{ "$%.2f"|format(d.old) if 'price' in d.field or 'cost' in d.field else d.old }}
+            {%- else %}{{ d.old }}{% endif -%}
+          </td>
+          <td class="py-1 font-semibold text-gray-900">
+            {%- if d.new is none %}—
+            {%- elif d.new is number %}{{ "$%.2f"|format(d.new) if 'price' in d.field or 'cost' in d.field else d.new }}
+            {%- else %}{{ d.new }}{% endif -%}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
   {# ── Edit form — <details> works without Alpine re-init ─────────────────── #}
   {% if not c.applied_product_id %}
   <details class="border-t border-gray-100 pt-4 group">

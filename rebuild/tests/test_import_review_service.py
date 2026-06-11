@@ -222,12 +222,14 @@ def test_apply_new_creates_product(db):
     assert result["applied"] == 1
     assert result["errors"] == []
 
-    db.refresh(c)
-    assert c.applied_product_id is not None
-    assert c.applied_at is not None
-    product = db.get(Product, c.applied_product_id)
+    # R4 queue hygiene: the applied candidate leaves the queue — its data lives
+    # on the product; the batch header carries the applied tally.
+    db.expire_all()
+    assert db.get(ImportCandidate, c.id) is None
+    product = db.query(Product).filter(Product.title == "Head Bolt").first()
     assert product is not None
-    assert product.title == "Head Bolt"
+    db.refresh(batch)
+    assert batch.applied_count == 1
 
 
 def test_apply_never_writes_cost(db):
@@ -239,9 +241,9 @@ def test_apply_never_writes_cost(db):
     svc.set_review_status(c.id, ScrapedItemReviewStatus.ACCEPTED)
 
     svc.apply_approved(batch.id)
-    db.refresh(c)
+    db.expire_all()
 
-    product = db.get(Product, c.applied_product_id)
+    product = db.query(Product).filter(Product.title == "Head Bolt").first()
     assert product is not None
     # cost column must never be written here — it is owner-locked to PO receipt only
     assert (product.cost is None) or (product.cost == 0.0)
@@ -322,17 +324,20 @@ def test_apply_only_ids_narrows_the_run(db):
     result = svc.apply_approved(batch.id, only_ids=[c1.id])
 
     assert result["applied"] == 1 and result["created"] == 1
-    db.refresh(c1); db.refresh(c2); db.refresh(batch)
-    assert c1.applied_product_id is not None
-    assert c2.applied_product_id is None          # untouched — not in only_ids
+    db.expire_all()
+    assert db.get(ImportCandidate, c1.id) is None  # applied → removed (R4)
+    c2 = db.get(ImportCandidate, c2.id)
+    assert c2 is not None and c2.applied_product_id is None  # untouched — not in only_ids
+    batch = db.get(ImportBatch, batch.id)
     # Batch must NOT be finalized as APPLIED while accepted rows remain unapplied
     assert batch.status == ImportBatchStatus.STAGED
 
     # The remaining row applies on a later full run
     result2 = svc.apply_approved(batch.id)
     assert result2["applied"] == 1
-    db.refresh(c2)
-    assert c2.applied_product_id is not None
+    db.expire_all()
+    assert db.get(ImportCandidate, c2.id) is None  # applied → removed (R4)
+    assert db.get(ImportBatch, batch.id).applied_count == 2
 
 
 def test_apply_new_carries_reviewer_corrections(db):
@@ -354,8 +359,9 @@ def test_apply_new_carries_reviewer_corrections(db):
     result = svc.apply_approved(batch.id)
     assert result["created"] == 1 and result["errors"] == []
 
-    db.refresh(c)
-    product = db.get(Product, c.applied_product_id)
+    db.expire_all()
+    product = db.query(Product).filter(Product.title == "Head Bolt").first()
+    assert product is not None
     assert product.price_override == 12.49          # corrected price wins over feed price
     assert product.category_id == cat.id            # reviewer category overrides classifier
     assert product.engine_manufacturer == "Cummins" # reviewer engine make applied
@@ -426,8 +432,9 @@ def test_apply_allowed_for_admin(db):
 
     assert result["created"] == 1
     assert result["applied"] == 1
-    db.refresh(c)
-    assert c.applied_product_id is not None
+    db.expire_all()
+    assert db.get(ImportCandidate, c.id) is None    # applied → removed (R4)
+    assert db.query(Product).filter(Product.title == "Head Bolt").count() == 1
 
 
 # ── Bulk review: auto-accept confident at staging + one-click bulk approve ─────

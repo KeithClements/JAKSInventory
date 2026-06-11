@@ -38,6 +38,9 @@ class ImportBatch(Base):
     needs_review_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     approved_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     applied_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # R4 delta-refresh: UPDATE rows whose incoming values matched the catalog
+    # exactly — counted at staging time, never staged as candidates.
+    unchanged_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -127,6 +130,9 @@ class ImportCandidate(Base):
     price_changed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     old_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     new_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # R4 delta-refresh: JSON list of {"field", "old", "new"} computed at staging
+    # for UPDATE rows — what the preview dock renders as Current → Incoming.
+    diff_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
     resolved_category_id: Mapped[int | None] = mapped_column(
         ForeignKey("product_categories.id"), nullable=True
     )

@@ -72,6 +72,14 @@
     <span class="text-gray-500">Cross-ref <b class="text-gray-900 tabular-nums">{{ batch.cross_ref_count }}</b></span>
     <span class="text-gray-500">Needs review <b class="text-amber-600 tabular-nums">{{ batch.needs_review_count }}</b></span>
     <span class="text-gray-500">Approved <b class="text-green-700 tabular-nums">{{ batch.approved_count }}</b></span>
+    {% if batch.unchanged_count %}
+    <span class="text-gray-400" title="UPDATE rows identical to the catalog — tallied here, never staged">
+      Unchanged skipped <b class="tabular-nums">{{ batch.unchanged_count }}</b></span>
+    {% endif %}
+    {% if batch.applied_count %}
+    <span class="text-gray-500" title="Applied candidates leave the queue — their data lives on the products now">
+      Applied <b class="text-green-700 tabular-nums">{{ batch.applied_count }}</b></span>
+    {% endif %}
     {# ── Apply Approved button — visible whenever there are accepted-but-not-yet-applied rows.
          Uses unapplied_count (a live count from the route) not batch.approved_count (a cached
          tally), so the button survives after a partial apply or batch re-approval. ── #}

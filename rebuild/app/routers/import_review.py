@@ -53,6 +53,7 @@ def index(request: Request, db: Session = Depends(get_db)):
 @router.post("/upload")
 def upload(request: Request, background: BackgroundTasks, file: UploadFile = File(...),
            source_app: str = Form(""), use_mapping: str = Form(""),
+           skip_unchanged: str = Form(""),
            db: Session = Depends(get_db),
            user_id: int = Depends(get_current_user_id)):
     text = file.file.read().decode("utf-8", "replace")
@@ -81,7 +82,8 @@ def upload(request: Request, background: BackgroundTasks, file: UploadFile = Fil
             status_code=400)
     # Analyze the rows in the background so the upload returns immediately; the
     # queue page polls (candidate count vs total) until staging completes.
-    background.add_task(run_background_staging, batch_id, rows, user_id)
+    background.add_task(run_background_staging, batch_id, rows, user_id,
+                        bool(skip_unchanged))
     return RedirectResponse(f"/import-review/{batch_id}", status_code=303)
 
 
@@ -181,7 +183,30 @@ def mapping_template_delete(template_id: int, request: Request,
     return RedirectResponse("/import-review/", status_code=303)
 
 
+@router.post("/batch/{batch_id}/delete")
+def batch_delete(batch_id: int, request: Request, db: Session = Depends(get_db),
+                 user_id: int = Depends(get_current_user_id)):
+    """R4 queue hygiene: drop a batch + all its remaining candidates (old/test
+    uploads, applied history). Catalog data is untouched. Gated like apply."""
+    try:
+        ImportReviewService(db, user_id).delete_batch(batch_id)
+    except PermissionDeniedError:
+        return RedirectResponse(
+            "/import-review/?error=You+do+not+have+permission+to+delete+batches.",
+            status_code=303)
+    return RedirectResponse("/import-review/", status_code=303)
+
+
 # ── Candidate preview dock partial — registered BEFORE /{batch_id} ────────────
+def _parse_diff(c) -> list:
+    """R4 — the Current → Incoming field diff staged on the candidate."""
+    import json as _json
+    try:
+        return _json.loads(c.diff_json) if c.diff_json else []
+    except (ValueError, TypeError):
+        return []
+
+
 @router.get("/preview/{candidate_id}", response_class=HTMLResponse)
 def candidate_preview(candidate_id: int, request: Request, db: Session = Depends(get_db)):
     c = db.get(ImportCandidate, candidate_id)
@@ -193,7 +218,8 @@ def candidate_preview(candidate_id: int, request: Request, db: Session = Depends
                   .filter(ProductCategory.is_active == True)   # noqa: E712
                   .order_by(ProductCategory.level, ProductCategory.name).all())
     return templates.TemplateResponse(request, "import_review/_preview_panel.html",
-                                      {"c": c, "matched": matched, "categories": categories})
+                                      {"c": c, "matched": matched, "categories": categories,
+                                       "diff": _parse_diff(c)})
 
 
 @router.post("/candidate/{candidate_id}/save", response_class=HTMLResponse)
@@ -235,7 +261,7 @@ def candidate_save(candidate_id: int, request: Request,
                   .order_by(ProductCategory.level, ProductCategory.name).all())
     return templates.TemplateResponse(request, "import_review/_preview_panel.html",
                                       {"c": c, "matched": matched, "categories": categories,
-                                       "saved": True})
+                                       "diff": (_parse_diff(c) if c else []), "saved": True})
 
 
 _PAGE_SIZE = 100

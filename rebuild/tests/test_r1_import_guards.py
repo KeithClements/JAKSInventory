@@ -176,9 +176,13 @@ def test_apply_with_approved_duplicates_reaches_applied(db):
     assert result["created"] == 1 and result["applied"] == 1
     assert result["skipped_duplicates"] == 1        # reported, not silently dropped
     assert result["errors"] == []
-    db.refresh(first); db.refresh(dup); db.refresh(batch)
-    assert first.applied_product_id is not None
-    assert dup.applied_product_id is None           # never applied — nothing to write
+    # R4 queue hygiene: the applied row AND the swept duplicate both leave the
+    # queue; the batch header carries the tallies.
+    db.expire_all()
+    assert db.get(ImportCandidate, first.id) is None
+    assert db.get(ImportCandidate, dup.id) is None
+    batch = db.get(type(batch), batch.id)
+    assert batch.applied_count == 1
     assert batch.status == ImportBatchStatus.APPLIED  # the wedge: used to stay STAGED forever
     # exactly one product — the dup row created nothing
     assert db.query(Product).count() == 1

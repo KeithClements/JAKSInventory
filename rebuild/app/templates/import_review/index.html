@@ -27,6 +27,12 @@
                class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
         Custom column mapping
       </label>
+      <label class="flex items-center gap-2 text-xs text-gray-500"
+             title="Existing products whose incoming values match the catalog exactly are tallied and not staged — the queue only holds real changes.">
+        <input type="checkbox" name="skip_unchanged" value="1" checked
+               class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+        Skip unchanged products
+      </label>
       <button type="submit" class="btn-primary btn-sm">Analyze &amp; Stage</button>
     </form>
     <p class="text-xs text-gray-400 mt-2">
@@ -97,10 +103,12 @@
             <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Batch</th>
             <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Source</th>
             <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Total</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Unchanged</th>
             <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Needs Review</th>
             <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Approved</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Applied</th>
             <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
-            <th class="px-4 py-3 w-16"></th>
+            <th class="px-4 py-3 w-28"></th>
           </tr>
         </thead>
         <tbody class="divide-y divide-gray-100">
@@ -113,10 +121,18 @@
             </td>
             <td class="px-4 py-3 text-sm text-gray-600">{{ b.source_app or '—' }}</td>
             <td class="px-4 py-3 text-right text-sm tabular-nums text-gray-900">{{ b.total }}</td>
+            <td class="px-4 py-3 text-right text-sm tabular-nums text-gray-400" title="UPDATE rows identical to the catalog — never staged">{{ b.unchanged_count or 0 }}</td>
             <td class="px-4 py-3 text-right text-sm tabular-nums {% if b.needs_review_count %}text-amber-600 font-semibold{% else %}text-gray-400{% endif %}">{{ b.needs_review_count }}</td>
             <td class="px-4 py-3 text-right text-sm tabular-nums {% if b.approved_count %}text-green-700 font-semibold{% else %}text-gray-400{% endif %}">{{ b.approved_count }}</td>
+            <td class="px-4 py-3 text-right text-sm tabular-nums {% if b.applied_count %}text-green-700 font-semibold{% else %}text-gray-400{% endif %}">{{ b.applied_count }}</td>
             <td class="px-4 py-3"><span class="inline-flex items-center px-2 py-1 rounded-lg text-xs font-semibold bg-gray-100 text-gray-600">{{ b.status | title }}</span></td>
-            <td class="px-4 py-3 text-right"><a href="/import-review/{{ b.id }}" class="text-sm text-brand-600 hover:underline">Review →</a></td>
+            <td class="px-4 py-3 text-right whitespace-nowrap" onclick="event.stopPropagation();">
+              <a href="/import-review/{{ b.id }}" class="text-sm text-brand-600 hover:underline">Review →</a>
+              <form method="post" action="/import-review/batch/{{ b.id }}/delete" class="inline ml-2"
+                    onsubmit="return confirm('Delete this batch and all its staged rows? Applied products are NOT affected.');">
+                <button type="submit" class="text-xs text-gray-400 hover:text-red-600 hover:underline">Delete</button>
+              </form>
+            </td>
           </tr>
           {% endfor %}
         </tbody>

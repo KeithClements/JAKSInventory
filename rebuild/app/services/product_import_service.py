@@ -254,6 +254,12 @@ class ProductImportService(BaseService):
                     "tags": _get(row, "tags"),
                     "price": _get(row, "variant price"),
                     "compare_at": _get(row, "variant compare at price"),
+                    # Optional scraper columns (SCRAPER_REQUIREMENTS.md) — absent
+                    # on older exports; downstream treats blank as "don't touch".
+                    "cost": _get(row, "our cost", "pai_cost", "vendor_cost",
+                                 "dealer_cost", "net_cost", "cost"),
+                    "manufacturer": _get(row, "manufacturer", "engine make",
+                                         "engine_make", "engine_manufacturer"),
                     "barcode": _get(row, "variant barcode"),
                     "grams": _get(row, "variant grams"),
                     "status": _get(row, "status"),
