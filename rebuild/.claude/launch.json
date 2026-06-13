@@ -12,6 +12,24 @@
       "runtimeExecutable": "C:\\Users\\keith\\JAKSLeadFinder\\.venv\\Scripts\\python.exe",
       "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--app-dir", "C:\\Users\\keith\\JAKSLeadFinder", "--host", "127.0.0.1", "--port", "8200"],
       "port": 8200
+    },
+    {
+      "name": "lead-finder-verify",
+      "runtimeExecutable": "C:\\Users\\keith\\JAKSLeadFinder\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--app-dir", "C:\\Users\\keith\\JAKSLeadFinder", "--host", "127.0.0.1", "--port", "8201"],
+      "port": 8201
+    },
+    {
+      "name": "axle-shop",
+      "runtimeExecutable": "C:\\Users\\keith\\AxleShop\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--app-dir", "C:\\Users\\keith\\AxleShop", "--host", "127.0.0.1", "--port", "8100"],
+      "port": 8100
+    },
+    {
+      "name": "pai-info",
+      "runtimeExecutable": "C:\\Users\\keith\\PAI Info\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "app.web.server:app", "--app-dir", "C:\\Users\\keith\\PAI Info", "--host", "127.0.0.1", "--port", "8767"],
+      "port": 8767
     }
   ]
 }

@@ -96,7 +96,8 @@
     {% elif line.line_role == 'core' %}
     <span class="inline-flex items-center rounded-full bg-orange-100 px-2 py-0.5 text-xs font-medium text-orange-700">CORE</span>
     {% elif line.product %}
-    <span class="font-mono text-xs font-semibold text-blue-700">{{ line.product.sku }}</span>
+    {# Axle .pn — IBM Plex Mono 12px 700, ink. #}
+    <span class="pn">{{ line.product.sku }}</span>
     {% else %}
     <span class="text-xs text-gray-300 italic">—</span>
     {% endif %}
@@ -295,10 +296,10 @@
     <span class="text-gray-400 text-xs pointer-events-none">%</span>
   </td>
 
-  {# Line total — struck out when excluded upgrade_option #}
-  <td class="px-3 py-1.5 text-right font-medium text-sm tabular-nums w-24
-             {{ 'text-gray-300 line-through' if not line.is_included else 'text-gray-800' }}">
-    ${{ '%.2f' % line.line_total }}
+  {# Line total — Axle .money.ext (mono 12.5px 700, ink) for emphasis; struck out when excluded upgrade_option #}
+  <td class="px-3 py-1.5 text-right w-24
+             {{ 'text-gray-300 line-through' if not line.is_included else '' }}">
+    <span class="money ext">${{ '%.2f' % line.line_total }}</span>
   </td>
 
   {# ── Context menu (⋮) ──────────────────────────────────────────────────── #}

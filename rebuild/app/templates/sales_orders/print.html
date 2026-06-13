@@ -4,109 +4,296 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{{ so.so_number }} — {{ so.customer.company_name if so.customer else "Sales Order" }}</title>
-  {% include "documents/_styles.html" %}
+  {# Axle print spec §7 — mirrors quotes/print.html. Self-host preferred in prod. #}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Barlow:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root{
+      --ink:#0b0c0d;
+      --amber:#e7891d;
+      --s700:#2f343a; --s500:#565d65; --s400:#7c838b; --s300:#a9afb6;
+      --s200:#cdd1d5; --s100:#e7e9eb;
+      --disp:"Oswald",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      --body:"Barlow",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+      --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html{ -webkit-font-smoothing:antialiased; }
+    body{
+      font-family: var(--body); color: var(--ink); background: #cfd2d6;
+      font-size: 12.5px; line-height: 1.45;
+      -webkit-print-color-adjust: exact; print-color-adjust: exact;
+    }
+
+    .page-shell{
+      width: 8.5in; min-height: 11in; margin: 24px auto;
+      background: #fff; box-shadow: 0 8px 30px rgba(0,0,0,.18);
+      padding: 0.7in 0.75in 0.65in;
+      display: flex; flex-direction: column;
+    }
+
+    .controls{ position: fixed; top: 14px; right: 16px; display: flex; gap: 8px; z-index: 9999; }
+    .btn{
+      font-family: var(--disp); font-weight: 600;
+      text-transform: uppercase; letter-spacing: .06em;
+      font-size: 12px; padding: 9px 14px; border-radius: 6px;
+      cursor: pointer; border: none; line-height: 1.4;
+    }
+    .btn-primary  { background: var(--ink); color: #fff; }
+    .btn-secondary{ background: #e5e7eb; color: #374151; }
+
+    .void-banner{ text-align:center; padding: 6px 0 10px; margin-bottom: 10px; }
+    .void-badge{
+      display: inline-block; font-family: var(--disp); font-weight: 700;
+      font-size: 14px; letter-spacing: .25em; text-transform: uppercase;
+      padding: 5px 26px; border-radius: 4px;
+      border: 2px solid var(--ink); color: var(--ink); background: #fff;
+    }
+
+    .doc-header{
+      display: flex; justify-content: space-between; align-items: flex-start;
+      border-bottom: 2.5px solid var(--ink); padding-bottom: 16px;
+    }
+    .co-name{
+      font-family: var(--disp); font-weight: 700;
+      text-transform: uppercase; font-size: 28px;
+      line-height: .9; letter-spacing: .01em; color: var(--ink);
+    }
+    .co-logo{ max-height: 56px; max-width: 360px; width: auto; display: block; margin-bottom: 4px; }
+    .co-info{ font-family: var(--body); font-size: 11px; color: var(--s500); line-height: 1.7; margin-top: 6px; }
+
+    .doc-right{ text-align: right; }
+    .doc-title{
+      font-family: var(--disp); font-weight: 700;
+      text-transform: uppercase; font-size: 28px; line-height: .9; color: var(--ink);
+    }
+    .doc-meta{
+      font-family: var(--mono); font-size: 11px;
+      color: var(--s500); margin-top: 7px; line-height: 1.7;
+    }
+    .doc-meta strong{ color: var(--ink); font-weight: 600; }
+
+    .meta-row{
+      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px;
+      padding: 16px 0 18px; border-bottom: 1px solid var(--s200);
+    }
+    .meta-lab{
+      font-family: var(--disp); font-weight: 600;
+      text-transform: uppercase; letter-spacing: .07em;
+      font-size: 10px; color: var(--s400); margin-bottom: 5px;
+    }
+    .meta-val{ font-size: 12.5px; color: var(--s700); line-height: 1.55; }
+    .meta-val b{ color: var(--ink); font-weight: 600; font-size: 13.5px; }
+    .meta-mono{ font-family: var(--mono); font-size: 11.5px; color: var(--s700); }
+    .ref-key{
+      color: var(--s400); font-family: var(--disp);
+      font-weight: 600; text-transform: uppercase;
+      letter-spacing: .05em; font-size: 10px; margin-right: 4px;
+    }
+
+    table.lines{ width: 100%; border-collapse: collapse; margin-top: 18px; }
+    table.lines thead th{
+      font-family: var(--disp); font-weight: 600;
+      text-transform: uppercase; letter-spacing: .07em;
+      font-size: 9.5px; color: var(--s400);
+      text-align: left; padding: 7px 8px;
+      border-bottom: 1.5px solid var(--ink);
+    }
+    table.lines thead th.r{ text-align: right; }
+    table.lines thead th.c{ text-align: center; }
+
+    table.lines tbody td{
+      padding: 9px 8px; border-bottom: 1px solid var(--s100);
+      vertical-align: top; font-size: 12.5px; page-break-inside: avoid;
+    }
+    table.lines tbody tr:last-child td{ border-bottom: 1px solid var(--s200); }
+
+    td.td-num   { color: var(--s300); font-family: var(--mono); font-size: 11.5px; text-align: center; }
+    td.r        { text-align: right; }
+    td.td-total { text-align: right; font-family: var(--mono); font-size: 12px; }
+    td.td-total b{ font-weight: 600; }
+
+    .pn{ font-family: var(--mono); font-weight: 600; font-size: 11.5px; color: var(--ink); white-space: nowrap; }
+    .ds{ font-family: var(--body); color: var(--s500); font-size: 11.5px; margin-top: 1px; line-height: 1.4; }
+    .money{ font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+
+    /* Source / status badges — B&W safe */
+    .src-badge{
+      display: inline-block; font-family: var(--disp);
+      font-size: 9px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .06em; padding: 1px 5px; border-radius: 3px;
+      border: 1px solid var(--s300); color: var(--s700); background: #fff;
+    }
+    .src-badge.bo{ border-color: var(--ink); color: var(--ink); }
+    .eta-tag{
+      display: inline-block; font-family: var(--mono);
+      font-size: 10px; color: var(--s500); margin-left: 4px;
+    }
+    .cancel-tag{
+      display: inline-block; font-family: var(--mono);
+      font-size: 10px; color: var(--s500); margin-top: 2px;
+    }
+
+    .tot-wrap{ display: flex; justify-content: flex-end; margin-top: 14px; }
+    .tots{ width: 3.1in; }
+    .tots .row{
+      display: flex; justify-content: space-between;
+      padding: 5px 10px; font-size: 12.5px; color: var(--s700);
+    }
+    .tots .row .lbl{ font-family: var(--body); }
+    .tots .row .val{ font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+    .tots .row.paid-row .lbl,
+    .tots .row.paid-row .val{ color: var(--ink); font-weight: 600; }
+    .tots .grand{
+      display: flex; justify-content: space-between; align-items: center;
+      margin-top: 6px; border-top: 2.5px solid var(--ink);
+      padding: 10px 10px 0;
+    }
+    .tots .grand .l{
+      font-family: var(--disp); font-weight: 700;
+      text-transform: uppercase; letter-spacing: .08em;
+      font-size: 12px; color: var(--ink);
+    }
+    .tots .grand .v{
+      font-family: var(--mono); font-weight: 600;
+      font-size: 19px; color: var(--ink);
+    }
+    .tots .balance{
+      display: flex; justify-content: space-between; align-items: center;
+      margin-top: 6px; border-top: 1px solid var(--s200);
+      padding: 8px 10px 0;
+    }
+    .tots .balance .l{
+      font-family: var(--disp); font-weight: 700;
+      text-transform: uppercase; letter-spacing: .07em;
+      font-size: 11px; color: var(--ink);
+    }
+    .tots .balance .v{ font-family: var(--mono); font-weight: 600; font-size: 14px; color: var(--ink); }
+
+    .notes-section{ margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--s100); }
+    .sec-label{
+      font-family: var(--disp); font-size: 10px;
+      font-weight: 600; text-transform: uppercase;
+      letter-spacing: .08em; color: var(--s400); margin-bottom: 5px;
+    }
+    .notes-body{ font-size: 11.5px; color: var(--s500); line-height: 1.65; white-space: pre-wrap; }
+
+    .terms{ margin-top: 22px; padding-top: 4px; }
+    .terms .box{
+      border: 1px solid var(--s200);
+      border-left: 3px solid var(--amber);
+      padding: 10px 14px;
+      font-size: 11px; color: var(--s500); line-height: 1.6;
+    }
+    .terms .box b{ color: var(--ink); font-weight: 600; }
+
+    .doc-foot{
+      display: flex; justify-content: space-between; align-items: center;
+      margin-top: 18px; padding-top: 12px;
+      border-top: 1px solid var(--s200);
+      font-family: var(--mono); font-size: 9.5px;
+      color: var(--s400); letter-spacing: .04em; text-transform: uppercase;
+    }
+    .doc-foot .mid{ text-align: center; }
+    .doc-foot .rt { text-align: right; }
+    .page-shell .doc-footer{ display: none; }
+
+    @page { size: letter portrait; margin: 0; }
+    @media print{
+      body{ background: #fff; }
+      .page-shell{ width: auto; min-height: auto; margin: 0; box-shadow: none; padding: 0.7in 0.75in 0.65in; }
+      .controls{ display: none !important; }
+    }
+  </style>
 </head>
 <body>
 
-{% include "documents/_controls.html" %}
+<div class="controls">
+  <button class="btn btn-primary" onclick="window.print()">&#128438; Print / Save PDF</button>
+  <button class="btn btn-secondary" onclick="window.close()">&#x2715; Close</button>
+</div>
 
 <div class="page-shell">
 
-  {# ── Watermark ─────────────────────────────────────────────────────── #}
+  {# Cancelled / Closed banner (B&W-safe outlined badge) #}
   {% if so.status == 'cancelled' %}
-  <div class="doc-watermark"><span class="watermark-badge wm-void">Cancelled</span></div>
+  <div class="void-banner"><span class="void-badge">Cancelled</span></div>
   {% elif so.status == 'closed' %}
-  <div class="doc-watermark"><span class="watermark-badge wm-closed">Closed</span></div>
+  <div class="void-banner"><span class="void-badge">Closed</span></div>
   {% endif %}
 
-  {# ── Header ────────────────────────────────────────────────────────── #}
+  {# ── Header ────────────────────────────────────────────────────────────── #}
   <div class="doc-header">
     {% include "documents/_company_header.html" %}
     <div class="doc-right">
-      <div class="doc-label">Sales Order</div>
-      <div class="doc-number">{{ so.so_number }}</div>
-      <div class="doc-dates">
-        <strong>Date:</strong> {{ so.created_at.strftime('%B %d, %Y') }}<br>
-        {% if so.customer and so.customer.payment_terms %}
-          <strong>Terms:</strong> {{ so.customer.payment_terms | upper }}<br>
-        {% endif %}
-        {% if so.quote_id %}
-          <strong>RE:</strong> Quote #{{ so.quote_id }}<br>
-        {% endif %}
-        {% with status_class=so.status, status_label=(so.status|upper|replace('_', ' ')) %}
-          {% include "documents/_status_pill.html" %}
-        {% endwith %}
+      <div class="doc-title">Sales Order</div>
+      <div class="doc-meta">
+        <strong>No.</strong> {{ so.so_number }}<br>
+        {{ so.created_at.strftime('%B %d, %Y') }}
+        {% if so.status %} &middot; {{ so.status|upper|replace('_',' ') }}{% endif %}
+        {% if so.quote_id %}<br>RE: Quote #{{ so.quote_id }}{% endif %}
       </div>
     </div>
   </div>
 
-  {# ── Customer + Ship-To + Reference ────────────────────────────────── #}
-  <div class="party-row">
+  {# ── Three-column meta row: From / Ship to (or Bill to) / Terms-Reference #}
+  <div class="meta-row">
 
-    {% with party_label="Bill To",
-            party_name=(so.customer.company_name if so.customer else "—"),
-            party_lines=customer_addr_lines,
-            party_contact=None,
-            party_anonymous=False %}
-      {% include "documents/_party_block.html" %}
-    {% endwith %}
+    <div>
+      <div class="meta-lab">From</div>
+      <div class="meta-val">
+        {% if company.name %}<b>{{ company.name }}</b><br>{% endif %}
+        {% if company.address %}{{ company.address }}<br>{% endif %}
+        {% if company.phone %}<span class="meta-mono">{{ company.phone }}</span>{% if company.email %}<br>{% endif %}{% endif %}
+        {% if company.email %}<span class="meta-mono">{{ company.email }}</span>{% endif %}
+      </div>
+    </div>
 
-    {% if ship_to_lines %}
-      {% with party_label="Ship To",
-              party_name=ship_to_name,
-              party_lines=ship_to_lines,
-              party_contact=None,
-              party_anonymous=False %}
-        {% include "documents/_party_block.html" %}
-      {% endwith %}
-    {% endif %}
+    <div>
+      <div class="meta-lab">{% if ship_to_lines %}Ship to{% else %}Bill to{% endif %}</div>
+      <div class="meta-val">
+        {% if ship_to_lines %}
+          <b>{{ ship_to_name or (so.customer.company_name if so.customer else '—') }}</b>
+          <br>{% for ln in ship_to_lines %}{{ ln }}{% if not loop.last %}<br>{% endif %}{% endfor %}
+        {% else %}
+          <b>{{ so.customer.company_name if so.customer else '—' }}</b>
+          {% if customer_addr_lines %}
+            <br>{% for ln in customer_addr_lines %}{{ ln }}{% if not loop.last %}<br>{% endif %}{% endfor %}
+          {% endif %}
+          {% if so.customer and so.customer.phone %}<br><span class="meta-mono">{{ so.customer.phone }}</span>{% endif %}
+        {% endif %}
+      </div>
+    </div>
 
-    {# Reference fields #}
-    {% if so.customer_po_number or so.customer_job_number or so.esn or so.engine_manufacturer or so.engine_model %}
-    <div class="party-block">
-      <div class="party-label">Reference</div>
-      <div class="ref-block">
-        {% if so.customer_po_number %}
-        <div class="ref-row">
-          <span class="ref-label">Customer PO</span>
-          <span class="ref-val">{{ so.customer_po_number }}</span>
-        </div>
-        {% endif %}
-        {% if so.customer_job_number %}
-        <div class="ref-row">
-          <span class="ref-label">Job #</span>
-          <span class="ref-val">{{ so.customer_job_number }}</span>
-        </div>
-        {% endif %}
-        {% if so.esn %}
-        <div class="ref-row">
-          <span class="ref-label">ESN</span>
-          <span class="ref-val">{{ so.esn }}</span>
-        </div>
-        {% endif %}
+    <div>
+      <div class="meta-lab">Terms &amp; Reference</div>
+      <div class="meta-val">
+        {% if so.customer and so.customer.payment_terms %}<span class="ref-key">Terms</span>{{ so.customer.payment_terms | upper }}<br>{% endif %}
+        {% if so.requested_ship_date %}<span class="ref-key">Ship</span><span class="meta-mono">{{ so.requested_ship_date.strftime('%m/%d/%Y') }}</span><br>{% endif %}
+        {% if prepared_by %}Prepared by {{ prepared_by }}<br>{% endif %}
+        {% if so.customer_po_number %}<span class="ref-key">PO</span><span class="meta-mono">{{ so.customer_po_number }}</span><br>{% endif %}
+        {% if so.customer_job_number %}<span class="ref-key">Job</span><span class="meta-mono">{{ so.customer_job_number }}</span><br>{% endif %}
+        {% if so.esn %}<span class="ref-key">ESN</span><span class="meta-mono">{{ so.esn }}</span><br>{% endif %}
         {% if so.engine_manufacturer or so.engine_model %}
-        <div class="ref-row">
-          <span class="ref-label">Engine</span>
-          <span class="ref-val">{{ so.engine_manufacturer }} {{ so.engine_model }}</span>
-        </div>
+          <span class="ref-key">Engine</span>{{ so.engine_manufacturer }} {{ so.engine_model }}
         {% endif %}
       </div>
     </div>
-    {% endif %}
 
   </div>
 
-  {# ── Line items ────────────────────────────────────────────────────── #}
+  {# ── Line items ──────────────────────────────────────────────────────────── #}
   <table class="lines">
     <thead>
       <tr>
-        <th class="ctr" style="width:28px">#</th>
-        <th class="lft" style="width:120px">Part #</th>
-        <th class="lft">Description</th>
-        <th class="ctr" style="width:90px">Source</th>
-        <th class="rgt" style="width:48px">Qty</th>
-        <th class="rgt" style="width:90px">Unit Price</th>
-        <th class="rgt" style="width:90px">Extended</th>
+        <th class="c" style="width:26px">#</th>
+        <th>Part / Description</th>
+        <th class="c" style="width:78px">Source</th>
+        <th class="r" style="width:48px">Qty</th>
+        <th class="r" style="width:88px">Unit</th>
+        <th class="r" style="width:92px">Ext</th>
       </tr>
     </thead>
     <tbody>
@@ -116,74 +303,76 @@
           {# skip fully cancelled lines #}
         {%- else -%}
           {%- set ns.row = ns.row + 1 -%}
-          <tr{% if ns.row % 2 == 0 %} class="even-row"{% endif %}>
+          <tr>
             <td class="td-num">{{ ns.row }}</td>
             <td>
-              <span style="font-family:monospace;font-size:9pt;color:#374151;">
-                {{ (line.product.sku if line.product and line.product.sku else "—") }}
-              </span>
-            </td>
-            <td>
-              {{ line.description or (line.product.title if line.product else "—") }}
+              {% if line.product and line.product.sku %}
+                <div class="pn">{{ line.product.sku }}</div>
+                <div class="ds">{{ line.description or (line.product.title if line.product else "—") }}</div>
+              {% else %}
+                <span class="ds" style="color:var(--s700)">{{ line.description or "—" }}</span>
+              {% endif %}
               {% if line.qty_cancelled %}
-              <span class="badge badge-bo" style="margin-top:2px;">
-                {{ line.qty_cancelled }} cancelled
-              </span>
+                <div class="cancel-tag">{{ line.qty_cancelled }} cancelled</div>
               {% endif %}
             </td>
-            <td class="td-ctr">
+            <td class="td-num" style="text-align:center">
               {% set src = line.fulfillment_source or line.source or "stock" %}
               {% if src == 'stock' %}
-                <span class="badge badge-stock">Stock</span>
+                <span class="src-badge">Stock</span>
               {% elif src == 'backorder' %}
-                <span class="badge badge-bo">Backorder</span>
+                <span class="src-badge bo">B/O</span>
               {% elif src == 'linked_po' %}
-                <span class="badge badge-bo">On PO</span>
+                <span class="src-badge bo">On PO</span>
               {% elif src == 'special_order' %}
-                <span class="badge badge-special">Special</span>
+                <span class="src-badge bo">Special</span>
               {% elif src == 'dropship' %}
-                <span class="badge badge-dropship">Drop Ship</span>
+                <span class="src-badge">Drop</span>
               {% else %}
-                <span class="badge badge-stock">{{ src|title }}</span>
+                <span class="src-badge">{{ src|title }}</span>
               {% endif %}
+              {% if line.eta_date %}<div class="eta-tag">ETA {{ line.eta_date.strftime('%m/%d') }}</div>{% endif %}
             </td>
-            <td class="td-rgt">{{ line.qty_ordered }}</td>
-            <td class="td-rgt">${{ "%.2f"|format(line.unit_price) }}</td>
-            <td class="td-total">${{ "%.2f"|format(line.line_total) }}</td>
+            <td class="r money">{{ line.qty_ordered }}</td>
+            <td class="r money">${{ "%.2f"|format(line.unit_price) }}</td>
+            <td class="td-total"><b>${{ "%.2f"|format(line.line_total) }}</b></td>
           </tr>
         {%- endif -%}
       {% else %}
-        <tr><td colspan="7" class="td-empty">No line items.</td></tr>
+        <tr>
+          <td colspan="6" style="text-align:center;padding:18px;color:var(--s300);font-style:italic">
+            No line items.
+          </td>
+        </tr>
       {% endfor %}
     </tbody>
   </table>
 
-  {# ── Totals ────────────────────────────────────────────────────────── #}
-  <div class="totals-wrap">
-    <div class="totals-inner">
-      <div class="t-row">
+  {# ── Totals ────────────────────────────────────────────────────────────── #}
+  <div class="tot-wrap">
+    <div class="tots">
+      <div class="row">
         <span class="lbl">Subtotal</span>
         <span class="val">${{ "%.2f"|format(so.subtotal) }}</span>
       </div>
-      <div class="t-row grand">
-        <span class="lbl">Total</span>
-        <span class="val">${{ "%.2f"|format(so.subtotal) }}</span>
+      <div class="grand">
+        <span class="l">Order Total</span>
+        <span class="v">${{ "%.2f"|format(so.subtotal) }}</span>
       </div>
       {% if so.deposit_amount and so.deposit_amount > 0 %}
-      <hr class="t-divider">
-      <div class="t-row paid-row">
+      <div class="row paid-row">
         <span class="lbl">Deposit Collected</span>
         <span class="val">&#x2212;${{ "%.2f"|format(so.deposit_amount) }}</span>
       </div>
-      <div class="t-row balance-row">
-        <span class="lbl">Balance at Invoice</span>
-        <span class="val">${{ "%.2f"|format((so.subtotal - so.deposit_amount)|round(2)) }}</span>
+      <div class="balance">
+        <span class="l">Balance at Invoice</span>
+        <span class="v">${{ "%.2f"|format((so.subtotal - so.deposit_amount)|round(2)) }}</span>
       </div>
       {% endif %}
     </div>
   </div>
 
-  {# ── Notes ────────────────────────────────────────────────────────── #}
+  {# ── Notes ─────────────────────────────────────────────────────────────── #}
   {% if so.notes and so.notes.strip() %}
   <div class="notes-section">
     <div class="sec-label">Notes</div>
@@ -191,18 +380,43 @@
   </div>
   {% endif %}
 
-  {# ── Backorder / pending notice ──────────────────────────────────── #}
-  {% if so.has_backorder %}
-  <div class="callout callout-amber">
-    <strong>Backorder notice:</strong> One or more items on this order are not in
-    stock. We will contact you when they are ready. Final pricing and tax (if
-    applicable) will appear on the invoice.
+  {# ── Terms box (§7: 3px amber left border — gray in B&W) ──────────────── #}
+  {% if company.terms_text %}
+  <div class="terms">
+    <div class="box">
+      <b>Terms &amp; Conditions:</b> {{ company.terms_text }}
+    </div>
+  </div>
+  {% else %}
+  <div class="terms">
+    <div class="box">
+      <b>Sales order:</b> This confirms items reserved for you. An invoice
+      will follow when the order is ready. Final pricing and tax (if
+      applicable) will appear on the invoice.
+      {% if so.has_backorder %} <b>·</b> One or more items are on backorder; we will contact you when they're ready.{% endif %}
+    </div>
   </div>
   {% endif %}
 
   {% set disclaimer = "This sales order confirms items reserved for you. An invoice will follow when the order is ready." %}
   {% set footer_message = "Thank you for your order" %}
   {% include "documents/_footer.html" %}
+
+  {# ── Axle three-cell mono footer (§7) ─────────────────────────────────── #}
+  <div class="doc-foot">
+    <span>
+      <svg viewBox="0 0 64 64" width="11" height="11" style="vertical-align:-1px;margin-right:5px"
+           fill="none" stroke="#7c838b" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="32" cy="32" r="28"></circle>
+        <circle cx="32" cy="32" r="17" stroke-width="3"></circle>
+        <circle cx="32" cy="32" r="6.5" fill="#7c838b" stroke="none"></circle>
+        <rect x="30" y="20" width="4" height="6" rx="1" fill="#7c838b" stroke="none"></rect>
+      </svg>
+      Axle &middot; Parts Counter System
+    </span>
+    <span class="mid">{{ so.so_number }} &middot; {{ so.created_at.strftime('%m/%d/%Y') }}</span>
+    <span class="rt">{% if company.email %}{{ company.email }}{% elif company.phone %}{{ company.phone }}{% elif company.name %}{{ company.name }}{% endif %}</span>
+  </div>
 
 </div>{# /page-shell #}
 

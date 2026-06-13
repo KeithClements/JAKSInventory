@@ -340,7 +340,7 @@ wired** into quote/invoice line-add (`4f4b5db`) · **demo-reset production-gated
 |---|---|---|
 | **Product categorization & classification system** | **✅ BUILT 2026-06-06** (see §18) | Dedicated **Inventory → Category Maintenance** screen (owns Category/Subcategory/Product-Family tree + sort order + active + default markup + import rules; also Brand & Manufacturer/Engine-Make lists). Products List gets **filters** (Category/Subcategory/Family/Manufacturer/Brand/Needs-Review/Uncategorized) + **bulk Assign Category/Manufacturer** + **Manage Categories** link only. Importer: Shopify **Type → top-level category only**; Title/Tags/Body-HTML/OEM/Applications → suggest subcategory/family/manufacturer; low-confidence → `needs_review` + **Import Review queue**. Enforces **Brand ≠ Vendor ≠ Manufacturer/Engine-Make** (today the importer hard-codes `brand`+`manufacturer` both to "PAI"). Full spec + 4 owner forks in **§18**. |
 | ~~UX — customer `pricing_tier` decorative label~~ | **✅ RESOLVED 2026-06-07** | Both halves now done: (1) `customer.discount_pct` auto-applies to quote/invoice lines (already worked, `test_tier_pricing.py`); (2) `pricing_tier` is now **wired into price resolution** — `PricingService.tier_discount_pct()`/`sell_price_for_tier()` (`pricing_service.py:93/107`) read a per-tier discount from settings and are consulted at line-add in `quote_service.py:116/513/590` + `invoice_service.py:325` (`4f4b5db`); the confusing per-entry-form dropdown was removed (`9db732b`, owner decision). Locked by `test_tier_pricing_and_demo_gate.py`. No longer a gap. |
-| QBO OAuth + **invoice** push | **✅ BUILT 2026-06-04** | OAuth2 + REST client + accounting-summary invoice push + bulk sync + Settings/invoice-list/workspace UI; 17+ tests; owner-tested against the live sandbox. Fails-soft — never touches the money path. **Still deferred within 1B:** payments / vendor-bills / credit-memos push; Fernet token encryption; AST-tax reconcile (`qbo_push_tax` kill-switch). |
+| QBO OAuth + **invoice** push | **✅ BUILT 2026-06-04 → COMPLETED 2026-06-10 (R2/R3)** | OAuth2 + REST client + accounting-summary invoice push + bulk sync + Settings/invoice-list/workspace UI; fails-soft — never touches the money path. **R2/R3 closed the rest of 1B:** `push_payment` + `push_vendor_bill` + `push_credit_memo`, Fernet token encryption at rest (`JAKS_FERNET_KEY`, `cryptography` 48.0.1 pinned), real user attribution + AuditLog rows on every push. **Only deferred now:** AST-tax detection + background retry worker (needs a scheduler — Phase 3); `Vendor.qbo_vendor_id` persistence (re-resolves per push, hasattr-gated). |
 | Vendor availability + ESN scrapers (PAI/HHP/ATL) | **REMOVED from ERP scope (P2-D9, 2026-06-02)** | The ERP never scrapes. `vendor_availability_service.py` / `esn_lookup_service.py` stubs + `scraper.py` models + scraper routes/seed are being deleted (Backend). Live pricing/catalog lives in the standalone PAI Info tool → Shopify. |
 | Product enrichment sync (cross-refs + CPL/ESN) | **✅ BUILT (`370820b`)** | One-way sync from the scraper's CSV export onto stocked products (match `jaks_sku`→`products.sku`; never creates products / touches cost/sell). `ProductApplication` model + `ProductEnrichmentService` + `POST /products/enrich-sync` + UI trigger; 9 tests. Spec: `PHASE_2_PLAN.md` §7.2. |
 | Real email/SMS send | NullProvider only | `MessagingService` logs to `communication_log` (`logged_only`); SMTP/M365/Twilio providers are Phase 2. |
@@ -363,7 +363,7 @@ Backend can do these workflows; the **screens are still raw L1 `tbl-*` tables** 
 
 | Feature | Notes |
 |---|---|
-| Serial number tracking UI (cylinder heads) | Models + `product_serial_numbers` exist; no UI. |
+| ~~Serial number tracking UI (cylinder heads)~~ | **✅ BUILT 2026-06-10 (R3)** — capture textarea at PO receive (`SerialService`, fail-safe) → FIFO auto-assign at invoice finalize → release on void. |
 | Kit BOM management UI (vendor + JAKS-built) | `product_kits` / `product_kit_lines` exist; no UI. |
 | Quote pop-out window (second browser window) | Spec locked — `window.open('/quotes/{id}/popup')`. Not built. |
 | Research status on quote lines | `ResearchService` implemented; quote-line research UI is partial — **verify before scheduling**. |
@@ -481,7 +481,7 @@ Research status on quote lines, quote pop-out window, quote duplication, custome
 
 Keith signs off when ALL of these work in real daily use (not test data):
 
-- [ ] **2-user login ENFORCED on production routes; every invoice / payment / adjustment is attributed to the signed-in user** *(O2 — mechanism shipped `90245d0`; owner RULED enforce 2026-05-31. Today still OPT-IN, falling back to user 1 at `deps.py:20` — Backend to add the session guard.)*
+- [x] **2-user login ENFORCED on production routes; every invoice / payment / adjustment is attributed to the signed-in user** *(O2 — ✅ DONE: `deps.py` production routes require a real session; the user-1 fallback is test-env-only. R3 added real user attribution to QBO pushes too.)*
 - [ ] **Automatic `data/jaks.db` backup runs on schedule; a restore has been tested from a backup** *(O3)*
 - [ ] Enter new vendor + product in under 3 minutes (including enrichment)
 - [ ] Create PO, receive it partially, inventory updates correctly
@@ -493,7 +493,7 @@ Keith signs off when ALL of these work in real daily use (not test data):
 - [ ] Core return shipment document prints with RMA and tracking
 - [ ] Warranty claim moves through all states; account credit issued on approval
 - [ ] Return authorization generates; credit applied to customer balance
-- [~] *(Phase 1B — not a 1A go-live blocker)* Wife pushes **invoices** to QBO with one click ✅ **built + owner-tested 2026-06-04** (single + bulk); payments / vendor-bills / credit-memos still to build
+- [~] *(Phase 1B — not a 1A go-live blocker)* Wife pushes **invoices** to QBO with one click ✅ **built + owner-tested 2026-06-04** (single + bulk); **payments / vendor-bills / credit-memos push ✅ BUILT 2026-06-10 (R2/R3)** — remaining is operational: reconnect the live (non-sandbox) company + set `JAKS_FERNET_KEY`
 - [ ] Dashboard shows: open SOs, follow-up quotes today, overdue invoices, outstanding cores
 - [ ] No data integrity issues in 2 weeks of real daily use
 - [ ] Wife has no open bookkeeping accuracy questions
@@ -832,14 +832,14 @@ Sequences reset annually (Jan 1). `current_sequence_year` in settings detected o
 
 | Item | Sev | Effort | Notes |
 |---|---|---|---|
-| **Owner test pass** — Cores, Returns, Warranty, Vendor Returns, Reports, 5 E2E flows + one backup→restore drill | **High** | M | Never owner-tested. Biggest confidence gap. Fill the R3 sheet with real data. |
-| **CSRF** on all state-changing POSTs | **High** | M | No CSRF anywhere (`main.py:58`). All-or-nothing app-wide pass. Catastrophic routes now admin-gated, so exposure is reduced but not eliminated. |
-| **Tier-pricing label: relabel or wire** | ~~High~~ **Low (downgraded 2026-06-06)** | S | **NOT a mispricing bug.** Per-customer pricing works: `discount_pct` auto-applies on quote lines (`quote_service.py:119-122`) + invoice draft; regression-locked (`tests/test_tier_pricing.py`). Only the `pricing_tier` dropdown is a decorative label no logic reads — relabel as "Customer Type" or wire tier→default-discount. |
-| Encrypt QBO OAuth tokens at rest | Med | M | Plaintext in `data/jaks.db` (`qbo_client.py:133`). **Needs the `cryptography` dependency (not currently installed).** |
+| **Owner test pass** — now = the **R4 go-live trial sheet** (`Testing Feedback/TESTING_FEEDBACK_R4_GOLIVE_TRIAL.md`, **still blank 2026-06-10**): 5 lifecycles A–E + screen-by-screen + DI spot checks + one backup→restore drill | **High** | M | Never owner-tested end-to-end on the current build. **THE remaining go-live gate.** DB already reset clean for it. |
+| **CSRF** on all state-changing POSTs | **High** | M | Still absent app-wide (SameSite-Lax waiver stands for the 2-user LAN). Revisit only if internet-exposed. |
+| ~~**Tier-pricing label: relabel or wire**~~ | — | — | **✅ CLOSED 2026-06-07** — `pricing_tier` wired into price resolution (`4f4b5db`) + the confusing dropdown removed (`9db732b`). |
+| ~~Encrypt QBO OAuth tokens at rest~~ | — | — | **✅ DONE 2026-06-10 (R2)** — Fernet behind `JAKS_FERNET_KEY` (`cryptography` 48.0.1 pinned; legacy plaintext reads fine). Operational step: set the key before connecting the real company. |
 | Force admin password change on first login | Med | S | Dashboard banner (17.1) is the interim; hard redirect-on-login still to do. |
-| `demo-reset` env-guard (refuse on the prod instance) | Low | S | Belt-and-suspenders atop the new admin gate. |
-| Seed bookkeeper (wife) user + set strong admin/bookkeeper passwords | High | S | Operational §11 cutover step. |
-| `products/list.html` export-button wiring | Low | S | Left uncommitted (another lane has the file open); the route half is committed. |
+| ~~`demo-reset` env-guard (refuse on the prod instance)~~ | — | — | **✅ DONE** — `JAKS_ENV=production` → 403 on GET+POST (`4f4b5db`). |
+| Seed bookkeeper (wife) user + set strong admin/bookkeeper passwords | High | S | Operational §11 cutover step (bookkeeper seeded; strong passwords still to set at `/account`). |
+| ~~`products/list.html` export-button wiring~~ | — | — | **✅ DONE** — Products Export CSV wired (17.1) + R1-13 shipped the other 5 CSV exports. |
 
 ### 17.3 — Counter-readiness (Tier 2 — a real parts counter needs these)
 
@@ -1082,13 +1082,24 @@ military-green `#5a6630` + amber + steel palette, Oswald/Barlow/IBM Plex Mono, h
 Route through the existing `documents/_company_header.html`/`_footer.html`/`_styles` partials +
 `get_company_dict()` seam — **print templates only; do NOT restyle the ERP app shell** (§3 design system stays locked).
 
-### 19.6 — Report card (2026-06-10 verified)
+### 19.6 — Report card (2026-06-10 verified; grades below were PRE-sprint)
 Navigation B+ · Products B− · Inventory B · Purchasing B · Receiving B− · Quotes B− · Invoicing B− ·
 Customers B− · Cores C+ · QBO C+ · Reporting B− · UI/UX B− · **Readiness C+ → target A after R1+R2.**
 Grade path: R1 = stop money loss (C+→B), R2 = close vendor/QBO loops (B→A−), R3 + 2 weeks clean daily use = A.
+
+> **2026-06-10 (evening) — R1+R2+R3+R4 ALL SHIPPED** (`248ea09` / `40eea95` / `a53bbe2` / `674491a..f18aec9`),
+> each wave adversarially verified; the R3 full-chain E2E (`test_r3_e2e_full_chain.py`, money to the cent)
+> caught + fixed a real core-deposit double-bill in `fulfill_and_invoice`. **Code readiness ≈ A−.**
+> What separates A− from A is no longer code: **(1)** the owner R4 trial sheet is still blank,
+> **(2)** the operational cutover (strong passwords · backup→restore drill · real-catalog Full Import ·
+> live-QBO reconnect + `JAKS_FERNET_KEY`), **(3)** two weeks of clean daily use. Live DB was reset to a
+> clean trial state (130 seed products, 1 invoice) — the 13k catalog re-imports at cutover by design.
+> Code still open (small): force-password-change redirect · §19.5 brand-kit prints (not started) ·
+> §17.3 counter-readiness tier (pick ticket / daily close / CASH walk-in) · CSRF (waived for LAN).
+> In flight uncommitted: vendor SKU-digit auto-assign + freeze (`vendors.py` + `sku_service.py`).
 
 ---
 
 *This document is the single source of truth for all JAKS Inventory build decisions.*
 *Update it as decisions change. All other planning documents are superseded.*
-*Last updated: 2026-06-10 — **§19 added (verified system review, B−, authoritative punch list) and Sprint R1 §19.2 implemented the same day** (16/16 money/integrity fixes, adversarially verified, 1438 tests green). Next: §19.3 Sprint R2. Prior note (2026-06-06) — status-refresher pass: 983 tests verified green; tier-pricing downgraded from blocker to a label decision (money path proven real); real-data cutover (13,153-part catalog) recorded as the live operational gate; owner-acceptance breadth named as the one true status gap. See §17 banner. **Added §18 Product Categorization & Classification spec** (Inventory → Category Maintenance screen; Products-List filters/bulk-assign/Manage-Categories link; importer rules + Import Review queue; Brand/Vendor/Manufacturer-Engine-Make separation) — **BUILT & verified the same night** (increments 1–7; 1051 tests pass; backfill applied to the live 13,154-part catalog). Not yet git-committed. See §18 banner.*
+*Last updated: 2026-06-10 (evening status-refresher reconciliation) — **R1+R2+R3+R4 all SHIPPED** (`248ea09`/`40eea95`/`a53bbe2`/`674491a..f18aec9`); ledger reconciled: QBO 1B marked COMPLETE (payments/vendor-bills/credit-memos push + Fernet, R2/R3), serials marked BUILT (R3), §17.2 closed rows struck (tier-pricing · Fernet · demo-reset guard · products export), §11 O2 marked enforced. **Remaining gate = owner-run R4 trial sheet (blank) + operational cutover**, not code. Prior note: **§19 added (verified system review, B−, authoritative punch list) and Sprint R1 §19.2 implemented the same day** (16/16 money/integrity fixes, adversarially verified, 1438 tests green). Next: §19.3 Sprint R2. Prior note (2026-06-06) — status-refresher pass: 983 tests verified green; tier-pricing downgraded from blocker to a label decision (money path proven real); real-data cutover (13,153-part catalog) recorded as the live operational gate; owner-acceptance breadth named as the one true status gap. See §17 banner. **Added §18 Product Categorization & Classification spec** (Inventory → Category Maintenance screen; Products-List filters/bulk-assign/Manage-Categories link; importer rules + Import Review queue; Brand/Vendor/Manufacturer-Engine-Make separation) — **BUILT & verified the same night** (increments 1–7; 1051 tests pass; backfill applied to the live 13,154-part catalog). Not yet git-committed. See §18 banner.*

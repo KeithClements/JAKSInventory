@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Vendors — JAKS Inventory{% endblock %}
+{% block title %}Vendors — Axle{% endblock %}
 {% block heading %}Vendors{% endblock %}
 
 {% block header_actions %}
@@ -14,7 +14,6 @@
 {% block content %}
 {# ── §7 macro library ──────────────────────────────────────────────────────── #}
 {% from "macros/list_behavior.html" import operational_list_script %}
-{% from "macros/filter_tabs.html"   import filter_tabs %}
 {% from "macros/bulk_toolbar.html"  import bulk_toolbar %}
 {% from "macros/chips.html"         import status_chip %}
 {% from "macros/empty_state.html"   import empty_state %}
@@ -52,43 +51,43 @@
 >
 
 {# ══════════════════════════════════════════════════════════════════════════════
-   TOOLBAR — tabs + search
+   TOOLBAR — Axle §4: search (flex 1) + .fchip filter pills
 ══════════════════════════════════════════════════════════════════════════════ #}
-<div class="flex flex-wrap items-center gap-3">
+{% set vendor_tabs = [
+  ('active',   'Active',   _counts.get('active',   0)),
+  ('inactive', 'Inactive', _counts.get('inactive', 0)),
+  ('all',      'All',      _counts.get('all',      0)),
+] %}
 
-  {# Filter tabs — slugs match the router contract (active / inactive / all).
-     Default view is `active`; `inactive` surfaces deactivated vendors. #}
-  {% set vendor_tabs = [
-    ('active',   'Active',   _counts.get('active',   0)),
-    ('inactive', 'Inactive', _counts.get('inactive', 0)),
-    ('all',      'All',      _counts.get('all',      0)),
-  ] %}
-  {{ filter_tabs(vendor_tabs, active_tab, q) }}
+<div class="flex flex-wrap items-center gap-2">
 
-  {# Search — hidden tab input preserves active tab on submit #}
-  <form method="get" class="flex items-center gap-2 ml-auto">
+  {# Search — flex 1 per Axle spec #}
+  <form method="get" class="flex items-center gap-2 flex-1 min-w-[260px]">
     <input type="hidden" name="tab" value="{{ active_tab }}" />
-    <div class="relative">
+    <div class="relative flex-1">
       <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
            fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
       </svg>
       <input name="q" value="{{ q }}" placeholder="Vendor name or code…"
-             class="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white w-56
+             class="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-md bg-white
                     focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400
                     placeholder:text-gray-400" />
     </div>
-    <button type="submit"
-            class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200
-                   rounded-lg hover:bg-gray-50 transition-colors">
-      Search
-    </button>
     {% if q %}
     <a href="?tab={{ active_tab }}"
        class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</a>
     {% endif %}
   </form>
+
+  {# Axle filter chips — bordered radius-14 pills, active = solid steel-900 #}
+  {% for slug, label, count in vendor_tabs %}
+  <a href="?tab={{ slug }}{% if q %}&q={{ q|urlencode }}{% endif %}"
+     class="fchip {% if active_tab == slug %}on{% endif %}">
+    {{ label }}<span class="ml-1.5 tabular-nums opacity-70">{{ count }}</span>
+  </a>
+  {% endfor %}
 
 </div>
 
@@ -109,38 +108,24 @@
   <div class="overflow-x-auto">
     <table class="w-full min-w-[1020px]">
 
-      {# ── Table head ── #}
+      {# ── Table head ── Axle: th 10px Oswald uppercase steel-400 on #fafbfa #}
       <thead>
-        <tr class="bg-gray-50 border-b border-gray-200">
+        <tr class="border-b border-gray-200" style="background:#fafbfa;">
           {# Checkbox — also carries the health stripe #}
-          <th class="w-10 px-4 py-3 text-center">
+          <th class="w-10 px-4 py-3 text-center" style="background:#fafbfa;">
             <input type="checkbox"
                    :checked="allSelected"
                    @change="toggleAll()"
                    aria-label="Select all vendors"
                    class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
           </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Vendor / Code
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Contact
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide hidden md:table-cell">
-            Terms
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Open POs · Bills
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide hidden lg:table-cell">
-            Credits
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide hidden lg:table-cell">
-            Last PO
-          </th>
-          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Actions
-          </th>
+          <th class="px-4 py-3 text-left label-mini">Vendor / Code</th>
+          <th class="px-4 py-3 text-left label-mini">Contact</th>
+          <th class="px-4 py-3 text-left label-mini hidden md:table-cell">Terms</th>
+          <th class="px-4 py-3 text-left label-mini">Open POs · Bills</th>
+          <th class="px-4 py-3 text-left label-mini hidden lg:table-cell">Credits</th>
+          <th class="px-4 py-3 text-left label-mini hidden lg:table-cell">Last PO</th>
+          <th class="px-4 py-3 text-right label-mini">Actions</th>
         </tr>
       </thead>
 
@@ -196,7 +181,7 @@
               {{ v.name }}
             </a>
             {% if v.vendor_code %}
-            <span class="font-mono text-xs text-gray-400 mt-0.5 block">{{ v.vendor_code }}</span>
+            <span class="font-mono pn mt-0.5 block" style="color:#7c838b;">{{ v.vendor_code }}</span>
             {% endif %}
             {% if v.account_number %}
             <span class="text-xs text-gray-300">Acct: {{ v.account_number }}</span>
@@ -234,13 +219,13 @@
             <div class="flex items-center gap-2 flex-wrap">
               {# Open POs #}
               {% if open_pos %}
-              {{ status_chip('bg-blue-50 text-blue-700', 'bg-blue-500', open_pos | length ~ ' PO' ~ ('s' if open_pos | length != 1)) }}
+              <span class="chip-axle chip-ok"><span class="dot"></span>{{ open_pos | length }} PO{{ 's' if open_pos | length != 1 }}</span>
               {% else %}
               <span class="text-xs text-gray-300">0 POs</span>
               {% endif %}
               {# Open Bills (POs in billed status — awaiting match/approval) #}
               {% if billed_pos %}
-              {{ status_chip('bg-amber-50 text-amber-700', 'bg-amber-500', billed_pos | length ~ ' Bill' ~ ('s' if billed_pos | length != 1)) }}
+              <span class="chip-axle chip-low"><span class="dot"></span>{{ billed_pos | length }} Bill{{ 's' if billed_pos | length != 1 }}</span>
               {% endif %}
             </div>
           </td>
@@ -248,8 +233,8 @@
           {# ── §2B Credits pending ───────────────────────────────────────── #}
           <td class="px-4 py-4 align-middle hidden lg:table-cell">
             {% if open_credits %}
-            {{ status_chip('bg-amber-100 text-amber-800', 'bg-amber-500', open_credits | length ~ ' credit' ~ ('s' if open_credits | length != 1)) }}
-            <div class="text-xs text-amber-600 mt-0.5 tabular-nums font-medium">${{ '%.2f' % credit_total }}</div>
+            <span class="chip-axle chip-low"><span class="dot"></span>{{ open_credits | length }} credit{{ 's' if open_credits | length != 1 }}</span>
+            <div class="money mt-0.5" style="color:#b06511;">${{ '%.2f' % credit_total }}</div>
             {% else %}
             <span class="text-gray-300 text-xs">—</span>
             {% endif %}
@@ -272,7 +257,7 @@
               {% else %}
               <span class="text-xs text-gray-600">{{ last_po.created_at.strftime('%m/%d/%y') }}</span>
               {% endif %}
-              <div class="text-[10px] text-gray-400 mt-0.5 font-mono">{{ last_po.po_number }}</div>
+              <div class="text-[10px] mt-0.5 font-mono pn" style="color:#a9afb6;">{{ last_po.po_number }}</div>
             {% else %}
             <span class="text-gray-300 text-xs">—</span>
             {% endif %}
@@ -304,13 +289,14 @@
     </table>
   </div>
 
-  {# ── Table footer count ── #}
-  <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
-    <span class="text-xs text-gray-400">
+  {# ── Table footer — Axle .pgr: mono 11px on #fafbfa ── #}
+  <div class="px-5 py-3 border-t border-gray-100 flex items-center justify-between"
+       style="background:#fafbfa; font-family:'IBM Plex Mono',monospace; font-size:11px; color:#7c838b;">
+    <span>
       {{ vendors | length }} vendor{{ 's' if vendors | length != 1 else '' }}
       {% if active_tab != 'all' or q %} · filtered{% endif %}
     </span>
-    <span x-show="selectedCount > 0" x-cloak class="text-xs text-brand-700 font-medium">
+    <span x-show="selectedCount > 0" x-cloak class="text-brand-700 font-medium">
       <span x-text="selectedCount"></span> selected
     </span>
   </div>

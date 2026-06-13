@@ -599,6 +599,8 @@ def product_export_csv(
         "sku", "title", "description", "status",
         "cost", "markup_pct", "price_override", "selling_price",
         "qty_on_hand", "is_active", "category",
+        # SEO / marketplace columns — consumed by the Shopify / eBay export-sync.
+        "seo_title", "seo_description", "search_keywords",
     ])
     for p in products:
         try:
@@ -619,6 +621,9 @@ def product_export_csv(
             p.qty_on_hand,
             "yes" if p.is_active else "no",
             p.category.name if p.category else "",
+            p.seo_title or "",
+            p.seo_description or "",
+            p.search_keywords or "",
         ])
 
     buf.seek(0)
@@ -1238,6 +1243,12 @@ def _parse_product_form(form) -> dict:
         "reorder_point": _int("reorder_point"),
         "notes": str(form.get("notes", "")).strip(),
         "internal_notes": str(form.get("internal_notes", "")).strip(),
+        # SEO / marketplace fields (Shopify + eBay export-sync) — only included
+        # when the posting form carries them, so forms without the SEO card
+        # (quick-create, new) can never blank stored values on save.
+        **({"seo_title": str(form.get("seo_title", "")).strip()} if "seo_title" in form else {}),
+        **({"seo_description": str(form.get("seo_description", "")).strip()} if "seo_description" in form else {}),
+        **({"search_keywords": str(form.get("search_keywords", "")).strip()} if "search_keywords" in form else {}),
         # Warranty fields
         "is_warrantable": bool(form.get("is_warrantable")),
         "manufacturer_warranty_months": _int("manufacturer_warranty_months"),

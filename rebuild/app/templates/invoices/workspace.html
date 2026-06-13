@@ -2,103 +2,17 @@
 {% block title %}{{ invoice.invoice_number }} — JAKS Inventory{% endblock %}
 {% block heading %}{{ invoice.invoice_number }}{% endblock %}
 
+{# Axle status chips — .chip-axle base + state modifier (dot + Oswald label) #}
 {% set status_pill_map = {
-  'draft':   ('badge-gray',  'DRAFT'),
-  'open':    ('badge-blue',  'OPEN'),
-  'partial': ('badge-amber', 'PARTIAL'),
-  'paid':    ('badge-green', 'PAID'),
-  'void':    ('badge-red',   'VOID'),
+  'draft':   ('chip-draft',   'DRAFT'),
+  'open':    ('chip-invoice', 'OPEN'),
+  'partial': ('chip-low',     'PARTIAL'),
+  'paid':    ('chip-ok',      'PAID'),
+  'void':    ('chip-out',     'VOID'),
 } %}
 
 {% block header_actions %}
-  {# DRAFT — Save Draft (autosaved already, but explicit indicator) + Finalize #}
-  {% if editable %}
-    <button type="button"
-            class="btn-secondary btn-sm"
-            onclick="document.getElementById('inv-header-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}))"
-            title="Save header changes">
-      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-              d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/>
-      </svg>
-      Save Draft
-    </button>
-    <button type="button" class="btn-primary btn-sm"
-            @click="$dispatch('open-finalize')">
-      Finalize
-      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-      </svg>
-    </button>
-
-  {# OPEN / PARTIAL — Print, Email, Take Payment, Void #}
-  {% elif invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL] %}
-    <a href="/invoices/{{ invoice.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
-    <a href="/invoices/{{ invoice.id }}/pdf" class="btn-secondary btn-sm">PDF</a>
-    <button type="button" class="btn-primary btn-sm"
-            @click="$dispatch('open-payment')">
-      Take Payment
-    </button>
-    {% if (invoice.amount_paid or 0) > 0 %}
-    <button type="button" class="btn-danger btn-sm opacity-50 cursor-not-allowed" disabled
-            title="Reverse the ${{ '%.2f'|format(invoice.amount_paid) }} in applied payments first, then void.">
-      Void
-    </button>
-    {% else %}
-    <button type="button" class="btn-danger btn-sm"
-            @click="$dispatch('open-void')">
-      Void
-    </button>
-    {% endif %}
-
-  {# PAID — Print only (Void requires reversing payments first) #}
-  {% elif invoice.status == InvoiceStatus.PAID %}
-    <a href="/invoices/{{ invoice.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
-    <a href="/invoices/{{ invoice.id }}/pdf" class="btn-secondary btn-sm">PDF</a>
-    <button type="button" class="btn-danger btn-sm opacity-50 cursor-not-allowed" disabled
-            title="This invoice is paid. Reverse its payments first, then void.">
-      Void
-    </button>
-
-  {# VOID — Print only #}
-  {% elif invoice.status == InvoiceStatus.VOID %}
-    <a href="/invoices/{{ invoice.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
-  {% endif %}
-
-  {# ── Phase 1B — QuickBooks push (finalized, non-void invoices) ── #}
-  {% if not editable and invoice.status != InvoiceStatus.VOID %}
-    {% if invoice.qbo_invoice_id %}
-      <span class="inline-flex items-center gap-1 rounded-md bg-green-50 border border-green-200 text-green-700 px-2.5 py-1 text-xs font-medium"
-            title="Synced to QuickBooks (id {{ invoice.qbo_invoice_id }})">
-        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-        </svg>
-        QBO Synced
-      </span>
-    {% else %}
-      <form method="post" action="/qbo/invoices/{{ invoice.id }}/push" class="inline">
-        <button type="submit" class="btn-secondary btn-sm"
-          {% if invoice.qbo_sync_status == 'error' and invoice.qbo_sync_error %}title="Last error: {{ invoice.qbo_sync_error }}"{% endif %}>
-          {% if invoice.qbo_sync_status == 'error' %}Retry QBO push{% else %}Push to QBO{% endif %}
-        </button>
-      </form>
-    {% endif %}
-  {% endif %}
-
-  {# ── Issue Credit Memo (finalized, non-void: OPEN / PARTIAL / PAID) — R8 ── #}
-  {% if invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL, InvoiceStatus.PAID] %}
-  <button type="button" class="btn-secondary btn-sm"
-          @click="$dispatch('open-credit-memo')"
-          title="Issue a customer credit memo against this invoice">
-    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-            d="M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h14a2 2 0 012 2v14a2 2 0 01-2 2z"/>
-    </svg>
-    Issue Credit Memo
-  </button>
-  {% endif %}
-
-  <a href="/invoices/" class="text-sm text-gray-500 hover:text-gray-700">← Invoices</a>
+{% include "invoices/_header_actions.html" %}
 {% endblock %}
 
 
@@ -109,7 +23,7 @@
 {% import "macros/credit_status.html" as creditmacro %}
 {% import "macros/intelligence.html" as intel %}
 {% import "macros/motion.html" as motion %}
-<div class="max-w-6xl space-y-3"
+<div class="max-w-7xl space-y-3"
      x-data="{
        showVehicleInfo: {{ 'true' if (invoice.esn or invoice.engine_manufacturer or invoice.engine_model) else 'false' }},
        paymentOpen: false,
@@ -213,9 +127,9 @@
       {# Row 1 — primary info #}
       <div class="flex items-center gap-x-5 gap-y-2 flex-wrap text-sm">
 
-        {# Status pill #}
-        {% set pill = status_pill_map.get(invoice.status, ('badge-gray', invoice.status|upper)) %}
-        <span class="{{ pill[0] }} text-xs font-bold tracking-wider">{{ pill[1] }}</span>
+        {# Status chip — Axle .chip-axle #}
+        {% set pill = status_pill_map.get(invoice.status, ('chip-draft', invoice.status|upper)) %}
+        <span class="chip-axle {{ pill[0] }}"><span class="dot"></span>{{ pill[1] }}</span>
 
         {# Customer — link + change customer button when DRAFT #}
         <div class="flex items-center gap-2 shrink-0">
@@ -399,9 +313,9 @@
   {# ── Invoice Intelligence Panel (§5.8 / P2-D3) — Profit & Margin gated by the
        live Show-margin toggle (the macro wraps them in x-show="showMargin",
        inherited from the base.html <body> scope). metrics: invoice_intelligence. #}
-  <div class="bg-white rounded-xl border border-gray-200 shadow-sm mb-3">
-    <div class="px-4 py-2.5 border-b border-gray-100">
-      <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Invoice Intelligence</span>
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm mb-3 overflow-hidden">
+    <div class="flex items-center gap-2 px-4 py-2.5 border-b border-steel-150">
+      <h4 class="label-mini text-steel-500">Invoice Intelligence</h4>
     </div>
     <div class="px-4 py-3">
       {{ intel.invoice_intelligence_panel(invoice_intelligence | default({})) }}
@@ -497,39 +411,39 @@
   ═══════════════════════════════════════════════════════════════════════════ #}
   {% set active_allocations = invoice.allocations | selectattr('is_reversed', 'equalto', false) | list %}
   {% if active_allocations %}
-  <div class="card">
-    <div class="card-header">
-      <h2 class="card-title">Payments</h2>
-      <span class="text-xs text-gray-400">{{ active_allocations | length }} payment{{ 's' if active_allocations | length != 1 }}</span>
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <div class="flex items-center gap-2 px-4 py-2.5 border-b border-steel-150">
+      <h4 class="label-mini text-steel-500">Payments</h4>
+      <span class="ml-auto font-mono text-[10.5px] text-steel-400">{{ active_allocations | length }} payment{{ 's' if active_allocations | length != 1 }}</span>
     </div>
     <div class="overflow-x-auto">
-      <table class="w-full divide-y divide-gray-100 text-sm">
-        <thead class="bg-gray-50">
-          <tr>
-            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Date</th>
-            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Method</th>
-            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Reference</th>
-            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Amount</th>
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-steel-200 bg-[#fafbfa] font-display font-semibold text-steel-400 uppercase tracking-[.07em] text-[10px]">
+            <th class="text-left px-4 py-2">Date</th>
+            <th class="text-left px-4 py-2">Method</th>
+            <th class="text-left px-4 py-2">Reference</th>
+            <th class="text-right px-4 py-2">Amount</th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-gray-100">
+        <tbody class="divide-y divide-steel-100">
           {% for a in active_allocations %}
-          <tr class="hover:bg-gray-50/80 transition-colors">
-            <td class="px-4 py-3 align-middle text-xs text-gray-600">{{ a.payment.payment_date.strftime('%b %d, %Y') }}</td>
-            <td class="px-4 py-3 align-middle">
-              <span class="badge-gray">{{ a.payment.payment_method | title }}</span>
+          <tr class="hover:bg-[#f6f7f2] transition-colors">
+            <td class="px-4 py-2.5 align-middle text-xs text-steel-500 font-mono">{{ a.payment.payment_date.strftime('%b %d, %Y') }}</td>
+            <td class="px-4 py-2.5 align-middle">
+              <span class="chip-axle chip-draft">{{ a.payment.payment_method | title }}</span>
             </td>
-            <td class="px-4 py-3 align-middle text-xs text-gray-500">
+            <td class="px-4 py-2.5 align-middle text-xs text-steel-400">
               {% if a.payment.check_number %}#{{ a.payment.check_number }}{% else %}—{% endif %}
             </td>
-            <td class="px-4 py-3 align-middle text-right tabular-nums font-semibold text-green-700">${{ "%.2f"|format(a.amount_applied) }}</td>
+            <td class="px-4 py-2.5 align-middle text-right"><span class="money" style="color:#15803d;">${{ "%.2f"|format(a.amount_applied) }}</span></td>
           </tr>
           {% endfor %}
         </tbody>
-        <tfoot class="border-t-2 border-gray-200">
-          <tr class="bg-gray-50">
-            <td colspan="3" class="px-4 py-2 text-right text-xs font-semibold text-gray-500">Total received</td>
-            <td class="px-4 py-2 text-right text-sm font-bold text-green-700 tabular-nums">${{ "%.2f"|format(totals.amount_paid) }}</td>
+        <tfoot class="border-t-2 border-steel-200">
+          <tr class="bg-[#fafbfa]">
+            <td colspan="3" class="px-4 py-2 text-right label-mini text-steel-500">Total received</td>
+            <td class="px-4 py-2 text-right"><span class="money ext" style="color:#15803d;">${{ "%.2f"|format(totals.amount_paid) }}</span></td>
           </tr>
         </tfoot>
       </table>
@@ -546,17 +460,17 @@
      two buttons drive the global create slide-over defined in base.html.
   ═══════════════════════════════════════════════════════════════════════════ #}
   {% if invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL, InvoiceStatus.PAID] %}
-  <div class="card">
-    <div class="card-header">
-      <h2 class="card-title">After-Sale Service</h2>
-      <span class="text-xs text-gray-400">Core returns · warranty · returns</span>
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <div class="flex items-center gap-2 px-4 py-2.5 border-b border-steel-150">
+      <h4 class="label-mini text-steel-500">After-Sale Service</h4>
+      <span class="ml-auto font-mono text-[10.5px] text-steel-400">core returns · warranty · returns</span>
     </div>
-    <div class="card-body space-y-5">
+    <div class="px-4 py-4 space-y-5">
 
       {# ── Core returns — only when this invoice still has open cores ── #}
       {% if invoice_cores %}
       <div>
-        <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Core Returns</p>
+        <p class="label-mini text-steel-400 mb-2">Core Returns</p>
         <div class="space-y-2">
           {% for core in invoice_cores %}
           <div id="core-item-{{ core.id }}" x-data="{ open: false, outcome: 'accepted' }"
@@ -565,9 +479,9 @@
             <div class="flex items-center justify-between gap-3 px-4 py-3">
               <div class="min-w-0">
                 <div class="flex items-center gap-2">
-                  <span class="font-mono text-sm font-bold text-brand-700">{{ core.product.sku if core.product else '—' }}</span>
-                  <span class="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 font-semibold">⟲ Core</span>
-                  {% if core.is_overdue %}<span class="badge-red">Overdue</span>{% endif %}
+                  <span class="pn">{{ core.product.sku if core.product else '—' }}</span>
+                  <span class="corechip">⟲ Core</span>
+                  {% if core.is_overdue %}<span class="chip-axle chip-out"><span class="dot"></span>Overdue</span>{% endif %}
                 </div>
                 <p class="text-xs text-gray-500 truncate max-w-[320px]">{{ core.product.title if core.product else '—' }}</p>
               </div>
@@ -648,7 +562,7 @@
 
       {# ── Warranty & Returns — always available on a finalized invoice ── #}
       <div>
-        <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Warranty &amp; Returns</p>
+        <p class="label-mini text-steel-400 mb-2">Warranty &amp; Returns</p>
         <div class="flex flex-wrap items-center gap-3">
           <button type="button"
                   hx-get="/warranty/new?invoice_id={{ invoice.id }}"

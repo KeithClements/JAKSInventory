@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Vendor Returns — JAKS Inventory{% endblock %}
+{% block title %}Vendor Returns — Axle{% endblock %}
 {% block heading %}Vendor Returns{% endblock %}
 
 {% block header_actions %}
@@ -14,7 +14,6 @@
 {% block content %}
 {# ── §7 macro library ──────────────────────────────────────────────────────── #}
 {% from "macros/list_behavior.html" import operational_list_script %}
-{% from "macros/filter_tabs.html"   import filter_tabs %}
 {% from "macros/bulk_toolbar.html"  import bulk_toolbar %}
 {% from "macros/chips.html"         import status_chip %}
 {% from "macros/empty_state.html"   import empty_state %}
@@ -48,14 +47,14 @@
   } %}
 {% endif %}
 
-{# ── Status chip map (§4 semantics) ──────────────────────────────────────── #}
+{# ── Status chip map — Axle .chip-axle variants (draft|ok|low|out|invoice) ── #}
 {% set vr_chip = {
-  'draft':    ('bg-gray-100 text-gray-600',  'bg-gray-400',   'Draft'),
-  'shipped':  ('bg-blue-50 text-blue-700',   'bg-blue-500',   'Shipped'),
-  'accepted': ('bg-green-50 text-green-700', 'bg-green-500',  'Accepted'),
-  'partial':  ('bg-amber-50 text-amber-700', 'bg-amber-500',  'Partial'),
-  'rejected': ('bg-red-100 text-red-700',    'bg-red-400',    'Rejected'),
-  'closed':   ('bg-gray-100 text-gray-600',  'bg-gray-400',   'Closed'),
+  'draft':    ('chip-draft', 'Draft'),
+  'shipped':  ('chip-ok',    'Shipped'),
+  'accepted': ('chip-ok',    'Accepted'),
+  'partial':  ('chip-low',   'Partial'),
+  'rejected': ('chip-out',   'Rejected'),
+  'closed':   ('chip-draft', 'Closed'),
 } %}
 
 {# ── Flash messages (create / ship / decision / close redirects) ── #}
@@ -84,44 +83,47 @@
 >
 
 {# ══════════════════════════════════════════════════════════════════════════════
-   TOOLBAR — tabs + search
+   TOOLBAR — Axle §4: search (flex 1) + .fchip filter pills (inline, no macro)
 ══════════════════════════════════════════════════════════════════════════════ #}
-<div class="flex flex-wrap items-center gap-3">
+{% set vr_tabs = [
+  ('',         'All',      _counts.get('',         0)),
+  ('draft',    'Draft',    _counts.get('draft',    0)),
+  ('shipped',  'Shipped',  _counts.get('shipped',  0)),
+  ('accepted', 'Accepted', _counts.get('accepted', 0)),
+  ('partial',  'Partial',  _counts.get('partial',  0)),
+  ('rejected', 'Rejected', _counts.get('rejected', 0)),
+  ('closed',   'Closed',   _counts.get('closed',   0)),
+] %}
 
-  {% set vr_tabs = [
-    ('',         'All',      _counts.get('',         0)),
-    ('draft',    'Draft',    _counts.get('draft',    0)),
-    ('shipped',  'Shipped',  _counts.get('shipped',  0)),
-    ('accepted', 'Accepted', _counts.get('accepted', 0)),
-    ('partial',  'Partial',  _counts.get('partial',  0)),
-    ('rejected', 'Rejected', _counts.get('rejected', 0)),
-    ('closed',   'Closed',   _counts.get('closed',   0)),
-  ] %}
-  {{ filter_tabs(vr_tabs, active_tab, q) }}
+<div class="flex flex-wrap items-center gap-2">
 
-  <form method="get" class="flex items-center gap-2 ml-auto">
+  {# Search — flex 1 per Axle spec #}
+  <form method="get" class="flex items-center gap-2 flex-1 min-w-[260px]">
     <input type="hidden" name="tab" value="{{ active_tab }}" />
-    <div class="relative">
+    <div class="relative flex-1">
       <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
            fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
       </svg>
       <input name="q" value="{{ q }}" placeholder="VR #, vendor, RMA…"
-             class="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white w-60
+             class="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-md bg-white
                     focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400
                     placeholder:text-gray-400" />
     </div>
-    <button type="submit"
-            class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200
-                   rounded-lg hover:bg-gray-50 transition-colors">
-      Search
-    </button>
     {% if q %}
     <a href="?tab={{ active_tab }}"
        class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</a>
     {% endif %}
   </form>
+
+  {# Axle filter chips (.fchip / .fchip.on) — bordered radius-14 pills, active = solid steel-900 #}
+  {% for slug, label, count in vr_tabs %}
+  <a href="?tab={{ slug }}{% if q %}&q={{ q|urlencode }}{% endif %}"
+     class="fchip {% if active_tab == slug %}on{% endif %}">
+    {{ label }}<span class="ml-1.5 tabular-nums opacity-70">{{ count }}</span>
+  </a>
+  {% endfor %}
 
 </div>
 
@@ -142,21 +144,21 @@
   <div class="overflow-x-auto">
     <table class="w-full min-w-[920px]">
 
-      {# ── Table head ── #}
-      <thead class="sticky top-0 z-20 [&_th]:bg-gray-50">
-        <tr class="bg-gray-50 border-b border-gray-200">
-          <th class="w-10 px-4 py-3 text-center">
+      {# ── Table head ── Axle: th 10px Oswald uppercase steel-400 on #fafbfa #}
+      <thead class="sticky top-0 z-20 [&_th]:bg-[#fafbfa]">
+        <tr class="border-b border-gray-200" style="background:#fafbfa;">
+          <th class="w-10 px-4 py-3 text-center" style="background:#fafbfa;">
             <input type="checkbox"
                    :checked="allSelected"
                    @change="toggleAll()"
                    aria-label="Select all vendor returns"
                    class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
           </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">VR # / Created</th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Vendor</th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
-          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide hidden md:table-cell">Expected</th>
-          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Credited</th>
+          <th class="px-4 py-3 text-left label-mini">VR # / Created</th>
+          <th class="px-4 py-3 text-left label-mini">Vendor</th>
+          <th class="px-4 py-3 text-left label-mini">Status</th>
+          <th class="px-4 py-3 text-right label-mini hidden md:table-cell">Expected</th>
+          <th class="px-4 py-3 text-right label-mini">Credited</th>
           <th class="px-4 py-3 w-12"></th>
         </tr>
       </thead>
@@ -197,10 +199,10 @@
                    class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
           </td>
 
-          {# VR # / Created date #}
+          {# VR # / Created date — .pn mono 12px bold ink #}
           <td class="px-4 py-4 align-middle">
             <a href="/vendor-returns/{{ vr.id }}" @click.stop
-               class="font-mono text-sm font-bold text-brand-700 hover:text-brand-900 hover:underline leading-none">
+               class="font-mono pn hover:underline">
               {{ vr.vr_number }}
             </a>
             <div class="text-xs text-gray-400 mt-0.5">{{ vr.created_at.strftime('%m/%d/%y') }}</div>
@@ -211,38 +213,38 @@
             {% if vnd %}<span class="text-sm font-medium text-gray-900">{{ vnd.name }}</span>
             {% else %}<span class="text-sm text-gray-400">—</span>{% endif %}
             {% if vr.rma_number %}
-            <div class="font-mono text-xs text-gray-400 mt-0.5">RMA {{ vr.rma_number }}</div>
+            <div class="font-mono pn mt-0.5" style="color:#a9afb6;">RMA {{ vr.rma_number }}</div>
             {% endif %}
           </td>
 
-          {# Status chip + shipped date #}
+          {# Status chip — Axle .chip-axle dot + label — + shipped date #}
           <td class="px-4 py-4 align-middle">
-            {% set c = vr_chip.get(vr.status, ('bg-gray-100 text-gray-600', 'bg-gray-400', vr.status | title)) %}
-            {{ status_chip(c[0], c[1], c[2]) }}
+            {% set c = vr_chip.get(vr.status, ('chip-draft', vr.status | title)) %}
+            <span class="chip-axle {{ c[0] }}"><span class="dot"></span>{{ c[1] }}</span>
             {% if vr.shipped_at %}
             <div class="text-xs text-gray-400 mt-0.5">Shipped {{ vr.shipped_at.strftime('%m/%d/%y') }}</div>
             {% endif %}
           </td>
 
-          {# Expected credit #}
+          {# Expected credit — .money mono right-aligned #}
           <td class="px-4 py-4 align-middle text-right hidden md:table-cell">
             {% if vr.expected_credit > 0 %}
-            <span class="text-sm text-gray-500 tabular-nums">${{ '%.2f' % vr.expected_credit }}</span>
+            <span class="money" style="color:#7c838b;">${{ '%.2f' % vr.expected_credit }}</span>
             {% else %}<span class="text-gray-300">—</span>{% endif %}
           </td>
 
-          {# Credited (actual) + difference / restock sub-lines #}
+          {# Credited (actual) — .money.ext — + difference / restock sub-lines #}
           <td class="px-4 py-4 align-middle text-right">
             {% if vr.actual_credit > 0 or vr.status in ['accepted', 'partial', 'closed'] %}
-            <span class="text-sm font-bold text-gray-900 tabular-nums">${{ '%.2f' % vr.actual_credit }}</span>
+            <span class="money ext">${{ '%.2f' % vr.actual_credit }}</span>
             {% else %}<span class="text-gray-300">—</span>{% endif %}
             {% if shortfall %}
-            <div class="text-xs text-red-600 mt-0.5 tabular-nums font-medium">−${{ '%.2f' % vr.credit_difference }} short</div>
+            <div class="money mt-0.5" style="color:#c0392b;">−${{ '%.2f' % vr.credit_difference }} short</div>
             {% elif vr.credit_difference < -0.005 %}
-            <div class="text-xs text-green-700 mt-0.5 tabular-nums font-medium">+${{ '%.2f' % (vr.credit_difference | abs) }} over</div>
+            <div class="money mt-0.5" style="color:#5a9a3c;">+${{ '%.2f' % (vr.credit_difference | abs) }} over</div>
             {% endif %}
             {% if vr.restocking_fee > 0 %}
-            <div class="text-xs text-amber-600 mt-0.5 tabular-nums">−${{ '%.2f' % vr.restocking_fee }} restock</div>
+            <div class="money mt-0.5" style="color:#b06511;">−${{ '%.2f' % vr.restocking_fee }} restock</div>
             {% endif %}
           </td>
 
@@ -272,18 +274,20 @@
   {# ── Footer: record count + credit summary + selected count ── #}
   {% set total_expected = vendor_returns | map(attribute='expected_credit') | sum %}
   {% set total_credited = vendor_returns | map(attribute='actual_credit')   | sum %}
-  <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between flex-wrap gap-3">
-    <div class="flex items-center gap-4 text-xs text-gray-400 flex-wrap">
+  {# ── Table footer — Axle .pgr: mono 11px on #fafbfa ── #}
+  <div class="px-5 py-3 border-t border-gray-100 flex items-center justify-between flex-wrap gap-3"
+       style="background:#fafbfa; font-family:'IBM Plex Mono',monospace; font-size:11px; color:#7c838b;">
+    <div class="flex items-center gap-4 flex-wrap">
       <span>{{ vendor_returns | length }} return{{ 's' if vendor_returns | length != 1 else '' }}
       {% if active_tab or q %} · filtered{% endif %}</span>
       {% if total_expected > 0 %}
-      <span>Expected: <strong class="text-gray-700">${{ '%.2f' % total_expected }}</strong></span>
+      <span>Expected: <strong style="color:#0b0c0d;">${{ '%.2f' % total_expected }}</strong></span>
       {% endif %}
       {% if total_credited > 0 %}
-      <span>Credited: <strong class="text-green-700">${{ '%.2f' % total_credited }}</strong></span>
+      <span>Credited: <strong style="color:#5a9a3c;">${{ '%.2f' % total_credited }}</strong></span>
       {% endif %}
     </div>
-    <span x-show="selectedCount > 0" x-cloak class="text-xs text-brand-700 font-medium">
+    <span x-show="selectedCount > 0" x-cloak class="text-brand-700 font-medium">
       <span x-text="selectedCount"></span> selected
     </span>
   </div>

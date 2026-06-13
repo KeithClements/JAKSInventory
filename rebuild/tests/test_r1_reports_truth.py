@@ -250,8 +250,11 @@ def test_dashboard_overdue_count_matches_overdue_report():
     with TestClient(app, raise_server_exceptions=False) as c:
         r = c.get("/")
         assert r.status_code == 200
-        # The overdue tile is the only red stat-value on the dashboard
-        assert f'<p class="stat-value text-red-600">{report_count}</p>' in r.text
+        # Axle redesign (2026-06-11) folded the overdue tile into the AR Balance
+        # sub-line. The semantic guarantee — dashboard count == report count —
+        # still holds; assert against the rendered sub-line copy instead of the
+        # legacy <p class="stat-value text-red-600"> structure that no longer exists.
+        assert f"{report_count} overdue invoice" in r.text
 
 
 # ===========================================================================

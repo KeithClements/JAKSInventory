@@ -409,6 +409,50 @@
         </div>
       </div>
 
+      {# SEO & Marketplace card — feeds the storefront/eBay export-sync (Shopify
+         title ≤70 chars, meta description ≤160). Saved through the same Info-tab
+         autosave; importer/AI-enrich may pre-fill, owner edits win. #}
+      <div class="card"
+           x-data="{ st: {{ (product.seo_title or '')|length }}, sd: {{ (product.seo_description or '')|length }} }">
+        <div class="card-header">
+          <h2 class="card-title">SEO &amp; Marketplace</h2>
+          <span class="text-xs text-steel-400">used by Shopify / eBay export &amp; sync</span>
+        </div>
+        <div class="card-body space-y-4">
+          <div>
+            <label class="form-label flex items-center justify-between">
+              <span>SEO Title</span>
+              <span class="normal-case font-normal tracking-normal"
+                    :class="st > 70 ? 'text-red-600 font-semibold' : 'text-gray-400'"
+                    x-text="st + ' / 70'"></span>
+            </label>
+            <input name="seo_title" maxlength="255" class="form-input"
+                   @input="st = $el.value.length"
+                   placeholder="{{ product.title }}"
+                   value="{{ product.seo_title }}" />
+            <p class="form-hint">Listing title for the storefront. Blank = product title is used.</p>
+          </div>
+          <div>
+            <label class="form-label flex items-center justify-between">
+              <span>SEO Description</span>
+              <span class="normal-case font-normal tracking-normal"
+                    :class="sd > 160 ? 'text-red-600 font-semibold' : 'text-gray-400'"
+                    x-text="sd + ' / 160'"></span>
+            </label>
+            <textarea name="seo_description" rows="3" class="form-textarea"
+                      @input="sd = $el.value.length">{{ product.seo_description }}</textarea>
+            <p class="form-hint">Meta / listing description shown in search results and marketplace listings.</p>
+          </div>
+          <div>
+            <label class="form-label">Search Keywords / Tags</label>
+            <input name="search_keywords" class="form-input"
+                   value="{{ product.search_keywords }}"
+                   placeholder="comma, separated, tags" />
+            <p class="form-hint">Comma-separated tags — fills Shopify tags / eBay item specifics. Imports pre-fill this from the feed's Tags column.</p>
+          </div>
+        </div>
+      </div>
+
       {# Actions — honest save-state pill (Save Standard v2). saveState is driven by the
          autosave JS via 'product-save-state' window events; green "All changes saved"
          appears ONLY after a confirmed save. Archive uses deactivate-form (no nesting). #}

@@ -183,6 +183,8 @@ class ProductService(BaseService):
             "return_policy_type", "return_window_override_days",
             "restock_fee_percent", "notes", "internal_notes",
             "engine_manufacturer", "engine_model",
+            # SEO / marketplace (Shopify + eBay export-sync)
+            "seo_title", "seo_description", "search_keywords",
             # Warranty fields
             "is_warrantable", "manufacturer_warranty_months",
             "supplier_warranty_months", "supplier_warranty_type",

@@ -1118,13 +1118,23 @@ def _read_xlsx(content: bytes) -> list[dict[str, str]]:
 
 
 def _read_csv(content: bytes) -> list[dict[str, str]]:
-    text = content.decode("utf-8-sig")  # handles BOM from Excel CSV exports
-    reader = csv.DictReader(io.StringIO(text))
-    return [
-        {k.strip(): v.strip() for k, v in row.items()}
-        for row in reader
-        if any(v.strip() for v in row.values())
-    ]
+    try:
+        text = content.decode("utf-8-sig")  # handles BOM from Excel CSV exports
+    except UnicodeDecodeError:
+        text = content.decode("cp1252", errors="replace")  # Excel "CSV (Comma delimited)" saves ANSI
+    # newline="" lets the csv module handle \r\n / bare-\r endings and embedded
+    # newlines inside quoted fields (QBO multi-line billing addresses) itself.
+    reader = csv.DictReader(io.StringIO(text, newline=""))
+    rows: list[dict[str, str]] = []
+    for row in reader:
+        cleaned = {
+            (k or "").strip(): " ".join(str(v or "").split())
+            for k, v in row.items()
+            if k is not None and not isinstance(v, list)
+        }
+        if any(cleaned.values()):
+            rows.append(cleaned)
+    return rows
 
 
 @router.get("/import", response_class=HTMLResponse)
@@ -1153,7 +1163,7 @@ async def customer_import_preview(
     filename = (file.filename or "").lower()
 
     try:
-        if filename.endswith(".xlsx"):
+        if filename.endswith(".xlsx") or filename.endswith(".xls"):
             raw_rows = _read_xlsx(content)
         elif filename.endswith(".csv"):
             raw_rows = _read_csv(content)
@@ -1167,7 +1177,7 @@ async def customer_import_preview(
                     "skipped": [],
                     "total_valid": 0,
                     "total_skipped": 0,
-                    "error": "Unsupported file type. Please upload a .xlsx or .csv file.",
+                    "error": "Unsupported file type. Please upload a .xls, .xlsx, or .csv file.",
                 },
             )
     except Exception as exc:

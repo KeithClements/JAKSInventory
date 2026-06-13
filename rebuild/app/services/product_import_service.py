@@ -69,6 +69,19 @@ def _vendor_code_from_sku(sku: str) -> str | None:
     return m.group(1).upper() if m else None
 
 
+def _row_vendor_code(p: dict) -> str:
+    """The vendor code for an import row. The JAKS-native export carries an
+    explicit ``vendor`` column (PAI / IMB / …) — parse_jaks_export_csv parks it
+    on ``vendor_code`` and it WINS, because that format's SKU is a bare part
+    number with no prefix. Legacy Shopify feeds have no vendor column, so fall
+    back to the ``JAKS-<CODE>-`` SKU prefix, then to PAI. One source of truth for
+    'which vendor (and therefore which SKU digit) does this row belong to'."""
+    explicit = (p.get("vendor_code") or "").strip().upper()
+    if explicit:
+        return explicit
+    return _vendor_code_from_sku(p.get("sku", "")) or _PAI_VENDOR_CODE
+
+
 # §18.2 — Brand = the PARTS brand (the seeded Brand rows), not the vendor's
 # legal name. Vendor codes map to their brand label; unmapped codes fall back
 # to the vendor record's name.
@@ -341,6 +354,12 @@ class ProductImportService(BaseService):
                     "barcode": _get(row, "variant barcode"),
                     "grams": _get(row, "variant grams"),
                     "status": _get(row, "status"),
+                    # Shopify exports carry these natively; the scraper feed may
+                    # too. Blank when absent — create-time fill only, so hand
+                    # edits in the ERP's SEO card are never overwritten.
+                    "seo_title": _get(row, "seo title", "seo_title"),
+                    "seo_description": _get(row, "seo description", "seo_description",
+                                            "meta description"),
                     "pai_part": parsed["pai_part"],
                     "oem": parsed["oem"],
                     "apps": parsed["apps"],
@@ -422,7 +441,12 @@ class ProductImportService(BaseService):
                 pack_qty = 1
 
             rows.append({
-                "sku":            sku,           # raw PAI part number → vendor_sku dedup key
+                "sku":            sku,           # raw part number → vendor_sku dedup key
+                # Explicit supplier identity from the feed (SCRAPER_EXPORT_SPEC
+                # 'vendor' col): PAI / IMB / …. Drives the vendor record + SKU
+                # digit. The bare part number has no prefix, so this is the ONLY
+                # signal of which vendor a JAKS-native row belongs to.
+                "vendor_code":    (r.get("vendor") or "").strip().upper(),
                 "title":          title,
                 "type":           r.get("category", "").strip(),
                 "tags":           engine_make,
@@ -442,6 +466,10 @@ class ProductImportService(BaseService):
                 "is_reman":       is_reman,
                 "unit_of_measure": unit_of_measure,
                 "pack_qty":       pack_qty,
+                # Optional SEO columns (SCRAPER_EXPORT_SPEC additive 2026-06-12) —
+                # blank when the scraper doesn't send them.
+                "seo_title":       r.get("seo_title", ""),
+                "seo_description": r.get("seo_description", ""),
             })
         return rows
 
@@ -615,7 +643,16 @@ class ProductImportService(BaseService):
         # JAKS scheme SKU, so the stable per-part identity is the CSV "Variant SKU"
         # we park on ProductVendorSource.vendor_sku. (Keying dedup on product.sku
         # would re-create everything on the next import.)
-        existing = {s.strip().lower() for (s,) in self.db.query(ProductVendorSource.vendor_sku).all() if s}
+        # Dedup key is (vendor_code, vendor_sku) — NOT the bare part number — so
+        # the twin-SKU scheme works: the SAME part number from two vendors is two
+        # distinct products (90001 vs 30001), never silently dropped. Recover each
+        # parked source's vendor code via a join so the key matches the per-row key.
+        existing = {
+            ((vc or "").strip().upper(), s.strip().lower())
+            for s, vc in self.db.query(ProductVendorSource.vendor_sku, Vendor.vendor_code)
+                              .join(Vendor, Vendor.id == ProductVendorSource.vendor_id).all()
+            if s
+        }
         cat_cache = {c.name.strip().lower(): c.id for c in self.db.query(ProductCategory).all()}
         # SKU-scheme guardrail (owner-locked 2026-06-06: ONE digit per vendor):
         # each row's vendor comes from its feed-SKU prefix (JAKS-PAI-… /
@@ -624,8 +661,7 @@ class ProductImportService(BaseService):
         # a feed would mint SKUs in another vendor's namespace. EVERY vendor
         # the feed references must exist with its digit, else fail cleanly and
         # write nothing (atomic — a half-imported mixed feed is worse).
-        feed_codes = {(_vendor_code_from_sku(p.get("sku", "")) or _PAI_VENDOR_CODE)
-                      for p in rows if p.get("sku")}
+        feed_codes = {_row_vendor_code(p) for p in rows if p.get("sku")}
         vendors_by_code: dict[str, Vendor] = {}
         problems: list[str] = []
         for code in sorted(feed_codes):
@@ -668,24 +704,26 @@ class ProductImportService(BaseService):
             .group_by(Product.engine_code, Product.category_code).all()
         ):
             seq_counters[(ec or "", cc or "")] = mx or 0
-        seen: set[str] = set()
+        seen: set[tuple[str, str]] = set()
         committed = 0
 
         for p in rows:
             sku = p.get("sku", "")
-            k = sku.lower()
             if not sku:
                 summary["skipped_no_sku"] += 1
                 continue
+            # Per-row vendor: the explicit ``vendor`` column wins (JAKS-native
+            # export), else the feed-SKU prefix, else PAI. Resolved BEFORE dedup so
+            # the dedup key is vendor-namespaced. Plain values only — the 500-row
+            # chunk commit expunges the session, so touching the Vendor ORM objects
+            # here dies on feeds > 500 rows.
+            row_code = _row_vendor_code(p)
+            k = (row_code, sku.strip().lower())
             if k in existing or k in seen:
                 summary["skipped_existing"] += 1
                 continue
             seen.add(k)
 
-            # Per-row vendor: the feed-SKU prefix names it (no prefix = PAI).
-            # Plain values only — the 500-row chunk commit expunges the session,
-            # so touching the Vendor ORM objects here dies on feeds > 500 rows.
-            row_code = _vendor_code_from_sku(sku) or _PAI_VENDOR_CODE
             row_vendor_id = vendor_ids_by_code[row_code]
             row_digit = digits_by_code[row_code]
 
@@ -764,6 +802,11 @@ class ProductImportService(BaseService):
                 shopify_product_id=p["handle"],
                 shopify_status=p["status"][:20],
                 search_keywords=p["tags"],
+                # SEO / marketplace — from the feed when present (Shopify exports
+                # carry SEO Title/Description natively). Create-only: full_import
+                # skips existing products, so ERP-side edits are never clobbered.
+                seo_title=(p.get("seo_title") or "")[:255],
+                seo_description=p.get("seo_description") or "",
                 price_override=_to_float(p["price"]),          # OUR sell price
                 compare_at_price=_to_float(p["compare_at"]),   # marketing compare-at
                 enrichment_source=(f"{row_code} scraper (JAKS export)"
@@ -1053,14 +1096,17 @@ class ProductImportService(BaseService):
                     price_change = False
                     compare_change = False  # paired with price for sample-row sanity
 
-            # Cost change check — the SKU prefix names the vendor whose dealer
-            # price "Our Cost" is; the write targets THAT vendor's source.
+            # Cost change check — the explicit ``vendor`` column names the vendor
+            # whose dealer price "Our Cost" is (JAKS-native export); the SKU prefix
+            # is the legacy fallback. Without the column-first rule, a JAKS-native
+            # IMB row (bare part number, no prefix) would mis-write its cost onto
+            # the PAI source. The write targets THAT vendor's source.
             cost_src = None
             cost_vendor = None
             cost_change = False
             old_cost_val = None
             if new_cost is not None and new_cost > 0:
-                vcode = _vendor_code_from_sku(sku)
+                vcode = (_get(row, "vendor") or "").strip().upper() or _vendor_code_from_sku(sku)
                 cost_vendor = _vendor_for(vcode)
                 if cost_vendor is None:
                     _count_no_source(vcode)

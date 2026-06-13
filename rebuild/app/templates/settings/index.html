@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Settings — JAKS Inventory{% endblock %}
+{% block title %}Settings — Axle{% endblock %}
 {% block heading %}Settings{% endblock %}
 
 {% block content %}
@@ -219,15 +219,117 @@
       <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
         <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Shopify</h2>
         {% for s in settings %}
-        {% if s.key in ['shopify_store_url','shopify_api_key','shopify_api_secret'] %}
+        {% if s.key in ['shopify_store_url','shopify_api_key','shopify_api_secret','shopify_access_token'] %}
         <div>
           <label class="block text-xs font-medium text-gray-600 mb-1">{{ s.label }}</label>
           <input name="{{ s.key }}" value="{{ s.value }}"
-            {% if 'secret' in s.key or 'key' in s.key %}type="password"{% endif %}
+            {% if 'secret' in s.key or 'key' in s.key or 'token' in s.key %}type="password"{% endif %}
             class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
         </div>
         {% endif %}
         {% endfor %}
+        <p class="text-xs text-gray-400">
+          The sync uses the <b>Store URL</b> + <b>Admin API Access Token</b> (create a custom app in
+          Shopify Admin → Settings → Apps → Develop apps; token starts with <span class="font-mono">shpat_</span>).
+          Save here first, then link below.
+        </p>
+      </div>
+
+      {# Phase A — match & link existing store listings to ERP products.
+         Read-only against Shopify; idempotent. Button lives OUTSIDE the main
+         settings <form> semantics via type="button" + fetch (no nested-form). #}
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-3"
+           x-data="{ busy: false, result: null, status: null,
+                     async load() {
+                       try { this.status = await (await fetch('/shopify/status')).json(); } catch(e) {}
+                     },
+                     async link() {
+                       this.busy = true; this.result = null;
+                       try {
+                         const r = await fetch('/shopify/link-products', { method: 'POST' });
+                         this.result = await r.json();
+                       } catch(e) { this.result = { ok: false, error: String(e) }; }
+                       this.busy = false; this.load();
+                     } }"
+           x-init="load()">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Catalog Link <span class="text-xs text-gray-400 font-normal ml-1">(sync step 1)</span></h2>
+        <p class="text-xs text-gray-500">
+          The storefront already carries the catalog. Linking matches each ERP product to its existing
+          Shopify listing (by SKU, then handle) and stores the real Shopify IDs — required before any
+          push so the sync updates listings instead of duplicating them. Reads only; safe to re-run.
+        </p>
+        <div class="flex items-center gap-4" x-show="status" x-cloak>
+          <span class="text-xs text-gray-500">Linked:
+            <b class="font-mono" x-text="status ? status.linked : '–'"></b> /
+            <span class="font-mono" x-text="status ? status.total : '–'"></span>
+          </span>
+          <span class="text-xs" :class="status && status.configured ? 'text-green-700' : 'text-amber-700'"
+                x-text="status && status.configured ? 'Credentials configured' : 'Not configured — save URL + token above'"></span>
+        </div>
+        <button type="button" @click="link()" :disabled="busy"
+                class="btn-primary btn-sm">
+          <span x-show="!busy">Match &amp; Link Products</span>
+          <span x-show="busy" x-cloak>Linking… (walks the whole store — may take a few minutes)</span>
+        </button>
+        <template x-if="result">
+          <div class="text-xs rounded-lg px-3 py-2 border"
+               :class="result.ok ? 'bg-green-50 border-green-200 text-green-800' : 'bg-red-50 border-red-200 text-red-700'">
+            <template x-if="result.ok">
+              <span>
+                Linked <b x-text="result.linked"></b> of <b x-text="result.candidates"></b> unlinked products
+                (store has <span x-text="result.store_variants"></span> variants;
+                <span x-text="result.unmatched"></span> unmatched<span x-show="result.unmatched > 0">
+                — first few: <span class="font-mono" x-text="(result.sample_unmatched || []).join(', ')"></span></span>).
+              </span>
+            </template>
+            <template x-if="!result.ok">
+              <span x-text="result.error"></span>
+            </template>
+          </div>
+        </template>
+      </div>
+
+      {# Phase B — push price + stock to linked listings (sync step 2) + nightly schedule #}
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-3"
+           x-data="{ busy:false, msg:null, st:null, autoOn:false, autoHour:2,
+                     async load(){ try{ this.st = await (await fetch('/shopify/sync-status')).json();
+                                         this.autoOn = this.st.auto_enabled; this.autoHour = this.st.auto_hour; }catch(e){} },
+                     async syncNow(){ this.busy=true; this.msg=null;
+                       try{ const r = await fetch('/shopify/sync-now', {method:'POST'}); this.msg = await r.json(); }
+                       catch(e){ this.msg = {ok:false, error:String(e)}; }
+                       this.busy=false; setTimeout(()=>this.load(), 1500); },
+                     async saveAuto(){ const f=new FormData(); f.append('enabled', this.autoOn?'1':'0'); f.append('hour', this.autoHour);
+                       try{ await fetch('/shopify/auto-sync', {method:'POST', body:f}); }catch(e){} this.load(); } }"
+           x-init="load()">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Sync Price &amp; Stock <span class="text-xs text-gray-400 font-normal ml-1">(sync step 2)</span></h2>
+        <p class="text-xs text-gray-500">
+          Pushes our selling price and sellable stock to every <b>linked</b> listing. Safe to re-run — it never
+          changes a product's title, photos, or publish status. (Link products in step 1 first.)
+        </p>
+        <div class="text-xs text-gray-500" x-show="st" x-cloak>
+          Last sync: <b class="font-mono" x-text="(st && st.last_sync) || 'never'"></b>
+          <template x-if="st && st.last_summary"><span> — <span x-text="st.last_summary"></span></span></template>
+          <template x-if="st && st.last_error"><span class="text-red-600"> — <span x-text="st.last_error"></span></span></template>
+        </div>
+        <button type="button" @click="syncNow()" :disabled="busy" class="btn-primary btn-sm">
+          <span x-show="!busy">Sync price &amp; stock now</span>
+          <span x-show="busy" x-cloak>Starting…</span>
+        </button>
+        <template x-if="msg">
+          <div class="text-xs rounded-lg px-3 py-2 border"
+               :class="msg.ok ? 'bg-green-50 border-green-200 text-green-800' : 'bg-red-50 border-red-200 text-red-700'"
+               x-text="msg.message || msg.error"></div>
+        </template>
+        <div class="border-t border-gray-100 pt-3 mt-1">
+          <label class="flex items-center gap-2 text-xs text-gray-600">
+            <input type="checkbox" x-model="autoOn" @change="saveAuto()" class="rounded border-gray-300">
+            <span>Run automatically every night at</span>
+            <input type="number" min="0" max="23" x-model="autoHour" @change="saveAuto()"
+                   class="w-14 rounded border border-gray-200 px-2 py-1 text-xs font-mono">
+            <span>:00</span>
+          </label>
+          <p class="text-xs text-gray-400 mt-1">Off by default. When on, refreshes price + stock for all linked listings nightly.</p>
+        </div>
       </div>
     </div>{# /shopify tab #}
 

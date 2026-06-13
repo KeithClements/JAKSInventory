@@ -118,3 +118,501 @@ def test_publish_is_failsoft_when_unconfigured(db):
     assert res["ok"] is False
     assert "not configured" in res["error"].lower()
     assert p.shopify_product_id == ""     # nothing written
+
+
+# ── Phase A — SEO mapping + Connect & Link (2026-06-12) ─────────────────────────
+
+def test_seo_fields_flow_into_product_set_input(db):
+    p = _product(db)
+    p.seo_title = "CAT C15 O-Ring | 2-Yr Warranty"
+    p.seo_description = "OEM-quality O-ring for CAT C15 engines."
+    p.search_keywords = "cat, c15, o-ring"
+    db.commit()
+    svc = ShopifyService(db)
+    L = svc.build_listing(p)
+    assert L["seo_title"] == "CAT C15 O-Ring | 2-Yr Warranty"
+    inp = svc.to_product_set_input(L)
+    assert inp["seo"] == {"title": "CAT C15 O-Ring | 2-Yr Warranty",
+                          "description": "OEM-quality O-ring for CAT C15 engines."}
+    # owner search keywords land as tags (deduped, case-insensitive)
+    lower_tags = [t.lower() for t in inp["tags"]]
+    assert "c15" in lower_tags and "o-ring" in lower_tags
+    assert lower_tags.count("c15") == 1
+
+
+def test_no_seo_block_when_blank(db):
+    p = _product(db)
+    svc = ShopifyService(db)
+    inp = svc.to_product_set_input(svc.build_listing(p))
+    assert "seo" not in inp
+
+
+def test_parked_handle_is_not_sent_as_update_id(db):
+    """Imports park the HANDLE in shopify_product_id — productSet would reject it
+    as an invalid GID, so it must never be sent as the update id."""
+    p = _product(db)
+    p.shopify_product_id = "jaks-pai-121250"
+    db.commit()
+    svc = ShopifyService(db)
+    inp = svc.to_product_set_input(svc.build_listing(p))
+    assert "id" not in inp
+
+
+def _fake_variants():
+    return [
+        {"variant_id": "gid://shopify/ProductVariant/11", "sku": "JAKS-PAI-121250",
+         "product_id": "gid://shopify/Product/1", "handle": "jaks-pai-121250", "status": "ACTIVE"},
+        {"variant_id": "gid://shopify/ProductVariant/22", "sku": "OTHER-SKU",
+         "product_id": "gid://shopify/Product/2", "handle": "other-part", "status": "DRAFT"},
+    ]
+
+
+def test_match_and_link_by_vendor_sku(db, monkeypatch):
+    p = _product(db)                       # vendor_sku = JAKS-PAI-121250
+    svc = ShopifyService(db)
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    monkeypatch.setattr(svc, "_fetch_all_variants", _fake_variants)
+    summary = svc.match_and_link()
+    assert summary["ok"] is True
+    assert summary["linked"] == 1 and summary["unmatched"] == 0
+    db.refresh(p)
+    assert p.shopify_product_id == "gid://shopify/Product/1"
+    assert p.shopify_variant_id == "gid://shopify/ProductVariant/11"
+    assert p.shopify_status == "ACTIVE"
+    # idempotent — second run has nothing to do
+    summary2 = svc.match_and_link()
+    assert summary2["candidates"] == 0 and summary2["linked"] == 0
+
+
+def test_match_and_link_by_handle_fallback(db, monkeypatch):
+    p = _product(db)
+    # break the SKU path; leave the parked handle from import
+    for src in p.vendor_sources:
+        src.vendor_sku = "NO-MATCH"
+        src.vendor_part_number = "NO-MATCH-2"
+    p.shopify_product_id = "other-part"
+    db.commit()
+    svc = ShopifyService(db)
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    monkeypatch.setattr(svc, "_fetch_all_variants", _fake_variants)
+    summary = svc.match_and_link()
+    assert summary["linked"] == 1
+    db.refresh(p)
+    assert p.shopify_product_id == "gid://shopify/Product/2"
+
+
+def test_match_and_link_unmatched_is_reported(db, monkeypatch):
+    p = _product(db)
+    for src in p.vendor_sources:
+        src.vendor_sku = "ZZZ"
+        src.vendor_part_number = "ZZZ2"
+    db.commit()
+    svc = ShopifyService(db)
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    monkeypatch.setattr(svc, "_fetch_all_variants", lambda: [])
+    summary = svc.match_and_link()
+    assert summary["linked"] == 0 and summary["unmatched"] == 1
+    assert p.sku in summary["sample_unmatched"]
+
+
+def test_match_and_link_failsoft_unconfigured(db):
+    _product(db)
+    res = ShopifyService(db).match_and_link()
+    assert res["ok"] is False and "not configured" in res["error"].lower()
+
+
+def test_link_status_counts(db):
+    p = _product(db)
+    svc = ShopifyService(db)
+    s1 = svc.link_status()
+    assert s1["total"] == 1 and s1["linked"] == 0 and s1["unlinked"] == 1
+    p.shopify_product_id = "gid://shopify/Product/9"
+    db.commit()
+    s2 = svc.link_status()
+    assert s2["linked"] == 1 and s2["unlinked"] == 0
+
+
+def test_store_domain_normalizes_pasted_inputs(db, monkeypatch):
+    """Owners paste browser URLs — every common shape must resolve to the
+    {slug}.myshopify.com host the Admin API answers on."""
+    from app.services import shopify_service as mod
+    svc = ShopifyService(db)
+    cases = {
+        "https://admin.shopify.com/store/jaks-diesel-3/settings/domains/123": "jaks-diesel-3.myshopify.com",
+        "admin.shopify.com/store/jaks-diesel-3": "jaks-diesel-3.myshopify.com",
+        "https://jaks-diesel-3.myshopify.com/": "jaks-diesel-3.myshopify.com",
+        "jaks-diesel-3.myshopify.com/admin": "jaks-diesel-3.myshopify.com",
+        "jaks-diesel-3": "jaks-diesel-3.myshopify.com",
+        "www.jaksdiesel.com": "www.jaksdiesel.com",
+        "": "",
+    }
+    for raw, want in cases.items():
+        monkeypatch.setattr(mod, "get_setting_value_db", lambda db, k, d="", _raw=raw: _raw)
+        assert svc._store_domain() == want, raw
+
+
+def test_match_and_link_surfaces_shopify_error(db, monkeypatch):
+    _product(db)
+    svc = ShopifyService(db)
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    monkeypatch.setattr(svc, "_token", lambda: "atkn_not_an_admin_token")
+    def _fail():
+        svc._last_error = "Invalid API key or access token"
+        return None
+    monkeypatch.setattr(svc, "_fetch_all_variants", _fail)
+    res = svc.match_and_link()
+    assert res["ok"] is False
+    assert "Invalid API key or access token" in res["error"]
+    assert "shpat_" in res["error"]          # the wrong-token-type hint
+
+
+def test_match_and_link_by_store_sku_shape(db, monkeypatch):
+    """The LIVE store lists JAKS-<part#> (no vendor segment) — the matcher must
+    try that shape built from the vendor part number."""
+    p = _product(db)                       # vendor_part_number = 121250
+    for src in p.vendor_sources:
+        src.vendor_sku = "JAKS-PAI-121250"  # old shape — NOT in the store index
+    db.commit()
+    svc = ShopifyService(db)
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    monkeypatch.setattr(svc, "_fetch_all_variants", lambda: [
+        {"variant_id": "gid://shopify/ProductVariant/77", "sku": "JAKS-121250",
+         "product_id": "gid://shopify/Product/7", "handle": "x", "status": "ACTIVE"},
+    ])
+    summary = svc.match_and_link()
+    assert summary["linked"] == 1
+    db.refresh(p)
+    assert p.shopify_product_id == "gid://shopify/Product/7"
+
+
+def test_update_listing_fields_sends_only_price_seo_tags(db, monkeypatch):
+    """Partial update must touch ONLY tags/seo (productUpdate) + variant price —
+    never title, description, or images (respects 'Price + SEO/tags' choice)."""
+    p = _product(db)
+    p.shopify_product_id = "gid://shopify/Product/55"
+    p.shopify_variant_id = "gid://shopify/ProductVariant/66"
+    p.seo_title = "CAT O-Ring"
+    db.commit()
+    svc = ShopifyService(db)
+    calls = []
+    def fake_graphql(query, variables):
+        calls.append((query, variables))
+        if "productUpdate" in query:
+            return {"data": {"productUpdate": {"product": {"id": "gid://shopify/Product/55"}, "userErrors": []}}}
+        return {"data": {"productVariantsBulkUpdate": {"productVariants": [{"id": "x", "price": "6.99"}], "userErrors": []}}}
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    monkeypatch.setattr(svc, "_graphql", fake_graphql)
+    res = svc.update_listing_fields(p)
+    assert res["ok"] is True
+    upd = next(v for q, v in calls if "productUpdate" in q)["input"]
+    assert upd["id"] == "gid://shopify/Product/55"
+    assert "tags" in upd and upd["seo"]["title"] == "CAT O-Ring"
+    # critically — NOT a full overwrite:
+    assert "descriptionHtml" not in upd and "title" not in upd and "files" not in upd
+    price_call = next(v for q, v in calls if "productVariantsBulkUpdate" in q)
+    assert price_call["variants"][0]["price"] == "6.99"
+
+
+def test_update_listing_fields_rejects_unlinked(db, monkeypatch):
+    p = _product(db)                 # shopify_product_id = "" (a fresh handle, not gid)
+    svc = ShopifyService(db)
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    res = svc.update_listing_fields(p)
+    assert res["ok"] is False and "not linked" in res["error"]
+
+
+def test_store_title_enriches_generic_imb_titles(db):
+    from app.models.product import ProductApplication
+    p = _product(db)
+    p.title = "Turbocharger"
+    p.brand = "Interstate-McBee"
+    p.engine_manufacturer = "Cummins"
+    p.engine_model = "N14"
+    db.commit()
+    L = ShopifyService(db).build_listing(p)
+    assert L["title"] == "Interstate-McBee Cummins N14 Turbocharger"
+
+
+def test_store_title_no_duplication_and_hides_pai(db):
+    p = _product(db)
+    # rich title already containing the make → make not doubled; PAI brand hidden
+    p.title = "Cummins ISX15 Front Housing Gasket Kit"
+    p.brand = "PAI"
+    p.engine_manufacturer = "Cummins"
+    p.engine_model = ""
+    db.commit()
+    L = ShopifyService(db).build_listing(p)
+    assert L["title"] == "Cummins ISX15 Front Housing Gasket Kit"   # unchanged
+    assert "PAI" not in L["title"]
+
+
+def test_store_title_make_only_when_no_model(db):
+    p = _product(db)
+    p.title = "Follower"
+    p.brand = "Interstate-McBee"
+    p.engine_manufacturer = "Detroit Diesel"
+    p.engine_model = ""
+    db.commit()
+    L = ShopifyService(db).build_listing(p)
+    assert L["title"] == "Interstate-McBee Detroit Diesel Follower"
+
+
+# ── Review-fix regression tests (2026-06-13) ────────────────────────────────────
+
+def test_empty_tags_not_sent_so_merchant_tags_preserved(db, monkeypatch):
+    """ProductInput.tags REPLACES — sending [] would wipe merchant tags. When the
+    ERP derives no tags, the tags key must be omitted entirely."""
+    p = _product(db)
+    p.shopify_product_id = "gid://shopify/Product/55"
+    p.shopify_variant_id = "gid://shopify/ProductVariant/66"
+    # strip everything that produces a tag
+    p.engine_manufacturer = ""
+    p.engine_model = ""
+    p.search_keywords = ""
+    p.category_id = None
+    for a in list(p.applications):
+        db.delete(a)
+    db.commit()
+    svc = ShopifyService(db)
+    calls = []
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    monkeypatch.setattr(svc, "_graphql", lambda q, v: (calls.append((q, v)) or (
+        {"data": {"productUpdate": {"product": {"id": "x"}, "userErrors": []}}} if "productUpdate" in q
+        else {"data": {"productVariantsBulkUpdate": {"productVariants": [{"id": "x", "price": "6.99"}], "userErrors": []}}})))
+    res = svc.update_listing_fields(p)
+    assert res["ok"] is True
+    upd_calls = [v for q, v in calls if "productUpdate" in q]
+    # no tags + no seo => productUpdate skipped entirely (only price runs)
+    assert upd_calls == [] or "tags" not in upd_calls[0]["input"]
+
+
+def test_price_skipped_surfaced_when_no_variant_gid(db, monkeypatch):
+    p = _product(db)
+    p.shopify_product_id = "gid://shopify/Product/55"
+    p.shopify_variant_id = ""          # linked product, but no variant gid
+    db.commit()
+    svc = ShopifyService(db)
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    monkeypatch.setattr(svc, "_graphql", lambda q, v:
+        {"data": {"productUpdate": {"product": {"id": "x"}, "userErrors": []}}})
+    res = svc.update_listing_fields(p)
+    assert res["ok"] is True and res["price_synced"] is False
+    summ = svc.update_batch([p.id])
+    assert summ["updated"] == 1 and summ["price_skipped"] == 1
+
+
+def test_word_present_respects_token_boundaries():
+    from app.services.shopify_service import _word_present
+    assert _word_present("C7", "c7 turbocharger")
+    assert not _word_present("C7", "c70 series filter")   # not a substring match
+    assert not _word_present("CAT", "locator pin")        # 'cat' inside 'locator'
+    assert _word_present("CAT", "cat c15 gasket")
+    assert _word_present("Series 60", "detroit series 60 head")
+
+
+def test_store_title_keeps_short_model_not_in_title(db):
+    p = _product(db)
+    p.title = "C70 Filter"            # contains 'c7' as substring only
+    p.brand = "Interstate-McBee"
+    p.engine_manufacturer = "Caterpillar"
+    p.engine_model = "C7"
+    db.commit()
+    L = ShopifyService(db).build_listing(p)
+    # C7 is genuinely absent (C70 != C7) so it must be added
+    assert "C7 " in L["title"] or L["title"].endswith("C7 Filter") or " C7 " in (" " + L["title"])
+    assert L["title"].startswith("Interstate-McBee Caterpillar C7")
+
+
+def test_store_title_hides_non_brand_vendor_names(db):
+    p = _product(db)
+    p.title = "Turbocharger"
+    p.brand = "HHP Parts"             # a vendor/distributor name, NOT a real brand
+    p.engine_manufacturer = "Cummins"
+    p.engine_model = "N14"
+    db.commit()
+    L = ShopifyService(db).build_listing(p)
+    assert "HHP" not in L["title"]
+    assert L["title"] == "Cummins N14 Turbocharger"
+
+
+def test_store_title_falls_back_to_sku_when_all_blank(db):
+    p = _product(db)
+    p.title = "   "
+    p.brand = ""
+    p.engine_manufacturer = ""
+    p.engine_model = ""
+    for a in list(p.applications):
+        db.delete(a)
+    db.commit()
+    L = ShopifyService(db).build_listing(p)
+    assert L["title"] == p.sku
+
+
+def test_store_domain_normalizes_case_and_query(db, monkeypatch):
+    from app.services import shopify_service as mod
+    svc = ShopifyService(db)
+    cases = {
+        "https://Admin.Shopify.com/store/Jaks-Diesel-3/settings": "jaks-diesel-3.myshopify.com",
+        "jaks-diesel-3.myshopify.com?foo=bar": "jaks-diesel-3.myshopify.com",
+        "JAKS-DIESEL-3": "jaks-diesel-3.myshopify.com",
+    }
+    for raw, want in cases.items():
+        monkeypatch.setattr(mod, "get_setting_value_db", lambda db, k, d="", _raw=raw: _raw)
+        assert svc._store_domain() == want, raw
+
+
+def test_match_and_link_flags_total_miss(db, monkeypatch):
+    # 60 unlinked products, a big store, but nothing matches -> ok:False guard.
+    from app.models.product import Product
+    from app.constants import ProductStatus
+    for i in range(60):
+        db.add(Product(sku=f"NOMATCH-{i:03d}", title="x", status=ProductStatus.ACTIVE, is_active=True))
+    db.commit()
+    svc = ShopifyService(db)
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    fake = [{"variant_id": f"gid://shopify/ProductVariant/{i}", "sku": f"STORE-{i}",
+             "product_id": f"gid://shopify/Product/{i}", "handle": f"h{i}", "status": "ACTIVE"}
+            for i in range(600)]
+    monkeypatch.setattr(svc, "_fetch_all_variants", lambda: fake)
+    summary = svc.match_and_link()
+    assert summary["linked"] == 0
+    assert summary["ok"] is False and "warning" in summary
+
+
+def test_metafield_lists_capped_at_128(db):
+    from app.models.product import CrossReference, ProductApplication
+    from app.constants import CrossRefType
+    p = _product(db)
+    for i in range(200):
+        db.add(CrossReference(product_id=p.id, ref_type=CrossRefType.OEM,
+                              ref_number=f"REF{i}", brand="CUMMINS"))
+        db.add(ProductApplication(product_id=p.id, engine_make="CUMMINS", engine_model=f"M{i}"))
+    db.commit()
+    inp = ShopifyService(db).to_product_set_input(ShopifyService(db).build_listing(p))
+    import json as _json
+    for m in inp["metafields"]:
+        if m["key"] in ("oem_references", "engine_applications"):
+            assert len(_json.loads(m["value"])) <= 128, m["key"]
+
+
+# ── Inventory sync — ERP-is-master overwrite (2026-06-13) ───────────────────────
+
+def _link_with_inventory(p, item="gid://shopify/InventoryItem/1", on_hand=5, committed=2):
+    p.shopify_product_id = "gid://shopify/Product/9"
+    p.shopify_variant_id = "gid://shopify/ProductVariant/9"
+    p.shopify_inventory_item_id = item
+    p.qty_on_hand = on_hand
+    p.qty_committed = committed
+
+
+def test_sync_inventory_sets_absolute_available(db, monkeypatch):
+    p = _product(db)
+    _link_with_inventory(p, on_hand=5, committed=2)        # qty_available = 3
+    db.commit()
+    svc = ShopifyService(db)
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    monkeypatch.setattr(svc, "_location_id", lambda: "gid://shopify/Location/1")
+    calls = []
+    monkeypatch.setattr(svc, "_graphql", lambda q, v: (calls.append((q, v)) or
+        {"data": {"inventorySetOnHandQuantities": {"userErrors": []}}}))
+    res = svc.sync_inventory([p.id])
+    assert res["ok"] and res["synced"] == 1 and res["skipped"] == 0 and res["failed"] == 0
+    setq = next(v for q, v in calls
+                if "inventorySetOnHandQuantities" in q)["input"]["setQuantities"][0]
+    assert setq == {"inventoryItemId": "gid://shopify/InventoryItem/1",
+                    "locationId": "gid://shopify/Location/1", "quantity": 3}
+
+
+def test_sync_inventory_clamps_negative_to_zero(db, monkeypatch):
+    p = _product(db)
+    _link_with_inventory(p, on_hand=1, committed=5)        # available = -4 → clamp 0
+    db.commit()
+    svc = ShopifyService(db)
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    monkeypatch.setattr(svc, "_location_id", lambda: "gid://shopify/Location/1")
+    grabbed = {}
+    def fg(q, v):
+        if "inventorySetOnHandQuantities" in q:
+            grabbed.update(v)
+        return {"data": {"inventorySetOnHandQuantities": {"userErrors": []}}}
+    monkeypatch.setattr(svc, "_graphql", fg)
+    svc.sync_inventory([p.id])
+    assert grabbed["input"]["setQuantities"][0]["quantity"] == 0
+
+
+def test_sync_inventory_self_heals_untracked(db, monkeypatch):
+    p = _product(db)
+    _link_with_inventory(p, on_hand=7, committed=0)        # available = 7
+    db.commit()
+    svc = ShopifyService(db)
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    monkeypatch.setattr(svc, "_location_id", lambda: "gid://shopify/Location/1")
+    seen, state = [], {"set": 0}
+    def fg(q, v):
+        seen.append(q)
+        if "inventorySetOnHandQuantities" in q:
+            state["set"] += 1
+            if state["set"] == 1:        # first BATCH set fails — item not tracked yet
+                return {"data": {"inventorySetOnHandQuantities":
+                                 {"userErrors": [{"field": ["setQuantities"], "message": "not tracked"}]}}}
+            return {"data": {"inventorySetOnHandQuantities": {"userErrors": []}}}
+        if "inventoryItemUpdate" in q:
+            return {"data": {"inventoryItemUpdate": {"inventoryItem": {"id": "x", "tracked": True}, "userErrors": []}}}
+        if "inventoryActivate" in q:
+            return {"data": {"inventoryActivate": {"inventoryLevel": {"id": "y"}, "userErrors": []}}}
+        return {}
+    monkeypatch.setattr(svc, "_graphql", fg)
+    res = svc.sync_inventory([p.id])
+    assert res["synced"] == 1 and res["failed"] == 0
+    assert any("inventoryItemUpdate" in q for q in seen)   # tracking enabled
+    assert any("inventoryActivate" in q for q in seen)     # activated at location
+
+
+def test_sync_inventory_skips_unlinked(db, monkeypatch):
+    p = _product(db)                                       # no inventory item id
+    svc = ShopifyService(db)
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    monkeypatch.setattr(svc, "_location_id", lambda: "gid://shopify/Location/1")
+    monkeypatch.setattr(svc, "_graphql", lambda q, v: {"data": {}})
+    res = svc.sync_inventory([p.id])
+    assert res["skipped"] == 1 and res["synced"] == 0
+
+
+def test_sync_inventory_failsoft_unconfigured(db):
+    p = _product(db)
+    res = ShopifyService(db).sync_inventory([p.id])
+    assert res["ok"] is False and "not configured" in res["error"].lower()
+
+
+def test_match_and_link_captures_inventory_item_id(db, monkeypatch):
+    p = _product(db)                                       # vendor_sku JAKS-PAI-121250
+    svc = ShopifyService(db)
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    monkeypatch.setattr(svc, "_fetch_all_variants", lambda: [
+        {"variant_id": "gid://shopify/ProductVariant/11", "sku": "JAKS-PAI-121250",
+         "product_id": "gid://shopify/Product/1", "handle": "jaks-pai-121250",
+         "status": "ACTIVE", "inventory_item_id": "gid://shopify/InventoryItem/55"}])
+    svc.match_and_link()
+    db.refresh(p)
+    assert p.shopify_inventory_item_id == "gid://shopify/InventoryItem/55"
+
+
+def test_sync_linked_resolves_linked_and_merges(db, monkeypatch):
+    p = _product(db)
+    p.shopify_product_id = "gid://shopify/Product/9"     # linked
+    db.commit()
+    svc = ShopifyService(db)
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    seen = {}
+    monkeypatch.setattr(svc, "update_batch", lambda ids: (seen.update(upd=list(ids)) or
+        {"updated": 1, "price_skipped": 0, "failed": 0, "errors": []}))
+    monkeypatch.setattr(svc, "sync_inventory", lambda ids: (seen.update(inv=list(ids)) or
+        {"synced": 1, "failed": 0, "errors": []}))
+    res = svc.sync_linked()                               # None → resolve linked ids
+    assert res["ok"] and res["content_updated"] == 1 and res["stock_synced"] == 1
+    assert seen["upd"] == [p.id] and seen["inv"] == [p.id]
+
+
+def test_sync_linked_failsoft_unconfigured(db):
+    res = ShopifyService(db).sync_linked([1])
+    assert res["ok"] is False and "not configured" in res["error"].lower()

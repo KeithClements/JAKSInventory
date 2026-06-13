@@ -102,6 +102,7 @@ def on_startup() -> None:
         _startup_backup(db)
     finally:
         db.close()
+    _start_shopify_scheduler()
 
 
 def _startup_backup(db: Session) -> None:
@@ -143,6 +144,50 @@ def _startup_backup(db: Session) -> None:
         log.info("startup backup complete")
     except Exception:
         log.exception("startup backup failed (continuing startup)")
+
+
+def _start_shopify_scheduler() -> None:
+    """Nightly price + stock sync to the linked Shopify storefront.
+
+    OFF by default (set shopify_auto_sync_enabled='1' in Settings → Shopify to turn
+    on). A daemon thread re-reads the setting each cycle so toggling takes effect
+    without a restart, and fires once per day when the local hour matches
+    shopify_auto_sync_hour. Skipped under the in-memory test engine (mirrors
+    _startup_backup); never raises into startup."""
+    import threading
+    import time as _time
+
+    if ":memory:" in str(_appdb.engine.url):
+        return
+
+    def _loop() -> None:
+        from app.settings_utils import get_setting_value_db
+        from app.services.shopify_service import run_background_shopify_sync
+        last_run_date = None
+        while True:
+            try:
+                db = _appdb.SessionLocal()
+                try:
+                    enabled = get_setting_value_db(
+                        db, "shopify_auto_sync_enabled", "0").strip() == "1"
+                    try:
+                        hour = int(get_setting_value_db(db, "shopify_auto_sync_hour", "2"))
+                    except (TypeError, ValueError):
+                        hour = 2
+                finally:
+                    db.close()
+                now = datetime.now()
+                if enabled and now.hour == hour and last_run_date != now.date():
+                    last_run_date = now.date()
+                    log.info("shopify nightly sync starting")
+                    run_background_shopify_sync(None)   # system run; opens own session
+                    log.info("shopify nightly sync finished")
+            except Exception:
+                log.exception("shopify nightly scheduler tick failed (continuing)")
+            _time.sleep(600)   # re-check every 10 minutes
+
+    threading.Thread(target=_loop, daemon=True, name="shopify-nightly-sync").start()
+    log.info("shopify nightly scheduler started (idle until enabled in Settings)")
 
 
 def _seed_core_locations(db: Session) -> None:

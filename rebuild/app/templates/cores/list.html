@@ -1,18 +1,18 @@
 {% extends "base.html" %}
-{% block title %}Cores Queue — JAKS Inventory{% endblock %}
+{% block title %}Cores Queue — Axle{% endblock %}
 {% block heading %}Cores Queue{% endblock %}
 
 {% block content %}
 {% from "macros/empty_state.html" import empty_state %}
 {# QB2 Queue Board (§2A) for the core-charge lifecycle. Owner ruling 2026-05-31:
    one stage-grouped board, keep the existing inline action forms (cores have no
-   per-item workspace to link to). stage → (left stripe, row tint, chip bg+text,
-   chip dot, label). #}
+   per-item workspace to link to). stage → (left stripe, row tint, Axle chip class,
+   label). Stage identity stays on the stripe color; chips carry §4 semantics. #}
 {% set stage_meta = {
-  'awaiting_return':    ('border-l-amber-400',  'bg-amber-50/20',  'bg-amber-100 text-amber-700',   'bg-amber-500',  'Awaiting Return'),
-  'pending_inspection': ('border-l-amber-400',  'bg-amber-50/20',  'bg-amber-100 text-amber-700',   'bg-amber-500',  'Pending Inspection'),
-  'ready_to_ship':      ('border-l-blue-400',   '',                'bg-blue-50 text-blue-700',      'bg-blue-500',   'Ready to Ship'),
-  'awaiting_vendor':    ('border-l-purple-400', 'bg-purple-50/20', 'bg-purple-100 text-purple-700', 'bg-purple-500', 'Awaiting Vendor'),
+  'awaiting_return':    ('border-l-amber-400',  'bg-amber-50/20',  'chip-low', 'Awaiting Return'),
+  'pending_inspection': ('border-l-amber-400',  'bg-amber-50/20',  'chip-low', 'Pending Inspection'),
+  'ready_to_ship':      ('border-l-blue-400',   '',                'chip-ok',  'Ready to Ship'),
+  'awaiting_vendor':    ('border-l-purple-400', 'bg-purple-50/20', 'chip-low', 'Awaiting Vendor'),
 } %}
 {% set stage_labels = {
   'awaiting_return':    'Awaiting Customer Return',
@@ -181,14 +181,14 @@
     <div class="overflow-x-auto">
       <table class="w-full min-w-[980px]">
         <thead>
-          <tr class="bg-gray-50 border-b border-gray-200">
-            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Core</th>
-            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Customer</th>
-            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Qty</th>
-            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Value</th>
-            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Detail</th>
-            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
-            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Action</th>
+          <tr class="border-b border-gray-200" style="background:#fafbfa;">
+            <th class="px-4 py-3 text-left label-mini">Core</th>
+            <th class="px-4 py-3 text-left label-mini">Customer</th>
+            <th class="px-4 py-3 text-right label-mini">Qty</th>
+            <th class="px-4 py-3 text-right label-mini">Value</th>
+            <th class="px-4 py-3 text-left label-mini">Detail</th>
+            <th class="px-4 py-3 text-left label-mini">Status</th>
+            <th class="px-4 py-3 text-right label-mini">Action</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-gray-100">
@@ -239,7 +239,7 @@
                        class="mt-0.5 w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-400 shrink-0 cursor-pointer" />
                 {% endif %}
                 <div class="min-w-0">
-                  <span class="font-mono text-sm font-bold text-brand-700">{{ core.product.sku if core.product else '—' }}</span>
+                  <span class="font-mono pn">{{ core.product.sku if core.product else '—' }}</span>
                   <div class="text-xs text-gray-500 truncate max-w-[220px]">{{ core.product.title if core.product else '—' }}</div>
                 </div>
               </div>
@@ -251,17 +251,17 @@
               {% else %}<span class="text-gray-300">—</span>{% endif %}
             </td>
             {# Qty — outstanding (awaiting return) vs returned (later stages) #}
-            <td class="px-4 py-4 align-middle text-right tabular-nums font-medium text-gray-700">
-              {{ core.qty_outstanding if stage == 'awaiting_return' else core.qty_returned }}
+            <td class="px-4 py-4 align-middle text-right">
+              <span class="money" style="font-weight:600; color:#2f343a;">{{ core.qty_outstanding if stage == 'awaiting_return' else core.qty_returned }}</span>
             </td>
-            {# Value — customer charge (return) or expected vendor/customer credit #}
-            <td class="px-4 py-4 align-middle text-right tabular-nums">
+            {# Value — customer charge (return) or expected vendor/customer credit (.money) #}
+            <td class="px-4 py-4 align-middle text-right">
               {% if stage == 'awaiting_return' %}
-              <span class="font-semibold text-orange-600">${{ '%.2f' | format(core.customer_unit_charge) }}<span class="text-[10px] text-gray-400 font-normal">/ea</span></span>
+              <span class="money" style="font-weight:600; color:#b06511;">${{ '%.2f' | format(core.customer_unit_charge) }}<span class="text-[10px] text-gray-400 font-normal">/ea</span></span>
               {% elif stage == 'pending_inspection' %}
-              <span class="font-semibold text-green-700">${{ '%.2f' | format(core.customer_unit_charge * core.qty_returned) }}</span>
+              <span class="money ext" style="color:#3c4520;">${{ '%.2f' | format(core.customer_unit_charge * core.qty_returned) }}</span>
               {% else %}
-              <span class="font-semibold text-green-700">${{ '%.2f' | format(core.vendor_unit_charge * core.qty_returned) }}</span>
+              <span class="money ext" style="color:#3c4520;">${{ '%.2f' | format(core.vendor_unit_charge * core.qty_returned) }}</span>
               {% endif %}
             </td>
             {# Detail — return deadline / vendor tracking #}
@@ -272,19 +272,15 @@
                 {% if row.overdue %}<span class="badge-red ml-1">Overdue</span>{% endif %}
                 {% else %}<span class="text-gray-300">—</span>{% endif %}
               {% elif stage == 'awaiting_vendor' %}
-                <span class="font-mono text-gray-500">{{ core.core_tracking_number or '—' }}</span>
+                <span class="font-mono pn" style="color:#7c838b;">{{ core.core_tracking_number or '—' }}</span>
               {% else %}<span class="text-gray-300">—</span>{% endif %}
             </td>
-            {# Status chip #}
+            {# Status chip — Axle .chip-axle dot + label #}
             <td class="px-4 py-4 align-middle">
               {% if row.overdue %}
-              <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold bg-red-100 text-red-700">
-                <span class="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0"></span>Overdue Return
-              </span>
+              <span class="chip-axle chip-out"><span class="dot"></span>Overdue Return</span>
               {% else %}
-              <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold {{ meta[2] }}">
-                <span class="w-1.5 h-1.5 rounded-full {{ meta[3] }} shrink-0"></span>{{ meta[4] }}
-              </span>
+              <span class="chip-axle {{ meta[2] }}"><span class="dot"></span>{{ meta[3] }}</span>
               {% endif %}
             </td>
             {# Action — expands the stage-specific inline form below #}
@@ -430,8 +426,9 @@
         </tbody>
       </table>
     </div>
-    <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/60">
-      <span class="text-xs text-gray-400">{{ total }} open core charge{{ 's' if total != 1 }} in the lifecycle{% if q %} · filtered{% endif %}</span>
+    <div class="px-5 py-3 border-t border-gray-100"
+         style="background:#fafbfa; font-family:'IBM Plex Mono',monospace; font-size:11px; color:#7c838b;">
+      <span>{{ total }} open core charge{{ 's' if total != 1 }} in the lifecycle{% if q %} · filtered{% endif %}</span>
     </div>
   </div>
 
@@ -453,10 +450,10 @@
      → vendor-decision form (unchecked cores accepted, checked cores denied). #}
   {% if vcr_rows %}
   {% set vcr_status_meta = {
-    'draft':         ('bg-gray-100 text-gray-600',     'bg-gray-400',   'Draft'),
-    'shipped':       ('bg-blue-50 text-blue-700',      'bg-blue-500',   'Shipped'),
-    'vendor_review': ('bg-purple-100 text-purple-700', 'bg-purple-500', 'Vendor Review'),
-    'disputed':      ('bg-red-100 text-red-700',       'bg-red-500',    'Disputed'),
+    'draft':         ('chip-draft', 'Draft'),
+    'shipped':       ('chip-ok',    'Shipped'),
+    'vendor_review': ('chip-low',   'Vendor Review'),
+    'disputed':      ('chip-out',   'Disputed'),
   } %}
   <div class="card overflow-hidden">
     <div class="px-5 py-3 border-b border-gray-100 bg-gray-50/60 flex items-center justify-between">
@@ -470,14 +467,12 @@
       <div class="px-5 py-4">
         <div class="flex items-center justify-between gap-3 flex-wrap">
           <div class="flex items-center gap-3 flex-wrap min-w-0">
-            <span class="font-mono text-sm font-bold text-brand-700">{{ vcr.vcr_number }}</span>
-            <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold {{ vmeta[0] }}">
-              <span class="w-1.5 h-1.5 rounded-full {{ vmeta[1] }} shrink-0"></span>{{ vmeta[2] }}
-            </span>
+            <span class="font-mono pn">{{ vcr.vcr_number }}</span>
+            <span class="chip-axle {{ vmeta[0] }}"><span class="dot"></span>{{ vmeta[1] }}</span>
             <span class="text-sm font-medium text-gray-800">{{ vrow.vendor.name if vrow.vendor else '—' }}</span>
             <span class="text-xs text-gray-500">{{ vrow.cores|length }} core{{ 's' if vrow.cores|length != 1 }}</span>
-            <span class="text-xs text-gray-500">Expected <span class="font-semibold text-green-700">${{ '%.2f' | format(vcr.expected_credit) }}</span></span>
-            {% if vcr.tracking_number %}<span class="font-mono text-xs text-gray-400">{{ vcr.tracking_number }}</span>{% endif %}
+            <span class="text-xs text-gray-500">Expected <span class="money" style="color:#3c4520;">${{ '%.2f' | format(vcr.expected_credit) }}</span></span>
+            {% if vcr.tracking_number %}<span class="font-mono pn" style="color:#a9afb6;">{{ vcr.tracking_number }}</span>{% endif %}
           </div>
           <div class="flex items-center gap-1.5">
             <a href="/cores/vcr/{{ vcr.id }}/print" target="_blank" rel="noopener"

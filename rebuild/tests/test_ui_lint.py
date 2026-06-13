@@ -231,13 +231,14 @@ _STRUCTURAL_MARKERS: list[tuple[str, re.Pattern[str], str, bool]] = [
         True,  # queue boards exempt
     ),
     (
-        "fixed bottom-0 left-64",
+        "fixed bottom-0 left-sidebar",
         re.compile(
-            r"fixed\s+bottom-0\s+left-64"
-            r"|fixed\b[^>]*\bbottom-0\b[^>]*\bleft-64\b"
+            r"fixed\s+bottom-0\s+left-(?:64|sidebar)"
+            r"|fixed\b[^>]*\bbottom-0\b[^>]*\bleft-(?:64|sidebar)\b"
+            r"|left-sidebar"                               # Axle 232px shell binding
             r"|preview_dock_shell\s*\(",                   # macro emits this
         ),
-        "preview dock container must use fixed bottom-0 left-64 (or preview_dock_shell macro)",
+        "preview dock container must use fixed bottom-0 left-sidebar (or preview_dock_shell macro)",
         True,  # queue boards exempt
     ),
 ]

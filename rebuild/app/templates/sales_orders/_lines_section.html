@@ -1,22 +1,22 @@
 {# ═══════════════════════════════════════════════════════════════════════════
-   _lines_section.html
-   HTMX-swappable container: line grid + add-line row + fulfill form.
-   Re-rendered on every add / update / delete line action.
+   _lines_section.html — Axle Line-Item Workspace (sales-order edition).
+
+   HTMX-swappable container: header row + line table + fulfill form. Re-rendered
+   on every add/update/delete line action. Mirrors quotes/workspace.html line
+   table but with the SO-specific concepts (ordered / invoiced / remaining,
+   backorder + PO link, ship qty, core child lines).
 ═══════════════════════════════════════════════════════════════════════════ #}
 <div id="so-lines-section">
 
-  {# Linked-PO state → micro-chip colour + label. Once a backordered line is
-     ordered onto a PO the chip tracks the PO's progress. Decision (owner,
-     2026-06-01): a line reads "On order" only when the PO has actually been
-     Sent; a draft PO still reads "Ordering" (it isn't placed with the vendor
-     yet). reserved_stock overrides this with "Ready" (see below). #}
+  {# Linked-PO state → chip colour + label (Owner 2026-06-01: "On order" only
+     once PO is sent; draft = "Ordering"). reserved_stock overrides to Ready. #}
   {% set po_state_chip = {
-    'draft':        ('bg-amber-50 text-amber-600', 'Ordering'),
-    'verbal_order': ('bg-amber-50 text-amber-600', 'Ordering'),
-    'sent':         ('bg-blue-50 text-blue-700',   'On order'),
-    'partial':      ('bg-blue-50 text-blue-700',   'Receiving'),
-    'received':     ('bg-green-50 text-green-700', 'Received'),
-    'billed':       ('bg-green-50 text-green-700', 'Received'),
+    'draft':        ('#fdf3e4', '#b06511', '#f0d6ae', 'Ordering'),
+    'verbal_order': ('#fdf3e4', '#b06511', '#f0d6ae', 'Ordering'),
+    'sent':         ('#e8eef5', '#1e4f7d', '#cbdaeb', 'On order'),
+    'partial':      ('#e8eef5', '#1e4f7d', '#cbdaeb', 'Receiving'),
+    'received':     ('#eaf3e4', '#3c5a23', '#cfe1c0', 'Received'),
+    'billed':       ('#eaf3e4', '#3c5a23', '#cfe1c0', 'Received'),
   } %}
 
   {% if order_error %}
@@ -25,65 +25,86 @@
   </div>
   {% endif %}
 
-  <div class="card">
-    <div class="card-header">
-      <h2 class="card-title">Line Items</h2>
-      <span class="text-xs text-gray-400">
-        {{ so.lines | length }} line{{ 's' if so.lines | length != 1 }}
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+
+    {# Card header — Axle .chd style (Oswald uppercase label + right-rail count) #}
+    <div class="flex items-center gap-2 px-4 py-2.5 border-b border-steel-150">
+      <h4 class="label-mini text-steel-500">Line Items</h4>
+      <span class="ml-auto font-mono text-[10.5px] text-steel-400">
+        {{ so.lines | length }} line{% if (so.lines | length) != 1 %}s{% endif %}
         {% if so.has_backorder %} · <span class="text-amber-600 font-medium">backorders</span>{% endif %}
       </span>
     </div>
 
     {% if so.lines %}
     <div class="overflow-x-auto">
-      <table class="tbl">
-        <thead class="tbl-head">
-          <tr>
-            <th class="tbl-th w-8">#</th>
-            <th class="tbl-th w-24">SKU</th>
-            <th class="tbl-th min-w-[14rem]">Description</th>
-            <th class="tbl-th-r w-20">Ordered</th>
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-steel-200 bg-[#fafbfa] font-display font-semibold text-steel-400 uppercase tracking-[.07em] text-[10px]">
+            <th class="text-center px-2 py-2 w-8">#</th>
+            <th class="text-left px-3 py-2 w-28">Part</th>
+            <th class="text-left px-2 py-2">Description</th>
+            <th class="text-center px-2 py-2 w-14">Bin</th>
+            <th class="text-right px-2 py-2 w-16">Qty</th>
             {% if not editable %}
-            <th class="tbl-th-r w-20">Invoiced</th>
-            <th class="tbl-th-r w-20">Remaining</th>
+            <th class="text-right px-2 py-2 w-16">Invc.</th>
+            <th class="text-right px-2 py-2 w-16">Rem.</th>
             {% endif %}
-            <th class="tbl-th-r w-24">Unit Price</th>
-            <th class="tbl-th-r w-20">Disc %</th>
-            <th class="tbl-th-r w-24">Extended</th>
-            {% if can_fulfill %}<th class="tbl-th-r w-24">Ship Qty</th>{% endif %}
-            {% if editable %}<th class="tbl-th w-10"></th>{% endif %}
+            <th class="text-right px-2 py-2 w-32 min-w-[7.5rem]">Unit</th>
+            <th class="text-right px-2 py-2 w-16">Disc %</th>
+            <th class="text-right px-2 py-2 w-20">Margin %</th>
+            <th class="text-right px-3 py-2 w-24">Ext</th>
+            {% if can_fulfill %}<th class="text-right px-2 py-2 w-24">Ship</th>{% endif %}
+            {% if editable %}<th class="w-8 px-2 py-2"></th>{% endif %}
           </tr>
         </thead>
         <tbody>
           {% for line in so.lines %}
           {% set cancelled = line.qty_ordered == line.qty_invoiced and line.qty_invoiced == 0 and line.line_status == 'cancelled' %}
           {% set done = line.qty_remaining == 0 and line.qty_invoiced > 0 %}
-          {# Bug 1: CORE_CHARGE child line — render the way invoice lines do (amber tint,
-             ↳ indent under parent, read-only "core charge" label; line_total flows into Subtotal). #}
           {% set is_core = line.line_type == 'core_charge' %}
           {% set is_child = line.parent_line_id is not none %}
-          <tr class="tbl-row {% if is_core %}bg-amber-50/50{% elif done %}bg-gray-50/60{% elif cancelled %}bg-gray-50/40{% endif %}">
 
-            <td class="tbl-td text-xs text-gray-400 tabular-nums">{% if is_child %}<span title="Linked to the line above">↳</span>{% else %}{{ loop.index }}{% endif %}</td>
+          {# Row tint — core child lines = subtle amber tint; done/cancelled = gray #}
+          {% set row_bg = 'hover:bg-gray-50' %}
+          {% set left_border = '' %}
+          {% if is_core %}
+            {% set row_bg = 'bg-amber-50/30 hover:bg-amber-50/50' %}
+            {% set left_border = 'border-l-4 border-amber-300' %}
+          {% elif done %}
+            {% set row_bg = 'bg-gray-50/60' %}
+          {% elif cancelled %}
+            {% set row_bg = 'bg-gray-50/40' %}
+          {% endif %}
 
-            <td class="tbl-td">
-              {% if line.product %}
-              <a href="/products/{{ line.product_id }}"
-                 class="font-mono text-xs font-bold text-brand-700 hover:underline">{{ line.product.sku }}</a>
+          <tr class="group border-b border-gray-100 transition-colors {{ row_bg }}">
+
+            {# # / row index (or ↳ for child) #}
+            <td class="px-2 py-1.5 text-center w-8 text-xs text-gray-400 tabular-nums {{ left_border }}">
+              {% if is_child %}<span title="Linked to the line above">↳</span>{% else %}{{ loop.index }}{% endif %}
+            </td>
+
+            {# Part — .pn for SKU, core badge for core_charge lines #}
+            <td class="px-3 py-1.5 w-28 shrink-0">
+              {% if is_core %}
+              <span class="corechip">CORE</span>
+              {% elif line.product %}
+              <a href="/products/{{ line.product_id }}">
+                <span class="pn">{{ line.product.sku }}</span>
+              </a>
               {% else %}
-              <span class="text-xs font-semibold {% if is_core %}text-amber-700{% else %}text-gray-400{% endif %} uppercase">{{ line.line_type | replace('_', ' ') }}</span>
+              <span class="text-xs font-semibold text-gray-400 uppercase">{{ line.line_type | replace('_', ' ') }}</span>
               {% endif %}
-              {% if is_core %}<p class="text-xs text-amber-700 font-medium mt-0.5">Refundable core{% if line.is_locked_to_parent %} · linked{% endif %}</p>{% endif %}
-              {# Fulfillment-source badge. 'backorder' and 'linked_po' have richer
-                 chips of their own in the description cell, so skip them here. #}
+              {% if is_core %}<p class="text-[10.5px] text-amber-700 mt-0.5">Refundable{% if line.is_locked_to_parent %} · linked{% endif %}</p>{% endif %}
               {% if line.fulfillment_source and line.fulfillment_source not in ['stock', 'backorder', 'linked_po'] %}
-              <p class="text-xs text-amber-600 font-medium mt-0.5">
+              <p class="text-[10.5px] text-amber-600 mt-0.5">
                 {{ line.fulfillment_source | replace('_', ' ') | title }}
               </p>
               {% endif %}
             </td>
 
-            <td class="tbl-td {% if done or cancelled %}text-gray-400{% endif %}">
+            {# Description (editable) + PO link chip below #}
+            <td class="px-2 py-1 min-w-0">
               {% if editable and not done and not cancelled and not is_core %}
               <input type="text" value="{{ line.description }}"
                      hx-post="/sales-orders/{{ so.id }}/lines/{{ line.id }}"
@@ -91,51 +112,71 @@
                      hx-target="#so-lines-section"
                      hx-swap="outerHTML"
                      name="description"
-                     class="w-full text-sm border-0 bg-transparent hover:bg-white focus:bg-white
-                            border border-transparent hover:border-gray-200 focus:border-brand-400
-                            rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-brand-400" />
+                     @focus="$event.target.select()"
+                     class="w-full border border-transparent hover:border-gray-200 focus:border-brand-400
+                            focus:outline-none focus:ring-0 rounded px-1.5 py-1 text-sm bg-transparent
+                            focus:bg-white transition-colors
+                            {{ 'line-through text-gray-400' if cancelled else '' }}" />
               {% else %}
-              <span class="text-sm {% if cancelled %}line-through{% endif %}">{{ line.description }}</span>
+              <span class="text-sm {% if cancelled %}line-through text-gray-400{% elif done %}text-gray-400{% endif %}">{{ line.description }}</span>
               {% endif %}
-              {# Backorder → Order → on-order lifecycle. reserved_stock = goods
-                 received & earmarked for this line (Ready); otherwise the chip
-                 tracks the linked PO's progress (Ordering → On order · ETA →
-                 Receiving). A cancelled PO falls back to Backorder + Re-order. #}
+
+              {# Backorder → Order → On order lifecycle chip #}
               {% if line.linked_po_line and line.linked_po_line.po.status != 'cancelled' %}
                 {% set lpo = line.linked_po_line.po %}
                 {% if line.line_status == 'reserved_stock' %}
                 <a href="/purchase-orders/{{ lpo.id }}"
                    title="Received on this PO and reserved for this order — ready to fulfill"
-                   class="inline-flex mt-0.5 items-center px-1.5 py-0.5 rounded text-xs bg-green-50 text-green-700 font-medium hover:bg-green-100 transition-colors">
+                   class="chip-axle chip-ok mt-1">
+                  <span class="dot"></span>
                   Ready · PO {{ lpo.po_number }} →
                 </a>
                 {% else %}
-                {% set sc = po_state_chip.get(lpo.status, ('bg-blue-50 text-blue-700', 'On order')) %}
+                {% set sc = po_state_chip.get(lpo.status, ('#e8eef5', '#1e4f7d', '#cbdaeb', 'On order')) %}
                 <a href="/purchase-orders/{{ lpo.id }}"
-                   title="{{ sc[1] }} on {{ lpo.po_number }}"
-                   class="inline-flex mt-0.5 items-center px-1.5 py-0.5 rounded text-xs font-medium hover:opacity-80 transition-opacity {{ sc[0] }}">
-                  {{ sc[1] }} · {{ lpo.po_number }}{% if lpo.status in ['sent', 'partial'] and lpo.expected_at %} · ETA {{ lpo.expected_at.strftime('%b %d') }}{% endif %} →
+                   title="{{ sc[3] }} on {{ lpo.po_number }}"
+                   class="chip-axle mt-1"
+                   style="background:{{ sc[0] }}; color:{{ sc[1] }}; border-color:{{ sc[2] }};">
+                  <span class="dot" style="background:{{ sc[1] }};"></span>
+                  {{ sc[3] }} · {{ lpo.po_number }}{% if lpo.status in ['sent', 'partial'] and lpo.expected_at %} · ETA {{ lpo.expected_at.strftime('%b %d') }}{% endif %} →
                 </a>
                 {% endif %}
               {% elif line.is_backordered and not done and not cancelled %}
-              <span class="inline-flex mt-0.5 px-1.5 py-0.5 rounded text-xs bg-amber-50 text-amber-600 font-medium">Backorder</span>
+              <span class="chip-axle chip-low mt-1">
+                <span class="dot"></span>
+                Backorder{% if line.eta_date %} · ETA {{ line.eta_date.strftime('%b %d') }}{% endif %}
+              </span>
               {% if editable %}
               <button type="button"
                       hx-post="/sales-orders/{{ so.id }}/lines/{{ line.id }}/create-po"
                       hx-target="#so-lines-section"
                       hx-swap="outerHTML"
-                      class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium text-brand-700 bg-brand-50 hover:bg-brand-100 transition-colors"
+                      class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded border border-steel-200 text-xs font-medium text-steel-500 bg-transparent hover:text-brand-700 hover:border-brand-300 transition-colors"
                       title="Create a purchase order for this backordered part">
-                {{ 'Re-order' if line.linked_po_line else 'Order' }}&nbsp;→
+                {{ 'Re-order' if line.linked_po_line else 'Order' }} →
               </button>
               {% endif %}
               {% endif %}
+
               {% if cancelled %}
-              <span class="inline-flex mt-0.5 px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-400 font-medium">Cancelled</span>
+              <span class="chip-axle chip-draft mt-1">
+                <span class="dot"></span>
+                Cancelled
+              </span>
               {% endif %}
             </td>
 
-            <td class="tbl-td-r {% if done or cancelled %}text-gray-400{% endif %}">
+            {# Bin — Axle .bin mono steel-400 #}
+            <td class="px-2 py-1.5 text-center w-14">
+              {% if line.product and line.product.bin_location %}
+              <span class="bin">{{ line.product.bin_location }}</span>
+              {% else %}
+              <span class="text-gray-200 text-xs">—</span>
+              {% endif %}
+            </td>
+
+            {# Qty Ordered (editable) — Axle .qty pill-style stepper feel #}
+            <td class="px-2 py-1 w-16 text-right">
               {% if editable and not done and not cancelled and not is_core %}
               <input type="number" value="{{ line.qty_ordered }}" min="1"
                      hx-post="/sales-orders/{{ so.id }}/lines/{{ line.id }}"
@@ -143,60 +184,84 @@
                      hx-target="#so-lines-section"
                      hx-swap="outerHTML"
                      name="qty_ordered"
-                     class="w-16 text-right text-sm border border-gray-200 rounded px-1.5 py-1
-                            focus:outline-none focus:ring-1 focus:ring-brand-400" />
+                     @focus="$event.target.select()"
+                     class="w-14 text-right border border-gray-200 hover:border-gray-300 focus:border-brand-400
+                            focus:outline-none rounded px-1.5 py-1 text-sm bg-transparent focus:bg-white transition-colors" />
               {% else %}
-              <span class="tabular-nums">{{ line.qty_ordered }}</span>
+              <span class="font-mono text-xs tabular-nums {% if done or cancelled %}text-gray-400{% endif %}">{{ line.qty_ordered }}</span>
               {% endif %}
             </td>
 
             {% if not editable %}
-            <td class="tbl-td-r text-gray-500 tabular-nums">{{ line.qty_invoiced }}</td>
-            <td class="tbl-td-r font-medium tabular-nums
-                       {% if line.qty_remaining == 0 %}text-gray-300{% else %}text-brand-700{% endif %}">
+            <td class="px-2 py-1.5 text-right w-16 font-mono text-xs tabular-nums text-gray-500">{{ line.qty_invoiced }}</td>
+            <td class="px-2 py-1.5 text-right w-16 font-mono text-xs tabular-nums
+                       {% if line.qty_remaining == 0 %}text-gray-300{% else %}text-brand-700 font-semibold{% endif %}">
               {{ line.qty_remaining }}
             </td>
             {% endif %}
 
-            <td class="tbl-td-r {% if done or cancelled %}text-gray-400{% endif %}">
+            {# Unit Price (editable) — wider cell so $#,###.## doesn't truncate #}
+            <td class="px-2 py-1 w-32">
               {% if editable and not done and not cancelled and not is_core %}
-              <input type="number" value="{{ '%.2f' % line.unit_price }}" step="0.01" min="0"
-                     hx-post="/sales-orders/{{ so.id }}/lines/{{ line.id }}"
-                     hx-trigger="change"
-                     hx-target="#so-lines-section"
-                     hx-swap="outerHTML"
-                     name="unit_price"
-                     class="w-24 text-right text-sm border border-gray-200 rounded px-1.5 py-1
-                            focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              <div class="relative">
+                <span class="absolute left-1.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs pointer-events-none">$</span>
+                <input type="number" value="{{ '%.2f' % line.unit_price }}" step="0.01" min="0"
+                       hx-post="/sales-orders/{{ so.id }}/lines/{{ line.id }}"
+                       hx-trigger="change"
+                       hx-target="#so-lines-section"
+                       hx-swap="outerHTML"
+                       name="unit_price"
+                       @focus="$event.target.select()"
+                       class="w-full pl-4 pr-1.5 text-right border border-gray-200 hover:border-gray-300
+                              focus:border-brand-400 focus:outline-none rounded py-1 text-sm bg-transparent
+                              focus:bg-white transition-colors" />
+              </div>
               {% else %}
-              <span class="tabular-nums">${{ '%.2f' % line.unit_price }}</span>
+              <span class="money {% if done or cancelled %}text-gray-400{% endif %}">${{ '%.2f' % line.unit_price }}</span>
               {% endif %}
             </td>
 
-            <td class="tbl-td-r {% if done or cancelled %}text-gray-400{% endif %}">
+            {# Discount % (editable) #}
+            <td class="px-2 py-1 w-16">
               {% if editable and not done and not cancelled and not is_core %}
-              <input type="number" value="{{ '%.1f' % line.discount_pct }}" step="0.5" min="0" max="100"
-                     hx-post="/sales-orders/{{ so.id }}/lines/{{ line.id }}"
-                     hx-trigger="change"
-                     hx-target="#so-lines-section"
-                     hx-swap="outerHTML"
-                     name="discount_pct"
-                     class="w-16 text-right text-sm border border-gray-200 rounded px-1.5 py-1
-                            focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              <div class="relative">
+                <input type="number" value="{{ '%.1f' % line.discount_pct }}" step="0.5" min="0" max="100"
+                       hx-post="/sales-orders/{{ so.id }}/lines/{{ line.id }}"
+                       hx-trigger="change"
+                       hx-target="#so-lines-section"
+                       hx-swap="outerHTML"
+                       name="discount_pct"
+                       @focus="$event.target.select()"
+                       class="w-14 text-right border border-gray-200 hover:border-gray-300 focus:border-brand-400
+                              focus:outline-none rounded px-1.5 py-1 pr-4 text-sm bg-transparent focus:bg-white transition-colors" />
+                <span class="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs pointer-events-none">%</span>
+              </div>
               {% else %}
-              <span class="tabular-nums {% if line.discount_pct %}text-red-600{% endif %}">
+              <span class="font-mono text-xs tabular-nums {% if line.discount_pct %}text-red-600{% else %}text-gray-300{% endif %}">
                 {% if line.discount_pct %}{{ '%.1f' % line.discount_pct }}%{% else %}—{% endif %}
               </span>
               {% endif %}
             </td>
 
-            <td class="tbl-td-r font-medium tabular-nums {% if done or cancelled %}text-gray-400{% endif %}">
-              ${{ '%.2f' % line.line_total }}
+            {# Margin % — read-only display, computed inline (SOLine has no
+               margin_pct property; mirror the QuoteLine formula). #}
+            <td class="px-2 py-1 text-right w-20">
+              {% set _mp = 0.0 if (line.unit_price or 0) == 0 or (line.unit_cost or 0) == 0
+                          else ((line.unit_price - line.unit_cost) / line.unit_price * 100) %}
+              <span class="font-mono text-xs tabular-nums
+                    {{ 'text-red-500' if _mp < 0 else ('text-amber-500' if _mp < 15 else 'text-gray-500') }}">
+                {% if line.unit_cost > 0 and line.unit_price > 0 %}{{ '%.0f' % _mp }}%{% else %}—{% endif %}
+              </span>
+            </td>
+
+            {# Ext / Line total — Axle .money.ext (mono 12.5px 700, ink) #}
+            <td class="px-3 py-1.5 text-right w-24 {% if cancelled %}line-through text-gray-300{% endif %}">
+              <span class="money ext {% if done %}text-gray-400{% endif %}">${{ '%.2f' % line.line_total }}</span>
             </td>
 
             {# Ship Qty input — only on open/partial, only for lines with remaining qty #}
             {% if can_fulfill %}
-            <td class="tbl-td-r">
+            <td class="px-2 py-1.5 text-right w-24">
               {% if line.qty_remaining > 0 and not cancelled %}
               <input type="number" name="line_qty_{{ line.id }}"
                      form="fulfill-form"
@@ -211,55 +276,47 @@
             {% endif %}
 
             {# Delete button — suppressed for auto-derived core lines (locked to parent) #}
-            {% if editable and not cancelled and not is_core %}
-            <td class="tbl-td text-center">
+            {% if editable %}
+            <td class="px-2 py-1.5 w-8 text-center">
+              {% if not cancelled and not is_core %}
               <button type="button"
                       hx-post="/sales-orders/{{ so.id }}/lines/{{ line.id }}/delete"
                       hx-target="#so-lines-section"
                       hx-swap="outerHTML"
                       hx-confirm="Cancel this line? Committed inventory will be released."
-                      class="text-gray-300 hover:text-red-500 transition-colors p-1 rounded">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      class="opacity-0 group-hover:opacity-100 focus:opacity-100
+                             text-gray-300 hover:text-red-500 transition-all p-1 rounded"
+                      title="Cancel line"
+                      aria-label="Cancel line">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                         d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
                 </svg>
               </button>
+              {% endif %}
             </td>
-            {% elif editable %}
-            <td class="tbl-td"></td>
             {% endif %}
 
           </tr>
           {% endfor %}
         </tbody>
-        <tfoot class="border-t-2 border-gray-100 bg-gray-50">
-          <tr>
-            {# label spans: # + SKU + Desc + Ordered + (Invoiced + Remaining when not editable) + Price + Disc% #}
-            <td colspan="{{ 6 if editable else 8 }}"
-                class="px-4 py-3 text-right text-sm font-semibold text-gray-600">Subtotal</td>
-            <td class="px-4 py-3 text-right font-bold tabular-nums">${{ '%.2f' % so.subtotal }}</td>
-            {% if can_fulfill %}<td></td>{% endif %}
-            {% if editable %}<td></td>{% endif %}
-          </tr>
-        </tfoot>
       </table>
     </div>
     {% else %}
     <div class="px-5 py-10 text-center text-sm text-gray-400">
-      No line items yet. Search above to add a product.
+      No line items yet — search above to add a product.
     </div>
     {% endif %}
 
-    {# ── Fulfill & Invoice bar ─────────────────────────────────────────────── #}
+    {# Card footer — Fulfill hint + form. The amber Fulfill & Invoice CTA in the
+       sticky header actions submits this same form (via the HTML form= attr). #}
     {% if can_fulfill %}
-    <div class="border-t border-gray-200 px-5 py-3 bg-brand-50/40 flex items-center justify-between">
-      <p class="text-xs text-gray-500">
-        Set "Ship Qty" for each line. Set to 0 to hold a line. Remaining qty stays on the SO as backorder.
+    <div class="border-t border-steel-150 px-4 py-2.5 flex items-center justify-between gap-3">
+      <p class="text-xs text-steel-500">
+        Set "Ship" per line — 0 to hold, remaining qty stays on the SO as backorder.
       </p>
       <form id="fulfill-form" action="/sales-orders/{{ so.id }}/fulfill" method="post" class="inline">
-        <button type="submit"
-                onclick="return confirm('Create invoice for selected quantities?')"
-                class="btn-primary">
+        <button type="submit" class="btn-amber btn-sm">
           Fulfill &amp; Invoice →
         </button>
       </form>

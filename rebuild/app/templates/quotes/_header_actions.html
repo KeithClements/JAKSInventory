@@ -101,10 +101,14 @@
 
   {% endif %}
 
-  {# Print / Save PDF — first-class on every status (promoted out of the More menu) #}
-  <a href="/quotes/{{ quote.id }}/print?auto=1" target="_blank" rel="noopener" class="btn-secondary btn-sm">Print / PDF</a>
+  {# Print / Save PDF — first-class ghost on every status (promoted out of the More menu) #}
+  <a href="/quotes/{{ quote.id }}/print?auto=1" target="_blank" rel="noopener" class="btn-secondary btn-sm">Print</a>
 
-  {# Overflow: convert + duplicate + mark lost. Rendered on EVERY status —
+  {# Save — force-flush the quote-save autosave (sticky bar wires the actual state).
+     Ghost styling per Axle spec (Print · Save · Convert-to-Invoice). #}
+  <button type="button" @click="$dispatch('quote-save-flush')" class="btn-secondary btn-sm">Save</button>
+
+  {# Overflow: duplicate + mark lost. Rendered on EVERY status —
      Duplicate Quote is the universal item (R2: re-quoting a converted/declined/
      expired quote into a fresh draft is a daily counter operation). #}
   <div class="relative inline-block">
@@ -113,16 +117,6 @@
     </button>
     <div x-show="moreOpen" x-cloak @click.away="moreOpen = false"
          class="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 py-1 min-w-[11rem]">
-
-      {% if quote.status in (QuoteStatus.DRAFT, QuoteStatus.SENT) %}
-      <form id="quote-convert-invoice-form" action="/quotes/{{ quote.id }}/convert-to-invoice" method="post">
-        <button type="button"
-                @click="moreOpen = false; jakConfirm({ title: 'Convert to invoice?', body: 'Convert{% if quote.status == QuoteStatus.DRAFT %} this quote directly{% endif %} to an invoice?', cta: 'Convert to Invoice', danger: false, formId: 'quote-convert-invoice-form' })"
-                class="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">
-          → Invoice
-        </button>
-      </form>
-      {% endif %}
 
       {# R2 — copy all lines into a fresh DRAFT quote (service allows any status) #}
       <form action="/quotes/{{ quote.id }}/duplicate" method="post">
@@ -140,6 +134,18 @@
       {% endif %}
     </div>
   </div>
+
+  {# ── Convert to Invoice — the Axle primary CTA (amber, rightmost). Only on
+     active statuses where conversion is allowed. Confirm modal kept as-is. #}
+  {% if quote.status in (QuoteStatus.DRAFT, QuoteStatus.SENT) %}
+  <form id="quote-convert-invoice-form" action="/quotes/{{ quote.id }}/convert-to-invoice" method="post" class="inline">
+    <button type="button"
+            @click="jakConfirm({ title: 'Convert to invoice?', body: 'Convert{% if quote.status == QuoteStatus.DRAFT %} this quote directly{% endif %} to an invoice?', cta: 'Convert to Invoice', danger: false, formId: 'quote-convert-invoice-form' })"
+            class="btn-amber btn-sm">
+      Convert to Invoice →
+    </button>
+  </form>
+  {% endif %}
 
   {# Mark Lost popover (sent only) — structured reason picker (P2-D7).
      `reason` drives both the submit gate and the competitor-intel reveal;

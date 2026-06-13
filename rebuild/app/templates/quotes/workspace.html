@@ -228,77 +228,156 @@
 {% include "line_items/_line_adder.html" %}
 {% endif %}
 
-{# ── Line items ───────────────────────────────────────────────────────────── #}
-<div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden mb-0">
-  <div class="overflow-x-auto">
-    <table class="w-full text-sm">
-      <thead>
-        <tr class="border-b border-gray-100 bg-gray-50 text-xs font-semibold text-gray-400 uppercase tracking-wide">
-          <th class="text-left px-3 py-2 w-28">SKU</th>
-          <th class="text-left px-2 py-2">Description</th>
-          <th class="text-center px-2 py-2 w-14">On Hand</th>
-          <th class="text-right px-2 py-2 w-12">Qty</th>
-          <th class="text-right px-2 py-2 w-32 min-w-[7.5rem]">Unit Price</th>
-          <th class="text-right px-2 py-2 w-16">Disc %</th>
-          <th class="text-right px-2 py-2 w-20">Margin %</th>
-          <th class="text-right px-3 py-2 w-24">Total</th>
-          <th class="w-8 px-2 py-2"></th>
-        </tr>
-      </thead>
-      <tbody id="quote-lines-tbody"
-             hx-get="/quotes/{{ quote.id }}/lines"
-             hx-trigger="refreshLines"
-             hx-swap="innerHTML">
-        {% for line in sorted_lines %}
-          {% include "quotes/_line_row.html" %}
+{# ── Axle two-column layout: main lines column (flex 1) + 284px right rail ── #}
+<div class="flex gap-4 items-start">
+
+  {# ═══════════════════════ MAIN COLUMN — Line Items ════════════════════════ #}
+  <div class="flex-1 min-w-0 flex flex-col gap-3">
+
+    {# Line items card #}
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      {# Card header — Axle .chd style (Oswald uppercase label + right-rail count) #}
+      <div class="flex items-center gap-2 px-4 py-2.5 border-b border-steel-150">
+        <h4 class="label-mini text-steel-500">Line Items</h4>
+        <span class="ml-auto font-mono text-[10.5px] text-steel-400">
+          {{ sorted_lines | length }} line{% if (sorted_lines | length) != 1 %}s{% endif %}
+        </span>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-steel-200 bg-[#fafbfa] font-display font-semibold text-steel-400 uppercase tracking-[.07em] text-[10px]">
+              <th class="text-left px-3 py-2 w-28">Part</th>
+              <th class="text-left px-2 py-2">Description</th>
+              <th class="text-center px-2 py-2 w-14">Bin</th>
+              <th class="text-right px-2 py-2 w-12">Qty</th>
+              <th class="text-right px-2 py-2 w-32 min-w-[7.5rem]">Unit</th>
+              <th class="text-right px-2 py-2 w-16">Disc %</th>
+              <th class="text-right px-2 py-2 w-20">Margin %</th>
+              <th class="text-right px-3 py-2 w-24">Ext</th>
+              <th class="w-8 px-2 py-2"></th>
+            </tr>
+          </thead>
+          <tbody id="quote-lines-tbody"
+                 hx-get="/quotes/{{ quote.id }}/lines"
+                 hx-trigger="refreshLines"
+                 hx-swap="innerHTML">
+            {% for line in sorted_lines %}
+              {% include "quotes/_line_row.html" %}
+            {% endfor %}
+            {% if not sorted_lines %}
+            <tr id="empty-state-row">
+              <td colspan="9" class="px-4 py-8 text-center text-gray-400 text-sm">
+                No lines yet — search for a part above to get started.
+              </td>
+            </tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+
+      {# Card footer — Add Line / Scan ghost actions. .alertchip slot intentionally
+         omitted: no price-expiry alert field is in the current quote context, and
+         the spec forbids fabricating data. Slot returns when the data does. #}
+      <div class="flex items-center gap-2 px-4 py-2.5 border-t border-steel-150">
+        <button type="button" @click="document.getElementById('line-search-input')?.focus()"
+                class="btn-secondary btn-sm" title="Focus the part search above">
+          + Add Line
+        </button>
+        <button type="button" @click="document.getElementById('line-search-input')?.focus()"
+                class="btn-secondary btn-sm" title="Scan a barcode / type a SKU">
+          Scan
+        </button>
+      </div>
+    </div>{# /lines card #}
+
+    {# Optional Add-ons (excluded optionals — not in the quote total).
+       Static: renders from sorted_lines on load; the /totals partial carries no line data, so it
+       does NOT live-refresh — reload to update after adding/removing an optional (Bug 6). #}
+    {% set optional_lines = sorted_lines | selectattr('line_role', 'equalto', 'optional') | rejectattr('is_included') | list %}
+    {% if optional_lines %}
+    <div class="bg-white border border-gray-200 rounded-xl shadow-sm px-4 py-3">
+      <div class="flex items-center justify-between">
+        <span class="text-xs font-semibold text-sky-700 uppercase tracking-wide">Optional Add-ons</span>
+        <span class="text-sm font-bold text-sky-700 tabular-nums">${{ '%.2f' % (optional_lines | sum(attribute='line_total')) }}</span>
+      </div>
+      <p class="text-xs text-gray-400 mt-0.5">Not included in the quote total — the customer can add these on request.</p>
+      <div class="mt-2 divide-y divide-gray-50">
+        {% for line in optional_lines %}
+        <div class="flex items-center justify-between gap-3 py-1 text-xs">
+          <span class="min-w-0 truncate text-gray-700">
+            {% if line.product %}<span class="font-mono text-sky-600">{{ line.product.sku }}</span> {% endif %}{{ line.description }}
+          </span>
+          <span class="shrink-0 tabular-nums text-gray-500">{{ line.qty }} × ${{ '%.2f' % line.unit_price }} = <span class="font-medium text-gray-700">${{ '%.2f' % line.line_total }}</span></span>
+        </div>
         {% endfor %}
-        {% if not sorted_lines %}
-        <tr id="empty-state-row">
-          <td colspan="9" class="px-4 py-8 text-center text-gray-400 text-sm">
-            No lines yet — search for a part above to get started.
-          </td>
-        </tr>
-        {% endif %}
-      </tbody>
-    </table>
-  </div>
-
-</div>{# /card #}
-
-{# ── Totals bar ───────────────────────────────────────────────────────────── #}
-<div id="quote-totals"
-     hx-get="/quotes/{{ quote.id }}/totals"
-     hx-trigger="refreshTotals"
-     class="bg-white border border-gray-200 rounded-xl shadow-sm mt-3 px-4 py-3">
-  {% include "quotes/_totals.html" %}
-</div>
-
-{# ── Optional Add-ons (excluded optionals — not in the quote total). Static: renders
-   from sorted_lines on load; the /totals partial carries no line data, so it does NOT
-   live-refresh — reload to update after adding/removing an optional (Bug 6). #}
-{% set optional_lines = sorted_lines | selectattr('line_role', 'equalto', 'optional') | rejectattr('is_included') | list %}
-{% if optional_lines %}
-<div class="bg-white border border-gray-200 rounded-xl shadow-sm mt-3 px-4 py-3">
-  <div class="flex items-center justify-between">
-    <span class="text-xs font-semibold text-sky-700 uppercase tracking-wide">Optional Add-ons</span>
-    <span class="text-sm font-bold text-sky-700 tabular-nums">${{ '%.2f' % (optional_lines | sum(attribute='line_total')) }}</span>
-  </div>
-  <p class="text-xs text-gray-400 mt-0.5">Not included in the quote total — the customer can add these on request.</p>
-  <div class="mt-2 divide-y divide-gray-50">
-    {% for line in optional_lines %}
-    <div class="flex items-center justify-between gap-3 py-1 text-xs">
-      <span class="min-w-0 truncate text-gray-700">
-        {% if line.product %}<span class="font-mono text-sky-600">{{ line.product.sku }}</span> {% endif %}{{ line.description }}
-      </span>
-      <span class="shrink-0 tabular-nums text-gray-500">{{ line.qty }} × ${{ '%.2f' % line.unit_price }} = <span class="font-medium text-gray-700">${{ '%.2f' % line.line_total }}</span></span>
+      </div>
     </div>
-    {% endfor %}
-  </div>
-</div>
-{% endif %}
+    {% endif %}
 
-{# ── Follow-Up Bar ────────────────────────────────────────────────────────── #}
-{% include "quotes/_follow_up_bar.html" %}
+    {# Follow-Up Bar — stays in the main column #}
+    {% include "quotes/_follow_up_bar.html" %}
+
+  </div>{# /main column #}
+
+  {# ═══════════════════════ RIGHT RAIL (284px) ══════════════════════════════ #}
+  <aside class="w-[284px] shrink-0 flex flex-col gap-3.5">
+
+    {# Customer card — keyed identity for this quote (the header strip already
+       shows balances; this is the rail summary). #}
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="flex items-center gap-2 px-4 py-2.5 border-b border-steel-150">
+        <h4 class="label-mini text-steel-500">Customer</h4>
+        {% if quote.customer.account_number %}
+        <span class="ml-auto font-mono text-[10.5px] text-steel-400">Acct {{ quote.customer.account_number }}</span>
+        {% endif %}
+      </div>
+      <div class="px-4 pt-2.5 pb-3">
+        <div class="font-display font-semibold text-[15px] text-ink">{{ quote.customer.company_name }}</div>
+        <div class="text-xs text-steel-500 mt-1 leading-relaxed">
+          {{ cust_payment_terms | replace('_', ' ') | title }}
+          {% if quote.customer.is_tax_exempt %} · Tax-exempt{% endif %}
+          {% if quote.customer.contact_name %}<br>{{ quote.customer.contact_name }}{% if quote.customer.phone %} — {{ quote.customer.phone }}{% endif %}{% endif %}
+        </div>
+      </div>
+    </div>
+
+    {# Totals card — .kv rows + .tot block + .margin (admin-only via showMargin). #}
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="flex items-center gap-2 px-4 py-2.5 border-b border-steel-150">
+        <h4 class="label-mini text-steel-500">Totals</h4>
+      </div>
+      <div id="quote-totals"
+           hx-get="/quotes/{{ quote.id }}/totals"
+           hx-trigger="refreshTotals">
+        {% include "quotes/_totals.html" %}
+      </div>
+      {# Margin block — gated by base.html showMargin (admin toggle). The progress
+         bar width keys off line_count<1?0:50 just to give a visual; real margin %
+         is not on the existing quote context, so the numeric stays at 0 until the
+         backend exposes it (no fabricated data). #}
+      <div class="margin border-t border-steel-150" x-show="showMargin" x-cloak>
+        <div class="row">
+          <span>Margin</span>
+          <b>—</b>
+        </div>
+        <div class="bar"><i style="width:0%"></i></div>
+      </div>
+    </div>
+
+    {# QuickBooks sync card — .sync LED. #}
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="sync">
+        <span class="led"></span>
+        <span><b>QuickBooks</b> ready</span>
+        <span class="t">on convert</span>
+      </div>
+    </div>
+
+  </aside>{# /rail #}
+
+</div>{# /flex layout #}
 
 {# ── Sticky save bar (Save Standard v2) — honest dirty-state pill + manual Save + toast.
    saveState is driven by the autosave JS via window 'quote-save-state' events; the Save

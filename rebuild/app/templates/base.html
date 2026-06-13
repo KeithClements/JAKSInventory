@@ -1,14 +1,17 @@
 {% from "macros/motion.html" import slide_right, backdrop_fade, dropdown_scale, modal_scale %}
 {% from "macros/confirm_modal.html" import confirm_modal %}
 <!DOCTYPE html>
-<html lang="en" class="h-full bg-stone-50">
+<html lang="en" class="h-full bg-paper">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>{% block title %}JAKS Inventory{% endblock %}</title>
+  <title>{% block title %}Axle{% endblock %}</title>
+  <link rel="icon" type="image/svg+xml" href="/static/brand/axle-favicon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  {# Axle brand type: Oswald (display) / Barlow (body) / IBM Plex Mono (numbers).
+     TODO production: self-host woff2 per the brand handoff (assets README). #}
+  <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Barlow:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   {# ── Compiled Tailwind CSS — built from app/static/css/input.css ──────────
      Tokens:  tailwind.config.js  (brand palette, font, content paths)
      Rebuild: npm run build:css  |  Watch: npm run watch:css ─────────────── #}
@@ -24,41 +27,43 @@
   <style>
     [x-cloak] { display: none !important; }
 
-    /* ── Sidebar nav ─────────────────────────────────────────────────── */
+    /* ── Sidebar nav — Axle dark chrome (steel-900 bg, mil active) ────── */
     .nav-link {
       display: flex;
       align-items: center;
-      gap: 0.75rem;
-      padding: 0.5625rem 0.75rem;
-      border-radius: 0.5rem;
-      font-size: 0.875rem;
+      gap: 10px;
+      padding: 8.5px 10px;
+      border-radius: 6px;
+      font-family: "Oswald", "Barlow", sans-serif;
+      font-size: 12px;
       font-weight: 500;
-      color: #8a9470;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #a9afb6; /* steel-300 */
       text-decoration: none;
       transition: background-color 0.15s ease, color 0.15s ease;
     }
+    .nav-link svg { color: #7c838b; /* steel-400 */ width: 15px; height: 15px; }
     .nav-link:hover {
-      background-color: rgba(176, 190, 113, 0.15);
-      color: #dce8b0;
+      background-color: #22262b; /* steel-800 */
+      color: #ffffff;
     }
     .nav-link.active {
-      background-color: rgba(75, 83, 32, 0.38);
-      color: #eef2dc;
-      border-left: 3px solid #94a84e; /* brand-400 */
-      border-top-left-radius: 0;
-      border-bottom-left-radius: 0;
-      padding-left: calc(0.75rem - 3px);
+      background-color: #5a6630; /* mil */
+      color: #ffffff;
     }
+    .nav-link.active svg { color: #b6cf45; /* mil-glow */ }
     .nav-section {
       display: block;
-      font-size: 0.625rem;
-      font-weight: 700;
-      color: #556030;
+      font-family: "Oswald", "Barlow", sans-serif;
+      font-size: 9.5px;
+      font-weight: 600;
+      color: #565d65; /* steel-500 */
       text-transform: uppercase;
-      letter-spacing: 0.12em;
+      letter-spacing: 0.14em;
       padding: 0.875rem 0.75rem 0.375rem;
       margin-top: 0.5rem;
-      border-top: 1px solid rgba(75,83,32,0.22);
+      border-top: 1px solid #2f343a; /* steel-700 */
     }
 
     /* ── Slide-over transitions (Alpine handles show/hide) ───────────── */
@@ -97,19 +102,22 @@
        Colors automatically follow the brand palette defined above.
     ════════════════════════════════════════════════════════════════════ */
 
-    /* ── Buttons ─────────────────────────────────────────────────────── */
+    /* ── Buttons — Axle: Oswald 600 uppercase, 5px radius ───────────── */
     .btn {
-      @apply inline-flex items-center gap-1.5 font-medium rounded-lg transition-colors
+      @apply inline-flex items-center gap-1.5 font-display font-semibold uppercase
+             tracking-[0.06em] rounded-[5px] transition-colors
              focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-brand-400
              disabled:opacity-50 disabled:cursor-not-allowed;
     }
-    .btn-primary   { @apply btn px-4 py-2 text-sm text-white bg-brand-700 hover:bg-brand-600; }
-    .btn-secondary { @apply btn px-4 py-2 text-sm text-gray-700 bg-white border border-gray-300 hover:bg-gray-50; }
-    .btn-danger    { @apply btn px-4 py-2 text-sm text-white bg-red-600 hover:bg-red-700 focus:ring-red-400; }
-    .btn-ghost     { @apply btn px-3 py-1.5 text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-100; }
+    .btn-primary   { @apply btn px-3.5 py-2 text-xs text-white bg-brand-700 hover:bg-brand-600; }
+    .btn-secondary { @apply btn px-3.5 py-2 text-xs text-steel-600 bg-white border border-steel-200 hover:bg-gray-50; }
+    .btn-danger    { @apply btn px-3.5 py-2 text-xs text-white bg-red-600 hover:bg-red-700 focus:ring-red-400; }
+    .btn-ghost     { @apply btn px-3 py-1.5 text-xs text-steel-500 hover:text-steel-700 hover:bg-gray-100; }
+    /* Amber accent — THE primary workflow CTA (Convert to Invoice etc.) */
+    .btn-amber     { @apply btn px-3.5 py-2 text-xs text-white bg-hub hover:bg-hub-light; }
     /* Size modifiers — combine: class="btn-primary btn-sm" */
-    .btn-sm        { @apply px-3 py-1.5 text-xs; }
-    .btn-xs        { @apply px-2 py-1 text-xs; }
+    .btn-sm        { @apply px-2.5 py-1.5 text-[11px]; }
+    .btn-xs        { @apply px-2 py-1 text-[10.5px]; }
 
     /* ── Form controls ───────────────────────────────────────────────── */
     .form-input {
@@ -131,13 +139,13 @@
     .form-hint     { @apply mt-1 text-xs text-gray-400; }
     .form-error    { @apply mt-1 text-xs text-red-600; }
 
-    /* ── Cards ───────────────────────────────────────────────────────── */
-    .card        { @apply bg-white rounded-xl border border-gray-200 overflow-hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.07), 0 4px 16px rgba(0,0,0,0.04); }
+    /* ── Cards — Axle: 10px radius, 1px steel border, NO shadow ──────── */
+    .card        { @apply bg-white rounded-[10px] border border-steel-200 overflow-hidden; }
     .card-header {
-      @apply flex items-center justify-between px-5 py-3.5
-             border-b border-gray-100 bg-gray-50/60;
+      @apply flex items-center justify-between px-4 py-3
+             border-b border-steel-150 bg-white;
     }
-    .card-title  { @apply text-sm font-semibold text-gray-800; }
+    .card-title  { @apply font-display text-[11px] font-semibold uppercase tracking-[0.07em] text-steel-500; }
     .card-body   { @apply p-5; }
     .card-footer { @apply flex justify-end gap-2 px-5 py-3 border-t border-gray-100 bg-gray-50/40; }
 
@@ -226,18 +234,144 @@
     .link        { @apply text-brand-700 hover:text-brand-600 font-medium transition-colors; }
     .link-subtle { @apply text-gray-600 hover:text-brand-700 transition-colors; }
 
-    /* ── Stat / KPI tiles (dashboard) ────────────────────────────────── */
-    .stat-card   { @apply card flex flex-col gap-2 p-5; }
-    .stat-label  { @apply text-xs font-semibold text-gray-500 uppercase tracking-widest; }
-    .stat-value  { @apply text-3xl font-extrabold text-gray-900 tabular-nums leading-none; }
-    .stat-sub    { @apply text-xs text-gray-500 mt-0.5; }
+    /* ── Stat / KPI tiles — Axle: card padding 14 16, mono 24px value ── */
+    .stat-card   { @apply card flex flex-col gap-1.5; padding: 14px 16px; }
+    .stat-label  { @apply font-display font-semibold uppercase text-steel-400; font-size: 10.5px; letter-spacing: 0.09em; }
+    .stat-value  { @apply font-mono font-semibold text-ink leading-none; font-size: 24px; }
+    .stat-sub    { @apply text-steel-500 mt-0.5; font-size: 11.5px; }
+
+    /* Stat card semantic value colors (per Axle handoff) */
+    .stat-card .stat-value.v-revenue { color: #5a6630; }
+    .stat-card .stat-value.v-cores   { color: #b06511; }
+    .stat-card .stat-value.v-danger  { color: #c0392b; }
 
     /* ── Stat card accent variants (inset left border — radius-safe) ─── */
-    .stat-card-green { @apply stat-card; box-shadow: 0 1px 3px rgba(0,0,0,0.07), inset 4px 0 0 #22c55e; }
-    .stat-card-amber { @apply stat-card; box-shadow: 0 1px 3px rgba(0,0,0,0.07), inset 4px 0 0 #f59e0b; }
-    .stat-card-red   { @apply stat-card; box-shadow: 0 1px 3px rgba(0,0,0,0.07), inset 4px 0 0 #ef4444; }
-    .stat-card-blue  { @apply stat-card; box-shadow: 0 1px 3px rgba(0,0,0,0.07), inset 4px 0 0 #3b82f6; }
-    .stat-card-brand { @apply stat-card; box-shadow: 0 1px 3px rgba(0,0,0,0.07), inset 4px 0 0 #4b5320; }
+    .stat-card-green { @apply stat-card; box-shadow: inset 4px 0 0 #5a9a3c; }
+    .stat-card-amber { @apply stat-card; box-shadow: inset 4px 0 0 #e7891d; }
+    .stat-card-red   { @apply stat-card; box-shadow: inset 4px 0 0 #c0392b; }
+    .stat-card-blue  { @apply stat-card; box-shadow: inset 4px 0 0 #3b82f6; }
+    .stat-card-brand { @apply stat-card; box-shadow: inset 4px 0 0 #5a6630; }
+
+    /* ════════════════════════════════════════════════════════════════════
+       AXLE — design-handoff helper utilities (axle-erp.css canon)
+       Use these on the dashboard, quote/invoice builder, catalog, print.
+    ═════════════════════════════════════════════════════════════════════ */
+
+    /* Mono part number + money columns */
+    .pn          { font-family: "IBM Plex Mono", ui-monospace, monospace;
+                   font-size: 12px; font-weight: 700; color: #0b0c0d; white-space: nowrap; }
+    .money       { font-family: "IBM Plex Mono", ui-monospace, monospace;
+                   font-size: 11.5px; white-space: nowrap; }
+    .money.ext   { font-size: 12.5px; font-weight: 700; color: #0b0c0d; }
+    .bin         { font-family: "IBM Plex Mono", ui-monospace, monospace;
+                   font-size: 11.5px; color: #7c838b; white-space: nowrap; }
+
+    /* Core charge chip — small amber pill (.corechip) */
+    .corechip    { display: inline-block; font-family: "IBM Plex Mono", monospace;
+                   font-size: 10.5px; font-weight: 500;
+                   background: #fdf3e4; color: #b06511; border: 1px solid #f0d6ae;
+                   border-radius: 4px; padding: 2px 7px; white-space: nowrap; }
+
+    /* Inline alert chip — amber banner above totals (.alertchip) */
+    .alertchip   { display: inline-flex; align-items: center; gap: 7px;
+                   font-family: "Oswald", "Barlow", sans-serif; font-weight: 600;
+                   text-transform: uppercase; letter-spacing: 0.06em; font-size: 10.5px;
+                   background: #fdf3e4; color: #b06511; border: 1px solid #efd3a8;
+                   border-radius: 5px; padding: 6px 11px; white-space: nowrap; }
+
+    /* Axle status chip (.chip) — dot + label, smaller than .badge */
+    .chip-axle   { display: inline-flex; align-items: center; gap: 6px;
+                   font-family: "Oswald", "Barlow", sans-serif; font-weight: 600;
+                   text-transform: uppercase; letter-spacing: 0.07em; font-size: 10.5px;
+                   border-radius: 4px; padding: 4px 9px; }
+    .chip-axle .dot { width: 6px; height: 6px; border-radius: 50%; }
+    .chip-draft   { background: #e7e9eb; color: #454b52; } .chip-draft  .dot { background: #7c838b; }
+    .chip-ok      { background: #eaf3e4; color: #5a9a3c; } .chip-ok     .dot { background: #5a9a3c; }
+    .chip-low     { background: #fdf3e4; color: #b06511; } .chip-low    .dot { background: #e7891d; }
+    .chip-out     { background: #f9e9e6; color: #c0392b; } .chip-out    .dot { background: #c0392b; }
+    .chip-invoice { background: #5a6630; color: #fff; }    .chip-invoice .dot { background: #b6cf45; }
+
+    /* Stock indicator (.stk) — dot + label for catalog rows */
+    .stk         { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+                   font-family: "IBM Plex Mono", monospace; font-size: 11.5px; }
+    .stk .d      { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+    .stk.ok      { color: #565d65; } .stk.ok  .d { background: #5a9a3c; }
+    .stk.low     { color: #b06511; } .stk.low .d { background: #e7891d; }
+    .stk.out     { color: #c0392b; } .stk.out .d { background: #c0392b; }
+
+    /* Filter chip (.fchip) — Axle catalog pill */
+    .fchip       { display: inline-flex; align-items: center;
+                   font-family: "Oswald", "Barlow", sans-serif; font-weight: 500;
+                   text-transform: uppercase; letter-spacing: 0.05em; font-size: 11px;
+                   border: 1px solid #cdd1d5; background: #fff; color: #565d65;
+                   border-radius: 14px; padding: 5px 12px; cursor: pointer;
+                   transition: background-color 0.15s, color 0.15s, border-color 0.15s; }
+    .fchip:hover { background: #f6f7f2; color: #0b0c0d; }
+    .fchip.on    { background: #191c1f; border-color: #191c1f; color: #fff; }
+
+    /* Qty stepper (.qty) — bordered pill with − value + buttons */
+    .qty         { display: inline-flex; align-items: center;
+                   border: 1px solid #cdd1d5; border-radius: 5px; overflow: hidden;
+                   background: #fff; }
+    .qty button, .qty .pm {
+                   background: #f2f3f0; color: #565d65; border: none;
+                   font-family: "IBM Plex Mono", monospace; font-size: 13px;
+                   padding: 4px 10px; cursor: pointer; line-height: 1;
+                   transition: background-color 0.1s; }
+    .qty button:hover { background: #e7e9eb; color: #0b0c0d; }
+    .qty input, .qty .val {
+                   border: none; outline: none; background: transparent;
+                   font-family: "IBM Plex Mono", monospace; font-size: 12px;
+                   text-align: center; min-width: 36px; padding: 4px 6px; color: #0b0c0d; }
+
+    /* Quote / Invoice Total — the cash-register moment (.tot) */
+    .tot         { display: flex; justify-content: space-between; align-items: center;
+                   padding: 20px 16px; min-height: 74px;
+                   background: linear-gradient(180deg, #22262b, #191c1f);
+                   border-top: 2px solid #e7891d; color: #fff;
+                   border-radius: 0 0 10px 10px; }
+    .tot .l      { font-family: "Oswald", "Barlow", sans-serif; font-weight: 600;
+                   text-transform: uppercase; letter-spacing: 0.12em; font-size: 11px;
+                   color: #a9afb6; }
+    .tot .v      { font-family: "IBM Plex Mono", monospace; font-size: 26px;
+                   font-weight: 600; color: #b6cf45; letter-spacing: -0.01em; }
+
+    /* Margin progress bar (admin-only, under totals) */
+    .margin      { padding: 10px 14px; }
+    .margin .row { display: flex; justify-content: space-between; align-items: center;
+                   font-size: 11.5px; color: #565d65; }
+    .margin .row b { color: #3c4520; font-family: "IBM Plex Mono", monospace; font-weight: 600; }
+    .margin .bar { height: 7px; border-radius: 4px; background: #e7e9eb;
+                   overflow: hidden; margin-top: 7px; }
+    .margin .bar i { display: block; height: 100%;
+                     background: linear-gradient(90deg, #6d7b39, #9cb23c); border-radius: 4px; }
+
+    /* QuickBooks sync card (.sync) — green LED with halo */
+    .sync        { display: flex; align-items: center; gap: 9px;
+                   padding: 11px 14px; font-size: 12px; color: #565d65; }
+    .sync .led   { width: 8px; height: 8px; border-radius: 50%;
+                   background: #5a9a3c; box-shadow: 0 0 0 3px #eaf3e4; flex: 0 0 auto; }
+    .sync b      { font-weight: 600; color: #0b0c0d; }
+    .sync .t     { font-family: "IBM Plex Mono", monospace; font-size: 10px;
+                   color: #7c838b; margin-left: auto; }
+
+    /* Catalog detail drawer — 300px right panel */
+    .drawer      { width: 300px; flex: 0 0 auto; display: flex; flex-direction: column;
+                   gap: 14px; overflow: hidden; }
+    .bigpn       { font-family: "IBM Plex Mono", monospace; font-weight: 600;
+                   font-size: 16px; color: #3c4520; }
+
+    /* Section label for inside cards — 10px Oswald (Axle) */
+    .label-mini  { font-family: "Oswald", "Barlow", sans-serif; font-weight: 600;
+                   text-transform: uppercase; letter-spacing: 0.07em;
+                   font-size: 9.5px; color: #7c838b; }
+
+    /* KV row — Axle helper for right-rail summary lines */
+    .kv          { display: flex; justify-content: space-between; gap: 10px;
+                   padding: 6px 14px; font-size: 12.5px; color: #454b52; }
+    .kv > span:first-child { white-space: nowrap; }
+    .kv b        { color: #0b0c0d; font-weight: 600; }
+    .kv .money   { font-family: "IBM Plex Mono", monospace; font-size: 12px; }
 
     /* ── Page-level section heading ──────────────────────────────────── */
     .section-title { @apply text-xs font-semibold text-gray-600 uppercase tracking-widest mb-3; }
@@ -264,24 +398,24 @@
     .sidebar-collapsed .nav-link.active {
       padding-left: 0;
       border-left: none;
-      border-radius: 0.5rem;
-      background-color: rgba(75, 83, 32, 0.55);
-      outline: 1px solid rgba(148, 168, 78, 0.35);
+      border-radius: 6px;
+      background-color: #5a6630; /* mil */
     }
+    /* Icon-rail spec: 17px icons, centered (Axle .rail-mode) */
     .sidebar-collapsed .nav-link svg {
-      width: 1.375rem;
-      height: 1.375rem;
+      width: 17px;
+      height: 17px;
     }
 
     /* ── Sidebar nav scrollbar — dark/thin, hidden until hover ──────────────── */
-    .sidebar-nav { scrollbar-width: thin; scrollbar-color: rgba(75, 83, 32, 0.4) transparent; }
+    .sidebar-nav { scrollbar-width: thin; scrollbar-color: #2f343a transparent; }
     .sidebar-nav::-webkit-scrollbar { width: 4px; }
     .sidebar-nav::-webkit-scrollbar-track { background: transparent; }
     .sidebar-nav::-webkit-scrollbar-thumb {
-      background: rgba(75, 83, 32, 0.35);
+      background: #2f343a; /* steel-700 */
       border-radius: 99px;
     }
-    .sidebar-nav::-webkit-scrollbar-thumb:hover { background: rgba(94, 105, 40, 0.65); }
+    .sidebar-nav::-webkit-scrollbar-thumb:hover { background: #454b52; }
   </style>
 </head>
 
@@ -417,7 +551,7 @@
   <div class="flex flex-1 flex-col min-w-0">
 
     {# ── Header bar ─────────────────────────────────────────────────── #}
-    <header class="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-stone-200 bg-white px-4 shadow-sm">
+    <header class="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-steel-200 bg-white px-5">
 
       {# Mobile hamburger #}
       <button @click="sidebarOpen = true" class="lg:hidden p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors shrink-0">
@@ -426,8 +560,8 @@
         </svg>
       </button>
 
-      {# Page heading #}
-      <h1 class="text-sm font-semibold text-gray-700 whitespace-nowrap shrink-0">
+      {# Page heading — Axle crumb: Oswald 500, mixed case #}
+      <h1 class="font-display text-[14px] font-semibold text-ink tracking-[0.02em] whitespace-nowrap shrink-0">
         {% block heading %}{% endblock %}
       </h1>
 
@@ -518,7 +652,7 @@
         @click="logCallOpen = true"
         class="flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-semibold text-white
                bg-brand-700 hover:bg-brand-600 active:bg-brand-800 rounded-lg transition-colors shrink-0"
-        style="box-shadow: 0 1px 3px rgba(75,83,32,0.35);"
+        style="box-shadow: 0 1px 3px rgba(90,102,48,0.35);"
         title="Log a call (any screen)"
       >
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -529,8 +663,8 @@
       </button>
 
       {# User avatar — initials pill #}
-      <div class="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 select-none"
-           style="background: #4b5320; box-shadow: 0 1px 3px rgba(0,0,0,0.25);"
+      <div class="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 select-none bg-brand-700"
+           style="box-shadow: 0 1px 3px rgba(0,0,0,0.25);"
            title="Keith">
         K
       </div>
@@ -589,27 +723,37 @@
   {# SIDEBAR — placed after <main> in the DOM for correct Tab order;
      restored to the visual left by lg:flex-row-reverse on the flex wrapper. #}
   <aside
-    class="fixed inset-y-0 left-0 z-50 flex flex-col shadow-xl
+    class="fixed inset-y-0 left-0 z-50 flex flex-col shadow-xl bg-steel-900
            transition-all duration-300 ease-in-out lg:relative lg:translate-x-0"
-    style="background: linear-gradient(175deg, #1e220a 0%, #161908 55%, #111407 100%);"
     :class="[sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0',
-             sidebarCollapsed ? 'w-20 sidebar-collapsed' : 'w-64']"
+             sidebarCollapsed ? 'w-14 sidebar-collapsed' : 'w-sidebar']"
     x-cloak
   >
-    {# Logo #}
-    <div class="flex h-16 shrink-0 items-center border-b border-[#252a0f]"
-         :class="sidebarCollapsed ? 'justify-center px-2' : 'justify-between px-4'">
-      <div class="sidebar-logo-text min-w-0">
-        <div class="text-sm font-bold text-white tracking-widest uppercase truncate">JAKS Inventory</div>
-        <div class="text-xs font-medium truncate" style="color: #6b7a3a;">Parts &amp; Operations</div>
+    {# Brand row — Hub mark + AXLE wordmark (Axle Logo System) #}
+    <div class="flex shrink-0 items-center border-b border-steel-700"
+         :class="sidebarCollapsed ? 'flex-col justify-center gap-1 px-1 py-2' : 'justify-between px-4 h-16'">
+      <div class="flex items-center gap-2.5 min-w-0">
+        {# Hub mark — reversed build for dark surfaces (ring mil-bright, bore amber) #}
+        <svg class="shrink-0" :class="sidebarCollapsed ? 'w-6 h-6' : 'w-[27px] h-[27px]'" viewBox="0 0 64 64" aria-hidden="true">
+          <g fill="none" stroke="#9cb23c" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="32" cy="32" r="28"></circle>
+            <circle cx="32" cy="32" r="17" stroke-width="3"></circle>
+            <circle cx="32" cy="32" r="6.5" fill="#ffb24d" stroke="none"></circle>
+            <rect x="30" y="20" width="4" height="6" rx="1" fill="#9cb23c" stroke="none"></rect>
+          </g>
+        </svg>
+        <div class="sidebar-logo-text min-w-0">
+          <div class="font-display font-bold text-white uppercase truncate"
+               style="font-size: 21px; line-height: 0.8; letter-spacing: 0.01em;">Axle</div>
+          <div class="font-mono font-normal text-steel-400 truncate"
+               style="font-size: 7px; letter-spacing: 0.26em; margin-top: 4px;">PARTS COUNTER SYSTEM</div>
+        </div>
       </div>
       <div class="flex items-center gap-1 shrink-0">
         {# Desktop collapse toggle — double-chevron, flips direction with state #}
         <button @click="toggleSidebar()"
-                class="hidden lg:flex items-center justify-center w-7 h-7 rounded-lg transition-colors"
-                style="color: #4a5228;"
-                onmouseover="this.style.background='rgba(176,190,113,0.12)'; this.style.color='#8a9470'"
-                onmouseout="this.style.background=''; this.style.color='#4a5228'"
+                class="hidden lg:flex items-center justify-center w-7 h-7 rounded-lg transition-colors
+                       text-steel-600 hover:text-steel-300 hover:bg-steel-800"
                 :title="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'">
           <svg class="w-3.5 h-3.5 transition-transform duration-300"
                :class="sidebarCollapsed ? 'rotate-180' : ''"
@@ -629,17 +773,15 @@
 
     {# Recently Viewed — populated by router context; renders nothing when empty #}
     {% if recently_viewed %}
-    <div class="sidebar-recent border-b border-[#252a0f] px-3 py-2">
-      <p class="text-xs font-bold uppercase tracking-widest mb-1.5" style="color: #4a5228;">Recent</p>
+    <div class="sidebar-recent border-b border-steel-700 px-3 py-2">
+      <p class="font-display text-[9.5px] font-semibold uppercase tracking-[0.14em] mb-1.5 text-steel-500">Recent</p>
       {% for item in recently_viewed %}
       <a href="{{ item.url }}"
-         class="flex items-center gap-2 py-1 text-xs rounded px-1 transition-colors truncate"
-         style="color: #7a8460;"
-         onmouseover="this.style.background='rgba(176,190,113,0.09)'; this.style.color='#dce8b0'"
-         onmouseout="this.style.background=''; this.style.color='#7a8460'">
-        <span class="shrink-0" style="color: #4a5228;">{{ item.icon }}</span>
+         class="flex items-center gap-2 py-1 text-xs rounded px-1 transition-colors truncate
+                text-steel-400 hover:text-white hover:bg-steel-800">
+        <span class="shrink-0 text-steel-600">{{ item.icon }}</span>
         <span class="truncate">{{ item.label }}</span>
-        <span class="ml-auto shrink-0" style="color: #3c4420;">{{ item.age }}</span>
+        <span class="ml-auto shrink-0 font-mono text-[10px] text-steel-600">{{ item.age }}</span>
       </a>
       {% endfor %}
     </div>

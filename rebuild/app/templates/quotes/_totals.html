@@ -1,25 +1,35 @@
 {#
   quotes/_totals.html
   ====================
-  Totals bar content — rendered both on initial workspace load and as HTMX
+  Totals card content — rendered both on initial workspace load and as HTMX
   partial for GET /quotes/{id}/totals (triggered after every line mutation).
   Context: gross, discount_amount, subtotal, line_count
+
+  Axle visual contract (design_handoff_axle_erp §3):
+   - .kv rows for subtotal / discount / line count
+   - .tot block ("Quote Total") = dark gradient + amber top border + mil-glow value
+   - quote has no tax_amount field — Quote Total == subtotal (post-discount)
 #}
-<div class="flex items-center justify-between">
-  <span class="text-sm text-gray-400">
-    {{ line_count }} line{% if line_count != 1 %}s{% endif %}
-  </span>
-  <div class="flex items-center gap-6">
-    {% if discount_amount > 0 %}
-    <div class="text-sm text-gray-400">
-      Gross: <span class="tabular-nums font-medium">${{ '%.2f' % gross }}</span>
-    </div>
-    <div class="text-sm text-red-600">
-      Discount: <span class="tabular-nums font-medium">−${{ '%.2f' % discount_amount }}</span>
-    </div>
-    {% endif %}
-    <div class="text-base font-semibold text-gray-900">
-      Total: <span class="tabular-nums">${{ '%.2f' % subtotal }}</span>
-    </div>
+{# ── kv rows ───────────────────────────────────────────────────────────────── #}
+<div class="py-1.5">
+  <div class="kv">
+    <span>{{ line_count }} line{% if line_count != 1 %}s{% endif %}</span>
+    <span class="money">${{ '%.2f' % gross }}</span>
   </div>
+  {% if discount_amount > 0 %}
+  <div class="kv">
+    <span>Discount</span>
+    <span class="money" style="color:#c0392b;">−${{ '%.2f' % discount_amount }}</span>
+  </div>
+  {% endif %}
+  <div class="kv">
+    <span>Tax</span>
+    <span class="money" style="color:var(--steel-400,#7c838b);">incl.</span>
+  </div>
+</div>
+
+{# ── Quote Total — the cash-register moment ─────────────────────────────────── #}
+<div class="tot">
+  <span class="l">Quote Total</span>
+  <span class="v">${{ '%.2f' % subtotal }}</span>
 </div>

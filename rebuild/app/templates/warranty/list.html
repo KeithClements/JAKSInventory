@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Warranty Queue — JAKS Inventory{% endblock %}
+{% block title %}Warranty Queue — Axle{% endblock %}
 {% block heading %}Warranty Queue{% endblock %}
 
 {% block header_actions %}
@@ -17,14 +17,14 @@
 {% block content %}
 {% from "macros/empty_state.html" import empty_state %}
 {# QB2 Queue Board (§2A) — copy of receiving_queue.html, adapted for warranty.
-   state → (left stripe, row tint, chip bg+text, chip dot, label, next-action label) #}
+   state → (left stripe, row tint, Axle chip class, label, next-action label) #}
 {% set state_meta = {
-  'draft':     ('border-l-gray-300',   '',                'bg-gray-100 text-gray-600',     'bg-gray-400',   'Draft',           'Submit'),
-  'submitted': ('border-l-purple-400', 'bg-purple-50/20', 'bg-purple-100 text-purple-700', 'bg-purple-500', 'Awaiting Vendor', 'Record Decision'),
-  'approved':  ('border-l-green-400',  'bg-green-50/20',  'bg-green-100 text-green-700',   'bg-green-500',  'Approved',        'Credit Customer'),
-  'denied':    ('border-l-red-400',    'bg-red-50/20',    'bg-red-100 text-red-700',       'bg-red-500',    'Denied',          'Notify Customer'),
-  'credited':  ('border-l-green-400',  '',                'bg-green-50 text-green-700',    'bg-green-500',  'Credited',        'Close'),
-  'notified':  ('border-l-amber-400',  '',                'bg-amber-100 text-amber-700',   'bg-amber-500',  'Notified',        'Close'),
+  'draft':     ('border-l-gray-300',   '',                'chip-draft', 'Draft',           'Submit'),
+  'submitted': ('border-l-purple-400', 'bg-purple-50/20', 'chip-low',   'Awaiting Vendor', 'Record Decision'),
+  'approved':  ('border-l-green-400',  'bg-green-50/20',  'chip-ok',    'Approved',        'Credit Customer'),
+  'denied':    ('border-l-red-400',    'bg-red-50/20',    'chip-out',   'Denied',          'Notify Customer'),
+  'credited':  ('border-l-green-400',  '',                'chip-ok',    'Credited',        'Close'),
+  'notified':  ('border-l-amber-400',  '',                'chip-low',   'Notified',        'Close'),
 } %}
 
 <div class="space-y-4">
@@ -122,12 +122,12 @@
     <div class="overflow-x-auto">
       <table class="w-full min-w-[920px]">
         <thead>
-          <tr class="bg-gray-50 border-b border-gray-200">
-            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Claim #</th>
-            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Customer</th>
-            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide w-48">Parts / Credit</th>
-            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
-            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Actions</th>
+          <tr class="border-b border-gray-200" style="background:#fafbfa;">
+            <th class="px-4 py-3 text-left label-mini">Claim #</th>
+            <th class="px-4 py-3 text-left label-mini">Customer</th>
+            <th class="px-4 py-3 text-left label-mini w-48">Parts / Credit</th>
+            <th class="px-4 py-3 text-left label-mini">Status</th>
+            <th class="px-4 py-3 text-right label-mini">Actions</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-gray-100">
@@ -147,10 +147,10 @@
           {% endif %}
 
           <tr class="hover:bg-gray-50/80 transition-colors group {{ meta[1] }}">
-            {# Claim # + stripe #}
+            {# Claim # + stripe — .pn mono 12px bold ink #}
             <td class="px-4 py-4 align-middle border-l-4 {{ meta[0] }}">
               <a href="/warranty/{{ claim.id }}"
-                 class="font-mono text-sm font-bold text-brand-700 hover:text-brand-900 hover:underline">{{ claim.claim_number }}</a>
+                 class="font-mono pn hover:underline">{{ claim.claim_number }}</a>
               <div class="flex flex-wrap items-center gap-1.5 mt-1">
                 {# warranty_type chip — §4: orange is reserved for CORE charges, and purple
                    collides with the 'Awaiting Vendor' status chip on this row (Architect ruling
@@ -179,17 +179,15 @@
             <td class="px-4 py-4 align-middle">
               <div class="text-sm text-gray-700">{{ claim.claim_lines | length }} part{{ 's' if claim.claim_lines | length != 1 }}</div>
               {% if claim.total_credit_amount > 0 %}
-              <div class="text-[11px] text-brand-700 font-semibold tabular-nums">${{ '%.2f' % claim.total_credit_amount }} credit</div>
+              <div class="money" style="color:#3c4520;">${{ '%.2f' % claim.total_credit_amount }} credit</div>
               {% else %}
               <div class="text-[10px] text-gray-400">credit TBD</div>
               {% endif %}
             </td>
 
-            {# Status #}
+            {# Status — Axle .chip-axle dot + label #}
             <td class="px-4 py-4 align-middle">
-              <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold {{ meta[2] }}">
-                <span class="w-1.5 h-1.5 rounded-full {{ meta[3] }} shrink-0"></span>{{ meta[4] }}
-              </span>
+              <span class="chip-axle {{ meta[2] }}"><span class="dot"></span>{{ meta[3] }}</span>
             </td>
 
             {# Actions — the prominent button is the next workflow step; it links into the
@@ -198,7 +196,7 @@
               <div class="flex items-center justify-end gap-1.5">
                 <a href="/warranty/{{ claim.id }}"
                    class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-brand-700 text-white hover:bg-brand-600 transition-colors">
-                  {{ meta[5] }}
+                  {{ meta[4] }}
                 </a>
                 <a href="/warranty/{{ claim.id }}"
                    title="Open claim"
@@ -223,8 +221,9 @@
         </tbody>
       </table>
     </div>
-    <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/60">
-      <span class="text-xs text-gray-400">
+    <div class="px-5 py-3 border-t border-gray-100"
+         style="background:#fafbfa; font-family:'IBM Plex Mono',monospace; font-size:11px; color:#7c838b;">
+      <span>
         {{ total }} active claim{{ 's' if total != 1 }} in the warranty lifecycle{% if q %} · filtered{% endif %}
       </span>
     </div>

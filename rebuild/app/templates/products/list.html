@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Products — JAKS Inventory{% endblock %}
+{% block title %}Products — Axle{% endblock %}
 {% block heading %}Products{% endblock %}
 
 {% block header_actions %}
@@ -21,7 +21,6 @@
 {% block content %}
 {# Shared operational-list primitives — §7 macro library #}
 {% from "macros/list_behavior.html" import operational_list_script %}
-{% from "macros/filter_tabs.html" import filter_tabs %}
 {% from "macros/bulk_toolbar.html" import bulk_toolbar %}
 {% from "macros/preview_dock.html" import preview_dock_shell %}
 {{ operational_list_script() }}
@@ -105,63 +104,66 @@
 </div>
 
 {# ══════════════════════════════════════════════════════════════════════════════
-   TOOLBAR
+   FILTER BAR — Axle §4 (parts catalog): search (flex 1) + .fchip pills
+   Filter chip choice (a): inline .fchip pills replace the filter_tabs macro here.
+   Rationale: the macro's bg-gray-100 rounded-xl p-1 / bg-brand-700 active style
+   conflicts structurally with Axle's bordered radius-14 pills (active = solid
+   steel-900). Inline is less invasive than forking the macro just for this screen.
 ══════════════════════════════════════════════════════════════════════════════ #}
-<div class="flex flex-wrap items-center gap-3">
+{% set product_tabs = [
+  ('all',           'All',           counts.all),
+  ('in_stock',      'In Stock',      counts.in_stock),
+  ('low_stock',     'Low Stock',     counts.low_stock),
+  ('out_of_stock',  'Out of Stock',  counts.out_of_stock),
+  ('special_order', 'Special Order', counts.special_order),
+  ('needs_review',  'Needs Review',  counts.needs_review),
+  ('uncategorized', 'Uncategorized', counts.uncategorized),
+] %}
 
-  {# Status tabs — §7 Primitive 1 #}
-  {% set product_tabs = [
-    ('all',           'All',           counts.all),
-    ('in_stock',      'In Stock',      counts.in_stock),
-    ('low_stock',     'Low Stock',     counts.low_stock),
-    ('out_of_stock',  'Out of Stock',  counts.out_of_stock),
-    ('special_order', 'Special Order', counts.special_order),
-    ('needs_review',  'Needs Review',  counts.needs_review),
-    ('uncategorized', 'Uncategorized', counts.uncategorized),
-  ] %}
-  {{ filter_tabs(product_tabs, tab, q) }}
-
-  {# Sort — SKU (default) · Vendor · Category (hierarchical: Major Group → Category → Sub-category) #}
-  <form method="get" class="flex items-center gap-2 ml-auto">
-    <input type="hidden" name="tab" value="{{ tab }}" />
-    {% if q %}<input type="hidden" name="q" value="{{ q }}" />{% endif %}
-    <label for="product-sort" class="text-xs font-medium text-gray-500 whitespace-nowrap">Sort by</label>
-    <select id="product-sort" name="sort" onchange="this.form.submit()"
-            class="py-2 pl-3 pr-8 text-sm border border-gray-200 rounded-lg bg-white cursor-pointer
-                   focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400">
-      <option value="sku"      {% if sort == 'sku' %}selected{% endif %}>SKU</option>
-      <option value="vendor"   {% if sort == 'vendor' %}selected{% endif %}>Vendor</option>
-      <option value="category" {% if sort == 'category' %}selected{% endif %}>Category</option>
-    </select>
-  </form>
-
-  {# Search #}
-  <form method="get" class="flex items-center gap-2">
+<div class="flex flex-wrap items-center gap-2">
+  {# Search — flex 1 per Axle spec #}
+  <form method="get" class="flex items-center gap-2 flex-1 min-w-[260px]">
     <input type="hidden" name="tab" value="{{ tab }}" />
     <input type="hidden" name="sort" value="{{ sort }}" />
-    <div class="relative">
+    <div class="relative flex-1">
       <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
            fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
       </svg>
-      <input name="q" value="{{ q }}" placeholder="SKU, title, manufacturer…"
-             class="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white w-64
+      <input name="q" value="{{ q }}" placeholder="Search parts… number, description, cross-ref"
+             class="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-md bg-white
                     focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400
                     placeholder:text-gray-400" />
     </div>
-    <button type="submit"
-            class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200
-                   rounded-lg hover:bg-gray-50 transition-colors">
-      Search
-    </button>
     {% if q %}
     <a href="?tab={{ tab }}{% if sort != 'sku' %}&sort={{ sort }}{% endif %}"
        class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</a>
     {% endif %}
   </form>
 
+  {# Axle filter chips (.fchip / .fchip.on) — bordered radius-14 pills, active = solid steel-900 #}
+  {% for slug, label, count in product_tabs %}
+  <a href="?tab={{ slug }}{% if q %}&q={{ q }}{% endif %}{% if sort != 'sku' %}&sort={{ sort }}{% endif %}"
+     class="fchip {% if tab == slug %}on{% endif %}">
+    {{ label }}<span class="ml-1.5 tabular-nums opacity-70">{{ count }}</span>
+  </a>
+  {% endfor %}
 </div>
+
+{# Sort row — kept compact below the fbar (not in Axle spec but the route requires it) #}
+<form method="get" class="flex items-center gap-2">
+  <input type="hidden" name="tab" value="{{ tab }}" />
+  {% if q %}<input type="hidden" name="q" value="{{ q }}" />{% endif %}
+  <label for="product-sort" class="label-mini">Sort by</label>
+  <select id="product-sort" name="sort" onchange="this.form.submit()"
+          class="py-1.5 pl-3 pr-8 text-xs border border-gray-200 rounded-md bg-white cursor-pointer
+                 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400">
+    <option value="sku"      {% if sort == 'sku' %}selected{% endif %}>SKU</option>
+    <option value="vendor"   {% if sort == 'vendor' %}selected{% endif %}>Vendor</option>
+    <option value="category" {% if sort == 'category' %}selected{% endif %}>Category</option>
+  </select>
+</form>
 
 {# ══════════════════════════════════════════════════════════════════════════════
    §18 FILTERS — Category (incl. subcategory/family) · Manufacturer · Brand
@@ -246,6 +248,17 @@
      class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">
     Export CSV
   </a>
+  <div class="h-4 w-px bg-brand-200"></div>
+  <button type="button"
+          @click="jaksShopifyPublish(Object.keys(selected).filter(function(k){return selected[k];}).map(Number))"
+          class="text-xs font-medium text-brand-700 hover:text-brand-900 transition-colors">
+    Publish to Shopify (draft)
+  </button>
+  <button type="button"
+          @click="jaksShopifySync(Object.keys(selected).filter(function(k){return selected[k];}).map(Number))"
+          class="text-xs font-medium text-brand-700 hover:text-brand-900 transition-colors">
+    Re-sync price &amp; stock
+  </button>
 {% endcall %}
 
 {# ══════════════════════════════════════════════════════════════════════════════
@@ -256,38 +269,24 @@
   <div class="overflow-x-auto">
     <table class="w-full min-w-[960px]" aria-label="Product inventory list">
 
-      {# ── Table head ── #}
+      {# ── Table head ── Axle: th 10px Oswald uppercase steel-400 on #fafbfa bg #}
       <thead>
-        <tr class="bg-gray-50 border-b border-gray-200">
+        <tr class="border-b border-gray-200" style="background:#fafbfa;">
           {# Select all #}
-          <th class="w-10 px-4 py-3 text-center">
+          <th class="w-10 px-4 py-3 text-center" style="background:#fafbfa;">
             <input type="checkbox"
                    :checked="allSelected"
                    @change="toggleAll()"
                    aria-label="Select all products"
                    class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
           </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            SKU / Manufacturer
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Product
-          </th>
-          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Cost
-          </th>
-          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Sell
-          </th>
-          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Margin
-          </th>
-          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            On Hand
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Health
-          </th>
+          <th class="px-4 py-3 text-left label-mini">Part #</th>
+          <th class="px-4 py-3 text-left label-mini">Description</th>
+          <th class="px-4 py-3 text-right label-mini">Cost</th>
+          <th class="px-4 py-3 text-right label-mini">List</th>
+          <th class="px-4 py-3 text-right label-mini">Margin</th>
+          <th class="px-4 py-3 text-right label-mini">Avail</th>
+          <th class="px-4 py-3 text-left label-mini">Status</th>
           <th class="px-4 py-3 w-12"></th>
         </tr>
       </thead>
@@ -372,11 +371,11 @@
                    class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
           </td>
 
-          {# SKU + Manufacturer badge #}
+          {# Part # — .pn mono 12px bold ink + Manufacturer badge #}
           <td class="px-4 py-4 align-middle">
             <div class="flex items-center gap-2 flex-wrap">
               <a href="/products/{{ p.id }}"
-                 class="font-mono text-sm font-bold text-brand-700 hover:text-brand-900 hover:underline leading-none"
+                 class="font-mono pn hover:underline"
                  @click.stop>{{ p.sku }}</a>
               {% if _mfr_display %}
               <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border {{ mfr_cls }}"
@@ -422,17 +421,17 @@
             {% endif %}
           </td>
 
-          {# Cost #}
+          {# Cost — .money mono right-aligned #}
           <td class="px-4 py-4 align-middle text-right">
-            <span class="text-sm text-gray-500 tabular-nums">${{ "%.2f"|format(p.cost) }}</span>
+            <span class="money" style="color:#7c838b;">${{ "%.2f"|format(p.cost) }}</span>
           </td>
 
-          {# Sell price — renders the Backend-resolved price when present (STAGED, pairs
-             with Backend #2's resolved_price_map seam), else the stored selling_price.
-             Guarded → no change until the route passes the map. #}
+          {# List (sell price) — .money.ext mono 700 ink — the price-list column emphasis.
+             Resolved price wins when present (STAGED, pairs with Backend #2's
+             resolved_price_map seam), else the stored selling_price. #}
           <td class="px-4 py-4 align-middle text-right">
             {% set _rp = (resolved_price_map | default({})).get(p.id) %}
-            <span class="text-sm font-bold text-gray-900 tabular-nums">${{ "%.2f"|format(_rp if _rp is not none else p.selling_price) }}</span>
+            <span class="money ext">${{ "%.2f"|format(_rp if _rp is not none else p.selling_price) }}</span>
           </td>
 
           {# Margin % — '—' when cost is $0 (unknown) so a 0-cost import doesn't read as 100% #}
@@ -447,12 +446,12 @@
             {% endif %}
           </td>
 
-          {# On Hand + min / max indicators #}
+          {# Avail (= on-hand) — mono bold per Axle ("Avail bolded") + min/max sub-line #}
           <td class="px-4 py-4 align-middle text-right">
-            <span class="text-sm font-bold tabular-nums
-              {% if p.qty_on_hand == 0 %}text-red-600
-              {% elif p.reorder_point > 0 and p.qty_on_hand <= p.reorder_point %}text-amber-600
-              {% else %}text-gray-800{% endif %}">
+            <span class="money" style="font-weight:700; font-size:12.5px;
+              {% if p.qty_on_hand == 0 %}color:#c0392b;
+              {% elif p.reorder_point > 0 and p.qty_on_hand <= p.reorder_point %}color:#b06511;
+              {% else %}color:#0b0c0d;{% endif %}">
               {{ p.qty_on_hand }}
             </span>
             {# Min / max #}
@@ -472,12 +471,17 @@
             {% endif %}
           </td>
 
-          {# Inventory health chip #}
+          {# Status — .stk dot+label (Axle: green In stock / amber Low / red Out) #}
           <td class="px-4 py-4 align-middle">
-            <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold {{ health_cls }}">
-              <span class="w-1.5 h-1.5 rounded-full {{ health_dot }} shrink-0"></span>
-              {{ health_label }}
-            </span>
+            {% if health == 'out' %}
+              <span class="stk out"><span class="d"></span>Out</span>
+            {% elif health == 'low' %}
+              <span class="stk low"><span class="d"></span>Low</span>
+            {% elif health == 'on_order' %}
+              <span class="stk low"><span class="d"></span>On order</span>
+            {% else %}
+              <span class="stk ok"><span class="d"></span>In stock</span>
+            {% endif %}
             {% if p.qty_backordered > 0 %}
             <div class="text-[10px] text-orange-500 mt-1 font-medium">{{ p.qty_backordered }} b/o</div>
             {% endif %}
@@ -505,9 +509,10 @@
     </table>
   </div>
 
-  {# ── Table footer count ── #}
-  <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between gap-3">
-    <span class="text-xs text-gray-400">
+  {# ── Table footer + pagination ── Axle .pgr: mono 11px, bordered page pills #}
+  <div class="px-5 py-3 border-t border-gray-100 flex items-center justify-between gap-3"
+       style="background:#fafbfa; font-family:'IBM Plex Mono',monospace; font-size:11px; color:#7c838b;">
+    <span>
       {% if total %}Showing {{ page_start }}–{{ page_end }} of {{ total }}{% else %}0 products{% endif %}
       {% if tab != 'all' or q %} · filtered{% endif %}
       <span x-show="selectedCount > 0" x-cloak class="ml-2 text-brand-700 font-medium"><span x-text="selectedCount"></span> selected</span>
@@ -515,12 +520,27 @@
     {% if total_pages > 1 %}
     {% set _qs = ('&q=' ~ (q | urlencode)) if q else '' %}
     {% set _qs = _qs ~ (('&tab=' ~ tab) if (tab and tab != 'all') else '') ~ (('&sort=' ~ sort) if (sort and sort != 'sku') else '') %}
-    <div class="flex items-center gap-1 shrink-0">
-      {% if page > 1 %}<a href="?page={{ page - 1 }}{{ _qs }}" class="btn-secondary btn-xs">← Prev</a>
-      {% else %}<span class="btn-secondary btn-xs opacity-40 cursor-not-allowed">← Prev</span>{% endif %}
-      <span class="text-xs text-gray-500 px-2 tabular-nums">Page {{ page }} / {{ total_pages }}</span>
-      {% if page < total_pages %}<a href="?page={{ page + 1 }}{{ _qs }}" class="btn-secondary btn-xs">Next →</a>
-      {% else %}<span class="btn-secondary btn-xs opacity-40 cursor-not-allowed">Next →</span>{% endif %}
+    <div class="flex items-center gap-1.5 shrink-0">
+      {% if page > 1 %}
+        <a href="?page={{ page - 1 }}{{ _qs }}"
+           class="inline-block border border-gray-200 rounded px-2 py-0.5 hover:bg-gray-50 hover:text-gray-900 transition-colors"
+           style="font-family:'IBM Plex Mono',monospace; font-size:11px;">← Prev</a>
+      {% else %}
+        <span class="inline-block border border-gray-200 rounded px-2 py-0.5 opacity-40 cursor-not-allowed"
+              style="font-family:'IBM Plex Mono',monospace; font-size:11px;">← Prev</span>
+      {% endif %}
+      <span class="inline-block border rounded px-2 py-0.5"
+            style="font-family:'IBM Plex Mono',monospace; font-size:11px;
+                   background:#5a6630; border-color:#5a6630; color:#fff;">{{ page }}</span>
+      <span style="color:#a9afb6;">/ {{ total_pages }}</span>
+      {% if page < total_pages %}
+        <a href="?page={{ page + 1 }}{{ _qs }}"
+           class="inline-block border border-gray-200 rounded px-2 py-0.5 hover:bg-gray-50 hover:text-gray-900 transition-colors"
+           style="font-family:'IBM Plex Mono',monospace; font-size:11px;">Next →</a>
+      {% else %}
+        <span class="inline-block border border-gray-200 rounded px-2 py-0.5 opacity-40 cursor-not-allowed"
+              style="font-family:'IBM Plex Mono',monospace; font-size:11px;">Next →</span>
+      {% endif %}
     </div>
     {% endif %}
   </div>
@@ -565,4 +585,44 @@
 {{ preview_dock_shell('Product Preview', 'product-preview-body') }}
 
 </div>{# end x-data wrapper #}
+
+<script>
+  // Bulk Shopify actions — selected product ids POSTed as form data to the
+  // admin-gated /shopify endpoints. Publish creates DRAFT listings; Re-sync pushes
+  // price+SEO/tags then stock to already-linked listings.
+  function _jaksSelForm(ids) {
+    var f = new FormData();
+    ids.forEach(function (i) { f.append('product_ids', i); });
+    return f;
+  }
+  function jaksShopifyPublish(ids) {
+    if (!ids.length) { alert('Select at least one product first.'); return; }
+    if (!confirm('Publish ' + ids.length + ' product(s) to Shopify as DRAFT? They stay '
+                 + 'hidden on the storefront until you set them Active in Shopify.')) return;
+    var f = _jaksSelForm(ids); f.append('status', 'DRAFT');
+    fetch('/shopify/publish', { method: 'POST', body: f })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        alert((d.published || 0) + ' published, ' + (d.failed || 0) + ' failed'
+              + (d.error ? (' — ' + d.error) : '.'));
+        location.reload();
+      })
+      .catch(function () { alert('Shopify publish request failed.'); });
+  }
+  function jaksShopifySync(ids) {
+    if (!ids.length) { alert('Select at least one product first.'); return; }
+    fetch('/shopify/update-batch', { method: 'POST', body: _jaksSelForm(ids) })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        fetch('/shopify/sync-inventory', { method: 'POST', body: _jaksSelForm(ids) })
+          .then(function (r) { return r.json(); })
+          .then(function (d2) {
+            alert('Listings updated: ' + (d.updated || 0) + ', stock synced: '
+                  + (d2.synced || 0) + ', failed: ' + ((d.failed || 0) + (d2.failed || 0)) + '.');
+            location.reload();
+          });
+      })
+      .catch(function () { alert('Shopify sync request failed.'); });
+  }
+</script>
 {% endblock %}

@@ -175,6 +175,10 @@ class Product(Base):
     # ── External IDs ─────────────────────────────────────────────────────────
     shopify_product_id: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     shopify_variant_id: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    # Shopify InventoryItem GID (quantities attach to the inventory item, not the
+    # variant). Captured during match_and_link so the stock sync doesn't re-resolve
+    # it every run. Empty until linked.
+    shopify_inventory_item_id: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     ebay_listing_id: Mapped[str] = mapped_column(String(100), nullable=False, default="")
 
     # ── ESN / Engine Info ─────────────────────────────────────────────────────

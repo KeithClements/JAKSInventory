@@ -1,135 +1,136 @@
 {# ═══════════════════════════════════════════════════════════════════════════
-   _totals_panel.html
-   Standalone totals panel. Targeted by header-form HTMX (outerHTML swap on #totals-panel)
-   and embedded in _lines_and_totals.html for line-edit updates.
+   _totals_panel.html — Axle redress
+   Targeted by header-form HTMX (outerHTML swap on #totals-panel) and embedded
+   in _lines_and_totals.html for line-edit updates. Visuals only — every value
+   comes straight from the server `totals` context (server computes everything).
 
-   Per Phase A spec — Cores ALWAYS display separately from Parts.
+   Layout: Tax/CC controls (DRAFT) on top, .kv rows for breakdown, .tot block
+   for the "Invoice Total" / "Balance Due" cash-register moment.
 ═════════════════════════════════════════════════════════════════════════════ #}
-<div id="totals-panel" class="card">
-  <div class="card-body py-3">
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+<div id="totals-panel" class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
 
-      {# Left: CC fee toggle (DRAFT only) — also shown as a static row below when ON #}
-      <div class="md:col-span-2 flex flex-col gap-2 text-sm">
-        {% if editable %}
-        <form hx-post="/invoices/{{ invoice.id }}/header"
-              hx-trigger="change throttle:200ms"
-              hx-target="#totals-panel"
-              hx-swap="outerHTML"
-              class="flex items-center gap-2">
-          {# Hidden "0" + checkbox "1" pattern so unchecked state is submitted #}
-          <input type="hidden" name="apply_cc_surcharge" value="0"/>
-          <input type="checkbox" name="apply_cc_surcharge" id="cc-fee-toggle"
-                 value="1" {% if invoice.apply_cc_surcharge %}checked{% endif %}
-                 class="form-checkbox"/>
-          <label for="cc-fee-toggle" class="text-sm text-gray-700 select-none cursor-pointer">
-            Apply {{ "%g" | format(invoice.cc_surcharge_pct) }}% card convenience fee
-          </label>
-        </form>
+  {# ── Tax + CC fee toggles (DRAFT only) — same routes/HTMX as before ─────── #}
+  {% if editable %}
+  <div class="flex flex-col gap-1.5 px-4 py-2.5 border-b border-steel-150 text-sm bg-[#fafbfa]">
+    <form hx-post="/invoices/{{ invoice.id }}/header"
+          hx-trigger="change throttle:200ms"
+          hx-target="#totals-panel"
+          hx-swap="outerHTML"
+          class="flex items-center gap-2">
+      <input type="hidden" name="apply_cc_surcharge" value="0"/>
+      <input type="checkbox" name="apply_cc_surcharge" id="cc-fee-toggle"
+             value="1" {% if invoice.apply_cc_surcharge %}checked{% endif %}
+             class="form-checkbox"/>
+      <label for="cc-fee-toggle" class="text-xs text-steel-600 select-none cursor-pointer">
+        Apply {{ "%g" | format(invoice.cc_surcharge_pct) }}% card convenience fee
+      </label>
+    </form>
+    <form hx-post="/invoices/{{ invoice.id }}/header"
+          hx-trigger="change throttle:200ms"
+          hx-target="#totals-panel"
+          hx-swap="outerHTML"
+          class="flex items-center gap-2">
+      <input type="hidden" name="is_taxable" value="0"/>
+      <input type="checkbox" name="is_taxable" id="is-taxable-toggle"
+             value="1" {% if invoice.is_taxable %}checked{% endif %}
+             class="form-checkbox"/>
+      <label for="is-taxable-toggle" class="text-xs text-steel-600 select-none cursor-pointer">
+        Taxable
+      </label>
+      <label class="text-[10px] text-steel-400 ml-1 uppercase tracking-wide">Rate %</label>
+      <input type="number" name="tax_rate"
+             value="{{ invoice.tax_rate }}" min="0" max="50" step="0.001"
+             class="w-16 text-xs text-right border border-gray-200 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand-400"/>
+    </form>
+  </div>
+  {% endif %}
 
-        <form hx-post="/invoices/{{ invoice.id }}/header"
-              hx-trigger="change throttle:200ms"
-              hx-target="#totals-panel"
-              hx-swap="outerHTML"
-              class="flex items-center gap-3">
-          <input type="hidden" name="is_taxable" value="0"/>
-          <input type="checkbox" name="is_taxable" id="is-taxable-toggle"
-                 value="1" {% if invoice.is_taxable %}checked{% endif %}
-                 class="form-checkbox"/>
-          <label for="is-taxable-toggle" class="text-sm text-gray-700 select-none cursor-pointer">
-            Taxable
-          </label>
-          <label class="text-xs text-gray-400 ml-2">Rate %</label>
-          <input type="number" name="tax_rate"
-                 value="{{ invoice.tax_rate }}" min="0" max="50" step="0.001"
-                 class="w-20 text-sm text-right border border-gray-200 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand-400"/>
-        </form>
-        {% else %}
-        {# Static read-only summary #}
-        <p class="text-xs text-gray-500">
-          {% if totals.is_taxable_display %}Taxable at {{ "%g"|format(totals.tax_rate_display) }}%{% else %}Non-taxable{% endif %}
-          {% if invoice.apply_cc_surcharge %} · {{ "%g" | format(invoice.cc_surcharge_pct) }}% card fee applied{% endif %}
-        </p>
-        {% endif %}
-      </div>
+  {# ── .kv rows — subtotal · cores · tax · fees · paid · balance ──────────── #}
+  <div class="px-4 py-3">
+    <div class="kv">
+      <span>Parts Subtotal</span>
+      <span class="money">${{ "%.2f"|format(totals.parts_subtotal) }}</span>
+    </div>
 
-      {# Right: totals breakdown #}
-      <div class="space-y-1 text-sm md:border-l md:border-gray-100 md:pl-4">
-        <div class="flex justify-between">
-          <span class="text-gray-500">Parts Subtotal</span>
-          <span class="tabular-nums text-gray-800">${{ "%.2f"|format(totals.parts_subtotal) }}</span>
-        </div>
+    {% if totals.core_subtotal > 0 %}
+    <div class="kv">
+      <span class="text-hub-deep">Core Charges</span>
+      <span class="money text-hub-deep">${{ "%.2f"|format(totals.core_subtotal) }}</span>
+    </div>
+    {% endif %}
 
-        {% if totals.core_subtotal > 0 %}
-        <div class="flex justify-between">
-          <span class="text-amber-700 font-medium">Core Charges</span>
-          <span class="tabular-nums text-amber-700 font-medium">${{ "%.2f"|format(totals.core_subtotal) }}</span>
-        </div>
-        {% endif %}
+    {% if totals.freight_subtotal > 0 %}
+    <div class="kv">
+      <span>Freight / Delivery</span>
+      <span class="money">${{ "%.2f"|format(totals.freight_subtotal) }}</span>
+    </div>
+    {% endif %}
 
-        {% if totals.freight_subtotal > 0 %}
-        <div class="flex justify-between">
-          <span class="text-gray-500">Freight / Delivery</span>
-          <span class="tabular-nums text-gray-800">${{ "%.2f"|format(totals.freight_subtotal) }}</span>
-        </div>
-        {% endif %}
+    {% if totals.other_subtotal != 0 %}
+    <div class="kv">
+      <span>Fees / Adjustments</span>
+      <span class="money">
+        {%- if totals.other_subtotal < 0 %}−${{ "%.2f"|format(-totals.other_subtotal) }}{% else %}${{ "%.2f"|format(totals.other_subtotal) }}{% endif -%}
+      </span>
+    </div>
+    {% endif %}
 
-        {# Fees & adjustments (NSF / restocking / misc fee, credits) — counted in
-           TOTAL by the totals engine, surfaced here so the total visibly reconciles. #}
-        {% if totals.other_subtotal != 0 %}
-        <div class="flex justify-between">
-          <span class="text-gray-500">Fees / Adjustments</span>
-          <span class="tabular-nums text-gray-800">
-            {%- if totals.other_subtotal < 0 %}–${{ "%.2f"|format(-totals.other_subtotal) }}{% else %}${{ "%.2f"|format(totals.other_subtotal) }}{% endif -%}
-          </span>
-        </div>
-        {% endif %}
+    {% if totals.discount_amount > 0 %}
+    <div class="kv">
+      <span style="color:#c0392b;">Discount ({{ "%g" | format(invoice.discount_pct) }}%)</span>
+      <span class="money" style="color:#c0392b;">−${{ "%.2f"|format(totals.discount_amount) }}</span>
+    </div>
+    {% endif %}
 
-        {% if totals.discount_amount > 0 %}
-        <div class="flex justify-between text-red-600">
-          <span>Discount ({{ "%g" | format(invoice.discount_pct) }}%)</span>
-          <span class="tabular-nums">–${{ "%.2f"|format(totals.discount_amount) }}</span>
-        </div>
-        {% endif %}
+    {# Tax row — always shown; dimmed when not taxable / zero #}
+    {% if totals.tax_amount > 0 %}
+    <div class="kv">
+      <span>Sales Tax ({{ "%g" | format(invoice.tax_rate) }}%)</span>
+      <span class="money">${{ "%.2f"|format(totals.tax_amount) }}</span>
+    </div>
+    {% else %}
+    <div class="kv">
+      <span style="color:var(--steel-400,#7c838b);">Tax</span>
+      <span class="money" style="color:var(--steel-400,#7c838b);">
+        {% if totals.is_taxable_display %}—{% else %}exempt{% endif %}
+      </span>
+    </div>
+    {% endif %}
 
-        <div class="flex justify-between border-t border-gray-200 pt-1 mt-1">
-          <span class="text-gray-500 text-xs">Taxable Amount</span>
-          <span class="tabular-nums text-gray-600 text-xs">${{ "%.2f"|format(totals.taxable_amount) }}</span>
-        </div>
+    {% if totals.amount_paid > 0 %}
+    <div class="kv border-t border-steel-150 mt-1.5 pt-1.5">
+      <span>Paid</span>
+      <span class="money" style="color:#15803d;">${{ "%.2f"|format(totals.amount_paid) }}</span>
+    </div>
+    {% endif %}
+  </div>
 
-        {% if totals.tax_amount > 0 %}
-        <div class="flex justify-between">
-          <span class="text-gray-500">Sales Tax ({{ "%g" | format(invoice.tax_rate) }}%)</span>
-          <span class="tabular-nums text-gray-800">${{ "%.2f"|format(totals.tax_amount) }}</span>
-        </div>
-        {% endif %}
+  {# ── .tot block — the cash-register moment ──────────────────────────────── #}
+  <div class="tot">
+    <span class="l">Invoice Total</span>
+    <span class="v">${{ "%.2f"|format(totals.total) }}</span>
+  </div>
 
-        {% if totals.cc_fee_amount > 0 %}
-        <div class="flex justify-between text-gray-500">
-          <span>CC Convenience Fee</span>
-          <span class="tabular-nums">${{ "%.2f"|format(totals.cc_fee_amount) }}</span>
-        </div>
-        <p class="text-[11px] text-gray-400">Estimate if paid by card — applied at processing, not in the total.</p>
-        {% endif %}
-
-        <div class="flex justify-between border-t-2 border-gray-300 pt-2 mt-2">
-          <span class="font-bold text-gray-800">TOTAL</span>
-          <span class="text-xl font-extrabold text-brand-700 tabular-nums">${{ "%.2f"|format(totals.total) }}</span>
-        </div>
-
-        {% if totals.amount_paid > 0 %}
-        <div class="flex justify-between text-xs">
-          <span class="text-gray-400">Paid</span>
-          <span class="tabular-nums text-green-700 font-semibold">${{ "%.2f"|format(totals.amount_paid) }}</span>
-        </div>
-        <div class="flex justify-between">
-          <span class="text-sm font-semibold {% if totals.balance_due > 0 %}text-amber-600{% else %}text-green-600{% endif %}">Balance Due</span>
-          <span class="text-sm font-bold tabular-nums {% if totals.balance_due > 0 %}text-amber-600{% else %}text-green-600{% endif %}">
-            ${{ "%.2f"|format(totals.balance_due) }}
-          </span>
-        </div>
-        {% endif %}
-      </div>
+  {# Balance Due — .kv row below the block, only once payments exist #}
+  {% if totals.amount_paid > 0 %}
+  <div class="px-4 py-2 border-t border-steel-150">
+    <div class="kv">
+      <span class="font-semibold {% if totals.balance_due > 0 %}text-amber-700{% endif %}">Balance Due</span>
+      <span class="money ext" {% if totals.balance_due <= 0 %}style="color:#15803d;"{% endif %}>${{ "%.2f"|format(totals.balance_due) }}</span>
     </div>
   </div>
+  {% endif %}
+
+  {# CC convenience fee — INFORMATIONAL ONLY (R1 design decision): the surcharge
+     is applied to the card portion at processing time and is NEVER added into
+     the invoice total. Display note only — no math here. #}
+  {% if totals.cc_fee_amount > 0 %}
+  <div class="px-4 py-2 border-t border-steel-150">
+    <p class="text-[10px] text-steel-400 italic leading-snug">
+      If paid by card: +${{ "%.2f"|format(totals.cc_fee_amount) }}
+      ({{ "%g" | format(invoice.cc_surcharge_pct) }}%) convenience fee —
+      applied at processing, not included in the total.
+    </p>
+  </div>
+  {% endif %}
 </div>
