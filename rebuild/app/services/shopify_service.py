@@ -145,6 +145,15 @@ class ShopifyService(BaseService):
             f"{a.engine_make} {a.engine_model}".strip()
             for a in product.applications if (a.engine_make or a.engine_model)
         ][:_MAX_METAFIELD_LIST]
+        # Storefront images: prefer CLEAN (unwatermarked, Shopify-CDN) photos. When
+        # a product has one, drop the watermarked PAI-CDN images from the push (they
+        # stay in the ERP as a fallback, just never shown on the storefront), and put
+        # the primary first so it becomes Shopify's featured image.
+        _imgs = [i for i in product.images if i.url]
+        if any("cdn.shopify.com" in (i.url or "").lower() for i in _imgs):
+            _imgs = [i for i in _imgs if "paiindustries.com" not in (i.url or "").lower()]
+        _imgs.sort(key=lambda i: (not i.is_primary, i.id))
+        listing_images = [i.url for i in _imgs]
         return {
             "sku": product.sku,
             "title": self._store_title(product, product.title),
@@ -164,7 +173,7 @@ class ShopifyService(BaseService):
             "cost": cost,
             "barcode": product.barcode or "",
             "weight_lbs": float(product.weight_lbs or 0),
-            "images": [img.url for img in product.images if img.url],
+            "images": listing_images,
             "metafields": {
                 "pai_part_no": (src.vendor_part_number if src else ""),
                 "oem_references": oem_refs,

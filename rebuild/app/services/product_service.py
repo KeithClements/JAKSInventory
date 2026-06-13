@@ -520,6 +520,34 @@ class ProductService(BaseService):
         self.db.commit()
         return img
 
+    # Image provenance for the "clean supersedes watermarked" rule: ATL re-hosts
+    # unwatermarked photos on the Shopify CDN; PAI's own CDN is watermarked. (Smart
+    # Import tags every image source='pai', so we key off the URL host, not source.)
+    _CLEAN_IMG_HOST = "cdn.shopify.com"
+    _WATERMARKED_IMG_HOST = "paiindustries.com"
+
+    def supersede_primary_with_clean(self, product_id: int) -> bool:
+        """Make a clean (unwatermarked, Shopify-CDN) image the product's PRIMARY,
+        demoting any watermarked (PAI-CDN) image to a kept-but-non-primary fallback
+        (nothing is deleted). No-op when the product has no clean image. Idempotent;
+        returns True if the primary actually changed."""
+        imgs = (self.db.query(ProductImage)
+                .filter(ProductImage.product_id == product_id)
+                .order_by(ProductImage.id).all())
+        clean = [i for i in imgs if self._CLEAN_IMG_HOST in (i.file_path or "").lower()]
+        if not clean:
+            return False
+        target_id = clean[0].id
+        changed = False
+        for i in imgs:
+            want = (i.id == target_id)
+            if bool(i.is_primary) != want:
+                i.is_primary = want
+                changed = True
+        if changed:
+            self.db.commit()
+        return changed
+
     def remove_product_image(self, product_id: int, image_id: int) -> None:
         """
         Remove an image. If it was the primary image, promotes the

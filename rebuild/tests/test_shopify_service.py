@@ -616,3 +616,49 @@ def test_sync_linked_resolves_linked_and_merges(db, monkeypatch):
 def test_sync_linked_failsoft_unconfigured(db):
     res = ShopifyService(db).sync_linked([1])
     assert res["ok"] is False and "not configured" in res["error"].lower()
+
+
+# ── Clean image supersedes watermarked (2026-06-13) ─────────────────────────────
+
+_CLEAN_IMG = "https://cdn.shopify.com/s/files/1/0450/clean/121250_01.jpg"
+
+
+def test_build_listing_drops_watermarked_when_clean_present(db):
+    from app.models.product import ProductImage
+    p = _product(db)   # _product already adds a watermarked PAI image (primary)
+    db.add(ProductImage(product_id=p.id, file_path=_CLEAN_IMG, is_primary=False))
+    db.commit()
+    L = ShopifyService(db).build_listing(p)
+    assert L["images"] == [_CLEAN_IMG]                 # watermarked PAI dropped from push
+
+
+def test_build_listing_keeps_watermarked_when_no_clean(db):
+    p = _product(db)   # only the watermarked PAI image
+    L = ShopifyService(db).build_listing(p)
+    assert L["images"] == ["https://cache.paiindustries.com/x/121250_01.jpg"]   # better than nothing
+
+
+def test_build_listing_features_clean_primary_first(db):
+    from app.models.product import ProductImage
+    p = _product(db)
+    db.add(ProductImage(product_id=p.id, file_path=_CLEAN_IMG, is_primary=True))
+    db.add(ProductImage(product_id=p.id,
+                        file_path="https://cdn.shopify.com/s/files/1/0450/clean/121250_02.jpg",
+                        is_primary=False))
+    db.commit()
+    L = ShopifyService(db).build_listing(p)
+    assert L["images"][0] == _CLEAN_IMG                # primary featured first; PAI gone
+
+
+def test_supersede_primary_with_clean(db):
+    from app.models.product import ProductImage
+    from app.services.product_service import ProductService
+    p = _product(db)   # watermarked PAI image is primary
+    db.add(ProductImage(product_id=p.id, file_path=_CLEAN_IMG, is_primary=False))
+    db.commit()
+    assert ProductService(db).supersede_primary_with_clean(p.id) is True
+    db.refresh(p)
+    primary = next(i for i in p.images if i.is_primary)
+    assert "cdn.shopify.com" in primary.file_path                    # clean is now primary
+    assert any("paiindustries.com" in i.file_path for i in p.images)  # watermarked kept
+    assert ProductService(db).supersede_primary_with_clean(p.id) is False   # idempotent

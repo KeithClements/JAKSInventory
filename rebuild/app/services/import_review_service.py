@@ -813,6 +813,9 @@ class ImportReviewService(BaseService):
                                        alt_text=(im.get("alt") or "")[:300])
                 existing_imgs.add(_norm(url))
                 got["images"] += 1
+        # A clean (unwatermarked ATL) image supersedes the watermarked PAI image as
+        # the primary — keeps the watermarked one as a non-primary fallback.
+        psvc.supersede_primary_with_clean(product_id)
         return got
 
     def _finalize_batch(self, batch_id: int, *, applied_or_skipped: int = 0) -> None:
