@@ -135,6 +135,26 @@ def test_update_existing_sku_flags_price_change(db):
     assert batch.update_count == 1
 
 
+def test_image_url_change_detected_when_count_unchanged(db):
+    """Swapping a watermarked photo for a clean one (count stays 1) must register
+    as a change — the old count-based check (incoming > existing) missed it and
+    skip_unchanged then dropped the row, so clean images never imported."""
+    from app.models.product import ProductImage
+    p = Product(sku="JAKS-PAI-IMG", price_override=10.99)
+    db.add(p); db.flush()
+    db.add(ProductImage(product_id=p.id, is_primary=True,
+                        file_path="https://cache.paiindustries.com/x/IMG_01.jpg"))
+    db.commit()
+    # same SKU + same price + ONE image, but a DIFFERENT (clean) URL
+    batch = ImportReviewService(db, None).analyze_feed(
+        _csv([_prod_row("JAKS-PAI-IMG", price="10.99", oem="",
+                        img="https://cdn.shopify.com/x/IMG_01.jpg")]))
+    cands = _cands(db, batch)
+    assert len(cands) == 1                        # NOT skipped as unchanged (the fix)
+    assert cands[0].disposition == ImportDisposition.UPDATE
+    assert cands[0].has_new_images is True        # URL swap detected despite count 1==1
+
+
 # ── cross-reference match ────────────────────────────────────────────────────
 
 def test_cross_ref_match_links_and_needs_review(db):

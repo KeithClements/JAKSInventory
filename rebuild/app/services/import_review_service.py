@@ -196,6 +196,14 @@ class ImportReviewService(BaseService):
                 xref_sets.setdefault(pid, set()).add(key)
         img_counts = dict(self.db.query(ProductImage.product_id, func.count(ProductImage.id))
                           .group_by(ProductImage.product_id).all())
+        # Change detection by image URL CONTENT, not count (2026-06-13): a part
+        # swapping its watermarked photo for a clean one (count stays 1→1) must
+        # register as changed, or skip_unchanged silently drops it. Normalized the
+        # same way the apply-time dedup is, so "new here" matches what apply adds.
+        img_url_sets: dict[int, set[str]] = {}
+        for pid, fp in self.db.query(ProductImage.product_id, ProductImage.file_path).all():
+            if fp:
+                img_url_sets.setdefault(pid, set()).add(_norm(fp))
         # R4 — current values for the field-level diff: (price_override,
         # compare_at_price, manufacturer) per product + the PAI vendor cost.
         prod_info = {pid: (po, ca, (mfg or ""))
@@ -231,6 +239,7 @@ class ImportReviewService(BaseService):
                                      prod_info=prod_info,
                                      vendor_cost_map=vendor_cost_map,
                                      xref_sets=xref_sets,
+                                     img_url_sets=img_url_sets,
                                      skip_unchanged=skip_unchanged)
             if cand is None:           # R4 — identical to the catalog: not staged
                 batch.unchanged_count += 1
@@ -255,12 +264,14 @@ class ImportReviewService(BaseService):
                      prod_info: dict | None = None,
                      vendor_cost_map: dict | None = None,
                      xref_sets: dict | None = None,
+                     img_url_sets: dict | None = None,
                      skip_unchanged: bool = False) -> ImportCandidate | None:
         """Returns None (R4) when the row is a clean UPDATE of an existing product
         and every incoming value matches the catalog — nothing to review."""
         prod_info = prod_info or {}
         vendor_cost_map = vendor_cost_map or {}
         xref_sets = xref_sets or {}
+        img_url_sets = img_url_sets or {}
         sku = (p.get("sku") or "").strip()
         k = _norm(sku)
         flags: list[str] = []
@@ -302,12 +313,19 @@ class ImportReviewService(BaseService):
         if category_issue:
             flags.append("category needs mapping")
 
-        # 5 — new image(s)?
+        # 5 — new / CHANGED image(s)? Compare by normalized URL, not count, so a
+        # part swapping a watermarked photo for a clean one (count unchanged) is
+        # still detected (the old `incoming > existing` count check missed it and
+        # skip_unchanged then dropped the row).
         incoming = len(p.get("images") or [])
         existing = img_counts.get(matched_pid, 0) if matched_pid else 0
-        has_new_images = incoming > existing
+        incoming_norm = {_norm(im.get("url") or "")
+                         for im in (p.get("images") or []) if im.get("url")}
+        existing_norm = (img_url_sets.get(matched_pid) or set()) if matched_pid else set()
+        new_image_urls = incoming_norm - existing_norm
+        has_new_images = bool(new_image_urls)
         if has_new_images:
-            flags.append(f"+{incoming - existing} image(s)")
+            flags.append(f"+{len(new_image_urls)} image(s)")
 
         # 6 — new / changed price?
         new_price = _to_float(p.get("price"))
@@ -642,6 +660,8 @@ class ImportReviewService(BaseService):
                 summary["errors"].append(res["error"])
             else:
                 summary["created"] = res.get("created", 0)
+                summary["images_added"] += res.get("images", 0)
+                summary["cross_refs_added"] += res.get("cross_refs", 0)
                 # full_import's chunked commits expunged the session — re-bind
                 # the batch row before _finish touches applied_count.
                 batch = self.db.get(ImportBatch, batch_id)
