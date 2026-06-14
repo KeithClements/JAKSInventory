@@ -250,9 +250,9 @@
   </a>
   <div class="h-4 w-px bg-brand-200"></div>
   <button type="button"
-          @click="jaksShopifyPublish(Object.keys(selected).filter(function(k){return selected[k];}).map(Number))"
+          @click="jaksShopifyPush(Object.keys(selected).filter(function(k){return selected[k];}).map(Number))"
           class="text-xs font-medium text-brand-700 hover:text-brand-900 transition-colors">
-    Publish to Shopify (draft)
+    Push to Shopify
   </button>
   <button type="button"
           @click="jaksShopifySync(Object.keys(selected).filter(function(k){return selected[k];}).map(Number))"
@@ -595,19 +595,18 @@
     ids.forEach(function (i) { f.append('product_ids', i); });
     return f;
   }
-  function jaksShopifyPublish(ids) {
+  function jaksShopifyPush(ids) {
     if (!ids.length) { alert('Select at least one product first.'); return; }
-    if (!confirm('Publish ' + ids.length + ' product(s) to Shopify as DRAFT? They stay '
-                 + 'hidden on the storefront until you set them Active in Shopify.')) return;
-    var f = _jaksSelForm(ids); f.append('status', 'DRAFT');
-    fetch('/shopify/publish', { method: 'POST', body: f })
+    if (!confirm('Push ' + ids.length + ' product(s) to Shopify? Existing listings KEEP '
+                 + 'their current status (live stays live); new products are created as drafts.')) return;
+    fetch('/shopify/republish', { method: 'POST', body: _jaksSelForm(ids) })
       .then(function (r) { return r.json(); })
       .then(function (d) {
-        alert((d.published || 0) + ' published, ' + (d.failed || 0) + ' failed'
+        alert((d.published || 0) + ' pushed, ' + (d.failed || 0) + ' failed'
               + (d.error ? (' — ' + d.error) : '.'));
         location.reload();
       })
-      .catch(function () { alert('Shopify publish request failed.'); });
+      .catch(function () { alert('Shopify push request failed.'); });
   }
   function jaksShopifySync(ids) {
     if (!ids.length) { alert('Select at least one product first.'); return; }

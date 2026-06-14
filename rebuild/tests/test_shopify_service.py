@@ -662,3 +662,41 @@ def test_supersede_primary_with_clean(db):
     assert "cdn.shopify.com" in primary.file_path                    # clean is now primary
     assert any("paiindustries.com" in i.file_path for i in p.images)  # watermarked kept
     assert ProductService(db).supersede_primary_with_clean(p.id) is False   # idempotent
+
+
+def test_republish_batch_preserves_status(db, monkeypatch):
+    """A full re-publish (needed to push image changes) must KEEP each product's
+    status — a live (ACTIVE) listing stays live, never silently dropped to DRAFT."""
+    pa = _product(db); pa.shopify_product_id = "gid://shopify/Product/1"; pa.shopify_status = "ACTIVE"
+    pd = _product(db); pd.shopify_product_id = "gid://shopify/Product/2"; pd.shopify_status = "DRAFT"
+    pn = _product(db)   # unlinked (shopify_product_id == "")
+    db.commit()
+    svc = ShopifyService(db)
+    seen = {}
+    def fake_pub(p, *, status="DRAFT"):
+        seen[p.id] = status
+        return {"ok": True, "product": {"id": "x"}}
+    monkeypatch.setattr(svc, "publish_product", fake_pub)
+    res = svc.republish_batch([pa.id, pd.id, pn.id])
+    assert res["published"] == 3 and res["failed"] == 0
+    assert seen[pa.id] == "ACTIVE"     # live stays live (NOT dropped to draft)
+    assert seen[pd.id] == "DRAFT"      # draft stays draft
+    assert seen[pn.id] == "DRAFT"      # unlinked/new -> draft (never auto-live)
+
+
+def test_async_publish_treats_queued_null_product_as_success(db, monkeypatch):
+    """synchronous=False: productSet returns a null product (queued) — that is a
+    SUCCESS, not a failure. The GID is captured later via re-link."""
+    p = _product(db)
+    svc = ShopifyService(db)
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    monkeypatch.setattr(svc, "_token", lambda: "shpat_x")
+    import httpx
+    class _Resp:
+        def json(self): return {"data": {"productSet": {"product": None, "userErrors": []}}}
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: _Resp())
+    res = svc.publish_product(p, status="DRAFT", synchronous=False)
+    assert res["ok"] is True and res.get("queued") is True
+    # sync call with null product is still a failure
+    res2 = svc.publish_product(p, status="DRAFT", synchronous=True)
+    assert res2["ok"] is False

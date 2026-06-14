@@ -83,6 +83,23 @@ def update_batch(product_ids: list[int] = Form([]),
                             status_code=403)
 
 
+@router.post("/republish")
+def republish(product_ids: list[int] = Form([]),
+              db: Session = Depends(get_db),
+              user_id: int = Depends(get_current_user_id)):
+    """Re-publish selected products, PRESERVING each one's current status — safe
+    for updating images on already-live listings (never unpublishes an ACTIVE
+    one; creates unlinked products as DRAFT). Admin only."""
+    svc = ShopifyService(db, user_id)
+    if not svc.is_configured():
+        return JSONResponse({"ok": False, "error": "Shopify not configured."}, status_code=400)
+    try:
+        return JSONResponse(svc.republish_batch(product_ids))
+    except PermissionDeniedError:
+        return JSONResponse({"ok": False, "error": "Publishing to Shopify requires admin access."},
+                            status_code=403)
+
+
 @router.post("/sync-inventory")
 def sync_inventory(product_ids: list[int] = Form([]),
                    db: Session = Depends(get_db),

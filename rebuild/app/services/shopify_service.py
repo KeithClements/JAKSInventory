@@ -316,10 +316,16 @@ class ShopifyService(BaseService):
         "}"
     )
 
-    def publish_product(self, product: Product, *, status: str = "DRAFT") -> dict:
+    def publish_product(self, product: Product, *, status: str = "DRAFT",
+                        synchronous: bool = True) -> dict:
         """Create/update one product on Shopify. Idempotent via shopify_product_id.
         Fail-soft: returns {ok: False, error: ...} instead of raising when Shopify
-        is unconfigured or the call fails — never blocks ERP work."""
+        is unconfigured or the call fails — never blocks ERP work.
+
+        synchronous=False returns the product id immediately and lets Shopify
+        process media/inventory in the background — far faster for a bulk draft
+        push (the per-call image fetch is the main cost). The single-product UI
+        push keeps synchronous=True so the caller sees the finished listing."""
         if self.current_user_id is not None:
             self.assert_can(Permission.PUBLISH_SHOPIFY)
         if not self.is_configured():
@@ -333,7 +339,7 @@ class ShopifyService(BaseService):
         try:
             resp = httpx.post(
                 url,
-                json={"query": self._MUTATION, "variables": {"input": inp, "synchronous": True}},
+                json={"query": self._MUTATION, "variables": {"input": inp, "synchronous": synchronous}},
                 headers={"X-Shopify-Access-Token": self._token(),
                          "Content-Type": "application/json"},
                 timeout=30.0,
@@ -353,6 +359,13 @@ class ShopifyService(BaseService):
             product.shopify_status = prod.get("status", "") or ""
             self.db.commit()
             return {"ok": True, "product": prod}
+        # synchronous=False: productSet queues the create and returns a null
+        # `product` inline — the listing IS created in the background. With no
+        # errors/userErrors that is a SUCCESS (queued); the caller captures the
+        # real GID afterward via a bulk re-link by SKU. Only treat a null product
+        # as failure on a synchronous call (where the id should have come back).
+        if not synchronous:
+            return {"ok": True, "queued": True, "product": None}
         return {"ok": False, "error": "no product returned", "raw": data}
 
     # ── Partial update — price + SEO + tags ONLY (existing linked listings) ───
@@ -460,6 +473,32 @@ class ShopifyService(BaseService):
             else:
                 summary["failed"] += 1
                 summary["errors"].append({"product_id": pid, "sku": p.sku, "error": res.get("error")})
+        return summary
+
+    def republish_batch(self, product_ids: list[int]) -> dict:
+        """Full re-publish that PRESERVES each product's current status — the SAFE
+        way to push image/content changes to already-live listings. A linked
+        ACTIVE listing stays ACTIVE (updating its image never unpublishes it), a
+        linked DRAFT stays DRAFT, and an unlinked product is created as DRAFT (new
+        listings never auto-go-live). Needed because the partial update doesn't
+        touch images and a plain publish defaults to DRAFT (which would unpublish
+        actives). Fail-soft; partial-success safe."""
+        summary = {"requested": len(product_ids), "published": 0, "failed": 0, "errors": []}
+        for pid in product_ids:
+            p = self.db.get(Product, pid)
+            if not p:
+                summary["failed"] += 1
+                summary["errors"].append({"product_id": pid, "error": "not found"})
+                continue
+            linked = (p.shopify_product_id or "").startswith("gid://")
+            status = ((p.shopify_status or "ACTIVE").upper() if linked else "DRAFT")
+            res = self.publish_product(p, status=status)
+            if res.get("ok"):
+                summary["published"] += 1
+            else:
+                summary["failed"] += 1
+                summary["errors"].append({"product_id": pid, "sku": p.sku,
+                                          "error": res.get("error")})
         return summary
 
     # ══ Inventory sync — push real stock to Shopify (ERP is master) ════════════
