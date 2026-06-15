@@ -149,7 +149,8 @@ def derive_manufacturer(p: dict, cls: dict | None = None) -> str:
     return ""
 
 # SKU match aliases (header keys are lowercased before lookup)
-_SKU_KEYS = ("jaks_sku", "sku", "variant sku", "internal_sku", "part_number", "jaks_part")
+_SKU_KEYS = ("jaks_sku", "sku", "variant sku", "internal_sku", "part_number",
+             "jaks_part", "pai_part_no")
 # True PAI cost columns (Pricing-Update pai_cost mode) — NOT "variant price" (that's sell)
 _COST_KEYS = ("pai_cost", "vendor_cost", "dealer_cost", "net_cost", "cost")
 
@@ -1044,13 +1045,17 @@ class ProductImportService(BaseService):
             new_price = _to_float(price_raw)
             new_compare = _to_float(compare_raw)
             new_cost = _to_float(cost_raw)
-            # Manufacturer: trim, then canonicalize case-insensitively.
+            # Manufacturer: canonicalize via the same rules full_import uses
+            # (derive_manufacturer → normalize_make → _MANUFACTURER_BY_ENGINE_MAKE),
+            # so feeds saying "NAVISTAR" / "CAT" / "DDC" land on the
+            # MANUFACTURERS-list value ("International" / "Caterpillar" /
+            # "Detroit Diesel") instead of passing through verbatim.
             mfg_in = (mfg_raw or "").strip()
-            new_mfg = _mfg_lookup.get(mfg_in.lower()) if mfg_in else None
-            mfg_unmapped = bool(mfg_in) and new_mfg is None
-            if mfg_unmapped:
-                # Pass through verbatim — frees us to handle "Detroit" / "DDC"
-                # etc. without losing the data; surface for review.
+            new_mfg = derive_manufacturer({"manufacturer": mfg_in}) if mfg_in else None
+            mfg_unmapped = bool(mfg_in) and (new_mfg or "") not in _MFG_CANON
+            if not new_mfg and mfg_in:
+                # derive_manufacturer kept the verbatim input — keep it too,
+                # so we don't lose data on a truly unknown make.
                 new_mfg = mfg_in
 
             if (new_price is None and new_compare is None
