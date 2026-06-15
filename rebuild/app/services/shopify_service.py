@@ -163,9 +163,13 @@ class ShopifyService(BaseService):
             # description never trips a publish userError.
             "seo_title": (product.seo_title or "").strip()[:_SEO_TITLE_MAX],
             "seo_description": (product.seo_description or "").strip()[:_SEO_DESC_MAX],
-            # vendor = engine make (a useful storefront facet) or the store brand —
-            # never the supplier name (PAI stays hidden).
-            "vendor": (product.engine_manufacturer or _VENDOR_FALLBACK),
+            # vendor = the canonical product manufacturer (Cummins / Caterpillar /
+            # International / …). Prefers Product.manufacturer (the curated value
+            # backed by app/routers/products.py MANUFACTURERS) and falls back to
+            # the legacy engine_manufacturer field — never the supplier name
+            # (PAI stays hidden).
+            "vendor": (product.manufacturer or product.engine_manufacturer
+                       or _VENDOR_FALLBACK),
             "product_type": (product.category.name if product.category else "") or "Engine Parts",
             "status": "DRAFT",
             "tags": tags,
@@ -395,13 +399,21 @@ class ShopifyService(BaseService):
             return {"ok": False, "error": "product is not linked to a Shopify listing"}
         listing = self.build_listing(product)
 
-        # 1) tags + SEO (productUpdate leaves every other field untouched).
+        # 1) tags + SEO + vendor (productUpdate leaves every other field
+        # untouched). Vendor rides on the partial update so a manufacturer
+        # refresh in the ERP flows to Shopify's storefront facet without a
+        # full re-publish.
         prod_input: dict = {"id": pid}
         # ProductInput.tags REPLACES (not merges) — sending [] would WIPE every
         # merchant-curated tag. Only send tags when we actually derived some, so
         # a product with no ERP tags never clobbers hand-added Shopify tags.
         if listing["tags"]:
             prod_input["tags"] = listing["tags"]
+        # Vendor: only push when the ERP has a real value (skip the
+        # _VENDOR_FALLBACK case, so a product without a manufacturer doesn't
+        # clobber a Shopify-side vendor a merchant set by hand).
+        if listing.get("vendor") and listing["vendor"] != _VENDOR_FALLBACK:
+            prod_input["vendor"] = listing["vendor"]
         if listing.get("seo_title") or listing.get("seo_description"):
             seo: dict = {}
             if listing.get("seo_title"):

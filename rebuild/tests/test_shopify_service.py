@@ -313,6 +313,79 @@ def test_update_listing_fields_sends_only_price_seo_tags(db, monkeypatch):
     assert price_call["variants"][0]["price"] == "6.99"
 
 
+def test_build_listing_prefers_manufacturer_over_engine_manufacturer(db):
+    """The Pricing-Update import writes the canonical vendor to
+    Product.manufacturer (Cummins / Caterpillar / International / …). The
+    Shopify listing's vendor must read from that field first, so the
+    storefront facet tracks the value the owner curates in the product form."""
+    p = _product(db)
+    p.manufacturer = "Caterpillar"
+    p.engine_manufacturer = "CAT / Caterpillar"  # legacy classifier output
+    db.commit()
+    L = ShopifyService(db).build_listing(p)
+    assert L["vendor"] == "Caterpillar"
+
+
+def test_build_listing_falls_back_to_engine_manufacturer(db):
+    """Legacy products that pre-date the manufacturer field still publish
+    with the engine_manufacturer value, so nothing regresses for products
+    that haven't been touched by the new importer."""
+    p = _product(db)
+    p.manufacturer = ""
+    p.engine_manufacturer = "Cummins"
+    db.commit()
+    L = ShopifyService(db).build_listing(p)
+    assert L["vendor"] == "Cummins"
+
+
+def test_update_listing_fields_pushes_vendor_when_set(db, monkeypatch):
+    """A manufacturer refresh in the ERP must reach Shopify via the partial
+    update path — without this, sync_linked would silently drop the change
+    because the previous behavior only sent tags + SEO."""
+    p = _product(db)
+    p.manufacturer = "International"
+    p.shopify_product_id = "gid://shopify/Product/77"
+    p.shopify_variant_id = "gid://shopify/ProductVariant/88"
+    db.commit()
+    svc = ShopifyService(db)
+    calls = []
+    def fake_graphql(query, variables):
+        calls.append((query, variables))
+        if "productUpdate" in query:
+            return {"data": {"productUpdate": {"product": {"id": "gid://shopify/Product/77"}, "userErrors": []}}}
+        return {"data": {"productVariantsBulkUpdate": {"productVariants": [{"id": "x", "price": "6.99"}], "userErrors": []}}}
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    monkeypatch.setattr(svc, "_graphql", fake_graphql)
+    res = svc.update_listing_fields(p)
+    assert res["ok"] is True
+    upd = next(v for q, v in calls if "productUpdate" in q)["input"]
+    assert upd["vendor"] == "International"
+
+
+def test_update_listing_fields_skips_vendor_when_only_fallback(db, monkeypatch):
+    """A product with no manufacturer must NOT clobber a Shopify-side
+    vendor a merchant set by hand — the partial update can't tell whether
+    the Shopify value is curated, so the safe default is to omit the field
+    entirely when the ERP has no real value to push."""
+    p = _product(db)
+    p.manufacturer = ""
+    p.engine_manufacturer = ""              # no signal → would fall back to "JAK's Diesel"
+    p.shopify_product_id = "gid://shopify/Product/99"
+    p.shopify_variant_id = ""
+    db.commit()
+    svc = ShopifyService(db)
+    calls = []
+    def fake_graphql(query, variables):
+        calls.append((query, variables))
+        return {"data": {"productUpdate": {"product": {"id": "gid://shopify/Product/99"}, "userErrors": []}}}
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    monkeypatch.setattr(svc, "_graphql", fake_graphql)
+    res = svc.update_listing_fields(p)
+    assert res["ok"] is True
+    upd = next(v for q, v in calls if "productUpdate" in q)["input"]
+    assert "vendor" not in upd
+
+
 def test_update_listing_fields_rejects_unlinked(db, monkeypatch):
     p = _product(db)                 # shopify_product_id = "" (a fresh handle, not gid)
     svc = ShopifyService(db)
