@@ -14,51 +14,203 @@
 </div>
 {% endif %}
 
-<form method="post" action="/products/new" class="max-w-3xl space-y-6"
-      data-sku="{{ (form_data.sku if form_data else '') | e }}"
-      x-data="{
-        sku: '',
-        skuTouched: false,
-        get skuValid() { return this.sku.trim().length > 0; },
-        categoryAddOpen: false,
-      }"
-      x-init="sku = $el.dataset.sku"
-      @submit="if (!skuValid) { $event.preventDefault(); skuTouched = true; }">
+{# ── Engine make→models map embedded as JSON (read by inline Alpine — never put
+     raw JSON inside an x-data attribute, the quotes break attribute parsing). #}
+<script type="application/json" id="engine-models-json">{{ engine_models_by_make | tojson }}</script>
 
-  <!-- Identity -->
+<form method="post" action="/products/new" class="max-w-3xl space-y-6"
+      data-vendor-id="{{ (form_data.vendor_id if form_data else '') | e }}"
+      data-vendor-part="{{ (form_data.vendor_part_number if form_data else '') | e }}"
+      data-engine-make="{{ (form_data.engine_make if form_data else '') | e }}"
+      data-engine-model="{{ (form_data.engine_model if form_data else '') | e }}"
+      data-category-id="{{ (form_data.category_id if form_data else '') | e }}"
+      data-vendor-cost="{{ (form_data.vendor_cost if form_data else '') | e }}"
+      data-house-brand="{{ '1' if (form_data and form_data.get('is_house_brand')) else '' }}"
+      x-data="{
+        vendorId: '',
+        vendorName: '',
+        vendorPart: '',
+        vendorCostUserTouched: false,
+        engineModels: {},
+        engineMake: '',
+        engineModel: '',
+        categoryId: '',
+        isHouseBrand: false,
+        jaksProductNumber: '',
+        lookupBusy: false,
+        get fieldsValid() {
+          if (String(this.vendorId).trim() === '' || String(this.vendorPart).trim() === '') return false;
+          if (this.isHouseBrand && String(this.jaksProductNumber).trim() === '') return false;
+          return true;
+        },
+        get noSpecificEngine() { return !this.engineMake; },
+        get modelOptions() {
+          return this.engineMake && this.engineModels[this.engineMake]
+            ? this.engineModels[this.engineMake] : [];
+        },
+        get skuPreview() {
+          // MASTER_PLAN §20: the customer-facing SKU is the vendor's real part #
+          // for standard parts, or the owner-typed JAKS Product # for private label.
+          if (this.isHouseBrand) return (this.jaksProductNumber || '').trim().toUpperCase() || '—';
+          return (this.vendorPart || '').trim() || '—';
+        },
+        async lookup() {
+          if (String(this.vendorId).trim() === '' || String(this.vendorPart).trim() === '') return;
+          this.lookupBusy = true;
+          const qs = 'vendor_id=' + encodeURIComponent(this.vendorId) +
+                     '&part=' + encodeURIComponent(this.vendorPart);
+          try {
+            const classifyR = await fetch('/products/classify-part?' + qs);
+            const classify = classifyR.ok ? await classifyR.json() : null;
+            if (classify) {
+              if (classify.category_id && !this.categoryId) {
+                this.categoryId = String(classify.category_id);
+              }
+              if (classify.engine_make && !this.engineMake) {
+                this.engineMake = classify.engine_make;
+                this.$nextTick(() => {
+                  if (classify.engine_model) this.engineModel = classify.engine_model;
+                });
+              } else if (classify.engine_model && !this.engineModel) {
+                this.engineModel = classify.engine_model;
+              }
+              if (classify.suggested_cost !== null && classify.suggested_cost !== undefined
+                  && !this.vendorCostUserTouched && !this.$refs.vendorCost.value) {
+                this.$refs.vendorCost.value = classify.suggested_cost;
+                this.$refs.vendorCost.dispatchEvent(new Event('input', {bubbles: true}));
+              }
+            }
+          } catch (e) { /* network blip — leave state */ }
+          finally { this.lookupBusy = false; }
+        },
+        onVendorChange(ev) {
+          const opt = ev.target.selectedOptions[0];
+          this.vendorName = (opt && opt.dataset.name) || '';
+          this.lookup();
+        }
+      }"
+      x-init="
+        engineModels = JSON.parse(document.getElementById('engine-models-json').textContent || '{}');
+        vendorId     = $el.dataset.vendorId;
+        vendorPart   = $el.dataset.vendorPart;
+        engineMake   = $el.dataset.engineMake;
+        engineModel  = $el.dataset.engineModel;
+        categoryId   = $el.dataset.categoryId;
+        isHouseBrand = $el.dataset.houseBrand === '1';
+        $nextTick(() => {
+          const vsel = $el.querySelector('select[name=vendor_id]');
+          if (vsel) { const opt = vsel.selectedOptions[0]; vendorName = (opt && opt.dataset.name) || ''; }
+        });
+      "
+      @submit="if (!fieldsValid) { $event.preventDefault(); }"
+      @ai-accept="
+        const name = $event.detail.field;
+        const value = $event.detail.value || '';
+        const el = $el.querySelector('[name=&quot;' + name + '&quot;]');
+        if (el) {
+          el.value = value;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      ">
+
+  <!-- Vendor Source -->
   <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
-    <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Product Identity</h2>
+    <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">
+      Vendor Source
+      <span class="ml-2 text-xs font-normal text-gray-400">— the part # the vendor knows; prints on the PO</span>
+    </h2>
 
     <div class="grid grid-cols-2 gap-4">
       <div>
         <label class="block text-xs font-medium text-gray-500 mb-1">
-          SKU <span class="text-red-500">*</span>
+          Vendor <span class="text-red-500">*</span>
         </label>
-        <input name="sku" required
-               x-model="sku"
-               @blur="skuTouched = true"
-               @input="skuTouched = true"
-               :class="skuTouched && !skuValid
-                 ? 'border-red-400 ring-1 ring-red-400 bg-red-50/30'
-                 : 'border-gray-200'"
-               value="{{ form_data.sku if form_data else '' }}"
-               placeholder="e.g. PAI-311148"
-               class="rounded-lg border px-3 py-2 text-sm w-full font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
-        <p x-show="skuTouched && !skuValid" x-cloak
-           class="mt-1 text-xs font-medium text-red-600 flex items-center gap-1">
-          <svg class="w-3 h-3 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
-          </svg>
-          SKU is required
-        </p>
+        <select name="vendor_id" required
+                x-model="vendorId"
+                @change="onVendorChange($event)"
+                class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">
+          <option value="">— Select Vendor —</option>
+          {% for v in vendors %}
+            <option value="{{ v.id }}"
+                    data-name="{{ v.name }}"
+                    {% if form_data and form_data.get('vendor_id')|string == v.id|string %}selected{% endif %}>
+              {{ v.name }}
+            </option>
+          {% endfor %}
+        </select>
       </div>
       <div>
-        <label class="block text-xs font-medium text-gray-500 mb-1">Title</label>
-        <input name="title"
-               value="{{ form_data.title if form_data else '' }}"
-               placeholder="e.g. Cummins ISX Inframe Kit"
-               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        <label class="block text-xs font-medium text-gray-500 mb-1">
+          Vendor Part # <span class="text-red-500">*</span>
+        </label>
+        <input name="vendor_part_number" required
+               x-model="vendorPart"
+               @blur="lookup()"
+               value="{{ form_data.vendor_part_number if form_data else '' }}"
+               placeholder="e.g. 311148"
+               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        <p class="mt-1 text-[10px] text-gray-400">
+          <span x-show="lookupBusy">Checking…</span>
+          <span x-show="!lookupBusy">On blur: auto-fills engine, category, and cost.</span>
+        </p>
       </div>
+    </div>
+
+    {# Vendor Cost stays in the Vendor Source card — it's the cost FOR THIS
+       vendor's source row, not the moving-avg COGS. Pricing card reads from it
+       via the shared x-data. #}
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label class="block text-xs font-medium text-gray-500 mb-1">Vendor Cost ($)</label>
+        <input name="vendor_cost" type="number" step="0.01" min="0"
+               x-ref="vendorCost"
+               @input="vendorCostUserTouched = true; $dispatch('vendor-cost-changed', { value: $event.target.value })"
+               value="{{ form_data.vendor_cost if form_data else '' }}"
+               placeholder="0.00"
+               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        <p class="mt-1 text-[10px] text-gray-400">Posts to this vendor's source — not the moving-avg COGS.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Product Identity -->
+  <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+    <div class="flex items-center justify-between border-b border-gray-100 pb-3">
+      <h2 class="text-sm font-semibold text-gray-700">Product Identity</h2>
+      {# ── Suggest with AI ────────────────────────────────────────────────
+         HTMX posts the current form fields → /products/ai-suggest, which
+         returns the suggestion panel partial. hx-sync prevents stacked
+         requests if the owner double-clicks; hx-indicator shows the spinner
+         on the button itself. The panel <div> below is replaced (not
+         appended), so a second click just refreshes the suggestion. #}
+      <button type="button"
+              hx-post="/products/ai-suggest"
+              hx-include="closest form"
+              hx-target="#ai-suggestion-panel"
+              hx-swap="outerHTML"
+              hx-indicator="#ai-suggest-indicator"
+              hx-sync="this:replace"
+              class="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100 transition-colors disabled:opacity-50">
+        <svg class="w-3.5 h-3.5 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M10 1l1.7 4.6L16 7.3l-4.3 1.7L10 13.6 8.3 9 4 7.3l4.3-1.7L10 1zm6 8.5l.85 2.3L19 12.65l-2.15.85L16 15.8l-.85-2.3L13 12.65l2.15-.85L16 9.5zM4 14l.85 2.3L7 17.15l-2.15.85L4 20.3l-.85-2.3L1 17.15l2.15-.85L4 14z"/>
+        </svg>
+        <span>Suggest with AI</span>
+        <span id="ai-suggest-indicator" class="htmx-indicator text-[10px] text-amber-700">Asking Claude…</span>
+      </button>
+    </div>
+
+    {# Suggestion panel — HTMX swap target. Starts empty; the "Suggest with AI"
+       button replaces this node with the rendered panel partial. The form's
+       @ai-accept handler copies field values from the panel into the inputs
+       below by `name`. #}
+    <div id="ai-suggestion-panel"></div>
+
+    <div>
+      <label class="block text-xs font-medium text-gray-500 mb-1">Title</label>
+      <input name="title"
+             value="{{ form_data.title if form_data else '' }}"
+             placeholder="e.g. Cummins ISX Inframe Kit"
+             class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
     </div>
 
     <div>
@@ -68,19 +220,30 @@
                 class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">{{ form_data.description if form_data else '' }}</textarea>
     </div>
 
+    {# Meta description — populated by the AI suggest panel. The backend POST
+       /products/new doesn't currently persist this field (Product has no
+       meta_description column yet), but we keep the input so the AI accept
+       handler has a target. It's submitted with the form and silently dropped. #}
+    <div>
+      <label class="block text-xs font-medium text-gray-500 mb-1">
+        Meta description
+        <span class="text-gray-400 font-normal">(for search results / storefront SEO)</span>
+      </label>
+      <textarea name="meta_description" rows="2"
+                placeholder="Short, search-friendly summary — ≤155 chars."
+                class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">{{ form_data.meta_description if form_data else '' }}</textarea>
+    </div>
+
     <div class="grid grid-cols-2 gap-4">
       <div>
         <label class="block text-xs font-medium text-gray-500 mb-1">Manufacturer</label>
-        <select name="manufacturer"
-                class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">
-          <option value="">— Select —</option>
-          {% for m in manufacturers %}
-            <option value="{{ m }}"
-              {% if form_data and form_data.get('manufacturer') == m %}selected{% endif %}>
-              {{ m }}
-            </option>
-          {% endfor %}
-        </select>
+        <input name="manufacturer" list="manufacturer-list"
+               value="{{ form_data.manufacturer if form_data else '' }}"
+               placeholder="Cummins, Caterpillar, …"
+               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        <datalist id="manufacturer-list">
+          {% for m in manufacturers %}<option value="{{ m }}">{% endfor %}
+        </datalist>
       </div>
       <div>
         <label class="block text-xs font-medium text-gray-500 mb-1">Brand</label>
@@ -91,53 +254,122 @@
       </div>
     </div>
 
-    <div>
-      <label class="block text-xs font-medium text-gray-500 mb-1">Category</label>
-      <div class="flex items-center gap-2">
-        <select name="category_id"
-                class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400 flex-1">
-          <option value="">— None —</option>
-          {% for cat in categories %}
-            <option value="{{ cat.id }}"
-              {% if form_data and form_data.get('category_id')|string == cat.id|string %}selected{% endif %}>
-              {{ cat.full_path }}
-            </option>
+    {# Engine make / model — inline cascading picker (real product attributes:
+       engine_manufacturer / engine_model). The first Make option is "No specific
+       engine" (value=""); selecting it hides the model dropdown and submits both
+       fields as empty (multi-fit parts). Auto-fills from classify-part on Vendor
+       Part # blur. Submits engine_make/engine_model directly via the <select> +
+       <input> name attributes — no hidden mirror needed. #}
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label class="block text-xs font-medium text-gray-500 mb-1">Engine Make</label>
+        <select name="engine_make" x-model="engineMake"
+                class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">
+          <option value="">— No specific engine —</option>
+          {% for mk in engine_makes %}
+            <option value="{{ mk }}"
+              {% if form_data and form_data.get('engine_make') == mk %}selected{% endif %}>{{ mk }}</option>
           {% endfor %}
         </select>
-        {# + button — TODO: wire to POST /categories/quick-create when backend lands #}
-        <button type="button"
-                @click="categoryAddOpen = !categoryAddOpen"
-                title="Add new category"
-                class="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-dashed border-gray-300 text-gray-400 hover:border-brand-400 hover:text-brand-600 hover:bg-brand-50 transition-colors text-sm font-bold">
-          +
-        </button>
       </div>
-      {# TODO-safe info panel — replace with slide-over trigger when backend is ready #}
-      <div x-show="categoryAddOpen" x-cloak
-           class="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-800 flex items-start gap-2">
-        <svg class="w-3.5 h-3.5 shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
-          <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/>
-        </svg>
-        <span>
-          Categories are managed in
-          <a href="/settings" class="font-semibold underline hover:text-amber-900">Settings → Products</a>.
-          Ask your administrator to add new categories.
-          {# TODO: replace this panel with hx-get="/categories/quick-create-form" when route exists #}
-        </span>
-      </div>
+      <template x-if="!noSpecificEngine">
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">Engine Model</label>
+          <select name="engine_model" x-model="engineModel"
+                  class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">
+            <option value="">— Select Model —</option>
+            <template x-for="md in modelOptions" :key="md">
+              <option :value="md" x-text="md"
+                      :selected="md === engineModel"></option>
+            </template>
+          </select>
+        </div>
+      </template>
+      {# When "No specific engine" is picked the visible <select> is removed
+         from the DOM (template x-if), so submit a blank engine_model via this
+         mirror so the form's POST still carries the field. #}
+      <template x-if="noSpecificEngine">
+        <input type="hidden" name="engine_model" value="" />
+      </template>
     </div>
+    <p class="text-[11px] text-gray-400 -mt-2">
+      "No specific engine" → multi-fit part.
+    </p>
 
+    <div>
+      <label class="block text-xs font-medium text-gray-500 mb-1">Category</label>
+      <select name="category_id"
+              x-model="categoryId"
+              class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">
+        <option value="">— None —</option>
+        {% for cat in categories %}
+          <option value="{{ cat.id }}"
+                  {% if form_data and form_data.get('category_id')|string == cat.id|string %}selected{% endif %}>
+            {{ cat.full_path }}
+          </option>
+        {% endfor %}
+      </select>
+      <p class="mt-1 text-[10px] text-gray-400">
+        Pick the deepest applicable node — used for browsing and filtering.
+      </p>
+    </div>
+  </div>
+
+  <!-- SKU / Private label -->
+  <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+    <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">
+      SKU <span class="text-xs font-normal text-gray-400">(what the customer sees)</span>
+    </h2>
+
+    {# Private label (MASTER_PLAN §20): standard parts sell under the vendor's
+       part #; private-label parts get the owner's own product # as the SKU while
+       the vendor part # still rides on the source and prints on the PO. #}
+    <label class="flex items-center gap-2 cursor-pointer select-none">
+      <input type="checkbox" name="is_house_brand" x-model="isHouseBrand"
+             class="rounded border-gray-300 text-purple-600 focus:ring-brand-400" />
+      <span class="text-sm font-medium text-gray-700">Private label — use my own product number</span>
+    </label>
+
+    <template x-if="isHouseBrand">
+      <div>
+        <label class="block text-xs font-medium text-gray-500 mb-1">
+          JAKS Product # <span class="text-red-500">*</span>
+        </label>
+        <input name="jaks_product_number" x-model="jaksProductNumber"
+               value="{{ form_data.jaks_product_number if form_data else '' }}"
+               placeholder="e.g. 2239250S3"
+               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full font-mono uppercase focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        <p class="mt-1 text-[10px] text-gray-400">
+          Your sell-as number — shows on customer documents. The vendor part #
+          (<span class="font-mono" x-text="vendorPart || '—'"></span>) still prints on the PO.
+        </p>
+      </div>
+    </template>
+
+    <div>
+      <div class="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-1">Customer-facing SKU</div>
+      <div class="text-2xl font-mono font-bold tracking-tight text-brand-700 tabular-nums"
+           x-text="skuPreview"></div>
+      <p class="mt-1 text-xs text-gray-500" x-show="!isHouseBrand">
+        Standard part — the SKU is the vendor's part number.
+      </p>
+      <p class="mt-1 text-xs text-purple-700" x-show="isHouseBrand" x-cloak>
+        Private label — the SKU is your JAKS Product #; the vendor # stays on the PO.
+      </p>
+    </div>
   </div>
 
   <!-- Pricing -->
   <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
     <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Pricing</h2>
 
-    {# Pricing inputs + LIVE "what you charge" readout. Inline x-data mirrors the
-       core-charge block below; the math matches PricingService.sell_price_for —
+    {# Pricing math reads vendor_cost (the input lives in the Vendor Source card).
+       Listens for the `vendor-cost-changed` event the input dispatches, so the
+       "You Charge" readout updates as the owner types upstream. Markup +
+       price_override stay here. PricingService.sell_price_for math:
        price_override wins, else cost × (1 + markup/100), blank markup → default. #}
     <div x-data="{
-           cost: {% if form_data and form_data.get('cost') not in (None, '') %}{{ form_data.cost|float(0) }}{% else %}null{% endif %},
+           cost: {% if form_data and form_data.get('vendor_cost') not in (None, '') %}{{ form_data.vendor_cost|float(0) }}{% else %}0{% endif %},
            markup: {% if form_data and form_data.get('markup_pct') not in (None, '') %}{{ form_data.markup_pct|float(0) }}{% else %}null{% endif %},
            override: {% if form_data and form_data.get('price_override') not in (None, '') %}{{ form_data.price_override|float(0) }}{% else %}null{% endif %},
            defaultMarkup: {{ default_markup|float(30) }},
@@ -146,16 +378,9 @@
            get hasInput() { return this.usingOverride || Number(this.cost) > 0; },
            get sellPrice() { return this.usingOverride ? Number(this.override) : Math.round((Number(this.cost)||0) * (1 + this.effMarkup/100) * 100) / 100; },
            get marginPct() { const s = this.sellPrice, c = Number(this.cost)||0; return (!s || !c) ? null : Math.round((s-c)/s*1000)/10; }
-         }">
-      <div class="grid grid-cols-3 gap-4">
-        <div>
-          <label class="block text-xs font-medium text-gray-500 mb-1">Our Cost ($)</label>
-          <input name="cost" type="number" step="0.01" min="0"
-                 x-model.number="cost"
-                 value="{{ form_data.cost if form_data else '' }}"
-                 placeholder="0.00"
-                 class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
-        </div>
+         }"
+         @vendor-cost-changed.window="cost = Number($event.detail.value) || 0">
+      <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="block text-xs font-medium text-gray-500 mb-1">
             Markup % <span class="text-gray-400 font-normal">(blank = {{ default_markup }}% default)</span>
@@ -178,7 +403,6 @@
         </div>
       </div>
 
-      {# Live readout — updates as cost / markup / override change. #}
       <div x-cloak class="mt-4 flex items-end justify-between gap-4 rounded-lg border border-gray-100 bg-gray-50 px-4 py-3">
         <div>
           <div class="text-[10px] font-bold uppercase tracking-widest text-gray-400">You Charge</div>
@@ -188,7 +412,7 @@
         <div class="text-right text-xs text-gray-500 space-y-0.5">
           <div x-show="usingOverride" class="text-gray-600">via price override</div>
           <div x-show="!usingOverride && hasInput">
-            <span class="tabular-nums" x-text="'$' + (Number(cost)||0).toFixed(2)"></span> cost
+            <span class="tabular-nums" x-text="'$' + (Number(cost)||0).toFixed(2)"></span> vendor cost
             × <span class="tabular-nums" x-text="effMarkup + '%'"></span> markup<span
               x-show="markup === null || markup === ''"> (default)</span>
           </div>
@@ -282,7 +506,7 @@
   <div class="flex items-center gap-4 flex-wrap">
     <div class="flex gap-3">
       <button type="submit"
-              :class="skuValid
+              :class="fieldsValid
                 ? 'bg-brand-700 text-white hover:bg-brand-600 cursor-pointer'
                 : 'bg-gray-200 text-gray-500 cursor-default'"
               class="rounded-lg px-5 py-2.5 text-sm font-medium transition-colors">
@@ -293,13 +517,13 @@
         Cancel
       </a>
     </div>
-    {# "Why disabled" explanation — visible only when button is blocked #}
-    <p x-show="!skuValid" x-cloak
+    <p x-show="!fieldsValid" x-cloak
        class="flex items-center gap-1.5 text-xs text-amber-700 font-medium">
       <svg class="w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
         <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
       </svg>
-      Enter a SKU to enable Save
+      <span x-show="!isHouseBrand || String(jaksProductNumber).trim() !== ''">Pick a Vendor and type a Vendor Part # to enable Save</span>
+      <span x-show="isHouseBrand && String(jaksProductNumber).trim() === ''" x-cloak>Enter your JAKS Product # to enable Save</span>
     </p>
   </div>
 

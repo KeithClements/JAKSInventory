@@ -105,6 +105,13 @@ def test_get_new_renders_vendor_and_engine_picker_not_sku_input(client, db_sessi
     assert 'name="engine_model"' in html
     # No more manual SKU input on this form.
     assert 'name="sku"' not in html
+    # MASTER_PLAN §20 — private-label two-number controls present.
+    assert 'name="is_house_brand"' in html
+    assert 'name="jaks_product_number"' in html
+    assert "Private label" in html
+    # The opaque masking / twin UI is gone.
+    assert 'twin_of_product_id' not in html
+    assert 'VNNNN' not in html
 
 
 # ── POST happy path ──────────────────────────────────────────────────────────
@@ -176,6 +183,31 @@ def test_post_sku_is_vendor_part_number(client, db_session):
 
     p = db_session.query(Product).get(pid)
     assert p.sku == "MULTIFIT-1"
+
+
+def test_post_private_label_uses_jaks_product_number_as_sku(client, db_session):
+    """MASTER_PLAN §20 private label: is_house_brand → SKU is the owner-typed JAKS
+    Product #, while the vendor part # still rides on the source for the PO."""
+    vendor = _seed_vendor(db_session)
+    cat = _seed_category(db_session, name="Heads", code="HEAD")
+    r = client.post("/products/new", data={
+        "vendor_id": str(vendor.id),
+        "vendor_part_number": "M2239250HH",
+        "is_house_brand": "on",
+        "jaks_product_number": "2239250S3",
+        "title": "Stage 3 cylinder head",
+        "category_id": str(cat.id),
+        "reorder_point": "0",
+        "vendor_core_charge": "0", "customer_core_charge": "0",
+    })
+    assert r.status_code == 303, r.text
+    pid = int(r.headers["location"].rsplit("/", 1)[-1])
+    p = db_session.query(Product).get(pid)
+    assert p.sku == "2239250S3"          # owner's number, not the vendor's M-number
+    assert p.is_house_brand is True
+    src = db_session.query(ProductVendorSource).filter(
+        ProductVendorSource.product_id == p.id).first()
+    assert src.vendor_part_number == "M2239250HH"   # vendor # still on the source (-> PO)
 
 
 # ── Required-field validations ───────────────────────────────────────────────
@@ -303,52 +335,4 @@ def test_classify_part_returns_suggested_cost_from_existing_source(client, db_se
     assert j["suggested_cost"] == 18.75
 
 
-# ── /products/twin-check ─────────────────────────────────────────────────────
-
-def test_twin_check_returns_null_when_no_match(client, db_session):
-    vendor = _seed_vendor(db_session)
-    r = client.get(
-        f"/products/twin-check?vendor_id={vendor.id}&part=NOMATCH-1"
-    )
-    assert r.status_code == 200
-    assert r.json() == {"twin": None}
-
-
-def test_twin_check_finds_match_on_other_vendor(client, db_session):
-    """The typed (vendor, part#) is brand-new but ANOTHER vendor sources the
-    same physical part# — that's a twin candidate."""
-    pai = _seed_vendor(db_session, name="PAI", code="PAI", vendor_number="9")
-    hhp = _seed_vendor(db_session, name="HHP", code="HHP", vendor_number="3")
-    cat = _seed_category(db_session, name="Injectors", code="INJ")
-    base = _seed_product_with_source(
-        db_session, pai, sku="JAKS-ISX-INJ-90001",
-        title="ISX Injector", part_number="311148",
-        category_id=cat.id, part_seq=1,
-    )
-    # HHP types the SAME part# — they should be prompted to twin off `base`.
-    r = client.get(
-        f"/products/twin-check?vendor_id={hhp.id}&part=311148"
-    )
-    assert r.status_code == 200
-    j = r.json()
-    assert j["twin"] is not None
-    assert j["twin"]["product_id"] == base.id
-    assert j["twin"]["sku"] == "JAKS-ISX-INJ-90001"
-    assert j["twin"]["vendor_name"] == "PAI"
-    assert j["twin"]["title"] == "ISX Injector"
-
-
-def test_twin_check_ignores_same_vendor_match(client, db_session):
-    """A match on the SAME vendor is a duplicate, not a twin — the duplicate
-    block on POST handles that path; twin-check must stay silent here."""
-    vendor = _seed_vendor(db_session)
-    cat = _seed_category(db_session, name="Injectors", code="INJ")
-    _seed_product_with_source(
-        db_session, vendor, sku="JAKS-INJ-90001",
-        part_number="311148", category_id=cat.id,
-    )
-    r = client.get(
-        f"/products/twin-check?vendor_id={vendor.id}&part=311148"
-    )
-    assert r.status_code == 200
-    assert r.json() == {"twin": None}
+# (twin-check removed with the SKU masking — MASTER_PLAN §20)

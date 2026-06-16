@@ -47,7 +47,7 @@ def test_form_renders_vendor_mode(Session, client):
     html = client.get(f"/products/quick-create-form?vendor_id={vendor_id}&doc_type=purchase_order").text
     assert 'name="vendor_part_number"' in html
     assert 'name="category_id"' in html
-    assert "generated automatically" in html
+    assert "vendor part number" in html
     assert "Suggest with AI" in html
     assert 'name="sku_suffix"' not in html      # no manual SKU in vendor mode
 

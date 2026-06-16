@@ -1156,9 +1156,9 @@ Grade path: R1 = stop money loss (C+→B), R2 = close vendor/QBO loops (B→A−
 > **and the importer** (`product_import_service.full_import`) de-masked — both now use the vendor part #
 > (importer is the catalog restore path, so this stops a re-import re-masking). ④ `sku_service.py` +
 > `backfill_sku_scheme.py` shelved dormant. ⑤ Tests updated to §20 — **1871 functional pass, 0 fails**
-> (66 reds are all pre-existing visual-baseline drift). **③ Private-label two-number UI = the one remaining
-> fast-follow** (backend `is_house_brand`/`jaks_product_number` already wired; UI not built — no private-label
-> products exist yet).
+> (66 reds are all pre-existing visual-baseline drift). ③ **Private-label two-number UI SHIPPED** — `products/new.html` reworked: is_house_brand
+> checkbox + JAKS Product # field (SKU = your number when on, vendor part # when off), masking/twin UI removed.
+> All of §20 now shipped (UNCOMMITTED beyond `500474b`, which carried steps ①②④⑤). Cleanup left (non-blocking): dead `/products/twin-check` route + quick-create "generated automatically" wording; INFO/GEN category junk is now browse/filter-only.
 
 ### 20.1 — The model (locked)
 - **Standard products (PAI, McBee/IMB — effectively all ~29.6k):** the SKU **is the vendor's real part

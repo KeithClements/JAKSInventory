@@ -510,50 +510,6 @@ async def product_ai_suggest(request: Request, db: Session = Depends(get_db),
     )
 
 
-# ── Twin-check (does another vendor already source this exact part#?) ─────────
-
-@router.get("/twin-check")
-def product_twin_check(
-    vendor_id: int, part: str, db: Session = Depends(get_db),
-):
-    """Returns {"twin": {...} | null}.
-
-    "twin" is set when an ACTIVE ProductVendorSource on a *different* vendor
-    already carries this part#. Multiple matches → the one with the highest
-    Product.part_seq wins (most-recently minted in its sequence). Used by the
-    new-product form to prompt the user to twin instead of duplicate.
-    """
-    part = (part or "").strip()
-    vendor_id = int(vendor_id) if vendor_id else 0
-    if not part or not vendor_id:
-        return {"twin": None}
-
-    match = (
-        db.query(ProductVendorSource)
-        .join(Product, Product.id == ProductVendorSource.product_id)
-        .join(Vendor, Vendor.id == ProductVendorSource.vendor_id)
-        .filter(
-            ProductVendorSource.vendor_part_number == part,
-            ProductVendorSource.vendor_id != vendor_id,
-            ProductVendorSource.is_active == True,  # noqa: E712
-        )
-        .order_by(Product.part_seq.desc().nullslast(), Product.id.desc())
-        .first()
-    )
-    if match is None:
-        return {"twin": None}
-    p = match.product
-    v = match.vendor
-    return {"twin": {
-        "product_id": p.id,
-        "sku": p.sku or "",
-        "vendor_name": (v.name if v is not None else "") or "",
-        "title": p.title or "",
-    }}
-
-
-# ── Detail ───────────────────────────────────────────────────────────────────
-
 # ── Quick Create (slide-over — called from quote "add non-stocked item") ──────
 
 def _quick_create_vendor_ctx(db: Session, vendor_id: int | None) -> dict:
