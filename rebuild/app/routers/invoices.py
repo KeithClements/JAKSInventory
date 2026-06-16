@@ -913,16 +913,10 @@ async def invoice_finalise(
     )
 
 
-# ── Print / PDF (unchanged) ───────────────────────────────────────────────────
+# ── Print / PDF ───────────────────────────────────────────────────────────────
 
-@router.get("/{invoice_id}/print", response_class=HTMLResponse)
-def invoice_print(invoice_id: int, request: Request, db: Session = Depends(get_db),
-                  user_id: int = Depends(get_current_user_id)):
-    inv = _get_invoice_or_redirect(db, invoice_id)
-    if isinstance(inv, RedirectResponse):
-        return inv
-
-    c = inv.customer
+def _customer_addr_lines(c) -> list[str]:
+    """Customer address block for printed documents (shared by print + PDF)."""
     addr_lines: list[str] = [ln for ln in [c.address_line1, c.address_line2] if ln and ln.strip()]
     city_parts = [p for p in [c.city, c.state] if p and p.strip()]
     city_line = ", ".join(city_parts)
@@ -934,20 +928,69 @@ def invoice_print(invoice_id: int, request: Request, db: Session = Depends(get_d
         addr_lines.append(city_line)
     if c.phone and c.phone.strip():
         addr_lines.append(c.phone.strip())
+    return addr_lines
 
-    # Invoice-level discount, computed by the model so the printed document agrees
-    # with the List total, the Preview panel, and the workspace totals panel.
-    discount_amount = inv.discount_amount
 
-    company = get_company_dict(db)
+def _invoice_core_slip_context(db: Session, inv) -> dict:
+    """
+    Companion Core Return Slip data for the printed invoice.
 
-    return templates.TemplateResponse(request, "invoices/print.html", {
+    When an invoice carries core charges, Print/PDF append a second page — a
+    return slip listing the cores the customer owes back, with a sign-off block.
+    Driven by the SAME open-cores query the After-Sale Service card uses, so the
+    slip and the workspace agree. Rendered ad-hoc: NO CoreSlip row is created here
+    (the customer-return/receive flow still owns CoreSlip creation — avoids dupes).
+    Returns invoice_cores=[] when there are none, so the slip page is omitted.
+    """
+    from app.constants import CoreDirection, CoreStatus
+    from app.models.core import CoreCharge
+    cores = (
+        db.query(CoreCharge)
+        .join(InvoiceLine, CoreCharge.invoice_line_id == InvoiceLine.id)
+        .filter(
+            InvoiceLine.invoice_id == inv.id,
+            CoreCharge.direction == CoreDirection.CUSTOMER_OWES_RETURN,
+            CoreCharge.status.in_([CoreStatus.OPEN, CoreStatus.PARTIAL]),
+        )
+        .order_by(CoreCharge.id)
+        .all()
+    )
+    deadlines = [c.return_deadline for c in cores if c.return_deadline]
+    return {
+        "invoice_cores": cores,
+        "core_slip_total_qty": sum(c.qty_outstanding for c in cores),
+        "core_slip_total_credit": round(
+            sum(c.customer_unit_charge * c.qty_outstanding for c in cores), 2
+        ),
+        "core_slip_deadline": min(deadlines) if deadlines else None,
+        "core_slip_grace_days": cores[0].grace_days_snapshot if cores else None,
+    }
+
+
+def _invoice_print_context(db: Session, inv, user_id: int) -> dict:
+    """Shared render context for the invoice print view and the PDF render."""
+    ctx = {
         "invoice": inv,
-        "customer_addr_lines": addr_lines,
-        "discount_amount": discount_amount,
-        "company": company,
+        "customer_addr_lines": _customer_addr_lines(inv.customer),
+        # Invoice-level discount, computed by the model so the printed document
+        # agrees with the List total, Preview panel, and workspace totals panel.
+        "discount_amount": inv.discount_amount,
+        "company": get_company_dict(db),
         "prepared_by": get_prepared_by(db, user_id),
-    })
+    }
+    ctx.update(_invoice_core_slip_context(db, inv))
+    return ctx
+
+
+@router.get("/{invoice_id}/print", response_class=HTMLResponse)
+def invoice_print(invoice_id: int, request: Request, db: Session = Depends(get_db),
+                  user_id: int = Depends(get_current_user_id)):
+    inv = _get_invoice_or_redirect(db, invoice_id)
+    if isinstance(inv, RedirectResponse):
+        return inv
+    return templates.TemplateResponse(
+        request, "invoices/print.html", _invoice_print_context(db, inv, user_id)
+    )
 
 
 @router.get("/{invoice_id}/pdf")
@@ -960,32 +1003,8 @@ def invoice_pdf(invoice_id: int, request: Request, db: Session = Depends(get_db)
     if isinstance(inv, RedirectResponse):
         return inv
 
-    c = inv.customer
-    addr_lines: list[str] = [ln for ln in [c.address_line1, c.address_line2] if ln and ln.strip()]
-    city_parts = [p for p in [c.city, c.state] if p and p.strip()]
-    city_line = ", ".join(city_parts)
-    if city_line and c.zip_code and c.zip_code.strip():
-        city_line += " " + c.zip_code.strip()
-    elif not city_line and c.zip_code and c.zip_code.strip():
-        city_line = c.zip_code.strip()
-    if city_line:
-        addr_lines.append(city_line)
-    if c.phone and c.phone.strip():
-        addr_lines.append(c.phone.strip())
-
-    # Invoice-level discount, computed by the model so the printed document agrees
-    # with the List total, the Preview panel, and the workspace totals panel.
-    discount_amount = inv.discount_amount
-
-    company = get_company_dict(db)
-
     html_str = templates.env.get_template("invoices/print.html").render(
-        request=request,
-        invoice=inv,
-        customer_addr_lines=addr_lines,
-        discount_amount=discount_amount,
-        company=company,
-        prepared_by=get_prepared_by(db, user_id),
+        request=request, **_invoice_print_context(db, inv, user_id)
     )
     try:
         from weasyprint import HTML

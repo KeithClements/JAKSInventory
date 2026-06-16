@@ -268,6 +268,30 @@
     .doc-foot .rt { text-align: right; }
     .page-shell .doc-footer{ display: none; }
 
+    /* ── Companion Core Return Slip (second page) ────────────────────────── */
+    .slip-note{
+      margin-top: 16px;
+      border: 1px solid var(--s200);
+      border-left: 3px solid var(--amber);   /* prints gray in B&W */
+      padding: 10px 14px;
+      font-size: 11.5px; color: var(--s500); line-height: 1.6;
+    }
+    .slip-note b{ color: var(--ink); font-weight: 600; }
+    .sig-row{
+      display: grid; grid-template-columns: 1fr 1fr; gap: 40px;
+      margin-top: 46px; page-break-inside: avoid;
+    }
+    .sig-cell .sig-cap{
+      font-family: var(--disp); font-weight: 600;
+      text-transform: uppercase; letter-spacing: .07em;
+      font-size: 10px; color: var(--s400); margin-bottom: 30px;
+    }
+    .sig-cell .sig-line{
+      border-top: 1px solid var(--ink); padding-top: 5px;
+      font-family: var(--mono); font-size: 9.5px;
+      color: var(--s400); text-transform: uppercase; letter-spacing: .04em;
+    }
+
     /* ── Print overrides ─────────────────────────────────────────────────── */
     @page { size: letter portrait; margin: 0; }
     @media print{
@@ -276,6 +300,8 @@
         width: auto; min-height: auto; margin: 0;
         box-shadow: none; padding: 0.7in 0.75in 0.65in;
       }
+      /* Core return slip always starts on a fresh sheet after the invoice */
+      .core-slip-page{ page-break-before: always; }
       .controls{ display: none !important; }
     }
   </style>
@@ -506,6 +532,14 @@
   </div>
 
 </div>{# /page-shell #}
+
+{# ── Companion Core Return Slip — printed only when this invoice carries core
+   charges. Mimics the invoice (shares the styles above); lists the cores the
+   customer owes back with a sign-off block. Omitted entirely when no cores. ── #}
+{% if invoice_cores %}
+  {% include "invoices/_core_return_slip_page.html" %}
+{% endif %}
+
 <script>
 (function () {
   var params = new URLSearchParams(window.location.search);
