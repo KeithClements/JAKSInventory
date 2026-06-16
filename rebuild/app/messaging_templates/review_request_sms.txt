@@ -1,0 +1,1 @@
+Hi {customer_name}, it's JAK's Diesel. Thanks again for your order! If your {sample_product} treated you right, would you leave us a quick review? {review_link} Reply STOP to opt out.

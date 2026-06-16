@@ -491,6 +491,70 @@ def customer_export_csv(
     )
 
 
+# ── Review-seeding exports ───────────────────────────────────────────────────
+# Cold-start social proof: turn finalized sales history into review-request
+# files. Multi-segment paths, so they never collide with /{customer_id}.
+# See app/services/review_outreach_service.py for the consent + dedupe rules.
+
+def _csv_response(filename: str, header: list[str], rows: list[list]) -> "StreamingResponse":
+    from fastapi.responses import StreamingResponse
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(header)
+    for r in rows:
+        writer.writerow(r)
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.get("/review-requests/judgeme.csv")
+def review_requests_judgeme_csv(
+    paid_only: bool = True,
+    db: Session = Depends(get_db),
+):
+    """Judge.me 'send review requests via CSV' importer file (product reviews).
+
+    paid_only=true (default) targets only paid invoices; pass paid_only=false to
+    include all finalized (open/partial/paid) sales.
+    """
+    from app.services.review_outreach_service import ReviewOutreachService
+
+    rows = ReviewOutreachService(db).judgeme_rows(paid_only=paid_only)
+    return _csv_response(
+        "judgeme_review_requests.csv",
+        ["reviewer_name", "reviewer_email", "product_id", "fulfilled_at", "quantity"],
+        [[r["reviewer_name"], r["reviewer_email"], r["product_id"], r["fulfilled_at"], r["quantity"]]
+         for r in rows],
+    )
+
+
+@router.get("/review-requests/google.csv")
+def review_requests_google_csv(
+    paid_only: bool = True,
+    db: Session = Depends(get_db),
+):
+    """Personal-ask outreach list for the Google Business Profile review track.
+
+    One row per customer (best customers first), with per-channel consent flags
+    so you only email/text people who agreed to it.
+    """
+    from app.services.review_outreach_service import ReviewOutreachService
+
+    rows = ReviewOutreachService(db).google_outreach_rows(paid_only=paid_only)
+    return _csv_response(
+        "google_review_outreach.csv",
+        ["customer_name", "company_name", "email", "phone", "allow_email",
+         "allow_sms", "orders", "total_spent", "last_purchase", "sample_product"],
+        [[r["customer_name"], r["company_name"], r["email"], r["phone"],
+          r["allow_email"], r["allow_sms"], r["orders"], r["total_spent"],
+          r["last_purchase"], r["sample_product"]] for r in rows],
+    )
+
+
 # ── Customer preview panel (HTMX dock) ───────────────────────────────────────
 # IMPORTANT: must be registered BEFORE /{customer_id} to avoid the int route
 # capturing "preview" as a customer_id parameter.
