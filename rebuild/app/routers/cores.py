@@ -744,7 +744,21 @@ def core_slip_doc_pdf(slip_id: int, request: Request, db: Session = Depends(get_
 
 # ── Vendor Core Return Sheet (VCR-XXXX) — group document ──────────────────────
 
-def _vcr_print_context(vcr: VendorCoreReturn, db: Session) -> dict:
+def _vcr_copies(copies: str) -> list[dict]:
+    """Which document copies the VCR print job renders.
+
+    Default (any value other than 'both'/'office') = a single vendor-facing copy
+    with no label — preserves the original /cores/vcr/{id}/print output. 'both'
+    renders a Vendor Copy + an Office Copy (one to ship, one for our records).
+    """
+    if copies == "both":
+        return [{"label": "Vendor Copy"}, {"label": "Office Copy"}]
+    if copies == "office":
+        return [{"label": "Office Copy"}]
+    return [{"label": None}]
+
+
+def _vcr_print_context(vcr: VendorCoreReturn, db: Session, copies: str = "") -> dict:
     company = get_company_dict(db)
 
     company_addr_lines = [
@@ -766,24 +780,27 @@ def _vcr_print_context(vcr: VendorCoreReturn, db: Session) -> dict:
         "company_addr_lines": company_addr_lines,
         "vendor_addr_lines": vendor_addr_lines_,
         "total_qty": total_qty,
+        "copies": _vcr_copies(copies),
     }
 
 
 @router.get("/vcr/{vcr_id}/print", response_class=HTMLResponse)
-def vcr_doc_print(vcr_id: int, request: Request, db: Session = Depends(get_db)):
+def vcr_doc_print(vcr_id: int, request: Request, copies: str = "",
+                  db: Session = Depends(get_db)):
     vcr = db.query(VendorCoreReturn).filter(VendorCoreReturn.id == vcr_id).first()
     if vcr is None:
         return RedirectResponse("/cores/", status_code=303)
-    ctx = _vcr_print_context(vcr, db)
+    ctx = _vcr_print_context(vcr, db, copies)
     return templates.TemplateResponse(request, "cores/print_vcr.html", ctx)
 
 
 @router.get("/vcr/{vcr_id}/pdf")
-def vcr_doc_pdf(vcr_id: int, request: Request, db: Session = Depends(get_db)):
+def vcr_doc_pdf(vcr_id: int, request: Request, copies: str = "",
+                db: Session = Depends(get_db)):
     vcr = db.query(VendorCoreReturn).filter(VendorCoreReturn.id == vcr_id).first()
     if vcr is None:
         return RedirectResponse("/cores/", status_code=303)
-    ctx = _vcr_print_context(vcr, db)
+    ctx = _vcr_print_context(vcr, db, copies)
     return render_pdf_or_fallback(
         request=request,
         templates=templates,
