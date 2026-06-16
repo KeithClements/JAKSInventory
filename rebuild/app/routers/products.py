@@ -114,11 +114,15 @@ def _product_search_filter(db: Session, q: str):
     nq = normalize_part(q)
     if nq:
         nlike = f"%{nq}%"
+        # Match the PRECOMPUTED normalized columns (DB-trigger maintained) instead
+        # of normalizing every row in-query — turns a multi-second scan of 216k+
+        # cross-references into a plain indexed-column read. Identical results:
+        # the stored value uses the same separator set as _norm_col.
         _xref_hit = (
             db.query(CrossReference.id)
             .filter(
                 CrossReference.product_id == Product.id,
-                _norm_col(CrossReference.ref_number).like(nlike),
+                CrossReference.ref_number_norm.like(nlike),
             )
             .exists()
         )
@@ -127,8 +131,8 @@ def _product_search_filter(db: Session, q: str):
             .filter(
                 ProductVendorSource.product_id == Product.id,
                 ProductVendorSource.is_active == True,  # noqa: E712
-                _norm_col(ProductVendorSource.vendor_part_number).like(nlike)
-                | _norm_col(ProductVendorSource.vendor_sku).like(nlike),
+                ProductVendorSource.vendor_part_number_norm.like(nlike)
+                | ProductVendorSource.vendor_sku_norm.like(nlike),
             )
             .exists()
         )
@@ -324,61 +328,263 @@ def product_preview_panel(
 
 # ── New ──────────────────────────────────────────────────────────────────────
 
-@router.get("/new", response_class=HTMLResponse)
-def product_new(request: Request, db: Session = Depends(get_db)):
+def _new_product_ctx(db: Session) -> dict:
+    """Render-context shared by GET /products/new and its 422 re-render."""
+    from app.constants import ENGINE_MAKES, ENGINE_MODELS_BY_MAKE
     default_markup = get_setting_value_db(db, "default_markup_pct", "30.0")
-    return templates.TemplateResponse(request, "products/new.html", {
+    return {
         "vendors": _vendors(db),
         "categories": _categories(db),
         "category_tree": ProductService(db).category_tree(),  # #7 nested picker
         "manufacturers": MANUFACTURERS,
+        "engine_makes": ENGINE_MAKES,
+        "engine_models_by_make": ENGINE_MODELS_BY_MAKE,
         "default_markup": default_markup,
-    })
+    }
+
+
+@router.get("/new", response_class=HTMLResponse)
+def product_new(request: Request, db: Session = Depends(get_db)):
+    return templates.TemplateResponse(request, "products/new.html",
+                                      _new_product_ctx(db))
 
 
 @router.post("/new", response_class=HTMLResponse)
 async def product_create(request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
+    # Pre-validate the auto-SKU fields BEFORE _parse_product_form so we emit the
+    # owner-locked error wording the UI promises (instead of falling through to
+    # ProductService.create_product's manual-SKU branch with "sku is required").
+    vendor_id_raw = str(form.get("vendor_id", "")).strip()
+    vendor_part_number = str(form.get("vendor_part_number", "")).strip()
+
+    def _error(msg: str):
+        ctx = _new_product_ctx(db)
+        ctx.update({"error": msg, "form_data": dict(form)})
+        return templates.TemplateResponse(request, "products/new.html",
+                                          ctx, status_code=422)
+
+    if not vendor_id_raw:
+        return _error("Vendor is required.")
+    if not vendor_part_number:
+        return _error("Vendor part number is required.")
+
     try:
         data = _parse_product_form(form)
+        # Owner rule: the new form mints the SKU; never trust a manual sku field.
+        data.pop("sku", None)
         product = _svc(db, user_id).create_product(data)
         return RedirectResponse(f"/products/{product.id}", status_code=303)
     except ValueError as exc:
-        default_markup = get_setting_value_db(db, "default_markup_pct", "30.0")
-        return templates.TemplateResponse(request, "products/new.html", {
-            "vendors": _vendors(db),
-            "categories": _categories(db),
-            "manufacturers": MANUFACTURERS,
-            "default_markup": default_markup,
-            "error": str(exc),
-            "form_data": dict(form),
-        }, status_code=422)
+        return _error(str(exc))
+
+
+# ── Classify-part (auto-fill category + engine + suggested cost) ─────────────
+
+@router.get("/classify-part")
+def product_classify_part(
+    vendor_id: int, part: str, db: Session = Depends(get_db),
+):
+    """Suggestion endpoint for the new-product form — given a typed vendor +
+    part#, return whatever classification + cost the system can already see.
+
+    All keys nullable on miss; never raises. The form may use this to pre-fill
+    the engine picker, category, and Vendor Cost when an existing import row
+    already knows the part.
+    """
+    from app.services.classification_service import ClassificationService
+    part = (part or "").strip()
+    vendor_id = int(vendor_id) if vendor_id else 0
+
+    out: dict = {
+        "category_id": None, "category_path": None,
+        "engine_make": None, "engine_model": None,
+        "suggested_cost": None,
+    }
+    if not part or not vendor_id:
+        return out
+
+    # ── Suggested cost — last cost we paid this vendor for this part# ──────
+    source = (
+        db.query(ProductVendorSource)
+        .filter(
+            ProductVendorSource.vendor_id == vendor_id,
+            ProductVendorSource.vendor_part_number == part,
+            ProductVendorSource.is_active == True,  # noqa: E712
+        )
+        .order_by(ProductVendorSource.id.desc())
+        .first()
+    )
+    if source is not None and source.vendor_cost:
+        out["suggested_cost"] = round(float(source.vendor_cost), 4)
+
+    # ── Category + engine suggestion ───────────────────────────────────────
+    sug = ClassificationService(db).classify(
+        title=part, tags="", extra_text="",
+        app_makes=[], app_models=[],
+    )
+    cat_id = sug.get("category_id")
+    if cat_id:
+        from app.models.product import ProductCategory
+        cat = db.query(ProductCategory).filter(ProductCategory.id == cat_id).first()
+        if cat is not None:
+            out["category_id"] = cat.id
+            out["category_path"] = cat.full_path
+    if sug.get("engine_manufacturer"):
+        out["engine_make"] = sug["engine_manufacturer"]
+    if sug.get("engine_model"):
+        out["engine_model"] = sug["engine_model"]
+    return out
+
+
+# ── AI suggest (Claude) — title + description + meta_description ─────────────
+
+@router.post("/ai-suggest", response_class=HTMLResponse)
+async def product_ai_suggest(request: Request, db: Session = Depends(get_db),
+                              user_id: int = Depends(get_current_user_id)):
+    """Generate AI-suggested copy for the product form.
+
+    Accepts form-encoded or JSON body (HTMX usually posts form data). All
+    fields optional — the service composes the prompt from whatever facts it
+    has. Returns an HTML fragment for HTMX swap into an ai-suggestion target.
+
+    Fail-soft: a missing/invalid API key or any Anthropic API failure renders
+    a friendly hint inside the same panel (200 OK, never 500).
+    """
+    from app.services.ai_description_service import AIDescriptionService
+    from app.models.product import ProductCategory
+
+    # Body parsing — prefer form (what HTMX sends) but accept JSON too.
+    ctype = (request.headers.get("content-type") or "").lower()
+    if ctype.startswith("application/json"):
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+    else:
+        body = dict(await request.form())
+
+    def _get(key: str) -> str | None:
+        v = body.get(key)
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
+
+    # Resolve human-readable names for the prompt (vendor → name, category → path).
+    vendor_name: str | None = None
+    vendor_id_raw = _get("vendor_id")
+    if vendor_id_raw and vendor_id_raw.isdigit():
+        v = db.query(Vendor).filter(Vendor.id == int(vendor_id_raw)).first()
+        if v is not None:
+            vendor_name = v.name
+
+    category_path: str | None = None
+    cat_id_raw = _get("category_id")
+    if cat_id_raw and cat_id_raw.isdigit():
+        cat = (
+            db.query(ProductCategory)
+            .filter(ProductCategory.id == int(cat_id_raw))
+            .first()
+        )
+        if cat is not None:
+            # full_path is the breadcrumb the catalog already uses.
+            category_path = getattr(cat, "full_path", None) or cat.name
+
+    suggestion = AIDescriptionService(db, user_id).suggest_for_product(
+        vendor_name=vendor_name,
+        vendor_part_number=_get("vendor_part_number"),
+        manufacturer=_get("manufacturer"),
+        brand=_get("brand"),
+        category_path=category_path,
+        engine_make=_get("engine_make"),
+        engine_model=_get("engine_model"),
+        current_title=_get("title"),
+        current_description=_get("description"),
+    )
+
+    return templates.TemplateResponse(
+        request,
+        "products/_ai_suggestion_panel.html",
+        {"suggestion": suggestion},
+    )
+
+
+# ── Twin-check (does another vendor already source this exact part#?) ─────────
+
+@router.get("/twin-check")
+def product_twin_check(
+    vendor_id: int, part: str, db: Session = Depends(get_db),
+):
+    """Returns {"twin": {...} | null}.
+
+    "twin" is set when an ACTIVE ProductVendorSource on a *different* vendor
+    already carries this part#. Multiple matches → the one with the highest
+    Product.part_seq wins (most-recently minted in its sequence). Used by the
+    new-product form to prompt the user to twin instead of duplicate.
+    """
+    part = (part or "").strip()
+    vendor_id = int(vendor_id) if vendor_id else 0
+    if not part or not vendor_id:
+        return {"twin": None}
+
+    match = (
+        db.query(ProductVendorSource)
+        .join(Product, Product.id == ProductVendorSource.product_id)
+        .join(Vendor, Vendor.id == ProductVendorSource.vendor_id)
+        .filter(
+            ProductVendorSource.vendor_part_number == part,
+            ProductVendorSource.vendor_id != vendor_id,
+            ProductVendorSource.is_active == True,  # noqa: E712
+        )
+        .order_by(Product.part_seq.desc().nullslast(), Product.id.desc())
+        .first()
+    )
+    if match is None:
+        return {"twin": None}
+    p = match.product
+    v = match.vendor
+    return {"twin": {
+        "product_id": p.id,
+        "sku": p.sku or "",
+        "vendor_name": (v.name if v is not None else "") or "",
+        "title": p.title or "",
+    }}
 
 
 # ── Detail ───────────────────────────────────────────────────────────────────
 
 # ── Quick Create (slide-over — called from quote "add non-stocked item") ──────
 
+def _quick_create_vendor_ctx(db: Session, vendor_id: int | None) -> dict:
+    """When the modal is opened from a PO (vendor known), pass the vendor +
+    category list so it renders the auto-SKU variant. No vendor → manual variant."""
+    ctx: dict = {}
+    if vendor_id:
+        v = db.query(Vendor).filter(Vendor.id == vendor_id).first()
+        if v is not None:
+            ctx["vendor"] = v
+            ctx["categories"] = _categories(db)
+    return ctx
+
+
 @router.get("/quick-create-form", response_class=HTMLResponse)
-def product_quick_create_form(request: Request):
-    return templates.TemplateResponse(request, "products/_quick_create.html")
+def product_quick_create_form(
+    request: Request,
+    vendor_id: int | None = None,
+    doc_type: str = "",
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse(
+        request, "products/_quick_create.html", _quick_create_vendor_ctx(db, vendor_id)
+    )
 
 
 @router.post("/quick-create", response_class=HTMLResponse)
 async def product_quick_create(request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
-    sku_suffix = str(form.get("sku_suffix", "")).strip().upper()
     title = str(form.get("title", "")).strip()
-    if not sku_suffix or not title:
-        # D-6 — re-render the panel at 200 so HTMX swaps it. A bare <p> at 422 is
-        # not swapped by HTMX → the user only sees the generic "Could not load the
-        # form (422)" fallback and loses their input. `error` + `form_data` feed
-        # UI-Builder's {% if error %} banner + value repopulation in the template.
-        return templates.TemplateResponse(request, "products/_quick_create.html", {
-            "error": "SKU and title are required.",
-            "form_data": dict(form),
-        })
-    sku = f"JAKS-{sku_suffix}"
+    vendor_id_raw = str(form.get("vendor_id", "")).strip()
     svc = _svc(db, user_id)
     # O5 — when the quick-create form leaves markup blank, inherit the configured
     # default_markup_pct rather than a hardcoded 30.
@@ -386,28 +592,58 @@ async def product_quick_create(request: Request, db: Session = Depends(get_db), 
     _pricing = PricingService(db)
     markup_raw = str(form.get("markup_pct", "")).strip()
     markup_pct = float(markup_raw) if markup_raw else _pricing.default_markup_pct()
+    cost = float(form.get("cost") or 0)
+
+    def _rerender(msg: str):
+        # D-6 — re-render the panel at 200 so HTMX swaps it (a 422 with a bare <p>
+        # isn't swapped → user sees the generic fallback and loses input). Carry
+        # vendor context back so the auto-SKU variant re-renders, not the manual one.
+        vid = int(vendor_id_raw) if vendor_id_raw.isdigit() else None
+        ctx = _quick_create_vendor_ctx(db, vid)
+        ctx.update({"error": msg, "form_data": dict(form)})
+        return templates.TemplateResponse(request, "products/_quick_create.html", ctx)
+
+    # Fields shared by both paths.
+    common = {
+        "title": title,
+        "description": str(form.get("description", "")).strip(),
+        "cost": cost,
+        "markup_pct": markup_pct,
+        "has_core": bool(form.get("has_core")),
+        "vendor_core_charge": float(form.get("vendor_core_charge") or 0),
+        "customer_core_charge": float(form.get("customer_core_charge") or 0),
+    }
+
+    if vendor_id_raw.isdigit():
+        # ── Auto-SKU path (opened from a PO — vendor known). SkuService mints the
+        # JAKS SKU from vendor digit + category (+ engine) and stamps a preferred
+        # ProductVendorSource with the supplier's part #. On a PO the entered unit
+        # cost IS the vendor's cost, so it seeds vendor_cost too. ──
+        vendor_part_number = str(form.get("vendor_part_number", "")).strip()
+        if not title or not vendor_part_number:
+            return _rerender("Title and vendor part # are required.")
+        cat_raw = str(form.get("category_id", "")).strip()
+        data = dict(common)
+        data.update({
+            "vendor_id": int(vendor_id_raw),
+            "vendor_part_number": vendor_part_number,
+            "vendor_cost": cost,
+            "category_id": int(cat_raw) if cat_raw.isdigit() else None,
+            "engine_make": str(form.get("engine_make", "")).strip(),
+            "engine_model": str(form.get("engine_model", "")).strip(),
+        })
+    else:
+        # ── Manual-SKU path (quote / SO / invoice / misc — no vendor). ──
+        sku_suffix = str(form.get("sku_suffix", "")).strip().upper()
+        if not sku_suffix or not title:
+            return _rerender("SKU and title are required.")
+        data = dict(common)
+        data["sku"] = f"JAKS-{sku_suffix}"
+
     try:
-        # Bug 3 fix: include description so the quick-create slide-over passes
-        # it through to the product record (the main /new form already does via
-        # _parse_product_form; the inline dict here was the gap).
-        product = svc.create_product({
-            "sku": sku,
-            "title": title,
-            "description": str(form.get("description", "")).strip(),
-            "cost": float(form.get("cost") or 0),
-            "markup_pct": markup_pct,
-            "has_core": bool(form.get("has_core")),
-            "vendor_core_charge": float(form.get("vendor_core_charge") or 0),
-            "customer_core_charge": float(form.get("customer_core_charge") or 0),
-        })
+        product = svc.create_product(data)
     except ValueError as exc:
-        # D-6 — same: re-render at 200 with the real validation message so HTMX
-        # swaps the panel in place and keeps the user's entered values, instead of
-        # the generic 422 fallback. UI-Builder renders error/form_data.
-        return templates.TemplateResponse(request, "products/_quick_create.html", {
-            "error": str(exc),
-            "form_data": dict(form),
-        })
+        return _rerender(str(exc))
     db.commit()
     sell = _pricing.sell_price_for(product)
     _detail = html.escape(json.dumps({
@@ -1227,6 +1463,11 @@ def _parse_product_form(form) -> dict:
 
     category_id = _opt_int("category_id")
 
+    # Auto-SKU-path inputs from the new-product form. Empty/zero on every other
+    # form (legacy update, autosave, quick-create) — the path selector in
+    # ProductService.create_product treats vendor_id as the on-switch.
+    vendor_id = _opt_int("vendor_id")
+
     return {
         "sku": str(form.get("sku", "")).strip().upper(),
         "title": str(form.get("title", "")).strip(),
@@ -1243,11 +1484,28 @@ def _parse_product_form(form) -> dict:
         "reorder_point": _int("reorder_point"),
         "notes": str(form.get("notes", "")).strip(),
         "internal_notes": str(form.get("internal_notes", "")).strip(),
+        # Vendor-SKU / new-product fields (ignored by update_product's whitelist).
+        "vendor_id": vendor_id,
+        "vendor_part_number": str(form.get("vendor_part_number", "")).strip(),
+        "vendor_cost": _opt_float("vendor_cost"),
+        "engine_make": str(form.get("engine_make", "")).strip(),
+        "engine_model": str(form.get("engine_model", "")).strip(),
+        # Private-label (MASTER_PLAN §20): mark a part house-brand and the SKU
+        # becomes the owner-typed JAKS Product # instead of the vendor part #.
+        "is_house_brand": bool(form.get("is_house_brand")),
+        "jaks_product_number": str(form.get("jaks_product_number", "")).strip(),
         # SEO / marketplace fields (Shopify + eBay export-sync) — only included
         # when the posting form carries them, so forms without the SEO card
         # (quick-create, new) can never blank stored values on save.
         **({"seo_title": str(form.get("seo_title", "")).strip()} if "seo_title" in form else {}),
         **({"seo_description": str(form.get("seo_description", "")).strip()} if "seo_description" in form else {}),
+        # AI "Suggest with AI" emits a meta_description field. On forms that carry
+        # it WITHOUT a dedicated SEO card (the new-product form) persist it to the
+        # seo_description column instead of dropping it. Where both fields exist
+        # (detail.html SEO card) the explicit seo_description above wins — the
+        # conditions are mutually exclusive so there is no key collision.
+        **({"seo_description": str(form.get("meta_description", "")).strip()}
+           if ("meta_description" in form and "seo_description" not in form) else {}),
         **({"search_keywords": str(form.get("search_keywords", "")).strip()} if "search_keywords" in form else {}),
         # Warranty fields
         "is_warrantable": bool(form.get("is_warrantable")),

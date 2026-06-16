@@ -632,8 +632,10 @@ class ProductImportService(BaseService):
             rows = rows[:limit]
         summary = {
             "mode": "full_import", "dry_run": dry_run,
-            "products_seen": len(rows), "created": 0, "skipped_existing": 0,
-            "skipped_no_sku": 0, "cross_refs": 0, "applications": 0, "images": 0,
+            "products_seen": len(rows), "created": 0,
+            "pricing_refreshed": 0, "costs_updated": 0, "skipped_existing": 0,
+            "skipped_no_sku": 0, "skipped_sku_collision": 0,
+            "cross_refs": 0, "applications": 0, "images": 0,
             "categories_created": 0, "vendor_sources": 0, "needs_review": 0,
             "classified": 0, "sample": [],
         }
@@ -648,12 +650,22 @@ class ProductImportService(BaseService):
         # the twin-SKU scheme works: the SAME part number from two vendors is two
         # distinct products (90001 vs 30001), never silently dropped. Recover each
         # parked source's vendor code via a join so the key matches the per-row key.
-        existing = {
-            ((vc or "").strip().upper(), s.strip().lower())
-            for s, vc in self.db.query(ProductVendorSource.vendor_sku, Vendor.vendor_code)
-                              .join(Vendor, Vendor.id == ProductVendorSource.vendor_id).all()
-            if s
-        }
+        # Dict (not a set) so re-import can refresh pricing on existing products.
+        existing: dict[tuple[str, str], tuple[int, int]] = {}
+        for s, vc, prod_id, src_id in (
+            self.db.query(
+                ProductVendorSource.vendor_sku,
+                Vendor.vendor_code,
+                ProductVendorSource.product_id,
+                ProductVendorSource.id,
+            )
+            .join(Vendor, Vendor.id == ProductVendorSource.vendor_id)
+            .all()
+        ):
+            if s:
+                key = ((vc or "").strip().upper(), s.strip().lower())
+                if key not in existing:
+                    existing[key] = (prod_id, src_id)
         cat_cache = {c.name.strip().lower(): c.id for c in self.db.query(ProductCategory).all()}
         # SKU-scheme guardrail (owner-locked 2026-06-06: ONE digit per vendor):
         # each row's vendor comes from its feed-SKU prefix (JAKS-PAI-… /
@@ -691,20 +703,16 @@ class ProductImportService(BaseService):
         # Snapshot vendor ids + digits as plain values: the chunked commit below
         # expunges the session every 500 rows, detaching these ORM instances.
         vendor_ids_by_code = {c: v.id for c, v in vendors_by_code.items()}
-        digits_by_code = {c: (v.vendor_number or "").strip() for c, v in vendors_by_code.items()}
         names_by_code = {c: v.name for c, v in vendors_by_code.items()}
         classifier = ClassificationService(self.db)   # §18.6 — rules cache built once
-        # JAKS SKU scheme: mint JAKS-[ENGINE]-[CATEGORY]-[V][NNNN] at import time.
-        # Seed the per-(engine,category) sequence counters from the DB so re-imports
-        # continue the numbering instead of colliding.
-        cat_code_cache: dict[int, str] = {}
-        seq_counters: dict[tuple[str, str], int] = {}
-        for ec, cc, mx in (
-            self.db.query(Product.engine_code, Product.category_code, func.max(Product.part_seq))
-            .filter(Product.part_seq.isnot(None))
-            .group_by(Product.engine_code, Product.category_code).all()
-        ):
-            seq_counters[(ec or "", cc or "")] = mx or 0
+        # MASTER_PLAN §20: the customer-facing SKU is the vendor's real part number
+        # (p["pai_part"]) — no opaque masking. Seed a guard with every existing SKU
+        # so a part# that collides with another product is skipped, not crashed on
+        # the UNIQUE(sku) index (part numbers are not globally unique across vendors).
+        minted_skus: set[str] = {
+            (s or "").strip().lower()
+            for (s,) in self.db.query(Product.sku).all()
+        }
         seen: set[tuple[str, str]] = set()
         committed = 0
 
@@ -720,13 +728,54 @@ class ProductImportService(BaseService):
             # here dies on feeds > 500 rows.
             row_code = _row_vendor_code(p)
             k = (row_code, sku.strip().lower())
-            if k in existing or k in seen:
+            if k in seen:
                 summary["skipped_existing"] += 1
                 continue
             seen.add(k)
 
+            if k in existing:
+                # Product already exists — refresh sell price and vendor cost from
+                # the scraper export rather than silently skipping.
+                prod_id, src_id = existing[k]
+                new_price   = _to_float(p.get("price"))
+                new_compare = _to_float(p.get("compare_at"))
+                new_cost    = _to_float(p.get("cost")) if p.get("cost") else None
+
+                has_price  = new_price is not None
+                has_cost   = new_cost is not None and new_cost > 0
+                if has_price:
+                    summary["pricing_refreshed"] += 1
+                if has_cost:
+                    summary["costs_updated"] += 1
+                if not has_price and not has_cost:
+                    summary["skipped_existing"] += 1
+
+                if not dry_run:
+                    product = self.db.get(Product, prod_id)
+                    src     = self.db.get(ProductVendorSource, src_id)
+                    if product is not None:
+                        if has_price and abs((product.price_override or 0.0) - new_price) >= 0.005:
+                            product.price_override = new_price
+                        if new_compare is not None and abs((product.compare_at_price or 0.0) - new_compare) >= 0.005:
+                            product.compare_at_price = new_compare
+                        if has_cost and src is not None:
+                            old_cost = src.vendor_cost or 0.0
+                            if abs(old_cost - new_cost) >= 0.005:
+                                src.vendor_cost = new_cost
+                                src.last_cost_updated_at = datetime.utcnow()
+                                self.db.add(ProductCostHistory(
+                                    product_id=prod_id, vendor_id=src.vendor_id,
+                                    old_cost=old_cost, new_cost=new_cost,
+                                    changed_by_id=self.current_user_id,
+                                    notes="Full import refresh (scraper cost)",
+                                ))
+                    committed += 1
+                    if committed % 500 == 0:
+                        self.db.commit()
+                        self.db.expunge_all()
+                continue
+
             row_vendor_id = vendor_ids_by_code[row_code]
-            row_digit = digits_by_code[row_code]
 
             cat_id = self._resolve_category(p["type"], cat_cache, summary, dry_run)
             # §18.6 — refine below the Shopify-Type category + derive engine make.
@@ -735,15 +784,15 @@ class ProductImportService(BaseService):
                 app_makes=[_split_two(a)[0] for a in p["apps"]],
                 app_models=[_split_two(a)[1] for a in p["apps"]],
             )
-            # JAKS SKU scheme — mint the customer-facing SKU now; the raw CSV SKU is
-            # parked on the vendor source (vendor_sku, below) so it stays searchable.
-            # The (engine, category) sequence is SHARED across vendors by design —
-            # the same part from a 2nd vendor reads 90001 ↔ 30001 (twin rule).
-            ecode = _engine_code(cls["engine_model"] or "")
-            ccode = self._sku_cat_code(cls["category_id"] or cat_id, p["type"], cat_code_cache)
-            new_seq = seq_counters.get((ecode, ccode), 0) + 1
-            seq_counters[(ecode, ccode)] = new_seq
-            new_sku = assemble_sku(ccode, row_digit, new_seq, engine_code=ecode)
+            # MASTER_PLAN §20 — the customer-facing SKU IS the vendor's real part
+            # number; the raw CSV SKU is still parked on the vendor source
+            # (vendor_sku, below) so it stays searchable. Skip (don't crash) if the
+            # part# collides with an existing SKU.
+            prod_sku = (p["pai_part"] or sku).strip()
+            if prod_sku.lower() in minted_skus:
+                summary["skipped_sku_collision"] += 1
+                continue
+            minted_skus.add(prod_sku.lower())
             if cls["needs_review"]:
                 summary["needs_review"] += 1
             if cls["category_id"] or cls["engine_manufacturer"]:
@@ -777,8 +826,7 @@ class ProductImportService(BaseService):
             p_uom         = (p.get("unit_of_measure") or "EA") or "EA"
 
             product = Product(
-                sku=new_sku,                                     # JAKS scheme SKU (raw CSV sku parked on the vendor source)
-                engine_code=ecode, category_code=ccode, part_seq=new_seq,
+                sku=prod_sku,                                    # MASTER_PLAN §20: SKU = vendor part #
                 title=p["title"][:500],
                 # §18.2 — Brand = the parts brand (seeded Brand rows: PAI /
                 # Interstate-McBee / …), keyed off the row's vendor.

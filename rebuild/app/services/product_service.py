@@ -86,11 +86,29 @@ class ProductService(BaseService):
     def create_product(self, data: dict) -> Product:
         """
         Create a new product record.
-        Validates: sku uniqueness.
-        data keys: sku, title, description, brand, manufacturer, cost,
-                   markup_pct, category_id, has_core, vendor_core_charge,
-                   customer_core_charge, unit_of_measure, ...
+
+        Two paths, decided by what's in ``data``:
+          • Vendor-SKU path (the new product form): when ``vendor_id`` is
+            provided the customer-facing SKU is the vendor's real part number
+            (MASTER_PLAN §20) — unless the part is private-label
+            (``is_house_brand``), where the owner-typed JAKS Product # is used
+            instead and the vendor part# still rides on the source for the PO.
+            The vendor's part# is stamped on a ProductVendorSource (preferred)
+            and a VENDOR_ALT CrossReference so a search for it finds the product.
+          • Manual-SKU path (legacy callers: quick-create slide-over, importer,
+            tests): ``data['sku']`` is supplied directly and stamped as-is. The
+            auto-SKU columns (engine_code/category_code/part_seq) are left blank.
+
+        Required (vendor-SKU): vendor_id, vendor_part_number.
+        Optional (vendor-SKU): vendor_cost, engine_make, engine_model,
+                               is_house_brand, jaks_product_number.
         """
+        # ── Path selector — vendor_id present means "vendor source known" ──────
+        vendor_id = data.get("vendor_id")
+        if vendor_id:
+            return self._create_product_with_auto_sku(data)
+
+        # ── Manual-SKU path (legacy) ────────────────────────────────────────────
         sku = data.get("sku", "").strip().upper()
         if not sku:
             raise ValueError("sku is required")
@@ -108,6 +126,7 @@ class ProductService(BaseService):
             sku=sku,
             title=data.get("title", ""),
             description=data.get("description", ""),
+            seo_description=data.get("seo_description", ""),
             brand=data.get("brand", ""),
             manufacturer=data.get("manufacturer", ""),
             cost=float(data.get("cost", 0.0)),
@@ -135,6 +154,156 @@ class ProductService(BaseService):
             entity_id=product.id,
             action=AuditAction.CREATED,
             new_value={"sku": sku, "title": product.title},
+        )
+        self.db.commit()
+        return product
+
+    # ── Auto-SKU orchestrator (new product form) ──────────────────────────────
+
+    def _create_product_with_auto_sku(self, data: dict) -> Product:
+        """The vendor-SKU path of ``create_product`` (MASTER_PLAN §20). The
+        customer-facing SKU is the vendor's real part number for standard parts,
+        or the owner-typed JAKS Product # for private-label (``is_house_brand``)
+        parts; either way the vendor's part# is stamped on a preferred
+        ProductVendorSource AND a VENDOR_ALT CrossReference so searches find it.
+
+        All-or-nothing: any failure rolls back the whole transaction so we never
+        leave a Product behind without its SKU + vendor source + cross-ref.
+        """
+        vendor_id = int(data["vendor_id"])
+        vendor = self.db.query(Vendor).filter(Vendor.id == vendor_id).first()
+        if vendor is None:
+            raise ValueError(f"Vendor {vendor_id} not found")
+
+        part_number = (data.get("vendor_part_number") or "").strip()
+        if not part_number:
+            raise ValueError("Vendor part number is required")
+
+        # Reject a duplicate (vendor, part#) — that exact source already exists.
+        collision = (
+            self.db.query(ProductVendorSource)
+            .filter(
+                ProductVendorSource.vendor_id == vendor_id,
+                ProductVendorSource.vendor_part_number == part_number,
+                ProductVendorSource.is_active == True,  # noqa: E712
+            )
+            .first()
+        )
+        if collision is not None:
+            existing_sku = (collision.product.sku
+                            if collision.product is not None else "?")
+            raise ValueError(
+                f"This vendor already sources part# {part_number} "
+                f"(product {existing_sku})."
+            )
+
+        self._validate_core_charges(
+            bool(data.get("has_core", False)),
+            data.get("vendor_core_charge", 0.0),
+            data.get("customer_core_charge", 0.0),
+        )
+
+        # Customer-facing SKU (MASTER_PLAN §20): standard parts use the vendor's
+        # real part number; private-label parts (is_house_brand) use the owner's
+        # own JAKS Product # while the vendor part# still rides on the source for
+        # the PO. No opaque masking — sku_service is shelved (§20.4).
+        engine_make = (data.get("engine_make") or "").strip()
+        engine_model = (data.get("engine_model") or "").strip()
+        is_house_brand = bool(data.get("is_house_brand", False))
+        if is_house_brand:
+            customer_sku = (data.get("jaks_product_number")
+                            or data.get("sku") or "").strip().upper()
+            if not customer_sku:
+                raise ValueError(
+                    "Enter your JAKS Product # for a private-label part."
+                )
+        else:
+            customer_sku = part_number
+
+        # Unique-sku guard: part numbers are not globally unique across vendors,
+        # so fail loud with an actionable message rather than save a duplicate.
+        clash = self.db.query(Product).filter(Product.sku == customer_sku).first()
+        if clash is not None:
+            raise ValueError(
+                f"SKU '{customer_sku}' already exists (product_id={clash.id}). "
+                f"Another vendor may use the same part number — mark this part "
+                f"private-label and give it a distinct JAKS Product #."
+            )
+
+        product = Product(
+            sku=customer_sku,
+            title=data.get("title", ""),
+            description=data.get("description", ""),
+            seo_description=data.get("seo_description", ""),
+            brand=data.get("brand", ""),
+            manufacturer=data.get("manufacturer", ""),
+            engine_manufacturer=engine_make,
+            engine_model=engine_model,
+            is_house_brand=is_house_brand,
+            cost=float(data.get("cost", 0.0)),
+            markup_pct=data.get("markup_pct"),
+            price_override=data.get("price_override"),
+            category_id=data.get("category_id"),
+            has_core=bool(data.get("has_core", False)),
+            vendor_core_charge=float(data.get("vendor_core_charge", 0.0)),
+            customer_core_charge=float(data.get("customer_core_charge", 0.0)),
+            unit_of_measure=data.get("unit_of_measure", "EA"),
+            reorder_point=int(data.get("reorder_point", 0)),
+            max_stock_level=data.get("max_stock_level"),
+            weight_lbs=float(data.get("weight_lbs", 0.0)),
+            is_returnable=bool(data.get("is_returnable", True)),
+            return_policy_type=data.get("return_policy_type", "standard"),
+            notes=data.get("notes", ""),
+            internal_notes=data.get("internal_notes", ""),
+            status=ProductStatus.ACTIVE,
+        )
+        self.db.add(product)
+        self.db.flush()  # product.id available below
+
+        # Vendor source — preferred + active. vendor_sku mirrors the typed part#
+        # so it stays searchable through the precomputed _norm columns. (Cost is
+        # optional on the new form; missing/None → 0.0 on the vendor source.)
+        source = ProductVendorSource(
+            product_id=product.id,
+            vendor_id=vendor_id,
+            vendor_part_number=part_number,
+            vendor_sku=part_number,
+            vendor_cost=float(data.get("vendor_cost") or 0.0),
+            is_preferred=True,
+            is_active=True,
+        )
+        self.db.add(source)
+
+        # VENDOR_ALT cross-reference — guarded against the
+        # (product_id, ref_type, ref_number) unique index. Stored uppercased
+        # to match add_cross_reference's normalization.
+        ref_number = part_number.upper()
+        existing_xref = (
+            self.db.query(CrossReference)
+            .filter(
+                CrossReference.product_id == product.id,
+                CrossReference.ref_type == CrossRefType.VENDOR_ALT,
+                CrossReference.ref_number == ref_number,
+            )
+            .first()
+        )
+        if existing_xref is None:
+            self.db.add(CrossReference(
+                product_id=product.id,
+                ref_type=CrossRefType.VENDOR_ALT,
+                ref_number=ref_number,
+                brand=vendor.name or "",
+                status="proven",
+            ))
+
+        self.audit(
+            entity_type=EntityType.PRODUCT,
+            entity_id=product.id,
+            action=AuditAction.CREATED,
+            new_value={
+                "sku": product.sku, "title": product.title,
+                "vendor_id": vendor_id, "vendor_part_number": part_number,
+            },
         )
         self.db.commit()
         return product
@@ -182,7 +351,7 @@ class ProductService(BaseService):
             "reorder_point", "max_stock_level", "weight_lbs", "is_returnable",
             "return_policy_type", "return_window_override_days",
             "restock_fee_percent", "notes", "internal_notes",
-            "engine_manufacturer", "engine_model",
+            "engine_manufacturer", "engine_model", "is_house_brand",
             # SEO / marketplace (Shopify + eBay export-sync)
             "seo_title", "seo_description", "search_keywords",
             # Warranty fields

@@ -127,8 +127,8 @@ def test_full_import_creates_products_and_relations(db):
     ProductImportService(db, None).full_import(_shopify_csv(), dry_run=False)
     p = _product_by_pai(db, "111")
     assert p is not None
-    # SKU minted on the JAKS scheme; the raw CSV number is parked on the vendor source
-    assert p.sku.startswith("JAKS-") and p.sku != "JAKS-PAI-111"
+    # MASTER_PLAN §20: SKU = the vendor's real part #; raw CSV number parked on the source
+    assert p.sku == "111"
     _s0 = db.query(ProductVendorSource).filter(ProductVendorSource.product_id == p.id).first()
     assert _s0.vendor_sku == "JAKS-PAI-111"
     # Pricing mapping — the cardinal rule
@@ -160,7 +160,10 @@ def test_full_import_is_idempotent(db):
     svc = ProductImportService(db, None)
     svc.full_import(_shopify_csv(), dry_run=False)
     summ2 = svc.full_import(_shopify_csv(), dry_run=False)
-    assert summ2["created"] == 0 and summ2["skipped_existing"] == 2
+    # Re-import creates no new products and refreshes pricing on existing ones.
+    assert summ2["created"] == 0
+    assert summ2["pricing_refreshed"] == 2  # both have Variant Price — counts as refreshed
+    assert summ2["skipped_existing"] == 0
     assert db.query(Product).count() == 2  # no duplicates
 
 

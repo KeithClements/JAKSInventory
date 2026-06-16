@@ -184,30 +184,19 @@ def _mini_shopify_csv() -> str:
     return buf.getvalue()
 
 
-def test_e2e_import_then_backfill_produces_scheme_skus(db_session):
-    """The owner's real flow: scraper Full Import, then run the backfill. Proves the
-    scheme is applied throughout — products end up with vendor-independent SKUs and
-    their old PAI number is parked (still searchable)."""
+def test_e2e_import_produces_vendor_part_number_skus(db_session):
+    """MASTER_PLAN §20: Full Import sets the customer-facing SKU to the vendor's
+    real part number; the raw CSV SKU is still parked on the vendor source so it
+    stays searchable. (The opaque JAKS scheme is shelved — see §20.)"""
     db = db_session
     from app.services.product_import_service import ProductImportService
 
-    # R1-16: full_import no longer auto-creates the vendor (vendor digit is
-    # owner-assigned) — seed PAI the way the live DB has it.
     _vendor(db, "PAI Industries", "PAI", "9")
     ProductImportService(db, None).full_import(_mini_shopify_csv(), dry_run=False)
-    pai = db.query(Vendor).filter(Vendor.vendor_code == "PAI").first()
-    assert pai.vendor_number == "9"
-    # the importer now mints the JAKS scheme SKU DIRECTLY — no backfill step needed
     src = db.query(ProductVendorSource).filter_by(vendor_part_number="111").first()
     p = src.product
-    assert p.sku == "JAKS-855-ENG-90001"                  # engine 855 / ENGINE PARTS / vendor 9
-    assert p.part_seq == 1
-    assert src.vendor_sku == "JAKS-PAI-111"               # old PAI number parked + searchable
-
-    # the standalone backfill is now idempotent on an already-schemed catalog
-    SkuService(db).regenerate_catalog(apply=True)
-    db.refresh(p)
-    assert p.sku == "JAKS-855-ENG-90001"
+    assert p.sku == "111"                       # SKU = vendor part #, no masking
+    assert src.vendor_sku == "JAKS-PAI-111"     # raw CSV sku parked + searchable
 
 
 # ── DB: catalog backfill ────────────────────────────────────────────────────────

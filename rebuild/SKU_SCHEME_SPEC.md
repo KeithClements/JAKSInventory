@@ -1,5 +1,16 @@
 # JAKS Customer-Facing SKU Scheme — Spec & Build Record
 
+> ## ⚠️ REVERSED 2026-06-16 — this opaque scheme is no longer the direction.
+> After an owner interview the masking scheme below was judged too confusing (10% of SKUs were
+> meaningless `JAKS-GEN-#####`, 2,730 kits under a junk `INFO` code, cryptic derived codes, and it hid
+> the vendor part number staff need to order/cross-ref/test). **The customer-facing SKU is now simply the
+> vendor's real part number** for standard products; only **private-label** parts (`products.is_house_brand`)
+> carry a separate owner-typed **JAKS Product #** (e.g. `2239250S3`) while the vendor part # still prints
+> on the PO. The revert was applied to the live catalog (29,659 rows, 0 collisions); the create path and
+> importer were de-masked; this `sku_service.py` + `scripts/backfill_sku_scheme.py` are **shelved (dormant,
+> not deleted)** as a possible future feature. **Authoritative spec: MASTER_PLAN.md §20.** Everything below
+> is retained for historical context only.
+
 *Owner-locked 2026-06-06 (interview) · BUILT the same night on `backend/workflow-series-3`.*
 *Supersedes the 2026-05-22 `JAKS-[VENDOR_CODE]-[PART#]` decision (that format leaked the vendor).*
 

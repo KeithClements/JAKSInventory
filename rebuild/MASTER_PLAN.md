@@ -212,6 +212,22 @@ All 13 services in `/app/services/`:
 
 ## 9. Build Status — What Is NOT YET BUILT ❌
 
+> **✅ 2026-06-14 — STATUS REFRESHER. 8 of the 10 audit blockers below are closed; live testing now active on `Testing Feedback/TESTING_FEEDBACK_R4_GOLIVE_TRIAL.md`.**
+> Ground-truthed against `HEAD` (`b721d19`) + working-tree edits. The catalog now has the **JAKS SKU scheme APPLIED at scale**: `select count(*) from products where part_seq is not null` = **27,508 of 27,509** — auto-mint + backfill ran, the 13k+ leak SKUs (`JAKS-PAI-#`) are **gone** (0 rows). **CDN-only JS is gone** (`base.html:24-26` self-hosts Alpine 3.14.9 / HTMX 1.9.12 / Chart 4.4.3, the §8 lib pin). **Suggested-sell chip tier-pricing bug FIXED** (`_line_row.html:484-488 / 503-508` explicitly omit price, route through `PricingService.sell_price_for_tier` — comments call out the audit fix). **Hardcoded `InvoiceService(db, 1)` audit user gone** (0 router matches). **AR aging bar keys consolidated** (`_balance_widget.html` now uses backend's `current/1_30/31_60/61_90/over_90`). **Credit-hold dual state synced** (`customer_service.py:155,186` syncs `customer_status` ↔ `CustomerFlag.CREDIT_HOLD`).
+>
+> **Of the 10 audit blockers — 8 closed, 1 mitigated, 1 partial:**
+> - **#1 FK + child indexes ✅** · **#2 deposit-cancel orphan ✅** · **#3 reports COGS double-count ✅** (lines 229/346 are now docstring shapes, the line-type filter takes care of cores) · **#4 suggested-sell tier bypass ✅** · **#6 credit-hold dual state ✅** · **#7 hardcoded audit user ✅** · **#8 CDN libs ✅** · **#10 AR aging keys ✅**.
+> - **#5 `Product.selling_price` 30% fallback ⚠️ mitigated** — the property is still 30% (`product.py:311`), but every callsite that prices a customer (search, CSV, line-add, pickers) routes through `PricingService.sell_price_for(product)` which respects the setting; the property docstring documents the workaround. Leave as-is unless the model property leaks into a customer-facing path.
+> - **#9 PAI cost data 🚨 STILL ZERO** — `select count(*) from products where cost = 0 or cost is null` = **27,508 of 27,509**. The SKU half of #9 is done; the **cost half is unresolved** — every margin reads ~100% and inventory valuation reports ~$0. Until the owner runs the PAI Info → Pricing-Update import, do NOT trust dashboard margin / sales-by-product / inventory-valuation numbers. (This is data-ops, not a code fix — `scripts/full_import.py` is the route.)
+>
+> **In flight (uncommitted — DO NOT collide):**
+> - **Auto-SKU + fast vendor part# entry on `/products/new`** (this session): `app/routers/products.py` (+169), `app/services/product_service.py` (+195), `app/templates/products/new.html` (+420), `tests/test_products_new_form.py` (NEW, 414 lines, **14/14 green**), `tests/test_regression_b1_b2.py` (+5). New endpoints `GET /products/classify-part` + `GET /products/twin-check`. POST writes Product + `ProductVendorSource(is_preferred=True)` + `CrossReference(VENDOR_ALT, ref_number=typed part#)` for search hot-path. Legacy callers (importer, quick-create) take the manual-SKU branch unchanged. E2E verified — owner can commit when satisfied.
+> - 11 other files in the working-tree pile (`database.py`, `main.py`, `models/product.py`, `routers/quotes.py`, `services/quote_service.py`, `services/sales_order_service.py`, `services/search_service.py`, `base.html`, `templates/sales_orders/_header_actions.html`, `templates/invoices/_header_actions.html`, `services/search_index.py`) — separate work piles from the prior 2026-06-10..13 wave (Shopify sync, image supersession, search hardening); commit cadence is owner's call.
+>
+> **Live testing reality:** owner is filling in `Testing Feedback/TESTING_FEEDBACK_R4_GOLIVE_TRIAL.md` right now. The R4 trial sheet is the **5-lifecycle gate** (Purchasing spine A · Revenue in-stock B · Revenue backorder+deposit C · Cores D · A/R + statements E) + a 20-section screen-by-screen pass + the data-integrity spot checks. **No marks are filled in yet** — treat every workflow as "code says ready, owner-verification pending."
+>
+> *The 2026-06-07 audit banner below is retained as the prior milestone.*
+
 > **🔍 2026-06-07 — FULL 16-SUBSYSTEM CODE AUDIT (16 auditors → adversarial risk verification → synthesis). Overall grade: C+. Verdict: "usable for daily parts ops AFTER a ~10-item fix list; QBO is Phase 1.1, not Phase 1." Full report: `STATUS_REPORT_2026-06-07.md`.**
 > Ground-truthed against the working tree (incl. dirty/untracked WIP), not plan prose. The money spine (quote→SO→PO→receive→invoice→payment) runs end-to-end with atomic finalize + real-ledger void rollback — it will NOT corrupt a clean transaction. What holds the grade at C+ is a cluster of *silent* correctness defects + an unloaded cost/SKU data layer.
 >
@@ -334,6 +350,8 @@ wired** into quote/invoice line-add (`4f4b5db`) · **demo-reset production-gated
 13k+ product catalog imported + paginated + images + schema-v2 pricing · **JAKS SKU scheme** (`fc57750`) ·
 **Vendor Returns List L1→L2** (`6809b47`) · 3-way match write-side correction (`test_match_correct`). **1079 tests green.**
 
+**Landed since (audit-blocker close-out + entry-flow rewrite, 2026-06-08 → 06-14):** **8 of 10 audit blockers closed in-tree** (FK enforcement, deposit-cancel orphan, reports COGS double-count, suggested-sell tier bypass, credit-hold dual state, hardcoded audit user, CDN libs self-hosted, AR aging keys) · **Shopify push as master**: ERP-as-master sync (`d859034`), Smart-Import image-URL delta (`46a68d1`), clean ATL images supersede watermarked PAI (`b45b257`), safe status-preserving re-publish for live listings (`b721d19`) · **Multi-vendor mint live** (`f18aec9`/`118c9da`/`24f4ce1`): full_import resolves vendor per row from feed-SKU prefix, IMB mints on digit `3` (PAI = `9`) — 27,508 of 27,509 products now carry a real `part_seq`-stamped JAKS SKU, the leak SKUs are gone · **Auto-SKU + fast vendor part# entry on `/products/new`** (this session, uncommitted): vendor pick + Vendor Part # typing auto-fills engine/category/cost via `GET /products/classify-part`, twin-detect via `GET /products/twin-check`, writes `ProductVendorSource(preferred=True)` + `CrossReference(VENDOR_ALT)` search mirror; 14/14 new tests green; E2E verified end-to-end.
+
 ### 9.1 — Genuinely not built / deferred (BACKEND)
 
 | Feature | Status | Notes |
@@ -381,6 +399,28 @@ eBay listings · full TaxJar (multi-state) · ESN lookup scraper live · serial-
 ---
 
 ## 10. Next Build Queue (Priority Order)
+
+> **🟢 2026-06-14 — LIVE-TESTING PRIORITY. Owner is hand-walking the R4 GOLIVE TRIAL sheet. Stability + small UX papercuts now outrank ambitious feature work — every recommendation below assumes that posture.**
+>
+> **Top of queue (in this order):**
+>
+> 1. **Owner-driven papercut backlog** — whatever the R4 trial sheet (`Testing Feedback/TESTING_FEEDBACK_R4_GOLIVE_TRIAL.md`) surfaces gets dispatched as one-off seam/template fixes. Treat each ❌/⚠️ as the only thing the next lane works on until cleared. **Do NOT start a new feature series while live-testing is open.**
+> 2. **PAI cost-data backfill (data-ops, not code)** — 27,508 / 27,509 products have `cost = 0`. Owner runs `scripts/full_import.py` against the latest PAI Info `pai_shopify_all.csv` (or `Pricing Update` mode) — no code change needed. **Blocks** trustworthy dashboard margins / Sales-by-Product / Inventory Valuation reports. Until done, mute or banner those reports in live use to avoid misreading $0 valuations as data corruption.
+> 3. **AI product description automation** *(owner ask 2026-06-14)* — speeds up the "<3 min to add a vendor + product" go-live gate (§11). **Pick Claude over Grok** for this — better instruction-following + structured-output for high-volume catalog work. Two-stage build (Sprint 6 below); the templates run on Sonnet 4.6 first, then Haiku 4.5 sweeps the backlog. Builds **on top of** the just-shipped auto-SKU + fast vendor part# entry flow — same form, same `ProductService.create_product` orchestrator.
+>
+> **SPRINT 6 — AI Description Generator** *(plan-forward, not yet built)*
+>
+> *Goal:* Owner picks vendor, types vendor part #, clicks **"Suggest description"** → Claude returns title + description + meta-description + SEO keywords, owner skims, accepts, saves. Same flow for batch back-fill against the existing 27k-product catalog.
+>
+> **6.1 — Claude client + settings card.** Settings → AI tab: API key (encrypted at rest via the existing `JAKS_FERNET_KEY` seam, mirror QBO's pattern), per-environment model selection (default Sonnet 4.6 for interactive, Haiku 4.5 for batch), prompt template (editable, with hard-coded business-voice anchor — "B2B heavy-duty diesel parts, plain English, no fluff, OEM cross-refs when known"). New service: `app/services/ai_description_service.py` — single-product `suggest_one(product, vendor, part_number)` + batch `suggest_batch(product_ids, model="haiku")`. Structured-output tool definition forces `{title, description, meta_description, seo_keywords[]}`.
+>
+> **6.2 — `/products/new` "Suggest description" button.** Inline button in the Identity card. On click: HTMX POST `/products/ai-suggest` with the current vendor + part # + any title/description already typed. Returns a slide-over with the four suggested fields side-by-side with the current values; owner clicks individual **Accept** buttons or **Accept All**. Same suggest path also lives on Product Detail (for backfill on existing rows).
+>
+> **6.3 — Batch backfill from Products list.** Filter to "Description blank" or "AI not run" tag → bulk select → "Suggest descriptions" → background job streams Haiku results into a Review Queue tab (mirrors the Smart-Import Review Queue pattern). Each suggestion is review-required; nothing writes without owner approval. Idempotent — re-run safe.
+>
+> **6.4 — Tests + cost guardrail.** Unit tests with a mocked Anthropic client (no live API in CI). Per-run + per-day token budget settings; refuse to start a batch that exceeds the budget; banner the current spend on the Review Queue.
+>
+> *Hard rule:* AI-generated text is **always review-required**. No description is written to a customer-facing field without an owner click. The model is a draft generator, not a source of truth.
 
 > **✅ SUPERSEDED 2026-06-02 — this entire Phase-1 queue is DONE.** Sprints 1–5 below (the original
 > build order) and the 05-31 "current" items 1–5 all landed: cost-variance 3-way gate (`c36769c`/`bd65c69`),
@@ -1100,6 +1140,82 @@ Grade path: R1 = stop money loss (C+→B), R2 = close vendor/QBO loops (B→A−
 
 ---
 
+## 20. Customer-Facing SKU — REVERT to Vendor Part Numbers (decision 2026-06-16)
+
+> **DECISION LOCKED 2026-06-16 (owner interview). REVERSES the 2026-06-06 opaque SKU scheme**
+> (`JAKS-[ENGINE]-[CATEGORY]-[V][NNNN]`, see `SKU_SCHEME_SPEC.md`). That scheme was built **and applied
+> to the live catalog** — all 29,659 products carry it — but created too much confusion: **10%** are
+> meaningless `JAKS-GEN-#####`, **2,730** kits landed under a junk `INFO` code, the derived codes are
+> cryptic (`HEABF` / `SEAOR` / `CAMC`), the opaque vendor digit is `9` (PAI) on nearly everything, and —
+> worst — it **masks the very number staff need to order, cross-ref, and test a part**. The masking only
+> ever belonged on private-label product.
+>
+> **STATUS 2026-06-16 (UNCOMMITTED):** Steps 1–2 + 4–5 SHIPPED. ① Revert applied to live `jaks.db` (all
+> 29,659 `product.sku ← vendor_part_number`, 0 collisions; backup `jaks.db.pre-sku-revert-20260616-104559.bak`)
+> via new `scripts/revert_sku_to_vendor_part.py`. ② Create path (`product_service` + `routers/products`)
+> **and the importer** (`product_import_service.full_import`) de-masked — both now use the vendor part #
+> (importer is the catalog restore path, so this stops a re-import re-masking). ④ `sku_service.py` +
+> `backfill_sku_scheme.py` shelved dormant. ⑤ Tests updated to §20 — **1871 functional pass, 0 fails**
+> (66 reds are all pre-existing visual-baseline drift). **③ Private-label two-number UI = the one remaining
+> fast-follow** (backend `is_house_brand`/`jaks_product_number` already wired; UI not built — no private-label
+> products exist yet).
+
+### 20.1 — The model (locked)
+- **Standard products (PAI, McBee/IMB — effectively all ~29.6k):** the SKU **is the vendor's real part
+  number**, used everywhere (internal screens · customer documents · PO). No masking; no engine/category
+  codes in the SKU.
+- **Private-label products only (owner-manufactured, `M`-prefix):** two numbers —
+  - **Vendor Part #** (`M2239250HH`) — lives on the vendor source; prints on the **PO to the vendor**.
+  - **JAKS Product #** (`2239250S3`) — owner-typed **free-form**; this is `product.sku` (your system +
+    customer documents). Carries meaning for the customer (e.g. `S3` = stage-3 head).
+- **Flag:** the existing **`products.is_house_brand`** boolean marks a part private-label — **no new
+  column**. `is_house_brand = 0` → SKU = vendor part #; `= 1` → SKU = owner-typed JAKS Product #, with the
+  vendor # kept on the source for the PO.
+- **No toggle.** With masking gone there is nothing to switch; the earlier "global mask toggle" idea is dropped.
+
+### 20.2 — Why it's safe (verified 2026-06-16)
+- Every one of the 29,659 products already carries its real vendor part # on the preferred source
+  (`ProductVendorSource.vendor_part_number`, e.g. PAI `040000`); `product.manufacturer_part_number` is
+  empty everywhere. Revert = `product.sku ← vendor_part_number`.
+- **0 collisions** — all 29,659 vendor part numbers are distinct, so the `UNIQUE(sku)` index won't trip.
+- Line items reference `product_id` + a `description` snapshot (no SKU snapshot), so the SKU renders live —
+  but the DB holds only trial documents (**4 quotes · 1 SO · 6 invoices · 2 POs**); nothing real is
+  disturbed. The 29.6k catalog is the re-importable PAI feed.
+- PO print already references `vendor_part_number`, so the private-label PO flow is half-wired.
+
+### 20.3 — Build order
+1. **Revert script** — `product.sku ← preferred source.vendor_part_number` for all standard products;
+   **two-phase temp→final** (respects `UNIQUE(sku)`); auto-backs-up `jaks.db`; **dry-run default**,
+   `--apply` to write. *(Backend, one-shot — eyeball the old→new samples before applying.)*
+2. **Stop the masking mint** — the product-create path (`product_service.py` / `routers/products.py`) no
+   longer calls `assign_new_sku`: standard parts default SKU = vendor part #; `is_house_brand` parts let
+   the owner type the JAKS Product #.
+3. **Private-label two-number UI** — product new/detail: when `is_house_brand` is on, expose the JAKS
+   Product # as the SKU and keep the Vendor Part # on the source (already prints on the PO). Label it
+   clearly ("Private label — my own number").
+4. **Shelve the masking** — keep `sku_service.py` + `scripts/backfill_sku_scheme.py` in-repo but out of
+   the active path (possible future ERP feature); retire the masking assertions in `tests/test_sku_service.py`.
+5. **Docs/memory** — mark `SKU_SCHEME_SPEC.md` reverted; update the `jaks-sku-scheme` memory.
+
+### 20.4 — Deferred (no longer SKU-blocking)
+- **INFO / GEN category junk** — once SKUs are vendor part #s the derived codes vanish from the SKU, so
+  this becomes a **browse/filter** cleanup only: re-map the bogus `INFO` ("Information") category → a real
+  **KIT** category (2,730 kits), and give the ~2,984 uncategorized hardware items (`BOLT`/`SCREW`/`WASHER`)
+  a **FASTENER** category. Low priority.
+- **Re-masking option** — the opaque scheme stays shelved-but-available if the owner later wants
+  source-protection on the standard catalog (or to sell it as an ERP feature).
+
+### 20.5 — Forks pending owner confirmation
+*Written in on the recommended default; change here and the build follows.*
+
+| Fork | Default (written in) | Override |
+|---|---|---|
+| **S1 Private-label inventory** | None entered yet → private-label UI is a fast-follow after the revert | Some exist now → build the UI with the revert |
+| **S2 Masking code** | Shelve dormant (possible ERP feature) | Remove entirely |
+| **S3 Standard customer SKU** | Bare vendor part # (e.g. `040000`) shown to customers | Re-mask later if the leak matters |
+
+---
+
 *This document is the single source of truth for all JAKS Inventory build decisions.*
 *Update it as decisions change. All other planning documents are superseded.*
-*Last updated: 2026-06-10 (evening status-refresher reconciliation) — **R1+R2+R3+R4 all SHIPPED** (`248ea09`/`40eea95`/`a53bbe2`/`674491a..f18aec9`); ledger reconciled: QBO 1B marked COMPLETE (payments/vendor-bills/credit-memos push + Fernet, R2/R3), serials marked BUILT (R3), §17.2 closed rows struck (tier-pricing · Fernet · demo-reset guard · products export), §11 O2 marked enforced. **Remaining gate = owner-run R4 trial sheet (blank) + operational cutover**, not code. Prior note: **§19 added (verified system review, B−, authoritative punch list) and Sprint R1 §19.2 implemented the same day** (16/16 money/integrity fixes, adversarially verified, 1438 tests green). Next: §19.3 Sprint R2. Prior note (2026-06-06) — status-refresher pass: 983 tests verified green; tier-pricing downgraded from blocker to a label decision (money path proven real); real-data cutover (13,153-part catalog) recorded as the live operational gate; owner-acceptance breadth named as the one true status gap. See §17 banner. **Added §18 Product Categorization & Classification spec** (Inventory → Category Maintenance screen; Products-List filters/bulk-assign/Manage-Categories link; importer rules + Import Review queue; Brand/Vendor/Manufacturer-Engine-Make separation) — **BUILT & verified the same night** (increments 1–7; 1051 tests pass; backfill applied to the live 13,154-part catalog). Not yet git-committed. See §18 banner.*
+*Last updated: 2026-06-10 (evening status-refresher reconciliation) — **R1+R2+R3+R4 all SHIPPED** (`248ea09`/`40eea95`/`a53bbe2`/`674491a..f18aec9`); ledger reconciled: QBO 1B marked COMPLETE (payments/vendor-bills/credit-memos push + Fernet, R2/R3), serials marked BUILT (R3), §17.2 closed rows struck (tier-pricing · Fernet · demo-reset guard · products export), §11 O2 marked enforced. **Remaining gate = owner-run R4 trial sheet (blank) + operational cutover**, not code. Prior note: **§19 added (verified system review, B−, authoritative punch list) and Sprint R1 §19.2 implemented the same day** (16/16 money/integrity fixes, adversarially verified, 1438 tests green). Next: §19.3 Sprint R2. Prior note (2026-06-06) — status-refresher pass: 983 tests verified green; tier-pricing downgraded from blocker to a label decision (money path proven real); real-data cutover (13,153-part catalog) recorded as the live operational gate; owner-acceptance breadth named as the one true status gap. See §17 banner. **Added §18 Product Categorization & Classification spec** (Inventory → Category Maintenance screen; Products-List filters/bulk-assign/Manage-Categories link; importer rules + Import Review queue; Brand/Vendor/Manufacturer-Engine-Make separation) — **BUILT & verified the same night** (increments 1–7; 1051 tests pass; backfill applied to the live 13,154-part catalog). Not yet git-committed. See §18 banner. **2026-06-16: added §20 — REVERT the opaque SKU scheme to vendor part numbers** (owner interview; reverses the 2026-06-06 `JAKS-[ENGINE]-[CATEGORY]-[V][NNNN]` scheme that is live on all 29,659 products and caused too much confusion); plan = `product.sku ← vendor_part_number`, private-label parts (`is_house_brand`) keep a separate owner-typed JAKS Product # while the vendor # still prints on the PO; revert verified safe (0 collisions, trial-only documents) — dry-run pending owner review. See §20.*
