@@ -1299,13 +1299,20 @@ security headers present, CSP doesn't break Alpine/htmx, native-form token injec
   outstanding-cores, lost-sales) + export buttons enabled in the 6 templates.
 - **Dashboard QBO chip** now reflects real `connection_summary()` state (was hardcoded "ready").
 
-### 21.7 — Still deferred (later / Phase 2-3)
-engine-application + barcode/UPC search · `products.sku_norm` + `invoice_lines.product_id` index ·
-ProductApplication edit UI + engine make/model picker · standalone vendor-bill list + AP aging ·
-`CreditMemo.applied/unapplied`→computed · server-side session revocation · backup-before-migration +
-schema_version · self-host fonts (drop Google Fonts CDN) · SO-convert credit-hold warn · interest that
-posts to an invoice · bulk statements · quote-conversion + vendor-performance reports. **SaaS
-multi-tenancy = someday (#6).**
+### 21.7 — Counter findability + scale — ✅ SHIPPED 2026-06-16 (`tests/test_s21_search.py`, 6; commit `aef175a`)
+Live-verified against the real 29k catalog ("Cummins" → 5 parts by engine fit; backfill+indexes clean).
+- **Barcode/UPC exact search** (`search_service.py`, match_type `barcode` → SCAN chip) — scanned code resolves to its part.
+- **Engine-application search** — queries `ProductApplication` (make/model) for "Cummins ISX"/"ISX"; was populated but never queried (match_type `engine_app` → ENGINE chip; ranked below part #).
+- **`products.sku_norm`** precomputed INDEXED column (Product before_insert/update listener + startup backfill) — SKU search no longer normalizes every row per keystroke.
+- **New FK indexes** — `invoice_lines.product_id`, `product_applications.product_id`.
+
+### 21.8 — Still deferred (later / Phase 2-3)
+ProductApplication edit UI + engine make/model picker on product detail · bulk product-reassign-to-category ·
+standalone vendor-bill list + AP aging · `CreditMemo.applied/unapplied`→computed (delicate money-path
+refactor; amounts not actively drifting) · server-side session revocation · backup-before-migration +
+schema_version (low value — owner #7: jaks.db is throwaway) · self-host fonts (drop Google Fonts CDN) ·
+SO-convert credit-hold warn · barcode scan→auto-add-line · interest that posts to an invoice · bulk
+statements · quote-conversion + vendor-performance reports. **SaaS multi-tenancy = someday (#6).**
 
 ---
 
