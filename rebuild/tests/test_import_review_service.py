@@ -191,19 +191,9 @@ def test_category_issue_when_unmapped_then_ok_when_mapped(db):
 
 # ── review actions ───────────────────────────────────────────────────────────
 
-@pytest.mark.xfail(
-    strict=False,
-    reason="REAL BUG surfaced by the isolation-harness fix (this is NOT a test "
-           "regression). set_review_status (import_review_service.py:243-246) sets "
-           "cand.review_status=ACCEPTED, then recomputes batch.approved_count with a "
-           ".count() filtered on review_status==ACCEPTED. Production SessionLocal is "
-           "autoflush=False (database.py:33), so the just-set status is NOT flushed "
-           "before the count and the accepted candidate is omitted -> approved_count "
-           "is off-by-one in the Review Queue tally. It passed ONLY because this "
-           "module used a raw Session(eng) (autoflush=True), unfaithful to prod and "
-           "the source of the suite's s18/import non-determinism. Fix: self.db.flush() "
-           "before the count query. When Backend lands it this XPASSes -> drop marker.",
-)
+# Was xfail (approved_count off-by-one under prod's autoflush=False). FIXED:
+# set_review_status now self.db.flush()es before the approved_count recompute
+# (import_review_service.py:450) — marker dropped, this is a hard guard again.
 def test_set_review_status_updates_candidate_and_batch_tally(db):
     svc = ImportReviewService(db, None)
     batch = svc.analyze_feed(_csv([_prod_row("JAKS-R-1", oem=""), _prod_row("JAKS-R-2", oem="")]))
