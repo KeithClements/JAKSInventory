@@ -835,6 +835,7 @@ def product_export_csv(
 async def product_enrich_sync(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    _admin=Depends(require_admin),   # C11 — was the one import route with no role gate
 ):
     from app.services.enrichment_service import ProductEnrichmentService
     raw = await file.read()

@@ -101,6 +101,16 @@ class WarrantyClaimLine(Base):
     approved_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     resolution: Mapped[str | None] = mapped_column(String(30), nullable=True)
     credit_amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # C5 — serial / ESN of the failed part, captured during the warranty process.
+    # The print template already references line.serial_number; this column makes
+    # it real (it was previously an AttributeError crash on every claim print).
+    serial_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Q6 — labor reimbursement on the claim line, entered during the warranty
+    # process. Kept separate from credit_amount (the parts credit) so the claim
+    # can differentiate parts vs labor for PAI/IMB reimbursement. labor_rate is
+    # $/hr; labor_amount is the computed line labor total.
+    labor_hours: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    labor_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     # If resolution = replacement, this links the replacement invoice line
     replacement_invoice_line_id: Mapped[int | None] = mapped_column(
         ForeignKey("invoice_lines.id"), nullable=True
@@ -110,6 +120,11 @@ class WarrantyClaimLine(Base):
         "WarrantyClaim", back_populates="claim_lines"
     )
     product: Mapped[Product | None] = relationship("Product")
+
+    @property
+    def labor_amount(self) -> float:
+        """Computed labor reimbursement for this line (hours × rate)."""
+        return round((self.labor_hours or 0.0) * (self.labor_rate or 0.0), 2)
 
 
 # ── Scaffold table ────────────────────────────────────────────────────────────

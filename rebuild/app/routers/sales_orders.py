@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
+from urllib.parse import quote as url_quote
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -491,6 +492,13 @@ async def fulfill_and_invoice(
     try:
         svc = SalesOrderService(db, user_id)
         invoice = svc.fulfill_and_invoice(so_id, line_quantities)
+    except PermissionError:
+        # C3 — fulfillment finalizes an invoice, which needs FINALIZE_INVOICE.
+        db.rollback()
+        return RedirectResponse(
+            f"/sales-orders/{so_id}?error={url_quote('You do not have permission to fulfill/invoice this order (it finalizes an invoice). Ask an admin or bookkeeper.')}",
+            status_code=303,
+        )
     except ValueError as exc:
         return RedirectResponse(
             f"/sales-orders/{so_id}?error={str(exc)}",

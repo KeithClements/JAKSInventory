@@ -1012,6 +1012,8 @@ class Permission(StrEnum):
     INVENTORY_ADJUST            = "inventory_adjust"
     NEGATIVE_INVENTORY_OVERRIDE = "negative_inventory_override"
     VOID_LOCKED_INVOICE         = "void_locked_invoice"
+    FINALIZE_INVOICE            = "finalize_invoice"   # commit cost snapshot + decrement inventory + lock to AR
+    RECEIVE_PO                  = "receive_po"          # increment qty_on_hand + alter moving-average cost
     RECORD_PAYMENT              = "record_payment"
     REPUSH_QBO                  = "repush_qbo"
     MERGE_CUSTOMERS             = "merge_customers"

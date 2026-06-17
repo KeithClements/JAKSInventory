@@ -30,6 +30,15 @@ class Customer(Base):
             unique=True,
             sqlite_where=text("usdot_number IS NOT NULL"),
         ),
+        # C10 — DB backstop against duplicate customers on email (case-insensitive).
+        # Partial so the '' default (customers with no email on file) repeats
+        # freely. Name must match _PENDING_UNIQUE_INDEXES in app/database.py
+        # (the defensive live-DB path that probes for existing dupes first).
+        Index(
+            "uq_customers_email", text("email COLLATE NOCASE"),
+            unique=True,
+            sqlite_where=text("email IS NOT NULL AND email != ''"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

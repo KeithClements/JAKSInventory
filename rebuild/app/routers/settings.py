@@ -305,12 +305,16 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
 @router.post("/", response_class=RedirectResponse)
 async def save_settings(request: Request, db: Session = Depends(get_db), _admin=Depends(require_admin)):
     form = await request.form()
+    # Secrets Fernet-encrypted at rest. A blank submit means "keep the existing
+    # value" (the field renders masked/empty so the admin doesn't re-type it).
+    # Each key's READ path must _decrypt(): qbo_client_secret in qbo_client, and
+    # shopify_access_token in shopify_service (C7). NOTE: shopify_api_secret /
+    # taxjar_api_key / anthropic_api_key are still plaintext — encrypt them here
+    # only after confirming every read site decrypts (tracked as a follow-up).
+    _ENCRYPTED_KEYS = {"qbo_client_secret", "shopify_access_token"}
     for key in VISIBLE_KEYS:
         val = form.get(key, "")
-        # §21 — qbo_client_secret is Fernet-encrypted at rest (read path already
-        # _decrypt()s it). A blank submit means "keep the existing secret" (the
-        # field renders masked/empty so the admin doesn't re-type it each save).
-        if key == "qbo_client_secret":
+        if key in _ENCRYPTED_KEYS:
             sval = str(val).strip()
             if not sval:
                 continue  # keep stored value

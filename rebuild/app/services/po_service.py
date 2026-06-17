@@ -247,6 +247,9 @@ class POService(BaseService):
             notes=data.get("notes", ""),
         )
         self.db.add(line)
+        self.db.flush()
+        # C9 — a line added to an already-VERBAL_ORDER PO is immediately on order.
+        self._resync_on_order_if_verbal(po, product_id)
         self.db.commit()
         return line
 
@@ -277,6 +280,40 @@ class POService(BaseService):
         )
         self.db.commit()
 
+    def mark_verbal_order(self, po_id: int) -> None:
+        """C9 — set a PO to VERBAL_ORDER (phone order) and put its lines ON ORDER.
+
+        Like send_to_vendor, a verbal order is a real purchasing commitment, so
+        its lines must increment qty_on_order. We recompute from source via
+        resync_qty_on_order (which now includes VERBAL_ORDER) rather than a raw
+        += so this is idempotent and stays correct as lines are added/edited in
+        the workspace. Previously verbal orders never touched qty_on_order, so
+        the purchasing on-order signal was wrong for every phone order."""
+        po = self._get_po_or_404(po_id)
+        old_status = po.status
+        po.status = POStatus.VERBAL_ORDER
+        if po.ordered_at is None:
+            po.ordered_at = datetime.utcnow()
+        self.db.flush()
+        product_svc = ProductService(self.db, self.current_user_id)
+        for pid in {ln.product_id for ln in po.lines if ln.product_id}:
+            product_svc.resync_qty_on_order(pid)
+        self.audit(
+            entity_type=EntityType.PURCHASE_ORDER,
+            entity_id=po_id,
+            action=AuditAction.STATUS_CHANGED,
+            old_value=old_status,
+            new_value=POStatus.VERBAL_ORDER,
+        )
+        self.db.commit()
+
+    def _resync_on_order_if_verbal(self, po, product_id: int | None) -> None:
+        """Keep qty_on_order correct when a line on an already-VERBAL_ORDER PO is
+        added/edited/deleted in the workspace. No-op for DRAFT (not yet on order)
+        and SENT/PARTIAL (lines are frozen / handled by their own paths)."""
+        if product_id and po.status == POStatus.VERBAL_ORDER:
+            ProductService(self.db, self.current_user_id).resync_qty_on_order(product_id)
+
     # ── Receiving ─────────────────────────────────────────────────────────────
 
     def create_receipt(
@@ -306,6 +343,11 @@ class POService(BaseService):
         Marks PO RECEIVED if all lines fully received (qty_received + qty_cancelled
         >= qty_ordered), PARTIAL otherwise.
         """
+        # RBAC — receiving increments qty_on_hand and permanently alters the
+        # moving-average cost. Gate it (ADMIN/BOOKKEEPING) so a SALES clerk
+        # cannot mutate inventory/cost. Receiving is a warehouse/AP function.
+        self.assert_can(Permission.RECEIVE_PO)
+
         receipt = POReceipt(
             vendor_id=vendor_id,
             received_by_id=self.current_user_id,
@@ -1412,6 +1454,9 @@ class POService(BaseService):
         for field in ("description", "qty_ordered", "unit_cost", "core_charge_per_unit", "notes"):
             if field in data:
                 setattr(line, field, data[field])
+        self.db.flush()
+        # C9 — qty edit on a verbal-order line changes on-order; recompute.
+        self._resync_on_order_if_verbal(po, line.product_id)
         self.db.commit()
         return line
 
@@ -1423,7 +1468,11 @@ class POService(BaseService):
         po = self._get_po_or_404(line.po_id)
         if po.status not in (POStatus.DRAFT, POStatus.VERBAL_ORDER):
             raise ValueError(f"Cannot delete lines on a {po.status} PO")
+        _pid = line.product_id  # capture before delete for the verbal resync
         self.db.delete(line)
+        self.db.flush()
+        # C9 — removing a verbal-order line drops it from on-order.
+        self._resync_on_order_if_verbal(po, _pid)
         self.db.commit()
 
     def _get_po_or_404(self, po_id: int) -> PurchaseOrder:

@@ -69,10 +69,18 @@ _ROLE_PERMISSIONS: dict[str, set[str]] = {
         Permission.REPUSH_QBO,
         Permission.VIEW_AUDIT_LOG,
         Permission.SEND_EMAIL,
+        # Money/inventory commit actions: finalizing an invoice snapshots cost
+        # and decrements stock; receiving a PO alters moving-average cost. Both
+        # are owner/bookkeeper actions, not counter-clerk actions.
+        Permission.FINALIZE_INVOICE,
+        Permission.RECEIVE_PO,
     },
-    # SALES (counter clerk) intentionally does NOT get RECORD_PAYMENT or
-    # VOID_LOCKED_INVOICE — money-in and invoice voids are owner/bookkeeper
-    # actions. Grant RECORD_PAYMENT here if a shop wants clerks taking payment.
+    # SALES (counter clerk) intentionally does NOT get RECORD_PAYMENT,
+    # VOID_LOCKED_INVOICE, FINALIZE_INVOICE, or RECEIVE_PO — money-in, invoice
+    # voids, invoice finalization (cost snapshot + inventory decrement), and PO
+    # receiving (moving-average cost change) are owner/bookkeeper actions.
+    # >>> If you want counter clerks to finalize their own sales, add
+    # >>> Permission.FINALIZE_INVOICE to this SALES set. (per owner Q2: kept off.)
     UserRole.SALES: {
         Permission.SEND_EMAIL,
     },

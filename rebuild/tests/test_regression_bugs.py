@@ -65,7 +65,7 @@ def db(client):
 def _customer(db):
     from app.models.customer import Customer
     c = Customer(company_name="Bug Guard Co", contact_name="QA",
-                 email="bug@test.local")
+                 email=f"bug{__import__('uuid').uuid4().hex[:8]}@test.local")
     db.add(c); db.commit(); db.refresh(c)
     return c
 

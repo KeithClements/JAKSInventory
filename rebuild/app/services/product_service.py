@@ -643,9 +643,12 @@ class ProductService(BaseService):
 
     def resync_qty_on_order(self, product_id: int) -> tuple[int, int]:
         """§21 — recompute qty_on_order from open purchase orders and write the
-        corrected cache. On-order is incremented at Place Order (→ SENT) and
-        decremented on receipt, so the truth is the outstanding qty over POs that
-        are placed-but-not-done (SENT / PARTIAL). Returns (old, new). Flushes only."""
+        corrected cache. On-order is incremented at Place Order (→ SENT) or at
+        verbal-order create (→ VERBAL_ORDER) and decremented on receipt, so the
+        truth is the outstanding qty over POs that are placed-but-not-done
+        (SENT / VERBAL_ORDER / PARTIAL). Returns (old, new). Flushes only.
+        C9 — VERBAL_ORDER was previously excluded here, so phone orders never
+        showed as on-order even after a resync."""
         from app.constants import POStatus
         from app.models.purchase_order import POLine, PurchaseOrder
         product = self._get_or_404(product_id)
@@ -655,7 +658,9 @@ class ProductService(BaseService):
             .join(PurchaseOrder, POLine.po_id == PurchaseOrder.id)
             .filter(
                 POLine.product_id == product_id,
-                PurchaseOrder.status.in_([POStatus.SENT, POStatus.PARTIAL]),
+                PurchaseOrder.status.in_(
+                    [POStatus.SENT, POStatus.VERBAL_ORDER, POStatus.PARTIAL]
+                ),
             )
             .all()
         )

@@ -265,6 +265,18 @@ class SalesOrder(QBOSyncMixin, Base):
         ForeignKey("customer_addresses.id"), nullable=True
     )
 
+    # ── Tax (C1) ──────────────────────────────────────────────────────────────
+    # Mirror Quote.is_taxable / tax_rate_snapshot so the SO carries the tax
+    # intent agreed at quote/SO time. Without this, fulfill_and_invoice
+    # re-derived tax from the LIVE customer record at fulfillment, so a taxable
+    # customer's invoice could silently exceed the SO total they agreed to.
+    # Seeded at create, forwarded into the invoice. tax_rate_snapshot is a
+    # percent (e.g. 8.25); 0.0 when the order is not taxable.
+    # Default False: an SO is taxable only when create_sales_order captures a real
+    # rate (a directly-built SO with no rate must not read as "taxable").
+    is_taxable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    tax_rate_snapshot: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     internal_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -290,7 +302,15 @@ class SalesOrder(QBOSyncMixin, Base):
 
     @property
     def is_fully_invoiced(self) -> bool:
-        return all(ln.qty_invoiced >= ln.qty_ordered for ln in self.lines)
+        # C6 — exclude fully-cancelled, never-invoiced lines. cancel_line sets
+        # qty_ordered = qty_invoiced, so a cancelled-before-invoicing line is
+        # (0 >= 0) = True and would flip the whole SO to INVOICED with no invoice
+        # attached. Only count lines that were actually ordered or invoiced, and
+        # require at least one such line so an all-cancelled SO is not "invoiced".
+        relevant = [ln for ln in self.lines if ln.qty_ordered > 0 or ln.qty_invoiced > 0]
+        return bool(relevant) and all(
+            ln.qty_invoiced >= ln.qty_ordered for ln in relevant
+        )
 
     @property
     def has_backorder(self) -> bool:

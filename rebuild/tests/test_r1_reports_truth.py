@@ -52,7 +52,7 @@ def db():
 def _customer(db, *, company_name="R1 Cust", **kw):
     from app.models.customer import Customer
     c = Customer(company_name=company_name, contact_name="QA",
-                 email="r1@test.local", **kw)
+                 email=f"r1-{__import__('uuid').uuid4().hex[:8]}@test.local", **kw)
     db.add(c); db.flush()
     return c
 

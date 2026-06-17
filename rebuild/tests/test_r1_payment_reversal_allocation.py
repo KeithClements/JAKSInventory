@@ -70,7 +70,7 @@ def db(client):
 
 def _customer(db) -> Customer:
     c = Customer(company_name=f"R1 Reversal Co {next(_seq)}", contact_name="QA",
-                 email="r1@test.local")
+                 email=f"r1rev{next(_seq)}@test.local")
     db.add(c); db.commit(); db.refresh(c)
     return c
 

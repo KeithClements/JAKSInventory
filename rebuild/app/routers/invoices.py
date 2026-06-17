@@ -919,6 +919,13 @@ async def invoice_finalise(
 
     try:
         InvoiceService(db, user_id).finalise(invoice_id, allow_negative_inventory=allow_negative)
+    except PermissionError:
+        # C3 — SALES role lacks FINALIZE_INVOICE. Friendly message, not a 500.
+        db.rollback()
+        return RedirectResponse(
+            f"/invoices/{invoice_id}?error={url_quote('You do not have permission to finalize invoices. Ask an admin or bookkeeper.')}",
+            status_code=303,
+        )
     except ValueError as exc:
         db.rollback()
         return RedirectResponse(

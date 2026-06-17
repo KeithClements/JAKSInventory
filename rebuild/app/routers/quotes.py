@@ -384,8 +384,12 @@ def _quote_customer_ctx(db, quote) -> dict:
     # Use the InvoiceMetricsService helper for last_purchase and lifetime
     # (it already does this per-customer keyed on any invoice).
     return {
-        "cust_outstanding_cores": m.get("outstanding_cores", 0),
-        "cust_last_purchase": m.get("last_purchase"),
+        # Item 12 — these read the WRONG keys before (outstanding_cores /
+        # last_purchase), which CustomerMetricsService never emits, so the quote
+        # workspace intelligence panel was permanently blank. Correct keys are
+        # outstanding_core_credits / last_invoice_date (see METRIC_KEYS).
+        "cust_outstanding_cores": m.get("outstanding_core_credits", 0),
+        "cust_last_purchase": m.get("last_invoice_date"),
         "cust_lifetime_sales": m.get("lifetime_sales", 0.0),
     }
 
@@ -1138,8 +1142,19 @@ async def convert_to_so(
 @router.post("/{quote_id}/convert-to-invoice")
 async def convert_to_invoice(
     quote_id: int,
+    confirm_credit_hold: str = Form(""),
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
+    # Item 13 — credit-hold WARN gate, mirroring convert-to-so. The list-page
+    # "→ Invoice" button POSTed straight here with no gate, so a held customer
+    # could be converted to a live invoice in one click. Bounce back with the
+    # warning unless the clerk has acknowledged it (confirm_credit_hold=1).
+    if confirm_credit_hold.lower() not in {"1", "true", "on", "yes"}:
+        from app.services.customer_service import CustomerService
+        quote = _get_quote_or_404(db, quote_id)
+        if quote.customer and CustomerService(db).is_on_credit_hold(quote.customer):
+            return RedirectResponse(f"/quotes/{quote_id}?credit_hold=1", status_code=303)
+
     invoice = QuoteService(db, user_id).convert_to_invoice(quote_id)
     return RedirectResponse(f"/invoices/{invoice.id}", status_code=303)

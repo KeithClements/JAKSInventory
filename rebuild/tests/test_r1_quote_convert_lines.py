@@ -57,7 +57,7 @@ def _uid():
 def _customer(db):
     from app.models.customer import Customer
     c = Customer(company_name=f"R1 Convert Co {_uid()}", contact_name="QA",
-                 email="r1@t.local")
+                 email=f"r1conv{_uid()}@t.local")
     db.add(c); db.commit(); db.refresh(c)
     return c
 

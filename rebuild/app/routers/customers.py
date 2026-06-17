@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.constants import (
@@ -87,6 +88,21 @@ def _find_duplicate_customers(
         if cn == norm or (len(norm) >= 4 and len(cn) >= 4 and (cn in norm or norm in cn)):
             matches.append(c)
     return matches
+
+
+def _find_customer_by_email(
+    db: Session, email: str, exclude_id: int | None = None
+) -> Customer | None:
+    """C10 — return the existing customer that owns `email` (case-insensitive),
+    if any. Unlike the company-name match this is a HARD dedup key (DB unique
+    index uq_customers_email), so callers must block, not warn. Blank → no match."""
+    em = (email or "").strip()
+    if not em:
+        return None
+    q = db.query(Customer).filter(func.lower(Customer.email) == em.lower())
+    if exclude_id:
+        q = q.filter(Customer.id != exclude_id)
+    return q.first()
 
 
 # ── List tab definitions (JAKS_UI_Change_Plan.md §2) ─────────────────────────
@@ -718,6 +734,23 @@ async def customer_create(
 ):
     form = await request.form()
     company_name = str(form.get("company_name", "")).strip()
+    email = str(form.get("email", "")).strip()
+
+    # C10 — HARD email dedup. A duplicate email means split AR / inconsistent
+    # credit hold / duplicate QBO push, so this is a block (not a "create
+    # anyway" warning like the company-name case). Pre-check for a friendly
+    # message; the DB unique index is the backstop below if a race slips past.
+    email_conflict = _find_customer_by_email(db, email)
+    if email_conflict is not None:
+        return templates.TemplateResponse(
+            request,
+            "customers/new.html",
+            {
+                **_new_customer_ctx(db),
+                "email_conflict": email_conflict,
+                "prefill": {k: str(v) for k, v in form.items()},
+            },
+        )
 
     # Duplicate protection — warn instead of silently creating a near-duplicate,
     # unless the user explicitly chose "Create Anyway" (confirm_duplicate=1).
@@ -764,7 +797,21 @@ async def customer_create(
     # P2-D2 — flags chip editor (Requires-PO / Credit-Hold / Call-first /
     # Warranty-escalation). No-op for a new customer when the form omits them.
     CustomerService(db).set_stored_flags(c, form.getlist("flags"))
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # C10 backstop — a concurrent insert won the email race (or another
+        # unique key collided). Re-render with the conflict instead of a 500.
+        db.rollback()
+        return templates.TemplateResponse(
+            request,
+            "customers/new.html",
+            {
+                **_new_customer_ctx(db),
+                "email_conflict": _find_customer_by_email(db, email),
+                "prefill": {k: str(v) for k, v in form.items()},
+            },
+        )
     return RedirectResponse(f"/customers/{c.id}", status_code=303)
 
 

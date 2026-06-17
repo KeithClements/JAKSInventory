@@ -47,7 +47,7 @@ def db(client):
 
 
 def _customer(db, **kw):
-    c = Customer(company_name="Surcharge Co", contact_name="QA", email="s@t.local",
+    c = Customer(company_name="Surcharge Co", contact_name="QA", email=f"s{__import__('uuid').uuid4().hex[:8]}@t.local",
                  payment_terms=PaymentTerms.COD, **kw)
     db.add(c); db.commit(); db.refresh(c)
     return c

@@ -417,8 +417,10 @@ async def po_create(request: Request, db: Session = Depends(get_db), user_id: in
             log.warning("New-PO product seed failed (po=%s, product=%s): %s", po.id, seed_pid, exc)
 
     if status_override == POStatus.VERBAL_ORDER:
-        po.status = POStatus.VERBAL_ORDER
-        db.commit()
+        # C9 — mark_verbal_order sets the status AND puts the lines on order
+        # (qty_on_order). The old code only set the status, so verbal/phone
+        # orders never showed as on-order anywhere.
+        svc.mark_verbal_order(po.id)
 
     return RedirectResponse(f"/purchase-orders/{po.id}", status_code=303)
 
@@ -868,6 +870,13 @@ async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)
                 vendor_id=po.vendor_id,
                 po_line_quantities=po_line_quantities,
                 data=receipt_data,
+            )
+        except PermissionError:
+            # C3 — SALES role lacks RECEIVE_PO. Friendly message, not a 500.
+            db.rollback()
+            return RedirectResponse(
+                f"/purchase-orders/{po_id}?error={url_quote('You do not have permission to receive POs. Ask an admin or bookkeeper.')}",
+                status_code=303,
             )
         except ValueError as exc:
             db.rollback()

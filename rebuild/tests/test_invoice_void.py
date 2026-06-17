@@ -22,6 +22,7 @@ from __future__ import annotations
 import datetime
 import pathlib
 import sys
+import uuid
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -59,7 +60,7 @@ def db(client):
 def _customer(db):
     from app.models.customer import Customer
     c = Customer(company_name="Void Test Co", contact_name="QA",
-                 email="void@test.local")
+                 email=f"void{__import__('uuid').uuid4().hex[:8]}@test.local")
     db.add(c); db.commit(); db.refresh(c)
     return c
 

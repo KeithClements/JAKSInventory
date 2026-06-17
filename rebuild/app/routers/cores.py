@@ -19,6 +19,7 @@ from urllib.parse import quote as url_quote
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from datetime import timedelta
@@ -53,12 +54,21 @@ templates = Jinja2Templates(
 
 @router.get("/", response_class=HTMLResponse)
 def cores_list(request: Request, q: str = "", db: Session = Depends(get_db)):
-    # Customer cores awaiting return (OPEN or PARTIAL)
+    # Customer cores awaiting return (OPEN or PARTIAL).
+    # C4 — exclude cores already physically received and placed on inspection
+    # HOLD: a PARTIAL+HOLD core has a return event pending inspection, so it
+    # belongs ONLY in the pending_inspection queue below. Without this filter it
+    # appeared in BOTH stages with two live action buttons → a single returned
+    # core could be credited twice. NULL outcome (not yet inspected) stays here.
     awaiting_return = (
         db.query(CoreCharge)
         .filter(
             CoreCharge.direction == CoreDirection.CUSTOMER_OWES_RETURN,
             CoreCharge.status.in_([CoreStatus.OPEN, CoreStatus.PARTIAL]),
+            or_(
+                CoreCharge.inspection_outcome.is_(None),
+                CoreCharge.inspection_outcome != CoreInspectionOutcome.HOLD,
+            ),
         )
         .order_by(CoreCharge.return_deadline)
         .all()

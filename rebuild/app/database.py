@@ -304,6 +304,18 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
 
     # ── §21 — persisted QBO vendor binding (qbo_service writes it on first push).
     ("vendors", "qbo_vendor_id", "TEXT NULL"),
+
+    # ── Audit fix sprint — C1: SO carries the tax intent agreed at SO time so
+    #    fulfill_and_invoice no longer re-derives tax from the live customer. ───
+    ("sales_orders", "is_taxable",        "BOOLEAN NOT NULL DEFAULT 0"),
+    ("sales_orders", "tax_rate_snapshot", "REAL NOT NULL DEFAULT 0"),
+
+    # ── Audit fix sprint — C5 + Q6: warranty claim line serial/ESN capture
+    #    (makes print template's line.serial_number real) + labor reimbursement
+    #    (hours × rate), entered during the warranty process. ──────────────────
+    ("warranty_claim_lines", "serial_number", "TEXT NULL"),
+    ("warranty_claim_lines", "labor_hours",   "REAL NOT NULL DEFAULT 0"),
+    ("warranty_claim_lines", "labor_rate",    "REAL NOT NULL DEFAULT 0"),
 ]
 
 
@@ -490,6 +502,22 @@ _PENDING_UNIQUE_INDEXES: list[tuple[str, str, str, str, str]] = [
         "WHERE usdot_number IS NOT NULL",
         "multiple customers share the same USDOT number — merge the duplicate "
         "carrier records before the Lead Finder dedup backstop can be created",
+    ),
+    (
+        # C10 — one customer per real email (case-insensitive). Partial: blank
+        # emails repeat freely. If live data already has dupes, this SKIPS with a
+        # warning so startup never wedges; the owner merges, then it creates next boot.
+        "uq_customers_email",
+        "customers",
+        "SELECT COUNT(*) FROM ("
+        "SELECT 1 FROM customers "
+        "WHERE email IS NOT NULL AND email != '' "
+        "GROUP BY lower(email) HAVING COUNT(*) > 1)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_customers_email "
+        "ON customers (email COLLATE NOCASE) "
+        "WHERE email IS NOT NULL AND email != ''",
+        "multiple customers share the same email — merge the duplicate customer "
+        "records before the email dedup backstop can be created",
     ),
 ]
 

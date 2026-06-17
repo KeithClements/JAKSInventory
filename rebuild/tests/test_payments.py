@@ -81,7 +81,7 @@ def db(client):
 
 def _customer(db, *, credit: float = 0.0) -> Customer:
     c = Customer(company_name=f"Pay Test Co {next(_seq)}", contact_name="QA",
-                 email="pay@test.local", credit_balance=credit)
+                 email=f"pay{next(_seq)}@test.local", credit_balance=credit)
     db.add(c); db.commit(); db.refresh(c)
     return c
 

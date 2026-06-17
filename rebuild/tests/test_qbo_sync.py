@@ -153,9 +153,9 @@ def _connect(db, *, expires_at="2999-01-01T00:00:00", environment="sandbox"):
     db.commit()
 
 
-def _customer(db, *, name=None, email="cust@test.local", qbo_id="") -> Customer:
+def _customer(db, *, name=None, email=None, qbo_id="") -> Customer:
     c = Customer(company_name=name or f"QBO Co {next(_seq)}", contact_name="QA",
-                 email=email, qbo_customer_id=qbo_id)
+                 email=email or f"cust{next(_seq)}@test.local", qbo_customer_id=qbo_id)
     db.add(c); db.commit(); db.refresh(c)
     return c
 

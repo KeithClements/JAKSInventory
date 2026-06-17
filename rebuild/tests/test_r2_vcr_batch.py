@@ -73,7 +73,7 @@ def _uniq() -> int:
 def _customer(db):
     from app.models.customer import Customer
     c = Customer(company_name=f"R2 VCR Cust {_uniq()}", contact_name="QA",
-                 email="r2vcr@test.local")
+                 email=f"r2vcr{_uniq()}@test.local")
     db.add(c); db.commit(); db.refresh(c)
     return c
 

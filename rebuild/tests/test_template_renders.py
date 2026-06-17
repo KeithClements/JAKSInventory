@@ -82,7 +82,7 @@ def _make_taxable_invoice(db):
     from app.services.invoice_service import InvoiceService
 
     c = Customer(company_name="Tax Print Co", contact_name="QA",
-                 email="taxprint@test.local")
+                 email=f"taxprint{__import__('uuid').uuid4().hex[:8]}@test.local")
     db.add(c); db.flush()
 
     inv = Invoice(
@@ -162,7 +162,7 @@ def test_b1_tax_row_absent_when_tax_amount_zero(db, jenv):
     from app.services.invoice_service import InvoiceService
 
     c = Customer(company_name="Exempt Print Co", contact_name="QA",
-                 email="exempt@test.local")
+                 email=f"exempt{__import__('uuid').uuid4().hex[:8]}@test.local")
     db.add(c); db.flush()
 
     inv = Invoice(

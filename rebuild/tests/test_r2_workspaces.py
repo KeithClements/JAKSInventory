@@ -73,7 +73,7 @@ def _customer(db, *, card_surcharge_pct: float | None = None):
     c = Customer(
         company_name=f"R2 Cust {_uniq()}",
         contact_name="QA",
-        email="r2@test.local",
+        email=f"r2{_uniq()}@test.local",
         is_active=True,
         card_surcharge_pct=card_surcharge_pct,
     )

@@ -60,7 +60,7 @@ def _ready_vcr(db):
     from app.models.core import CoreCharge
     from app.services.core_service import CoreService
 
-    cust = Customer(company_name=f"Copies Cust {_uniq()}", email="copies@test.local")
+    cust = Customer(company_name=f"Copies Cust {_uniq()}", email=f"copies{_uniq()}@test.local")
     ven = Vendor(name=f"Copies Vendor {_uniq()}", is_active=True, account_number="JAK-1")
     prod = Product(sku=f"VCRCOPY-{_uniq():04d}", title="Reman Turbo", description="x",
                    cost=300, markup_pct=40, qty_on_hand=0,

@@ -63,6 +63,31 @@ class SalesOrderService(BaseService):
         year = datetime.utcnow().year
         so_number = bump_counter(self.db, "next_so_number", "SO", year)
 
+        # C1 — capture the tax intent agreed at SO time so fulfill_and_invoice
+        # does NOT silently re-derive tax from the live customer at fulfillment
+        # (which could make a taxable customer's invoice exceed the SO total they
+        # agreed to). Prefer the originating quote's frozen tax; else the
+        # customer's current tax status. An explicit data override wins (imports).
+        from app.models.customer import Customer as _Customer
+        from app.models.quote import Quote as _Quote
+        _src_quote = (
+            self.db.query(_Quote).filter(_Quote.id == quote_id).first()
+            if quote_id else None
+        )
+        if _src_quote is not None:
+            # Require a positive rate to call it taxable — Quote.is_taxable
+            # defaults True even when no rate is set, which would otherwise
+            # produce a contradictory "taxable, 0% rate" SO.
+            _q_rate = float(_src_quote.tax_rate_snapshot or 0.0)
+            _so_is_taxable = bool(_src_quote.is_taxable) and _q_rate > 0
+            _so_tax_rate = _q_rate if _so_is_taxable else 0.0
+        else:
+            _cust = self.db.query(_Customer).filter(_Customer.id == customer_id).first()
+            _cust_exempt = bool(getattr(_cust, "is_tax_exempt", False)) if _cust else False
+            _cust_rate = float(getattr(_cust, "tax_rate", 0.0) or 0.0) if _cust else 0.0
+            _so_is_taxable = (not _cust_exempt) and _cust_rate > 0
+            _so_tax_rate = _cust_rate if _so_is_taxable else 0.0
+
         so = SalesOrder(
             so_number=so_number,
             customer_id=customer_id,
@@ -75,6 +100,8 @@ class SalesOrderService(BaseService):
             esn=data.get("esn"),
             engine_manufacturer=data.get("engine_manufacturer", ""),
             engine_model=data.get("engine_model", ""),
+            is_taxable=bool(data.get("is_taxable", _so_is_taxable)),
+            tax_rate_snapshot=float(data.get("tax_rate_snapshot", _so_tax_rate)),
             notes=data.get("notes", ""),
             internal_notes=data.get("internal_notes", ""),
         )
@@ -527,18 +554,30 @@ class SalesOrderService(BaseService):
         # Delegate invoice creation — create_invoice() commits (includes SO_RELEASED
         # txns and SOLine qty updates that were flushed above).
         inv_svc = InvoiceService(self.db, self.current_user_id)
+        _inv_data = {
+            "customer_po_number": so.customer_po_number,
+            "customer_job_number": so.customer_job_number,
+            "esn": so.esn,
+            "engine_manufacturer": so.engine_manufacturer or "",
+            "engine_model": so.engine_model or "",
+            "notes": so.notes,
+            "internal_notes": so.internal_notes,
+            "due_date": due_date,
+        }
+        # C1 — carry the SO-agreed tax forward so the invoice (and its finalize
+        # freeze) use the rate the customer agreed to on the SO, not whatever the
+        # live customer record says at fulfillment time. Only do this when the SO
+        # actually captured a positive tax rate; otherwise (no rate captured, or
+        # a legacy/direct-built SO) fall back to create_invoice deriving tax from
+        # the live customer — which both preserves pre-C1 behavior and avoids a
+        # contradictory "taxable but no rate" invoice that fails finalize.
+        if (so.tax_rate_snapshot or 0) > 0:
+            _inv_data["is_taxable"] = so.is_taxable
+            _inv_data["tax_rate"] = so.tax_rate_snapshot
+            _inv_data["tax_rate_snapshot"] = so.tax_rate_snapshot
         invoice = inv_svc.create_invoice(
             customer_id=so.customer_id,
-            data={
-                "customer_po_number": so.customer_po_number,
-                "customer_job_number": so.customer_job_number,
-                "esn": so.esn,
-                "engine_manufacturer": so.engine_manufacturer or "",
-                "engine_model": so.engine_model or "",
-                "notes": so.notes,
-                "internal_notes": so.internal_notes,
-                "due_date": due_date,
-            },
+            data=_inv_data,
             so_id=so_id,
             lines=inv_lines,
         )

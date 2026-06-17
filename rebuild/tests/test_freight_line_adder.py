@@ -66,7 +66,7 @@ def _uid():
 def _customer(db, *, tax_rate=0.0):
     from app.models.customer import Customer
     c = Customer(company_name=f"Freight Co {_uid()}", contact_name="QA",
-                 email="freight@t.local", tax_rate=tax_rate,
+                 email=f"freight{_uid()}@t.local", tax_rate=tax_rate,
                  is_tax_exempt=(tax_rate == 0.0))
     db.add(c); db.commit(); db.refresh(c)
     return c

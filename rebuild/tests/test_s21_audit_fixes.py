@@ -85,7 +85,7 @@ def _user(db, role: str) -> User:
 
 def _customer(db, **kw) -> Customer:
     c = Customer(company_name=f"S21 Co {next(_seq)}", contact_name="QA",
-                 email="s21@test.local", **kw)
+                 email=f"s21-{next(_seq)}@test.local", **kw)
     db.add(c); db.commit(); db.refresh(c)
     return c
 

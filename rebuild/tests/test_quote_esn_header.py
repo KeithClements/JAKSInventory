@@ -47,7 +47,7 @@ def db(client):
 
 def _customer(db):
     from app.models.customer import Customer
-    c = Customer(company_name="ESN Co", contact_name="QA", email="esn@test.local")
+    c = Customer(company_name="ESN Co", contact_name="QA", email=f"esn{__import__('uuid').uuid4().hex[:8]}@test.local")
     db.add(c); db.commit(); db.refresh(c)
     return c
 

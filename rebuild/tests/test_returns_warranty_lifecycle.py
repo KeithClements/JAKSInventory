@@ -67,7 +67,7 @@ def db(client):
 
 
 def _customer(db) -> Customer:
-    c = Customer(company_name=f"Life Cust {_uniq()}", contact_name="QA", email="life@test.local")
+    c = Customer(company_name=f"Life Cust {_uniq()}", contact_name="QA", email=f"life{_uniq()}@test.local")
     db.add(c); db.commit(); db.refresh(c)
     return c
 

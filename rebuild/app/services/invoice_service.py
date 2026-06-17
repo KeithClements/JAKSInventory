@@ -174,9 +174,12 @@ class InvoiceService(BaseService):
             cc_surcharge_pct=float(data.get("cc_surcharge_pct", cc_surcharge_pct)),
             is_taxable=bool(is_taxable_legacy),
             tax_rate=float(tax_rate_legacy),
-            # R1 — snapshot at creation
-            tax_rate_snapshot=float(cust_tax_rate),
-            tax_exempt_snapshot=cust_tax_exempt,
+            # R1 — snapshot at creation. C1 — a caller (SO fulfillment) may pass
+            # the tax intent agreed at SO time so the finalize freeze uses THAT
+            # rate, not the live customer's current rate. Defaults to the live
+            # customer when no override is supplied (unchanged for create_draft).
+            tax_rate_snapshot=float(data.get("tax_rate_snapshot", cust_tax_rate)),
+            tax_exempt_snapshot=bool(data.get("tax_exempt_snapshot", cust_tax_exempt)),
             due_date=data.get("due_date"),
             notes=data.get("notes", ""),
             internal_notes=data.get("internal_notes", ""),
@@ -540,6 +543,12 @@ class InvoiceService(BaseService):
           5. Create CoreCharge records for core child lines
           6. Set status = OPEN, mark for QBO sync
         """
+        # RBAC — finalizing snapshots cost, decrements inventory, and locks the
+        # invoice into AR. Gate it (ADMIN/BOOKKEEPING) so a SALES clerk cannot
+        # commit cost/inventory. (Grant SALES Permission.FINALIZE_INVOICE in
+        # base.py if a shop wants counter clerks to finalize their own sales.)
+        self.assert_can(Permission.FINALIZE_INVOICE)
+
         errors = self.validate_for_finalise(invoice_id)
         if errors:
             raise ValueError("; ".join(errors))
@@ -962,31 +971,34 @@ class InvoiceService(BaseService):
         if invoice.status == InvoiceStatus.VOID:
             raise ValueError(f"Invoice {invoice.invoice_number} is already void")
 
+        # C8 — a fully-PAID invoice must not be voided. (Reaching here with
+        # PAID status would otherwise destroy a settled revenue record via a
+        # crafted/replayed POST; the UI already hides the button for PAID.)
+        # Real correction path for a paid invoice is a credit memo.
+        if invoice.status == InvoiceStatus.PAID:
+            raise ValueError(
+                f"Invoice {invoice.invoice_number} is fully paid. Reverse the "
+                f"payment(s) or issue a credit memo — a paid invoice cannot be voided."
+            )
+
         # §21 — ALL voids require VOID_LOCKED_INVOICE (any invoice reaching this
         # route is finalised, therefore locked). Previously the gate fired only
         # inside the qbo_invoice_id branch, so a SALES clerk could void any
         # non-QBO posted invoice with no permission check. Enforce unconditionally.
         self.assert_can(Permission.VOID_LOCKED_INVOICE)
 
-        # R4 — QBO-pushed invoices must be corrected via credit memo
+        # C2 — QBO-pushed invoices must be corrected with a credit memo, never a
+        # local void. Voiding locally leaves the QBO record OPEN in AR forever
+        # (permanent ledger divergence). This is a HARD block by design (owner
+        # decision): the credit-memo path has its own QBO sync. The previous
+        # "admin override" branch re-checked the SAME permission already asserted
+        # above, so it was dead code that let anyone with void rights bypass it.
         if invoice.qbo_invoice_id:
-            # Allow admin override via permission
-            try:
-                self.assert_can(Permission.VOID_LOCKED_INVOICE)
-            except Exception:
-                raise ValueError(
-                    f"Invoice {invoice.invoice_number} has been pushed to QBO "
-                    f"(qbo_id={invoice.qbo_invoice_id}). Issue a credit memo to "
-                    f"correct it instead of voiding."
-                )
-            # Override granted — audit it before mutation
-            self.audit(
-                entity_type=EntityType.INVOICE,
-                entity_id=invoice_id,
-                action=AuditAction.VOIDED,
-                old_value={"qbo_invoice_id": invoice.qbo_invoice_id},
-                new_value={"override": "void_qbo_pushed", "reason": reason},
-                notes="Admin override voided QBO-pushed invoice",
+            raise ValueError(
+                f"Invoice {invoice.invoice_number} has been pushed to QuickBooks "
+                f"(qbo_id={invoice.qbo_invoice_id}) and cannot be voided — voiding "
+                f"would leave the QBO invoice open in AR. Issue a credit memo to "
+                f"correct it instead."
             )
 
         # R4 — invoices with applied payments must reverse payments first

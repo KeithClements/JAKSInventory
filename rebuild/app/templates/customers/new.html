@@ -8,6 +8,30 @@
 {% block content %}
 {% set prefill = prefill | default({}) %}
 {% set dup_matches = dup_matches | default([]) %}
+{% set email_conflict = email_conflict | default(none) %}
+
+{# ── Hard email conflict (C10) — a customer with this email already exists.
+     Unlike the soft company-name warning this CANNOT be overridden (the email
+     is a unique key), so there is no "Create Anyway" — point the user to the
+     existing record instead. #}
+{% if email_conflict %}
+<div class="rounded-xl bg-red-50 border border-red-200 px-4 py-3 max-w-2xl mb-6">
+  <p class="text-sm font-semibold text-red-800">A customer with this email already exists.</p>
+  <p class="text-xs text-red-700 mt-0.5">
+    Use the existing record so billing and credit stay on one account:
+  </p>
+  <div class="mt-2 flex items-center justify-between gap-2 rounded bg-white/70 border border-red-100 px-3 py-2">
+    <span class="min-w-0 truncate text-sm font-medium text-gray-800">
+      {{ email_conflict.company_name }}
+      <span class="text-xs text-gray-400">· {{ email_conflict.email }}</span>
+    </span>
+    <a href="/customers/{{ email_conflict.id }}"
+       class="shrink-0 text-xs font-semibold text-brand-700 hover:underline">View Existing →</a>
+  </div>
+  <p class="text-xs text-red-600 mt-2">…or change the email below to create a separate customer.</p>
+</div>
+{% endif %}
+
 <form method="post" action="/customers/new" class="max-w-2xl space-y-6"
       x-data="{ confirmDup: false }">
   <input type="hidden" name="confirm_duplicate" :value="confirmDup ? '1' : ''">

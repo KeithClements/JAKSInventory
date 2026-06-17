@@ -96,7 +96,13 @@ class ShopifyService(BaseService):
         return raw
 
     def _token(self) -> str:
-        return get_setting_value_db(self.db, "shopify_access_token", "").strip()
+        # C7 — the Shopify Admin token is Fernet-encrypted at rest (settings save
+        # encrypts it; see _ENCRYPTED_KEYS). _decrypt passes legacy plaintext
+        # through unchanged, so an existing token keeps working until re-saved.
+        from app.services.qbo_client import _decrypt as _secret_decrypt
+        return _secret_decrypt(
+            get_setting_value_db(self.db, "shopify_access_token", "").strip()
+        )
 
     def is_configured(self) -> bool:
         return bool(self._store_domain() and self._token())
