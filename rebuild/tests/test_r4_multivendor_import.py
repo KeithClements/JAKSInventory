@@ -3,12 +3,13 @@ tests/test_r4_multivendor_import.py
 ===================================
 full_import with a TWO-VENDOR scraper feed (SCRAPER_REQUIREMENTS.md): the
 feed-SKU prefix names each row's vendor (JAKS-PAI-… / JAKS-IMB-…; no prefix =
-legacy PAI). Each NEW product mints its JAKS SKU with THAT vendor's owner-set
-digit, gets THAT vendor's source + brand, and the (engine, category) sequence
-stays shared across vendors (twin rule 90001 ↔ 30001).
+legacy PAI). MASTER_PLAN §20: each NEW product keeps the vendor's real part #
+as its customer SKU (no opaque digit/sequence minting), and gets THAT vendor's
+source + brand.
 
-The R1 guard generalizes per-vendor: EVERY vendor a feed references must
-exist with its digit before anything is written (atomic).
+The R1 guard generalizes per-vendor: EVERY vendor a feed references must exist
+with its digit — now a vendor-EXISTENCE guard, not an in-SKU digit — before
+anything is written (atomic).
 """
 from __future__ import annotations
 
@@ -100,11 +101,9 @@ def test_mixed_feed_mints_each_vendors_digit(db):
     p_pai, src_pai = _by_feed_sku(db, "JAKS-PAI-040049")
     p_imb, src_imb = _by_feed_sku(db, "JAKS-IMB-1832665")
 
-    # Minted SKU's last segment = [V][NNNN] with the row vendor's digit
-    pai_tail = p_pai.sku.split("-")[-1]
-    imb_tail = p_imb.sku.split("-")[-1]
-    assert pai_tail.startswith("9") and len(pai_tail) == 5
-    assert imb_tail.startswith("3") and len(imb_tail) == 5
+    # MASTER_PLAN §20: SKU = the vendor's real part # (here the feed SKU; no masking).
+    assert p_pai.sku == "JAKS-PAI-040049"
+    assert p_imb.sku == "JAKS-IMB-1832665"
 
     assert src_pai.vendor_id == pai.id
     assert src_imb.vendor_id == imb.id
@@ -120,7 +119,7 @@ def test_no_prefix_row_defaults_to_pai(db):
     summ = svc.full_import(_csv([_prod_row("040049X")]), dry_run=False)
     assert summ.get("error") is None and summ["created"] == 1
     p, src = _by_feed_sku(db, "040049X")
-    assert p.sku.split("-")[-1].startswith("9")
+    assert p.sku == "040049X"          # §20: SKU = the (PAI-routed) vendor part #
     assert src.vendor_id == pai.id
 
 
@@ -151,10 +150,10 @@ def test_missing_imb_vendor_record_aborts(db):
     assert db.query(Product).count() == 0
 
 
-def test_sequence_shared_across_vendors(db):
-    """Twin rule: the NNNN sequence is per (engine, category), shared across
-    vendors — two same-category parts from different vendors take consecutive
-    sequence numbers, distinguished only by the digit."""
+def test_each_vendor_row_creates_its_own_product(db):
+    """MASTER_PLAN §20: the opaque per-(engine,category) sequence counter is gone —
+    each feed row keeps the vendor's real part # as its SKU and creates its own
+    product under its own vendor + brand."""
     _seed_vendor(db, name="PAI Industries", code="PAI", digit="9")
     _seed_vendor(db, name="Interstate-McBee", code="IMB", digit="3")
     svc = ProductImportService(db, None)
@@ -163,13 +162,13 @@ def test_sequence_shared_across_vendors(db):
         _prod_row("JAKS-PAI-100", title="Head Bolt"),
         _prod_row("JAKS-IMB-200", title="Head Bolt"),
     ]), dry_run=False)
-    assert summ.get("error") is None
-    p1, _ = _by_feed_sku(db, "JAKS-PAI-100")
-    p2, _ = _by_feed_sku(db, "JAKS-IMB-200")
-    assert (p1.engine_code, p1.category_code) == (p2.engine_code, p2.category_code)
-    assert {p1.part_seq, p2.part_seq} == {1, 2}   # one shared counter
-    assert p1.sku.split("-")[-1][0] == "9"
-    assert p2.sku.split("-")[-1][0] == "3"
+    assert summ.get("error") is None and summ["created"] == 2
+    p1, s1 = _by_feed_sku(db, "JAKS-PAI-100")
+    p2, s2 = _by_feed_sku(db, "JAKS-IMB-200")
+    assert p1.sku == "JAKS-PAI-100"
+    assert p2.sku == "JAKS-IMB-200"
+    assert s1.vendor_id != s2.vendor_id     # each under its own vendor
+    assert p1.brand != p2.brand
 
 
 def test_smart_import_new_imb_row_creates_under_imb(db):
@@ -189,6 +188,6 @@ def test_smart_import_new_imb_row_creates_under_imb(db):
     assert result["created"] == 1
 
     p, src = _by_feed_sku(db, "JAKS-IMB-555")
-    assert p.sku.split("-")[-1].startswith("3")
+    assert p.sku == "JAKS-IMB-555"     # §20: SKU = the IMB feed/vendor part #
     assert src.vendor_id == imb.id
     assert p.brand == "Interstate-McBee"

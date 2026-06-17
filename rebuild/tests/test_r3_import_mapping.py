@@ -384,4 +384,4 @@ def test_vendor_digit_guard_fires_for_mapped_batch(client, db):
     assert result2["created"] == 1 and result2["errors"] == []
     db.expire_all()
     p = db.query(Product).filter(Product.title == "Rocker Arm").first()
-    assert p is not None and p.sku.startswith("JAKS-")
+    assert p is not None and p.sku == "SAM-700"   # §20: SKU = the mapped vendor part #

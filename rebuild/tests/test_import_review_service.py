@@ -331,11 +331,23 @@ def test_apply_is_idempotent(db):
 
 def test_apply_only_ids_narrows_the_run(db):
     """only_ids applies exactly the named ACCEPTED candidates and leaves the other
-    accepted rows unapplied (per-row / selected-rows 'Approve & Add to Catalog')."""
+    accepted rows unapplied (per-row / selected-rows 'Approve & Add to Catalog').
+
+    MASTER_PLAN §20: the SKU is derived from the body 'PAI Part #', so the two rows
+    must carry DISTINCT part numbers — otherwise they collide on Product.sku and the
+    second is skipped (which is correct §20 behavior, just not what this test about
+    only_ids narrowing means to exercise)."""
     svc = ImportReviewService(db, None)
+
+    def _distinct_part(sku, part):
+        r = _prod_row(sku, oem="")
+        i = _HEADER.index("Body (HTML)")
+        r[i] = r[i].replace("PAI Part #:</strong> 111", f"PAI Part #:</strong> {part}")
+        return r
+
     batch = svc.analyze_feed(_csv([
-        _prod_row("APPLY-ONLY-1", oem=""),
-        _prod_row("APPLY-ONLY-2", oem=""),
+        _distinct_part("APPLY-ONLY-1", "11101"),
+        _distinct_part("APPLY-ONLY-2", "11102"),
     ]))
     c1, c2 = _cands(db, batch)
     svc.set_review_status(c1.id, ScrapedItemReviewStatus.ACCEPTED)
