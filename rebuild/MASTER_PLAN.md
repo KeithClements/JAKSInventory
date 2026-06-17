@@ -1331,11 +1331,33 @@ Live-verified on the real catalog (product detail → Applications tab → add C
 - **`CreditMemo.applied_amount`→computed** — derived from non-reversed allocations (drift-proof);
   `unapplied_amount` kept stored (close moves residual to credit_balance, not derivable). Writes removed.
 
-### 21.10 — Genuinely deferred (Phase 2-3 / SaaS)
-server-side session revocation · backup-before-migration + schema_version (low value — owner #7 throwaway
-DB) · interest that posts to an invoice · bulk statement generation/send · quote-conversion-rate +
-vendor-performance reports · ESN→CPL warranty validation · mobile/tablet workspace layout · pagination on
-list caps. **SaaS multi-tenancy (`company_id` scoping) = someday (#6).**
+### 21.10 — Mostly SHIPPED 2026-06-16 (commits `<qbo>`/`<features>`/`<bulk+pager>`)
+- **QBO push hardening** ✅ — `Vendor.qbo_vendor_id` persisted · 429 Retry-After backoff · AST no-override
+  retry (`_is_ast_tax_error`) · `unsynced_invoice_ids(pending_only)` (Sync-All skips ERROR) ·
+  `retry_failed_pushes` + background scheduler (`main.py`, ~30 min while connected, retry ceiling).
+- **Backup-before-migration** ✅ — `_apply_inline_migrations` snapshots the live SQLite file to `backups/`
+  before any ALTER (only when a column is genuinely missing; file DB only; best-effort).
+- **Quote-conversion + Vendor-performance reports** ✅ — `get_quote_conversion` (win-rate + value) /
+  `get_vendor_performance` (PO count/value, fill-rate, 3-way-match discrepancies) + routes + nav + CSV.
+- **Warranty ESN gate** ✅ — `submit_to_vendor` requires an ESN on VENDOR claims when
+  `warranty_require_esn` setting is on (default off — opt-in PAI/IMB compliance gate).
+- **Post accrued interest** ✅ — `CRMService.post_interest_charge` → DRAFT MISC_FEE invoice (operator
+  finalizes) + `POST /customers/{id}/post-interest` + "Charge Interest" button.
+- **Bulk month-end statements** ✅ — `generate_bulk_statements` (every customer with a balance) +
+  `POST /customers/statements/bulk-generate` + AR-aging button. (Generation only — no email provider.)
+- **List pagination** ✅ — `utils.compute_pager` + `macros/_pager.html`; invoice/quote/SO lists now page
+  (`?page=`) instead of a silent `limit(150/200)`.
+
+### 21.11 — Genuinely deferred (Phase 2-3 / SaaS)
+- **Server-side session revocation** — DEFERRED: needs invasive changes to the just-hardened auth hot path
+  (per-request DB lookup + token plumbing) with real lockout risk; revisit deliberately, not in a sweep.
+- **Mobile/tablet workspace layout** — DEFERRED: large responsive re-layout; high regression risk to the
+  dense desktop UI; needs its own design pass.
+- **schema_version tracking** — low value now that backup-before-migration ships (owner #7 throwaway DB).
+- **ESN→CPL range validation** against ProductApplication — only the non-empty ESN gate shipped; the
+  range check is unreliable against free-text `esn_range`.
+- Real email/SMS send (NullProvider only); server-side PDF (GTK); pagination on the remaining minor lists.
+- **SaaS multi-tenancy (`company_id` scoping) = someday (#6).**
 
 ---
 
