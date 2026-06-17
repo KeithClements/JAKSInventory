@@ -289,6 +289,9 @@ class VendorBill(QBOSyncMixin, Base):
     po: Mapped[PurchaseOrder | None] = relationship(
         "PurchaseOrder", back_populates="bills"
     )
+    # §21 — read-only nav to the vendor (the standalone Vendor Bills list + AP
+    # aging join on this). vendor_id FK already exists; no schema change.
+    vendor: Mapped[Vendor] = relationship("Vendor", viewonly=True)
     lines: Mapped[list[VendorBillLine]] = relationship(
         "VendorBillLine", back_populates="bill", cascade="all, delete-orphan"
     )

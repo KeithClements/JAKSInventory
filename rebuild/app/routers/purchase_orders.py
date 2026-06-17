@@ -479,6 +479,78 @@ def _po_core_return_context(db: Session, po: PurchaseOrder) -> dict:
     return {"core_return_ready": ready, "core_return_vcrs": vcrs}
 
 
+# ── Standalone vendor-bill list (§21) ────────────────────────────────────────
+# Registered BEFORE /{po_id} so "bills" isn't matched as a PO id. All vendor
+# bills across POs, with their net-of-vendor-credit balance, filterable by status.
+
+@router.get("/bills", response_class=HTMLResponse)
+def vendor_bill_list(request: Request, tab: str = "open", q: str = "", db: Session = Depends(get_db)):
+    from app.constants import VendorBillStatus
+    from app.models.vendor_credit import VendorCreditMemoAllocation
+
+    _OPEN = [VendorBillStatus.PENDING, VendorBillStatus.APPROVED, VendorBillStatus.DISCREPANCY]
+    TAB_STATUS = {
+        "open": _OPEN,
+        "pending": [VendorBillStatus.PENDING],
+        "discrepancy": [VendorBillStatus.DISCREPANCY],
+        "paid": [VendorBillStatus.PAID],
+        "all": [],
+    }
+
+    raw_counts = dict(
+        db.query(VendorBill.status, func.count(VendorBill.id)).group_by(VendorBill.status).all()
+    )
+    counts = {
+        "open": sum(raw_counts.get(s, 0) for s in _OPEN),
+        "pending": raw_counts.get(VendorBillStatus.PENDING, 0),
+        "discrepancy": raw_counts.get(VendorBillStatus.DISCREPANCY, 0),
+        "paid": raw_counts.get(VendorBillStatus.PAID, 0),
+        "all": sum(raw_counts.values()),
+    }
+
+    query = (
+        db.query(VendorBill)
+        .options(joinedload(VendorBill.vendor), joinedload(VendorBill.lines))
+        .order_by(VendorBill.created_at.desc())
+    )
+    statuses = TAB_STATUS.get(tab, _OPEN)
+    if statuses:
+        query = query.filter(VendorBill.status.in_(statuses))
+    if q:
+        like = f"%{q.strip()}%"
+        query = query.outerjoin(Vendor, VendorBill.vendor_id == Vendor.id).filter(
+            VendorBill.bill_number.ilike(like) | Vendor.name.ilike(like)
+        )
+    bills = query.all()
+
+    # Net-of-vendor-credit balance per shown bill.
+    bill_ids = [b.id for b in bills]
+    credit_by_bill: dict[int, float] = {}
+    if bill_ids:
+        for bid, amt in (
+            db.query(VendorCreditMemoAllocation.vendor_bill_id,
+                     func.sum(VendorCreditMemoAllocation.amount_applied))
+            .filter(VendorCreditMemoAllocation.vendor_bill_id.in_(bill_ids),
+                    VendorCreditMemoAllocation.is_reversed == False)  # noqa: E712
+            .group_by(VendorCreditMemoAllocation.vendor_bill_id).all()
+        ):
+            credit_by_bill[bid] = float(amt or 0.0)
+    balance_map = {
+        b.id: (0.0 if b.status == VendorBillStatus.PAID
+               else round(b.total_amount - credit_by_bill.get(b.id, 0.0), 2))
+        for b in bills
+    }
+
+    return templates.TemplateResponse(
+        request, "purchase_orders/bills_list.html",
+        {
+            "bills": bills, "tab": tab, "q": q, "counts": counts,
+            "balance_map": balance_map, "VendorBillStatus": VendorBillStatus,
+            "now": datetime.utcnow(),
+        },
+    )
+
+
 @router.get("/{po_id}", response_class=HTMLResponse)
 def po_workspace(po_id: int, request: Request, db: Session = Depends(get_db)):
     po = (

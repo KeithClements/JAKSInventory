@@ -130,7 +130,7 @@ class CreditMemoService(BaseService):
             warranty_claim_id=warranty_claim_id,
             trigger_type=trigger_type,
             total_amount=total_amount,
-            applied_amount=0.0,
+            # §21 — applied_amount is computed from allocations now (no column write).
             unapplied_amount=total_amount,
             status=CreditMemoStatus.OPEN,
             reason=reason or "",
@@ -276,8 +276,8 @@ class CreditMemoService(BaseService):
         )
         self.db.add(cm_alloc)
 
-        # Adjust CM totals
-        cm.applied_amount = round(cm.applied_amount + amount, 2)
+        # Adjust CM totals — applied_amount is computed from the allocation we just
+        # added (no write); only the stored unapplied_amount is decremented.
         cm.unapplied_amount = round(cm.unapplied_amount - amount, 2)
         if cm.unapplied_amount <= 0.001:
             cm.status = CreditMemoStatus.APPLIED

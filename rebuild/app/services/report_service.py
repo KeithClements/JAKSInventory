@@ -197,6 +197,65 @@ class ReportService(BaseService):
 
         return {"as_of": as_of, "rows": rows, "totals": totals}
 
+    # ── 1b. AP Aging (payables — what JAKS owes vendors) ──────────────────────
+
+    def get_ap_aging(self, as_of_date: date | None = None) -> dict[str, Any]:
+        """§21 — payables mirror of get_ar_aging. Buckets unpaid vendor-bill
+        balances (total_amount NET of applied, non-reversed vendor credits) by age
+        relative to as_of. Excludes PAID bills; reference date = due_date, else
+        bill_date, else created_at. Vendor-level rows + grand totals."""
+        from sqlalchemy import func as _func
+        from app.constants import VendorBillStatus
+        from app.models.purchase_order import VendorBill
+        from app.models.vendor_credit import VendorCreditMemoAllocation
+
+        as_of = as_of_date or date.today()
+        bills = (
+            self.db.query(VendorBill)
+            .options(joinedload(VendorBill.vendor))
+            .filter(VendorBill.status != VendorBillStatus.PAID)
+            .all()
+        )
+        # Applied (non-reversed) vendor credits per bill — net them off the balance.
+        credit_by_bill = {
+            bid: float(amt or 0.0)
+            for bid, amt in (
+                self.db.query(
+                    VendorCreditMemoAllocation.vendor_bill_id,
+                    _func.sum(VendorCreditMemoAllocation.amount_applied),
+                )
+                .filter(VendorCreditMemoAllocation.is_reversed == False)  # noqa: E712
+                .group_by(VendorCreditMemoAllocation.vendor_bill_id)
+                .all()
+            )
+        }
+
+        aging: dict[int, dict[str, Any]] = defaultdict(lambda: {
+            "vendor": None, "vendor_id": None, "bill_count": 0,
+            **zero_buckets(), "total": 0.0, "bills": [],
+        })
+        for bill in bills:
+            balance = round(bill.total_amount - credit_by_bill.get(bill.id, 0.0), 2)
+            if balance <= 0:
+                continue
+            row = aging[bill.vendor_id]
+            row["vendor"] = bill.vendor
+            row["vendor_id"] = bill.vendor_id
+            row["bill_count"] += 1
+            row["bills"].append(bill)
+            row["total"] = round(row["total"] + balance, 2)
+            ref = as_date(bill.due_date) or as_date(bill.bill_date) or as_date(bill.created_at)
+            if ref is None:
+                row["current"] = round(row["current"] + balance, 2)
+                continue
+            bucket = bucket_for((as_of - ref).days)
+            row[bucket] = round(row[bucket] + balance, 2)
+
+        rows = sorted(aging.values(), key=lambda r: r["total"], reverse=True)
+        totals = {b: round(sum(r[b] for r in rows), 2) for b in AGING_BUCKETS}
+        totals["total"] = round(sum(r["total"] for r in rows), 2)
+        return {"as_of": as_of, "rows": rows, "totals": totals}
+
     # ── 2. Sales by Customer ─────────────────────────────────────────────────
 
     def get_sales_by_customer(

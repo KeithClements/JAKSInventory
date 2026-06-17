@@ -244,7 +244,8 @@ def _cm(db, customer_id, *, status=CreditMemoStatus.OPEN, lines=None,
     total = round(sum(q * p for _, q, p in lines), 2)
     cm = CreditMemo(
         cm_number=f"CM-TEST-{n:04d}", customer_id=customer_id, status=status,
-        total_amount=total, unapplied_amount=total, applied_amount=0.0,
+        # §21 — applied_amount is computed from allocations now (not a constructor arg).
+        total_amount=total, unapplied_amount=total,
         tax_amount=0.0, reason="R3 test",
     )
     for i, (desc, qty, price) in enumerate(lines):

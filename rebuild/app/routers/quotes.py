@@ -1108,9 +1108,20 @@ async def duplicate_quote(
 async def convert_to_so(
     quote_id: int,
     payment_mode: str = Form(SOPaymentMode.NONE),
+    confirm_credit_hold: str = Form(""),
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
+    # §21 — credit-hold = WARN (owner #6). If the quote's customer is on hold and
+    # the clerk hasn't acknowledged it, bounce back to the quote with a prominent
+    # warning + a "Convert anyway" path. The SO-create path was the audit's named
+    # gap alongside invoice finalize.
+    if confirm_credit_hold.lower() not in {"1", "true", "on", "yes"}:
+        from app.services.customer_service import CustomerService
+        quote = _get_quote_or_404(db, quote_id)
+        if quote.customer and CustomerService(db).is_on_credit_hold(quote.customer):
+            return RedirectResponse(f"/quotes/{quote_id}?credit_hold=1", status_code=303)
+
     so = QuoteService(db, user_id).convert_to_sales_order(quote_id, payment_mode)
     return RedirectResponse(f"/sales-orders/{so.id}", status_code=303)
 

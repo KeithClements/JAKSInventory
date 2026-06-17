@@ -7,11 +7,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{% block title %}Axle{% endblock %}</title>
   <link rel="icon" type="image/svg+xml" href="/static/brand/axle-favicon.svg">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   {# Axle brand type: Oswald (display) / Barlow (body) / IBM Plex Mono (numbers).
-     TODO production: self-host woff2 per the brand handoff (assets README). #}
-  <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Barlow:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+     §21 — SELF-HOSTED (latin woff2 under /static/fonts) so the brand renders even
+     on bad/no internet and the CSP needn't allow the Google Fonts CDN. Regenerate
+     with scripts/fetch_fonts.py. #}
+  <link rel="stylesheet" href="/static/fonts/fonts.css">
   {# ── Compiled Tailwind CSS — built from app/static/css/input.css ──────────
      Tokens:  tailwind.config.js  (brand palette, font, content paths)
      Rebuild: npm run build:css  |  Watch: npm run watch:css ─────────────── #}
@@ -870,6 +870,14 @@
                 d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
         </svg>
         3-Way Match
+      </a>
+
+      <a href="/purchase-orders/bills" title="All vendor bills with their net-of-credit balance + AP aging" class="nav-link {% if '/purchase-orders/bills' in request.url.path %}active{% endif %}">
+        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                d="M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16l3.5-2 3.5 2 3.5-2 3.5 2z"/>
+        </svg>
+        Vendor Bills
       </a>
 
       {# ── INVENTORY ───────────────────────────────────────────────── #}

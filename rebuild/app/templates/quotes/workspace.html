@@ -17,6 +17,27 @@
 <div class="mb-3">{{ linked_strip(linked_documents) }}</div>
 {% endif %}
 
+{# ── §21 credit-hold WARN-and-CONFIRM — convert-to-SO bounced here because the
+     customer is on credit hold (owner #6: warn, never block). ───────────────── #}
+{% if request.query_params.get('credit_hold') %}
+<div class="mb-3 rounded-lg bg-amber-50 border border-amber-300 px-4 py-3 text-sm text-amber-900 flex items-start gap-3">
+  <svg class="w-5 h-5 mt-0.5 text-amber-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3L12.74 5a2 2 0 00-3.48 0L3.2 16a2 2 0 001.73 3z"/>
+  </svg>
+  <div class="flex-1">
+    <strong>{{ quote.customer.company_name if quote.customer else 'This customer' }} is on credit hold.</strong>
+    Review the account before putting parts on an order. You can convert anyway if you've approved it.
+  </div>
+  <form method="post" action="/quotes/{{ quote.id }}/convert-to-so" class="shrink-0">
+    <input type="hidden" name="confirm_credit_hold" value="1">
+    <input type="hidden" name="payment_mode" value="{{ SOPaymentMode.NONE }}">
+    <button type="submit" class="px-3 py-1.5 rounded-md bg-amber-600 text-white text-xs font-semibold hover:bg-amber-700">
+      Convert to SO anyway
+    </button>
+  </form>
+</div>
+{% endif %}
+
 {# ── §4.5 credit warn (WARN-ONLY) — on_hold / over_limit banner ───────────── #}
 {% if (credit_status | default({})).get('warn') %}
 <div class="mb-3">{{ creditmacro.credit_warn(credit_status) }}</div>

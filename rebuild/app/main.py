@@ -56,6 +56,10 @@ log = logging.getLogger(__name__)
 app = FastAPI(title="JAKS Inventory", docs_url=None, redoc_url=None)
 
 BASE_DIR = Path(__file__).resolve().parent
+# §21 — self-hosted fonts: register the woff2 MIME so StaticFiles serves them as
+# font/woff2 (Python's mimetypes doesn't know .woff2 by default).
+import mimetypes
+mimetypes.add_type("font/woff2", ".woff2")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 # ── Auth enforcement (O2 — "A: enforce") ──────────────────────────────────────

@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Vendor Bills — Axle{% endblock %}
+{% block heading %}Vendor Bills{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+
+  {# ── Tabs + search ──────────────────────────────────────────────────────── #}
+  <div class="flex flex-wrap items-center gap-3">
+    <div class="inline-flex rounded-xl bg-gray-100 p-1">
+      {% for key, label in [('open','Open'), ('pending','Pending'), ('discrepancy','Discrepancy'), ('paid','Paid'), ('all','All')] %}
+      <a href="/purchase-orders/bills?tab={{ key }}"
+         class="px-3 py-1.5 rounded-lg text-sm font-medium {% if tab == key %}bg-white shadow-sm text-brand-700{% else %}text-gray-500 hover:text-gray-700{% endif %}">
+        {{ label }}
+        <span class="ml-1 text-xs {% if key == 'discrepancy' and counts[key] %}text-red-500{% else %}text-gray-400{% endif %}">{{ counts[key] }}</span>
+      </a>
+      {% endfor %}
+    </div>
+    <form method="get" action="/purchase-orders/bills" class="flex items-center gap-2">
+      <input type="hidden" name="tab" value="{{ tab }}"/>
+      <input name="q" value="{{ q }}" placeholder="Bill # or vendor…" class="form-input form-input-sm w-56"/>
+      <button class="btn-secondary btn-sm">Search</button>
+    </form>
+    <a href="/reports/ap-aging" class="ml-auto btn-secondary btn-sm">AP Aging →</a>
+  </div>
+
+  {# ── Table ──────────────────────────────────────────────────────────────── #}
+  {% if bills %}
+  <div class="card overflow-x-auto">
+    <table class="tbl">
+      <thead class="tbl-head">
+        <tr>
+          <th class="tbl-th">Bill #</th>
+          <th class="tbl-th">Vendor</th>
+          <th class="tbl-th">PO</th>
+          <th class="tbl-th">Bill Date</th>
+          <th class="tbl-th">Due</th>
+          <th class="tbl-th">Status</th>
+          <th class="tbl-th-r">Balance</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in bills %}
+        {% set overdue = b.due_date and b.status != VendorBillStatus.PAID and b.due_date < now %}
+        <tr class="tbl-row">
+          <td class="tbl-td font-mono text-brand-700">{{ b.bill_number or '—' }}</td>
+          <td class="tbl-td">
+            {% if b.vendor %}<a href="/vendors/{{ b.vendor.id }}" class="tbl-link">{{ b.vendor.name }}</a>{% else %}—{% endif %}
+          </td>
+          <td class="tbl-td">
+            {% if b.po %}<a href="/purchase-orders/{{ b.po.id }}" class="tbl-link font-mono text-xs">{{ b.po.po_number }}</a>{% else %}<span class="text-gray-300">—</span>{% endif %}
+          </td>
+          <td class="tbl-td text-gray-500 text-sm">{{ b.bill_date.strftime('%m/%d/%y') if b.bill_date else '—' }}</td>
+          <td class="tbl-td text-sm {% if overdue %}text-red-600 font-semibold{% else %}text-gray-500{% endif %}">
+            {{ b.due_date.strftime('%m/%d/%y') if b.due_date else '—' }}{% if overdue %} ⚠{% endif %}
+          </td>
+          <td class="tbl-td">
+            {% if b.status == VendorBillStatus.PAID %}<span class="badge badge-gray">Paid</span>
+            {% elif b.status == VendorBillStatus.DISCREPANCY %}<span class="badge badge-red">Discrepancy</span>
+            {% elif b.status == VendorBillStatus.APPROVED %}<span class="badge badge-green">Approved</span>
+            {% else %}<span class="badge badge-amber">Pending</span>{% endif %}
+          </td>
+          <td class="tbl-td-r font-semibold tabular-nums {% if balance_map[b.id] > 0 %}text-brand-700{% else %}text-gray-300{% endif %}">
+            {% if balance_map[b.id] > 0 %}${{ '%.2f' % balance_map[b.id] }}{% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card flex flex-col items-center justify-center py-16">
+    <p class="text-gray-500 font-medium">No vendor bills{% if tab != 'all' %} in “{{ tab }}”{% endif %}</p>
+    <p class="text-gray-400 text-sm mt-1">Vendor bills are created from the 3-Way Match screen.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -50,7 +50,12 @@ class CreditMemo(QBOSyncMixin, Base):
 
     # ── Amounts ───────────────────────────────────────────────────────────────
     total_amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    applied_amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # §21 — applied_amount is now COMPUTED from the allocations (see the property
+    # below), so it can never drift from the actual CreditMemoAllocation rows.
+    # The legacy DB column is left in place (orphaned, harmless) — not mapped.
+    # unapplied_amount STAYS stored: close_credit_memo zeroes it when the residual
+    # is pushed to the customer's credit_balance, a state not derivable from
+    # allocations alone, and reverse_credit_memo reads it to detect that case.
     unapplied_amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     tax_amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
@@ -85,6 +90,14 @@ class CreditMemo(QBOSyncMixin, Base):
     allocations: Mapped[list[CreditMemoAllocation]] = relationship(
         "CreditMemoAllocation", back_populates="credit_memo", cascade="all, delete-orphan"
     )
+
+    @property
+    def applied_amount(self) -> float:
+        """§21 — sum of non-reversed allocations to invoices. Computed (not stored)
+        so it can never drift from the CreditMemoAllocation ledger."""
+        return round(
+            sum(a.amount_applied for a in self.allocations if not a.is_reversed), 2
+        )
 
 
 class CreditMemoLine(Base):

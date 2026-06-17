@@ -109,13 +109,15 @@
                    hover:bg-gray-50/80 transition-colors
                    focus:bg-brand-50/40 focus:outline-none ring-inset focus:ring-1 focus:ring-brand-300">
 
-            {# match_type chip — §8H: part_number→gray, cross_ref→blue, vendor_sku→purple, competitor→amber, description→gray #}
+            {# match_type chip — §8H: part_number→gray, cross_ref→blue, vendor_sku→purple,
+               competitor→amber, description→gray; §21: barcode(SCAN)→green, engine_app(ENGINE)→blue #}
             <span class="shrink-0 badge mt-0.5"
                   :class="{
                     'badge-gray':   r.match_type === 'part_number' || r.match_type === 'description',
-                    'badge-blue':   r.match_type === 'cross_ref',
+                    'badge-blue':   r.match_type === 'cross_ref' || r.match_type === 'engine_app',
                     'badge-purple': r.match_type === 'vendor_sku',
-                    'badge-amber':  r.match_type === 'competitor'
+                    'badge-amber':  r.match_type === 'competitor',
+                    'badge-green':  r.match_type === 'barcode'
                   }"
                   x-text="matchLabel(r)"></span>
 
@@ -250,6 +252,13 @@ window.lineAdder = window.lineAdder || function (config) {
       } finally {
         this.loading = false;
       }
+      // §21 — scan→auto-add: a complete barcode/UPC scan resolves to exactly ONE
+      // product by an exact barcode match (the search's barcode step is == not
+      // LIKE), so add it straight away — no click. Guarded to the SOLE-result
+      // case so a short barcode that collides with SKUs still shows the list.
+      if (this.results.length === 1 && this.results[0].match_type === 'barcode') {
+        this.selectProduct(this.results[0]);   // adds the line + reset() for the next scan
+      }
     },
 
     focusResult(idx) {
@@ -344,7 +353,8 @@ window.lineAdder = window.lineAdder || function (config) {
       // Server-emitted label wins (line_items.MATCH_TYPE_LABELS); map kept as
       // a fallback for any caller not using the unified serializer.
       return r.match_label
-        || ({ part_number: 'PART', cross_ref: 'OEM', vendor_sku: 'VEND', competitor: 'COMP', description: 'DESC' })[r.match_type]
+        || ({ part_number: 'PART', barcode: 'SCAN', cross_ref: 'OEM', vendor_sku: 'VEND',
+              competitor: 'COMP', engine_app: 'ENGINE', description: 'DESC' })[r.match_type]
         || 'PART';
     },
     priceLabel(r) {

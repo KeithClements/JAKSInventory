@@ -234,6 +234,46 @@ def reports_ar_aging_export(
     )
 
 
+# ── AP Aging (payables) — §21 ─────────────────────────────────────────────────
+
+@router.get("/ap-aging", response_class=HTMLResponse)
+def reports_ap_aging(request: Request, as_of: str | None = None, db: Session = Depends(get_db)):
+    as_of_date = _parse_date(as_of) or date.today()
+    error_message = None
+    rows: list = []
+    totals = {b: 0.0 for b in ("current", "1_30", "31_60", "61_90", "over_90", "total")}
+    try:
+        data = ReportService(db).get_ap_aging(as_of_date)
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_ap_aging failed (as_of=%s)", as_of_date)
+        error_message = "Could not load AP aging data. Check server logs for details."
+    return templates.TemplateResponse(
+        request, "reports/ap_aging.html",
+        {"as_of": as_of_date, "rows": rows, "totals": totals, "error_message": error_message},
+    )
+
+
+@router.get("/ap-aging/export.csv")
+def reports_ap_aging_export(as_of: str | None = None, db: Session = Depends(get_db)):
+    as_of_date = _parse_date(as_of) or date.today()
+    data = ReportService(db).get_ap_aging(as_of_date)
+    return _csv_response(
+        ["vendor", "bill_count", "current", "1_30", "31_60", "61_90", "over_90", "total"],
+        [
+            [
+                r["vendor"].name if r["vendor"] else "",
+                r["bill_count"], f"{r['current']:.2f}", f"{r['1_30']:.2f}",
+                f"{r['31_60']:.2f}", f"{r['61_90']:.2f}", f"{r['over_90']:.2f}",
+                f"{r['total']:.2f}",
+            ]
+            for r in data["rows"]
+        ],
+        f"ap_aging_{as_of_date.isoformat()}.csv",
+    )
+
+
 # ── Sales by Customer ─────────────────────────────────────────────────────────
 
 @router.get("/sales-by-customer", response_class=HTMLResponse)
