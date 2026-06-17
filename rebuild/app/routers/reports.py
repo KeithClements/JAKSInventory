@@ -865,3 +865,66 @@ def _legacy_inventory(request: Request):
 @router.get("/open-pos/", include_in_schema=False)
 def _legacy_open_pos_slash():
     return RedirectResponse("/reports/open-pos", status_code=308)
+
+
+# ── Inventory Movement History (audit follow-up) ──────────────────────────────
+
+@router.get("/inventory-movement", response_class=HTMLResponse)
+def reports_inventory_movement(
+    request: Request,
+    q: str = "",
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Trace why a SKU's on-hand changed — the InventoryTransaction ledger, with
+    an optional SKU filter and a date window (defaults to the last 90 days)."""
+    today = date.today()
+    end_date = _parse_date(end) or today
+    start_date = _parse_date(start) or (today - timedelta(days=90))
+    error_message = None
+    rows: list = []
+    totals = {"row_count": 0, "total_matched": 0, "truncated": False}
+    try:
+        data = ReportService(db).get_inventory_movement(
+            sku_query=q or None, start=start_date, end=end_date
+        )
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_inventory_movement failed")
+        error_message = "Could not load inventory movement data. Check server logs for details."
+
+    return templates.TemplateResponse(
+        request,
+        "reports/inventory_movement.html",
+        {
+            "rows": rows, "totals": totals, "q": q,
+            "start": start_date.isoformat(), "end": end_date.isoformat(),
+            "error_message": error_message,
+        },
+    )
+
+
+# ── QBO Unsynced Transactions (audit follow-up) ───────────────────────────────
+
+@router.get("/qbo-unsynced", response_class=HTMLResponse)
+def reports_qbo_unsynced(request: Request, db: Session = Depends(get_db)):
+    """The list behind the dashboard QBO chip: finalized invoices stuck PENDING
+    or in ERROR, so the owner can see exactly what has not reached QuickBooks."""
+    error_message = None
+    rows: list = []
+    totals = {"count": 0, "error_count": 0, "pending_count": 0, "amount": 0.0}
+    try:
+        data = ReportService(db).get_qbo_unsynced()
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_qbo_unsynced failed")
+        error_message = "Could not load QBO sync data. Check server logs for details."
+
+    return templates.TemplateResponse(
+        request,
+        "reports/qbo_unsynced.html",
+        {"rows": rows, "totals": totals, "error_message": error_message},
+    )

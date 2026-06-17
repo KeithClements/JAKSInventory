@@ -12,7 +12,7 @@ import io
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.constants import CrossRefType, SuggestedSellType
@@ -218,24 +218,43 @@ def product_list(
         joinedload(Product.vendor_sources).joinedload(ProductVendorSource.vendor),
     )
 
-    # Sort: SKU (default) · Vendor · Category. SKU pages in SQL (fast common path).
-    # Vendor/Category use the self-referential full_path so they sort in Python over
-    # the matched set, then slice the page.
+    # Sort: SKU (default) · Vendor · Category — ALL paged in SQL (LIMIT/OFFSET).
+    # Previously vendor/category did .all() over the full (13k+) matched set and
+    # sorted/sliced in Python, spiking RAM and stalling the counter. We now sort
+    # in SQL via scalar subqueries: vendor = the preferred source's vendor name;
+    # category = the leaf category name (full_path is a recursive Python property,
+    # so the leaf name is the SQL-sortable, performant approximation). NULLs last.
     if sort == "vendor":
-        products = q_eager.order_by(Product.sku).all()
-        def _vendor_key(p):
-            pvs = p.preferred_vendor_source
-            name = pvs.vendor.name if pvs and pvs.vendor else ""
-            return (name == "", name.lower(), p.sku.lower())
-        products.sort(key=_vendor_key)
-        products = products[offset:offset + PAGE_SIZE]
+        _pref_vendor_name = (
+            select(Vendor.name)
+            .join(ProductVendorSource, ProductVendorSource.vendor_id == Vendor.id)
+            .where(
+                ProductVendorSource.product_id == Product.id,
+                ProductVendorSource.is_preferred.is_(True),
+                ProductVendorSource.is_active.is_(True),
+            )
+            .limit(1)
+            .scalar_subquery()
+        )
+        products = (
+            q_eager.order_by(
+                _pref_vendor_name.is_(None), func.lower(_pref_vendor_name), Product.sku
+            )
+            .limit(PAGE_SIZE).offset(offset).all()
+        )
     elif sort == "category":
-        products = q_eager.order_by(Product.sku).all()
-        def _category_key(p):
-            path = p.category.full_path if p.category else ""
-            return (path == "", path.lower(), p.sku.lower())
-        products.sort(key=_category_key)
-        products = products[offset:offset + PAGE_SIZE]
+        _cat_name = (
+            select(ProductCategory.name)
+            .where(ProductCategory.id == Product.category_id)
+            .limit(1)
+            .scalar_subquery()
+        )
+        products = (
+            q_eager.order_by(
+                _cat_name.is_(None), func.lower(_cat_name), Product.sku
+            )
+            .limit(PAGE_SIZE).offset(offset).all()
+        )
     else:
         sort = "sku"  # normalize unknown values back to the default
         products = q_eager.order_by(Product.sku).limit(PAGE_SIZE).offset(offset).all()

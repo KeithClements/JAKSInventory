@@ -82,6 +82,12 @@ class WarrantyClaim(Base):
     def is_pending_vendor(self) -> bool:
         return self.status == WarrantyStatus.SUBMITTED_TO_VENDOR
 
+    @property
+    def total_labor_amount(self) -> float:
+        """Q6 — sum of per-line labor reimbursement (hours × rate), distinct from
+        total_credit_amount (the parts credit)."""
+        return round(sum(ln.labor_amount for ln in self.claim_lines), 2)
+
 
 class WarrantyClaimLine(Base):
     """One affected part within a warranty claim."""

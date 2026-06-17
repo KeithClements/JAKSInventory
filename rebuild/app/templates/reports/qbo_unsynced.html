@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}QBO Unsynced — Axle{% endblock %}
+{% block heading %}QuickBooks — Unsynced{% endblock %}
+
+{% block content %}
+{% set active_report = 'qbo-unsynced' %}
+<div class="max-w-6xl space-y-4">
+  {% include "reports/_nav.html" %}
+
+  <div class="flex flex-wrap items-center gap-3 bg-white border border-gray-200 rounded-xl p-3">
+    <p class="text-sm text-gray-500">
+      Finalized invoices that have not reached QuickBooks — still pending push, or stuck in error.
+    </p>
+    <div class="flex-1"></div>
+    <a href="/invoices/?qbo=unsynced" class="btn-secondary btn-sm">Open Invoice List</a>
+  </div>
+
+  {# ── Summary tiles ────────────────────────────────────────────────────── #}
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div class="stat-card-brand">
+      <p class="stat-label">Unsynced</p>
+      <p class="stat-value text-brand-700">{{ totals.count }}</p>
+    </div>
+    <div class="stat-card {% if totals.error_count > 0 %}stat-card-red{% endif %}">
+      <p class="stat-label">In Error</p>
+      <p class="stat-value {% if totals.error_count > 0 %}text-red-700{% else %}text-gray-400{% endif %}">{{ totals.error_count }}</p>
+    </div>
+    <div class="stat-card {% if totals.pending_count > 0 %}stat-card-amber{% endif %}">
+      <p class="stat-label">Pending</p>
+      <p class="stat-value {% if totals.pending_count > 0 %}text-amber-600{% else %}text-gray-400{% endif %}">{{ totals.pending_count }}</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Total Amount</p>
+      <p class="stat-value text-gray-700">${{ '%.2f' % totals.amount }}</p>
+    </div>
+  </div>
+
+  {# ── Unsynced table ───────────────────────────────────────────────────── #}
+  {% if rows %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Invoices not in QuickBooks</h2>
+      <span class="text-xs text-gray-400">{{ rows | length }} invoice{{ 's' if rows | length != 1 }}</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">Invoice</th>
+            <th class="tbl-th">Customer</th>
+            <th class="tbl-th-r">Total</th>
+            <th class="tbl-th">Status</th>
+            <th class="tbl-th-r">Retries</th>
+            <th class="tbl-th">Last Error</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr class="tbl-row">
+            <td class="tbl-td font-medium">
+              <a href="/invoices/{{ row.id }}" class="tbl-link text-sm">{{ row.invoice_number }}</a>
+            </td>
+            <td class="tbl-td text-gray-700">{{ row.customer or '—' }}</td>
+            <td class="tbl-td-r text-gray-700">${{ '%.2f' % row.total }}</td>
+            <td class="tbl-td">
+              {% if row.status == 'error' %}
+              <span class="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700">Error</span>
+              {% else %}
+              <span class="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700">Pending</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td-r text-gray-500">{{ row.retry_count }}</td>
+            <td class="tbl-td text-gray-400 truncate max-w-md">{{ row.error or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="card flex flex-col items-center justify-center py-16">
+    <svg class="w-12 h-12 text-green-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    </svg>
+    <p class="text-gray-500 font-medium">Everything is synced</p>
+    <p class="text-gray-400 text-sm mt-1">No finalized invoices are pending or in error.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

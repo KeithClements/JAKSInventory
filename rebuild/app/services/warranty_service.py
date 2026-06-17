@@ -457,7 +457,43 @@ class WarrantyService(BaseService):
             approved_qty=0,
             credit_amount=round(float(data.get("credit_amount", 0.0)), 2),
             resolution=None,
+            # Q6 — serial/ESN + labor reimbursement captured at filing time
+            # (also editable later via update_service_info during the process).
+            serial_number=(str(data.get("serial_number") or "").strip() or None),
+            labor_hours=round(float(data.get("labor_hours", 0.0) or 0.0), 2),
+            labor_rate=round(float(data.get("labor_rate", 0.0) or 0.0), 2),
         )
         self.db.add(line)
         self.db.flush()
         return line
+
+    def update_service_info(self, claim_id: int, line_updates: dict[int, dict]) -> None:
+        """Q6 — record per-line serial number + labor (hours × rate) during the
+        warranty process. line_updates = {line_id: {serial_number, labor_hours,
+        labor_rate}}. Labor is reimbursement tracking, distinct from the parts
+        credit_amount, so it is editable for any not-yet-closed claim (you often
+        learn the repair labor after filing). No status transition."""
+        claim = self._get_claim_or_404(claim_id)
+        if claim.status == WarrantyStatus.CLOSED:
+            raise ValueError(
+                f"Claim {claim.claim_number} is closed — service info can no longer be edited."
+            )
+        by_id = {ln.id: ln for ln in claim.claim_lines}
+        for line_id, vals in line_updates.items():
+            line = by_id.get(int(line_id))
+            if line is None:
+                continue
+            if "serial_number" in vals:
+                line.serial_number = (str(vals["serial_number"] or "").strip() or None)
+            if "labor_hours" in vals:
+                line.labor_hours = round(float(vals["labor_hours"] or 0.0), 2)
+            if "labor_rate" in vals:
+                line.labor_rate = round(float(vals["labor_rate"] or 0.0), 2)
+        self.audit(
+            entity_type=EntityType.WARRANTY_CLAIM,
+            entity_id=claim_id,
+            action=AuditAction.EDITED,
+            new_value={"service_info_lines": list(line_updates.keys())},
+            notes="Updated warranty line serial/labor",
+        )
+        self.db.commit()

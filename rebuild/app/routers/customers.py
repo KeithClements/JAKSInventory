@@ -21,6 +21,7 @@ from app.constants import (
     CommunicationChannel, CommunicationDirection,
     CoreStatus, PaymentTerms, PricingTier, QuoteStatus, SOStatus,
     CustomerType, CustomerStatus, CustomerFlag, CUSTOMER_TYPE_LABELS, CUSTOMER_FLAG_LABELS,
+    CUSTOMER_STORED_FLAGS,
 )
 from app.deps import get_db, get_current_user_id
 from app.models.communication import Communication
@@ -1481,6 +1482,15 @@ def customer_detail(
             "customer_type_labels": CUSTOMER_TYPE_LABELS,
             "customer_flag_labels": CUSTOMER_FLAG_LABELS,
             "flags": svc.flags_for(c),                       # §4.3 chips (merged view)
+            # Edit-form flag chip editor (operator-settable flags only) + the
+            # customer's currently-stored set so checkboxes reflect state.
+            "stored_flag_options": [
+                (f, CUSTOMER_FLAG_LABELS.get(f, f)) for f in (
+                    CustomerFlag.REQUIRES_PO, CustomerFlag.CALL_FIRST,
+                    CustomerFlag.WARRANTY_ESCALATION, CustomerFlag.CREDIT_HOLD,
+                ) if f in CUSTOMER_STORED_FLAGS
+            ],
+            "customer_stored_flags": set(CustomerService._parse_stored(c.flags)),
             "metrics": CustomerMetricsService(db).metrics_for(c),  # §4.4 live panel
             "credit_status": svc.credit_status(c),           # §4.5 warn-only
             # §4.6 / #8 unified timeline — unblocks _timeline.html
@@ -1526,6 +1536,19 @@ async def customer_update(
         return RedirectResponse("/customers/", status_code=303)
 
     form = await request.form()
+
+    # C10 — block editing email to one another customer already owns (the unique
+    # index would otherwise 500 at commit). Check before mutating anything.
+    _new_email = str(form.get("email", "")).strip()
+    if _new_email:
+        _conflict = _find_customer_by_email(db, _new_email, exclude_id=customer_id)
+        if _conflict is not None:
+            return RedirectResponse(
+                f"/customers/{customer_id}?error="
+                + url_quote(f"Another customer already uses that email: {_conflict.company_name}"),
+                status_code=303,
+            )
+
     c.company_name = str(form.get("company_name", "")).strip()
     c.contact_name = str(form.get("contact_name", "")).strip()
     c.account_number = str(form.get("account_number", "")).strip()
@@ -1569,7 +1592,17 @@ async def customer_update(
         else:
             _stored.discard(_CF.CREDIT_HOLD)
         c.flags = CustomerService._serialize_stored(_stored)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # C10 race backstop — another insert/edit took the email between the
+        # pre-check and commit.
+        db.rollback()
+        return RedirectResponse(
+            f"/customers/{customer_id}?error="
+            + url_quote("Could not save — that email is already used by another customer."),
+            status_code=303,
+        )
     return RedirectResponse(f"/customers/{customer_id}?saved=1", status_code=303)
 
 

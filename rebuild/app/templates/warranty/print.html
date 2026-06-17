@@ -324,6 +324,12 @@
   {# ── Totals ────────────────────────────────────────────────────────────── #}
   <div class="tot-wrap">
     <div class="tots">
+      {% if claim.total_labor_amount > 0 %}
+      <div class="grand">
+        <span class="l">Total Labor</span>
+        <span class="v">${{ "%.2f"|format(claim.total_labor_amount) }}</span>
+      </div>
+      {% endif %}
       <div class="grand">
         <span class="l">Total Credit</span>
         <span class="v">${{ "%.2f"|format(claim.total_credit_amount) }}</span>

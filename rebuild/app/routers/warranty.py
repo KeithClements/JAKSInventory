@@ -247,6 +247,13 @@ async def warranty_create(
     product_ids = form.getlist("product_id[]")
     qty_claimeds = form.getlist("qty_claimed[]")
     credit_amounts = form.getlist("credit_amount[]")
+    # Q6 — optional per-line serial/ESN + labor (hours × rate) captured at filing.
+    serial_numbers = form.getlist("serial_number[]")
+    labor_hours_arr = form.getlist("labor_hours[]")
+    labor_rate_arr = form.getlist("labor_rate[]")
+
+    def _at(arr, i):
+        return arr[i] if i < len(arr) else ""
 
     lines = []
     for i, pid in enumerate(product_ids):
@@ -258,6 +265,9 @@ async def warranty_create(
             "product_id": int(pid),
             "qty_claimed": max(1, int(qty_raw)) if qty_raw else 1,
             "credit_amount": float(amt_raw) if amt_raw else 0.0,
+            "serial_number": str(_at(serial_numbers, i)).strip(),
+            "labor_hours": float(_at(labor_hours_arr, i) or 0.0),
+            "labor_rate": float(_at(labor_rate_arr, i) or 0.0),
         })
 
     if not lines:
@@ -306,6 +316,48 @@ def warranty_detail(claim_id: int, request: Request, db: Session = Depends(get_d
             "WarrantyResolution": WarrantyResolution,
         },
     )
+
+
+# ── Repair labor & serials (Q6) ───────────────────────────────────────────────
+
+@router.post("/{claim_id}/service-info", response_class=RedirectResponse)
+async def warranty_service_info(
+    claim_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Record per-line serial/ESN + labor (hours × rate) during the claim process.
+    Parallel arrays keyed by line_id[]; labor is distinct from the parts credit."""
+    from app.services.warranty_service import WarrantyService
+
+    form = await request.form()
+    line_ids = form.getlist("line_id[]")
+    serials = form.getlist("serial_number[]")
+    hours = form.getlist("labor_hours[]")
+    rates = form.getlist("labor_rate[]")
+
+    def _at(arr, i):
+        return arr[i] if i < len(arr) else ""
+
+    updates: dict[int, dict] = {}
+    for i, lid in enumerate(line_ids):
+        if not str(lid).strip().isdigit():
+            continue
+        updates[int(lid)] = {
+            "serial_number": str(_at(serials, i)).strip(),
+            "labor_hours": float(_at(hours, i) or 0.0),
+            "labor_rate": float(_at(rates, i) or 0.0),
+        }
+
+    try:
+        WarrantyService(db, user_id).update_service_info(claim_id, updates)
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error={url_quote(str(exc))}", status_code=303
+        )
+    return RedirectResponse(f"/warranty/{claim_id}?ok=service", status_code=303)
 
 
 # ── Submit to Vendor ──────────────────────────────────────────────────────────

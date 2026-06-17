@@ -294,8 +294,16 @@
                   <input name="account_number" value="{{ customer.account_number or '' }}" class="form-input" placeholder="Internal account number" />
                 </div>
 
-                {# Customer Type slots here once P2-D1 (type-driven defaults) ships the
-                   customer_type column + update handler. Deferred: no backend field yet. #}
+                <div class="col-span-2">
+                  <label class="form-label">Customer Type</label>
+                  <select name="customer_type" class="form-select">
+                    {% for t in customer_types %}
+                    <option value="{{ t }}" {% if customer.customer_type == t %}selected{% endif %}>
+                      {{ customer_type_labels.get(t, t) }}
+                    </option>
+                    {% endfor %}
+                  </select>
+                </div>
 
                 <div class="col-span-2">
                   <label class="form-label">Contact Name</label>
@@ -423,6 +431,26 @@
                   </div>
                 </div>
               </div>
+            </div>
+
+            {# Operational Flags (P2-D2) — Requires-PO, Call-First, Warranty-
+               Escalation, Credit-Hold. The hidden flags_submitted marker tells
+               the route to rewrite the stored flag set (without it, a save from
+               a form lacking this editor would wipe the flags). #}
+            <div>
+              <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide border-b border-gray-100 pb-2 mb-3">Flags</h3>
+              <input type="hidden" name="flags_submitted" value="1">
+              <div class="grid grid-cols-2 gap-2">
+                {% for key, label in stored_flag_options %}
+                <label class="flex items-center gap-2 text-sm text-gray-700">
+                  <input type="checkbox" name="flags" value="{{ key }}"
+                         {% if key in customer_stored_flags %}checked{% endif %}
+                         class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+                  {{ label }}
+                </label>
+                {% endfor %}
+              </div>
+              <p class="mt-1 text-xs text-gray-400">Credit-Hold also follows the Customer Status above.</p>
             </div>
 
             {# Actions — right-aligned footer bar, full-width within the card,

@@ -1408,3 +1408,100 @@ class ReportService(BaseService):
         }
 
         return {"as_of": as_of, "rows": rows, "totals": totals}
+
+    # ── Inventory Movement History (audit follow-up) ──────────────────────────
+
+    def get_inventory_movement(
+        self,
+        *,
+        sku_query: str | None = None,
+        start: date | None = None,
+        end: date | None = None,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        """Append-only ledger view: every InventoryTransaction (receipt, sale,
+        return, void correction, transfer, manual adjust) in the window, newest
+        first, so staff can trace WHY a SKU's on-hand changed — the gap flagged
+        in the audit. Optional SKU substring filter + date range. Capped at
+        ``limit`` rows; ``truncated`` is set when more matched than were returned.
+        """
+        from app.models.inventory import InventoryTransaction
+        q = (
+            self.db.query(InventoryTransaction)
+            .join(Product, InventoryTransaction.product_id == Product.id)
+            .options(joinedload(InventoryTransaction.product))
+        )
+        if sku_query and sku_query.strip():
+            q = q.filter(Product.sku.ilike(f"%{sku_query.strip()}%"))
+        if start:
+            q = q.filter(InventoryTransaction.performed_at >= datetime(start.year, start.month, start.day))
+        if end:
+            _end_dt = datetime(end.year, end.month, end.day) + timedelta(days=1)  # inclusive
+            q = q.filter(InventoryTransaction.performed_at < _end_dt)
+
+        total_matched = q.count()
+        txns = (
+            q.order_by(InventoryTransaction.performed_at.desc(), InventoryTransaction.id.desc())
+            .limit(limit).all()
+        )
+        rows = [{
+            "created_at": t.performed_at,
+            "product_id": t.product_id,
+            "sku": t.product.sku if t.product else "",
+            "title": t.product.title if t.product else "",
+            "transaction_type": t.transaction_type,
+            "qty_change": t.qty_change,
+            "qty_after": t.qty_after,
+            "reference_type": t.reference_type,
+            "reference_id": t.reference_id,
+            "notes": t.notes or "",
+        } for t in txns]
+        totals = {
+            "row_count": len(rows),
+            "total_matched": total_matched,
+            "truncated": total_matched > len(rows),
+        }
+        return {
+            "rows": rows, "totals": totals,
+            "start": start, "end": end, "sku_query": (sku_query or "").strip(),
+        }
+
+    # ── QBO Unsynced Transactions (audit follow-up) ───────────────────────────
+
+    def get_qbo_unsynced(self) -> dict[str, Any]:
+        """Finalized invoices whose QBO sync is still PENDING or in ERROR — the
+        drill-down behind the dashboard QBO chip (audit: the count existed but
+        there was no list). ERROR rows first (they need action), then oldest
+        PENDING. Read-only. (Payments/vendor-bills/credit-memos also carry the
+        QBO mixin; surfacing those here is a straightforward follow-up.)"""
+        from app.constants import InvoiceStatus, QBOSyncStatus
+        unsynced = (QBOSyncStatus.PENDING, QBOSyncStatus.ERROR)
+        invs = (
+            self.db.query(Invoice)
+            .filter(
+                Invoice.qbo_sync_status.in_(unsynced),
+                Invoice.status != InvoiceStatus.DRAFT,
+            )
+            .options(joinedload(Invoice.customer))
+            .all()
+        )
+        rows = [{
+            "id": inv.id,
+            "invoice_number": inv.invoice_number,
+            "customer": inv.customer.company_name if inv.customer else "",
+            "total": inv.total,
+            "status": inv.qbo_sync_status,
+            "error": inv.qbo_sync_error or "",
+            "retry_count": getattr(inv, "qbo_sync_retry_count", 0) or 0,
+            "last_synced_at": inv.qbo_last_synced_at,
+            "created_at": inv.created_at,
+        } for inv in invs]
+        # ERROR first, then PENDING; within each, oldest first (longest stuck).
+        rows.sort(key=lambda r: (r["status"] != QBOSyncStatus.ERROR, r["created_at"] or datetime.min))
+        totals = {
+            "count": len(rows),
+            "error_count": sum(1 for r in rows if r["status"] == QBOSyncStatus.ERROR),
+            "pending_count": sum(1 for r in rows if r["status"] == QBOSyncStatus.PENDING),
+            "amount": round(sum(r["total"] for r in rows), 2),
+        }
+        return {"rows": rows, "totals": totals}
