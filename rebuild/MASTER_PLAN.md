@@ -1317,12 +1317,25 @@ Live-verified on the real catalog (product detail → Applications tab → add C
   manufacturer); confirmed, no rebuild needed.
 - Net effect: engine fitment is now editable AND searchable (pairs with §21.7 engine-application search).
 
-### 21.9 — Still deferred (later / Phase 2-3)
-standalone vendor-bill list + AP aging · `CreditMemo.applied/unapplied`→computed (delicate money-path
-refactor; amounts not actively drifting) · server-side session revocation · backup-before-migration +
-schema_version (low value — owner #7: jaks.db is throwaway) · self-host fonts (drop Google Fonts CDN) ·
-SO-convert credit-hold warn · barcode scan→auto-add-line · interest that posts to an invoice · bulk
-statements · quote-conversion + vendor-performance reports. **SaaS multi-tenancy = someday (#6).**
+### 21.9 — Final cleanup batch — ✅ SHIPPED 2026-06-16 (commit `e15b7f8`; suite 1975/12; live-verified)
+- **Vendor-bill list + AP aging** — `ReportService.get_ap_aging` (AR-aging mirror, net of applied vendor
+  credits); `/reports/ap-aging` + CSV; `/purchase-orders/bills` standalone list (tabs + net-of-credit
+  balance); AP-Aging report-nav tab + Vendor Bills sidebar link; `VendorBill.vendor` viewonly relationship.
+- **Self-hosted fonts** — `scripts/fetch_fonts.py` → 11 latin woff2 + `fonts.css` under `static/fonts/`;
+  base.html drops the Google Fonts CDN; CSP drops googleapis/gstatic; woff2 MIME registered. Verified 11
+  fonts load, Oswald renders, zero Google dependency.
+- **SO-convert credit-hold warn** — `/quotes/{id}/convert-to-so` bounces an on-hold quote to `?credit_hold=1`
+  with a "Convert to SO anyway" banner (completes the §6 gate alongside invoice finalize).
+- **Barcode scan→auto-add** — line adder auto-adds when a search resolves to exactly one `barcode` match;
+  SCAN/ENGINE chips colored.
+- **`CreditMemo.applied_amount`→computed** — derived from non-reversed allocations (drift-proof);
+  `unapplied_amount` kept stored (close moves residual to credit_balance, not derivable). Writes removed.
+
+### 21.10 — Genuinely deferred (Phase 2-3 / SaaS)
+server-side session revocation · backup-before-migration + schema_version (low value — owner #7 throwaway
+DB) · interest that posts to an invoice · bulk statement generation/send · quote-conversion-rate +
+vendor-performance reports · ESN→CPL warranty validation · mobile/tablet workspace layout · pagination on
+list caps. **SaaS multi-tenancy (`company_id` scoping) = someday (#6).**
 
 ---
 
