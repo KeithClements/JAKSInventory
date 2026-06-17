@@ -19,8 +19,8 @@ from sqlalchemy import func
 from app.constants import AuditAction, CrossRefType, EntityType, InventoryTxnType, ProductStatus
 from app.models.inventory import InventoryTransaction
 from app.models.product import (
-    CrossReference, Product, ProductCategory, ProductCostHistory, ProductImage,
-    ProductVendorSource,
+    CrossReference, Product, ProductApplication, ProductCategory, ProductCostHistory,
+    ProductImage, ProductVendorSource,
 )
 from app.models.vendor import Vendor
 from app.services.base import BaseService
@@ -715,6 +715,61 @@ class ProductService(BaseService):
         xref.status = status
         self.db.commit()
         return xref
+
+    # ── Engine Applications (fitment) ─────────────────────────────────────────
+    # §21 — owner-authored engine fitment, surfaced on product detail and queried
+    # by the engine-application search. Dedup grain is the model's documented
+    # (product_id, engine_make, engine_model, cpl) — re-adding the same fit is a
+    # no-op rather than a duplicate row.
+
+    def add_application(
+        self, product_id: int, engine_make: str, engine_model: str = "",
+        cpl: str = "", esn_range: str | None = None, notes: str = "",
+    ) -> ProductApplication:
+        """Add an engine application to a product. Idempotent on the dedup grain;
+        a blank engine_make is rejected (the one required identifier)."""
+        self._get_or_404(product_id)
+        make = (engine_make or "").strip()
+        if not make:
+            raise ValueError("Engine make is required for an application.")
+        model = (engine_model or "").strip()
+        cpl_v = (cpl or "").strip()
+
+        existing = (
+            self.db.query(ProductApplication)
+            .filter(
+                ProductApplication.product_id == product_id,
+                func.lower(ProductApplication.engine_make) == make.lower(),
+                func.lower(ProductApplication.engine_model) == model.lower(),
+                func.lower(ProductApplication.cpl) == cpl_v.lower(),
+            )
+            .first()
+        )
+        if existing is not None:
+            # Refresh the looser fields on the existing row instead of duplicating.
+            existing.esn_range = (esn_range or "").strip() or None
+            existing.notes = (notes or "").strip()
+            self.db.commit()
+            return existing
+
+        app = ProductApplication(
+            product_id=product_id, engine_make=make, engine_model=model,
+            cpl=cpl_v, esn_range=(esn_range or "").strip() or None,
+            notes=(notes or "").strip(), source="manual",
+        )
+        self.db.add(app)
+        self.db.commit()
+        self.db.refresh(app)
+        return app
+
+    def remove_application(self, application_id: int) -> None:
+        app = self.db.query(ProductApplication).filter(
+            ProductApplication.id == application_id
+        ).first()
+        if app is None:
+            raise ValueError(f"ProductApplication {application_id} not found")
+        self.db.delete(app)
+        self.db.commit()
 
     # ── Images ────────────────────────────────────────────────────────────────
 

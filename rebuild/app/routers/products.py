@@ -907,6 +907,7 @@ def product_detail(
     p = db.query(Product).filter(Product.id == product_id).first()
     if not p:
         return RedirectResponse("/products/", status_code=303)
+    from app.constants import ENGINE_MAKES, ENGINE_MODELS_BY_MAKE
     return templates.TemplateResponse(request, "products/detail.html", {
         "product": p,
         "vendors": _vendors(db),
@@ -916,6 +917,8 @@ def product_detail(
         "cross_ref_types": list(CrossRefType),
         "suggested_sell_types": list(SuggestedSellType),
         "default_markup": float(get_setting_value_db(db, "default_markup_pct", "30.0")),
+        "engine_makes": ENGINE_MAKES,                # §21 application picker
+        "engine_models_by_make": ENGINE_MODELS_BY_MAKE,
         "ok": ok or (saved and "Saved.") or "",
         "error": error,
     })
@@ -1129,6 +1132,47 @@ def cross_ref_remove(product_id: int, xref_id: int, db: Session = Depends(get_db
     except ValueError:
         pass
     return HTMLResponse("", status_code=200)
+
+
+# ── Engine Applications (fitment) — §21 ──────────────────────────────────────
+# Add / remove engine applications on product detail. Both return the full
+# re-rendered list (targets #apps-list) so the dedup-refresh case never leaves a
+# duplicate row in the DOM.
+
+def _applications_response(request: Request, db: Session, product_id: int):
+    product = db.query(Product).filter(Product.id == product_id).first()
+    return templates.TemplateResponse(
+        request, "products/_applications_list.html", {"product": product},
+    )
+
+
+@router.post("/{product_id}/applications", response_class=HTMLResponse)
+async def application_add(product_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    form = await request.form()
+    try:
+        _svc(db, user_id).add_application(
+            product_id,
+            engine_make=str(form.get("engine_make", "")).strip(),
+            engine_model=str(form.get("engine_model", "")).strip(),
+            cpl=str(form.get("cpl", "")).strip(),
+            esn_range=str(form.get("esn_range", "")).strip() or None,
+            notes=str(form.get("notes", "")).strip(),
+        )
+    except ValueError as exc:
+        return HTMLResponse(
+            f'<tbody id="apps-list"><tr><td colspan="5" class="px-4 py-2 text-red-600 text-sm">{exc}</td></tr></tbody>',
+            status_code=422,
+        )
+    return _applications_response(request, db, product_id)
+
+
+@router.delete("/{product_id}/applications/{application_id}", response_class=HTMLResponse)
+def application_remove(product_id: int, application_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    try:
+        _svc(db, user_id).remove_application(application_id)
+    except ValueError:
+        pass
+    return _applications_response(request, db, product_id)
 
 
 # ── Cross Reference Status ────────────────────────────────────────────────────

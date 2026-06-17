@@ -1306,8 +1306,18 @@ Live-verified against the real 29k catalog ("Cummins" → 5 parts by engine fit;
 - **`products.sku_norm`** precomputed INDEXED column (Product before_insert/update listener + startup backfill) — SKU search no longer normalizes every row per keystroke.
 - **New FK indexes** — `invoice_lines.product_id`, `product_applications.product_id`.
 
-### 21.8 — Still deferred (later / Phase 2-3)
-ProductApplication edit UI + engine make/model picker on product detail · bulk product-reassign-to-category ·
+### 21.8 — Post-PAI catalog cleanup — ✅ SHIPPED 2026-06-16 (`tests/test_s21_applications.py`, 6)
+Live-verified on the real catalog (product detail → Applications tab → add Cummins ISX → appears → delete).
+- **ProductApplication edit UI** — new "Applications" tab on product detail (`detail.html`) with the engine
+  fitment list (`_applications_list.html`) + an add form using the standardized **engine make/model picker**
+  (`macros/engine_picker.html`); HTMX add/delete swap the whole `#apps-list` tbody (dedup-safe).
+- **Service CRUD** `ProductService.add_application` (idempotent on the make/model/cpl grain) /
+  `remove_application`; routes `POST /products/{id}/applications`, `DELETE …/{app_id}`.
+- **Bulk product-reassign-to-category** — already existed (`POST /products/bulk-assign` sets category_id +
+  manufacturer); confirmed, no rebuild needed.
+- Net effect: engine fitment is now editable AND searchable (pairs with §21.7 engine-application search).
+
+### 21.9 — Still deferred (later / Phase 2-3)
 standalone vendor-bill list + AP aging · `CreditMemo.applied/unapplied`→computed (delicate money-path
 refactor; amounts not actively drifting) · server-side session revocation · backup-before-migration +
 schema_version (low value — owner #7: jaks.db is throwaway) · self-host fonts (drop Google Fonts CDN) ·

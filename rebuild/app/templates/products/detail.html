@@ -31,7 +31,7 @@
 
   {# ── Tab bar ── #}
   <nav class="tab-bar mb-5">
-    {% set tabs = [('info', 'Info'), ('sources', 'Vendor Sources'), ('xrefs', 'Cross Refs'), ('images', 'Images'), ('suggestions', 'Suggested Sells'), ('history', 'Cost History')] %}
+    {% set tabs = [('info', 'Info'), ('sources', 'Vendor Sources'), ('xrefs', 'Cross Refs'), ('apps', 'Applications'), ('images', 'Images'), ('suggestions', 'Suggested Sells'), ('history', 'Cost History')] %}
     {% for key, label in tabs %}
     <button type="button"
             @click="tab='{{ key }}'"
@@ -41,6 +41,8 @@
         <span class="ml-1 text-xs text-gray-400">({{ product.vendor_sources|selectattr('is_active')|list|length }})</span>
       {% elif key == 'xrefs' %}
         <span class="ml-1 text-xs text-gray-400">({{ product.cross_references|length }})</span>
+      {% elif key == 'apps' %}
+        <span class="ml-1 text-xs text-gray-400">({{ product.applications|length }})</span>
       {% elif key == 'images' %}
         <span class="ml-1 text-xs text-gray-400">({{ product.images|length }})</span>
       {% elif key == 'suggestions' %}
@@ -793,6 +795,53 @@
           </div>
           <div class="flex items-end justify-end">
             <button type="submit" class="btn-primary">Add Cross Ref</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+
+  {# ══ APPLICATIONS TAB (§21 — engine fitment) ══ #}
+  {% from "macros/engine_picker.html" import engine_picker %}
+  <div x-show="tab==='apps'" x-cloak class="space-y-4">
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">Engine Applications</h2>
+        <p class="text-xs text-gray-400">Engines this part fits — drives the ENGINE search match.</p>
+      </div>
+      <div class="card-body">
+        <table class="min-w-full">
+          <thead>
+            <tr class="text-left text-xs font-semibold uppercase tracking-wide text-gray-500 border-b border-gray-100">
+              <th class="px-4 py-2">Make</th>
+              <th class="px-4 py-2">Model</th>
+              <th class="px-4 py-2">CPL</th>
+              <th class="px-4 py-2">ESN Range</th>
+              <th class="px-4 py-2 text-right"></th>
+            </tr>
+          </thead>
+          {% include "products/_applications_list.html" %}
+        </table>
+
+        {# Add form — engine make/model from the standardized picker #}
+        <form class="mt-4 grid grid-cols-1 md:grid-cols-4 gap-3 items-end border-t border-gray-100 pt-4"
+              hx-post="/products/{{ product.id }}/applications"
+              hx-target="#apps-list" hx-swap="outerHTML"
+              hx-on::after-request="if(event.detail.successful) this.reset()">
+          {{ engine_picker(None, None, engine_makes, engine_models_by_make,
+                           make_field='engine_make', model_field='engine_model') }}
+          <div>
+            <label class="form-label">CPL / Config</label>
+            <input name="cpl" class="form-input text-sm" placeholder="e.g. 2732" />
+          </div>
+          <div>
+            <label class="form-label">ESN Range</label>
+            <input name="esn_range" class="form-input text-sm" placeholder="optional" />
+          </div>
+          <div class="md:col-span-4 flex items-end justify-between gap-3">
+            <input name="notes" class="form-input text-sm flex-1" placeholder="Notes (optional)" />
+            <button type="submit" class="btn-primary whitespace-nowrap">Add Application</button>
           </div>
         </form>
       </div>
