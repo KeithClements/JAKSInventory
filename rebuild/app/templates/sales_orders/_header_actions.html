@@ -1,0 +1,181 @@
+{# Sales-order workspace — header actions, mirror of quotes/_header_actions.html
+   Order (left → right):
+     ← All SOs · status pill · Print · Save · More ▾ · Fulfill & Invoice (amber)
+   The Fulfill & Invoice button submits the same #fulfill-form that lives in
+   _lines_section.html via the HTML form= attribute (no JS changes here). It is
+   only shown when the route flag can_fulfill is true (open / partial). #}
+{% set so_status_chips = {
+  'draft':     ('chip-draft',   'Draft'),
+  'open':      ('chip-ok',      'Open'),
+  'partial':   ('chip-low',     'Partial'),
+  'hold':      ('chip-low',     'On Hold'),
+  'invoiced':  ('chip-invoice', 'Invoiced'),
+  'fulfilled': ('chip-invoice', 'Fulfilled'),
+  'cancelled': ('chip-out',     'Cancelled'),
+} %}
+
+<div class="flex items-center gap-2 flex-wrap justify-end"
+     x-data="{
+       moreOpen: false,
+       showDeposit: false,
+       showHold: false,
+       showCancel: false,
+       reason: '',
+       resolution: 'leave_open',
+     }">
+
+  {# §8B Zone 1 — back link, leftmost (same-tab nav) #}
+  <a href="/sales-orders/" class="hidden lg:inline mr-auto text-sm link-subtle">← All sales orders</a>
+
+  {% set _sc = so_status_chips.get(so.status, ('chip-draft', so.status | title)) %}
+  <span class="chip-axle {{ _sc[0] }}"><span class="dot"></span>{{ _sc[1] }}</span>
+
+  {# ── Print / Save — ghost on every status ──────────────────────────────── #}
+  <a href="/sales-orders/{{ so.id }}/print" target="_blank" rel="noopener" class="btn-secondary btn-sm">Print</a>
+  <a href="/sales-orders/{{ so.id }}/pdf" class="btn-secondary btn-sm">PDF</a>
+
+  {# ── More ▾ — Deposit (when allowed), Hold / Release, Cancel ───────────── #}
+  {% if so.status in (SOStatus.OPEN, SOStatus.PARTIAL, SOStatus.HOLD) %}
+  <div class="relative inline-block">
+    <button type="button" @click="moreOpen = !moreOpen" class="btn-secondary btn-sm">
+      More ▾
+    </button>
+    <div x-show="moreOpen" x-cloak @click.away="moreOpen = false"
+         class="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 py-1 min-w-[12rem]">
+
+      {% if so.status in (SOStatus.OPEN, SOStatus.PARTIAL) and so.payment_mode != SOPaymentMode.NONE %}
+      <button type="button" @click="moreOpen = false; showDeposit = true"
+              class="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">
+        Record Deposit…
+      </button>
+      {% endif %}
+
+      {% if so.status in (SOStatus.OPEN, SOStatus.PARTIAL) %}
+      <button type="button" @click="moreOpen = false; showHold = true"
+              class="w-full text-left px-4 py-2 text-sm text-amber-700 hover:bg-amber-50">
+        Place on Hold…
+      </button>
+      {% elif so.status == SOStatus.HOLD %}
+      <form action="/sales-orders/{{ so.id }}/release-hold" method="post">
+        <button type="submit"
+                class="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">
+          Release Hold
+        </button>
+      </form>
+      {% endif %}
+
+      <button type="button" @click="moreOpen = false; showCancel = true"
+              class="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50">
+        Cancel Order…
+      </button>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Fulfill & Invoice — the Axle primary CTA (amber, rightmost).
+       Submits the #fulfill-form that lives in _lines_section.html. ── #}
+  {% if can_fulfill %}
+  <form id="so-fulfill-form-trigger" class="inline">
+    <button type="button"
+            @click="jakConfirm({ title: 'Fulfill & invoice?', body: 'Create an invoice for the selected ship quantities? Remaining qty stays on the SO as backorder.', cta: 'Fulfill & Invoice', danger: false, formId: 'fulfill-form' })"
+            class="btn-amber btn-sm">
+      Fulfill &amp; Invoice →
+    </button>
+  </form>
+  {% endif %}
+
+  {# ── Deposit popover ─────────────────────────────────────────────────────── #}
+  {% if so.status in (SOStatus.OPEN, SOStatus.PARTIAL) and so.payment_mode != SOPaymentMode.NONE %}
+  <div x-show="showDeposit" x-cloak @click.away="showDeposit = false"
+       class="fixed inset-0 z-[60] flex items-start justify-center pt-24 px-4 bg-black/30"
+       @keydown.escape.window="showDeposit = false">
+    <div class="bg-white border border-gray-200 rounded-xl shadow-xl p-4 w-full max-w-sm" @click.stop>
+      <p class="text-sm font-semibold text-gray-800 mb-3">Record Deposit</p>
+      <form action="/sales-orders/{{ so.id }}/collect-deposit" method="post" class="space-y-3">
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">Amount</label>
+          <div class="relative">
+            <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
+            <input type="number" name="amount" step="0.01" min="0.01" required
+                   class="w-full pl-6 pr-3 py-2 text-sm border border-gray-300 rounded-lg text-right
+                          focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">Method</label>
+          <select name="payment_method" class="form-select">
+            <option value="{{ PaymentMethod.CHECK }}">Check</option>
+            <option value="{{ PaymentMethod.CASH }}">Cash</option>
+            <option value="{{ PaymentMethod.CREDIT_CARD }}">Credit Card</option>
+            <option value="{{ PaymentMethod.ACH }}">ACH / Wire</option>
+          </select>
+          {# R2 — card deposits on surcharge-flagged customers collect the fee. #}
+          {% if so.customer and (so.customer.card_surcharge_pct or 0) > 0 %}
+          <p class="text-[11px] text-gray-400 mt-1">
+            Credit card adds a {{ '%g' % so.customer.card_surcharge_pct }}% surcharge.
+          </p>
+          {% endif %}
+        </div>
+        <div class="flex gap-2 justify-end">
+          <button type="button" @click="showDeposit = false" class="btn-secondary btn-sm">Cancel</button>
+          <button type="submit" class="btn-primary btn-sm">Record Deposit</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Hold popover ─────────────────────────────────────────────────────── #}
+  {% if so.status in (SOStatus.OPEN, SOStatus.PARTIAL) %}
+  <div x-show="showHold" x-cloak @click.away="showHold = false"
+       class="fixed inset-0 z-[60] flex items-start justify-center pt-24 px-4 bg-black/30"
+       @keydown.escape.window="showHold = false">
+    <div class="bg-white border border-gray-200 rounded-xl shadow-xl p-4 w-full max-w-sm" @click.stop>
+      <p class="text-sm font-semibold text-gray-800 mb-2">Hold reason</p>
+      <form action="/sales-orders/{{ so.id }}/hold" method="post" class="space-y-3">
+        <input x-model="reason" type="text" name="hold_reason"
+               placeholder="Waiting on parts, payment, etc."
+               class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm
+                      focus:outline-none focus:ring-1 focus:ring-amber-400" />
+        <div class="flex gap-2 justify-end">
+          <button type="button" @click="showHold = false" class="btn-secondary btn-sm">Cancel</button>
+          <button type="submit" class="btn-amber btn-sm">Place on Hold</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Cancel popover ─────────────────────────────────────────────────────── #}
+  {% if so.status in (SOStatus.OPEN, SOStatus.PARTIAL, SOStatus.HOLD) %}
+  <div x-show="showCancel" x-cloak @click.away="showCancel = false"
+       class="fixed inset-0 z-[60] flex items-start justify-center pt-24 px-4 bg-black/30"
+       @keydown.escape.window="showCancel = false">
+    <div class="bg-white border border-gray-200 rounded-xl shadow-xl p-4 w-full max-w-sm" @click.stop>
+      <p class="text-sm font-semibold text-gray-800 mb-2">Cancel reason</p>
+      <form action="/sales-orders/{{ so.id }}/cancel" method="post" class="space-y-3">
+        <input x-model="reason" type="text" name="cancel_reason"
+               placeholder="Customer request, duplicate, etc."
+               class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm
+                      focus:outline-none focus:ring-1 focus:ring-red-400" />
+        {% if so.deposit_amount > 0 %}
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">Deposit resolution (${{ '%.2f' % so.deposit_amount }})</label>
+          <select x-model="resolution" name="deposit_resolution"
+                  class="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm">
+            <option value="leave_open">Leave unapplied (manual follow-up)</option>
+            <option value="credit">Convert to customer credit</option>
+            <option value="refund">Refund to customer</option>
+          </select>
+        </div>
+        {% endif %}
+        <div class="flex gap-2 justify-end">
+          <button type="button" @click="showCancel = false" class="btn-secondary btn-sm">Keep order</button>
+          <button type="submit" class="btn-danger btn-sm">Confirm: Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+</div>

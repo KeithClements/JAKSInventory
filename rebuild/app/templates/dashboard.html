@@ -246,13 +246,19 @@
       {% endif %}
     </div>
 
-    {# QuickBooks sync card #}
+    {# QuickBooks sync card — §21 real connection state (was hardcoded "ready") #}
     <div class="card" style="padding: 12px 14px;">
-      <div class="sync">
-        <span class="led"></span>
-        <span><b>QuickBooks</b> ready</span>
+      <a href="/settings/?tab=quickbooks" class="sync" style="text-decoration:none;color:inherit;">
+        {% if qbo and qbo.connected %}
+          <span class="led" {% if qbo.error %}style="background:#dc2626;"{% endif %}></span>
+          <span><b>QuickBooks</b>
+            {%- if qbo.error %} {{ qbo.error }} sync error{% elif qbo.pending %} {{ qbo.pending }} pending{% else %} synced{% endif %}</span>
+        {% else %}
+          <span class="led" style="background:#9ca3af;"></span>
+          <span><b>QuickBooks</b> not connected</span>
+        {% endif %}
         <span class="t">{{ today.strftime('%b %d') }}</span>
-      </div>
+      </a>
     </div>
 
   </div>{# /rail #}

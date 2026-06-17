@@ -130,6 +130,7 @@
 
     .type-invoice { font-weight: 600; color: #111; }
     .type-payment { color: #15803d; }
+    .type-credit { color: #0f766e; }   /* teal — warranty/core/return credit */
 
     /* Opening/closing rows */
     tr.opening-row td, tr.closing-row td {
@@ -356,6 +357,8 @@
           <span class="type-invoice">Invoice</span>
           {% elif line.txn_type == 'payment' %}
           <span class="type-payment">Payment</span>
+          {% elif line.txn_type == 'credit_memo' %}
+          <span class="type-credit">Credit Memo</span>
           {% else %}
           <span>{{ line.txn_type | title }}</span>
           {% endif %}

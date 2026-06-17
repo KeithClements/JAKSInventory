@@ -18,10 +18,40 @@
   <a href="/purchase-orders/{{ po.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
   <a href="/purchase-orders/{{ po.id }}/pdf" class="btn-secondary btn-sm">PDF</a>
 
+  {# ── Email to Vendor — separate from placing the order. SMTP isn't configured,
+     so this opens an honest pre-filled mail draft + the PDF to attach, rather
+     than pretending to send. Available on any live (non-cancelled) PO. ── #}
+  {% if po.status != 'cancelled' %}
+  {% set _subj = 'Purchase Order ' ~ po.po_number %}
+  {% set _body = 'Hello,\n\nPlease find attached our purchase order ' ~ po.po_number ~ '. Please confirm receipt and the expected ship date.\n\nThank you.' %}
+  <div x-data="{ open: false }" class="relative">
+    <button type="button" @click="open = !open" data-no-pending class="btn-secondary btn-sm">Email to Vendor</button>
+    <div x-show="open" x-cloak @click.outside="open = false"
+         class="absolute right-0 mt-2 w-80 rounded-xl border border-gray-100 bg-white p-4 text-left shadow-2xl z-[70]">
+      {% if po.vendor.email %}
+      <p class="text-xs text-gray-500 mb-1">Send PO <span class="font-mono">{{ po.po_number }}</span> to</p>
+      <p class="text-sm font-medium text-gray-800 mb-3 break-all">{{ po.vendor.email }}</p>
+      <a href="mailto:{{ po.vendor.email }}?subject={{ _subj | urlencode }}&body={{ _body | urlencode }}"
+         class="btn-primary btn-sm w-full justify-center mb-2">Open email draft</a>
+      <a href="/purchase-orders/{{ po.id }}/pdf"
+         class="btn-secondary btn-sm w-full justify-center">Download PO PDF to attach</a>
+      <p class="mt-2 text-[11px] leading-snug text-gray-400">
+        Opens your mail app with the message pre-filled — attach the downloaded PDF before sending.
+        (In-app sending isn't set up yet.)
+      </p>
+      {% else %}
+      <p class="text-sm text-gray-600 mb-2">No email on file for this vendor.</p>
+      <a href="/vendors/{{ po.vendor.id }}" class="btn-secondary btn-sm w-full justify-center">Add a vendor email</a>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
   {% if editable %}
     <form method="post" action="/purchase-orders/{{ po.id }}/send">
-      <button type="submit" class="btn-primary btn-sm">
-        {{ 'Convert to PO' if po.status == 'verbal_order' else 'Send to Vendor' }}
+      <button type="submit" class="btn-primary btn-sm"
+              title="Mark this PO as ordered — puts the items on-order in inventory">
+        {{ 'Confirm Verbal Order' if po.status == 'verbal_order' else 'Place Order' }}
       </button>
     </form>
     {# Empty form holds the POST action; the modal submits it on confirm (§3 Modal standard) #}
@@ -129,11 +159,13 @@
     <form hx-post="/purchase-orders/{{ po.id }}/header"
           hx-swap="none"
           hx-trigger="change from:input,select,textarea delay:600ms, submit"
-          x-data="{ _saving: false }"
+          x-data="{ ...customerPicker('po-dropship-results'), _saving: false, shipType: '{{ effective_ship_to_type | default('location') }}', customerId: '{{ po.drop_ship_customer_id or '' }}' }"
           x-init="
-            $el.addEventListener('htmx:beforeRequest', function() { _saving = true; });
-            $el.addEventListener('htmx:afterRequest',  function() { _saving = false; });
+            _wireResults();
+            $el.addEventListener('htmx:beforeRequest', function(e){ if (e.detail.requestConfig && (e.detail.requestConfig.path||'').indexOf('/header') !== -1) _saving = true; });
+            $el.addEventListener('htmx:afterRequest',  function(e){ if (e.detail.requestConfig && (e.detail.requestConfig.path||'').indexOf('/header') !== -1) _saving = false; });
           "
+          @customer-selected.window="onCustomerSelected($event.detail)"
           class="card card-body space-y-3">
 
       {# Row 1: Vendor + key fields + total #}
@@ -171,6 +203,23 @@
             {% endif %}
           </div>
 
+          {# Vendor-confirmed checkbox — record an acknowledgement even with no conf # #}
+          <div class="min-w-36 self-end">
+            {% if editable or po.status in ('sent', 'partial') %}
+            <label class="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer py-2">
+              <input type="checkbox" name="vendor_confirmed" value="1"
+                     {% if po.vendor_confirmed %}checked{% endif %}
+                     class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+              Vendor confirmed
+            </label>
+            {% else %}
+            <label class="form-label">Confirmed</label>
+            <p class="text-sm {% if po.vendor_confirmed %}text-green-600 font-medium{% else %}text-gray-400{% endif %}">
+              {{ '✓ Confirmed' if po.vendor_confirmed else '—' }}
+            </p>
+            {% endif %}
+          </div>
+
           <div class="min-w-32">
             <label class="form-label">Freight In</label>
             {% if editable %}
@@ -193,6 +242,85 @@
           <p class="text-xs text-gray-400 mt-1">Ordered {{ po.ordered_at.strftime('%b %d') }}</p>
           {% endif %}
           <p class="text-xs text-gray-400">Created {{ po.created_at.strftime('%b %d, %Y') }}</p>
+        </div>
+      </div>
+
+      {# ── Bill-To / Ship-To ── #}
+      <div class="border-t border-gray-50 pt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
+        {# Bill To — always one of our company locations #}
+        <div>
+          <label class="form-label">Bill To</label>
+          {% if editable or po.status in ('sent', 'partial') %}
+          <select name="bill_to_location_id" class="form-select">
+            {% for loc in company_locations | default([]) %}
+            <option value="{{ loc.id }}" {% if (po.bill_to_location_id or default_location_id) == loc.id %}selected{% endif %}>
+              {{ loc.name }}{% if loc.is_primary %} (default){% endif %}
+            </option>
+            {% endfor %}
+          </select>
+          {% else %}
+          <p class="text-sm text-gray-700">{{ bill_to.name if bill_to else '—' }}</p>
+          {% for l in (bill_to.lines if bill_to else []) %}<p class="text-xs text-gray-500">{{ l }}</p>{% endfor %}
+          {% endif %}
+        </div>
+
+        {# Ship To — our location | one-time address | drop-ship to a customer #}
+        <div>
+          <label class="form-label">Ship To</label>
+          {% if editable or po.status in ('sent', 'partial') %}
+          <select name="ship_to_type" x-model="shipType" class="form-select">
+            <option value="location">Our location</option>
+            <option value="ad_hoc">One-time address</option>
+            <option value="drop_ship">Drop-ship to a customer</option>
+          </select>
+
+          {# location → which one (primary reads "ship to me") #}
+          <div x-show="shipType === 'location'" x-cloak class="mt-2">
+            <select name="ship_to_location_id" class="form-select">
+              {% for loc in company_locations | default([]) %}
+              <option value="{{ loc.id }}" {% if (po.ship_to_location_id or default_location_id) == loc.id %}selected{% endif %}>
+                {{ loc.name }}{% if loc.is_primary %} — ship to me{% endif %}
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+
+          {# drop-ship → customer typeahead (sets the hidden customer id) #}
+          <div x-show="shipType === 'drop_ship'" x-cloak class="mt-2">
+            <input type="hidden" name="drop_ship_customer_id" :value="customerId">
+            {% if effective_ship_to_type == 'drop_ship' and ship_to and ship_to.name %}
+            <p class="text-xs text-gray-500 mb-1">Current: <span class="font-medium text-gray-700">{{ ship_to.name }}</span></p>
+            {% endif %}
+            <div class="relative">
+              <input type="text" autocomplete="off" name="q"
+                     placeholder="Search customer to drop-ship to…"
+                     :value="displayName"
+                     @input="pickInput($el.value)"
+                     @keydown.down.prevent="pickMove(1)"
+                     @keydown.up.prevent="pickMove(-1)"
+                     @keydown.enter.prevent="pickChoose()"
+                     @keydown.escape.prevent="pickClose()"
+                     hx-get="/customers/search-json"
+                     hx-trigger="input changed delay:200ms"
+                     hx-target="#po-dropship-results"
+                     class="form-input">
+              <div id="po-dropship-results"
+                   class="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-30 max-h-56 overflow-y-auto text-sm"
+                   x-show="displayName.length >= 2 && !customerId && !_dismissed" x-cloak></div>
+            </div>
+          </div>
+
+          {# one-time + drop-ship share a single free-text address (no duplicate name) #}
+          <div x-show="shipType === 'ad_hoc' || shipType === 'drop_ship'" x-cloak class="mt-2">
+            <textarea name="ship_to_snapshot" rows="3" class="form-textarea"
+                      :placeholder="shipType === 'drop_ship' ? 'Drop-ship address (blank = use the customer\'s address on file)' : 'Name / company, street, city ST ZIP'">{{ po.ship_to_snapshot or '' }}</textarea>
+          </div>
+          {% else %}
+          <p class="text-sm text-gray-700">
+            {% if ship_to and ship_to.is_drop_ship %}<span class="badge-amber">Drop-ship</span> {% endif %}{{ ship_to.name if ship_to else '—' }}
+          </p>
+          {% for l in (ship_to.lines if ship_to else []) %}<p class="text-xs text-gray-500">{{ l }}</p>{% endfor %}
+          {% endif %}
         </div>
       </div>
 
@@ -260,6 +388,7 @@
   {% set la = {
        'doc_type':      'purchase_order',
        'doc_id':        po.id,
+       'vendor_id':     po.vendor_id,
        'search_url':    '/line-items/product-search',
        'post_url':      '/purchase-orders/' ~ po.id ~ '/lines',
        'mode':          'cost',
@@ -483,6 +612,9 @@
     </div>
   </div>
   {% endif %}
+
+  {# ── Core Returns to Vendor (print slip + tracking + mark shipped) ── #}
+  {% include "purchase_orders/_core_returns_section.html" %}
 
   {# ── Related Bills ── #}
   {# ── Receipt History ── #}

@@ -279,3 +279,120 @@ def test_seed_brands_and_manufacturers_idempotent(db):
     man_names = {m.name for m in db.query(Manufacturer).all()}
     assert "Cummins" in man_names and "CAT / Caterpillar" in man_names
     assert "Other" not in man_names               # UI escape hatch, not a real row
+
+
+# ── C1: format detection is EXACT and LOUD ───────────────────────────────────
+#   detect_format() used to be a SUBSTRING test ("pai_part_no" in first line),
+#   so a header carrying a SUPERSTRING column ("pai_part_number") matched the
+#   JAKS branch, which then read the exact key "pai_part_no", found nothing, and
+#   `continue`d EVERY row → silent total data loss. These guard that hole.
+
+_JAKS_HEADER = ("pai_part_no,vendor,title,category,engine_make,engine_models,"
+                "sell_price,cost,core_charge,is_reman")
+
+
+def _jaks_csv(*rows: str) -> str:
+    return _JAKS_HEADER + "\n" + "\n".join(rows) + "\n"
+
+
+def test_detect_format_superstring_header_is_unknown_not_silent_jaks(db):
+    """(a) A header whose column is a SUPERSTRING of 'pai_part_no'
+    (e.g. 'pai_part_number') must NOT route to the JAKS parser and silently
+    drop every row. It routes to 'unknown', and full_import surfaces a loud
+    error while writing nothing."""
+    svc = ProductImportService(db, None)
+    text = ("pai_part_number,title,sell_price\n"
+            "111,Reman Turbo,1200.00\n"
+            "222,Std Gasket,40.00\n")
+    # detection: EXACT membership → not jaks (no exact 'pai_part_no' column),
+    # not shopify (no 'Variant SKU'), so unknown.
+    assert svc.detect_format(text) == "unknown"
+    # full_import refuses LOUDLY — an explicit error, not a silent created==0.
+    summ = svc.full_import(text, dry_run=False)
+    assert "error" in summ and "Unrecognized import format" in summ["error"]
+    assert summ.get("created", 0) == 0
+    assert db.query(Product).count() == 0          # nothing written
+
+
+def test_detect_format_unrecognized_header_is_unknown(db):
+    """A wholly unrecognized header (neither 'pai_part_no' nor 'Variant SKU')
+    is 'unknown' and full_import reports it rather than parse-and-dropping."""
+    svc = ProductImportService(db, None)
+    text = "part,name,price\nX1,Widget,9.99\n"
+    assert svc.detect_format(text) == "unknown"
+    summ = svc.full_import(text, dry_run=False)
+    assert "error" in summ and summ.get("created", 0) == 0
+    assert db.query(Product).count() == 0
+
+
+def test_detect_format_exact_headers_still_route(db):
+    """The legitimate exact headers still classify correctly (no over-correction
+    that would break real JAKS / Shopify feeds)."""
+    svc = ProductImportService(db, None)
+    assert svc.detect_format(_jaks_csv("111,PAI,Turbo,TURBOS,CUMMINS,ISX,1,1,0,0")) == "jaks"
+    assert svc.detect_format(_shopify_csv()) == "shopify"
+
+
+def test_full_import_real_jaks_header_parses_rows(db):
+    """(b) A REAL JAKS-native header (exact 'pai_part_no' column) parses > 0 rows
+    and creates products — the exact-membership detection didn't break the
+    happy path."""
+    svc = ProductImportService(db, None)
+    text = _jaks_csv(
+        "111,PAI,Reman Turbo,TURBOS,CUMMINS,ISX,1200.00,800.00,150.00,1",
+        "222,PAI,Std Gasket,GASKETS,CUMMINS,ISX,40.00,20.00,0,0",
+    )
+    assert svc.detect_format(text) == "jaks"
+    summ = svc.full_import(text, dry_run=False)
+    assert "error" not in summ
+    assert summ["created"] == 2                    # > 0 rows, not silently dropped
+    assert db.query(Product).count() == 2
+    p = _product_by_pai(db, "111")
+    assert p is not None and p.price_override == 1200.00
+
+
+# ── C8: blank core (unknown) is NOT $0 ───────────────────────────────────────
+
+def test_jaks_blank_core_is_none_explicit_zero_is_zero():
+    """parse_jaks_export_csv: a BLANK core_charge cell stays None ('unknown'),
+    while an EXPLICIT '0' becomes 0.0. Only an explicit 0 means $0."""
+    svc = ProductImportService.__new__(ProductImportService)  # parse needs no db
+    rows = ProductImportService.parse_jaks_export_csv(svc, _jaks_csv(
+        "111,PAI,Reman Turbo,TURBOS,CUMMINS,ISX,1200.00,800.00,,1",      # blank core
+        "222,PAI,Std Gasket,GASKETS,CUMMINS,ISX,40.00,20.00,0,0",        # explicit 0
+        "333,PAI,Reman Pump,PUMPS,CUMMINS,ISX,500.00,300.00,150.00,1",   # known core
+    ))
+    by_sku = {r["sku"]: r for r in rows}
+    assert by_sku["111"]["core_charge"] is None          # blank ≠ 0.0
+    assert by_sku["222"]["core_charge"] == 0.0           # explicit 0 preserved
+    assert by_sku["333"]["core_charge"] == 150.0
+    # reman + blank core is flagged; explicit-0 / known-core are not.
+    assert by_sku["111"]["core_unknown_reman"] is True
+    assert by_sku["222"]["core_unknown_reman"] is False
+    assert by_sku["333"]["core_unknown_reman"] is False
+
+
+def test_full_import_reman_blank_core_flagged_for_review(db):
+    """(c) A reman row with a BLANK core does not silently become a confident
+    $0: full_import flags it needs_review and surfaces a reman_core_unknown
+    count, so the owner fills the real amount before selling."""
+    svc = ProductImportService(db, None)
+    text = _jaks_csv(
+        "111,PAI,Reman Turbo,TURBOS,CUMMINS,ISX,1200.00,800.00,,1",     # reman, blank core
+        "333,PAI,Reman Pump,PUMPS,CUMMINS,ISX,500.00,300.00,150.00,1",  # reman, known core
+    )
+    summ = svc.full_import(text, dry_run=False)
+    assert "error" not in summ
+    assert summ["created"] == 2
+    assert summ.get("reman_core_unknown") == 1     # only the blank-core reman
+    assert summ["needs_review"] >= 1
+
+    p_unknown = _product_by_pai(db, "111")
+    assert p_unknown is not None
+    assert p_unknown.is_reman is True
+    assert p_unknown.has_core is True              # reman → core lifecycle still on
+    assert p_unknown.needs_review is True          # flagged so the $0 isn't silent
+
+    p_known = _product_by_pai(db, "333")
+    assert p_known is not None
+    assert p_known.customer_core_charge == 150.0   # known core unaffected

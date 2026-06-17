@@ -69,15 +69,42 @@
        the old _dirty flag was cosmetic — it showed "All changes saved" on load and was
        never wired to an actual save, so edits were silently lost on navigation.) #}
     <form id="product-info-form" method="post" action="/products/{{ product.id }}"
-          class="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
+          class="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start"
+          @ai-accept="
+            const name = $event.detail.field;
+            const value = $event.detail.value || '';
+            const el = $el.querySelector('[name=&quot;' + name + '&quot;]');
+            if (el) {
+              el.value = value;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+          ">
 
       {# Identity card — product fields (left) + single square primary photo (right),
          one full-width row. Replaces the old separate Identity + Photos cards (owner
          feedback 2026-06-06). The Images tab stays the full manager (upload / delete /
          reorder / set-primary); "Manage Photos →" jumps there. #}
       <div class="card xl:col-span-2">
-        <div class="card-header">
+        <div class="card-header flex items-center justify-between">
           <h2 class="card-title">Identity</h2>
+          {# ── Suggest with AI — sits in the Identity card header so it's
+               adjacent to Title / Description. HTMX posts the current form
+               fields to /products/ai-suggest; hx-sync prevents stacked
+               requests. The panel below this row receives the partial. #}
+          <button type="button"
+                  hx-post="/products/ai-suggest"
+                  hx-include="closest form"
+                  hx-target="#ai-suggestion-panel"
+                  hx-swap="outerHTML"
+                  hx-indicator="#ai-suggest-indicator"
+                  hx-sync="this:replace"
+                  class="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100 transition-colors disabled:opacity-50">
+            <svg class="w-3.5 h-3.5 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M10 1l1.7 4.6L16 7.3l-4.3 1.7L10 13.6 8.3 9 4 7.3l4.3-1.7L10 1zm6 8.5l.85 2.3L19 12.65l-2.15.85L16 15.8l-.85-2.3L13 12.65l2.15-.85L16 9.5zM4 14l.85 2.3L7 17.15l-2.15.85L4 14z"/>
+            </svg>
+            <span>Suggest with AI</span>
+            <span id="ai-suggest-indicator" class="htmx-indicator text-[10px] text-amber-700">Asking Claude…</span>
+          </button>
         </div>
         <div class="card-body">
           <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -130,6 +157,18 @@
                 <label class="form-label">Description</label>
                 <textarea name="description" rows="3" class="form-textarea">{{ product.description }}</textarea>
               </div>
+              {# Meta description — AI suggest writes here. Product model has no
+                 column for this yet, so the POST handler silently drops it; the
+                 input is here so the AI accept handler has a target. #}
+              <div>
+                <label class="form-label">Meta description <span class="text-gray-400 font-normal">(search / SEO)</span></label>
+                <textarea name="meta_description" rows="2" placeholder="Short, search-friendly summary — ≤155 chars."
+                          class="form-textarea">{{ product.meta_description if product.meta_description is defined else '' }}</textarea>
+              </div>
+              {# AI suggestion panel target — replaced by the partial when
+                 "Suggest with AI" returns. Starts empty so the panel doesn't
+                 push the photo down before it's used. #}
+              <div id="ai-suggestion-panel"></div>
             </div>
 
             {# ── Right: single square primary photo ── #}

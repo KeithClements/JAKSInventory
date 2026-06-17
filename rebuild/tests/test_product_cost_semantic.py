@@ -161,6 +161,50 @@ def test_receipt_moving_average_weighted_correctly(db):
     )
 
 
+def test_receipt_does_not_overwrite_vendor_quote(db):
+    """
+    §8N: ProductVendorSource.vendor_cost is the vendor's quoted/catalog price.
+    A PO receipt at a different (often one-off negotiated) cost must NOT clobber
+    the stored quote — it only records the divergence in ProductCostHistory.
+
+    Setup: preferred vendor quote $10. Receive a PO at $12.
+    Expect: source.vendor_cost stays $10, and a ProductCostHistory row captures
+    the 10 -> 12 divergence.
+    """
+    from app.models.product import ProductCostHistory, ProductVendorSource
+
+    vendor = _vendor(db)
+    product = _product(db, initial_cost=0.0, qty_on_hand=0)
+    src = _add_vendor_source(db, product, vendor, vendor_cost=10.0)
+    _, line = _sent_po(db, vendor, product, unit_cost=12.0, qty=5)
+    db.commit()
+
+    from app.services.po_service import POService
+    POService(db, current_user_id=1).create_receipt(
+        vendor_id=vendor.id,
+        po_line_quantities={line.id: 5},
+        data={},
+    )
+    db.commit()
+
+    src = db.query(ProductVendorSource).filter(ProductVendorSource.id == src.id).first()
+    assert src.vendor_cost == pytest.approx(10.0, abs=0.005), (
+        f"§8N: the vendor quote must stay $10 (the receipt price $12 is not the "
+        f"catalog quote). Got {src.vendor_cost}"
+    )
+
+    rows = (
+        db.query(ProductCostHistory)
+        .filter(ProductCostHistory.product_id == product.id)
+        .all()
+    )
+    assert any(
+        r.old_cost == pytest.approx(10.0, abs=0.005)
+        and r.new_cost == pytest.approx(12.0, abs=0.005)
+        for r in rows
+    ), "expected a ProductCostHistory row recording the 10 -> 12 receipt divergence"
+
+
 def test_sync_cost_from_preferred_does_not_overwrite_moving_average(db):
     """_sync_cost_from_preferred must leave product.cost (moving avg) untouched."""
     vendor = _vendor(db)

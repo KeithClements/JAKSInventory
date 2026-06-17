@@ -532,7 +532,7 @@
     <div class="tots">
       {% if discount_amount > 0 %}
       <div class="row">
-        <span class="lbl">Subtotal</span>
+        <span class="lbl">Subtotal (list)</span>
         <span class="val">${{ "%.2f"|format(gross_total) }}</span>
       </div>
       <div class="row disc-row">
@@ -540,9 +540,20 @@
         <span class="val">&#x2212;${{ "%.2f"|format(discount_amount) }}</span>
       </div>
       {% endif %}
+      <div class="row">
+        <span class="lbl">Subtotal</span>
+        <span class="val">${{ "%.2f"|format(subtotal) }}</span>
+      </div>
+      {# §21 — show estimated sales tax so a taxable customer is not under-quoted #}
+      {% if quote.is_taxable and quote.tax_amount > 0 %}
+      <div class="row">
+        <span class="lbl">Sales Tax{% if quote.tax_rate_snapshot %} ({{ "%.3g"|format(quote.tax_rate_snapshot) }}%){% endif %}</span>
+        <span class="val">${{ "%.2f"|format(quote.tax_amount) }}</span>
+      </div>
+      {% endif %}
       <div class="grand">
         <span class="l">Quote Total</span>
-        <span class="v">${{ "%.2f"|format(subtotal) }}</span>
+        <span class="v">${{ "%.2f"|format(quote.total) }}</span>
       </div>
     </div>
   </div>

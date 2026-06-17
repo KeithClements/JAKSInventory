@@ -892,6 +892,20 @@ async def invoice_finalise(
     form = await request.form()
     allow_negative = str(form.get("allow_negative_inventory", "")).lower() in {"1", "true", "on", "yes"}
 
+    # §21 — credit-hold = WARN (owner decision 6.16, not a hard block). If the
+    # customer is on credit hold and the operator has not yet acknowledged it,
+    # bounce back to the workspace with a prominent warning + a "Finalize anyway"
+    # path (re-POST carries confirm_credit_hold=1). Once acknowledged we proceed.
+    confirm_hold = str(form.get("confirm_credit_hold", "")).lower() in {"1", "true", "on", "yes"}
+    if not confirm_hold:
+        from app.services.customer_service import CustomerService
+        _inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+        if _inv and _inv.customer and CustomerService(db).is_on_credit_hold(_inv.customer):
+            return RedirectResponse(
+                f"/invoices/{invoice_id}?credit_hold=1",
+                status_code=303,
+            )
+
     try:
         InvoiceService(db, user_id).finalise(invoice_id, allow_negative_inventory=allow_negative)
     except ValueError as exc:
@@ -1206,6 +1220,13 @@ async def invoice_void(
     reason = str(form.get("reason", "")).strip() or "voided"
     try:
         InvoiceService(db, user_id).void_invoice(invoice_id, reason)
+    except PermissionError:
+        db.rollback()
+        return RedirectResponse(
+            f"/invoices/{invoice_id}?error="
+            f"{url_quote('You do not have permission to void invoices. Issue a credit memo instead.')}",
+            status_code=303,
+        )
     except ValueError as exc:
         db.rollback()
         return RedirectResponse(

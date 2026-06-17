@@ -66,6 +66,12 @@ def _totals_ctx(quote: Quote) -> dict:
         "discount_amount": discount_amount,
         "subtotal": subtotal,
         "line_count": len(included),
+        # §21 — quote tax (decision 6.16)
+        "quote": quote,
+        "is_taxable": quote.is_taxable,
+        "tax_rate": quote.tax_rate_snapshot,
+        "tax_amount": quote.tax_amount,
+        "total": quote.total,
     }
 
 
@@ -624,6 +630,27 @@ async def get_totals(
     )
 
 
+@router.post("/{quote_id}/toggle-tax", response_class=HTMLResponse)
+async def toggle_tax(
+    quote_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """§21 (6.16) — clerk toggles sales tax on a quote. Flips is_taxable; when
+    turning tax ON with no snapshot yet, seeds the rate from the customer's
+    tax_rate so the toggle actually applies tax. Returns the refreshed totals."""
+    quote = _get_quote_or_404(db, quote_id)
+    quote.is_taxable = not quote.is_taxable
+    if quote.is_taxable and not quote.tax_rate_snapshot:
+        quote.tax_rate_snapshot = quote.customer.tax_rate if quote.customer else 0.0
+    db.commit()
+    return templates.TemplateResponse(
+        request,
+        "quotes/_totals.html",
+        {"quote": quote, **_totals_ctx(quote)},
+    )
+
+
 # ── Lines ─────────────────────────────────────────────────────────────────────
 
 @router.post("/{quote_id}/lines", response_class=HTMLResponse)
@@ -708,8 +735,18 @@ async def update_line(
         if v is not None
     }
     svc = QuoteService(db, user_id)
-    line = svc.update_line(line_id, data)
+    line, cascaded = svc.update_line(line_id, data)
     db.refresh(line)
+    if cascaded:
+        quote = _get_quote_or_404(db, quote_id)
+        resp = templates.TemplateResponse(
+            request,
+            "quotes/_lines_tbody.html",
+            {"lines": _tree_sort_lines(quote.lines)},
+        )
+        resp.headers["HX-Retarget"] = "#quote-lines-tbody"
+        resp.headers["HX-Reswap"] = "innerHTML"
+        return resp
     return templates.TemplateResponse(
         request,
         "quotes/_line_row.html",

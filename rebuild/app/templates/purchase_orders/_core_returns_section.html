@@ -1,0 +1,121 @@
+{# ── Core Returns to Vendor ───────────────────────────────────────────────────
+   Surfaced on the PO so cores customers returned can be batched, printed (vendor
+   + office copies), and shipped back to THIS PO's vendor — print never requires
+   tracking; mark-shipped (with optional tracking) is a separate, later step.
+   Reuses the cores/VCR ledger (one source of truth). Renders only when there is
+   something to act on. Context: po, core_return_ready, core_return_vcrs.
+─────────────────────────────────────────────────────────────────────────────── #}
+{% if core_return_ready or core_return_vcrs %}
+<div id="core-returns" class="card scroll-mt-20">
+  <div class="card-header">
+    <h2 class="card-title">Core Returns to Vendor</h2>
+    <span class="text-xs text-gray-400">Send customer-returned cores back to {{ po.vendor.name }}</span>
+  </div>
+  <div class="card-body space-y-6">
+
+    {# ── A. Ready-to-ship cores for this vendor ── #}
+    {% if core_return_ready %}
+    <form method="post" action="/purchase-orders/{{ po.id }}/core-return"
+          x-data="{ selected: {{ core_return_ready | length }} }">
+      <p class="text-xs text-gray-500 mb-2">
+        {{ core_return_ready | length }} core{{ 's' if core_return_ready | length != 1 }}
+        received from customers and ready to go back to this vendor. Check the ones going
+        in this box, then create the slip. You can enter tracking and mark it shipped later.
+      </p>
+      <div class="divide-y divide-gray-100 border border-gray-100 rounded-lg">
+        {% for core in core_return_ready %}
+        <label class="flex items-center gap-3 px-3 py-2 hover:bg-gray-50/80 cursor-pointer">
+          <input type="checkbox" name="core_ids" value="{{ core.id }}" checked
+                 @change="selected += $event.target.checked ? 1 : -1"
+                 class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+          <span class="font-mono text-xs text-brand-700 w-28 shrink-0">{{ core.product.sku if core.product else '—' }}</span>
+          <span class="flex-1 text-sm text-gray-700">{{ core.product.title if core.product else 'Core part' }}</span>
+          <span class="text-xs text-gray-400 shrink-0">qty {{ core.qty_returned }}</span>
+          <span class="text-xs font-medium text-gray-600 tabular-nums shrink-0 w-24 text-right">${{ '%.2f' | format(core.vendor_unit_charge) }}/ea</span>
+        </label>
+        {% endfor %}
+      </div>
+      <div class="flex items-center justify-between gap-3 mt-3">
+        <p class="text-xs text-gray-400">Prints a <span class="font-medium text-gray-600">vendor copy</span> + an <span class="font-medium text-gray-600">office copy</span>.</p>
+        <button type="submit" class="btn-primary btn-sm"
+                :disabled="selected < 1"
+                :class="selected < 1 ? 'opacity-50 cursor-not-allowed' : ''">
+          Create &amp; print core return slip
+        </button>
+      </div>
+    </form>
+    {% else %}
+    <p class="text-sm text-gray-400">No customer cores are currently ready to return to {{ po.vendor.name }}.</p>
+    {% endif %}
+
+    {# ── B. This vendor's core returns — history + print / mark-shipped ── #}
+    {% if core_return_vcrs %}
+    <div>
+      <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Core returns for this vendor</p>
+      <div class="overflow-x-auto">
+        <table class="w-full min-w-[680px] text-sm">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">VCR #</th>
+              <th class="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+              <th class="px-3 py-2 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Cores</th>
+              <th class="px-3 py-2 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Expected</th>
+              <th class="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Tracking</th>
+              <th class="px-3 py-2 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Actions</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            {% set vstatus = {
+                 'draft':         ('badge-gray', 'Draft'),
+                 'shipped':       ('badge-blue', 'Shipped'),
+                 'vendor_review': ('badge-blue', 'Vendor Review'),
+                 'credited':      ('badge-green','Credited'),
+                 'disputed':      ('badge-red',  'Disputed'),
+                 'closed':        ('badge-gray', 'Closed'),
+               } %}
+            {% for vcr in core_return_vcrs %}
+            <tr class="hover:bg-gray-50/80 align-top" x-data="{ shipOpen: false }">
+              <td class="px-3 py-3 font-mono text-xs font-semibold text-gray-700">{{ vcr.vcr_number }}</td>
+              <td class="px-3 py-3">
+                <span class="{{ vstatus.get(vcr.status, ('badge-gray', vcr.status | title))[0] }}">
+                  {{ vstatus.get(vcr.status, ('badge-gray', vcr.status | title))[1] }}
+                </span>
+              </td>
+              <td class="px-3 py-3 text-right tabular-nums">{{ vcr.lines | length }}</td>
+              <td class="px-3 py-3 text-right tabular-nums">${{ '%.2f' | format(vcr.expected_credit) }}</td>
+              <td class="px-3 py-3 text-xs font-mono text-gray-500">{{ vcr.tracking_number or '—' }}</td>
+              <td class="px-3 py-3">
+                <div class="flex items-center justify-end gap-3">
+                  <a href="/cores/vcr/{{ vcr.id }}/print?copies=both" target="_blank" rel="noopener"
+                     class="text-xs link">Print both copies</a>
+                  {% if vcr.status == 'draft' %}
+                  <button type="button" @click="shipOpen = !shipOpen"
+                          class="text-xs font-semibold text-brand-700 hover:text-brand-800">Mark shipped</button>
+                  {% endif %}
+                </div>
+                {% if vcr.status == 'draft' %}
+                <form method="post" action="/purchase-orders/{{ po.id }}/core-return/{{ vcr.id }}/ship"
+                      x-show="shipOpen" x-cloak class="mt-2 flex flex-wrap items-end gap-2 justify-end">
+                  <div>
+                    <label class="block text-[10px] uppercase tracking-wide text-gray-400">Tracking (optional)</label>
+                    <input name="tracking_number" placeholder="e.g. 1Z…" class="form-input w-40" />
+                  </div>
+                  <div>
+                    <label class="block text-[10px] uppercase tracking-wide text-gray-400">RMA (optional)</label>
+                    <input name="rma_number" placeholder="vendor RMA" class="form-input w-32" />
+                  </div>
+                  <button type="submit" class="btn-primary btn-sm">Mark shipped</button>
+                </form>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+  </div>
+</div>
+{% endif %}

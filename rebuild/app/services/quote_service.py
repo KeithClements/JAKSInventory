@@ -44,6 +44,14 @@ class QuoteService(BaseService):
         quote_number = bump_counter(self.db, "next_quote_number", "Q", year)
         validity_days = int(data.get("validity_days", 30))
 
+        # §21 (6.16) — default quote tax from the customer (mirrors invoice draft):
+        # tax-exempt customers → non-taxable; otherwise taxable at their rate. The
+        # clerk can toggle per quote afterward. Snapshot the rate at quote time.
+        from app.models.customer import Customer
+        customer = self.db.query(Customer).filter(Customer.id == customer_id).first()
+        is_taxable = bool(customer) and (not customer.is_tax_exempt) and (customer.tax_rate > 0)
+        tax_rate = customer.tax_rate if (customer and is_taxable) else 0.0
+
         quote = Quote(
             quote_number=quote_number,
             customer_id=customer_id,
@@ -55,6 +63,8 @@ class QuoteService(BaseService):
             follow_up_date=data.get("follow_up_date"),
             notes=data.get("notes", ""),
             internal_notes=data.get("internal_notes", ""),
+            is_taxable=is_taxable,
+            tax_rate_snapshot=tax_rate,
         )
         self.db.add(quote)
         self.db.flush()
@@ -155,22 +165,39 @@ class QuoteService(BaseService):
                     "parent_line_id": line.id,
                     "is_included": True,
                     "discount_pct": 0.0,
+                    "is_auto_generated": True,
+                    "is_locked_to_parent": True,
                 }, sort_order + 1)
                 added.append(core_line)
 
         self.db.commit()
         return added
 
-    def update_line(self, line_id: int, data: dict) -> QuoteLine:
+    def update_line(self, line_id: int, data: dict) -> tuple[QuoteLine, bool]:
+        """Update a line. Returns (line, cascaded) where cascaded is True if a
+        qty change propagated to locked child lines (caller should refresh the
+        full tbody so the child rows update in the DOM)."""
         line = self.db.query(QuoteLine).filter(QuoteLine.id == line_id).first()
         if line is None:
             raise ValueError(f"QuoteLine {line_id} not found")
         updatable = ["description", "qty", "unit_price", "unit_cost", "discount_pct", "sort_order"]
+        qty_changed = "qty" in data and int(data["qty"]) != line.qty
         for field in updatable:
             if field in data:
                 setattr(line, field, data[field])
+
+        cascaded = False
+        if qty_changed and line.parent_line_id is None:
+            for child in line.children:
+                # Sync qty on auto-cores still locked to the parent. Fall back
+                # to the legacy CORE_CHARGE+parent shape so quotes created
+                # before is_locked_to_parent was set on auto-cores still cascade.
+                if child.is_locked_to_parent or child.line_type == LineType.CORE_CHARGE:
+                    child.qty = line.qty
+                    cascaded = True
+
         self.db.commit()
-        return line
+        return line, cascaded
 
     def remove_line(self, line_id: int) -> bool:
         """
@@ -452,6 +479,11 @@ class QuoteService(BaseService):
                 "esn": quote.esn,
                 "engine_manufacturer": quote.engine_manufacturer or "",
                 "engine_model": quote.engine_model or "",
+                # §21 — carry the quote's (possibly clerk-overridden) tax decision
+                # forward so the quoted total matches the invoice. create_invoice
+                # honors these data overrides instead of re-deriving from customer.
+                "is_taxable": quote.is_taxable,
+                "tax_rate": quote.tax_rate_snapshot,
             },
             lines=inv_lines,
         )
@@ -822,6 +854,8 @@ class QuoteService(BaseService):
             discount_pct=float(data.get("discount_pct", 0.0)),
             is_core_line=bool(data.get("is_core_line", False)),
             parent_line_id=data.get("parent_line_id"),
+            is_auto_generated=bool(data.get("is_auto_generated", False)),
+            is_locked_to_parent=bool(data.get("is_locked_to_parent", False)),
             sort_order=sort_order,
         )
         self.db.add(line)

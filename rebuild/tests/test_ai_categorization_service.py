@@ -57,9 +57,14 @@ class _FakeResp:
         return self._payload
 
 
-def _ai_text_response(obj: dict) -> dict:
-    """Shape of an Anthropic structured-output response: first block is text JSON."""
-    return {"content": [{"type": "text", "text": json.dumps(obj)}], "stop_reason": "end_turn"}
+def _ai_tool_response(obj: dict) -> dict:
+    """Shape of an Anthropic forced-tool response: a tool_use block whose `input`
+    is the schema-shaped object (§21 — replaced the old output_config/text JSON)."""
+    return {
+        "content": [{"type": "tool_use", "name": "classify_part",
+                     "id": "toolu_test", "input": obj}],
+        "stop_reason": "tool_use",
+    }
 
 
 def _seed():
@@ -118,7 +123,7 @@ def test_request_uses_haiku_headers_and_enum(monkeypatch):
         captured["url"] = url
         captured["headers"] = headers
         captured["json"] = json
-        return _FakeResp(_ai_text_response(
+        return _FakeResp(_ai_tool_response(
             {"category_id": str(ids["wp"]), "confidence": "high",
              "engine_manufacturer": "Cummins", "reason": "water pump"}))
 
@@ -133,7 +138,11 @@ def test_request_uses_haiku_headers_and_enum(monkeypatch):
     assert captured["headers"]["anthropic-version"] == ai_mod.ANTHROPIC_VERSION
     body = captured["json"]
     assert body["model"] == "claude-haiku-4-5"
-    schema = body["output_config"]["format"]["schema"]
+    # §21 — schema enforced via a forced tool call (no anthropic-beta header).
+    assert body["tool_choice"] == {"type": "tool", "name": "classify_part"}
+    tool = body["tools"][0]
+    assert tool["name"] == "classify_part"
+    schema = tool["input_schema"]
     enum = schema["properties"]["category_id"]["enum"]
     assert str(ids["wp"]) in enum and "UNKNOWN" in enum   # closed set of real ids
     assert schema["additionalProperties"] is False
@@ -142,7 +151,7 @@ def test_request_uses_haiku_headers_and_enum(monkeypatch):
 # ── happy path: suggestion written, status untouched ──────────────────────────
 def test_suggestion_sets_category_flag_and_notes_without_approving(monkeypatch):
     ids = _seed()
-    monkeypatch.setattr(ai_mod.httpx, "post", lambda *a, **k: _FakeResp(_ai_text_response(
+    monkeypatch.setattr(ai_mod.httpx, "post", lambda *a, **k: _FakeResp(_ai_tool_response(
         {"category_id": str(ids["wp"]), "confidence": "high",
          "engine_manufacturer": "Cummins", "reason": "clearly a water pump"})))
     db = _session()
@@ -169,7 +178,7 @@ def test_suggestion_sets_category_flag_and_notes_without_approving(monkeypatch):
 # ── UNKNOWN → recorded as no-match, leaves category unset ──────────────────────
 def test_unknown_leaves_category_unset(monkeypatch):
     ids = _seed()
-    monkeypatch.setattr(ai_mod.httpx, "post", lambda *a, **k: _FakeResp(_ai_text_response(
+    monkeypatch.setattr(ai_mod.httpx, "post", lambda *a, **k: _FakeResp(_ai_tool_response(
         {"category_id": "UNKNOWN", "confidence": "low",
          "engine_manufacturer": "", "reason": "ambiguous"})))
     db = _session()
@@ -186,7 +195,7 @@ def test_unknown_leaves_category_unset(monkeypatch):
 # ── a fabricated (out-of-set) id is rejected, not trusted ─────────────────────
 def test_out_of_set_id_is_rejected(monkeypatch):
     ids = _seed()
-    monkeypatch.setattr(ai_mod.httpx, "post", lambda *a, **k: _FakeResp(_ai_text_response(
+    monkeypatch.setattr(ai_mod.httpx, "post", lambda *a, **k: _FakeResp(_ai_tool_response(
         {"category_id": "999999", "confidence": "high",
          "engine_manufacturer": "", "reason": "made up"})))
     db = _session()

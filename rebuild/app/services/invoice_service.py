@@ -962,6 +962,12 @@ class InvoiceService(BaseService):
         if invoice.status == InvoiceStatus.VOID:
             raise ValueError(f"Invoice {invoice.invoice_number} is already void")
 
+        # §21 — ALL voids require VOID_LOCKED_INVOICE (any invoice reaching this
+        # route is finalised, therefore locked). Previously the gate fired only
+        # inside the qbo_invoice_id branch, so a SALES clerk could void any
+        # non-QBO posted invoice with no permission check. Enforce unconditionally.
+        self.assert_can(Permission.VOID_LOCKED_INVOICE)
+
         # R4 — QBO-pushed invoices must be corrected via credit memo
         if invoice.qbo_invoice_id:
             # Allow admin override via permission
@@ -1050,6 +1056,51 @@ class InvoiceService(BaseService):
                 "Serial release failed while voiding invoice %s — void continues",
                 invoice_id,
             )
+
+        # Close any open core charges this invoice created. Voiding means the
+        # sale "never happened", so the customer no longer owes those cores
+        # back — leaving them OPEN strands phantom core liability on the
+        # customer's account, the Cores Queue, the After-Sale panel, and the
+        # statement. Only OPEN/PARTIAL, not-yet-credited cores are closed:
+        # a core already RETURNED/CREDITED/SHIPPED reflects a real physical
+        # event, so a void must never silently erase an issued core credit
+        # (those are left untouched and logged for manual handling).
+        from app.models.core import CoreCharge
+        from app.constants import CoreStatus
+        core_line_ids = [
+            ln.id for ln in invoice.lines if ln.line_type == LineType.CORE_CHARGE
+        ]
+        if core_line_ids:
+            for core in (
+                self.db.query(CoreCharge)
+                .filter(CoreCharge.invoice_line_id.in_(core_line_ids))
+                .all()
+            ):
+                if (
+                    core.status in (CoreStatus.OPEN, CoreStatus.PARTIAL)
+                    and core.credit_issued_at is None
+                    and core.qty_returned == 0
+                ):
+                    old_status = core.status
+                    core.status = CoreStatus.CLOSED
+                    core.notes = (
+                        f"{core.notes}\nClosed: invoice {invoice.invoice_number} "
+                        f"voided — {reason}"
+                    ).strip()
+                    self.audit(
+                        entity_type=EntityType.CORE_CHARGE,
+                        entity_id=core.id,
+                        action=AuditAction.STATUS_CHANGED,
+                        old_value=old_status,
+                        new_value=CoreStatus.CLOSED,
+                        notes=f"Core closed: invoice {invoice.invoice_number} voided",
+                    )
+                else:
+                    log.warning(
+                        "Void of invoice %s left core_charge %s in status=%s "
+                        "(returned/credited) untouched — manual review",
+                        invoice.invoice_number, core.id, core.status,
+                    )
 
         # Roll the linked sales order back to un-invoiced. Voiding means "this
         # invoice never happened", so the qty it fulfilled/invoiced must return

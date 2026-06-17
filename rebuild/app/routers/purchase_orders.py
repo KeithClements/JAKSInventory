@@ -12,7 +12,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
-from app.constants import POStatus
+from app.constants import POStatus, POShipToType
 from app.deps import get_db, get_current_user_id
 from app.models.customer import Customer, CustomerAddress
 from app.models.product import Product
@@ -81,7 +81,11 @@ def _match_summary(po: PurchaseOrder) -> dict:
 
 def _workspace_ctx(po: PurchaseOrder) -> dict:
     editable   = po.status in (POStatus.DRAFT, POStatus.VERBAL_ORDER)
-    can_receive = po.status in (POStatus.SENT, POStatus.PARTIAL)
+    # §21 — VERBAL_ORDER POs are receivable directly. A phone/verbal order with
+    # same-day delivery is a daily diesel-counter event; forcing staff through a
+    # "Place Order" (→ SENT) step first is needless friction and inflates
+    # qty_on_order. The receiving queue already lists VERBAL_ORDER as awaiting.
+    can_receive = po.status in (POStatus.VERBAL_ORDER, POStatus.SENT, POStatus.PARTIAL)
     can_bill    = po.status in (POStatus.RECEIVED, POStatus.PARTIAL)
     match = _match_summary(po)
     return {
@@ -421,6 +425,60 @@ async def po_create(request: Request, db: Session = Depends(get_db), user_id: in
 
 # ── Workspace ─────────────────────────────────────────────────────────────────
 
+def _po_core_return_context(db: Session, po: PurchaseOrder) -> dict:
+    """
+    Cores ready to ship back to THIS PO's vendor + this vendor's recent core
+    returns (VCRs) — surfaced on the PO so a vendor core return slip can be
+    printed and shipped from the order the cores belong to.
+
+    A customer-returned core is offered for this vendor when ANY of: it is
+    explicitly tagged to the vendor, the part was purchased on THIS PO, or the
+    product's preferred vendor source is this vendor. Customer cores carry no
+    vendor_id until batched, and vendor sources can be sparse, so we union the
+    signals rather than rely on one.
+    """
+    from app.constants import (
+        CoreDirection, CoreStatus, CoreVendorStatus, CoreInspectionOutcome,
+    )
+    from app.models.core import CoreCharge, VendorCoreReturn
+
+    vendor_id = po.vendor_id
+    po_product_ids = {ln.product_id for ln in po.lines if ln.product_id}
+
+    ready_all = (
+        db.query(CoreCharge)
+        .filter(
+            CoreCharge.direction == CoreDirection.CUSTOMER_OWES_RETURN,
+            CoreCharge.status == CoreStatus.RETURNED,
+            CoreCharge.vendor_status == CoreVendorStatus.PENDING,
+            CoreCharge.inspection_outcome != CoreInspectionOutcome.HOLD,
+            CoreCharge.vcr_id.is_(None),
+        )
+        .order_by(CoreCharge.updated_at)
+        .all()
+    )
+
+    def _for_this_vendor(c: CoreCharge) -> bool:
+        if c.vendor_id == vendor_id:
+            return True
+        if c.product_id in po_product_ids:
+            return True
+        pvs = c.product.preferred_vendor_source if c.product else None
+        return bool(pvs and pvs.vendor_id == vendor_id)
+
+    ready = [c for c in ready_all if _for_this_vendor(c)]
+
+    vcrs = (
+        db.query(VendorCoreReturn)
+        .filter(VendorCoreReturn.vendor_id == vendor_id)
+        .order_by(VendorCoreReturn.created_at.desc())
+        .limit(10)
+        .all()
+    )
+
+    return {"core_return_ready": ready, "core_return_vcrs": vcrs}
+
+
 @router.get("/{po_id}", response_class=HTMLResponse)
 def po_workspace(po_id: int, request: Request, db: Session = Depends(get_db)):
     po = (
@@ -434,7 +492,81 @@ def po_workspace(po_id: int, request: Request, db: Session = Depends(get_db)):
     from app.services.document_links import related_documents
     ctx = _workspace_ctx(po)
     ctx["linked_documents"] = related_documents(db, po)
+    ctx.update(_po_core_return_context(db, po))
+    # Bill-to / ship-to controls + resolved blocks for the header.
+    primary = _primary_company_location(db)
+    ctx["company_locations"] = _active_company_locations(db)
+    ctx["default_location_id"] = primary.id if primary else None
+    ctx["effective_ship_to_type"] = _effective_ship_to_type(po)
+    ctx.update(_resolve_po_addresses(po, db))
     return templates.TemplateResponse(request, "purchase_orders/workspace.html", ctx)
+
+
+# ── Core Returns to Vendor (reuses the cores/VCR ledger; print ≠ ship) ─────────
+
+@router.post("/{po_id}/core-return", response_class=RedirectResponse)
+async def po_core_return_create(
+    po_id: int, request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Batch the selected ready cores into a vendor core return (VCR) for this
+    PO's vendor, then open the printable slip (vendor + office copies). Tracking
+    is captured later via mark-shipped — printing never requires it."""
+    from app.services.core_service import CoreService
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()
+    if not po:
+        return RedirectResponse("/purchase-orders/", status_code=303)
+    form = await request.form()
+    try:
+        core_ids = [int(i) for i in form.getlist("core_ids")]
+        vcr = CoreService(db, user_id).create_vcr(
+            vendor_id=po.vendor_id,
+            core_charge_ids=core_ids,
+            notes=f"Core return for PO {po.po_number}",
+        )
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote(str(exc))}", status_code=303)
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error creating core return for PO %s", po_id)
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error="
+            f"{url_quote('Unexpected error — the core return was not created.')}",
+            status_code=303)
+    return RedirectResponse(f"/cores/vcr/{vcr.id}/print?copies=both", status_code=303)
+
+
+@router.post("/{po_id}/core-return/{vcr_id}/ship", response_class=RedirectResponse)
+async def po_core_return_ship(
+    po_id: int, vcr_id: int, request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Mark a vendor core return shipped — tracking + RMA optional (printed,
+    signed, boxed now; shipped/recorded later). Stays on the PO."""
+    from app.services.core_service import CoreService
+    form = await request.form()
+    try:
+        CoreService(db, user_id).ship_vcr(
+            vcr_id=vcr_id,
+            tracking_number=str(form.get("tracking_number", "")).strip(),
+            rma_number=str(form.get("rma_number", "")).strip(),
+        )
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote(str(exc))}", status_code=303)
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error shipping core return %s for PO %s", vcr_id, po_id)
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error="
+            f"{url_quote('Unexpected error — the core return was not marked shipped.')}",
+            status_code=303)
+    return RedirectResponse(
+        f"/purchase-orders/{po_id}?ok={url_quote('Core return marked shipped.')}",
+        status_code=303)
 
 
 # ── Header autosave ───────────────────────────────────────────────────────────
@@ -452,13 +584,32 @@ async def po_header_save(po_id: int, request: Request, db: Session = Depends(get
         except ValueError:
             pass
 
+    def _opt_int(key: str):
+        raw = str(form.get(key, "")).strip()
+        return int(raw) if raw.isdigit() else None
+
     data = {
         "notes": str(form.get("notes", "")).strip(),
         "internal_notes": str(form.get("internal_notes", "")).strip(),
         "vendor_confirmation_number": str(form.get("vendor_confirmation_number", "")).strip() or None,
+        # Checkbox: present in the form body only when ticked.
+        "vendor_confirmed": form.get("vendor_confirmed") is not None,
         "freight_in_cost": float(form.get("freight_in_cost") or 0.0),
         "expected_at": expected_dt,
+        # Bill-to / ship-to (save_header sorts out which ship-to fields apply).
+        "bill_to_location_id": _opt_int("bill_to_location_id"),
+        "ship_to_type": str(form.get("ship_to_type", "")).strip() or None,
+        "ship_to_location_id": _opt_int("ship_to_location_id"),
+        "ship_to_snapshot": str(form.get("ship_to_snapshot", "")).strip() or None,
+        "drop_ship_customer_id": _opt_int("drop_ship_customer_id"),
+        "drop_ship_address_id": _opt_int("drop_ship_address_id"),
     }
+    # Only let the header autosave touch ship-to when the form actually carries it
+    # (the field is present on the PO workspace form). Guards other callers.
+    if "ship_to_type" not in form:
+        for k in ("bill_to_location_id", "ship_to_type", "ship_to_location_id",
+                  "ship_to_snapshot", "drop_ship_customer_id", "drop_ship_address_id"):
+            data.pop(k, None)
     try:
         svc.save_header(po_id, data)
     except ValueError:
@@ -593,10 +744,11 @@ async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)
     if not po:
         return RedirectResponse("/purchase-orders/", status_code=303)
 
-    # Status guard — only SENT or PARTIAL POs can be received
-    if po.status not in (POStatus.SENT, POStatus.PARTIAL):
+    # Status guard — VERBAL_ORDER, SENT, or PARTIAL POs can be received (§21:
+    # verbal/phone orders receive directly without a Place Order step).
+    if po.status not in (POStatus.VERBAL_ORDER, POStatus.SENT, POStatus.PARTIAL):
         return RedirectResponse(
-            f"/purchase-orders/{po_id}?error={url_quote('Cannot receive: PO must be in SENT or PARTIAL status.')}",
+            f"/purchase-orders/{po_id}?error={url_quote('Cannot receive: PO must be in VERBAL ORDER, SENT, or PARTIAL status.')}",
             status_code=303,
         )
 
@@ -1064,6 +1216,73 @@ async def po_correct_match_line(
     return RedirectResponse(f"/purchase-orders/{po_id}?ok=match_corrected", status_code=303)
 
 
+# ── Bill-to / Ship-to ───────────────────────────────────────────────────────
+
+def _active_company_locations(db: Session) -> list:
+    from app.models.company_location import CompanyLocation
+    return (
+        db.query(CompanyLocation)
+        .filter(CompanyLocation.is_active == True)  # noqa: E712
+        .order_by(CompanyLocation.is_primary.desc(), CompanyLocation.name)
+        .all()
+    )
+
+
+def _primary_company_location(db: Session):
+    from app.models.company_location import CompanyLocation
+    return (
+        db.query(CompanyLocation)
+        .filter(CompanyLocation.is_active == True,  # noqa: E712
+                CompanyLocation.is_primary == True)  # noqa: E712
+        .first()
+    )
+
+
+def _effective_ship_to_type(po: PurchaseOrder) -> str:
+    """ship_to_type, but legacy drop-ship POs (created before the field existed,
+    so type is still the 'location' default) are treated as drop_ship."""
+    stype = po.ship_to_type or POShipToType.LOCATION
+    if po.is_drop_ship and stype == POShipToType.LOCATION:
+        return POShipToType.DROP_SHIP
+    return stype
+
+
+def _resolve_po_addresses(po: PurchaseOrder, db: Session) -> dict:
+    """Render-ready {name, lines} blocks for the PO's bill-to and ship-to, used by
+    both the workspace and the print/PDF so the branching lives in one place."""
+    primary = _primary_company_location(db)
+
+    bill_loc = po.bill_to_location or primary
+    bill_to = {
+        "name": bill_loc.name if bill_loc else (get_company_dict(db).get("name") or ""),
+        "lines": bill_loc.address_lines if bill_loc else [],
+    }
+
+    stype = _effective_ship_to_type(po)
+    if stype == POShipToType.DROP_SHIP:
+        cust = (
+            db.query(Customer).filter(Customer.id == po.drop_ship_customer_id).first()
+            if po.drop_ship_customer_id else None
+        )
+        snap = [ln.strip() for ln in (po.ship_to_snapshot or "").splitlines() if ln.strip()]
+        lines = snap or (customer_address_lines(cust) if cust else [])
+        cust_name = ""
+        if cust is not None:
+            cust_name = (getattr(cust, "display_name", "") or getattr(cust, "company_name", "")
+                         or getattr(cust, "name", "") or "")
+        ship_to = {"kind": "drop_ship", "name": cust_name or "Drop-ship",
+                   "lines": lines, "is_drop_ship": True}
+    elif stype == POShipToType.AD_HOC:
+        lines = [ln.strip() for ln in (po.ship_to_snapshot or "").splitlines() if ln.strip()]
+        ship_to = {"kind": "ad_hoc", "name": "One-time address",
+                   "lines": lines, "is_drop_ship": False}
+    else:
+        loc = po.ship_to_location or primary
+        ship_to = {"kind": "location", "name": loc.name if loc else "",
+                   "lines": loc.address_lines if loc else [], "is_drop_ship": False}
+    return {"bill_to": bill_to, "ship_to": ship_to}
+
+
 # ── Print / PDF ───────────────────────────────────────────────────────────────
 
 def _po_print_context(po: PurchaseOrder, db: Session) -> dict:
@@ -1106,6 +1325,7 @@ def _po_print_context(po: PurchaseOrder, db: Session) -> dict:
         if not dropship_addr_lines and dropship_customer is not None:
             dropship_addr_lines = customer_address_lines(dropship_customer)
 
+    addrs = _resolve_po_addresses(po, db)
     return {
         "po": po,
         "company": company,
@@ -1113,6 +1333,8 @@ def _po_print_context(po: PurchaseOrder, db: Session) -> dict:
         "vendor_addr_lines": vendor_addr_lines_,
         "dropship_customer": dropship_customer,
         "dropship_addr_lines": dropship_addr_lines,
+        "bill_to": addrs["bill_to"],
+        "ship_to": addrs["ship_to"],
     }
 
 

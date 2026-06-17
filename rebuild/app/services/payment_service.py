@@ -64,6 +64,12 @@ class PaymentService(BaseService):
 
         Validates: sum of allocations <= amount_received.
         """
+        # §21 — recording money-in is gated. ADMIN + BOOKKEEPING have
+        # RECORD_PAYMENT; SALES/READ_ONLY do not (a counter clerk must not mark
+        # cash received that never arrived). System events (user_id None) pass.
+        from app.constants import Permission
+        self.assert_can(Permission.RECORD_PAYMENT)
+
         if amount_received <= 0:
             raise ValueError("amount_received must be greater than 0")
 

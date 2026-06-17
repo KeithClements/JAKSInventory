@@ -19,8 +19,8 @@ from datetime import datetime, timezone
 
 from app.constants import (
     AuditAction, EntityType, FulfillmentSource, InventoryTxnType, MatchResolution,
-    Permission, POStatus, QBOSyncStatus, SOLineSource, SOLineStatus, VendorBillStatus,
-    VendorCreditMemoTrigger,
+    Permission, POStatus, POShipToType, QBOSyncStatus, SOLineSource, SOLineStatus,
+    VendorBillStatus, VendorCreditMemoTrigger,
 )
 from app.models.inventory import InventoryTransaction
 from app.models.product import Product, ProductCostHistory
@@ -1372,10 +1372,33 @@ class POService(BaseService):
         for field in ("notes", "internal_notes", "vendor_confirmation_number"):
             if field in data:
                 setattr(po, field, data[field])
+        if "vendor_confirmed" in data:
+            po.vendor_confirmed = bool(data["vendor_confirmed"])
         if "freight_in_cost" in data:
             po.freight_in_cost = float(data["freight_in_cost"] or 0.0)
         if "expected_at" in data:
             po.expected_at = data["expected_at"]
+        # ── Bill-to / ship-to. ship_to_type owns which fields apply; the others
+        # are cleared so a stale drop-ship address can't linger after a switch.
+        if "bill_to_location_id" in data:
+            po.bill_to_location_id = data["bill_to_location_id"]
+        if "ship_to_type" in data:
+            stype = data["ship_to_type"] or POShipToType.LOCATION
+            po.ship_to_type = stype
+            po.ship_to_location_id = (
+                data.get("ship_to_location_id") if stype == POShipToType.LOCATION else None
+            )
+            po.ship_to_snapshot = (
+                data.get("ship_to_snapshot") if stype == POShipToType.AD_HOC else None
+            )
+            if stype == POShipToType.DROP_SHIP:
+                po.is_drop_ship = True
+                po.drop_ship_customer_id = data.get("drop_ship_customer_id")
+                po.drop_ship_address_id = data.get("drop_ship_address_id")
+            else:
+                po.is_drop_ship = False
+                po.drop_ship_customer_id = None
+                po.drop_ship_address_id = None
         self.db.commit()
 
     def update_line(self, line_id: int, data: dict) -> POLine:

@@ -170,6 +170,7 @@
           <th class="px-4 py-3 text-left label-mini hidden md:table-cell">Payment</th>
           <th class="px-4 py-3 text-left label-mini hidden lg:table-cell">Invoice</th>
           <th class="px-4 py-3 text-right label-mini">Total</th>
+          <th class="px-4 py-3 text-left label-mini">Ordered</th>
           <th class="px-4 py-3 w-12"></th>
         </tr>
       </thead>
@@ -295,6 +296,15 @@
           {# ── §2B Total — .money.ext mono 700 ink (primary total) ───────── #}
           <td class="px-4 py-4 align-middle text-right">
             <span class="money ext">${{ '%.2f' % so.subtotal }}</span>
+          </td>
+
+          {# ── Ordered (created) date — list is sorted newest-first ───────── #}
+          <td class="px-4 py-4 align-middle">
+            {% if so.created_at %}
+            <span class="text-sm tabular-nums text-gray-700">{{ so.created_at.strftime('%b %d, %Y') }}</span>
+            {% else %}
+            <span class="text-sm text-gray-300">—</span>
+            {% endif %}
           </td>
 
           {# ── Quick action — open workspace ─────────────────────────────── #}

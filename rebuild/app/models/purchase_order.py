@@ -5,7 +5,7 @@ from sqlalchemy import String, Text, Float, Integer, Boolean, ForeignKey, DateTi
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 from app.models.mixins import QBOSyncMixin
-from app.constants import POStatus, VendorBillStatus, QBOSyncStatus, Carrier, MatchResolution
+from app.constants import POStatus, POShipToType, VendorBillStatus, QBOSyncStatus, Carrier, MatchResolution
 
 # 3-way-match cost tolerance: a billed unit cost is a DISCREPANCY when it differs
 # from the PO/receipt unit cost by at least this much (1 cent). Single source of
@@ -29,8 +29,28 @@ class PurchaseOrder(QBOSyncMixin, Base):
     vendor_confirmation_number: Mapped[str | None] = mapped_column(
         String(100), nullable=True
     )
+    # Vendor acknowledged the order. Lets staff record a confirmation even when
+    # the vendor gives no confirmation number (phone/portal "yes, we've got it").
+    vendor_confirmed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
 
-    # ── Drop-Ship ─────────────────────────────────────────────────────────────
+    # ── Bill-To / Ship-To ─────────────────────────────────────────────────────
+    # Bill-to is always one of our own CompanyLocations (default = primary).
+    bill_to_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("company_locations.id"), nullable=True
+    )
+    # ship_to_type drives which ship-to fields apply: 'location' → ship_to_location_id,
+    # 'ad_hoc' → ship_to_snapshot, 'drop_ship' → the drop_ship_* fields below.
+    ship_to_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=POShipToType.LOCATION
+    )
+    ship_to_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("company_locations.id"), nullable=True
+    )
+    ship_to_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # ── Drop-Ship (ship_to_type == 'drop_ship') ───────────────────────────────
     is_drop_ship: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     drop_ship_customer_id: Mapped[int | None] = mapped_column(
         ForeignKey("customers.id"), nullable=True
@@ -74,6 +94,13 @@ class PurchaseOrder(QBOSyncMixin, Base):
         overlaps="lines,po_line,receipt",
     )
     bills: Mapped[list[VendorBill]] = relationship("VendorBill", back_populates="po")
+    # Two FKs to company_locations → disambiguate with foreign_keys.
+    bill_to_location: Mapped[CompanyLocation | None] = relationship(
+        "CompanyLocation", foreign_keys=[bill_to_location_id]
+    )
+    ship_to_location: Mapped[CompanyLocation | None] = relationship(
+        "CompanyLocation", foreign_keys=[ship_to_location_id]
+    )
 
     # ── Computed ──────────────────────────────────────────────────────────────
     @property
@@ -314,3 +341,4 @@ class VendorBillLine(Base):
 from app.models.vendor import Vendor                         # noqa: E402
 from app.models.product import Product                       # noqa: E402
 from app.models.customer import CustomerAddress              # noqa: E402
+from app.models.company_location import CompanyLocation      # noqa: E402

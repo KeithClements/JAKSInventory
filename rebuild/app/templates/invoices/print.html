@@ -292,6 +292,15 @@
       color: var(--s400); text-transform: uppercase; letter-spacing: .04em;
     }
 
+    /* ── Customer acknowledgement / received-by sign-off (on the invoice) ─── */
+    .ack-section{
+      margin-top: 20px; padding-top: 14px;
+      border-top: 1px solid var(--s100);
+      page-break-inside: avoid;
+    }
+    .ack-note{ font-size: 11px; color: var(--s500); line-height: 1.6; }
+    .ack-section .sig-row{ margin-top: 30px; }
+
     /* ── Print overrides ─────────────────────────────────────────────────── */
     @page { size: letter portrait; margin: 0; }
     @media print{
@@ -508,6 +517,28 @@
       {% else %}
         <b>Thank you</b> for your business.
       {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Customer acknowledgement / received-by sign-off ─────────────────────
+       Gives the customer a place to sign that they received the parts/services.
+       Hidden on void invoices (nothing to acknowledge). Reuses the .sig-row /
+       .sig-cell sign-off styling shared with the core return slip. ── #}
+  {% if invoice.status != 'void' %}
+  <div class="ack-section">
+    <div class="ack-note">
+      I acknowledge receipt of the parts and/or services listed above in good condition.
+    </div>
+    <div class="sig-row">
+      <div class="sig-cell">
+        <div class="sig-cap">Received By (Print Name)</div>
+        <div class="sig-line">Printed Name</div>
+      </div>
+      <div class="sig-cell">
+        <div class="sig-cap">Customer Signature</div>
+        <div class="sig-line">Signature &amp; Date</div>
+      </div>
     </div>
   </div>
   {% endif %}

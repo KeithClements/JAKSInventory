@@ -31,6 +31,7 @@
          'swap':          'beforeend',                  # htmx swap for `target`
          'child_mode':    true,                         # Quote only — sub-line insertion
          'new_product':   true,                         # show the + New Product shortcut
+         'freight':       true,                         # show the + Freight shortcut (sell docs only — NOT PO)
        } %}
     {% include "line_items/_line_adder.html" %}
 #}
@@ -174,11 +175,26 @@
                focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400" />
     </div>
 
+    {% if la.freight %}
+    {# + Freight — one-click freight/delivery line (line_type='freight'): non-taxable +
+       never discounted (constants.FREIGHT_LINE_TYPES). Amount is typed inline on the
+       row afterward (§8H: add immediately, edit money inline). Neutral/gray ghost so it
+       stays secondary to + New Product. Carries forward through quote→SO→invoice. #}
+    <button
+      type="button"
+      @click="addFreight()"
+      class="shrink-0 px-3 py-2 text-xs font-medium text-gray-600 border border-gray-200
+             rounded-lg bg-white hover:bg-gray-50 transition-colors whitespace-nowrap"
+      title="Add a freight / delivery charge — type the amount on the row">
+      + Freight
+    </button>
+    {% endif %}
+
     {% if la.new_product %}
     {# + New Product — quick-create slide-over; created product is added immediately #}
     <button
       type="button"
-      hx-get="/products/quick-create-form"
+      hx-get="/products/quick-create-form{% if la.vendor_id %}?vendor_id={{ la.vendor_id }}&doc_type={{ la.doc_type }}{% endif %}"
       hx-target="#create-slide-content"
       hx-swap="innerHTML"
       @click="$dispatch('open-create-slide', { title: 'New Product' })"
@@ -258,6 +274,15 @@ window.lineAdder = window.lineAdder || function (config) {
       const desc = this.q.trim();
       if (desc.length < 2) return;
       this._post({ description: desc, qty: this.qty || 1, line_type: 'misc' });
+    },
+
+    // Freight / delivery line (line_type='freight'): the service forces discount=0 and
+    // defaults it non-taxable; it lands in the "Freight / Delivery" totals bucket. Amount
+    // is left at $0 and typed inline on the row (§8H). Always top-level — clear any active
+    // child-mode first so freight never nests under a parent line.
+    addFreight() {
+      this.clearChildMode();
+      this._post({ description: 'Freight', qty: 1, line_type: 'freight' });
     },
 
     // After the quick-create slide-over saves a product → add it immediately.

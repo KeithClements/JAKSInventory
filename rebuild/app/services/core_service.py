@@ -97,9 +97,19 @@ class CoreService(BaseService):
             return_days = 45
         deadline = datetime.utcnow() + timedelta(days=return_days)
 
+        # §21 — stamp the product's preferred-vendor id at creation so the core
+        # can be grouped by vendor on the Ready-to-Ship / VCR board without a
+        # later lookup (previously vendor_id stayed NULL until VCR batch time,
+        # making multi-vendor cores untrackable at return time).
+        from app.models.product import Product
+        _prod = self.db.query(Product).filter(Product.id == product_id).first()
+        _pref = _prod.preferred_vendor_source if _prod else None
+        core_vendor_id = _pref.vendor_id if _pref else None
+
         core = CoreCharge(
             direction=CoreDirection.CUSTOMER_OWES_RETURN,
             customer_id=invoice.customer_id,
+            vendor_id=core_vendor_id,
             product_id=product_id,
             invoice_line_id=invoice_line_id,
             qty_charged=qty,
@@ -219,6 +229,13 @@ class CoreService(BaseService):
             },
         )
         self.db.commit()
+
+        # Owner decision 2026-06-16 — for an ACCEPTED return, push the issued
+        # account credit straight onto the core's originating invoice (if it is
+        # still owing) so the customer only owes the parts balance. See helper.
+        if inspection_outcome == CoreInspectionOutcome.ACCEPTED:
+            self._auto_apply_core_credit_to_invoice(core, credit_amount)
+
         return event
 
     def complete_inspection(
@@ -288,6 +305,12 @@ class CoreService(BaseService):
             new_value={"inspection_final": final_outcome, "notes": notes},
         )
         self.db.commit()
+
+        # Owner decision 2026-06-16 — once a held core is accepted, apply the
+        # now-issued account credit onto its originating invoice (see helper).
+        if final_outcome == CoreInspectionOutcome.ACCEPTED:
+            applied_amount = round(core.qty_returned * core.customer_unit_charge, 2)
+            self._auto_apply_core_credit_to_invoice(core, applied_amount)
 
     # ── Core Slip ─────────────────────────────────────────────────────────────
 
@@ -1122,7 +1145,86 @@ class CoreService(BaseService):
         )
         self.db.commit()
 
+        # Owner decision 2026-06-16 — an account-credit issuance auto-applies to
+        # the core's originating invoice when it is still owing (see helper).
+        if credit_method == CoreCreditMethod.ACCOUNT_CREDIT:
+            self._auto_apply_core_credit_to_invoice(core, credit_amount)
+
     # ── Private ───────────────────────────────────────────────────────────────
+
+    def _auto_apply_core_credit_to_invoice(
+        self, core: CoreCharge, credit_amount: float
+    ) -> float:
+        """Owner decision 2026-06-16 — immediately apply a just-issued ACCOUNT_CREDIT
+        core-return credit to the core's originating invoice so the customer only
+        owes the parts balance (the cores were settled at drop-off), instead of
+        leaving the credit floating on their account to chase later.
+
+        Returns the amount actually applied (0.0 when nothing was). It is a no-op —
+        the credit simply stays on the customer's account, exactly as before — when:
+          - the core isn't linked to an originating invoice (credit_invoice_id),
+          - that invoice isn't a finalized, still-owing invoice (OPEN / PARTIAL),
+          - or there is nothing applicable (already paid, or no credit available).
+
+        Runs as its own committed step AFTER the credit has been issued; any
+        failure here is logged and swallowed so it can NEVER roll back or block
+        the core return itself — the credit is still safely on the account.
+        """
+        if (
+            credit_amount <= 0.005
+            or core.customer_id is None
+            or core.credit_invoice_id is None
+        ):
+            return 0.0
+
+        from app.constants import InvoiceStatus
+        from app.models.customer import Customer
+        from app.models.invoice import Invoice
+
+        invoice = (
+            self.db.query(Invoice)
+            .filter(Invoice.id == core.credit_invoice_id)
+            .first()
+        )
+        # Only auto-apply to a finalized invoice that still owes — never touch a
+        # DRAFT, VOID, or already-PAID invoice (those leave the credit floating).
+        if invoice is None or invoice.status not in (
+            InvoiceStatus.OPEN,
+            InvoiceStatus.PARTIAL,
+        ):
+            return 0.0
+
+        # Clamp to what is actually owed AND actually available. The credit was
+        # just added, but the customer's balance could have been negative before
+        # (e.g. a prior vendor-denial chargeback), so never apply more than they
+        # truly hold or the invoice truly owes.
+        customer = (
+            self.db.query(Customer).filter(Customer.id == core.customer_id).first()
+        )
+        available = max(0.0, customer.credit_balance if customer else 0.0)
+        apply_amount = round(min(credit_amount, invoice.balance_due, available), 2)
+        if apply_amount <= 0.005:
+            return 0.0
+
+        try:
+            from app.services.payment_service import PaymentService
+            PaymentService(self.db, self.current_user_id).apply_account_credit(
+                customer_id=core.customer_id,
+                invoice_id=invoice.id,
+                amount=apply_amount,
+            )
+            log.info(
+                "Auto-applied $%.2f core-return credit (core %s) to invoice %s",
+                apply_amount, core.id, invoice.id,
+            )
+            return apply_amount
+        except Exception:
+            log.exception(
+                "Auto-apply of core-return credit failed (core %s -> invoice %s);"
+                " credit remains on the customer account",
+                core.id, invoice.id,
+            )
+            return 0.0
 
     def _charge_back_customer_credit(
         self, core: CoreCharge, max_amount: float | None = None

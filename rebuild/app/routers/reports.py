@@ -611,6 +611,135 @@ def reports_low_stock_export(db: Session = Depends(get_db)):
     )
 
 
+# ── §21 — the 6 previously-missing CSV exports (mirror the ar-aging pattern) ──
+
+@router.get("/sales-by-customer/export.csv")
+def reports_sales_by_customer_export(
+    start: str | None = None, end: str | None = None, db: Session = Depends(get_db),
+):
+    start_date, end_date = _resolve_range(start, end)
+    data = ReportService(db).get_sales_by_customer(start_date, end_date)
+    return _csv_response(
+        ["customer", "invoice_count", "gross_sales", "payments_received",
+         "balance_due", "cost", "margin", "margin_pct"],
+        [
+            [
+                r["customer"].company_name if r["customer"] else "",
+                r["invoice_count"], f"{r['gross_sales']:.2f}",
+                f"{r['payments_received']:.2f}", f"{r['balance_due']:.2f}",
+                f"{r['cost']:.2f}", f"{r['margin']:.2f}",
+                f"{r['margin_pct']:.1f}" if r["margin_pct"] is not None else "",
+            ]
+            for r in data["rows"]
+        ],
+        f"sales_by_customer_{start_date.isoformat()}_{end_date.isoformat()}.csv",
+    )
+
+
+@router.get("/sales-by-product/export.csv")
+def reports_sales_by_product_export(
+    start: str | None = None, end: str | None = None, db: Session = Depends(get_db),
+):
+    start_date, end_date = _resolve_range(start, end)
+    data = ReportService(db).get_sales_by_product(start_date, end_date)
+    return _csv_response(
+        ["sku", "description", "qty_sold", "revenue", "cost", "margin", "margin_pct"],
+        [
+            [
+                r["sku"], r["description"], r["qty_sold"], f"{r['revenue']:.2f}",
+                f"{r['cost']:.2f}", f"{r['margin']:.2f}",
+                f"{r['margin_pct']:.1f}" if r["margin_pct"] is not None else "",
+            ]
+            for r in data["rows"]
+        ],
+        f"sales_by_product_{start_date.isoformat()}_{end_date.isoformat()}.csv",
+    )
+
+
+@router.get("/inventory-valuation/export.csv")
+def reports_inventory_valuation_export(db: Session = Depends(get_db)):
+    data = ReportService(db).get_inventory_valuation()
+    return _csv_response(
+        ["sku", "title", "qty_on_hand", "qty_committed", "qty_available",
+         "avg_cost", "last_cost", "total_value", "warning"],
+        [
+            [
+                r["sku"], r["title"], r["qty_on_hand"], r["qty_committed"],
+                r["qty_available"], f"{r['avg_cost']:.2f}", f"{r['last_cost']:.2f}",
+                f"{r['total_value']:.2f}", r.get("warning") or "",
+            ]
+            for r in data["rows"]
+        ],
+        f"inventory_valuation_{date.today().isoformat()}.csv",
+    )
+
+
+@router.get("/open-pos/export.csv")
+def reports_open_pos_export(db: Session = Depends(get_db)):
+    data = ReportService(db).get_open_pos()
+    return _csv_response(
+        ["po_number", "vendor", "status", "ordered_at", "expected_at", "overdue",
+         "qty_ordered", "qty_received", "qty_remaining", "outstanding_value"],
+        [
+            [
+                r["po_number"], r["vendor"].name if r["vendor"] else "",
+                r["status"],
+                r["ordered_at"].date().isoformat() if r["ordered_at"] else "",
+                r["expected_at"].date().isoformat() if r["expected_at"] else "",
+                "yes" if r["overdue"] else "",
+                r["qty_ordered"], r["qty_received"], r["qty_remaining"],
+                f"{r['outstanding_value']:.2f}",
+            ]
+            for r in data["rows"]
+        ],
+        f"open_pos_{data['as_of'].isoformat()}.csv",
+    )
+
+
+@router.get("/outstanding-cores/export.csv")
+def reports_outstanding_cores_export(db: Session = Depends(get_db)):
+    data = ReportService(db).get_core_charges_outstanding()
+    return _csv_response(
+        ["sku", "description", "customer", "invoice_number", "core_slip_number",
+         "qty_outstanding", "amount", "age_days", "return_deadline", "overdue"],
+        [
+            [
+                r["sku"], r["description"],
+                r["customer"].company_name if r["customer"] else "",
+                r["invoice_number"] or "", r["core_slip_number"] or "",
+                r["qty_outstanding"], f"{r['amount']:.2f}", r["age_days"],
+                r["return_deadline"].date().isoformat() if r["return_deadline"] else "",
+                "yes" if r["overdue"] else "",
+            ]
+            for r in data["rows"]
+        ],
+        f"outstanding_cores_{data['as_of'].isoformat()}.csv",
+    )
+
+
+@router.get("/lost-sales/export.csv")
+def reports_lost_sales_export(
+    start: str | None = None, end: str | None = None, db: Session = Depends(get_db),
+):
+    start_date, end_date = _resolve_range(start, end)
+    data = ReportService(db).get_lost_sales(start_date, end_date)
+    return _csv_response(
+        ["logged_at", "customer", "product_sku", "product_title", "reason",
+         "competitor_name", "competitor_price", "quote_number"],
+        [
+            [
+                r["logged_at"].date().isoformat() if r["logged_at"] else "",
+                r["customer_name"], r["product_sku"], r["product_title"],
+                r["reason"], r["competitor_name"],
+                f"{r['competitor_price']:.2f}" if r["competitor_price"] is not None else "",
+                r["quote_number"] or "",
+            ]
+            for r in data["rows"]
+        ],
+        f"lost_sales_{start_date.isoformat()}_{end_date.isoformat()}.csv",
+    )
+
+
 # ── Back-compat redirects (legacy URLs from sidebar/bookmarks) ───────────────
 #
 # Keep these until the sidebar links migrate to canonical paths. Then they can

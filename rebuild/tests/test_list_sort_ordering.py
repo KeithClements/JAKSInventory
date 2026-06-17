@@ -25,15 +25,20 @@ from __future__ import annotations
 
 import itertools
 import re
+from datetime import datetime
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.constants import InvoiceStatus, LineType, PaymentMethod, PaymentStatus, QuoteStatus
+from app.constants import (
+    InvoiceStatus, LineType, PaymentMethod, PaymentStatus, ProductStatus,
+    QuoteStatus, SOPaymentMode, SOStatus,
+)
 from app.main import app
 from app.models.customer import Customer
 from app.models.invoice import Invoice, InvoiceLine, Payment
-from app.models.quote import Quote
+from app.models.product import Product
+from app.models.quote import Quote, SalesOrder, SOLine
 from tests.conftest import activate, fresh_engine
 
 _seq = itertools.count(1)
@@ -145,3 +150,57 @@ def test_payment_sort_by_amount_both_directions(client, db_session):
     desc = _row_ids(client.get("/payments/?sort=amount&direction=desc").text, "payments")
     assert asc.index(lo.id) < asc.index(hi.id)
     assert desc.index(hi.id) < desc.index(lo.id)
+
+
+# ── Default sort = newest by date, most recent on top (owner 2026-06-16) ──────
+# These also render the list templates that carry the new date columns
+# (Invoices "Invoiced", Sales Orders "Ordered"), guarding against Jinja errors.
+
+def _sales_order(db, customer_id, number, *, created_at) -> SalesOrder:
+    prod = Product(sku=f"LSO-{next(_seq):04d}", title="Sort Part",
+                   description="Sort Part", cost=10.0, markup_pct=50.0,
+                   qty_on_hand=0, status=ProductStatus.ACTIVE, is_active=True)
+    db.add(prod); db.flush()
+    so = SalesOrder(so_number=number, customer_id=customer_id, status=SOStatus.OPEN,
+                    payment_mode=SOPaymentMode.DEPOSIT, deposit_amount=0.0,
+                    notes="", internal_notes="")
+    db.add(so); db.flush()
+    db.add(SOLine(so_id=so.id, product_id=prod.id, line_type=LineType.PRODUCT,
+                  description="Sort Part", qty_ordered=1, qty_committed=1,
+                  qty_fulfilled=0, qty_invoiced=0, unit_price=100.0))
+    so.created_at = created_at
+    db.commit(); db.refresh(so)
+    return so
+
+
+def test_invoice_default_sort_is_newest_invoiced_first(client, db_session):
+    """No ?sort → Invoices default to newest-invoiced (created_at desc) on top."""
+    cust = _customer(db_session)
+    older = _invoice(db_session, cust.id, "INV-OLD-0001")
+    newer = _invoice(db_session, cust.id, "INV-NEW-0002")
+    older.created_at = datetime(2026, 1, 1, 9, 0, 0)
+    newer.created_at = datetime(2026, 3, 1, 9, 0, 0)
+    db_session.commit()
+    ids = _row_ids(client.get("/invoices/").text, "invoices")
+    assert ids.index(newer.id) < ids.index(older.id)
+
+
+def test_quote_default_sort_is_newest_created_first(client, db_session):
+    cust = _customer(db_session)
+    older = _quote(db_session, cust.id, "Q-OLD-0001")
+    newer = _quote(db_session, cust.id, "Q-NEW-0002")
+    older.created_at = datetime(2026, 1, 1, 9, 0, 0)
+    newer.created_at = datetime(2026, 3, 1, 9, 0, 0)
+    db_session.commit()
+    ids = _row_ids(client.get("/quotes/").text, "quotes")
+    assert ids.index(newer.id) < ids.index(older.id)
+
+
+def test_sales_order_default_sort_is_newest_created_first(client, db_session):
+    cust = _customer(db_session)
+    older = _sales_order(db_session, cust.id, "SO-OLD-0001",
+                         created_at=datetime(2026, 1, 1, 9, 0, 0))
+    newer = _sales_order(db_session, cust.id, "SO-NEW-0002",
+                         created_at=datetime(2026, 3, 1, 9, 0, 0))
+    ids = _row_ids(client.get("/sales-orders/").text, "sales-orders")
+    assert ids.index(newer.id) < ids.index(older.id)

@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Settings → AI — Axle{% endblock %}
+{% block heading %}Settings → AI{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl space-y-4">
+
+  <p class="text-sm">
+    <a href="/settings/" class="text-brand-700 underline hover:no-underline">← Back to Settings</a>
+  </p>
+
+  {% if saved %}
+  <div class="rounded-lg bg-green-50 border border-green-200 text-green-700 px-4 py-2 text-sm">
+    AI settings saved.
+  </div>
+  {% endif %}
+  {% if cleared %}
+  <div class="rounded-lg bg-amber-50 border border-amber-200 text-amber-700 px-4 py-2 text-sm">
+    API key cleared. The AI suggest button will be disabled until a new key is set.
+  </div>
+  {% endif %}
+  {% if error %}
+  <div class="rounded-lg bg-red-50 border border-red-200 text-red-700 px-4 py-2 text-sm">
+    {{ error }}
+  </div>
+  {% endif %}
+
+  <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+    <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">
+      Claude (Anthropic) — product description generator
+    </h2>
+
+    <div class="text-xs text-gray-500 leading-relaxed">
+      Powers the <b>Suggest with AI</b> button in the product form (title, description,
+      meta description). Your API key is stored
+      <b>encrypted at rest</b> with the <code>JAKS_FERNET_KEY</code> server secret
+      and is never echoed in any response.
+    </div>
+
+    <div class="rounded-lg border px-3 py-2 text-sm
+                {% if is_configured %}bg-green-50 border-green-200 text-green-800{% else %}bg-gray-50 border-gray-200 text-gray-600{% endif %}">
+      Status:
+      {% if is_configured %}
+        <b>Configured.</b> Enter a new key below to replace it, or clear it to disable.
+      {% else %}
+        <b>Not configured.</b> Add your Anthropic API key to enable AI suggestions.
+      {% endif %}
+    </div>
+
+    <form method="post" action="/settings/ai" class="space-y-4">
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">
+          Anthropic API key
+        </label>
+        <input name="anthropic_api_key" type="password" autocomplete="off"
+               placeholder="{% if is_configured %}Leave blank to keep the current key{% else %}sk-ant-…{% endif %}"
+               class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        <p class="text-xs text-gray-400 mt-1">
+          Get a key at <a href="https://console.anthropic.com/" target="_blank" rel="noopener" class="underline">console.anthropic.com</a>.
+        </p>
+      </div>
+
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">
+          Model
+        </label>
+        <input name="ai_description_model" value="{{ model }}"
+               placeholder="{{ default_model }}"
+               class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        <p class="text-xs text-gray-400 mt-1">
+          Default: <code>{{ default_model }}</code>. Override only if you know what you're doing.
+        </p>
+      </div>
+
+      <div class="flex items-center gap-3 pt-2">
+        <button type="submit"
+                class="rounded-lg bg-brand-700 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-600 transition-colors">
+          Save
+        </button>
+        {% if is_configured %}
+        <button type="submit" name="clear" value="1"
+                class="text-xs text-red-700 underline hover:no-underline"
+                onclick="return confirm('Clear the Anthropic API key? AI suggestions will be disabled until a new key is set.');">
+          Clear key
+        </button>
+        {% endif %}
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

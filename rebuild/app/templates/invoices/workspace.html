@@ -64,6 +64,28 @@
   </div>
   {% endif %}
 
+  {# ── §21 credit-hold WARN-and-CONFIRM — finalize bounced here because the
+       customer is on credit hold (owner decision 6.16: warn, never block). The
+       "Finalize anyway" button re-POSTs with confirm_credit_hold=1. ──────────── #}
+  {% if request.query_params.get('credit_hold') %}
+  <div class="rounded-lg bg-amber-50 border border-amber-300 px-4 py-3 text-sm text-amber-900 flex items-start gap-3">
+    <svg class="w-5 h-5 mt-0.5 text-amber-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3L12.74 5a2 2 0 00-3.48 0L3.2 16a2 2 0 001.73 3z"/>
+    </svg>
+    <div class="flex-1">
+      <strong>{{ invoice.customer.company_name if invoice.customer else 'This customer' }} is on credit hold.</strong>
+      Review the account before invoicing on terms. You can finalize anyway if you've approved it.
+    </div>
+    <form method="post" action="/invoices/{{ invoice.id }}/finalise" class="shrink-0">
+      <input type="hidden" name="confirm_credit_hold" value="1">
+      <button type="submit"
+              class="px-3 py-1.5 rounded-md bg-amber-600 text-white text-xs font-semibold hover:bg-amber-700">
+        Finalize anyway
+      </button>
+    </form>
+  </div>
+  {% endif %}
+
   {# ── §4.5 credit warn (WARN-ONLY) — on_hold / over_limit banner ─────────── #}
   {{ creditmacro.credit_warn(credit_status | default({})) }}
 
@@ -396,6 +418,7 @@
        'swap':          'outerHTML',
        'child_mode':    false,
        'new_product':   true,
+       'freight':       true,
      } %}
   {% include "line_items/_line_adder.html" %}
   {% endif %}
@@ -554,6 +577,12 @@
             document.body.addEventListener('openCoreSlip', function (e) {
               var url = e.detail && e.detail.url;
               if (url) window.open(url, '_blank', 'noopener');
+            });
+            // A returned core that auto-applies credit to THIS invoice lowers
+            // Balance Due. Reload (after the slip tab opens) so the totals, the
+            // payment dialog default and the status chip all reflect the new figure.
+            document.body.addEventListener('invoiceBalanceChanged', function () {
+              setTimeout(function () { window.location.reload(); }, 450);
             });
           }
         </script>

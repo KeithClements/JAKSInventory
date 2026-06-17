@@ -9,9 +9,7 @@
 
   <div class="flex items-center justify-between">
     <p class="text-xs text-gray-400">As of {{ today.strftime('%B %d, %Y') }} · Active SKUs only</p>
-    <button type="button" class="btn-secondary btn-sm" disabled title="Coming soon">
-      Export CSV
-    </button>
+    <a href="/reports/inventory-valuation/export.csv" class="btn-secondary btn-sm">Export CSV</a>
   </div>
 
   {# ── Summary tiles ─────────────────────────────────────────────────────── #}

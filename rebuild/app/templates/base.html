@@ -733,15 +733,10 @@
     <div class="flex shrink-0 items-center border-b border-steel-700"
          :class="sidebarCollapsed ? 'flex-col justify-center gap-1 px-1 py-2' : 'justify-between px-4 h-16'">
       <div class="flex items-center gap-2.5 min-w-0">
-        {# Hub mark — reversed build for dark surfaces (ring mil-bright, bore amber) #}
-        <svg class="shrink-0" :class="sidebarCollapsed ? 'w-6 h-6' : 'w-[27px] h-[27px]'" viewBox="0 0 64 64" aria-hidden="true">
-          <g fill="none" stroke="#9cb23c" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="32" cy="32" r="28"></circle>
-            <circle cx="32" cy="32" r="17" stroke-width="3"></circle>
-            <circle cx="32" cy="32" r="6.5" fill="#ffb24d" stroke="none"></circle>
-            <rect x="30" y="20" width="4" height="6" rx="1" fill="#9cb23c" stroke="none"></rect>
-          </g>
-        </svg>
+        {# Axle badge — app-tile variant (mil-green tile with hub mark) #}
+        <img src="/static/brand/axle-app-tile.svg" aria-hidden="true" alt="Axle"
+             :class="sidebarCollapsed ? 'w-8 h-8' : 'w-9 h-9'"
+             class="shrink-0 rounded-[7px]">
         <div class="sidebar-logo-text min-w-0">
           <div class="font-display font-bold text-white uppercase truncate"
                style="font-size: 21px; line-height: 0.8; letter-spacing: 0.01em;">Axle</div>
@@ -1449,6 +1444,41 @@
       },
     };
   };
+
+  {# ── AI suggestion panel behavior (products AI "Suggest with AI") ──────────
+     Defined here — NOT inside the swapped fragment — so the factory is on
+     `window` before Alpine starts. The panel partial is delivered by an HTMX
+     swap; Alpine's mutation observer initializes its `x-data="aiSuggestionPanel()"`
+     during the htmx settle phase, which runs BEFORE htmx executes any inline
+     <script> in the swapped content. Defining the factory in the fragment lost
+     that race ("aiSuggestionPanel is not defined" → empty scope → Accept dead).
+     Same lesson as customerPicker above: shared factories live in base.html.
+     Each Accept dispatches `ai-accept` {field, value}; the product form's
+     @ai-accept handler copies the value into the matching input by name. #}
+  window.aiSuggestionPanel = window.aiSuggestionPanel || function () {
+    return {
+      _root() { return this.$el.closest('#ai-suggestion-panel') || this.$el; },
+      accept(field) {
+        const root = this._root();
+        const node = root.querySelector('[data-ai-field="' + field + '"]');
+        const value = node ? (node.textContent || '').trim() : '';
+        root.dispatchEvent(new CustomEvent('ai-accept', {
+          bubbles: true,
+          detail: { field, value },
+        }));
+      },
+      acceptAll() {
+        this.accept('title');
+        this.accept('description');
+        this.accept('meta_description');
+        this.dismiss();
+      },
+      dismiss() {
+        const root = this._root();
+        if (root) root.innerHTML = '';
+      },
+    };
+  };
 </script>
 
 {# ════════════════════════════════════════════════════════════════════════════
@@ -1475,15 +1505,39 @@
            + 'fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>'
            + '</svg><span class="opacity-60">Working…</span>';
 
+  /* Failsafe — a native form submit only clears the lock on page reload. If the
+     request hangs (a stalled dev server, a dropped connection, a request that
+     never returns), the button would otherwise stay "Working…" forever. Restore
+     it after a timeout so the user can retry instead of being stuck. */
+  var STALL_MS = 15000;
+  var timers = new WeakMap();
+
+  function showStallNotice() {
+    if (document.getElementById('pending-stall-notice')) return;
+    var n = document.createElement('div');
+    n.id = 'pending-stall-notice';
+    n.textContent = 'The server didn’t respond — please check your connection and try again.';
+    n.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:9999;'
+      + 'background:#b91c1c;color:#fff;padding:10px 16px;border-radius:10px;font-size:13px;'
+      + 'box-shadow:0 8px 24px rgba(0,0,0,.25);max-width:90vw;text-align:center;';
+    document.body.appendChild(n);
+    setTimeout(function () { if (n.parentNode) n.parentNode.removeChild(n); }, 6000);
+  }
+
   function lock(btn) {
     if (!btn || btn.hasAttribute('data-no-pending') || btn.dataset.pendingLock) return;
     btn.dataset.pendingLock = '1';
     btn.dataset.pendingHtml = btn.innerHTML;
     btn.disabled = true;
     btn.innerHTML = SPIN;
+    timers.set(btn, setTimeout(function () {
+      if (btn.dataset.pendingLock) { unlock(btn); showStallNotice(); }
+    }, STALL_MS));
   }
   function unlock(btn) {
     if (!btn || !btn.dataset.pendingLock) return;
+    var t = timers.get(btn);
+    if (t) { clearTimeout(t); timers.delete(btn); }
     btn.disabled = false;
     btn.innerHTML = btn.dataset.pendingHtml;
     delete btn.dataset.pendingLock;
@@ -1499,7 +1553,13 @@
     }
   });
   document.body.addEventListener('htmx:afterRequest', function (evt) {
-    unlock(evt.detail.elt);
+    var elt = evt.detail.elt;
+    unlock(elt);
+    /* hx-post on a FORM → elt is the form, but the submit button is what got
+       locked by the native submit listener below. Unlock any descendants too. */
+    if (elt && elt.querySelectorAll) {
+      elt.querySelectorAll('button[data-pending-lock]').forEach(unlock);
+    }
   });
 
   /* Re-initialize Alpine on any HTMX-swapped content so x-data / x-show / @click
@@ -1513,6 +1573,42 @@
     var btn = evt.target.querySelector('button[type="submit"]:not([data-no-pending])');
     if (btn) lock(btn);
   });
+})();
+</script>
+
+{# ── §21.3 CSRF token wiring (double-submit cookie) ───────────────────────────
+   Attaches the jaks_csrf cookie value to (a) every HTMX/fetch request as the
+   X-CSRF-Token header and (b) every native <form> as a hidden _csrf field, so
+   the server-side CSRFMiddleware can validate state-changing requests. No
+   per-form template changes needed. #}
+<script>
+(function () {
+  function csrfToken() {
+    var m = document.cookie.match(/(?:^|;\s*)jaks_csrf=([^;]+)/);
+    return m ? decodeURIComponent(m[1]) : "";
+  }
+  // HTMX: stamp the header on every request (covers hx-post/put/patch/delete).
+  document.body.addEventListener("htmx:configRequest", function (evt) {
+    var t = csrfToken();
+    if (t) evt.detail.headers["X-CSRF-Token"] = t;
+  });
+  // Native forms: inject/refresh a hidden _csrf field just before submit.
+  document.addEventListener("submit", function (evt) {
+    var form = evt.target;
+    if (!(form instanceof HTMLFormElement)) return;
+    var method = (form.getAttribute("method") || "get").toLowerCase();
+    if (method === "get") return;                 // safe method, no token needed
+    var t = csrfToken();
+    if (!t) return;
+    var field = form.querySelector('input[name="_csrf"]');
+    if (!field) {
+      field = document.createElement("input");
+      field.type = "hidden";
+      field.name = "_csrf";
+      form.appendChild(field);
+    }
+    field.value = t;
+  }, true);
 })();
 </script>
 

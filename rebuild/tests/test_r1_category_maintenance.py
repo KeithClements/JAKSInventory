@@ -81,15 +81,18 @@ def test_manufacturer_rename_cascades_to_products(db):
     assert other.engine_manufacturer == "CAT R1"  # untouched
 
 
-def test_manufacturer_cascade_is_exact_match(db):
+def test_manufacturer_cascade_is_case_insensitive(db):
+    # §21 — the rename cascade is now case-INSENSITIVE so bulk-imported casing
+    # variants ('detroit r1' vs 'Detroit R1') are re-tagged, not orphaned from
+    # the engine-make filter. (Was exact-match before §21.)
     svc = CategoryService(db)
     m = svc.create_manufacturer("Detroit R1")
-    near_miss = _product(db, engine_manufacturer="detroit r1")  # different case
+    variant = _product(db, engine_manufacturer="detroit r1")  # different case
 
     svc.update_manufacturer(m.id, name="Detroit Diesel R1")
 
     db.expire_all()
-    assert near_miss.engine_manufacturer == "detroit r1"  # exact-match only
+    assert variant.engine_manufacturer == "Detroit Diesel R1"  # casing variant re-tagged
 
 
 def test_manufacturer_update_without_rename_leaves_products(db):

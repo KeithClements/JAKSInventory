@@ -154,6 +154,14 @@ async def create_payment(
             apply_surcharge=apply_surcharge,
             surcharge_pct=surcharge_pct,
         )
+    except PermissionError:
+        db.rollback()
+        cid = str(form.get("customer_id", ""))
+        return RedirectResponse(
+            f"/payments/new?customer_id={cid}&error="
+            f"{url_quote('You do not have permission to record payments.')}",
+            status_code=303,
+        )
     except ValueError as exc:
         db.rollback()
         cid = str(form.get("customer_id", ""))

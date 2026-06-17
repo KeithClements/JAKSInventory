@@ -297,6 +297,11 @@ _NOPARAM_GET = sorted({
 # list SHORT and justified -- every exclusion is a route nobody is smoke-testing.
 _EXCLUDE_200 = {
     "/openapi.json",   # FastAPI-generated schema, not an app page
+    # JSON suggestion APIs the new-product form calls with required query
+    # params (vendor_id + part). They are not UI pages — a no-param GET
+    # legitimately returns 422 ("field required") and that's not a regression.
+    "/products/classify-part",
+    "/products/twin-check",
 }
 
 _PAGE_ROUTES = [p for p in _NOPARAM_GET if p not in _EXCLUDE_200]

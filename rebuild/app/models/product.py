@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from sqlalchemy import String, Text, Float, Integer, Boolean, ForeignKey, DateTime, Index, func, text
+from sqlalchemy import String, Text, Float, Integer, Boolean, ForeignKey, DateTime, Index, func, text, event
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 from app.constants import (
@@ -378,6 +378,10 @@ class ProductVendorSource(Base):
     vendor_part_number: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     # Assembled JAKS SKU for this vendor: JAKS-[VENDOR_CODE]-[PART_NUMBER]
     vendor_sku: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    # Precomputed normalized part#/sku for fast search (DB-trigger maintained —
+    # see search_index.ensure_search_norm_columns).
+    vendor_part_number_norm: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    vendor_sku_norm: Mapped[str | None] = mapped_column(String(100), nullable=True)
     vendor_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     is_preferred: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     lead_time_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -433,6 +437,11 @@ class CrossReference(Base):
         String(20), nullable=False, default=CrossRefType.OEM
     )
     ref_number: Mapped[str] = mapped_column(String(100), nullable=False)
+    # Precomputed normalized ref_number (separators stripped, lowercased) — kept
+    # in sync by a DB trigger (see search_index.ensure_search_norm_columns). Lets
+    # part-number search read a plain column instead of normalizing 216k+ rows
+    # per keystroke. Nullable: populated by trigger/backfill, not the app.
+    ref_number_norm: Mapped[str | None] = mapped_column(String(100), nullable=True)
     brand: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="proven")
@@ -592,6 +601,33 @@ class SuggestedSell(Base):
     suggested_product: Mapped[Product] = relationship(
         "Product", foreign_keys=[suggested_product_id]
     )
+
+
+# ── Search-normalization sync ───────────────────────────────────────────────────
+# Keep the precomputed *_norm columns (fast part-number search) in step with the
+# source columns on every ORM insert/update. Must match search_index._NORM_SEPARATORS
+# and search_service._norm_col exactly so stored values equal the in-query form.
+_SEARCH_NORM_SEPS = ("-", " ", ".", "/", "_", "(", ")", "+", "#", "%")
+
+
+def _norm_part_value(s: str | None) -> str:
+    out = (s or "").lower()
+    for sep in _SEARCH_NORM_SEPS:
+        out = out.replace(sep, "")
+    return out
+
+
+@event.listens_for(CrossReference, "before_insert")
+@event.listens_for(CrossReference, "before_update")
+def _xref_set_norm(_mapper, _conn, target):  # noqa: ANN001
+    target.ref_number_norm = _norm_part_value(target.ref_number)
+
+
+@event.listens_for(ProductVendorSource, "before_insert")
+@event.listens_for(ProductVendorSource, "before_update")
+def _pvs_set_norm(_mapper, _conn, target):  # noqa: ANN001
+    target.vendor_part_number_norm = _norm_part_value(target.vendor_part_number)
+    target.vendor_sku_norm = _norm_part_value(target.vendor_sku)
 
 
 # ── Late imports ───────────────────────────────────────────────────────────────

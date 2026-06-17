@@ -146,6 +146,15 @@
             {% endif %}
             <td colspan="2"></td>
           </tr>
+          {% if editable and po.core_total > 0 %}
+          {# In edit mode core is a per-line input column but has no footer subtotal;
+             surface it here so the Order Total is fully explained. #}
+          <tr>
+            <td colspan="5" class="px-4 py-1.5 text-right text-xs text-gray-400">Core Charges</td>
+            <td class="px-4 py-1.5 text-right text-xs text-amber-600 tabular-nums">${{ '%.2f' | format(po.core_total) }}</td>
+            <td colspan="3"></td>
+          </tr>
+          {% endif %}
           {% if po.freight_in_cost > 0 %}
           <tr>
             <td colspan="{{ 5 if editable else 4 }}" class="px-4 py-1.5 text-right text-xs text-gray-400">Freight In</td>

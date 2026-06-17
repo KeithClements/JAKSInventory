@@ -16,6 +16,7 @@ from app.routers.settings import seed_settings
 from app.seeds import (
     seed_default_categories, seed_customer_type_defaults,
     seed_brands, seed_manufacturers, backfill_category_keywords,
+    seed_company_locations,
 )
 from app.routers.settings import seed_markup_tiers
 from app.routers import (
@@ -48,6 +49,7 @@ from app.routers import qbo as qbo_router
 from app.routers import import_review as import_review_router
 from app.routers import credit_memos as credit_memos_router
 from app.routers import shopify as shopify_router
+from app.routers import leadfinder_api as leadfinder_api_router
 
 log = logging.getLogger(__name__)
 
@@ -71,12 +73,22 @@ async def enforce_login(request: Request, call_next):
         if _is_test_env():                             # test bypass — in-memory engine only
             return await call_next(request)
     path = request.url.path
-    if path in _AUTH_EXEMPT or path.startswith("/static/"):
+    if path in _AUTH_EXEMPT or path.startswith("/static/") or path.startswith("/api/leadfinder"):
         return await call_next(request)
     from app.auth import SESSION_COOKIE, read_session_token
     if read_session_token(request.cookies.get(SESSION_COOKIE)) is None:
         return RedirectResponse("/login", status_code=303)
     return await call_next(request)
+
+
+# ── §21.3 Internet-exposed hardening (owner decision 6.16 #5) ──────────────────
+# Registered AFTER enforce_login so, by middleware stack order, security headers
+# is OUTERMOST (stamps every response incl. redirects/403s) and CSRF sits OUTSIDE
+# auth (issues its cookie even on the unauthenticated /login redirect). Both honor
+# the test bypass (JAKS_SKIP_AUTH + in-memory engine).
+from app.security import CSRFMiddleware, security_headers_middleware  # noqa: E402
+app.add_middleware(CSRFMiddleware)
+app.middleware("http")(security_headers_middleware)
 
 
 @app.on_event("startup")
@@ -87,10 +99,12 @@ def on_startup() -> None:
     db = _appdb.SessionLocal()
     try:
         seed_settings(db)
+        _ensure_search_norm_columns(db)
         seed_default_categories(db)
         backfill_category_keywords(db)
         seed_brands(db)
         seed_manufacturers(db)
+        seed_company_locations(db)
         seed_customer_type_defaults(db)
         seed_markup_tiers(db)
         _seed_session_secret(db)
@@ -103,6 +117,23 @@ def on_startup() -> None:
     finally:
         db.close()
     _start_shopify_scheduler()
+    _start_overdue_core_scheduler()
+
+
+def _ensure_search_norm_columns(db: Session) -> None:
+    """Idempotently add + backfill + auto-maintain the precomputed normalized
+    part-number search columns (fast list/workspace part-number search). Skipped
+    on non-SQLite; never blocks startup."""
+    try:
+        from app.services.search_index import ensure_search_norm_columns
+        if db.bind is None or db.bind.dialect.name != "sqlite":
+            return
+        ensure_search_norm_columns(db.connection())
+        db.commit()
+    except Exception:  # noqa: BLE001 — search index must never block boot
+        db.rollback()
+        import logging
+        logging.getLogger(__name__).exception("search norm-column setup failed")
 
 
 def _startup_backup(db: Session) -> None:
@@ -382,6 +413,39 @@ def _scan_overdue_cores(db: Session) -> None:
         log.exception("startup overdue-core scan failed (continuing startup)")
 
 
+def _start_overdue_core_scheduler() -> None:
+    """§21 — DAILY overdue-core scan. The startup scan above only fires once; a
+    server left up for days would never re-flag cores whose return deadline has
+    since passed, so outstanding core liability (hundreds per reman head) goes
+    uncollected. A daemon thread re-scans once per day (mirrors the Shopify
+    scheduler). Skipped under the in-memory test engine; never raises."""
+    import threading
+    import time as _time
+
+    if ":memory:" in str(_appdb.engine.url):
+        return
+
+    def _loop() -> None:
+        last_run_date = None
+        while True:
+            try:
+                now = datetime.now()
+                # Fire once per day at/after 06:00 local.
+                if now.hour >= 6 and last_run_date != now.date():
+                    last_run_date = now.date()
+                    db = _appdb.SessionLocal()
+                    try:
+                        _scan_overdue_cores(db)
+                    finally:
+                        db.close()
+            except Exception:
+                log.exception("daily overdue-core scheduler tick failed (continuing)")
+            _time.sleep(1800)   # re-check every 30 minutes
+
+    threading.Thread(target=_loop, daemon=True, name="overdue-core-daily-scan").start()
+    log.info("daily overdue-core scheduler started")
+
+
 app.include_router(dashboard.router)
 app.include_router(search_router.router)
 app.include_router(products.router)
@@ -410,3 +474,4 @@ app.include_router(qbo_router.router)
 app.include_router(import_review_router.router)
 app.include_router(credit_memos_router.router)
 app.include_router(shopify_router.router)
+app.include_router(leadfinder_api_router.router)

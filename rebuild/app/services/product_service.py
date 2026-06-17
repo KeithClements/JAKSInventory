@@ -14,8 +14,6 @@ Responsibilities:
 """
 from __future__ import annotations
 
-from datetime import datetime
-
 from sqlalchemy import func
 
 from app.constants import AuditAction, CrossRefType, EntityType, InventoryTxnType, ProductStatus
@@ -484,10 +482,12 @@ class ProductService(BaseService):
         self, product_id: int, vendor_id: int, new_cost: float, po_id: int | None = None
     ) -> bool:
         """
-        Compare new_cost to current vendor_cost on ProductVendorSource.
-        If different: writes ProductCostHistory row, updates vendor source cost,
-        and updates product.cost if this is the preferred vendor.
-        Returns True if cost changed.
+        Compare new_cost (a PO receipt price) to the stored quote on
+        ProductVendorSource.vendor_cost. If they differ, record a ProductCostHistory
+        row capturing the divergence. Per §8N this is history-only: it does NOT mutate
+        the vendor quote (vendor_cost stays the quoted/catalog price) and does NOT
+        touch product.cost (the moving-average COGS, owned by _apply_moving_average_cost).
+        Returns True if a history row was written (i.e. the costs differed).
         """
         source = (
             self.db.query(ProductVendorSource)
@@ -513,13 +513,13 @@ class ProductService(BaseService):
             po_id=po_id,
             notes="cost updated on PO receipt" if po_id else "manual",
         ))
-        source.vendor_cost = new_cost
-        source.last_cost_updated_at = datetime.utcnow()
 
-        # Option A (owner-ruled 2026-06-01): product.cost is the moving-weighted-average
-        # COGS, written only by InventoryService._apply_moving_average_cost on receipt.
-        # DO NOT mirror vendor_cost to product.cost here — the vendor quote price lives
-        # on ProductVendorSource.vendor_cost (already updated above). See §8N.
+        # §8N (owner-ruled 2026-06-01): record the divergence in ProductCostHistory
+        # but DO NOT mutate the stored quote. ProductVendorSource.vendor_cost is the
+        # vendor's quoted/catalog price — a PO receipt price (often a one-off negotiated
+        # cost) must not clobber it. And product.cost is the moving-weighted-average
+        # COGS, written only by InventoryService._apply_moving_average_cost on receipt,
+        # so a receipt cost is never mirrored onto product.cost here either.
 
         # flush only — caller (POService.create_receipt) commits the whole transaction
         self.db.flush()
@@ -615,6 +615,60 @@ class ProductService(BaseService):
                 "source": "ledger_resync",
             },
             notes=f"Inventory resync from ledger: {old_qty} → {new_qty}",
+        )
+        self.db.flush()
+        return old_qty, new_qty
+
+    def resync_qty_committed(self, product_id: int) -> tuple[int, int]:
+        """§21 — recompute qty_committed from the commitment ledger and write the
+        corrected cache. Mirrors resync_qty_on_hand; recovery path for a drifted
+        qty_committed (which otherwise makes in-stock parts read as unavailable
+        with no fix short of a ledger-polluting manual adjustment). Returns
+        (old, new). Flushes only — caller commits."""
+        product = self._get_or_404(product_id)
+        old_qty = product.qty_committed
+        new_qty = max(0, self.get_qty_committed_from_ledger(product_id))
+        product.qty_committed = new_qty
+        self.audit(
+            entity_type=EntityType.PRODUCT,
+            entity_id=product_id,
+            action=AuditAction.INVENTORY_ADJUSTED,
+            old_value={"qty_committed": old_qty},
+            new_value={"qty_committed": new_qty, "delta": new_qty - old_qty,
+                       "source": "ledger_resync"},
+            notes=f"qty_committed resync from ledger: {old_qty} → {new_qty}",
+        )
+        self.db.flush()
+        return old_qty, new_qty
+
+    def resync_qty_on_order(self, product_id: int) -> tuple[int, int]:
+        """§21 — recompute qty_on_order from open purchase orders and write the
+        corrected cache. On-order is incremented at Place Order (→ SENT) and
+        decremented on receipt, so the truth is the outstanding qty over POs that
+        are placed-but-not-done (SENT / PARTIAL). Returns (old, new). Flushes only."""
+        from app.constants import POStatus
+        from app.models.purchase_order import POLine, PurchaseOrder
+        product = self._get_or_404(product_id)
+        old_qty = product.qty_on_order
+        outstanding = (
+            self.db.query(POLine)
+            .join(PurchaseOrder, POLine.po_id == PurchaseOrder.id)
+            .filter(
+                POLine.product_id == product_id,
+                PurchaseOrder.status.in_([POStatus.SENT, POStatus.PARTIAL]),
+            )
+            .all()
+        )
+        new_qty = sum(ln.qty_outstanding for ln in outstanding)
+        product.qty_on_order = new_qty
+        self.audit(
+            entity_type=EntityType.PRODUCT,
+            entity_id=product_id,
+            action=AuditAction.INVENTORY_ADJUSTED,
+            old_value={"qty_on_order": old_qty},
+            new_value={"qty_on_order": new_qty, "delta": new_qty - old_qty,
+                       "source": "open_po_resync"},
+            notes=f"qty_on_order resync from open POs: {old_qty} → {new_qty}",
         )
         self.db.flush()
         return old_qty, new_qty

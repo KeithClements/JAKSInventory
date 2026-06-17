@@ -296,7 +296,14 @@
         {% for p in products %}
 
         {# ── Per-row computed values ── #}
-        {% set margin_pct = ((p.selling_price - p.cost) / p.selling_price * 100) | round(1) if p.selling_price > 0 else 0 %}
+        {# §21 — resolved sell price = sell_price_map[p.id] (PricingService tiered/markup
+           price the route computes); fall back to the stored selling_price only when
+           absent. Both the price column AND the margin badge read this one value so
+           they agree — previously margin used the hardcoded-30% selling_price property
+           and the price column read a never-passed `resolved_price_map`. #}
+        {% set _sell = (sell_price_map | default({})).get(p.id) %}
+        {% set _sell = _sell if _sell is not none else p.selling_price %}
+        {% set margin_pct = ((_sell - p.cost) / _sell * 100) | round(1) if _sell > 0 else 0 %}
 
         {# Inventory health #}
         {% if p.qty_on_hand == 0 %}
@@ -427,11 +434,10 @@
           </td>
 
           {# List (sell price) — .money.ext mono 700 ink — the price-list column emphasis.
-             Resolved price wins when present (STAGED, pairs with Backend #2's
-             resolved_price_map seam), else the stored selling_price. #}
+             §21 — reads the same resolved _sell (sell_price_map / PricingService) the
+             margin badge uses, so the two columns can never disagree. #}
           <td class="px-4 py-4 align-middle text-right">
-            {% set _rp = (resolved_price_map | default({})).get(p.id) %}
-            <span class="money ext">${{ "%.2f"|format(_rp if _rp is not none else p.selling_price) }}</span>
+            <span class="money ext">${{ "%.2f"|format(_sell) }}</span>
           </td>
 
           {# Margin % — '—' when cost is $0 (unknown) so a 0-cost import doesn't read as 100% #}

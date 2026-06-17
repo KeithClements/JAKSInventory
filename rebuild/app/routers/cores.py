@@ -222,7 +222,8 @@ async def record_return(
     from_invoice = str(form.get("from_invoice") or "").strip()
     core_obj = db.query(CoreCharge).filter(CoreCharge.id == core_id).first()
 
-    def _inv_fragment(message: str, tone: str, slip_url: str | None = None):
+    def _inv_fragment(message: str, tone: str, slip_url: str | None = None,
+                      reload_balance: bool = False):
         """Swap the `#core-item-{id}` row to an inline confirmation; optionally
         trigger opening the core slip in a new window."""
         import html as _html
@@ -245,9 +246,16 @@ async def record_return(
             f'<span class="ml-2 text-xs font-semibold text-gray-700">{_html.escape(message)}</span></div>'
             f'{slip_link}</div></div>'
         )
-        headers = {}
+        trigger: dict = {}
         if slip_url:
-            headers["HX-Trigger"] = _json.dumps({"openCoreSlip": {"url": slip_url}})
+            trigger["openCoreSlip"] = {"url": slip_url}
+        # When the credit lands on this invoice, tell the workspace to refresh
+        # so Balance Due / totals / the payment dialog reflect the new figure.
+        if reload_balance:
+            trigger["invoiceBalanceChanged"] = True
+        headers = {}
+        if trigger:
+            headers["HX-Trigger"] = _json.dumps(trigger)
         return HTMLResponse(body, headers=headers)
 
     # For HOLD or REJECTED outcomes — no credit slip.
@@ -280,7 +288,8 @@ async def record_return(
         db.rollback()
         log.exception("Could not create core slip for core_charge %s", core_id)
         if from_invoice:
-            return _inv_fragment("Return recorded — account credit applied.", "green")
+            return _inv_fragment("Return recorded — account credit applied.", "green",
+                                 reload_balance=True)
         return RedirectResponse(
             f"/cores/?ok={url_quote('Core return recorded — account credit applied.')}",
             status_code=303,
@@ -288,7 +297,9 @@ async def record_return(
 
     if from_invoice:
         credit = (getattr(core_obj, "customer_unit_charge", 0) or 0) * qty
-        return _inv_fragment(f"Returned — ${credit:.2f} credited to account.", "green", slip_url=slip_url)
+        return _inv_fragment(
+            f"Returned — ${credit:.2f} credit applied. Refreshing balance…",
+            "green", slip_url=slip_url, reload_balance=True)
     return RedirectResponse(slip_url, status_code=303)
 
 

@@ -22,6 +22,14 @@ class Customer(Base):
             unique=True,
             sqlite_where=text("account_number IS NOT NULL AND account_number != ''"),
         ),
+        # Lead Finder dedup backstop: one customer per real FMCSA DOT. Partial so
+        # the NULL default (every non-carrier customer) repeats freely. Name must
+        # match _PENDING_UNIQUE_INDEXES in app/database.py (defensive live-DB path).
+        Index(
+            "uq_customers_usdot_number", "usdot_number",
+            unique=True,
+            sqlite_where=text("usdot_number IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -44,6 +52,10 @@ class Customer(Base):
     )
     # Human/external account number (e.g. legacy AR code). Free text, not unique.
     account_number: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    # FMCSA carrier identity (USDOT #). Ties a customer to its real carrier; the
+    # JAK's Lead Finder dedup key (one customer per real DOT — see the partial
+    # unique index in __table_args__). NULL for non-carrier customers.
+    usdot_number: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
 
     # ── Primary contact (quick access; full list → customer_contacts) ─────────
     phone: Mapped[str] = mapped_column(String(50), nullable=False, default="")

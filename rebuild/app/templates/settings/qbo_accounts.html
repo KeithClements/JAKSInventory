@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}QuickBooks Accounts — JAKS Inventory{% endblock %}
+{% block heading %}QuickBooks — Chart of Accounts{% endblock %}
+
+{% block header_actions %}
+  <a href="/settings/?tab=quickbooks" class="text-sm text-gray-500 hover:text-gray-700">← Settings</a>
+{% endblock %}
+
+{% block content %}
+{% set has_accounts = accounts and accounts | length > 0 %}
+{% set acct_names = accounts | map(attribute='name') | list %}
+<div class="max-w-2xl space-y-4">
+
+  <p class="text-sm text-gray-500">
+    Map each ERP concept to a real account in your QuickBooks chart of accounts, so
+    invoices and vendor bills post where you expect.
+  </p>
+
+  {% if saved %}
+  <div class="rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800">Account mapping saved.</div>
+  {% endif %}
+  {% if error %}
+  <div class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">{{ error }}</div>
+  {% endif %}
+
+  {# ── Connection-state banner ── #}
+  {% if not connected %}
+  <div class="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800">
+    QuickBooks isn't connected yet, so the live chart can't be loaded. You can still
+    <b>type the account names</b> below and save them now — once you
+    <a href="/settings/?tab=quickbooks" class="underline font-medium">connect QuickBooks</a>
+    they become dropdowns from your real chart with a ✓/✗ existence check.
+  </div>
+  {% elif not fetch_ok %}
+  <div class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+    Couldn't load your chart of accounts: {{ fetch_error }}.
+    You can still type names below, or <a href="/settings/qbo-accounts" class="underline font-medium">retry</a>.
+  </div>
+  {% endif %}
+
+  <form method="post" action="/settings/qbo-accounts"
+        class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-5">
+    <div class="flex items-center justify-between border-b border-gray-100 pb-3">
+      <h2 class="text-sm font-semibold text-gray-700">Account mapping</h2>
+      {% if has_accounts %}<span class="text-xs text-gray-400">{{ accounts | length }} active accounts</span>{% endif %}
+    </div>
+
+    {% for f in fields %}
+    <div>
+      <div class="flex items-center justify-between mb-1">
+        <label class="block text-xs font-medium text-gray-600">{{ f.label }}</label>
+        {% if f.key in verify %}
+          {% if verify[f.key] %}
+          <span class="text-[11px] font-medium text-green-700">✓ found in QBO</span>
+          {% else %}
+          <span class="text-[11px] font-medium text-red-600">✗ not found in QBO</span>
+          {% endif %}
+        {% endif %}
+      </div>
+
+      {% if has_accounts %}
+      {# Connected — pick from the live chart, grouped by account type #}
+      <select name="{{ f.key }}"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand-400">
+        <option value="">— Not set —</option>
+        {% for type, accts in accounts | groupby('type') %}
+        <optgroup label="{{ type or 'Other' }}">
+          {% for a in accts %}
+          <option value="{{ a.name }}" {% if mappings[f.key] == a.name %}selected{% endif %}>{{ a.name }}</option>
+          {% endfor %}
+        </optgroup>
+        {% endfor %}
+        {% if mappings[f.key] and mappings[f.key] not in acct_names %}
+        <option value="{{ mappings[f.key] }}" selected>{{ mappings[f.key] }} (not in QBO)</option>
+        {% endif %}
+      </select>
+      {% else %}
+      {# Not connected (or chart unavailable) — free-text entry, saved as-is #}
+      <input type="text" name="{{ f.key }}" value="{{ mappings[f.key] }}"
+             placeholder="e.g. Cost of Goods Sold"
+             class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
+      {% endif %}
+      <p class="text-[11px] text-gray-400 mt-1">{{ f.used }}</p>
+    </div>
+    {% endfor %}
+
+    <div class="flex items-center justify-between pt-1">
+      {% if connected %}
+      <a href="/settings/qbo-accounts" class="text-xs text-gray-500 hover:text-gray-700">↻ Refresh from QuickBooks</a>
+      {% else %}<span></span>{% endif %}
+      <button type="submit" class="btn-primary btn-sm">Save mapping</button>
+    </div>
+  </form>
+
+  <p class="text-[11px] text-gray-400">
+    Mappings store the account <b>name</b> and are resolved against QuickBooks at sync time.
+    “Active” mappings already affect today's sync; “Reserved” ones are saved for the upcoming
+    purchase-order / vendor-bill posting step.
+  </p>
+
+</div>
+{% endblock %}

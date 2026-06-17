@@ -1,0 +1,141 @@
+{#
+  AI Suggestion Panel — HTMX fragment swapped into #ai-suggestion-panel on
+  the product form (or the Settings → AI "Test connection" target) when the
+  "Suggest with AI" button is clicked.
+
+  Contract from the backend:
+    - When the AI key is configured and the call succeeded:
+        suggestion = {
+          title, description, meta_description, model, tokens_in, tokens_out
+        }
+    - When the AI key is missing OR the call failed:
+        suggestion = {error: "no_api_key"|"api_error"|"bad_response", message: str}
+
+  How "Accept" works:
+    Each row dispatches a CustomEvent("ai-accept", {field, value}) on the
+    panel root. The product form listens for that event (see the `@ai-accept`
+    handler on each form) and copies `value` into the matching input/textarea
+    by `name`. Accept-All dispatches all three then closes the panel.
+
+    On the Settings → AI "Test connection" surface there's no form to write
+    to — the Accept buttons still fire the events but nothing's listening,
+    which is the intended no-op.
+#}
+{% set s = suggestion | default({}) %}
+
+<div id="ai-suggestion-panel"
+     class="rounded-xl border border-amber-200 bg-amber-50/40 p-4 text-sm space-y-3"
+     x-data="aiSuggestionPanel()">
+
+  {% if s.error %}
+    {# ── Friendly error envelope ─────────────────────────────────────── #}
+    <div class="flex items-start gap-3">
+      <svg class="w-5 h-5 shrink-0 text-amber-600 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m0 3v.008m-9-3.758a9 9 0 1018 0 9 9 0 00-18 0z"/>
+      </svg>
+      <div class="flex-1 min-w-0">
+        <p class="font-medium text-amber-900">
+          {% if s.error == 'no_api_key' %}
+            AI suggestions are not configured.
+          {% elif s.error == 'api_error' %}
+            AI request failed.
+          {% else %}
+            Couldn't generate a suggestion.
+          {% endif %}
+        </p>
+        <p class="text-amber-800 mt-0.5">{{ s.message or 'Try again or check Settings.' }}</p>
+        {% if s.error == 'no_api_key' %}
+        <a href="/settings/?tab=ai" class="inline-block mt-2 text-amber-900 underline hover:no-underline">
+          Open Settings → AI
+        </a>
+        {% endif %}
+      </div>
+      <button type="button"
+              @click="dismiss()"
+              class="text-amber-700 hover:text-amber-900 text-xs underline">
+        Dismiss
+      </button>
+    </div>
+
+  {% else %}
+    {# ── Suggestion content ─────────────────────────────────────────── #}
+    <div class="flex items-start justify-between gap-3">
+      <p class="font-medium text-amber-900 flex items-center gap-1.5">
+        {# Sparkles icon — same glyph as the "Suggest with AI" button so the
+           panel reads as "the result of the button you just clicked". #}
+        <svg class="w-4 h-4 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M10 1l1.7 4.6L16 7.3l-4.3 1.7L10 13.6 8.3 9 4 7.3l4.3-1.7L10 1zm6 8.5l.85 2.3L19 12.65l-2.15.85L16 15.8l-.85-2.3L13 12.65l2.15-.85L16 9.5zM4 14l.85 2.3L7 17.15l-2.15.85L4 20.3l-.85-2.3L1 17.15l2.15-.85L4 14z"/>
+        </svg>
+        AI Suggestion
+        {% if s.model or s.tokens_in or s.tokens_out %}
+        <span class="text-xs font-normal text-amber-700 ml-1">
+          ({% if s.model %}{{ s.model }}{% endif %}{% if s.tokens_in or s.tokens_out %}{% if s.model %} · {% endif %}{{ s.tokens_in or 0 }} tokens in / {{ s.tokens_out or 0 }} tokens out{% endif %})
+        </span>
+        {% endif %}
+      </p>
+      <div class="flex items-center gap-2">
+        <button type="button"
+                @click="acceptAll()"
+                class="rounded-lg bg-amber-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-600">
+          Accept all
+        </button>
+        <button type="button"
+                @click="dismiss()"
+                class="text-amber-700 hover:text-amber-900 text-xs underline">
+          Dismiss
+        </button>
+      </div>
+    </div>
+
+    {# Title #}
+    <div class="space-y-1">
+      <div class="flex items-center justify-between">
+        <label class="text-xs font-semibold uppercase tracking-wide text-amber-800">Title</label>
+        <button type="button"
+                @click="accept('title')"
+                class="text-xs text-amber-700 underline hover:no-underline">
+          Accept
+        </button>
+      </div>
+      <div data-ai-field="title" class="rounded border border-amber-200 bg-white px-3 py-2 text-gray-800">
+        {{ s.title or '' }}
+      </div>
+    </div>
+
+    {# Description #}
+    <div class="space-y-1">
+      <div class="flex items-center justify-between">
+        <label class="text-xs font-semibold uppercase tracking-wide text-amber-800">Description</label>
+        <button type="button"
+                @click="accept('description')"
+                class="text-xs text-amber-700 underline hover:no-underline">
+          Accept
+        </button>
+      </div>
+      <div data-ai-field="description" class="rounded border border-amber-200 bg-white px-3 py-2 text-gray-800 whitespace-pre-wrap">
+        {{ s.description or '' }}
+      </div>
+    </div>
+
+    {# Meta description #}
+    <div class="space-y-1">
+      <div class="flex items-center justify-between">
+        <label class="text-xs font-semibold uppercase tracking-wide text-amber-800">Meta description</label>
+        <button type="button"
+                @click="accept('meta_description')"
+                class="text-xs text-amber-700 underline hover:no-underline">
+          Accept
+        </button>
+      </div>
+      <div data-ai-field="meta_description" class="rounded border border-amber-200 bg-white px-3 py-2 text-gray-800">
+        {{ s.meta_description or '' }}
+      </div>
+    </div>
+  {% endif %}
+</div>
+
+{# The `aiSuggestionPanel()` Alpine factory is defined in base.html (NOT here).
+   It must exist on `window` before Alpine initializes this HTMX-swapped panel —
+   Alpine's mutation observer runs during the htmx settle phase, before any
+   inline <script> in the swapped fragment executes, so defining it here lost
+   the race and left the Accept buttons dead. See base.html for the factory. #}

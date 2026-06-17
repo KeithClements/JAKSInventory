@@ -11,3 +11,4 @@ itsdangerous==2.2.0
 weasyprint==68.1
 openpyxl==3.1.5
 cryptography==48.0.1  # Fernet token-at-rest encryption for QBO secrets (JAKS_FERNET_KEY)
+anthropic>=0.45.0  # Claude SDK for AI product-description generator (button in product form)

@@ -74,6 +74,28 @@ _FALLBACK_ITEM = "JAKS Parts Sales"
 # default-chart name, same convention as _resolve_income_account's preference.
 DEFAULT_BILL_EXPENSE_ACCOUNT = "Cost of Goods Sold"
 
+# Phase 4 — chart-of-accounts mappings the owner sets in Settings → QBO Accounts.
+# Stored as ACCOUNT NAMES (resolved by Name at push time, matching the existing
+# _resolve_bill_expense_account convention). `used` documents whether today's sync
+# already consumes the mapping or it's reserved for the procurement/Bill push phase.
+QBO_ACCOUNT_FIELDS: list[dict] = [
+    {"key": "qbo_bill_expense_account",    "label": "COGS – Diesel Parts",
+     "types": ["Cost of Goods Sold", "Expense"],
+     "used": "Active — vendor bills post their cost lines here."},
+    {"key": "qbo_income_account",          "label": "Sales Income (parts)",
+     "types": ["Income"],
+     "used": "Active — the generic income items attach to this account."},
+    {"key": "qbo_inventory_asset_account", "label": "Inventory Asset",
+     "types": ["Other Current Asset"],
+     "used": "Reserved — used when PO/bill inventory posting is enabled."},
+    {"key": "qbo_freight_in_account",      "label": "Freight In",
+     "types": ["Cost of Goods Sold", "Expense"],
+     "used": "Reserved — used when freight-in landed cost is posted."},
+    {"key": "qbo_freight_out_account",     "label": "Freight Out / Delivery",
+     "types": ["Expense", "Income"],
+     "used": "Reserved — used for outbound freight to customers."},
+]
+
 # Audit actions for push outcomes. Success reuses the canonical
 # AuditAction.QBO_SYNCED; failure is a literal (the action column is a plain
 # string — messaging_service sets the same precedent for non-enum actions).
@@ -729,11 +751,47 @@ class QBOSyncService(BaseService):
         rows = client.query("select Id, Name from Account where AccountType = 'Income'")
         if not rows:
             return None
-        # Prefer the QBO default product-income account when present.
+        # Prefer the owner-mapped income account (Settings → QBO Accounts), then
+        # the QBO default product-income account, then the first income account.
+        preferred = (
+            get_setting_value_db(self.db, "qbo_income_account", "").strip()
+            or "sales of product income"
+        )
         for r in rows:
-            if (r.get("Name") or "").strip().lower() == "sales of product income":
+            if (r.get("Name") or "").strip().lower() == preferred.lower():
                 return {"id": str(r["Id"]), "name": r["Name"]}
         return {"id": str(rows[0]["Id"]), "name": rows[0]["Name"]}
+
+    # ── Phase 4: chart-of-accounts mapping (Settings → QBO Accounts) ──────────
+    def list_accounts(self) -> dict:
+        """Fetch the live QBO chart of accounts for the mapping UI. Read-only.
+        Returns {"ok": True, "accounts": [...]} or {"ok": False, "error": str}."""
+        try:
+            client = QBOClient(self.db)
+        except QBONotConnected as exc:
+            return {"ok": False, "error": str(exc)}
+        try:
+            rows = client.query(
+                "select Id, Name, AccountType, AccountSubType, Classification "
+                "from Account where Active = true order by Name maxresults 1000"
+            )
+        except Exception as exc:  # noqa: BLE001 — surface a friendly error, never raise
+            return {"ok": False, "error": str(exc)[:300]}
+        accounts = [{
+            "id": str(r.get("Id", "")),
+            "name": r.get("Name", ""),
+            "type": r.get("AccountType", ""),
+            "subtype": r.get("AccountSubType", ""),
+            "classification": r.get("Classification", ""),
+        } for r in rows if r.get("Name")]
+        return {"ok": True, "accounts": accounts}
+
+    def account_mappings(self) -> dict:
+        """Current owner-set account names, keyed by setting key (blank = unset)."""
+        return {
+            f["key"]: get_setting_value_db(self.db, f["key"], "").strip()
+            for f in QBO_ACCOUNT_FIELDS
+        }
 
     # ── status for the Settings UI ────────────────────────────────────────────
     def connection_summary(self) -> dict:

@@ -105,6 +105,12 @@ def isolated_app(tmp_path, monkeypatch):
     app.dependency_overrides.pop(get_db, None)
 
 
+def _csrf(client):
+    """§21.3 — authenticated POSTs now need the double-submit CSRF token; the
+    TestClient holds the jaks_csrf cookie issued on the login response."""
+    return {"X-CSRF-Token": client.cookies.get("jaks_csrf", "")}
+
+
 def test_backup_restore_roundtrip_via_router(isolated_app):
     """The §11 gate: a row backed up, then deleted, comes back after a restore
     driven entirely through the /admin/backup router (engine.dispose() included)."""
@@ -123,7 +129,7 @@ def test_backup_restore_roundtrip_via_router(isolated_app):
     assert _count_customers(SessionLocal, NAME) == 1
 
     # 2. Create a backup through the router.
-    r = client.post("/admin/backup/run")
+    r = client.post("/admin/backup/run", headers=_csrf(client))
     assert r.status_code == 200, r.text
     created = r.json()["created"]
     assert created.startswith("jaks-") and created.endswith(".db")
@@ -139,7 +145,7 @@ def test_backup_restore_roundtrip_via_router(isolated_app):
 
     # 4. Restore through the router. This disposes app.database.engine first
     #    (the Windows-critical step) and copies the snapshot over the live file.
-    r = client.post("/admin/backup/restore", data={"filename": created})
+    r = client.post("/admin/backup/restore", data={"filename": created}, headers=_csrf(client))
     assert r.status_code == 200, r.text
     assert r.json()["ok"] is True
 
@@ -157,7 +163,7 @@ def test_backup_restore_roundtrip_via_router(isolated_app):
 def test_restore_rejects_path_traversal(isolated_app):
     """The restore route accepts only a bare filename inside the backup dir."""
     client, _SessionLocal, _db_file = isolated_app
-    r = client.post("/admin/backup/restore", data={"filename": "../jaks.db"})
+    r = client.post("/admin/backup/restore", data={"filename": "../jaks.db"}, headers=_csrf(client))
     assert r.status_code == 404, r.text
     assert r.json()["ok"] is False
 
@@ -171,6 +177,6 @@ def test_restore_requires_admin_role(isolated_app):
                     follow_redirects=False)
     assert r.status_code == 303, r.text[:200]
 
-    r = client.post("/admin/backup/restore", data={"filename": "anything.db"})
+    r = client.post("/admin/backup/restore", data={"filename": "anything.db"}, headers=_csrf(client))
     assert r.status_code == 403, r.text
     assert r.json()["detail"] == "Administrator role required."

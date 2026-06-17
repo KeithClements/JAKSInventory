@@ -133,7 +133,19 @@ class AICategorizationService(BaseService):
             "system": [{"type": "text", "text": system,
                         "cache_control": {"type": "ephemeral"}}],
             "messages": [{"role": "user", "content": self._candidate_summary(candidate)}],
-            "output_config": {"format": {"type": "json_schema", "schema": schema}},
+            # §21 — schema enforcement via a FORCED tool call. The previous
+            # output_config/json_schema shape needs an anthropic-beta header to take
+            # effect; without it the schema was ignored and the model could return
+            # free-form text (parse failure → silently no suggestion). Tool use with
+            # tool_choice is GA, needs no beta header, and guarantees the response
+            # carries a schema-shaped tool_use.input we can read directly.
+            "tools": [{
+                "name": "classify_part",
+                "description": "Return the single best category, confidence, and "
+                               "catalog fields for this diesel part.",
+                "input_schema": schema,
+            }],
+            "tool_choice": {"type": "tool", "name": "classify_part"},
         }
 
     @staticmethod
@@ -194,14 +206,15 @@ class AICategorizationService(BaseService):
             raise AICategorizationError(
                 f"Anthropic {resp.status_code}: {resp.text[:300]}")
         data = resp.json()
-        # output_config.format guarantees the first text block is schema-valid JSON.
+        # §21 — forced tool_choice guarantees a tool_use block whose `input` is
+        # the schema-shaped object. Read it directly (no JSON-from-prose parsing).
         for block in data.get("content", []):
-            if block.get("type") == "text":
-                try:
-                    return json.loads(block.get("text") or "")
-                except (ValueError, TypeError) as exc:
-                    raise AICategorizationError(f"bad JSON from model: {exc}") from exc
-        raise AICategorizationError("no text block in Anthropic response")
+            if block.get("type") == "tool_use":
+                result = block.get("input")
+                if isinstance(result, dict):
+                    return result
+                raise AICategorizationError("tool_use block had no object input")
+        raise AICategorizationError("no tool_use block in Anthropic response")
 
     def suggest_for_candidate(self, candidate: ImportCandidate,
                               options: list[tuple[int, str, int]] | None = None) -> dict:

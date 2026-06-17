@@ -38,6 +38,9 @@ from app.models.competitor import CompetitorPrice, CompetitorPriceHistory
 # ── Inventory ─────────────────────────────────────────────────────────────────
 from app.models.inventory import InventoryLocation, InventoryTransaction
 
+# ── Company locations (our bill-to / ship-to address book) ──────────────────────
+from app.models.company_location import CompanyLocation
+
 # ── Purchasing ────────────────────────────────────────────────────────────────
 from app.models.purchase_order import (
     PurchaseOrder,
@@ -135,6 +138,7 @@ __all_models__ = [
     # Inventory
     InventoryLocation,
     InventoryTransaction,
+    CompanyLocation,
     # Purchasing
     PurchaseOrder,
     POLine,

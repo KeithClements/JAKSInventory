@@ -100,6 +100,10 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     # ── Phase A — cross_references ────────────────────────────────────────────
     ("cross_references", "successful_sale_count",  "INTEGER NOT NULL DEFAULT 0"),
     ("cross_references", "replacement_product_id", "INTEGER NULL"),
+    # Precomputed normalized part numbers for fast search (see search_index.py).
+    ("cross_references", "ref_number_norm",        "TEXT NULL"),
+    ("product_vendor_sources", "vendor_part_number_norm", "TEXT NULL"),
+    ("product_vendor_sources", "vendor_sku_norm",  "TEXT NULL"),
 
     # ── Phase A — po_lines ────────────────────────────────────────────────────
     ("po_lines", "over_received",     "BOOLEAN NOT NULL DEFAULT 0"),
@@ -269,6 +273,30 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     #    field diff the preview dock renders for UPDATE candidates. ─────────────
     ("import_batches", "unchanged_count", "INTEGER NOT NULL DEFAULT 0"),
     ("import_candidates", "diff_json", "TEXT NOT NULL DEFAULT ''"),
+
+    # ── PO vendor-confirmed flag — checkbox alongside the free-text conf # so a
+    #    vendor's verbal/portal acknowledgement can be recorded without a number ─
+    ("purchase_orders", "vendor_confirmed", "BOOLEAN NOT NULL DEFAULT 0"),
+
+    # ── PO bill-to / ship-to (company Locations book + ad-hoc + drop-ship). The
+    #    company_locations table itself is created by create_all(); only these PO
+    #    columns need an ALTER on existing DBs. ────────────────────────────────
+    ("purchase_orders", "bill_to_location_id", "INTEGER NULL"),
+    ("purchase_orders", "ship_to_type",        "TEXT NOT NULL DEFAULT 'location'"),
+    ("purchase_orders", "ship_to_location_id", "INTEGER NULL"),
+    ("purchase_orders", "ship_to_snapshot",    "TEXT NULL"),
+
+    # ── §21 (decision 6.16) — quotes now carry tax so taxable customers aren't
+    #    systematically under-quoted. is_taxable defaults TRUE; the create path
+    #    overrides it from the customer's is_tax_exempt. ────────────────────────
+    ("quotes", "is_taxable",        "BOOLEAN NOT NULL DEFAULT 1"),
+    ("quotes", "tax_rate_snapshot", "REAL NOT NULL DEFAULT 0"),
+
+    # ── Lead Finder integration — FMCSA carrier identity (USDOT #) on customers.
+    #    The dedup key that ties an ERP customer to a Lead Finder lead's carrier;
+    #    one customer per real DOT (see the partial-unique index below). NULL for
+    #    every non-carrier customer. ─────────────────────────────────────────────
+    ("customers", "usdot_number", "INTEGER NULL"),
 ]
 
 
@@ -406,6 +434,19 @@ _PENDING_UNIQUE_INDEXES: list[tuple[str, str, str, str, str]] = [
         "WHERE bill_number IS NOT NULL AND bill_number != ''",
         "the same vendor has two bills with the same bill_number — void or "
         "renumber the duplicate bill",
+    ),
+    (
+        "uq_customers_usdot_number",
+        "customers",
+        "SELECT COUNT(*) FROM ("
+        "SELECT 1 FROM customers "
+        "WHERE usdot_number IS NOT NULL "
+        "GROUP BY usdot_number HAVING COUNT(*) > 1)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_customers_usdot_number "
+        "ON customers (usdot_number) "
+        "WHERE usdot_number IS NOT NULL",
+        "multiple customers share the same USDOT number — merge the duplicate "
+        "carrier records before the Lead Finder dedup backstop can be created",
     ),
 ]
 

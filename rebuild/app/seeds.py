@@ -155,3 +155,24 @@ def seed_manufacturers(db: Session) -> None:
         db.add(Manufacturer(name=name, sort_order=i, is_active=True))
         i += 1
     db.commit()
+
+
+# ── Company locations (PO bill-to / ship-to address book) ─────────────────────
+# Seed ONE primary location (the default "ship to me" / bill-to) from the
+# company_* settings so a fresh DB has a usable ship-to. Idempotent by emptiness
+# — never clobbers a hand-managed location list.
+
+def seed_company_locations(db: Session) -> None:
+    from app.models.company_location import CompanyLocation
+    from app.settings_utils import get_setting_value_db
+    if db.query(CompanyLocation.id).first() is not None:
+        return
+    name = (get_setting_value_db(db, "company_name", "") or "").strip() or "Main Shop"
+    db.add(CompanyLocation(
+        name=name,
+        address_line1=(get_setting_value_db(db, "company_address", "") or "").strip(),
+        phone=(get_setting_value_db(db, "company_phone", "") or "").strip(),
+        is_primary=True,
+        is_active=True,
+    ))
+    db.commit()

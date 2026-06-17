@@ -170,7 +170,7 @@ class SearchService(BaseService):
                 xref_hits = (
                     self.db.query(CrossReference, Product)
                     .join(Product, CrossReference.product_id == Product.id)
-                    .filter(_norm_col(CrossReference.ref_number).like(f"%{nq}%"))
+                    .filter(CrossReference.ref_number_norm.like(f"%{nq}%"))
                     .filter(Product.is_active == True if not include_inactive else True)  # noqa: E712
                     .limit(limit)
                     .all()
@@ -189,8 +189,8 @@ class SearchService(BaseService):
                     .join(Product, ProductVendorSource.product_id == Product.id)
                     .filter(
                         or_(
-                            _norm_col(ProductVendorSource.vendor_part_number).like(f"%{nq}%"),
-                            _norm_col(ProductVendorSource.vendor_sku).like(f"%{nq}%"),
+                            ProductVendorSource.vendor_part_number_norm.like(f"%{nq}%"),
+                            ProductVendorSource.vendor_sku_norm.like(f"%{nq}%"),
                         )
                     )
                     .filter(ProductVendorSource.is_active == True)  # noqa: E712
@@ -259,7 +259,7 @@ class SearchService(BaseService):
         hits = (
             self.db.query(CrossReference, Product)
             .join(Product, CrossReference.product_id == Product.id)
-            .filter(_norm_col(CrossReference.ref_number) == nref)
+            .filter(CrossReference.ref_number_norm == nref)
             .all()
         )
         results = []

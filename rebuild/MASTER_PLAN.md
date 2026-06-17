@@ -1216,6 +1216,99 @@ Grade path: R1 = stop money loss (C+→B), R2 = close vendor/QBO loops (B→A−
 
 ---
 
+## 21. Update 6.16 — Sellable-ERP Audit + Owner Decisions (verified)
+
+> **Source:** full 16-subsystem `jaks-erp-status-report` audit (42 agents, adversarially verified — 24
+> of 25 serious risks confirmed against the cited code, 1 refuted). **Overall grade: C+.** The bones are
+> strong (real inventory ledger, one totals engine, moving-avg COGS isolated from vendor quotes, properly
+> modeled core lifecycle, 3-way-match PO/receipt/bill). The grade is dragged by ~12 **verified money/inventory
+> edge defects** that produce wrong dollars or wrong parts in daily use. This section is the AUTHORITATIVE
+> punch list; it supersedes §16/§17/§19 ordering where they conflict.
+
+### 21.1 — Owner decisions LOCKED 2026-06-16
+1. **Credit hold = WARN.** Finalize/SO-convert for a held customer shows a warning + requires an explicit
+   override flag (warn-and-confirm with audit note). NOT a hard block.
+2. **Over-receipt = CONFIRM AND ALLOW.** Receiving more than ordered prompts a confirm, then proceeds.
+   No server-side hard cap.
+3. **Quote tax = default from customer.** A tax-exempt customer's quote stays tax-free; a taxable
+   customer's quote gets tax. The clerk can **toggle tax on/off per quote** when needed.
+4. **Competitor cross-refs → NORMAL part search.** Load HHP/ATL/IMB as `ref_type='competitor'` rows in
+   `cross_references` so they surface in the standard part typeahead (not a separate competitor screen).
+5. **DEPLOYMENT IS INTERNET-EXPOSED.** ⚠️ This promotes security from "LAN-medium/later" to **immediate**:
+   CSRF on state-changing POSTs, QBO client-secret + token encryption, the RBAC void/payment gate, cookie
+   `secure` flag, and HTTP security headers are now go-live blockers, not polish.
+6. **Multi-tenant SaaS = SOMEDAY goal.** Do NOT stop adding single-tenant surface area. No `company_id`
+   retrofit now. Revisit when resale is a near-term goal.
+7. **`jaks.db` is THROWAWAY** — real trial transactions run through it but everything posts to the **LIVE
+   QBO** (not sandbox) and the catalog is re-importable from the scraper. No backup-before-migration step
+   required. **Implication:** wrong QBO pushes write to real books, and the plaintext QBO secret is a real
+   credential-leak exposure → reinforces decision #5.
+
+### 21.2 — fix_before_phase1 — IMMEDIATE sprint (✅ SHIPPED 2026-06-16, UNCOMMITTED)
+*All line numbers re-verified against current code before editing. **11 code fixes shipped +
+1 false-positive refuted + 1 owner data-load**; new regression file `tests/test_s21_audit_fixes.py`
+(13 tests) locks them in. 0 new test failures (the 12 reds are all pre-existing — §21.4).*
+
+| # | Fix | Status | File(s) |
+|---|---|---|---|
+| 1 | ~~Remove vendor_cost clobber on receipt~~ | ⚪ **REFUTED — no fix needed** | already history-only (`product_service.py` `compare_and_record_cost_change`/`_sync_cost_from_preferred`; receipt path `po_service.py:397/416` never writes `vendor_cost`). The §8N fix IS present; the audit verifier read a stale blob. |
+| 2 | Close `CoreCharge` rows on invoice void | ✅ SHIPPED | `services/invoice_service.py` `void_invoice` — closes OPEN/PARTIAL, not-yet-returned/credited cores; logs+skips returned ones |
+| 3 | RBAC gate on void + payment | ✅ SHIPPED | `void_invoice` asserts `VOID_LOCKED_INVOICE` unconditionally; new `RECORD_PAYMENT` perm (ADMIN+BOOKKEEPING) gates `record_payment`; routers surface `PermissionError`. New `Permission.RECORD_PAYMENT` in `constants.py`; `base.py` `_ROLE_PERMISSIONS` + test-harness unknown-actor guard |
+| 4 | Credit-memo lines in statements | ✅ SHIPPED | `services/statement_service.py` `generate_statement` (nets pre-period CMs into opening balance + in-period CMs as credit lines); `statement_print.html` teal Credit-Memo row |
+| 5 | Receive `VERBAL_ORDER` POs | ✅ SHIPPED | `routers/purchase_orders.py` `can_receive` (`_workspace_ctx`) + receive-route guard |
+| 6 | Credit hold = **WARN + confirm** (#1) | ✅ SHIPPED | `routers/invoices.py` finalise bounces to `?credit_hold=1`; `invoices/workspace.html` amber banner + "Finalize anyway" (`confirm_credit_hold=1`). *SO-convert warn deferred — finalize is the AR gate.* |
+| 7 | Product-list price/margin key | ✅ SHIPPED | `templates/products/list.html` — single resolved `_sell` from `sell_price_map` drives both price column + margin badge |
+| 8 | FULL-payment guard | ✅ SHIPPED | `services/sales_order_service.py` `fulfill_and_invoice` blocks `payment_mode==FULL` while `deposit_amount < subtotal` |
+| 9 | Quote tax (#3) | ✅ SHIPPED | `models/quote.py` (`is_taxable`/`tax_rate_snapshot` + `taxable_base`/`tax_amount`/`total`), `database.py` migration, `quote_service.create_quote` default-from-customer, `routers/quotes.py` `_totals_ctx` + `POST /quotes/{id}/toggle-tax`, `_totals.html`+`print.html`, carry-forward in `convert_to_invoice` |
+| 10 | Encrypt `qbo_client_secret` + Fernet key (#5/#7) | ✅ SHIPPED | `routers/settings.py` (encrypt on save, blank=keep, mask in form), `settings/index.html` no-echo + "saved" hint, both `.bat` launchers bootstrap `JAKS_FERNET_KEY` from `%USERPROFILE%\.jaks_fernet.key` |
+| 11 | AI-categorize schema enforcement (#4-data is #12) | ✅ SHIPPED | `services/ai_categorization_service.py` — forced `tool_choice`/`tool_use` (GA, no beta header) replaces `output_config`; tests updated |
+| 12 | Competitor cross-refs → normal search (#4) | 🟡 **CODE-READY — owner data load** | search (`search_service.py:168-224`) + importer (`pricing_update_competitor`, route `POST /products/import-run` mode=pricing/source=competitor) BOTH already wired. Run a scraper competitor CSV through **Products → Import → Pricing Update → Competitor**. No code change. |
+
+### 21.3 — Security now-blockers (promoted by decision #5, internet-exposed)
+- CSRF tokens on demo-reset, invoice void, payment POST routes.
+- QBO client-secret + access/refresh token encryption at rest (Fernet) — #10 above.
+- Cookie `secure` flag + HTTP security headers (X-Frame-Options, CSP).
+- RBAC HTTP route tests (SALES user blocked on finalize/void/reverse/issue-credit-memo) — #3 above.
+
+### 21.4 — Verified-REFUTED / downgraded (do NOT re-litigate)
+- **SO list tab counts always zero** — REFUTED (backend passes counts; the template stub comment misled).
+- MPN duplicate products, ProductApplication re-import multiplication, N+1 totals, margin-unreliable-until-purchase — all **downgraded to low**; acceptable at current scale.
+
+### 21.5 — Security now-blockers (#5 internet-exposed) — ✅ SHIPPED 2026-06-16, UNCOMMITTED
+Live-verified in the preview (auth on, file DB): CSRF enforced (no-token→403, token→passes), all 4
+security headers present, CSP doesn't break Alpine/htmx, native-form token injection works.
+- **CSRF** — `app/security.py` `CSRFMiddleware` (pure-ASGI double-submit cookie; buffers+REPLAYS the body
+  so the `_csrf` form field never starves the downstream route; validates header OR form field OR
+  multipart). Skips validation when there's no valid session (auth redirects those). Wired in `base.html`
+  (htmx `X-CSRF-Token` header + native-form hidden `_csrf` injector). Test bypass honored. 7 new tests.
+- **Security headers** — `security_headers_middleware`: X-Frame-Options DENY · X-Content-Type-Options
+  nosniff · Referrer-Policy same-origin · CSP (self + 'unsafe-inline'/'unsafe-eval' for Alpine + Google
+  Fonts origins; `JAKS_DISABLE_CSP=1` escape hatch).
+- **Secure cookie** — `auth.py` login + CSRF cookie get `Secure` when HTTPS (direct or `X-Forwarded-Proto`)
+  or `JAKS_SECURE_COOKIES=1`; OFF by default so a plain-HTTP LAN run still logs in.
+- Affected production-mode tests updated (backup/auth/security send tokens). `tests/test_s21_csrf_security.py`.
+
+### 21.6 — Phase 1.1 batch — ✅ SHIPPED 2026-06-16, UNCOMMITTED (`tests/test_s21_phase11.py`, 11 tests)
+- **`CoreCharge.vendor_id` stamped at creation** from `product.preferred_vendor_source` (`core_service.py`).
+- **`resync_qty_committed` / `resync_qty_on_order`** (`product_service.py`) + admin routes
+  (`/admin/inventory/resync-committed/{id}`, `…/resync-on-order/{id}`, `…/resync-availability-all`).
+- **Daily overdue-core scan thread** (`main.py` `_start_overdue_core_scheduler`, mirrors Shopify scheduler).
+- **Case-insensitive Brand/Manufacturer rename cascade** (`category_service.py`; obsolete exact-match test
+  rewritten to assert the new behavior).
+- **6 missing report CSV exports** (`reports.py`: sales-by-customer/-product, inventory-valuation, open-pos,
+  outstanding-cores, lost-sales) + export buttons enabled in the 6 templates.
+- **Dashboard QBO chip** now reflects real `connection_summary()` state (was hardcoded "ready").
+
+### 21.7 — Still deferred (later / Phase 2-3)
+engine-application + barcode/UPC search · `products.sku_norm` + `invoice_lines.product_id` index ·
+ProductApplication edit UI + engine make/model picker · standalone vendor-bill list + AP aging ·
+`CreditMemo.applied/unapplied`→computed · server-side session revocation · backup-before-migration +
+schema_version · self-host fonts (drop Google Fonts CDN) · SO-convert credit-hold warn · interest that
+posts to an invoice · bulk statements · quote-conversion + vendor-performance reports. **SaaS
+multi-tenancy = someday (#6).**
+
+---
+
 *This document is the single source of truth for all JAKS Inventory build decisions.*
 *Update it as decisions change. All other planning documents are superseded.*
-*Last updated: 2026-06-10 (evening status-refresher reconciliation) — **R1+R2+R3+R4 all SHIPPED** (`248ea09`/`40eea95`/`a53bbe2`/`674491a..f18aec9`); ledger reconciled: QBO 1B marked COMPLETE (payments/vendor-bills/credit-memos push + Fernet, R2/R3), serials marked BUILT (R3), §17.2 closed rows struck (tier-pricing · Fernet · demo-reset guard · products export), §11 O2 marked enforced. **Remaining gate = owner-run R4 trial sheet (blank) + operational cutover**, not code. Prior note: **§19 added (verified system review, B−, authoritative punch list) and Sprint R1 §19.2 implemented the same day** (16/16 money/integrity fixes, adversarially verified, 1438 tests green). Next: §19.3 Sprint R2. Prior note (2026-06-06) — status-refresher pass: 983 tests verified green; tier-pricing downgraded from blocker to a label decision (money path proven real); real-data cutover (13,153-part catalog) recorded as the live operational gate; owner-acceptance breadth named as the one true status gap. See §17 banner. **Added §18 Product Categorization & Classification spec** (Inventory → Category Maintenance screen; Products-List filters/bulk-assign/Manage-Categories link; importer rules + Import Review queue; Brand/Vendor/Manufacturer-Engine-Make separation) — **BUILT & verified the same night** (increments 1–7; 1051 tests pass; backfill applied to the live 13,154-part catalog). Not yet git-committed. See §18 banner. **2026-06-16: added §20 — REVERT the opaque SKU scheme to vendor part numbers** (owner interview; reverses the 2026-06-06 `JAKS-[ENGINE]-[CATEGORY]-[V][NNNN]` scheme that is live on all 29,659 products and caused too much confusion); plan = `product.sku ← vendor_part_number`, private-label parts (`is_house_brand`) keep a separate owner-typed JAKS Product # while the vendor # still prints on the PO; revert verified safe (0 collisions, trial-only documents) — dry-run pending owner review. See §20.*
+*Last updated: 2026-06-16 — **added §21 Update 6.16**: verified 16-subsystem sellable-ERP audit (C+), 7 owner decisions LOCKED (credit-hold=warn, over-receipt=confirm-allow, quote-tax=default-from-customer+clerk-toggle, competitor-xrefs=normal-search, **deployment INTERNET-EXPOSED → security now-blocker**, multi-tenant=someday, jaks.db=throwaway-but-LIVE-QBO). **§21.2 immediate sprint (11 fixes), §21.5 security blockers (CSRF+headers+Secure cookie, live-verified), and §21.6 Phase-1.1 batch (6 items) ALL SHIPPED UNCOMMITTED** — full suite 1947 pass / 12 fail (all 12 pre-existing); #1 vendor_cost-clobber REFUTED, #12 competitor-xref = owner data-load. New test files test_s21_audit_fixes.py / test_s21_csrf_security.py / test_s21_phase11.py. See §21. Prior: 2026-06-10 (evening status-refresher reconciliation) — **R1+R2+R3+R4 all SHIPPED** (`248ea09`/`40eea95`/`a53bbe2`/`674491a..f18aec9`); ledger reconciled: QBO 1B marked COMPLETE (payments/vendor-bills/credit-memos push + Fernet, R2/R3), serials marked BUILT (R3), §17.2 closed rows struck (tier-pricing · Fernet · demo-reset guard · products export), §11 O2 marked enforced. **Remaining gate = owner-run R4 trial sheet (blank) + operational cutover**, not code. Prior note: **§19 added (verified system review, B−, authoritative punch list) and Sprint R1 §19.2 implemented the same day** (16/16 money/integrity fixes, adversarially verified, 1438 tests green). Next: §19.3 Sprint R2. Prior note (2026-06-06) — status-refresher pass: 983 tests verified green; tier-pricing downgraded from blocker to a label decision (money path proven real); real-data cutover (13,153-part catalog) recorded as the live operational gate; owner-acceptance breadth named as the one true status gap. See §17 banner. **Added §18 Product Categorization & Classification spec** (Inventory → Category Maintenance screen; Products-List filters/bulk-assign/Manage-Categories link; importer rules + Import Review queue; Brand/Vendor/Manufacturer-Engine-Make separation) — **BUILT & verified the same night** (increments 1–7; 1051 tests pass; backfill applied to the live 13,154-part catalog). Not yet git-committed. See §18 banner. **2026-06-16: added §20 — REVERT the opaque SKU scheme to vendor part numbers** (owner interview; reverses the 2026-06-06 `JAKS-[ENGINE]-[CATEGORY]-[V][NNNN]` scheme that is live on all 29,659 products and caused too much confusion); plan = `product.sku ← vendor_part_number`, private-label parts (`is_house_brand`) keep a separate owner-typed JAKS Product # while the vendor # still prints on the PO; revert verified safe (0 collisions, trial-only documents) — dry-run pending owner review. See §20.*

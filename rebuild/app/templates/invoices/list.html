@@ -121,6 +121,7 @@
           {{ sortable_th('Balance Due', 'balance', sort, direction, qs=_sqs, align='right') }}
           <th class="px-4 py-3 text-left label-mini">Status</th>
           <th class="px-4 py-3 text-left label-mini">QBO</th>
+          {{ sortable_th('Invoiced', 'created', sort, direction, qs=_sqs) }}
           {{ sortable_th('Due Date', 'due_date', sort, direction, qs=_sqs) }}
           <th class="px-4 py-3 w-12"></th>
         </tr>
@@ -227,6 +228,15 @@
           {# QBO sync state — Phase 1B #}
           <td class="px-4 py-4 align-middle">
             {{ qbo_status_chip(inv.qbo_sync_status, inv.id) }}
+          </td>
+
+          {# Invoiced (created) date — default sort, newest first #}
+          <td class="px-4 py-4 align-middle">
+            {% if inv.created_at %}
+            <span class="text-sm tabular-nums text-gray-700">{{ inv.created_at.strftime('%b %d, %Y') }}</span>
+            {% else %}
+            <span class="text-sm text-gray-300">—</span>
+            {% endif %}
           </td>
 
           {# Due Date #}

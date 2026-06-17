@@ -480,6 +480,16 @@ class POStatus(StrEnum):
     CANCELLED    = "cancelled"
 
 
+class POShipToType(StrEnum):
+    """Where a PO ships. LOCATION = one of our CompanyLocations (the primary is
+    "ship to me"); AD_HOC = a one-time typed address; DROP_SHIP = straight to a
+    customer (uses the existing drop_ship_* fields so receiving still skips
+    inventory and the print shows the drop-ship block)."""
+    LOCATION  = "location"
+    AD_HOC    = "ad_hoc"
+    DROP_SHIP = "drop_ship"
+
+
 class VendorBillStatus(StrEnum):
     PENDING     = "pending"
     APPROVED    = "approved"
@@ -1002,6 +1012,7 @@ class Permission(StrEnum):
     INVENTORY_ADJUST            = "inventory_adjust"
     NEGATIVE_INVENTORY_OVERRIDE = "negative_inventory_override"
     VOID_LOCKED_INVOICE         = "void_locked_invoice"
+    RECORD_PAYMENT              = "record_payment"
     REPUSH_QBO                  = "repush_qbo"
     MERGE_CUSTOMERS             = "merge_customers"
     CHANGE_SETTINGS             = "change_settings"

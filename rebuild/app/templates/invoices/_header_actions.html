@@ -1,0 +1,112 @@
+{# Invoice workspace — header actions: Print · Save · More ▾ · primary amber CTA
+   Mirrors the Quote workspace pattern (quotes/_header_actions.html) per Axle spec.
+   Primary action is state-driven:
+     DRAFT          → Finalize (amber, rightmost)
+     OPEN / PARTIAL → Record Payment (amber, rightmost)
+     PAID / VOID    → no amber CTA (Print only)
+   All routes / event names reuse existing endpoints + Alpine state — nothing new. #}
+{% set status_pill_map = {
+  'draft':   ('chip-draft',   'DRAFT'),
+  'open':    ('chip-invoice', 'OPEN'),
+  'partial': ('chip-low',     'PARTIAL'),
+  'paid':    ('chip-ok',      'PAID'),
+  'void':    ('chip-out',     'VOID'),
+} %}
+{% set pill = status_pill_map.get(invoice.status, ('chip-draft', invoice.status|upper)) %}
+
+<div class="flex items-center gap-2 flex-wrap justify-end"
+     x-data="{ moreOpen: false }">
+
+  {# Zone 1 — back link, leftmost #}
+  <a href="/invoices/" class="hidden lg:inline mr-auto text-sm link-subtle">← All invoices</a>
+
+  {# Status chip — Axle .chip-axle (dot + Oswald label) #}
+  <span class="chip-axle {{ pill[0] }}"><span class="dot"></span>{{ pill[1] }}</span>
+
+  {# QBO chip (finalized, non-void) — sync state lives next to the status badge #}
+  {% if not editable and invoice.status != InvoiceStatus.VOID and invoice.qbo_invoice_id %}
+  <span class="inline-flex items-center gap-1 rounded-md bg-green-50 border border-green-200 text-green-700 px-2.5 py-1 text-xs font-medium"
+        title="Synced to QuickBooks (id {{ invoice.qbo_invoice_id }})">
+    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+    </svg>
+    QBO Synced
+  </span>
+  {% endif %}
+
+  {# Print — first-class ghost on every status #}
+  <a href="/invoices/{{ invoice.id }}/print" target="_blank" rel="noopener" class="btn-secondary btn-sm">Print</a>
+
+  {# Save — DRAFT only; force-fire the same autosave POST (header form submit) #}
+  {% if editable %}
+  <button type="button"
+          onclick="document.getElementById('inv-header-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}))"
+          class="btn-secondary btn-sm"
+          title="Save header changes">Save</button>
+  {% endif %}
+
+  {# More ▾ — overflow: QBO push, Issue Credit Memo, Void #}
+  <div class="relative inline-block">
+    <button type="button" @click="moreOpen = !moreOpen" class="btn-secondary btn-sm">
+      More ▾
+    </button>
+    <div x-show="moreOpen" x-cloak @click.away="moreOpen = false"
+         class="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 py-1 min-w-[13rem]">
+
+      {# QBO push — finalized, non-void, not yet synced #}
+      {% if not editable and invoice.status != InvoiceStatus.VOID and not invoice.qbo_invoice_id %}
+      <form method="post" action="/qbo/invoices/{{ invoice.id }}/push">
+        <button type="submit"
+                class="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                {% if invoice.qbo_sync_status == 'error' and invoice.qbo_sync_error %}title="Last error: {{ invoice.qbo_sync_error }}"{% endif %}>
+          {% if invoice.qbo_sync_status == 'error' %}Retry QBO push{% else %}Push to QuickBooks{% endif %}
+        </button>
+      </form>
+      {% endif %}
+
+      {# Issue Credit Memo — finalized, non-void #}
+      {% if invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL, InvoiceStatus.PAID] %}
+      <button type="button" @click="moreOpen = false; $dispatch('open-credit-memo')"
+              class="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">
+        Issue Credit Memo…
+      </button>
+      {% endif %}
+
+      {# Void — OPEN/PARTIAL with no payments applied #}
+      {% if invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL] and (invoice.amount_paid or 0) == 0 %}
+      <div class="border-t border-gray-100 my-1"></div>
+      <button type="button" @click="moreOpen = false; $dispatch('open-void')"
+              class="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50">
+        Void Invoice…
+      </button>
+      {% elif invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL, InvoiceStatus.PAID] %}
+      <div class="border-t border-gray-100 my-1"></div>
+      <button type="button" disabled
+              class="w-full text-left px-4 py-2 text-sm text-gray-400 cursor-not-allowed"
+              title="{% if (invoice.amount_paid or 0) > 0 %}Reverse the ${{ '%.2f'|format(invoice.amount_paid) }} in applied payments first, then void.{% else %}Reverse payments first, then void.{% endif %}">
+        Void Invoice…
+      </button>
+      {% endif %}
+    </div>
+  </div>
+
+  {# Primary action — amber, rightmost. State-driven per Axle spec. #}
+  {% if editable %}
+  {# DRAFT → Finalize (opens existing jakConfirm-style modal via finalizeOpen) #}
+  <button type="button" class="btn-amber btn-sm"
+          @click="$dispatch('open-finalize')">
+    Finalize
+    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+    </svg>
+  </button>
+  {% elif invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL] %}
+  {# OPEN / PARTIAL → Record Payment (opens the existing payment modal) #}
+  <button type="button" class="btn-amber btn-sm"
+          @click="$dispatch('open-payment')">
+    Record Payment
+  </button>
+  {% endif %}
+  {# PAID / VOID → no amber CTA (Print already shown above) #}
+
+</div>

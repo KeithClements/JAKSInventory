@@ -354,9 +354,12 @@ class CategoryService(BaseService):
             b.name = nm[:200]
             # R1-6: Product.brand is free-text (no FK) — cascade the rename so
             # tagged parts stay attached to the brand (mirror of manufacturer).
+            # §21 — fire on ANY rename (incl. a case-only fix), and match
+            # case-INSENSITIVELY so bulk-imported casing variants ('PAI'/'pai'/
+            # 'Pai') are all re-tagged instead of orphaned from the brand filter.
             if old_name and old_name != b.name:
                 self.db.query(Product).filter(
-                    Product.brand == old_name
+                    func.lower(Product.brand) == old_name.lower()
                 ).update({"brand": b.name}, synchronize_session=False)
         if fields.get("sort_order") is not None:
             b.sort_order = int(fields["sort_order"])
@@ -419,10 +422,11 @@ class CategoryService(BaseService):
             m.name = nm[:200]
             # R1-6: Product.engine_manufacturer is free-text (no FK), so a rename
             # here must cascade or every tagged part drops out of the engine-make
-            # filter. Exact-match update mirrors how the filter compares.
+            # filter. §21 — fire on ANY rename (incl. a case-only fix) and match
+            # case-INSENSITIVELY so casing-variant imported rows aren't orphaned.
             if old_name and old_name != m.name:
                 self.db.query(Product).filter(
-                    Product.engine_manufacturer == old_name
+                    func.lower(Product.engine_manufacturer) == old_name.lower()
                 ).update({"engine_manufacturer": m.name}, synchronize_session=False)
         if fields.get("sort_order") is not None:
             m.sort_order = int(fields["sort_order"])

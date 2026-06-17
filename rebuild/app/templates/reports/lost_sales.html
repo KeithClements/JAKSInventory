@@ -20,9 +20,8 @@
     </div>
     <button type="submit" class="btn-primary btn-sm">Update</button>
     <div class="flex-1"></div>
-    <button type="button" class="btn-secondary btn-sm" disabled title="Coming soon">
-      Export CSV
-    </button>
+    <a href="/reports/lost-sales/export.csv?start={{ start_date.isoformat() }}&end={{ end_date.isoformat() }}"
+       class="btn-secondary btn-sm">Export CSV</a>
   </form>
 
   <p class="text-xs text-gray-400">

@@ -122,6 +122,65 @@ def inventory_resync_all(
     }
 
 
+# ── §21 — qty_committed / qty_on_order cache resync (recovery paths) ──────────
+# qty_committed is a cache over the SO commitment ledger; qty_on_order a cache
+# over open POs. Both could drift with no recovery before this (admin only had
+# qty_on_hand resync). These mirror the resync-all pattern above.
+
+@router.post("/inventory/resync-committed/{product_id}")
+def inventory_resync_committed(
+    product_id: int, db: Session = Depends(get_db), admin=Depends(require_admin),
+):
+    """Recompute one product's qty_committed from the commitment ledger."""
+    old_qty, new_qty = ProductService(db, current_user_id=admin.id).resync_qty_committed(product_id)
+    db.commit()
+    log.info("qty_committed resync: product %s %s -> %s by user %s",
+             product_id, old_qty, new_qty, admin.id)
+    return {"product_id": product_id, "old_qty_committed": old_qty,
+            "new_qty_committed": new_qty, "delta": new_qty - old_qty}
+
+
+@router.post("/inventory/resync-on-order/{product_id}")
+def inventory_resync_on_order(
+    product_id: int, db: Session = Depends(get_db), admin=Depends(require_admin),
+):
+    """Recompute one product's qty_on_order from open (SENT/PARTIAL) POs."""
+    old_qty, new_qty = ProductService(db, current_user_id=admin.id).resync_qty_on_order(product_id)
+    db.commit()
+    log.info("qty_on_order resync: product %s %s -> %s by user %s",
+             product_id, old_qty, new_qty, admin.id)
+    return {"product_id": product_id, "old_qty_on_order": old_qty,
+            "new_qty_on_order": new_qty, "delta": new_qty - old_qty}
+
+
+@router.post("/inventory/resync-availability-all")
+def inventory_resync_availability_all(
+    limit: int = 500, db: Session = Depends(get_db), admin=Depends(require_admin),
+):
+    """Recompute qty_committed AND qty_on_order for up to ``limit`` active
+    products. Companion to resync-all (which covers qty_on_hand)."""
+    limit = max(1, min(int(limit), 5000))
+    service = ProductService(db, current_user_id=admin.id)
+    product_ids = [
+        row[0] for row in (
+            db.query(Product.id).filter(Product.is_active == True)  # noqa: E712
+            .order_by(Product.id).limit(limit).all()
+        )
+    ]
+    corrected: list[dict] = []
+    for pid in product_ids:
+        oc, nc = service.resync_qty_committed(pid)
+        oo, no = service.resync_qty_on_order(pid)
+        if nc != oc or no != oo:
+            corrected.append({"product_id": pid,
+                              "qty_committed": [oc, nc], "qty_on_order": [oo, no]})
+    db.commit()
+    log.info("Availability resync-all: checked %d, corrected %d (limit %d) by user %s",
+             len(product_ids), len(corrected), limit, admin.id)
+    return {"checked": len(product_ids), "corrected": len(corrected),
+            "limit": limit, "corrections": corrected}
+
+
 @router.get("/smoke-tests", response_class=HTMLResponse)
 def smoke_tests_dashboard(request: Request):
     """Render the smoke-test results dashboard."""

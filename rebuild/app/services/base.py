@@ -62,6 +62,7 @@ class ConcurrentEditError(RuntimeError):
 _ROLE_PERMISSIONS: dict[str, set[str]] = {
     UserRole.ADMIN: {p.value for p in Permission},  # admin gets everything
     UserRole.BOOKKEEPING: {
+        Permission.RECORD_PAYMENT,
         Permission.REVERSE_PAYMENT,
         Permission.ISSUE_CREDIT_MEMO,
         Permission.APPROVE_VENDOR_BILL,
@@ -69,6 +70,9 @@ _ROLE_PERMISSIONS: dict[str, set[str]] = {
         Permission.VIEW_AUDIT_LOG,
         Permission.SEND_EMAIL,
     },
+    # SALES (counter clerk) intentionally does NOT get RECORD_PAYMENT or
+    # VOID_LOCKED_INVOICE — money-in and invoice voids are owner/bookkeeper
+    # actions. Grant RECORD_PAYMENT here if a shop wants clerks taking payment.
     UserRole.SALES: {
         Permission.SEND_EMAIL,
     },
@@ -102,6 +106,15 @@ class BaseService:
 
         user = self.db.query(User).filter(User.id == self.current_user_id).first()
         if user is None:
+            # Test harness uses stub actor ids (e.g. _UID = 1) with no backing
+            # User row for pure-service business-logic tests. Under JAKS_SKIP_AUTH
+            # treat an unknown actor as the system actor so those tests need not
+            # seed a user. Real seeded users (incl. the RBAC denial tests, which
+            # create an actual SALES user) still go through role enforcement
+            # below. In production JAKS_SKIP_AUTH is unset → unknown actor denied.
+            import os
+            if os.environ.get("JAKS_SKIP_AUTH"):
+                return True
             if raise_on_deny:
                 raise PermissionDeniedError(permission, self.current_user_id, None)
             return False

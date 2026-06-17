@@ -221,10 +221,10 @@
   <div class="meta-row">
 
     <div>
-      <div class="meta-lab">From</div>
+      <div class="meta-lab">Bill To</div>
       <div class="meta-val">
-        {% if company.name %}<b>{{ company.name }}</b><br>{% endif %}
-        {% if company.address %}{{ company.address }}<br>{% endif %}
+        <b>{{ (bill_to.name if bill_to and bill_to.name else company.name) or 'JAKS Parts' }}</b><br>
+        {% for l in (bill_to.lines if bill_to else []) %}{{ l }}<br>{% endfor %}
         {% if company.phone %}<span class="meta-mono">{{ company.phone }}</span>{% if company.email %}<br>{% endif %}{% endif %}
         {% if company.email %}<span class="meta-mono">{{ company.email }}</span>{% endif %}
       </div>
@@ -243,19 +243,14 @@
     </div>
 
     <div>
-      <div class="meta-lab">Terms &amp; Ship to</div>
+      <div class="meta-lab">{% if ship_to and ship_to.is_drop_ship %}Drop Ship To{% else %}Ship To{% endif %}</div>
       <div class="meta-val">
         {% if po.vendor_confirmation_number %}<span class="ref-key">Confirm</span><span class="meta-mono">{{ po.vendor_confirmation_number }}</span><br>{% endif %}
-        {% if po.is_drop_ship and dropship_addr_lines %}
-          <span class="ref-key">Drop Ship</span><br>
-          <b>{{ dropship_customer.company_name if dropship_customer else "Drop Ship" }}</b><br>
-          {% for ln in dropship_addr_lines %}{{ ln }}{% if not loop.last %}<br>{% endif %}{% endfor %}
+        {% if ship_to %}
+          <b>{{ ship_to.name or '—' }}</b>
+          {% for ln in ship_to.lines %}<br>{{ ln }}{% endfor %}
         {% else %}
-          <span class="ref-key">Ship to</span><br>
           <b>{{ company.name or "JAKS Parts" }}</b>
-          {% if company_addr_lines %}
-            <br>{% for ln in company_addr_lines %}{{ ln }}{% if not loop.last %}<br>{% endif %}{% endfor %}
-          {% endif %}
         {% endif %}
       </div>
     </div>

@@ -273,8 +273,13 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     except Exception:
         admin_pw_default = False
 
+    # §21 — real QBO connection state for the sync chip (was hardcoded "ready").
+    from app.services.qbo_service import QBOSyncService
+    qbo_summary = QBOSyncService(db).connection_summary()
+
     return templates.TemplateResponse(request, "dashboard.html", {
         "admin_pw_default": admin_pw_default,
+        "qbo": qbo_summary,
         "today_payments": today_payments,
         "ar_balance": ar_balance,
         "overdue_count": overdue_count,

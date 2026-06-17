@@ -23,8 +23,9 @@ from typing import TypedDict
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
-from app.constants import CoreDirection, CoreStatus, InvoiceStatus
+from app.constants import CoreDirection, CoreStatus, CreditMemoStatus, InvoiceStatus
 from app.models.core import CoreCharge
+from app.models.credit_memo import CreditMemo
 from app.models.customer import Customer
 from app.models.invoice import Invoice, Payment
 from app.models.statement import CustomerStatement
@@ -92,6 +93,30 @@ class StatementService:
         )
         opening_balance = round(sum(inv.balance_due for inv in pre_period_invoices), 2)
 
+        # §21 — credit memos reduce net A/R but are absent from invoice balances
+        # (balance_due = total − payment allocations only; CMs are independent
+        # documents). A customer with a warranty/core/return credit therefore
+        # showed an inflated statement balance. Net pre-period CMs into the
+        # opening balance so the running balance starts from the true figure.
+        _ACTIVE_CM = [
+            CreditMemoStatus.OPEN, CreditMemoStatus.APPLIED, CreditMemoStatus.PARTIAL,
+        ]
+        pre_period_cm_total = round(
+            sum(
+                cm.total_amount for cm in (
+                    self.db.query(CreditMemo)
+                    .filter(
+                        CreditMemo.customer_id == customer_id,
+                        CreditMemo.status.in_(_ACTIVE_CM),
+                        func.date(CreditMemo.created_at) < period_start,
+                    )
+                    .all()
+                )
+            ),
+            2,
+        )
+        opening_balance = round(opening_balance - pre_period_cm_total, 2)
+
         # ── Activity within period ─────────────────────────────────────────────
         period_invoices = (
             self.db.query(Invoice)
@@ -120,6 +145,19 @@ class StatementService:
             .all()
         )
 
+        # §21 — credit memos issued within the period, shown as credit lines.
+        period_credit_memos = (
+            self.db.query(CreditMemo)
+            .filter(
+                CreditMemo.customer_id == customer_id,
+                CreditMemo.status.in_(_ACTIVE_CM),
+                func.date(CreditMemo.created_at) >= period_start,
+                func.date(CreditMemo.created_at) <= period_end,
+            )
+            .order_by(CreditMemo.created_at)
+            .all()
+        )
+
         # Merge and sort all transactions by date
         raw_txns: list[tuple[date, str, str, float, float]] = []
         # (date, type, reference, charges, credits)
@@ -132,6 +170,10 @@ class StatementService:
             pmt_date = pmt.payment_date.date() if isinstance(pmt.payment_date, datetime) else pmt.payment_date
             ref = pmt.check_number or pmt.payment_method or "Payment"
             raw_txns.append((pmt_date, "payment", ref, 0.0, pmt.amount_received))
+
+        for cm in period_credit_memos:
+            cm_date = cm.created_at.date() if isinstance(cm.created_at, datetime) else cm.created_at
+            raw_txns.append((cm_date, "credit_memo", cm.cm_number, 0.0, cm.total_amount))
 
         raw_txns.sort(key=lambda t: t[0])
 

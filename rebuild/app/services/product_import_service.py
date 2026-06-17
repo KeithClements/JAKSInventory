@@ -432,7 +432,12 @@ class ProductImportService(BaseService):
             grams_raw = r.get("weight_grams", "").strip()
 
             # Core charge, is_reman, unit_of_measure, pack_qty (new 2026-06-08)
-            core_charge = _to_float(r.get("core_charge")) or 0.0
+            # C8 — distinguish "core unknown" (blank cell) from "core $0"
+            # (explicit 0). A blank stays None so full_import leaves the ERP
+            # value untouched instead of zeroing it; only an EXPLICIT 0 means
+            # $0. _to_float("") is None, _to_float("0") is 0.0 — exactly the
+            # signal we want, so DON'T coerce with `or 0.0`.
+            core_charge = _to_float(r.get("core_charge"))
             is_reman_raw = (r.get("is_reman") or "0").strip()
             is_reman = is_reman_raw in ("1", "true", "yes")
             unit_of_measure = (r.get("unit_of_measure") or "EA").strip().upper() or "EA"
@@ -463,7 +468,15 @@ class ProductImportService(BaseService):
                 "images":         images,
                 "warranty_months": w_months,
                 "handle":         sku.lower(),
+                # C8 — None == "core unknown" (blank cell); 0.0 == explicit $0.
                 "core_charge":    core_charge,
+                # Stable JAKS-native marker. full_import used to infer the source
+                # format from `core_charge is not None`, but a blank-core JAKS row
+                # now legitimately carries None — so carry the format explicitly.
+                "source_format":  "jaks",
+                # Reman + blank core = an undercharge risk (a reman core that
+                # silently posts as $0). Flag it for the importer's review queue.
+                "core_unknown_reman": (is_reman and core_charge is None),
                 "is_reman":       is_reman,
                 "unit_of_measure": unit_of_measure,
                 "pack_qty":       pack_qty,
@@ -474,12 +487,41 @@ class ProductImportService(BaseService):
             })
         return rows
 
-    @staticmethod
-    def detect_format(text: str) -> str:
-        """Return 'jaks' if the CSV header matches SCRAPER_EXPORT_SPEC.md v1,
-        else 'shopify' (the Shopify multi-row format)."""
-        first = text.split("\n", 1)[0].lower()
-        return "jaks" if "pai_part_no" in first else "shopify"
+    @classmethod
+    def detect_format(cls, text: str) -> str:
+        """Classify the upload by its header row. Returns one of:
+
+          • ``"jaks"``    — header has an EXACT column named ``pai_part_no``
+                            (SCRAPER_EXPORT_SPEC.md v1).
+          • ``"shopify"`` — header has an EXACT ``Variant SKU`` column
+                            (the Shopify multi-row export).
+          • ``"unknown"`` — neither matched. The caller MUST surface this as a
+                            clear error and refuse to import — never fall through
+                            to a parser that would silently drop every row.
+
+        C1 — detection is now EXACT column membership, not a substring scan. A
+        header carrying a SUPERSTRING column (e.g. ``pai_part_number``) used to
+        match the ``"pai_part_no" in first`` substring test, mis-route to the
+        JAKS parser, which reads the exact key ``pai_part_no``, finds nothing,
+        and ``continue``s EVERY row → silent total data loss. Splitting the
+        header into real column names and testing membership closes that hole.
+        """
+        headers = {h.lower() for h in cls.csv_headers(text)}
+        if "pai_part_no" in headers:
+            return "jaks"
+        if "variant sku" in headers:
+            return "shopify"
+        return "unknown"
+
+    # Human-facing message when detect_format() == "unknown". Kept as a constant
+    # so callers (full_import + the router) all surface the SAME wording.
+    UNKNOWN_FORMAT_ERROR = (
+        "Unrecognized import format: header did not match JAKS native "
+        "(expected a 'pai_part_no' column) or Shopify (expected a "
+        "'Variant SKU' column). Refusing to import — nothing was changed. "
+        "Check the file's header row, or use the column-mapping upload for a "
+        "custom vendor feed."
+    )
 
     # ══ R3: generic mapped-CSV support (custom vendor feeds) ═══════════════════
     @staticmethod
@@ -583,7 +625,8 @@ class ProductImportService(BaseService):
                 lbs = _to_float(vals["weight_lbs"])
                 grams_raw = str(round(lbs * 453.592, 1)) if lbs is not None else ""
 
-            core_charge = _to_float(vals.get("core_charge")) or 0.0
+            # C8 — blank core stays None ("unknown"); only explicit 0 means $0.
+            core_charge = _to_float(vals.get("core_charge"))
             is_reman = (vals.get("is_reman", "0").strip().lower()
                         in ("1", "true", "yes", "y"))
             uom = (vals.get("unit_of_measure") or "EA").strip().upper() or "EA"
@@ -609,7 +652,10 @@ class ProductImportService(BaseService):
                 "images":          images,
                 "warranty_months": w_months,
                 "handle":          sku.lower(),
+                # C8 — None == "core unknown" (blank cell); 0.0 == explicit $0.
                 "core_charge":     core_charge,
+                "source_format":   "mapped",
+                "core_unknown_reman": (is_reman and core_charge is None),
                 "is_reman":        is_reman,
                 "unit_of_measure": uom,
                 "pack_qty":        pack_qty,
@@ -624,7 +670,18 @@ class ProductImportService(BaseService):
         # When text is provided, auto-detect format: JAKS native (pai_part_no header)
         # or legacy Shopify multi-row.
         if rows is None:
-            if text and self.detect_format(text) == "jaks":
+            fmt = self.detect_format(text) if text else "shopify"
+            # C1 — an unrecognized header must NEVER fall through to a parser
+            # that drops every row in silence. Surface the format mismatch as a
+            # loud, user-facing error and write nothing.
+            if fmt == "unknown":
+                summary = {
+                    "mode": "full_import", "dry_run": dry_run,
+                    "products_seen": 0, "created": 0,
+                    "error": self.UNKNOWN_FORMAT_ERROR,
+                }
+                return summary
+            if fmt == "jaks":
                 rows = self.parse_jaks_export_csv(text)
             else:
                 rows = self.parse_shopify_csv(text)
@@ -793,8 +850,16 @@ class ProductImportService(BaseService):
                 summary["skipped_sku_collision"] += 1
                 continue
             minted_skus.add(prod_sku.lower())
-            if cls["needs_review"]:
+            # C8 — a reman part whose core charge is UNKNOWN (blank cell, not an
+            # explicit 0) is an undercharge risk: it would otherwise ship with a
+            # $0 core. Flag the product for review and surface a dedicated count
+            # so the owner can fill the real core amount before selling.
+            core_unknown_reman = bool(p.get("core_unknown_reman"))
+            row_needs_review = cls["needs_review"] or core_unknown_reman
+            if row_needs_review:
                 summary["needs_review"] += 1
+            if core_unknown_reman:
+                summary["reman_core_unknown"] = summary.get("reman_core_unknown", 0) + 1
             if cls["category_id"] or cls["engine_manufacturer"]:
                 summary["classified"] += 1
             n_oem = sum(1 for it in p["oem"] if _split_two(it)[1])
@@ -821,7 +886,13 @@ class ProductImportService(BaseService):
 
             # Core / reman fields — present in JAKS native format, absent (default 0)
             # in legacy Shopify format.
-            p_core_charge = _to_float(p.get("core_charge")) or 0.0
+            # C8 — distinguish "core unknown" (None) from "core $0" (explicit 0).
+            # An unknown core is NOT a confident $0: the new product's core
+            # columns are non-null in the schema, so they fall to 0.0, but the
+            # row is flagged needs_review (above) so the owner supplies the real
+            # amount before selling instead of silently undercharging a reman core.
+            raw_core     = _to_float(p.get("core_charge"))   # None when blank/unknown
+            p_core_charge = raw_core if raw_core is not None else 0.0
             p_is_reman    = bool(p.get("is_reman", False))
             p_uom         = (p.get("unit_of_measure") or "EA") or "EA"
 
@@ -841,7 +912,7 @@ class ProductImportService(BaseService):
                 category_id=cls["category_id"] or cat_id,        # §18.6 — deeper if confident, else Type
                 engine_manufacturer=cls["engine_manufacturer"],  # §18 A1 — Manufacturer = engine make
                 engine_model=cls["engine_model"],
-                needs_review=cls["needs_review"],                 # §18.6 — low-confidence → Import Review
+                needs_review=row_needs_review,                    # §18.6 low-confidence OR C8 reman-core-unknown → Import Review
                 status=ProductStatus.ACTIVE,
                 is_active=True,
                 special_order_only=True,
@@ -858,8 +929,11 @@ class ProductImportService(BaseService):
                 seo_description=p.get("seo_description") or "",
                 price_override=_to_float(p["price"]),          # OUR sell price
                 compare_at_price=_to_float(p["compare_at"]),   # marketing compare-at
+                # Source-format label: carried explicitly via "source_format"
+                # (a blank-core JAKS row now legitimately has core_charge=None,
+                # so the old `core_charge is not None` heuristic mislabeled it).
                 enrichment_source=(f"{row_code} scraper (JAKS export)"
-                                   if p.get("core_charge") is not None
+                                   if p.get("source_format") in ("jaks", "mapped")
                                    else f"{row_code} scraper (Shopify export)"),
                 last_enriched_at=datetime.utcnow(),
                 # Core charge — vendor and customer default to the scraped amount.

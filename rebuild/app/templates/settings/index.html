@@ -3,7 +3,8 @@
 {% block heading %}Settings{% endblock %}
 
 {% block content %}
-<div class="max-w-2xl" x-data="{ tab: 'company' }">
+<div class="max-w-2xl"
+     x-data="{ tab: (new URLSearchParams(window.location.search)).get('tab') || 'company' }">
 
   {# Saved flash #}
   {% if flash and flash.saved %}
@@ -18,6 +19,8 @@
     <button type="button" @click="tab = 'shopify'"    :class="tab === 'shopify'    ? 'tab-active' : 'tab-inactive'">Shopify</button>
     <button type="button" @click="tab = 'tax'"        :class="tab === 'tax'        ? 'tab-active' : 'tab-inactive'">Tax</button>
     <button type="button" @click="tab = 'system'"     :class="tab === 'system'     ? 'tab-active' : 'tab-inactive'">System</button>
+    <button type="button" @click="tab = 'reviews'"    :class="tab === 'reviews'    ? 'tab-active' : 'tab-inactive'">Reviews</button>
+    <button type="button" @click="tab = 'ai'"         :class="tab === 'ai'         ? 'tab-active' : 'tab-inactive'">AI</button>
   </div>
 
   {# Main settings form — every tab's inputs live in one form so Save persists all of
@@ -41,6 +44,10 @@
         </div>
         {% endif %}
         {% endfor %}
+        <a href="/settings/locations"
+           class="inline-flex items-center gap-1 text-sm font-medium text-brand-700 hover:text-brand-800">
+          Manage bill-to / ship-to locations →
+        </a>
       </div>
 
       <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
@@ -182,8 +189,14 @@
         {% if s.key in ['qbo_client_id','qbo_client_secret'] %}
         <div>
           <label class="block text-xs font-medium text-gray-600 mb-1">{{ s.label }}</label>
+          {# §21 — the secret is never echoed back (value stays blank). Encrypted
+             at rest; leave blank on save to keep the stored value. #}
           <input name="{{ s.key }}" value="{{ s.value }}" type="password" autocomplete="off"
+            placeholder="{{ '•••••••• saved — leave blank to keep' if s.is_set else '' }}"
             class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+          {% if s.key == 'qbo_client_secret' and s.is_set %}
+          <p class="text-[11px] text-gray-400 mt-1">Stored encrypted. Re-enter only to change it.</p>
+          {% endif %}
         </div>
         {% elif s.key == 'qbo_environment' %}
         <div>
@@ -365,23 +378,19 @@
         {% endfor %}
         <p class="text-xs text-gray-400">Document sequences &amp; backups are managed automatically (and from the Admin tools), not here.</p>
       </div>
-      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
-        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Smart Import — AI Categorization</h2>
-        {% for s in settings %}
-        {% if s.key == 'anthropic_api_key' %}
-        <div>
-          <label class="block text-xs font-medium text-gray-600 mb-1">{{ s.label }}</label>
-          <input name="{{ s.key }}" value="{{ s.value }}" type="password" autocomplete="off"
-            class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400"
-            placeholder="sk-ant-…" />
-        </div>
-        {% endif %}
-        {% endfor %}
-        <p class="text-xs text-gray-400">When set, a <b>🤖 AI-categorize flagged</b> button appears on any Smart Import batch's <em>Needs Review</em> tab. Claude suggests a <b>category, product description, and search tags</b> for each flagged row — a human still reviews and clicks Approve &amp; Apply. Model: <b>Claude Haiku</b> (~$0.001 per part, cheap/fast for bulk runs). Leave blank to disable. Never auto-approves anything.</p>
-      </div>
     </div>{# /system tab #}
 
-    <button type="submit" class="rounded-lg bg-brand-700 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-600 transition-colors">Save Settings</button>
+    {# ═══ AI TAB — placeholder so the tab content sits within the form spacer.
+       The actual AI form lives OUTSIDE the main settings <form> below, because
+       it POSTs to /settings/ai (encrypts the key with Fernet) instead of the
+       plain KV /settings/ endpoint. We render an empty div here so the Save
+       Settings button below stays hidden when the AI tab is active. ═══ #}
+    <div x-show="tab === 'ai'" x-cloak></div>
+
+    {# Reviews tab body lives OUTSIDE the form (download links + guidance, nothing to save). #}
+    <div x-show="tab === 'reviews'" x-cloak></div>
+
+    <button type="submit" x-show="tab !== 'ai' && tab !== 'reviews'" class="rounded-lg bg-brand-700 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-600 transition-colors">Save Settings</button>
   </form>
 
   {# ── Company tab: Logo upload — a SEPARATE multipart form (can't nest in the main form) ── #}
@@ -440,7 +449,7 @@
       </div>
       {% endif %}
 
-      <div class="flex items-center gap-2 pt-1">
+      <div class="flex flex-wrap items-center gap-2 pt-1">
         {% if qbo and qbo.connected %}
           <form method="post" action="/qbo/setup-items">
             <button class="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors">Set up QBO items</button>
@@ -453,6 +462,10 @@
         {% else %}
           <span class="text-xs text-gray-400">Enter your Client ID + Secret above and Save before connecting.</span>
         {% endif %}
+        {# Always reachable — the mapping page lets you set account names even before
+           connecting (it just can't show live dropdowns / verify until connected). #}
+        <a href="/settings/qbo-accounts"
+           class="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors">Map chart of accounts</a>
       </div>
 
       <p class="text-xs text-gray-400 border-t border-gray-100 pt-3">
@@ -462,6 +475,196 @@
       </p>
     </div>
   </div>{# /quickbooks connection panel #}
+
+  {# ── AI tab body — separate form because /settings/ai encrypts with Fernet
+       (different storage shape from the plain KV /settings/ POST). Sits outside
+       the main form so its inputs never accidentally post the API key plaintext
+       to the wrong endpoint. ── #}
+  <div x-show="tab === 'ai'" x-cloak class="space-y-4">
+
+    {% if flash and flash.ai_saved %}
+    <div class="rounded-lg bg-green-50 border border-green-200 text-green-700 px-4 py-2 text-sm">AI settings saved.</div>
+    {% endif %}
+    {% if flash and flash.ai_cleared %}
+    <div class="rounded-lg bg-amber-50 border border-amber-200 text-amber-700 px-4 py-2 text-sm">
+      API key cleared. The AI suggest button will be disabled until a new key is set.
+    </div>
+    {% endif %}
+    {% if flash and flash.ai_error %}
+    <div class="rounded-lg bg-red-50 border border-red-200 text-red-700 px-4 py-2 text-sm">{{ flash.ai_error }}</div>
+    {% endif %}
+
+    <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-5">
+      <div class="flex items-start justify-between gap-3 border-b border-gray-100 pb-3">
+        <div>
+          <h2 class="text-sm font-semibold text-gray-700 flex items-center gap-2">
+            {# sparkles icon #}
+            <svg class="w-4 h-4 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M10 1l1.7 4.6L16 7.3l-4.3 1.7L10 13.6 8.3 9 4 7.3l4.3-1.7L10 1zm6 8.5l.85 2.3L19 12.65l-2.15.85L16 15.8l-.85-2.3L13 12.65l2.15-.85L16 9.5zM4 14l.85 2.3L7 17.15l-2.15.85L4 20.3l-.85-2.3L1 17.15l2.15-.85L4 14z"/>
+            </svg>
+            Claude (Anthropic) — product description generator
+          </h2>
+          <p class="text-xs text-gray-500 mt-1">
+            Powers the <b>Suggest with AI</b> button on the product form (title, description, meta description).
+          </p>
+        </div>
+        {# Status chip — read from ai context #}
+        {% if ai and ai.is_configured %}
+          <span class="inline-flex items-center gap-1.5 rounded-full bg-green-100 text-green-800 px-2.5 py-0.5 text-xs font-medium whitespace-nowrap">
+            <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+            Configured
+          </span>
+        {% else %}
+          <span class="inline-flex items-center gap-1.5 rounded-full bg-amber-100 text-amber-800 px-2.5 py-0.5 text-xs font-medium whitespace-nowrap">
+            <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+            Not configured
+          </span>
+        {% endif %}
+      </div>
+
+      <form method="post" action="/settings/ai" class="space-y-4">
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">
+            Anthropic API key
+          </label>
+          <input name="anthropic_api_key" type="password" autocomplete="off"
+                 placeholder="{% if ai and ai.is_configured %}Leave blank to keep the current key{% else %}sk-ant-…{% endif %}"
+                 class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+          <p class="text-xs text-gray-400 mt-1">
+            Get a key at
+            <a href="https://console.anthropic.com/" target="_blank" rel="noopener" class="underline">console.anthropic.com</a>
+            → Settings → API keys. Stored encrypted at rest. Never logged.
+          </p>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Model</label>
+          {% set _m = (ai.model if ai else '') %}
+          <select name="ai_description_model"
+                  class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400">
+            <option value="claude-sonnet-4-6"  {% if _m == 'claude-sonnet-4-6'  or not _m %}selected{% endif %}>claude-sonnet-4-6 (default — best quality)</option>
+            <option value="claude-haiku-4-5-20251001" {% if _m == 'claude-haiku-4-5-20251001' %}selected{% endif %}>claude-haiku-4-5-20251001 (~5× cheaper / faster)</option>
+            <option value="claude-opus-4-8"    {% if _m == 'claude-opus-4-8' %}selected{% endif %}>claude-opus-4-8 (premium)</option>
+            {# Preserve any non-canonical override (e.g. a future model the owner
+               typed via the standalone /settings/ai page) so it isn't silently lost. #}
+            {% if _m and _m not in ['claude-sonnet-4-6', 'claude-haiku-4-5-20251001', 'claude-opus-4-8'] %}
+              <option value="{{ _m }}" selected>{{ _m }} (custom)</option>
+            {% endif %}
+          </select>
+          <p class="text-xs text-gray-400 mt-1">
+            Sonnet 4.6 is the right default. Haiku is ~5× cheaper if you're back-filling many products.
+          </p>
+        </div>
+
+        <div class="flex items-center gap-3 pt-2">
+          <button type="submit"
+                  class="rounded-lg bg-brand-700 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-600 transition-colors">
+            Save AI Settings
+          </button>
+          {% if ai and ai.is_configured %}
+          <button type="submit" name="clear" value="1"
+                  class="text-xs text-red-700 underline hover:no-underline"
+                  onclick="return confirm('Clear the Anthropic API key? AI suggestions will be disabled until a new key is set.');">
+            Clear key
+          </button>
+          {% endif %}
+        </div>
+      </form>
+    </div>
+
+    {# ── Test connection — pings POST /products/ai-suggest with a known sample part.
+         Renders the same panel partial the product form uses, so the owner can SEE
+         a real suggestion (or a real error) the moment they save the key. ── #}
+    <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-3">
+      <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Test connection</h2>
+      <p class="text-xs text-gray-500">
+        Sends a hardcoded sample part (Cummins ISX, vendor part <span class="font-mono">TEST-CONN</span>)
+        to Claude so you can verify the key works. The suggestion appears below — accept buttons are a no-op here.
+      </p>
+      <form hx-post="/products/ai-suggest"
+            hx-target="#ai-test-result"
+            hx-swap="innerHTML"
+            hx-indicator="#ai-test-indicator"
+            hx-sync="this:replace">
+        {# Hardcoded sample — DO NOT include the API key anywhere. #}
+        <input type="hidden" name="vendor_part_number" value="TEST-CONN" />
+        <input type="hidden" name="manufacturer" value="Cummins" />
+        <input type="hidden" name="engine_make" value="Cummins" />
+        <input type="hidden" name="engine_model" value="ISX" />
+        <button type="submit"
+                class="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                {% if not (ai and ai.is_configured) %}disabled title="Save an API key first."{% endif %}>
+          <svg class="w-4 h-4 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
+            <path d="M10 1l1.7 4.6L16 7.3l-4.3 1.7L10 13.6 8.3 9 4 7.3l4.3-1.7L10 1z"/>
+          </svg>
+          Test connection
+          <span id="ai-test-indicator" class="htmx-indicator text-xs text-gray-400">Asking Claude…</span>
+        </button>
+      </form>
+      <div id="ai-test-result"></div>
+    </div>
+  </div>{# /ai tab #}
+
+  {# ── REVIEWS tab — cold-start social-proof kit. Builds review-request lists
+       from finalized sales history. Outside the main form: pure downloads +
+       guidance. Routes + consent rules: app/services/review_outreach_service.py. ── #}
+  <div x-show="tab === 'reviews'" x-cloak class="space-y-4"
+       x-data="{ allSales: false,
+                 get qs(){ return this.allSales ? '?paid_only=false' : ''; } }">
+
+    <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+      <div class="border-b border-gray-100 pb-3">
+        <h2 class="text-sm font-semibold text-gray-700">Reviews &amp; Social Proof</h2>
+        <p class="text-xs text-gray-500 mt-1">
+          The storefront has almost no reviews while competitors run 800–1,200. The fastest honest fix is to
+          ask the customers who already bought from you. These two lists are built from your finalized sales —
+          one for product reviews (Judge.me), one for company reviews (Google).
+          Customers marked <b>do-not-contact</b> or opted-out are always excluded.
+        </p>
+      </div>
+
+      <label class="flex items-center gap-2 text-xs text-gray-600">
+        <input type="checkbox" x-model="allSales" class="rounded border-gray-300 text-brand-600 focus:ring-brand-400">
+        Include all finalized sales (open &amp; partial), not just fully-paid invoices
+      </label>
+
+      {# Track A — Google / company reviews #}
+      <div class="rounded-lg border border-gray-100 p-4 space-y-2">
+        <h3 class="text-sm font-medium text-gray-700">1 · Google reviews (the trust signal buyers check first)</h3>
+        <p class="text-xs text-gray-500">
+          A personal-ask list of your best customers (highest spend first) with per-channel consent flags.
+          Set up a <b>Google Business Profile</b>, grab your review link, then email/text these folks. Google
+          forbids incentives for its reviews — just ask.
+        </p>
+        <a :href="'/customers/review-requests/google.csv' + qs" download
+           class="inline-flex items-center gap-2 rounded-lg bg-brand-700 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 transition-colors">
+          Download Google outreach list (CSV)
+        </a>
+      </div>
+
+      {# Track B — Judge.me / product reviews #}
+      <div class="rounded-lg border border-gray-100 p-4 space-y-2">
+        <h3 class="text-sm font-medium text-gray-700">2 · Product reviews (puts star ratings on product pages)</h3>
+        <p class="text-xs text-gray-500">
+          Ready to upload to <b>Judge.me</b> (Shopify): Settings → Review requests → import CSV. One row per
+          customer + product they bought, deduped to the most recent purchase. Only includes products already
+          linked to Shopify and customers who allow email. Your product pages already render the star schema —
+          they just need data.
+        </p>
+        <a :href="'/customers/review-requests/judgeme.csv' + qs" download
+           class="inline-flex items-center gap-2 rounded-lg bg-brand-700 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 transition-colors">
+          Download Judge.me request CSV
+        </a>
+      </div>
+
+      <p class="text-xs text-gray-400 border-t border-gray-100 pt-3">
+        Ready-to-use email &amp; text copy lives in
+        <span class="font-mono">app/messaging_templates/review_request_email.txt</span> and
+        <span class="font-mono">review_request_sms.txt</span>. Keep asking every customer going forward — a
+        weekly export turns past sales into a steady stream of reviews.
+      </p>
+    </div>
+  </div>{# /reviews tab #}
 
 </div>
 {% endblock %}

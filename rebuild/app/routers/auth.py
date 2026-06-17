@@ -64,12 +64,16 @@ def login_submit(
     db.commit()
 
     resp = RedirectResponse("/", status_code=303)
+    # §21.3 — Secure flag set for HTTPS (directly or via X-Forwarded-Proto) or when
+    # JAKS_SECURE_COOKIES=1. Defaults OFF so a plain-HTTP LAN run still logs in.
+    from app.security import secure_cookies
     resp.set_cookie(
         SESSION_COOKIE,
         make_session_token(user.id),
         max_age=SESSION_MAX_AGE,
         httponly=True,
         samesite="lax",
+        secure=secure_cookies(request),
     )
     return resp
 

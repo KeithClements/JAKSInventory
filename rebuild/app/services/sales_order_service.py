@@ -208,9 +208,20 @@ class SalesOrderService(BaseService):
             "qty_ordered", "unit_price", "unit_cost",
             "discount_pct", "sort_order", "description",
         ]
+        qty_changed = (
+            "qty_ordered" in data and int(data["qty_ordered"]) != line.qty_ordered
+        )
         for field in updatable:
             if field in data:
                 setattr(line, field, data[field])
+
+        # Cascade qty_ordered to locked auto-core children — mirror invoice/quote
+        # update_line so the CORE_CHARGE row tracks its parent product line.
+        if qty_changed and line.parent_line_id is None:
+            for child in line.children:
+                if child.is_locked_to_parent or child.line_type == LineType.CORE_CHARGE:
+                    child.qty_ordered = line.qty_ordered
+
         self.db.commit()
         return line
 
@@ -401,6 +412,19 @@ class SalesOrderService(BaseService):
             raise ValueError(f"Sales order {so.so_number} is already fully invoiced")
         if so.status == SOStatus.HOLD:
             raise ValueError(f"Sales order {so.so_number} is on hold — release hold before invoicing")
+
+        # §21 — FULL payment mode = customer pays 100% up front (special orders).
+        # Block fulfill/invoice while the balance is uncollected, otherwise a
+        # "Pay in Full" $4,000 special order can ship with $0 actually received.
+        # DEPOSIT / NONE modes are net-terms and intentionally skip this gate.
+        if so.payment_mode == SOPaymentMode.FULL:
+            so_value = so.subtotal
+            if (so.deposit_amount or 0.0) + 0.01 < so_value:
+                raise ValueError(
+                    f"Sales order {so.so_number} is set to Pay in Full but only "
+                    f"${so.deposit_amount:.2f} of ${so_value:.2f} has been collected. "
+                    f"Record the remaining payment before invoicing."
+                )
 
         # Snapshot SO subtotal BEFORE fulfillment for proportional deposit allocation
         so_total_before = sum(
