@@ -32,6 +32,7 @@ _TARGETS = [
     ("cross_references", "ref_number", "ref_number_norm"),
     ("product_vendor_sources", "vendor_part_number", "vendor_part_number_norm"),
     ("product_vendor_sources", "vendor_sku", "vendor_sku_norm"),
+    ("products", "sku", "sku_norm"),   # §21 — indexed SKU search
 ]
 
 

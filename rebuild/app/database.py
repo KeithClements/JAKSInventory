@@ -297,6 +297,10 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     #    one customer per real DOT (see the partial-unique index below). NULL for
     #    every non-carrier customer. ─────────────────────────────────────────────
     ("customers", "usdot_number", "INTEGER NULL"),
+
+    # ── §21 — precomputed normalized SKU for indexed SKU search (also added +
+    #    backfilled by search_index.ensure_search_norm_columns on startup). ─────
+    ("products", "sku_norm", "TEXT NULL"),
 ]
 
 
@@ -345,6 +349,12 @@ _PENDING_INDEXES: list[tuple[str, str, str]] = [
     ("ix_quote_lines_quote_id",     "quote_lines",   "quote_id"),
     ("ix_so_lines_so_id",           "so_lines",      "so_id"),
     ("ix_po_lines_po_id",           "po_lines",      "po_id"),
+    # §21 — search's "last sold price" lookup + sales-by-product report scan
+    # InvoiceLine by product_id; unindexed it was a full scan that grows with
+    # invoice history.
+    ("ix_invoice_lines_product_id", "invoice_lines", "product_id"),
+    # §21 — engine-application search joins product_applications by product_id.
+    ("ix_product_applications_product_id", "product_applications", "product_id"),
 ]
 
 

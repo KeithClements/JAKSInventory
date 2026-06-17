@@ -33,9 +33,11 @@ DEFAULT_LIMIT = 8
 # own COMP badge instead of falling back to the default PART chip.
 MATCH_TYPE_LABELS = {
     "part_number": "PART",
+    "barcode": "SCAN",         # §21 — matched the product's barcode/UPC
     "cross_ref": "OEM",
     "vendor_sku": "VEND",
     "competitor": "COMP",
+    "engine_app": "ENGINE",    # §21 — matched a ProductApplication (engine fit)
     "description": "DESC",
 }
 

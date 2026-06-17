@@ -29,7 +29,7 @@ from sqlalchemy import func as sa_func
 from app.models.competitor import CompetitorPrice
 from app.models.customer import Customer
 from app.models.invoice import Invoice, InvoiceLine
-from app.models.product import CrossReference, Product, ProductVendorSource
+from app.models.product import CrossReference, Product, ProductApplication, ProductVendorSource
 from app.models.purchase_order import PurchaseOrder
 from app.models.quote import Quote, SalesOrder
 from app.models.vendor import Vendor
@@ -65,7 +65,7 @@ class ProductSearchResult:
     qty_on_hand: int
     vendor_name: str | None
     status: str
-    match_type: str          # "part_number" | "cross_ref" | "competitor" | "vendor_sku" | "description"
+    match_type: str          # part_number | barcode | cross_ref | vendor_sku | competitor | engine_app | description
     cross_ref_number: str | None = None
     last_sold_price: float | None = None   # most recent invoice line price for this product
     last_sold_date: str | None = None      # formatted date of that sale (MM/DD/YY)
@@ -141,13 +141,32 @@ class SearchService(BaseService):
         nq = normalize_part(q)
 
         if nq:
-            sku_norm = _norm_col(Product.sku)
+            # §21 — use the precomputed, INDEXED sku_norm column (kept in sync by
+            # the Product before_insert/update listener + backfilled on startup by
+            # search_index.ensure_search_norm_columns) instead of normalizing every
+            # row with a SQL function on each keystroke. Same pattern as the
+            # vendor_part_number_norm / ref_number_norm columns used below.
+            sku_norm = Product.sku_norm
 
             # 1. Exact SKU match (normalized)
             exact = base_q.filter(sku_norm == nq).first()
             if exact and exact.id not in seen:
                 seen.add(exact.id)
                 results.append(_to_result(exact, "part_number"))
+
+            # 1b. Barcode / UPC exact match (normalized) — a counter scanner
+            #     outputs the bare barcode; an exact hit on the dedicated barcode
+            #     field is an unambiguous "this exact part" signal, so it ranks
+            #     right behind an exact SKU. (The Scan button focuses the search
+            #     box; a scanned code resolves here.)
+            if len(results) < limit:
+                bc_norm = _norm_col(Product.barcode)
+                bc_hit = base_q.filter(
+                    Product.barcode.isnot(None), Product.barcode != "", bc_norm == nq
+                ).first()
+                if bc_hit and bc_hit.id not in seen:
+                    seen.add(bc_hit.id)
+                    results.append(_to_result(bc_hit, "barcode"))
 
             # 2. SKU contains (normalized), prefix matches ranked first —
             #    "141" finds "14-1234"; "ok1" finds "OK-1".
@@ -224,6 +243,40 @@ class SearchService(BaseService):
                         results.append(_to_result(p, "competitor", cross_ref_number=cp.competitor_part_number))
                     if len(results) >= limit:
                         break
+
+        # 5c. Engine application (ProductApplication) — "Cummins ISX", "ISX",
+        #     "DD15" etc. find every part that fits that engine. Uses the RAW
+        #     query (spaces kept) against make / model / "make model". Populated
+        #     from the PAI feed but was never queried before. Ranked below part-
+        #     number matches so a real part # always wins.
+        if q and len(results) < limit:
+            make_model = sa_func.lower(
+                ProductApplication.engine_make + " " + ProductApplication.engine_model
+            )
+            ql = q.lower()
+            app_hits = (
+                self.db.query(ProductApplication, Product)
+                .join(Product, ProductApplication.product_id == Product.id)
+                .filter(
+                    or_(
+                        sa_func.lower(ProductApplication.engine_make).like(f"%{ql}%"),
+                        sa_func.lower(ProductApplication.engine_model).like(f"%{ql}%"),
+                        make_model.like(f"%{ql}%"),
+                    )
+                )
+                .filter(Product.is_active == True if not include_inactive else True)  # noqa: E712
+                .limit(limit)
+                .all()
+            )
+            for app_row, p in app_hits:
+                if p.id not in seen:
+                    seen.add(p.id)
+                    label = " ".join(
+                        x for x in (app_row.engine_make, app_row.engine_model) if x
+                    ).strip()
+                    results.append(_to_result(p, "engine_app", cross_ref_number=label or None))
+                if len(results) >= limit:
+                    break
 
         # 6. Description keyword (lowest priority — raw prose, not part-normalized)
         if len(results) < limit:

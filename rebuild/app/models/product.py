@@ -85,6 +85,11 @@ class Product(Base):
     # For single-sourced products this mirrors the vendor source SKU. For multi-sourced
     # products the preferred vendor source SKU is used here by convention.
     sku: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    # §21 — precomputed normalized SKU (lower + separators stripped) for indexed
+    # SKU search, mirroring vendor_part_number_norm/ref_number_norm. Kept in sync
+    # by the before_insert/before_update listener below; backfilled by
+    # search_index.ensure_search_norm_columns on startup.
+    sku_norm: Mapped[str | None] = mapped_column(String(100), nullable=True)
     title: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     brand: Mapped[str] = mapped_column(String(200), nullable=False, default="")
@@ -628,6 +633,12 @@ def _xref_set_norm(_mapper, _conn, target):  # noqa: ANN001
 def _pvs_set_norm(_mapper, _conn, target):  # noqa: ANN001
     target.vendor_part_number_norm = _norm_part_value(target.vendor_part_number)
     target.vendor_sku_norm = _norm_part_value(target.vendor_sku)
+
+
+@event.listens_for(Product, "before_insert")
+@event.listens_for(Product, "before_update")
+def _product_set_sku_norm(_mapper, _conn, target):  # noqa: ANN001
+    target.sku_norm = _norm_part_value(target.sku)
 
 
 # ── Late imports ───────────────────────────────────────────────────────────────
