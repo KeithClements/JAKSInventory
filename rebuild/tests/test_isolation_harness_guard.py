@@ -21,6 +21,10 @@ _EXEMPT = {
     # Backup-acceptance test creates a FILE-based SQLite DB via tmp_path — not
     # an in-memory harness anti-pattern; intentionally file-based for backup/restore.
     "test_backup_acceptance.py",
+    # Alembic-adoption test deliberately builds isolated file + in-memory engines
+    # to exercise app/db_migrate.adopt() (the file-DB path can't use the shared
+    # in-memory harness); it saves/restores the app globals itself.
+    "test_alembic_adoption.py",
 }
 
 _TARGETS = sorted(

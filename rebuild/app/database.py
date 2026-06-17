@@ -567,7 +567,23 @@ def init_db() -> None:
     # Importing __all_models__ is not dead code — the import side-effect registers
     # every model class with Base.metadata so create_all() can see all tables.
     from app.models import __all_models__  # noqa: F401
+    # Detect a brand-new DB BEFORE create_all so the Alembic adopter can decide
+    # whether to stamp at HEAD (fresh — create_all builds the full current schema)
+    # or at BASELINE (an existing pre-Alembic DB that future revisions must still
+    # upgrade). 'users' is always present in any initialized DB.
+    try:
+        _was_fresh = "users" not in set(inspect(engine).get_table_names())
+    except Exception:
+        _was_fresh = False
     Base.metadata.create_all(bind=engine)
     _apply_inline_migrations()
     _apply_index_migrations()
     _apply_unique_index_migrations()
+    # Adopt Alembic / apply any pending revisions. File DBs only — in-memory test
+    # DBs build their schema from create_all above and skip Alembic (see
+    # app/db_migrate.py). Best-effort: never blocks startup.
+    try:
+        from app import db_migrate
+        db_migrate.adopt(was_fresh=_was_fresh)
+    except Exception:
+        log.exception("Alembic adoption step errored (continuing)")

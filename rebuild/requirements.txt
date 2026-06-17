@@ -1,6 +1,7 @@
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 sqlalchemy==2.0.49  # 2.0.36 incompatible with Python 3.14 (types.UnionType handling)
+alembic==1.18.4  # DB schema migrations (versioned + reversible); adopted by stamp, see app/db_migrate.py
 jinja2==3.1.4
 python-multipart==0.0.12
 aiofiles==24.1.0
