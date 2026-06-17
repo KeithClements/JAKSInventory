@@ -1,0 +1,29 @@
+{# macros/_pager.html — §21 reusable list pager.
+   Renders "Showing A–B of N" + Prev/Next that preserve the current querystring
+   (tab/q/sort/direction…). Expects a `pager` dict in context:
+     { page, per_page, total, total_pages, start, end }
+   Pass `pager_base` = the list's base path (e.g. "/invoices/"). #}
+{% macro pager(pager, base) %}
+{% if pager and pager.total > pager.per_page %}
+{% set qp = request.query_params %}
+{% set keep = [] %}
+{% for k, v in qp.items() if k != 'page' %}{% set _ = keep.append(k ~ '=' ~ v) %}{% endfor %}
+{% set qs = ('&' ~ keep|join('&')) if keep else '' %}
+<div class="flex items-center justify-between px-1 py-3 text-sm text-gray-500">
+  <span>Showing <b class="text-gray-700">{{ pager.start }}–{{ pager.end }}</b> of <b class="text-gray-700">{{ pager.total }}</b></span>
+  <div class="flex items-center gap-1">
+    {% if pager.page > 1 %}
+    <a href="{{ base }}?page={{ pager.page - 1 }}{{ qs }}" class="btn-secondary btn-sm">← Prev</a>
+    {% else %}
+    <span class="btn-secondary btn-sm opacity-40 cursor-not-allowed">← Prev</span>
+    {% endif %}
+    <span class="px-2 text-xs text-gray-400">Page {{ pager.page }} / {{ pager.total_pages }}</span>
+    {% if pager.page < pager.total_pages %}
+    <a href="{{ base }}?page={{ pager.page + 1 }}{{ qs }}" class="btn-secondary btn-sm">Next →</a>
+    {% else %}
+    <span class="btn-secondary btn-sm opacity-40 cursor-not-allowed">Next →</span>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+{% endmacro %}

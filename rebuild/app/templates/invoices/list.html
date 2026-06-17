@@ -26,6 +26,7 @@
 {% from "macros/preview_dock.html" import preview_dock_shell %}
 {% from "macros/chips.html" import status_chip, qbo_status_chip, status_stack %}
 {% from "macros/sortable.html" import sortable_th %}
+{% from "macros/_pager.html" import pager as pager_nav with context %}
 {{ operational_list_script() }}
 
 {# Preserve the active tab + search when a sortable column header is clicked. #}
@@ -279,13 +280,16 @@
   <div class="px-5 py-3 border-t border-gray-100 flex items-center justify-between"
        style="background:#fafbfa; font-family:'IBM Plex Mono',monospace; font-size:11px; color:#7c838b;">
     <span>
-      {{ invoices | length }} invoice{{ 's' if invoices | length != 1 else '' }}
+      {{ pager.total if pager else (invoices | length) }} invoice{{ 's' if (pager.total if pager else invoices|length) != 1 else '' }}
       {% if tab != 'all' or q %} · filtered{% endif %}
     </span>
     <span x-show="selectedCount > 0" x-cloak class="text-brand-700 font-medium">
       <span x-text="selectedCount"></span> selected
     </span>
   </div>
+
+  {# §21 — pagination (replaces the old silent limit(200)) #}
+  {{ pager_nav(pager, '/invoices/') }}
 </div>
 
 {% else %}

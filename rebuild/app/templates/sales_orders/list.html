@@ -24,6 +24,7 @@
 {% from "macros/preview_dock.html"  import preview_dock_shell %}
 {% from "macros/metric_strip.html"  import metric_strip %}
 {% from "macros/so_status.html"     import so_po_status_chip %}
+{% from "macros/_pager.html"        import pager as pager_nav with context %}
 {{ operational_list_script() }}
 
 {# ── Backend-contract guard: tab param arrives once backend adds counts ───────
@@ -334,13 +335,14 @@
   <div class="px-5 py-3 border-t border-gray-100 flex items-center justify-between"
        style="background:#fafbfa; font-family:'IBM Plex Mono',monospace; font-size:11px; color:#7c838b;">
     <span>
-      {{ orders | length }} order{{ 's' if orders | length != 1 else '' }}
+      {{ pager.total if pager else (orders | length) }} order{{ 's' if (pager.total if pager else orders|length) != 1 else '' }}
       {% if active_tab or q %} · filtered{% endif %}
     </span>
     <span x-show="selectedCount > 0" x-cloak class="text-brand-700 font-medium">
       <span x-text="selectedCount"></span> selected
     </span>
   </div>
+  {{ pager_nav(pager, '/sales-orders/') }}
 </div>
 
 {% else %}

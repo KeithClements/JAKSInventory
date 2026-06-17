@@ -1745,6 +1745,32 @@ def _optional_user_id(request: Request) -> int | None:
         return None
 
 
+@router.post("/statements/bulk-generate", response_class=RedirectResponse)
+def customers_bulk_statements(
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """§21 — month-end: generate + persist a statement for every customer with an
+    open AR balance, for the current calendar month. Redirects to AR aging with a
+    summary flash."""
+    from datetime import datetime
+    from app.services.statement_service import StatementService
+    # Use the UTC date — invoices are timestamped UTC (func.now()), so a local
+    # date.today() near midnight could exclude "today's" just-created invoices.
+    today = datetime.utcnow().date()
+    period_start = today.replace(day=1)
+    try:
+        summary = StatementService(db).generate_bulk_statements(
+            period_start, today, generated_by_user_id=user_id)
+    except Exception:
+        log.exception("bulk statement generation failed")
+        return RedirectResponse(
+            f"/reports/ar-aging?error={url_quote('Bulk statement generation failed.')}",
+            status_code=303)
+    msg = f"Generated {summary['generated']} statement(s) for {summary['customers']} customer(s) with a balance."
+    return RedirectResponse(f"/reports/ar-aging?ok={url_quote(msg)}", status_code=303)
+
+
 @router.get("/{customer_id}/statement", response_class=HTMLResponse)
 def customer_statement_form(
     customer_id: int,

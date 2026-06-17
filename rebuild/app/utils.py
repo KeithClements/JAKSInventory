@@ -85,6 +85,25 @@ def apply_sort(query, allowed: dict, sort: str, direction: str = "asc", default:
     return query.order_by(col.desc() if direction == "desc" else col.asc()), key, direction
 
 
+def compute_pager(page: int, total: int, per_page: int = 50) -> dict:
+    """§21 — list pagination math. Returns a dict the macros/_pager.html partial
+    renders: {page, per_page, total, total_pages, start, end, offset}. Clamps the
+    page into range so a bad ?page= never errors."""
+    per_page = max(1, int(per_page))
+    total = max(0, int(total))
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    try:
+        page = int(page)
+    except (TypeError, ValueError):
+        page = 1
+    page = min(max(1, page), total_pages)
+    offset = (page - 1) * per_page
+    start = (offset + 1) if total else 0
+    end = min(offset + per_page, total)
+    return {"page": page, "per_page": per_page, "total": total,
+            "total_pages": total_pages, "start": start, "end": end, "offset": offset}
+
+
 def normalize_part(s: str) -> str:
     """
     Fold a part / OEM / cross-reference number for matching: strip every

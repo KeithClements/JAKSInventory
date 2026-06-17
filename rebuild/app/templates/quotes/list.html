@@ -18,6 +18,7 @@
 {% from "macros/empty_state.html" import empty_state %}
 {% from "macros/filter_tabs.html" import filter_tabs %}
 {% from "macros/sortable.html" import sortable_th %}
+{% from "macros/_pager.html" import pager as pager_nav with context %}
 {% import "macros/motion.html" as motion %}
 {% set _sqs = '&status=' ~ status_filter ~ ('&q=' ~ (q | urlencode) if q else '') %}
 {% from "macros/bulk_toolbar.html" import bulk_toolbar %}
@@ -487,13 +488,14 @@ function trapFocus(e, container) {
   {# ── Table footer count ── #}
   <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
     <span class="text-xs text-gray-400">
-      {{ quotes | length }} quote{{ 's' if quotes | length != 1 else '' }}
+      {{ pager.total if pager else (quotes | length) }} quote{{ 's' if (pager.total if pager else quotes|length) != 1 else '' }}
       {% if status_filter or q %} · filtered{% endif %}
     </span>
     <span x-show="selectedCount > 0" x-cloak class="text-xs text-brand-700 font-medium">
       <span x-text="selectedCount"></span> selected
     </span>
   </div>
+  {{ pager_nav(pager, '/quotes/') }}
 </div>
 
 {# Legend for urgency indicators #}

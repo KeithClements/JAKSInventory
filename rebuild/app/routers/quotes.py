@@ -87,6 +87,7 @@ async def list_quotes(
     customer_id: int = 0,
     sort: str = "created",
     direction: str = "desc",
+    page: int = 1,
     db: Session = Depends(get_db),
 ):
     from datetime import datetime, date as date_type
@@ -159,7 +160,9 @@ async def list_quotes(
     query, sort, direction = apply_sort(
         query, _Q_SORT, (None if _margin_sort else sort), direction, default="created"
     )
-    quotes = query.limit(150).all()
+    # §21 — pagination (was a silent limit(150)).
+    from app.utils import compute_pager
+    pager = compute_pager(page, query.order_by(None).count(), per_page=50)
     if _margin_sort:
         sort = "margin"  # echo the active key back to the template's sort header
 
@@ -174,7 +177,12 @@ async def list_quotes(
             )
             return (sub - cost) / sub
 
-        quotes.sort(key=_q_margin, reverse=(direction == "desc"))
+        # margin is a computed property → sort the full (capped) set, then slice.
+        _rows = query.limit(2000).all()
+        _rows.sort(key=_q_margin, reverse=(direction == "desc"))
+        quotes = _rows[pager["offset"]:pager["offset"] + pager["per_page"]]
+    else:
+        quotes = query.limit(pager["per_page"]).offset(pager["offset"]).all()
 
     # ── Bulk AR aggregate for visible customer set (no N+1) ───────────────
     from collections import defaultdict
@@ -231,6 +239,7 @@ async def list_quotes(
             "today": today,
             "counts": counts,
             "ar_map": ar_map,
+            "pager": pager,
         },
     )
 

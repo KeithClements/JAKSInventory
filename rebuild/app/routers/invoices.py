@@ -303,6 +303,7 @@ def invoice_list(
     q: str = "",
     sort: str = "created",
     direction: str = "desc",
+    page: int = 1,
     # `status` kept for backward-compat with old links (?status=open).
     status: str = "",
     db: Session = Depends(get_db),
@@ -400,13 +401,22 @@ def invoice_list(
     query, sort, direction = apply_sort(
         query, _INV_SORT, (None if _computed_sort else sort), direction, default="created"
     )
-    invoices = query.limit(200).all()
+    # §21 — real pagination (was a silent limit(200) that hid older invoices).
+    from app.utils import compute_pager
+    total_rows = query.order_by(None).count()
+    pager = compute_pager(page, total_rows, per_page=50)
     if _computed_sort:
+        # total/balance are computed properties → must sort the full set in Python,
+        # then slice the page (cap the load so a huge filtered set can't blow up).
         sort = _computed_sort  # echo the active key back to the sort headers
-        invoices.sort(
+        rows = query.limit(2000).all()
+        rows.sort(
             key=(lambda i: i.total) if _computed_sort == "total" else (lambda i: i.balance_due),
             reverse=(direction == "desc"),
         )
+        invoices = rows[pager["offset"]:pager["offset"] + pager["per_page"]]
+    else:
+        invoices = query.limit(pager["per_page"]).offset(pager["offset"]).all()
     return templates.TemplateResponse(
         request,
         "invoices/list.html",
@@ -420,6 +430,7 @@ def invoice_list(
             "counts": counts,
             "InvoiceStatus": InvoiceStatus,
             "now": now,
+            "pager": pager,
         },
     )
 

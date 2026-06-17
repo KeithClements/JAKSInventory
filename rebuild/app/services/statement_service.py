@@ -242,6 +242,40 @@ class StatementService:
 
     # ── R3 — Statement persistence (immutable record of what was sent) ────────
 
+    def generate_bulk_statements(
+        self,
+        period_start: date,
+        period_end: date,
+        generated_by_user_id: int | None = None,
+    ) -> dict:
+        """§21 — generate + persist a statement for every customer who has an open
+        AR balance (an OPEN/PARTIAL invoice). Lets the bookkeeper run month-end
+        statements in one pass instead of one customer at a time. Returns a
+        summary; per-customer failures are collected, not raised.
+
+        (Generation only — there's no email provider yet, so 'send' is out of
+        scope; the persisted statements are printable/archivable as usual.)"""
+        customer_ids = [
+            cid for (cid,) in (
+                self.db.query(Invoice.customer_id)
+                .filter(Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL]))
+                .distinct()
+                .all()
+            )
+        ]
+        generated = 0
+        errors: list[str] = []
+        for cid in customer_ids:
+            try:
+                stmt = self.generate_statement(cid, period_start, period_end)
+                if stmt["closing_balance"] <= 0 and not stmt["lines"]:
+                    continue  # nothing to show
+                self.persist_statement(stmt, generated_by_user_id)
+                generated += 1
+            except Exception as exc:  # noqa: BLE001 — one bad customer must not abort the batch
+                errors.append(f"customer {cid}: {exc}")
+        return {"customers": len(customer_ids), "generated": generated, "errors": errors}
+
     def persist_statement(
         self,
         stmt: StatementData,

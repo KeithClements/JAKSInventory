@@ -90,6 +90,7 @@ async def list_sales_orders(
     tab: str = "",
     status: str = "",
     q: str = "",
+    page: int = 1,
     db: Session = Depends(get_db),
 ):
     # ── Unfiltered tab counts ─────────────────────────────────────────────
@@ -129,7 +130,11 @@ async def list_sales_orders(
                 SalesOrder.esn.ilike(f"%{q}%"),
             )
         )
-    orders = query.order_by(SalesOrder.created_at.desc()).limit(150).all()
+    # §21 — pagination (was a silent limit(150)).
+    from app.utils import compute_pager
+    query = query.order_by(SalesOrder.created_at.desc())
+    pager = compute_pager(page, query.order_by(None).count(), per_page=50)
+    orders = query.limit(pager["per_page"]).offset(pager["offset"]).all()
     return templates.TemplateResponse(
         request,
         "sales_orders/list.html",
@@ -140,6 +145,7 @@ async def list_sales_orders(
             "counts": counts,
             "q": q,
             "SOStatus": SOStatus,
+            "pager": pager,
             # §5.1 — SO dashboard strip metrics (UI renders the tiles)
             "so_metrics": SalesOrderMetricsService(db).dashboard_metrics(),
         },
