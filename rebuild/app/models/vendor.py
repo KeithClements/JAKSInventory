@@ -24,6 +24,10 @@ class Vendor(Base):
     vendor_number: Mapped[str] = mapped_column(String(2), nullable=False, default="")
     account_number: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     website: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    # §21 — persisted QBO Vendor binding. qbo_service._resolve_vendor already
+    # hasattr-gates this and writes it on first push; before this column it
+    # re-resolved by name on every vendor-bill push (dup-vendor risk on rename).
+    qbo_vendor_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # ── Single primary contact (kept for quick access; full list → vendor_contacts) ──
     contact_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")

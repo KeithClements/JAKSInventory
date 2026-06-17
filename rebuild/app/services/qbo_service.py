@@ -62,6 +62,19 @@ DEFAULT_ITEM_MAP: dict[str, str] = {
 _EXCLUDED_LINE_TYPES = {LineType.CC_SURCHARGE, LineType.TAX}
 # The distinct generic items we depend on existing in QBO.
 DEFAULT_ITEM_NAMES = sorted(set(DEFAULT_ITEM_MAP.values()))
+
+# §21 — markers Intuit returns when a company on Automated Sales Tax rejects a
+# manual TxnTaxDetail override. Used to trigger a no-override retry (let QBO's
+# AST compute the tax) instead of failing the push.
+_AST_TAX_ERROR_MARKERS = (
+    "txntaxdetail", "automated sales tax", "ast", "taxdetail",
+    "cannot specify the txn tax", "tax is calculated automatically",
+)
+
+
+def _is_ast_tax_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(m in msg for m in _AST_TAX_ERROR_MARKERS)
 # Invoice statuses we will push (finalized only — never a draft).
 _PUSHABLE_STATUSES = {InvoiceStatus.OPEN, InvoiceStatus.PARTIAL, InvoiceStatus.PAID}
 # Vendor-bill statuses we will push (3-way-match approved or already paid —
@@ -171,7 +184,20 @@ class QBOSyncService(BaseService):
             item_ids = self._resolve_items(client)
             customer_ref = self._resolve_customer(client, inv.customer)
             payload = self._build_invoice_payload(inv, customer_ref, item_ids)
-            created = client.create("Invoice", payload)
+            try:
+                created = client.create("Invoice", payload)
+            except QBOError as exc:
+                # §21 — Automated Sales Tax: a company with AST rejects our
+                # TxnTaxDetail override. Retry once letting QBO compute the tax
+                # rather than failing the push outright.
+                if _is_ast_tax_error(exc) and "TxnTaxDetail" in payload:
+                    log.info("invoice %s: AST tax-override rejected, retrying without override",
+                             inv.invoice_number)
+                    payload = self._build_invoice_payload(
+                        inv, customer_ref, item_ids, include_tax_override=False)
+                    created = client.create("Invoice", payload)
+                else:
+                    raise
             qbo_id = str(created.get("Id", "")).strip()
             if not qbo_id:
                 raise QBOError(f"QBO did not return an invoice Id: {created}")
@@ -193,20 +219,53 @@ class QBOSyncService(BaseService):
             self._audit_push(EntityType.INVOICE, invoice_id, ok=False, detail=msg)
             return {"ok": False, "error": msg}
 
-    def unsynced_invoice_ids(self) -> list[int]:
-        """IDs of finalized invoices not yet synced to QBO (qbo_sync_status !=
-        'synced'). Used by the bulk-push 'all unsynced' mode."""
+    def unsynced_invoice_ids(self, pending_only: bool = False) -> list[int]:
+        """IDs of finalized invoices not yet synced to QBO. Used by the bulk-push
+        'all unsynced' mode.
+
+        §21 — pending_only=True excludes ERROR-status invoices so a bulk "Sync
+        All" doesn't re-hammer Intuit with invoices that already failed (e.g. an
+        AST/tax config issue that will just fail again). The background retry
+        worker handles ERROR invoices on its own schedule."""
+        statuses = (
+            [QBOSyncStatus.PENDING] if pending_only
+            else None  # everything not synced
+        )
+        q = self.db.query(Invoice.id).filter(Invoice.status.in_(_PUSHABLE_STATUSES))
+        if statuses is not None:
+            q = q.filter(Invoice.qbo_sync_status.in_(statuses))
+        else:
+            q = q.filter(Invoice.qbo_sync_status != QBOSyncStatus.SYNCED)
+        return [iid for (iid,) in q.order_by(Invoice.id).all()]
+
+    def failed_invoice_ids(self, max_retries: int = 5) -> list[int]:
+        """§21 — ERROR-status invoices still under the retry ceiling, for the
+        background retry worker. Past the ceiling they're left for manual review
+        so a permanently-broken invoice doesn't loop forever."""
         return [
             iid for (iid,) in (
                 self.db.query(Invoice.id)
                 .filter(
                     Invoice.status.in_(_PUSHABLE_STATUSES),
-                    Invoice.qbo_sync_status != QBOSyncStatus.SYNCED,
+                    Invoice.qbo_sync_status == QBOSyncStatus.ERROR,
+                    Invoice.qbo_sync_retry_count < max_retries,
                 )
                 .order_by(Invoice.id)
                 .all()
             )
         ]
+
+    def retry_failed_pushes(self, limit: int = 25) -> dict:
+        """§21 — re-push ERROR invoices (under the retry ceiling). Returns a
+        summary; never raises (per-invoice push is already fail-soft)."""
+        ids = self.failed_invoice_ids()[:limit]
+        ok = 0
+        for iid in ids:
+            if self.push_invoice(iid).get("ok"):
+                ok += 1
+        if ids:
+            log.info("QBO retry worker: re-pushed %d/%d failed invoices", ok, len(ids))
+        return {"attempted": len(ids), "succeeded": ok}
 
     # ── payment push ────────────────────────────────────────────────────────
     def push_payment(self, payment_id: int) -> dict:
@@ -666,9 +725,13 @@ class QBOSyncService(BaseService):
         )
 
     def _build_invoice_payload(self, inv: Invoice, customer_ref: dict,
-                               item_ids: dict[str, str]) -> dict:
+                               item_ids: dict[str, str],
+                               include_tax_override: bool = True) -> dict:
         imap = self.item_map()
         push_tax = get_setting_value_db(self.db, "qbo_push_tax", "true").strip().lower() == "true"
+        # §21 — AST companies reject the TxnTaxDetail override; the push layer
+        # retries with include_tax_override=False so QBO's own tax engine computes it.
+        push_tax = push_tax and include_tax_override
 
         lines: list[dict] = []
         for ln in sorted(inv.lines, key=lambda x: x.sort_order):

@@ -214,7 +214,10 @@ async def qbo_push_batch(
     svc = QBOSyncService(db, current_user_id=user_id)
     ids, mode = await _parse_batch_request(request)
     if mode in _ALL_UNSYNCED_MODES:
-        ids = svc.unsynced_invoice_ids()
+        # §21 — pending_only: skip ERROR invoices so a bulk "Sync All" doesn't
+        # re-hammer Intuit with known failures (the background retry worker
+        # re-attempts those on its own schedule, under a retry ceiling).
+        ids = svc.unsynced_invoice_ids(pending_only=True)
 
     results = []
     for iid in ids:

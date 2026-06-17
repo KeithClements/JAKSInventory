@@ -122,6 +122,7 @@ def on_startup() -> None:
         db.close()
     _start_shopify_scheduler()
     _start_overdue_core_scheduler()
+    _start_qbo_retry_scheduler()
 
 
 def _ensure_search_norm_columns(db: Session) -> None:
@@ -448,6 +449,37 @@ def _start_overdue_core_scheduler() -> None:
 
     threading.Thread(target=_loop, daemon=True, name="overdue-core-daily-scan").start()
     log.info("daily overdue-core scheduler started")
+
+
+def _start_qbo_retry_scheduler() -> None:
+    """§21 — background retry for ERROR-status QBO invoice pushes. "Sync Failed"
+    invoices previously sat until someone manually re-pushed; this re-attempts
+    them (under the per-invoice retry ceiling) every ~30 min while QBO is
+    connected. Each push is already fail-soft and never touches the money path.
+    Skipped under the in-memory test engine; never raises."""
+    import threading
+    import time as _time
+
+    if ":memory:" in str(_appdb.engine.url):
+        return
+
+    def _loop() -> None:
+        while True:
+            try:
+                db = _appdb.SessionLocal()
+                try:
+                    from app.services.qbo_service import QBOSyncService
+                    svc = QBOSyncService(db, current_user_id=None)
+                    if svc.connection_summary().get("connected"):
+                        svc.retry_failed_pushes()
+                finally:
+                    db.close()
+            except Exception:
+                log.exception("QBO retry scheduler tick failed (continuing)")
+            _time.sleep(1800)   # every 30 minutes
+
+    threading.Thread(target=_loop, daemon=True, name="qbo-retry-worker").start()
+    log.info("QBO retry scheduler started (idle until connected)")
 
 
 app.include_router(dashboard.router)

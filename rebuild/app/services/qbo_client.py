@@ -351,6 +351,16 @@ class QBOClient:
             # token went stale mid-flight — refresh once and retry
             self.cfg = refresh_access_token(self.db)
             return self.request(method, path, json=json, params=params, _retried=True)
+        if resp.status_code == 429 and not _retried:
+            # §21 — Intuit rate limit: wait the Retry-After (capped) and retry once
+            # instead of failing the whole batch on a throttle.
+            import time as _time
+            try:
+                wait = float(resp.headers.get("Retry-After", "2"))
+            except (TypeError, ValueError):
+                wait = 2.0
+            _time.sleep(min(max(wait, 1.0), 10.0))
+            return self.request(method, path, json=json, params=params, _retried=True)
         if resp.status_code >= 400:
             raise QBOError(f"QBO {method} {path} → {resp.status_code}: {resp.text[:500]}")
         return resp.json() if resp.content else {}

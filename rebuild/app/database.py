@@ -301,6 +301,9 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     # ── §21 — precomputed normalized SKU for indexed SKU search (also added +
     #    backfilled by search_index.ensure_search_norm_columns on startup). ─────
     ("products", "sku_norm", "TEXT NULL"),
+
+    # ── §21 — persisted QBO vendor binding (qbo_service writes it on first push).
+    ("vendors", "qbo_vendor_id", "TEXT NULL"),
 ]
 
 
