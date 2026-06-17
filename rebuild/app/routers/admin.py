@@ -21,6 +21,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.deps import get_db, require_admin
@@ -243,3 +244,126 @@ def smoke_tests_artifact(relpath: str):
     if base not in target.parents or not target.is_file():
         return HTMLResponse("Artifact not found.", status_code=404)
     return FileResponse(str(target))
+
+
+# ── User & Role management (admin-only) ───────────────────────────────────────
+# The missing piece for a multi-person trial: create logins, assign roles
+# (ADMIN / BOOKKEEPING / SALES / READ_ONLY), reset passwords, activate/deactivate.
+# Self-lockout guards: you can't change/deactivate your OWN account, and the last
+# active ADMIN can't be demoted or deactivated.
+
+def _active_admin_count(db: Session) -> int:
+    from app.models.user import User
+    from app.constants import UserRole
+    return (
+        db.query(User)
+        .filter(User.role == UserRole.ADMIN, User.is_active == True)  # noqa: E712
+        .count()
+    )
+
+
+@router.get("/users", response_class=HTMLResponse)
+def users_list(
+    request: Request, ok: str = "", error: str = "",
+    db: Session = Depends(get_db), admin=Depends(require_admin),
+):
+    from app.models.user import User
+    from app.constants import UserRole
+    users = db.query(User).order_by(User.is_active.desc(), User.username).all()
+    return templates.TemplateResponse(
+        request, "admin/users.html",
+        {"users": users, "roles": list(UserRole), "me": admin, "ok": ok, "error": error},
+    )
+
+
+@router.post("/users", response_class=RedirectResponse)
+async def users_create(
+    request: Request, db: Session = Depends(get_db), admin=Depends(require_admin),
+):
+    from app.models.user import User
+    from app.constants import UserRole
+    from app.auth import hash_password
+    from sqlalchemy.exc import IntegrityError
+    form = await request.form()
+    name = str(form.get("name", "")).strip()
+    username = str(form.get("username", "")).strip()
+    password = str(form.get("password", ""))
+    try:
+        role = UserRole(str(form.get("role", UserRole.SALES)))
+    except ValueError:
+        role = UserRole.SALES
+    if not name or not username:
+        return RedirectResponse("/admin/users?error=" + quote("Name and username are required."), status_code=303)
+    if len(password) < 8:
+        return RedirectResponse("/admin/users?error=" + quote("Password must be at least 8 characters."), status_code=303)
+    if db.query(User).filter(func.lower(User.username) == username.lower()).first() is not None:
+        return RedirectResponse("/admin/users?error=" + quote(f"Username '{username}' is already taken."), status_code=303)
+    db.add(User(name=name, username=username, password_hash=hash_password(password), role=role, is_active=True))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return RedirectResponse("/admin/users?error=" + quote("Username is already taken."), status_code=303)
+    return RedirectResponse("/admin/users?ok=" + quote(f"Created user '{username}' ({role})."), status_code=303)
+
+
+@router.post("/users/{user_id}/role", response_class=RedirectResponse)
+async def users_set_role(
+    user_id: int, request: Request, db: Session = Depends(get_db), admin=Depends(require_admin),
+):
+    from app.models.user import User
+    from app.constants import UserRole
+    form = await request.form()
+    try:
+        new_role = UserRole(str(form.get("role", "")))
+    except ValueError:
+        return RedirectResponse("/admin/users?error=" + quote("Invalid role."), status_code=303)
+    u = db.query(User).filter(User.id == user_id).first()
+    if u is None:
+        return RedirectResponse("/admin/users?error=" + quote("User not found."), status_code=303)
+    if u.id == admin.id and new_role != UserRole.ADMIN:
+        return RedirectResponse("/admin/users?error=" + quote("You can't change your own role."), status_code=303)
+    if u.role == UserRole.ADMIN and new_role != UserRole.ADMIN and _active_admin_count(db) <= 1:
+        return RedirectResponse("/admin/users?error=" + quote("Can't demote the last active admin."), status_code=303)
+    u.role = new_role
+    db.commit()
+    return RedirectResponse("/admin/users?ok=" + quote(f"{u.username} is now {new_role}."), status_code=303)
+
+
+@router.post("/users/{user_id}/password", response_class=RedirectResponse)
+async def users_reset_password(
+    user_id: int, request: Request, db: Session = Depends(get_db), admin=Depends(require_admin),
+):
+    from app.models.user import User
+    from app.auth import hash_password
+    form = await request.form()
+    new_pw = str(form.get("new_password", ""))
+    if len(new_pw) < 8:
+        return RedirectResponse("/admin/users?error=" + quote("Password must be at least 8 characters."), status_code=303)
+    u = db.query(User).filter(User.id == user_id).first()
+    if u is None:
+        return RedirectResponse("/admin/users?error=" + quote("User not found."), status_code=303)
+    u.password_hash = hash_password(new_pw)
+    db.commit()
+    return RedirectResponse("/admin/users?ok=" + quote(f"Reset password for {u.username}."), status_code=303)
+
+
+@router.post("/users/{user_id}/toggle-active", response_class=RedirectResponse)
+async def users_toggle_active(
+    user_id: int, db: Session = Depends(get_db), admin=Depends(require_admin),
+):
+    from app.models.user import User
+    from app.constants import UserRole
+    u = db.query(User).filter(User.id == user_id).first()
+    if u is None:
+        return RedirectResponse("/admin/users?error=" + quote("User not found."), status_code=303)
+    if u.id == admin.id:
+        return RedirectResponse("/admin/users?error=" + quote("You can't deactivate your own account."), status_code=303)
+    if u.is_active and u.role == UserRole.ADMIN and _active_admin_count(db) <= 1:
+        return RedirectResponse("/admin/users?error=" + quote("Can't deactivate the last active admin."), status_code=303)
+    u.is_active = not u.is_active
+    db.commit()
+    return RedirectResponse(
+        "/admin/users?ok=" + quote(f"{u.username} {'activated' if u.is_active else 'deactivated'}."),
+        status_code=303,
+    )
