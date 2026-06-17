@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Quote Conversion — Axle{% endblock %}
+{% block heading %}Quote Conversion{% endblock %}
+
+{% block content %}
+{% set active_report = 'quote-conversion' %}
+<div class="max-w-5xl space-y-4">
+  {% include "reports/_nav.html" %}
+
+  <form method="get" action="/reports/quote-conversion"
+        class="flex flex-wrap items-end gap-3 bg-white border border-gray-200 rounded-xl p-3">
+    <div><label class="form-label">From</label>
+      <input type="date" name="start" value="{{ start_date.isoformat() }}" class="form-input w-44"/></div>
+    <div><label class="form-label">To</label>
+      <input type="date" name="end" value="{{ end_date.isoformat() }}" class="form-input w-44"/></div>
+    <button type="submit" class="btn-primary btn-sm">Update</button>
+  </form>
+
+  <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
+    <div class="stat-card-brand">
+      <p class="stat-label">Conversion Rate</p>
+      <p class="stat-value text-brand-700">
+        {% if data.conversion_rate is not none %}{{ '%.1f' % data.conversion_rate }}%{% else %}—{% endif %}
+      </p>
+      <p class="text-[11px] text-gray-400 mt-1">won ÷ (won + lost)</p>
+    </div>
+    <div class="stat-card"><p class="stat-label">Won</p><p class="stat-value text-green-700">{{ data.won }}</p></div>
+    <div class="stat-card"><p class="stat-label">Lost</p><p class="stat-value text-red-600">{{ data.lost }}</p></div>
+    <div class="stat-card"><p class="stat-label">Pending</p><p class="stat-value text-amber-600">{{ data.pending }}</p></div>
+    <div class="stat-card"><p class="stat-label">Total Quotes</p><p class="stat-value">{{ data.total }}</p></div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><h2 class="card-title">Value</h2></div>
+    <div class="card-body grid grid-cols-2 gap-4">
+      <div>
+        <p class="stat-label">Won Value</p>
+        <p class="text-2xl font-bold text-green-700 tabular-nums">${{ '%.2f' % data.won_value }}</p>
+      </div>
+      <div>
+        <p class="stat-label">Total Quoted Value</p>
+        <p class="text-2xl font-bold text-brand-700 tabular-nums">${{ '%.2f' % data.total_value }}</p>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

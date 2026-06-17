@@ -274,6 +274,66 @@ def reports_ap_aging_export(as_of: str | None = None, db: Session = Depends(get_
     )
 
 
+# ── Quote conversion + Vendor performance (§21.10) ────────────────────────────
+
+@router.get("/quote-conversion", response_class=HTMLResponse)
+def reports_quote_conversion(request: Request, start: str | None = None,
+                             end: str | None = None, db: Session = Depends(get_db)):
+    start_date, end_date = _resolve_range(start, end)
+    error_message = None
+    data = {"total": 0, "won": 0, "lost": 0, "pending": 0, "no_decision": 0,
+            "conversion_rate": None, "won_value": 0.0, "total_value": 0.0}
+    try:
+        data = ReportService(db).get_quote_conversion(start_date, end_date)
+    except Exception:
+        log.exception("reports_quote_conversion failed (%s–%s)", start_date, end_date)
+        error_message = "Could not load quote conversion data."
+    return templates.TemplateResponse(
+        request, "reports/quote_conversion.html",
+        {"start_date": start_date, "end_date": end_date, "data": data,
+         "error_message": error_message},
+    )
+
+
+@router.get("/vendor-performance", response_class=HTMLResponse)
+def reports_vendor_performance(request: Request, start: str | None = None,
+                               end: str | None = None, db: Session = Depends(get_db)):
+    start_date, end_date = _resolve_range(start, end)
+    error_message = None
+    rows: list = []
+    try:
+        rows = ReportService(db).get_vendor_performance(start_date, end_date)["rows"]
+    except Exception:
+        log.exception("reports_vendor_performance failed (%s–%s)", start_date, end_date)
+        error_message = "Could not load vendor performance data."
+    return templates.TemplateResponse(
+        request, "reports/vendor_performance.html",
+        {"start_date": start_date, "end_date": end_date, "rows": rows,
+         "error_message": error_message},
+    )
+
+
+@router.get("/vendor-performance/export.csv")
+def reports_vendor_performance_export(start: str | None = None, end: str | None = None,
+                                      db: Session = Depends(get_db)):
+    start_date, end_date = _resolve_range(start, end)
+    data = ReportService(db).get_vendor_performance(start_date, end_date)
+    return _csv_response(
+        ["vendor", "po_count", "po_value", "qty_ordered", "qty_received",
+         "fill_rate_pct", "bills", "discrepancy_bills"],
+        [
+            [
+                r["vendor"].name if r["vendor"] else "", r["po_count"],
+                f"{r['po_value']:.2f}", r["qty_ordered"], r["qty_received"],
+                f"{r['fill_rate']:.1f}" if r["fill_rate"] is not None else "",
+                r["bills"], r["discrepancy_bills"],
+            ]
+            for r in data["rows"]
+        ],
+        f"vendor_performance_{start_date.isoformat()}_{end_date.isoformat()}.csv",
+    )
+
+
 # ── Sales by Customer ─────────────────────────────────────────────────────────
 
 @router.get("/sales-by-customer", response_class=HTMLResponse)

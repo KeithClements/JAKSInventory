@@ -324,14 +324,26 @@ def _apply_inline_migrations(bind=None) -> None:
     target = bind if bind is not None else engine
     inspector = inspect(target)
     existing_tables = set(inspector.get_table_names())
+
+    # Determine the actual work first (columns genuinely missing) so we only back
+    # up + ALTER when there's a real schema change to apply.
+    pending: list[tuple[str, str, str]] = []
+    for table, column, sql_def in _PENDING_COLUMN_ADDITIONS:
+        if table not in existing_tables:
+            continue  # fresh DB — create_all() handled it
+        cols = {c["name"] for c in inspector.get_columns(table)}
+        if column not in cols:
+            pending.append((table, column, sql_def))
+
+    # §21 — snapshot the live SQLite file BEFORE mutating its schema, so a bad
+    # ALTER can't leave the only copy of the data broken. Only for the live file
+    # engine (bind is None) and only when a migration will actually run.
+    if pending and bind is None:
+        _backup_before_migration(len(pending))
+
     _customer_status_added = False
     with target.begin() as conn:
-        for table, column, sql_def in _PENDING_COLUMN_ADDITIONS:
-            if table not in existing_tables:
-                continue  # fresh DB — create_all() handled it
-            cols = {c["name"] for c in inspector.get_columns(table)}
-            if column in cols:
-                continue
+        for table, column, sql_def in pending:
             conn.execute(text(f'ALTER TABLE {table} ADD COLUMN {column} {sql_def}'))
             log.info("Added column %s.%s", table, column)
             if table == "customers" and column == "customer_status":
@@ -340,6 +352,24 @@ def _apply_inline_migrations(bind=None) -> None:
     if _customer_status_added:
         with target.begin() as conn:
             _backfill_customer_status(conn)
+
+
+def _backup_before_migration(n_pending: int) -> None:
+    """§21 — best-effort copy of the live SQLite file to ``backups/`` before a
+    schema migration runs. Never blocks startup; skipped for in-memory DBs."""
+    try:
+        if ":memory:" in str(engine.url) or not DB_PATH.exists():
+            return
+        import shutil
+        from datetime import datetime
+        backup_dir = DB_PATH.parent.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        dest = backup_dir / f"{DB_PATH.stem}-premigration-{stamp}.db"
+        shutil.copy2(DB_PATH, dest)
+        log.info("Pre-migration backup (%d pending column(s)) → %s", n_pending, dest)
+    except Exception:
+        log.exception("pre-migration backup failed (continuing migration)")
 
 
 # ── Hot child-table FK indexes ────────────────────────────────────────────────

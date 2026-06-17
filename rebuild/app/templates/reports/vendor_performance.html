@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Vendor Performance — Axle{% endblock %}
+{% block heading %}Vendor Performance{% endblock %}
+
+{% block content %}
+{% set active_report = 'vendor-performance' %}
+<div class="max-w-6xl space-y-4">
+  {% include "reports/_nav.html" %}
+
+  <form method="get" action="/reports/vendor-performance"
+        class="flex flex-wrap items-end gap-3 bg-white border border-gray-200 rounded-xl p-3">
+    <div><label class="form-label">From</label>
+      <input type="date" name="start" value="{{ start_date.isoformat() }}" class="form-input w-44"/></div>
+    <div><label class="form-label">To</label>
+      <input type="date" name="end" value="{{ end_date.isoformat() }}" class="form-input w-44"/></div>
+    <button type="submit" class="btn-primary btn-sm">Update</button>
+    <div class="flex-1"></div>
+    <a href="/reports/vendor-performance/export.csv?start={{ start_date.isoformat() }}&end={{ end_date.isoformat() }}"
+       class="btn-secondary btn-sm">Export CSV</a>
+  </form>
+
+  {% if rows %}
+  <div class="card overflow-x-auto">
+    <table class="tbl">
+      <thead class="tbl-head">
+        <tr>
+          <th class="tbl-th">Vendor</th>
+          <th class="tbl-th-r">POs</th>
+          <th class="tbl-th-r">PO Value</th>
+          <th class="tbl-th-r">Qty Ordered</th>
+          <th class="tbl-th-r">Qty Received</th>
+          <th class="tbl-th-r">Fill Rate</th>
+          <th class="tbl-th-r">Bills</th>
+          <th class="tbl-th-r">Discrepancies</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr class="tbl-row">
+          <td class="tbl-td font-medium">
+            {% if r.vendor %}<a href="/vendors/{{ r.vendor.id }}" class="tbl-link">{{ r.vendor.name }}</a>{% else %}—{% endif %}
+          </td>
+          <td class="tbl-td-r text-gray-500">{{ r.po_count }}</td>
+          <td class="tbl-td-r tabular-nums">${{ '%.2f' % r.po_value }}</td>
+          <td class="tbl-td-r text-gray-500">{{ r.qty_ordered }}</td>
+          <td class="tbl-td-r text-gray-500">{{ r.qty_received }}</td>
+          <td class="tbl-td-r tabular-nums {% if r.fill_rate is not none and r.fill_rate < 90 %}text-amber-600{% else %}text-green-700{% endif %}">
+            {% if r.fill_rate is not none %}{{ '%.0f' % r.fill_rate }}%{% else %}—{% endif %}
+          </td>
+          <td class="tbl-td-r text-gray-500">{{ r.bills }}</td>
+          <td class="tbl-td-r {% if r.discrepancy_bills > 0 %}text-red-600 font-semibold{% else %}text-gray-300{% endif %}">
+            {{ r.discrepancy_bills if r.discrepancy_bills else '—' }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card flex flex-col items-center justify-center py-16">
+    <p class="text-gray-500 font-medium">No vendor activity in this range</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

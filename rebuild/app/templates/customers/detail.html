@@ -14,6 +14,14 @@
     Statement
   </a>
   <a href="/invoices/new?customer_id={{ customer.id }}" class="btn-secondary btn-sm">New Invoice</a>
+  {# §21 — charge accrued interest as a DRAFT finance-charge invoice (only worth
+     showing when the customer accrues interest). #}
+  {% if customer.interest_rate and customer.interest_rate > 0 %}
+  <form method="post" action="/customers/{{ customer.id }}/post-interest" class="inline"
+        onsubmit="return confirm('Create a DRAFT finance-charge invoice for this customer’s accrued interest? You’ll review and finalize it.');">
+    <button type="submit" class="btn-secondary btn-sm" title="Charge accrued interest on the overdue balance">Charge Interest</button>
+  </form>
+  {% endif %}
   <a href="/customers/" class="text-sm text-gray-500 hover:text-gray-700">← Customers</a>
 {% endblock %}
 

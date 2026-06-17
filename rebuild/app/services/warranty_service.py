@@ -141,6 +141,17 @@ class WarrantyService(BaseService):
                 f"Claim {claim.claim_number} has no vendor assigned — "
                 "assign a vendor before submitting"
             )
+        # §21 — PAI / Interstate-McBee reject a vendor warranty claim with no ESN
+        # (engine serial). Gated by the `warranty_require_esn` setting (default
+        # off) so non-engine vendor parts aren't blocked; turn it on to enforce the
+        # PAI/IMB compliance gate. In-house JAKS-extended claims never need one.
+        if claim.warranty_type == WarrantyType.VENDOR and not (claim.esn or "").strip():
+            from app.settings_utils import get_setting_value_db
+            if get_setting_value_db(self.db, "warranty_require_esn", "false").strip().lower() == "true":
+                raise ValueError(
+                    f"Claim {claim.claim_number} has no ESN (engine serial) — "
+                    "vendor warranty claims require one (warranty_require_esn is on)"
+                )
 
         old_status = claim.status
         claim.status = WarrantyStatus.SUBMITTED_TO_VENDOR

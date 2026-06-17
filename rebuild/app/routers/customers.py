@@ -7,6 +7,7 @@ import json
 import logging
 import re
 from datetime import datetime
+from urllib.parse import quote as url_quote
 
 from fastapi import APIRouter, Depends, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -1442,6 +1443,29 @@ def customer_detail(
 
 
 # ── Update ────────────────────────────────────────────────────────────────────
+
+@router.post("/{customer_id}/post-interest", response_class=RedirectResponse)
+async def customer_post_interest(
+    customer_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """§21 — charge accrued interest: create a DRAFT finance-charge invoice the
+    operator then reviews + finalizes. Redirects to the new draft on success."""
+    try:
+        inv = CRMService(db, current_user_id=user_id).post_interest_charge(customer_id)
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/customers/{customer_id}?error={url_quote(str(exc))}", status_code=303)
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error posting interest for customer %s", customer_id)
+        return RedirectResponse(
+            f"/customers/{customer_id}?error={url_quote('Unexpected error — interest was not charged.')}",
+            status_code=303)
+    return RedirectResponse(f"/invoices/{inv.id}?ok={url_quote('Draft finance-charge invoice created — review and finalize.')}", status_code=303)
+
 
 @router.post("/{customer_id}", response_class=RedirectResponse)
 async def customer_update(

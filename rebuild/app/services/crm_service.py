@@ -396,6 +396,36 @@ class CRMService(BaseService):
         interest = overdue_amount * (customer.interest_rate / 100) * (overdue_days / 365)
         return round(interest, 2)
 
+    def post_interest_charge(self, customer_id: int) -> object:
+        """§21 — actually CHARGE the accrued interest: create a DRAFT invoice with
+        a single finance-charge (MISC_FEE, non-taxable) line for the computed
+        amount. Returns the draft Invoice so the operator reviews + finalizes it
+        (interest is never auto-posted to a customer). Raises if there's nothing
+        to charge."""
+        interest = self.calculate_interest_charge(customer_id)
+        if interest <= 0:
+            raise ValueError("No accrued interest to charge for this customer.")
+        from app.constants import LineType
+        from app.services.invoice_service import InvoiceService
+        inv = InvoiceService(self.db, self.current_user_id).create_invoice(
+            customer_id=customer_id,
+            data={"is_taxable": False, "tax_rate": 0.0,
+                  "notes": "Finance charge — interest on overdue balance"},
+            lines=[{
+                "description": "Finance charge — interest on overdue balance",
+                "qty": 1, "unit_price": interest, "unit_cost": 0.0,
+                "line_type": LineType.MISC_FEE, "is_taxable": False,
+            }],
+        )
+        self.audit(
+            entity_type=EntityType.CUSTOMER, entity_id=customer_id,
+            action=AuditAction.CREATED,
+            new_value={"interest_charge": interest, "draft_invoice_id": inv.id},
+            notes="Posted accrued interest as a draft finance-charge invoice",
+        )
+        self.db.commit()
+        return inv
+
     # ── Credit Balance ────────────────────────────────────────────────────────
     # CRMService is the sole owner of Customer.credit_balance mutations.
     # CoreService and WarrantyService call add_credit() / deduct_credit() here.

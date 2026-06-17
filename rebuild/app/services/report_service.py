@@ -27,6 +27,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.constants import (
@@ -38,7 +39,7 @@ from app.models.customer import Customer
 from app.models.invoice import Invoice, InvoiceLine
 from app.models.product import Product
 from app.models.purchase_order import PurchaseOrder, POLine
-from app.models.quote import LostSaleLog, SalesOrder, SOLine
+from app.models.quote import LostSaleLog, Quote, SalesOrder, SOLine
 from app.services.base import BaseService
 from app.services.ar_aging_utils import (
     AGING_BUCKETS, as_date, zero_buckets, bucket_for,
@@ -255,6 +256,106 @@ class ReportService(BaseService):
         totals = {b: round(sum(r[b] for r in rows), 2) for b in AGING_BUCKETS}
         totals["total"] = round(sum(r["total"] for r in rows), 2)
         return {"as_of": as_of, "rows": rows, "totals": totals}
+
+    # ── Quote conversion rate (§21.10) ────────────────────────────────────────
+
+    def get_quote_conversion(self, start_date: date, end_date: date) -> dict[str, Any]:
+        """§21 — quote win-rate over a period. Conversion = won / (won + lost)
+        decided quotes; also reports pending + dollar value won vs total."""
+        from app.constants import QuoteOutcome
+        quotes = (
+            self.db.query(Quote)
+            .options(joinedload(Quote.lines))
+            .filter(
+                func.date(Quote.created_at) >= start_date,
+                func.date(Quote.created_at) <= end_date,
+            )
+            .all()
+        )
+        counts = {QuoteOutcome.WON: 0, QuoteOutcome.LOST: 0,
+                  QuoteOutcome.PENDING: 0, QuoteOutcome.NO_DECISION: 0}
+        won_value = total_value = 0.0
+        for q in quotes:
+            counts[q.outcome] = counts.get(q.outcome, 0) + 1
+            sub = q.subtotal
+            total_value = round(total_value + sub, 2)
+            if q.outcome == QuoteOutcome.WON:
+                won_value = round(won_value + sub, 2)
+        won, lost = counts[QuoteOutcome.WON], counts[QuoteOutcome.LOST]
+        decided = won + lost
+        return {
+            "start_date": start_date, "end_date": end_date,
+            "total": len(quotes), "won": won, "lost": lost,
+            "pending": counts[QuoteOutcome.PENDING],
+            "no_decision": counts[QuoteOutcome.NO_DECISION],
+            "conversion_rate": round(won / decided * 100, 1) if decided else None,
+            "won_value": won_value, "total_value": total_value,
+        }
+
+    # ── Vendor performance (§21.10) ───────────────────────────────────────────
+
+    def get_vendor_performance(self, start_date: date, end_date: date) -> dict[str, Any]:
+        """§21 — per-vendor PO/bill scorecard over a period: PO count + value,
+        fill rate (qty_received / qty_ordered across the vendor's PO lines), and
+        bill-discrepancy count (3-way-match failures: over-bill / cost variance).
+        (On-time delivery isn't reported — a receipt can span multiple POs, so
+        there's no clean per-PO received date to compare against expected_at.)"""
+        from app.models.purchase_order import VendorBill
+        from app.models.vendor import Vendor
+
+        pos = (
+            self.db.query(PurchaseOrder)
+            .options(joinedload(PurchaseOrder.vendor), joinedload(PurchaseOrder.lines))
+            .filter(
+                func.date(PurchaseOrder.created_at) >= start_date,
+                func.date(PurchaseOrder.created_at) <= end_date,
+            )
+            .all()
+        )
+        bills = (
+            self.db.query(VendorBill)
+            .options(joinedload(VendorBill.lines))
+            .filter(
+                func.date(VendorBill.created_at) >= start_date,
+                func.date(VendorBill.created_at) <= end_date,
+            )
+            .all()
+        )
+
+        rows: dict[int, dict[str, Any]] = defaultdict(lambda: {
+            "vendor": None, "vendor_id": None, "po_count": 0, "po_value": 0.0,
+            "qty_ordered": 0, "qty_received": 0, "bills": 0, "discrepancy_bills": 0,
+        })
+        for po in pos:
+            r = rows[po.vendor_id]
+            r["vendor"] = po.vendor
+            r["vendor_id"] = po.vendor_id
+            r["po_count"] += 1
+            r["po_value"] = round(r["po_value"] + po.total, 2)
+            for ln in po.lines:
+                r["qty_ordered"] += ln.qty_ordered
+                r["qty_received"] += ln.qty_received
+        for b in bills:
+            r = rows[b.vendor_id]
+            if r["vendor_id"] is None:
+                r["vendor_id"] = b.vendor_id
+            r["bills"] += 1
+            if b.has_discrepancy:
+                r["discrepancy_bills"] += 1
+
+        # Fill any vendor names still missing (bill-only rows).
+        missing = [vid for vid, r in rows.items() if r["vendor"] is None]
+        if missing:
+            for v in self.db.query(Vendor).filter(Vendor.id.in_(missing)).all():
+                rows[v.id]["vendor"] = v
+        for r in rows.values():
+            r["fill_rate"] = (
+                round(r["qty_received"] / r["qty_ordered"] * 100, 1)
+                if r["qty_ordered"] else None
+            )
+
+        out = sorted(rows.values(), key=lambda r: r["po_value"], reverse=True)
+        return {"start_date": start_date, "end_date": end_date, "rows": out}
 
     # ── 2. Sales by Customer ─────────────────────────────────────────────────
 
