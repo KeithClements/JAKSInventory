@@ -193,10 +193,13 @@ class TwilioProvider:
         if not to:
             return SendResult(status=CommunicationStatus.FAILED, error="No recipient phone")
         url = f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}/Messages.json"
+        # Twilio requires the sending number in E.164 (+1…); normalize so a stored
+        # "18776112050" (missing +) doesn't get rejected as an invalid From.
+        from_e164 = _to_e164(self.from_number) or self.from_number
         try:
             r = httpx.post(
                 url, auth=(self.account_sid, self.auth_token),
-                data={"From": self.from_number, "To": to, "Body": body}, timeout=20,
+                data={"From": from_e164, "To": to, "Body": body}, timeout=20,
             )
             if r.status_code in (200, 201):
                 return SendResult(status=CommunicationStatus.SENT,
