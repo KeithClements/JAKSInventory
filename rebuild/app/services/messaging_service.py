@@ -184,9 +184,15 @@ class TwilioProvider:
     """Real SMS via the Twilio REST API (httpx — no extra SDK dependency).
     Requires an A2P 10DLC-registered sending number for US delivery."""
 
-    def __init__(self, *, account_sid: str, auth_token: str, from_number: str):
+    def __init__(self, *, account_sid: str, auth_token: str, from_number: str,
+                 api_key_sid: str = ""):
+        # account_sid (AC…) is ALWAYS the URL-path account. Auth is either
+        # Account SID + Auth Token, OR — when api_key_sid (SK…) is set — the
+        # API Key SID + its secret (auth_token holds the secret). API keys are
+        # Twilio's recommended, revocable credential.
         self.account_sid, self.auth_token = account_sid, auth_token
         self.from_number = from_number
+        self.api_key_sid = (api_key_sid or "").strip()
 
     def send_sms(self, *, to: str, body: str) -> SendResult:
         import httpx
@@ -196,9 +202,12 @@ class TwilioProvider:
         # Twilio requires the sending number in E.164 (+1…); normalize so a stored
         # "18776112050" (missing +) doesn't get rejected as an invalid From.
         from_e164 = _to_e164(self.from_number) or self.from_number
+        # Basic-auth username = the API Key SID when present (secret = auth_token),
+        # else the Account SID (Auth Token = auth_token). URL path stays AC…
+        auth_user = self.api_key_sid or self.account_sid
         try:
             r = httpx.post(
-                url, auth=(self.account_sid, self.auth_token),
+                url, auth=(auth_user, self.auth_token),
                 data={"From": from_e164, "To": to, "Body": body}, timeout=20,
             )
             if r.status_code in (200, 201):
@@ -653,8 +662,10 @@ class MessagingService(BaseService):
                 sid = self._setting("twilio_account_sid")
                 token = _secret_decrypt(self._setting("twilio_auth_token_encrypted"))
                 frm = self._setting("twilio_from_number")
+                api_key_sid = self._setting("twilio_api_key_sid")
                 if sid and token and frm:
-                    return TwilioProvider(account_sid=sid, auth_token=token, from_number=frm)
+                    return TwilioProvider(account_sid=sid, auth_token=token,
+                                          from_number=frm, api_key_sid=api_key_sid)
             return NullMessagingProvider()
 
         return NullMessagingProvider()

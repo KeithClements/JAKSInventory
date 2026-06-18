@@ -160,6 +160,7 @@ DEFAULTS: dict[str, tuple[str, str]] = {
 
     # R12 — Twilio (Phase 2)
     "twilio_account_sid":          ("",        ""),
+    "twilio_api_key_sid":          ("",        "Optional Twilio API Key SID (SK…)"),
     "twilio_auth_token_encrypted": ("",        "Encrypted at rest"),
     "twilio_from_number":          ("",        ""),
 
@@ -220,7 +221,7 @@ VISIBLE_KEYS = [
     "messaging_max_outbound_per_hour", "messaging_max_outbound_per_customer_per_day",
     "smtp_host", "smtp_port", "smtp_username", "smtp_password_encrypted",
     "smtp_from_address", "smtp_from_name", "smtp_use_tls",
-    "twilio_account_sid", "twilio_auth_token_encrypted", "twilio_from_number",
+    "twilio_account_sid", "twilio_api_key_sid", "twilio_auth_token_encrypted", "twilio_from_number",
     # §5.12 — document branding (logo itself is set via POST /settings/logo)
     "document_footer_text", "document_terms_text", "document_show_logo", "document_logo_height",
 ]
@@ -302,7 +303,7 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
         "messaging_log_only_mode", "messaging_email_provider", "messaging_sms_provider",
         "messaging_max_outbound_per_hour", "messaging_max_outbound_per_customer_per_day",
         "smtp_host", "smtp_port", "smtp_username", "smtp_from_address", "smtp_from_name",
-        "smtp_use_tls", "twilio_account_sid", "twilio_from_number",
+        "smtp_use_tls", "twilio_account_sid", "twilio_api_key_sid", "twilio_from_number",
     ]
     msg = {k: rows.get(k, DEFAULTS[k][0]) for k in _msg_keys}
     msg["smtp_password_is_set"] = bool((rows.get("smtp_password_encrypted") or "").strip())

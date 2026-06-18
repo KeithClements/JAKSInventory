@@ -443,17 +443,23 @@
           <div><label class="block text-xs font-medium text-gray-600 mb-1">Account SID</label>
             <input name="twilio_account_sid" value="{{ msg.twilio_account_sid }}" placeholder="ACxxxxxxxx…"
               class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
-          <div><label class="block text-xs font-medium text-gray-600 mb-1">Auth token
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">API Key SID <span class="normal-case font-normal text-gray-400">(optional)</span></label>
+            <input name="twilio_api_key_sid" value="{{ msg.twilio_api_key_sid }}" placeholder="SKxxxxxxxx… (leave blank to use Auth Token)"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">Auth token / API Key secret
             {% if msg.twilio_auth_token_is_set %}<span class="text-green-600 normal-case">· saved</span>{% endif %}</label>
             <input name="twilio_auth_token_encrypted" type="password" value="" autocomplete="off"
-              placeholder="{% if msg.twilio_auth_token_is_set %}leave blank to keep{% else %}auth token{% endif %}"
+              placeholder="{% if msg.twilio_auth_token_is_set %}leave blank to keep{% else %}auth token or API Key secret{% endif %}"
               class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
           <div><label class="block text-xs font-medium text-gray-600 mb-1">From number (10DLC)</label>
             <input name="twilio_from_number" value="{{ msg.twilio_from_number }}" placeholder="+13035551234"
               class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
         </div>
-        <p class="text-xs text-gray-400">Use your A2P 10DLC-registered Twilio number in E.164 (+1…). Customer numbers are
-          normalized to E.164 automatically. SMS only sends to customers who consented (allow_sms + consent date).</p>
+        <p class="text-xs text-gray-400"><strong>Account SID</strong> is always your <code>AC…</code> SID (Twilio Console home).
+          To use an <strong>API Key</strong> (recommended), also fill <strong>API Key SID</strong> (<code>SK…</code>) and put its
+          <strong>secret</strong> in the token field; otherwise leave API Key SID blank and use your Auth Token. Use your
+          A2P 10DLC-registered number in E.164 (+1…); customer numbers are normalized automatically. SMS only sends to
+          customers who consented (allow_sms + consent date).</p>
       </div>
 
       {# Rate limits #}

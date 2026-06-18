@@ -104,6 +104,54 @@ def test_sms_falls_back_to_null_when_creds_missing(db):
     assert isinstance(MessagingService(db)._provider_for(CommunicationChannel.SMS), NullMessagingProvider)
 
 
+def test_twilio_api_key_sid_passed_through(db):
+    from app.services.qbo_client import _encrypt
+    _set(db, messaging_log_only_mode="false", messaging_sms_provider="twilio",
+         twilio_account_sid="AC123", twilio_api_key_sid="SKabc",
+         twilio_auth_token_encrypted=_encrypt("thesecret"), twilio_from_number="+13035551234")
+    p = MessagingService(db)._provider_for(CommunicationChannel.SMS)
+    assert isinstance(p, TwilioProvider)
+    assert p.api_key_sid == "SKabc"
+
+
+# ── Twilio auth modes + From normalization (no network) ──────────────────────
+
+def _patch_twilio_post(monkeypatch):
+    captured = {}
+
+    class _Resp:
+        status_code = 201
+
+        def json(self):
+            return {"sid": "SMxxxx"}
+
+    def _fake_post(url, auth=None, data=None, timeout=None):
+        captured.update(url=url, auth=auth, data=data)
+        return _Resp()
+
+    import httpx
+    monkeypatch.setattr(httpx, "post", _fake_post)
+    return captured
+
+
+def test_twilio_api_key_auth_uses_sk_username_and_account_in_path(monkeypatch):
+    captured = _patch_twilio_post(monkeypatch)
+    tw = TwilioProvider(account_sid="AC_acct", auth_token="thesecret",
+                        from_number="18776112050", api_key_sid="SK_key")
+    res = tw.send_sms(to="+13035551234", body="hi")
+    assert res.status == "sent"
+    assert captured["auth"] == ("SK_key", "thesecret")   # API Key SID is the auth username
+    assert "/Accounts/AC_acct/" in captured["url"]        # URL path stays the Account SID
+    assert captured["data"]["From"] == "+18776112050"     # From normalized to E.164
+
+
+def test_twilio_classic_auth_when_no_api_key(monkeypatch):
+    captured = _patch_twilio_post(monkeypatch)
+    tw = TwilioProvider(account_sid="AC_acct", auth_token="authtoken", from_number="+13035550000")
+    tw.send_sms(to="+13035551234", body="hi")
+    assert captured["auth"] == ("AC_acct", "authtoken")   # Account SID + Auth Token
+
+
 # ── Channel guards (no network) ──────────────────────────────────────────────
 
 def test_provider_channel_guards():
