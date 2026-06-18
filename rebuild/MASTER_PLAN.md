@@ -1361,6 +1361,84 @@ Live-verified on the real catalog (product detail → Applications tab → add C
 
 ---
 
+## 22. Customer Communications — real Email/SMS send on documents + texting consent *(plan, 2026-06-17 — NOT built yet)*
+
+Owner ask: make "Send" on a quote/SO/invoice actually transmit; add an **"OK to text"** button on the
+customer profile; make **both email and SMS testable** once configured.
+
+### 22.1 — Current state (verified 2026-06-17)
+- **"Send" on a quote only flips status DRAFT → Sent** (`QuoteService.send_quote`) — it transmits NOTHING.
+  **Invoices and Sales Orders have no send/email action at all.** (This is the source of the confusion.)
+- **The messaging engine is already complete and capable** — `app/services/messaging_service.py`:
+  real **SMTP** (Workspace/365) + **Twilio SMS** providers, a global **`messaging_log_only_mode`
+  kill-switch (default ON)**, per-customer **consent + rate-limit** gating, a **`communication_log`**
+  audit of every attempt (SENT/FAILED/LOGGED_ONLY + `failed_reason`), `.txt` templates, and
+  `record_consent()` / `record_opt_out()`. It is simply **not wired to any document button.**
+- **Consent columns already on `Customer`**: `allow_email` (default True), `allow_sms` (default False),
+  `sms_consent_at` + `sms_consent_method`, `email_consent_at`, `do_not_contact`, `opt_out_at`,
+  `preferred_contact_method`. A communications page exists; **no "OK to text" control yet.**
+- **Design reality**: SMS **cannot** carry a PDF; **email can** (provider `send_email` already accepts
+  `attachments`, but `MessagingService.send()` does not yet forward them).
+
+### 22.2 — Decisions (RECOMMENDED defaults — owner interviewed 2026-06-17, not yet confirmed; flip any here)
+- **D1 — Send UX = ONE "Send" button → channel picker dialog.** Pre-filled recipient; rep picks
+  Email / Text / both; **Text is greyed with a reason when the customer has no OK-to-text**. *(alts:
+  separate Email+Text buttons · auto-send by `preferred_contact_method`.)*
+- **D2 — Channel content: email carries the PDF; SMS is a short heads-up.** SMS = doc # + amount +
+  shop phone ("reply here or call …"). **A public "view link" is deferred** until the app is
+  internet-reachable (today it's shop-LAN only). *(alts: SMS view-link · minimal note.)*
+- **D3 — "OK to text" = one-click verbal consent.** Sets `allow_sms` + `sms_consent_at` +
+  `method='verbal'` + audit (who/when); a matching **"Do not text / opt out"** turns it off. *(alts:
+  method picker Verbal/In-person/Written/Web · plain on-off toggle.)*
+- **D4 — Testability = Settings → Messaging "Send test".** Type any email/phone → live success/failure
+  from the real provider; plus the visible log-only kill switch and the per-customer communication log.
+
+### 22.3 — Function A: Send on quote / SO / invoice
+- New `POST /{doc}/send-message` on quotes → invoices → SOs, opening `documents/_send_dialog.html`
+  (HTMX/Alpine), pre-filled from the customer + the chosen template.
+- Dialog: channel checkboxes (Email/Text), editable recipient + subject/body (seeded from template),
+  "PDF will be attached" indicator for email, live SMS-consent state.
+- Submit → `MessagingService.send(...)` per channel. **Extend `send()` to forward `attachments`**;
+  render the doc PDF (reuse the existing `/{id}/pdf` + `document_render`) to a temp file and attach for
+  **email only**. SMS uses the SMS template.
+- **Status side-effect**: a successful (or log-only) email/SMS marks a quote **Sent** (reuse
+  `send_quote`); invoice/SO record a "last sent" via the communication_log (no status-model change).
+  Keep a **"just mark as sent, don't transmit"** option in the dialog.
+- Honors the **log-only kill switch** (logs, no transmit) so it's safe before go-live. Every attempt is
+  already written to `communication_log`.
+- Templates to add (reuse existing tone): `{quote,invoice,so}_send_email.txt` / `_send_sms.txt`.
+
+### 22.4 — Function B: "OK to text" on the customer profile
+- Header button on `customers/detail.html` (+ communications page): **"OK to text"** (one-click) →
+  `POST /customers/{id}/sms-consent` → `MessagingService.record_consent(id, SMS, 'verbal')`. Renders a
+  green **"Texting OK since <date>"** chip once set.
+- Companion **"Do not text"** (narrow: `allow_sms=False`, keeps email) and **"Opt out (all)"**
+  (`record_opt_out` → `do_not_contact`). Optional email-unsubscribe toggle for symmetry.
+- This consent state is exactly what the Function A dialog reads to enable/disable the Text channel.
+
+### 22.5 — Testability (must cover BOTH channels)
+- **Settings → Messaging card**: "Send test email" (to typed address) + "Send test SMS" (to typed
+  number) → call the **real** provider, surface inline SENT/FAILED + the provider's error text. This is
+  how the owner proves SMTP/Twilio before any customer ever gets a message.
+- Visible **`messaging_log_only_mode`** toggle; per-customer **Communications** tab shows every send.
+- **Automated tests** (a fake provider — never hit real SMTP/Twilio): `_provider_for` selection,
+  consent gating on the send route (Text blocked without consent), dialog render, test-send route returns
+  the provider result, log rows written, kill-switch forces `LOGGED_ONLY`, PDF attached on email path.
+
+### 22.6 — Build order
+1. `MessagingService.send()` `attachments` passthrough + a doc-PDF→temp-file helper.
+2. **Settings test-send routes + UI** (safe way to verify SMTP/Twilio first).
+3. **OK-to-text / opt-out buttons** (Function B) — small; unblocks SMS consent.
+4. **Send dialog + routes**: quote → invoice → SO (Function A).
+5. Templates + tests. **Flip `messaging_log_only_mode` OFF only after both test-sends pass.**
+
+### 22.7 — Out of scope / deferred
+Inbound SMS replies (webhook), public view-links, marketing/bulk blasts, scheduled/drip sends, Twilio
+delivery-status callbacks. **Compliance**: keep SMS strict (explicit consent + honor opt-out for
+10DLC/TCPA); auto-append "Reply STOP to opt out" to the first SMS to a number.
+
+---
+
 *This document is the single source of truth for all JAKS Inventory build decisions.*
 *Update it as decisions change. All other planning documents are superseded.*
-*Last updated: 2026-06-16 — **added §21 Update 6.16**: verified 16-subsystem sellable-ERP audit (C+), 7 owner decisions LOCKED (credit-hold=warn, over-receipt=confirm-allow, quote-tax=default-from-customer+clerk-toggle, competitor-xrefs=normal-search, **deployment INTERNET-EXPOSED → security now-blocker**, multi-tenant=someday, jaks.db=throwaway-but-LIVE-QBO). **§21.2 immediate sprint (11 fixes), §21.5 security blockers (CSRF+headers+Secure cookie, live-verified), and §21.6 Phase-1.1 batch (6 items) ALL SHIPPED UNCOMMITTED** — full suite 1947 pass / 12 fail (all 12 pre-existing); #1 vendor_cost-clobber REFUTED, #12 competitor-xref = owner data-load. New test files test_s21_audit_fixes.py / test_s21_csrf_security.py / test_s21_phase11.py. See §21. Prior: 2026-06-10 (evening status-refresher reconciliation) — **R1+R2+R3+R4 all SHIPPED** (`248ea09`/`40eea95`/`a53bbe2`/`674491a..f18aec9`); ledger reconciled: QBO 1B marked COMPLETE (payments/vendor-bills/credit-memos push + Fernet, R2/R3), serials marked BUILT (R3), §17.2 closed rows struck (tier-pricing · Fernet · demo-reset guard · products export), §11 O2 marked enforced. **Remaining gate = owner-run R4 trial sheet (blank) + operational cutover**, not code. Prior note: **§19 added (verified system review, B−, authoritative punch list) and Sprint R1 §19.2 implemented the same day** (16/16 money/integrity fixes, adversarially verified, 1438 tests green). Next: §19.3 Sprint R2. Prior note (2026-06-06) — status-refresher pass: 983 tests verified green; tier-pricing downgraded from blocker to a label decision (money path proven real); real-data cutover (13,153-part catalog) recorded as the live operational gate; owner-acceptance breadth named as the one true status gap. See §17 banner. **Added §18 Product Categorization & Classification spec** (Inventory → Category Maintenance screen; Products-List filters/bulk-assign/Manage-Categories link; importer rules + Import Review queue; Brand/Vendor/Manufacturer-Engine-Make separation) — **BUILT & verified the same night** (increments 1–7; 1051 tests pass; backfill applied to the live 13,154-part catalog). Not yet git-committed. See §18 banner. **2026-06-16: added §20 — REVERT the opaque SKU scheme to vendor part numbers** (owner interview; reverses the 2026-06-06 `JAKS-[ENGINE]-[CATEGORY]-[V][NNNN]` scheme that is live on all 29,659 products and caused too much confusion); plan = `product.sku ← vendor_part_number`, private-label parts (`is_house_brand`) keep a separate owner-typed JAKS Product # while the vendor # still prints on the PO; revert verified safe (0 collisions, trial-only documents) — dry-run pending owner review. See §20.*
+*Last updated: 2026-06-17 — **added §22 Customer Communications** (plan only): wire real Email/SMS "Send" on quote/SO/invoice + an "OK to text" consent button on the customer profile + Settings test-send for both channels. Found the messaging engine already complete (SMTP+Twilio, log-only kill switch, consent + communication_log) but unwired; "Send" on a quote today only flips status (transmits nothing); invoices/SOs have no send. 4 recommended decisions captured (one Send button→channel picker · email=PDF/SMS=heads-up · one-click verbal OK-to-text · Settings "Send test"). Build order + testability defined; nothing built yet. Prior: 2026-06-16 — **added §21 Update 6.16**: verified 16-subsystem sellable-ERP audit (C+), 7 owner decisions LOCKED (credit-hold=warn, over-receipt=confirm-allow, quote-tax=default-from-customer+clerk-toggle, competitor-xrefs=normal-search, **deployment INTERNET-EXPOSED → security now-blocker**, multi-tenant=someday, jaks.db=throwaway-but-LIVE-QBO). **§21.2 immediate sprint (11 fixes), §21.5 security blockers (CSRF+headers+Secure cookie, live-verified), and §21.6 Phase-1.1 batch (6 items) ALL SHIPPED UNCOMMITTED** — full suite 1947 pass / 12 fail (all 12 pre-existing); #1 vendor_cost-clobber REFUTED, #12 competitor-xref = owner data-load. New test files test_s21_audit_fixes.py / test_s21_csrf_security.py / test_s21_phase11.py. See §21. Prior: 2026-06-10 (evening status-refresher reconciliation) — **R1+R2+R3+R4 all SHIPPED** (`248ea09`/`40eea95`/`a53bbe2`/`674491a..f18aec9`); ledger reconciled: QBO 1B marked COMPLETE (payments/vendor-bills/credit-memos push + Fernet, R2/R3), serials marked BUILT (R3), §17.2 closed rows struck (tier-pricing · Fernet · demo-reset guard · products export), §11 O2 marked enforced. **Remaining gate = owner-run R4 trial sheet (blank) + operational cutover**, not code. Prior note: **§19 added (verified system review, B−, authoritative punch list) and Sprint R1 §19.2 implemented the same day** (16/16 money/integrity fixes, adversarially verified, 1438 tests green). Next: §19.3 Sprint R2. Prior note (2026-06-06) — status-refresher pass: 983 tests verified green; tier-pricing downgraded from blocker to a label decision (money path proven real); real-data cutover (13,153-part catalog) recorded as the live operational gate; owner-acceptance breadth named as the one true status gap. See §17 banner. **Added §18 Product Categorization & Classification spec** (Inventory → Category Maintenance screen; Products-List filters/bulk-assign/Manage-Categories link; importer rules + Import Review queue; Brand/Vendor/Manufacturer-Engine-Make separation) — **BUILT & verified the same night** (increments 1–7; 1051 tests pass; backfill applied to the live 13,154-part catalog). Not yet git-committed. See §18 banner. **2026-06-16: added §20 — REVERT the opaque SKU scheme to vendor part numbers** (owner interview; reverses the 2026-06-06 `JAKS-[ENGINE]-[CATEGORY]-[V][NNNN]` scheme that is live on all 29,659 products and caused too much confusion); plan = `product.sku ← vendor_part_number`, private-label parts (`is_house_brand`) keep a separate owner-typed JAKS Product # while the vendor # still prints on the PO; revert verified safe (0 collisions, trial-only documents) — dry-run pending owner review. See §20.*

@@ -15,7 +15,7 @@
 {% set pill = status_pill_map.get(invoice.status, ('chip-draft', invoice.status|upper)) %}
 
 <div class="flex items-center gap-2 flex-wrap justify-end"
-     x-data="{ moreOpen: false }">
+     x-data="{ moreOpen: false, sendOpen: false }">
 
   {# Zone 1 — back link, leftmost #}
   <a href="/invoices/" class="hidden lg:inline mr-auto text-sm link-subtle">← All invoices</a>
@@ -36,6 +36,11 @@
 
   {# Print — first-class ghost on every status #}
   <a href="/invoices/{{ invoice.id }}/print" target="_blank" rel="noopener" class="btn-secondary btn-sm">Print</a>
+
+  {# Send… — §22 shared email/text dialog (consent + log-only enforced in core) #}
+  {% if send %}
+  <button type="button" @click="sendOpen = true" class="btn-secondary btn-sm">Send…</button>
+  {% endif %}
 
   {# Save — DRAFT only; force-fire the same autosave POST (header form submit) #}
   {% if editable %}
@@ -108,5 +113,11 @@
   </button>
   {% endif %}
   {# PAID / VOID → no amber CTA (Print already shown above) #}
+
+  {# §22 Send dialog overlay — lives inside this x-data so `sendOpen` resolves.
+     Renders on full page load (NOT an HTMX swap), so the local x-data is safe. #}
+  {% if send %}
+  {% include "documents/_send_dialog.html" %}
+  {% endif %}
 
 </div>

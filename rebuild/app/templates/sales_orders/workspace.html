@@ -3,7 +3,15 @@
 {% block heading %}{{ so.so_number }}{% endblock %}
 
 {% block header_actions %}
-{% include "sales_orders/_header_actions.html" %}
+{# §22 Function A — Send dialog scope. Wraps the standard header actions plus a
+   first-class "Send…" button. `sendOpen` is the boolean the shared
+   documents/_send_dialog.html partial reads; the partial renders on full page
+   load (not an HTMX swap), so a local x-data here is safe. #}
+<div x-data="{ sendOpen: false }" class="contents">
+  {% include "sales_orders/_header_actions.html" %}
+  <button type="button" @click="sendOpen = true" class="btn-secondary btn-sm">Send…</button>
+  {% include "documents/_send_dialog.html" %}
+</div>
 {% endblock %}
 
 

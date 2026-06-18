@@ -28,6 +28,11 @@ from app.constants import (
     ENGINE_MAKES, ENGINE_MODELS_BY_MAKE,
 )
 from app.deps import get_current_user_id, get_db
+from app.services.document_messaging import (
+    build_send_context,
+    perform_document_send,
+    render_pdf_or_none,
+)
 from app.services.document_render import get_company_dict, get_prepared_by
 from app.models.customer import Customer
 from app.models.quote import Quote
@@ -447,27 +452,28 @@ async def workspace(
             # Seam 3 — customer relationship context while quoting
             **_quote_customer_ctx(db, quote),
             **_totals_ctx(quote),
+            # §22 — shared Send dialog (consent-aware, log-only by default)
+            "send": build_send_context(
+                db,
+                doc_label="Quote",
+                doc_number=quote.quote_number,
+                customer=quote.customer,
+                total=(quote.subtotal or 0.0),
+                action_url=f"/quotes/{quote.id}/send-message",
+            ),
         },
     )
 
 
 # ── Print / PDF ───────────────────────────────────────────────────────────────
 
-@router.get("/{quote_id}/print", response_class=HTMLResponse)
-async def print_quote(
-    quote_id: int,
-    request: Request,
-    db: Session = Depends(get_db),
-    user_id: int = Depends(get_current_user_id),
-):
-    """
-    Standalone print-ready HTML page for a quote.
-    Opens in a new tab — user hits Ctrl+P / Cmd+P or 'Print / Save PDF' button.
-    No weasyprint dependency: the browser's built-in PDF engine handles rendering.
-    """
-    from app.settings_utils import get_setting_value_db
+def _quote_print_context(db: Session, quote: Quote, request: Request,
+                         user_id: int) -> dict:
+    """Build the context that quotes/print.html consumes.
 
-    quote = _get_quote_or_404(db, quote_id)
+    Shared by GET /{quote_id}/print, GET /{quote_id}/pdf, and the §22 Send route
+    so the emailed PDF is byte-identical to the on-screen/download print doc.
+    """
     all_lines = _tree_sort_lines(quote.lines)
 
     included_lines = [ln for ln in all_lines if ln.is_included]
@@ -494,23 +500,37 @@ async def print_quote(
     if c.phone.strip():
         addr_lines.append(c.phone.strip())
 
-    company = get_company_dict(db)
+    return {
+        "request":             request,
+        "quote":               quote,
+        "included_lines":      included_lines,
+        "alt_lines":           alt_lines,
+        "customer_addr_lines": addr_lines,
+        "gross_total":         gross_total,
+        "subtotal":            subtotal,
+        "discount_amount":     discount_amount,
+        "company":             get_company_dict(db),
+        "prepared_by":         get_prepared_by(db, user_id),
+    }
 
+
+@router.get("/{quote_id}/print", response_class=HTMLResponse)
+async def print_quote(
+    quote_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """
+    Standalone print-ready HTML page for a quote.
+    Opens in a new tab — user hits Ctrl+P / Cmd+P or 'Print / Save PDF' button.
+    No weasyprint dependency: the browser's built-in PDF engine handles rendering.
+    """
+    quote = _get_quote_or_404(db, quote_id)
     return templates.TemplateResponse(
         request,
         "quotes/print.html",
-        {
-            "request":             request,
-            "quote":               quote,
-            "included_lines":      included_lines,
-            "alt_lines":           alt_lines,
-            "customer_addr_lines": addr_lines,
-            "gross_total":         gross_total,
-            "subtotal":            subtotal,
-            "discount_amount":     discount_amount,
-            "company":             company,
-            "prepared_by":         get_prepared_by(db, user_id),
-        },
+        _quote_print_context(db, quote, request, user_id),
     )
 
 
@@ -527,47 +547,11 @@ async def quote_pdf(
     Used for emailing quotes directly from the app.
     """
     from fastapi.responses import Response as FastAPIResponse
-    from app.settings_utils import get_setting_value_db
 
     quote = _get_quote_or_404(db, quote_id)
-    all_lines = _tree_sort_lines(quote.lines)
-
-    included_lines = [ln for ln in all_lines if ln.is_included]
-    alt_lines = [
-        ln for ln in all_lines
-        if ln.line_role == LineRole.UPGRADE_OPTION and not ln.is_included
-    ]
-
-    gross_total = round(sum(ln.unit_price * ln.qty for ln in included_lines), 2)
-    subtotal = quote.subtotal
-    discount_amount = round(gross_total - subtotal, 2)
-
-    c = quote.customer
-    addr_lines: list[str] = [ln for ln in [c.address_line1, c.address_line2] if ln.strip()]
-    city_parts = [p for p in [c.city, c.state] if p.strip()]
-    city_line = ", ".join(city_parts)
-    if city_line and c.zip_code.strip():
-        city_line += " " + c.zip_code.strip()
-    elif not city_line and c.zip_code.strip():
-        city_line = c.zip_code.strip()
-    if city_line:
-        addr_lines.append(city_line)
-    if c.phone.strip():
-        addr_lines.append(c.phone.strip())
-
-    company = get_company_dict(db)
 
     html_str = templates.env.get_template("quotes/print.html").render(
-        request=request,
-        quote=quote,
-        included_lines=included_lines,
-        alt_lines=alt_lines,
-        customer_addr_lines=addr_lines,
-        gross_total=gross_total,
-        subtotal=subtotal,
-        discount_amount=discount_amount,
-        company=company,
-        prepared_by=get_prepared_by(db, user_id),
+        **_quote_print_context(db, quote, request, user_id)
     )
 
     try:
@@ -1059,6 +1043,68 @@ async def send_quote(
 ):
     QuoteService(db, user_id).send_quote(quote_id)
     return RedirectResponse(f"/quotes/{quote_id}", status_code=303)
+
+
+@router.post("/{quote_id}/send-message")
+async def send_quote_message(
+    quote_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """§22 — email/SMS the quote to the customer via the shared messaging core.
+
+    Consent + rate limiting + the global log-only kill-switch all live in
+    MessagingService; this route only renders the PDF, fans the selected channels
+    out through perform_document_send, and flips a DRAFT quote → SENT when at
+    least one channel actually went out. Never raises into the user: blocked or
+    failed channels still return a 303 back to the workspace.
+    """
+    quote = _get_quote_or_404(db, quote_id)
+
+    form = await request.form()
+    channels = form.getlist("channels")
+    to_email = (form.get("to_email") or "").strip()
+    to_phone = (form.get("to_phone") or "").strip()
+    email_subject = form.get("email_subject") or ""
+    email_body = form.get("email_body") or ""
+    sms_body = form.get("sms_body") or ""
+
+    # Best-effort PDF attachment (None on hosts without WeasyPrint/GTK — email
+    # then sends without the attachment, matching the /pdf fallback).
+    pdf_bytes = render_pdf_or_none(
+        templates.env,
+        "quotes/print.html",
+        str(request.base_url),
+        **_quote_print_context(db, quote, request, user_id),
+    )
+
+    result = perform_document_send(
+        db,
+        user_id,
+        customer_id=quote.customer_id,
+        channels=channels,
+        to_email=to_email,
+        to_phone=to_phone,
+        email_subject=email_subject,
+        email_body=email_body,
+        sms_body=sms_body,
+        pdf_bytes=pdf_bytes,
+        pdf_filename=f"{quote.quote_number}.pdf",
+        related_entity_type="quote",
+        related_entity_id=quote.id,
+    )
+
+    n_sent = len(result["sent"])
+    # First successful send promotes a DRAFT quote to SENT (mirrors the legacy
+    # /send button). Already-SENT quotes can be re-sent without a status change.
+    if n_sent and quote.status == QuoteStatus.DRAFT:
+        QuoteService(db, user_id).send_quote(quote.id)
+
+    qs = f"?sent={n_sent}"
+    if result["failed"] or result["blocked"]:
+        qs += "&send_error=1"
+    return RedirectResponse(f"/quotes/{quote_id}{qs}", status_code=303)
 
 
 @router.post("/{quote_id}/mark-lost")

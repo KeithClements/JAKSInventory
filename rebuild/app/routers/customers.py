@@ -1606,6 +1606,100 @@ async def customer_update(
     return RedirectResponse(f"/customers/{customer_id}?saved=1", status_code=303)
 
 
+# ── SMS consent + opt-out controls (§22 Function B) ──────────────────────────
+# "OK to text" / "Stop texting" / "Do Not Contact" toggles on the customer
+# profile + communications page. Each posts a normal form and redirects 303
+# back to the doc it was triggered from (Referer), defaulting to the detail page.
+# The shared MessagingService owns the consent/opt-out semantics; these routes
+# are thin form handlers around it.
+
+def _consent_redirect(request: Request, customer_id: int) -> str:
+    """Redirect target for the consent toggles — back to the referring customer
+    page (detail or communications), defaulting to the detail page. Only same-app
+    customer URLs are honored so the Referer header can't bounce us off-site."""
+    ref = request.headers.get("referer", "") or ""
+    if ref:
+        from urllib.parse import urlsplit
+        path = urlsplit(ref).path
+        if path.startswith(f"/customers/{customer_id}"):
+            return path
+    return f"/customers/{customer_id}"
+
+
+@router.post("/{customer_id}/sms-consent", response_class=RedirectResponse)
+def customer_sms_consent(
+    customer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Record verbal SMS consent — sets allow_sms + sms_consent_at + method.
+    Audited + committed inside MessagingService.record_consent."""
+    MessagingService(db, current_user_id=user_id).record_consent(
+        customer_id, CommunicationChannel.SMS, "verbal"
+    )
+    return RedirectResponse(_consent_redirect(request, customer_id), status_code=303)
+
+
+@router.post("/{customer_id}/sms-optout", response_class=RedirectResponse)
+def customer_sms_optout(
+    customer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Stop texting this customer — clears allow_sms only (email untouched, and
+    they are NOT marked do_not_contact). Audited like the nearby routes."""
+    c = db.query(Customer).filter(Customer.id == customer_id).first()
+    if c:
+        c.allow_sms = False
+        MessagingService(db, current_user_id=user_id).audit(
+            entity_type="customer",
+            entity_id=customer_id,
+            action="sms_opt_out",
+            new_value={"allow_sms": False},
+        )
+        db.commit()
+    return RedirectResponse(_consent_redirect(request, customer_id), status_code=303)
+
+
+@router.post("/{customer_id}/contact-optout", response_class=RedirectResponse)
+def customer_contact_optout(
+    customer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Mark Do Not Contact — sets do_not_contact and clears allow_sms/allow_email.
+    Audited + committed inside MessagingService.record_opt_out."""
+    MessagingService(db, current_user_id=user_id).record_opt_out(
+        customer_id, reason="manual"
+    )
+    return RedirectResponse(_consent_redirect(request, customer_id), status_code=303)
+
+
+@router.post("/{customer_id}/contact-allow", response_class=RedirectResponse)
+def customer_contact_allow(
+    customer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Undo Do Not Contact — clears do_not_contact (does not silently re-grant
+    SMS consent; the rep re-arms "OK to text" explicitly). Audited."""
+    c = db.query(Customer).filter(Customer.id == customer_id).first()
+    if c:
+        c.do_not_contact = False
+        MessagingService(db, current_user_id=user_id).audit(
+            entity_type="customer",
+            entity_id=customer_id,
+            action="contact_allowed",
+            new_value={"do_not_contact": False},
+        )
+        db.commit()
+    return RedirectResponse(_consent_redirect(request, customer_id), status_code=303)
+
+
 # ── Log Call (HTMX) ───────────────────────────────────────────────────────────
 
 @router.post("/{customer_id}/log-call", response_class=HTMLResponse)

@@ -600,6 +600,64 @@
     </div>
   </div>{# /quickbooks connection panel #}
 
+  {# ── Messaging tab: Send-test card — SEPARATE form (can't nest in the main
+       settings form), posts to /settings/messaging/test. Fires a one-off test
+       message through the real provider; under log-only safe mode it just records
+       a LOGGED_ONLY audit row and reports back. §22.5 ── #}
+  <div x-show="tab === 'messaging'" x-cloak class="mt-6">
+    <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+      <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Send test</h2>
+
+      {% if flash and flash.msg_test %}
+        {% if flash.msg_test == 'sent' %}
+        <div class="rounded-lg bg-green-50 border border-green-200 text-green-700 px-4 py-2 text-sm">
+          Test sent (status: sent).
+        </div>
+        {% elif flash.msg_test == 'logged_only' %}
+        <div class="rounded-lg bg-amber-50 border border-amber-200 text-amber-700 px-4 py-2 text-sm">
+          logged_only — turn off log-only (safe mode) above to actually send.
+        </div>
+        {% elif flash.msg_test == 'failed' %}
+        <div class="rounded-lg bg-red-50 border border-red-200 text-red-700 px-4 py-2 text-sm">
+          Test failed{% if flash.msg_test_err %}: {{ flash.msg_test_err }}{% endif %}.
+        </div>
+        {% else %}
+        <div class="rounded-lg bg-gray-50 border border-gray-200 text-gray-600 px-4 py-2 text-sm">
+          Test status: {{ flash.msg_test }}.
+        </div>
+        {% endif %}
+      {% endif %}
+
+      <p class="text-xs text-gray-500">
+        Sends one test message through the saved provider so you can confirm your email / SMS
+        credentials work. While <b>log-only (safe mode)</b> is on it records the attempt without
+        transmitting — uncheck it above first to actually send.
+      </p>
+
+      <form method="post" action="/settings/messaging/test" class="space-y-4">
+        <div class="grid grid-cols-3 gap-3">
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Channel</label>
+            <select name="test_channel"
+                    class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">
+              <option value="email">Email</option>
+              <option value="sms">Text (SMS)</option>
+            </select>
+          </div>
+          <div class="col-span-2">
+            <label class="block text-xs font-medium text-gray-600 mb-1">Send to</label>
+            <input name="test_to" placeholder="you@jaksdiesel.com or +13035551234"
+                   class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+          </div>
+        </div>
+        <button type="submit"
+                class="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors">
+          Send test
+        </button>
+      </form>
+    </div>
+  </div>{# /messaging send-test card #}
+
   {# ── AI tab body — separate form because /settings/ai encrypts with Fernet
        (different storage shape from the plain KV /settings/ POST). Sits outside
        the main form so its inputs never accidentally post the API key plaintext

@@ -138,6 +138,17 @@ class SmtpProvider:
                        if self.from_name else self.from_address)
         msg["To"] = to
         msg.set_content(body)
+        # Attach files (quote/invoice/SO PDFs). Best-effort: a bad path is logged
+        # and skipped rather than failing the whole send.
+        for path in (attachments or []):
+            try:
+                p = Path(path)
+                msg.add_attachment(
+                    p.read_bytes(), maintype="application", subtype="pdf",
+                    filename=p.name,
+                )
+            except Exception as exc:
+                log.warning("SMTP attachment failed (%s): %s", path, exc)
         try:
             if int(self.port) == 465:
                 with smtplib.SMTP_SSL(self.host, self.port, timeout=20,
@@ -305,6 +316,102 @@ class MessagingService(BaseService):
         )
         self.db.commit()
         return comm
+
+    # ── Free-form send (the document "Send" dialog) ───────────────────────────
+
+    def send_message(
+        self,
+        *,
+        customer_id: int,
+        channel: str,
+        body: str,
+        subject: str | None = None,
+        attachments: list[Path] | None = None,
+        related_entity_type: str | None = None,
+        related_entity_id: int | None = None,
+        override_address: str | None = None,
+    ) -> Communication:
+        """Send an already-composed (and possibly rep-edited) message — no template
+        rendering. Consent-checked, rate-limited, sent via the live provider (email
+        forwards ``attachments`` such as the document PDF), and always logged.
+
+        Raises CommunicationBlockedError on consent / rate failure (the caller
+        decides how to surface per-channel blocks). §22 Function A.
+        """
+        customer = self._get_customer_or_raise(customer_id)
+        self._check_consent(customer, channel)
+        self._check_rate_limit(customer_id, channel)
+
+        to_address = override_address or self._resolve_address(customer, channel)
+        if channel == CommunicationChannel.SMS and override_address:
+            to_address = _to_e164(override_address)
+        from_address = get_setting_value_db(self.db, "company_email", "")
+
+        provider = self._provider_for(channel)
+        if channel == CommunicationChannel.EMAIL:
+            result = provider.send_email(
+                to=to_address, subject=subject or "", body=body,
+                attachments=attachments,
+            )
+        elif channel == CommunicationChannel.SMS:
+            result = provider.send_sms(to=to_address, body=body)
+        else:
+            result = SendResult(status=CommunicationStatus.LOGGED_ONLY)
+
+        comm = self._write_log(
+            customer_id=customer_id, channel=channel,
+            direction=CommunicationDirection.OUTBOUND, status=result.status,
+            to_address=to_address, from_address=from_address,
+            subject=subject, body=body, template_used=None,
+            related_entity_type=related_entity_type, related_entity_id=related_entity_id,
+            provider_message_id=result.provider_message_id,
+            failed_reason=result.error, consent_verified=True,
+        )
+        self.db.commit()
+        return comm
+
+    # ── Connection test (Settings → Messaging) ────────────────────────────────
+
+    def send_test(
+        self,
+        *,
+        channel: str,
+        to_address: str,
+        subject: str | None = None,
+        body: str = "",
+    ) -> SendResult:
+        """Send a TEST message to an arbitrary address via the REAL provider so the
+        owner can verify SMTP / Twilio from Settings. Honors the log-only
+        kill-switch (returns LOGGED_ONLY then). No customer / no consent check.
+        Logged with customer_id=None + provider='test' for the audit trail. §22.5
+        """
+        to = _to_e164(to_address) if channel == CommunicationChannel.SMS else (to_address or "").strip()
+        provider = self._provider_for(channel)
+        if channel == CommunicationChannel.EMAIL:
+            result = provider.send_email(
+                to=to, subject=subject or "Axle ERP test email",
+                body=body or "This is a test email from Axle ERP. If you received it, "
+                             "your email sending is configured correctly.",
+            )
+        elif channel == CommunicationChannel.SMS:
+            result = provider.send_sms(
+                to=to,
+                body=body or "Test message from Axle ERP — your SMS sending is configured correctly.",
+            )
+        else:
+            result = SendResult(status=CommunicationStatus.FAILED, error=f"Unknown channel {channel!r}")
+
+        self._write_log(
+            customer_id=None, channel=channel,
+            direction=CommunicationDirection.OUTBOUND, status=result.status,
+            to_address=to, from_address=get_setting_value_db(self.db, "company_email", ""),
+            subject=subject, body=body or "(connection test)", template_used=None,
+            related_entity_type=None, related_entity_id=None, provider="test",
+            provider_message_id=result.provider_message_id, failed_reason=result.error,
+            consent_verified=False,
+        )
+        self.db.commit()
+        return result
 
     # ── Manual / copy-paste logging ───────────────────────────────────────────
 

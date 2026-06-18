@@ -53,6 +53,8 @@ def get_prepared_by(db: Session, user_id: int | None) -> str:
         return "JAKS"
     from app.models.user import User
     user = db.query(User).filter(User.id == user_id).first()
+    if user is None:                       # id with no matching row → never crash
+        return "JAKS"
     return (user.name or "").strip() or "JAKS"
 
 

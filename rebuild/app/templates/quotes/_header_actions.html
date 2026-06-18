@@ -9,7 +9,7 @@
 } %}
 
 <div class="flex items-center gap-2 flex-wrap justify-end"
-     x-data="{ moreOpen: false, showSO: false, showLost: false, reason: '' }">
+     x-data="{ moreOpen: false, showSO: false, showLost: false, sendOpen: false, reason: '' }">
 
   {# §8B Zone 1 — back link, leftmost (same-tab nav) #}
   <a href="/quotes/" class="hidden lg:inline mr-auto text-sm link-subtle">← All quotes</a>
@@ -25,9 +25,9 @@
 
   {% if quote.status == QuoteStatus.DRAFT %}
 
-    <form action="/quotes/{{ quote.id }}/send" method="post" class="inline">
-      <button type="submit" class="btn-primary btn-sm">Send to Customer</button>
-    </form>
+    {# §22 — opens the shared Send dialog (email/SMS, consent-aware). Sending a
+       DRAFT promotes it to SENT, replacing the old direct-post Send button. #}
+    <button type="button" @click="sendOpen = true" class="btn-primary btn-sm">Send…</button>
 
     <div class="relative inline-block">
       <button type="button" @click="showSO = !showSO" class="btn-secondary btn-sm">
@@ -55,6 +55,9 @@
     </div>
 
   {% elif quote.status == QuoteStatus.SENT %}
+
+    {# §22 — re-send an already-sent quote (no status change on a re-send). #}
+    <button type="button" @click="sendOpen = true" class="btn-secondary btn-sm">Send…</button>
 
     <div class="relative inline-block">
       <button type="button" @click="showSO = !showSO" class="btn-primary btn-sm">
@@ -183,5 +186,9 @@
     </div>
   </div>
   {% endif %}
+
+  {# §22 — shared Send dialog (reads the `send` context built in the workspace
+     route). Lives inside this x-data scope so `sendOpen` is in scope. #}
+  {% include "documents/_send_dialog.html" %}
 
 </div>

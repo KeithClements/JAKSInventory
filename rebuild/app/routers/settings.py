@@ -320,6 +320,9 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
         "ai_saved": qp.get("ai_saved", ""),
         "ai_cleared": qp.get("ai_cleared", ""),
         "ai_error": qp.get("ai_error", ""),
+        # §22.5 — Messaging "Send test" result (status word + optional error)
+        "msg_test": qp.get("msg_test", ""),
+        "msg_test_err": qp.get("msg_test_err", ""),
     }
     return templates.TemplateResponse(
         request, "settings/index.html",
@@ -360,6 +363,39 @@ async def save_settings(request: Request, db: Session = Depends(get_db), _admin=
             db.add(Setting(key=key, value=val, label=label))
     db.commit()
     return RedirectResponse("/settings/?saved=1", status_code=303)
+
+
+# ── §22.5 — Messaging "Send test" (admin-only) ────────────────────────────────
+#
+# Fires a one-off test message at an arbitrary address/number through the REAL
+# provider so the owner can verify their SMTP / Twilio credentials from Settings.
+# Honors the global ``messaging_log_only_mode`` kill-switch — under the safe-mode
+# default this records a status=LOGGED_ONLY audit row and never transmits.
+# Never raises (MessagingService.send_test always returns a SendResult): the
+# result status (and any error) round-trips back as a ?msg_test= flash.
+
+@router.post("/messaging/test", response_class=RedirectResponse)
+async def messaging_send_test(
+    request: Request, db: Session = Depends(get_db), _admin=Depends(require_admin)
+):
+    from urllib.parse import quote
+    from app.constants import CommunicationChannel, CommunicationStatus
+    from app.services.messaging_service import MessagingService
+
+    form = await request.form()
+    test_channel = str(form.get("test_channel", "email")).strip().lower()
+    test_to = str(form.get("test_to", "")).strip()
+
+    channel = (CommunicationChannel.EMAIL if test_channel == "email"
+               else CommunicationChannel.SMS)
+    res = MessagingService(db, current_user_id=_admin.id).send_test(
+        channel=channel, to_address=test_to,
+    )
+
+    url = f"/settings/?tab=messaging&msg_test={quote(str(res.status))}"
+    if res.status == CommunicationStatus.FAILED:
+        url += f"&msg_test_err={quote(res.error or '')}"
+    return RedirectResponse(url, status_code=303)
 
 
 # ── §5.12 — Company logo upload (admin-only) ──────────────────────────────────

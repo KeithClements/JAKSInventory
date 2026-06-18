@@ -39,6 +39,11 @@ from app.deps import get_current_user_id, get_db
 from app.models.customer import Customer, CustomerAddress
 from app.models.product import Product
 from app.models.quote import SalesOrder, SOLine
+from app.services.document_messaging import (
+    build_send_context,
+    perform_document_send,
+    render_pdf_or_none,
+)
 from app.services.document_render import get_prepared_by  # noqa: F401 (used below)
 from app.services.document_render import (
     customer_address_lines,
@@ -255,6 +260,17 @@ async def so_workspace(
     from app.services.customer_service import CustomerService
     ctx["credit_status"] = (
         CustomerService(db).credit_status(so.customer, so.subtotal) if so.customer else None
+    )
+    # §22 Function A — shared "Send" dialog context. SalesOrder exposes `subtotal`
+    # (no `total` property like Quote/Invoice); fall back through both so the
+    # dialog's pre-filled body shows the order value.
+    ctx["send"] = build_send_context(
+        db,
+        doc_label="Sales Order",
+        doc_number=so.so_number,
+        customer=so.customer,
+        total=(getattr(so, "total", None) or so.subtotal or 0.0),
+        action_url=f"/sales-orders/{so.id}/send-message",
     )
     return templates.TemplateResponse(
         request,
@@ -648,3 +664,62 @@ def so_pdf(so_id: int, request: Request, db: Session = Depends(get_db),
         fallback_print_url=f"/sales-orders/{so_id}/print",
         download_filename=so.so_number,
     )
+
+
+# ── Send (§22 Function A) ─────────────────────────────────────────────────────
+
+@router.post("/{so_id}/send-message")
+async def so_send_message(
+    so_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Email / text the SO PDF to the customer via the shared messaging core.
+
+    Renders the same print context the /pdf route uses, builds a best-effort PDF
+    (None on Windows/no-GTK — email then sends without the attachment), and hands
+    off to perform_document_send (consent-checked, rate-limited, log-only-safe).
+    Never raises into the user — channel-level blocks/failures are summarized and
+    the workspace shows the count. Redirects 303 back to the workspace.
+    """
+    so = _get_so_or_404(db, so_id)
+
+    form = await request.form()
+    channels = form.getlist("channels")
+
+    # PDF is best-effort (same as /pdf): None → email sends without attachment.
+    # Build the print context defensively so a missing user / settings row never
+    # blocks the send itself.
+    pdf_bytes = None
+    if "email" in channels:
+        try:
+            ctx = _so_print_context(so, db)
+            ctx["prepared_by"] = get_prepared_by(db, user_id)
+            pdf_bytes = render_pdf_or_none(
+                templates.env, "sales_orders/print.html", str(request.base_url), **ctx
+            )
+        except Exception:  # noqa: BLE001 — never let PDF prep break the send
+            log.info("SO send: PDF context build failed for so=%s", so_id, exc_info=True)
+            pdf_bytes = None
+
+    result = perform_document_send(
+        db,
+        user_id,
+        customer_id=so.customer_id,
+        channels=channels,
+        to_email=str(form.get("to_email", "")),
+        to_phone=str(form.get("to_phone", "")),
+        email_subject=str(form.get("email_subject", "")),
+        email_body=str(form.get("email_body", "")),
+        sms_body=str(form.get("sms_body", "")),
+        pdf_bytes=pdf_bytes,
+        pdf_filename=f"{so.so_number}.pdf",
+        related_entity_type="sales_order",
+        related_entity_id=so.id,
+    )
+    n = len(result["sent"])
+    qs = f"?sent={n}"
+    if result["failed"] or result["blocked"]:
+        qs += "&send_error=1"   # base.html shows the amber "couldn't send" banner
+    return RedirectResponse(f"/sales-orders/{so_id}{qs}", status_code=303)

@@ -30,6 +30,11 @@ from app.constants import (
     InvoiceStatus, LineType, PaymentMethod, QBOSyncStatus,
 )
 from app.deps import get_current_user_id, get_db
+from app.services.document_messaging import (
+    build_send_context,
+    perform_document_send,
+    render_pdf_or_none,
+)
 from app.services.document_render import get_company_dict, get_prepared_by
 from app.models.customer import Customer
 from app.models.invoice import Invoice, InvoiceLine
@@ -164,10 +169,21 @@ def _workspace_context(
         if invoice.customer else None
     )
 
+    # ── §22 Send dialog context (shared messaging) ───────────────────────────
+    send_ctx = build_send_context(
+        db,
+        doc_label="Invoice",
+        doc_number=invoice.invoice_number,
+        customer=invoice.customer,
+        total=(invoice.total or 0.0),
+        action_url=f"/invoices/{invoice.id}/send-message",
+    )
+
     return {
         "invoice": invoice,
         "totals": totals,
         "customers": customers,
+        "send": send_ctx,
         "invoice_cores": invoice_cores,
         "invoice_intelligence": invoice_intelligence,
         "invoice_panel_metrics": invoice_panel_metrics,
@@ -1053,6 +1069,57 @@ def invoice_pdf(invoice_id: int, request: Request, db: Session = Depends(get_db)
             "Content-Length": str(len(pdf_bytes)),
         },
     )
+
+
+@router.post("/{invoice_id}/send-message", response_class=RedirectResponse)
+async def invoice_send_message(
+    invoice_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """§22 — email / text the invoice to the customer via shared MessagingService.
+
+    Best-effort attaches the print PDF (None on Windows/no-GTK → email sends
+    without attachment, exactly like the /pdf route). Consent + rate-limit +
+    log-only enforcement all live in the messaging core; this route never mutates
+    invoice status. Redirects 303 back to the workspace with a ?sent=<n> count.
+    """
+    inv = _get_invoice_or_redirect(db, invoice_id)
+    if isinstance(inv, RedirectResponse):
+        return inv
+
+    form = await request.form()
+    channels = [c for c in form.getlist("channels") if c in ("email", "sms")]
+
+    pdf_bytes = render_pdf_or_none(
+        templates.env,
+        "invoices/print.html",
+        str(request.base_url),
+        request=request,
+        **_invoice_print_context(db, inv, user_id),
+    )
+
+    result = perform_document_send(
+        db,
+        user_id,
+        customer_id=inv.customer_id,
+        channels=channels,
+        to_email=str(form.get("to_email", "")).strip(),
+        to_phone=str(form.get("to_phone", "")).strip(),
+        email_subject=str(form.get("email_subject", "")).strip(),
+        email_body=str(form.get("email_body", "")),
+        sms_body=str(form.get("sms_body", "")),
+        pdf_bytes=pdf_bytes,
+        pdf_filename=f"{inv.invoice_number}.pdf",
+        related_entity_type="invoice",
+        related_entity_id=inv.id,
+    )
+    n = len(result["sent"])
+    qs = f"?sent={n}"
+    if result["failed"] or result["blocked"]:
+        qs += "&send_error=1"   # base.html shows the amber "couldn't send" banner
+    return RedirectResponse(f"/invoices/{invoice_id}{qs}", status_code=303)
 
 
 # ── Payment (unchanged) ───────────────────────────────────────────────────────

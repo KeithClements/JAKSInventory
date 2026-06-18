@@ -222,6 +222,28 @@
               </div>
               {% else %}<div class="text-gray-400">No email</div>{% endif %}
             </div>
+
+            {# ── SMS consent / opt-out controls (§22 Function B) ──
+               Three-state: Do Not Contact → "Allow contact"; else texting OK →
+               green chip + "Stop texting"; else → "OK to text". Each posts a
+               normal form (303 back to this page). #}
+            <div class="mt-4 flex flex-wrap items-center gap-2">
+              {% if customer.do_not_contact %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-700">Do Not Contact</span>
+                <form method="post" action="/customers/{{ customer.id }}/contact-allow" class="inline">
+                  <button type="submit" class="btn-secondary btn-sm">Allow contact</button>
+                </form>
+              {% elif customer.allow_sms %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-700">Texting OK{% if customer.sms_consent_at %} since {{ customer.sms_consent_at.strftime('%b %d, %Y') }}{% endif %}</span>
+                <form method="post" action="/customers/{{ customer.id }}/sms-optout" class="inline">
+                  <button type="submit" class="btn-secondary btn-sm">Stop texting</button>
+                </form>
+              {% else %}
+                <form method="post" action="/customers/{{ customer.id }}/sms-consent" class="inline">
+                  <button type="submit" class="btn-secondary btn-sm">OK to text</button>
+                </form>
+              {% endif %}
+            </div>
           </div>
 
           {# Billing + Shipping addresses #}
