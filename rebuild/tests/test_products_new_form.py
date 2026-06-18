@@ -139,8 +139,8 @@ def test_post_creates_product_vendor_source_and_cross_ref(client, db_session):
     db_session.expire_all()
     p = db_session.query(Product).get(pid)
     assert p is not None
-    # MASTER_PLAN §20: the customer-facing SKU IS the vendor's real part number.
-    assert p.sku == "311148"
+    # Default vendor scheme: {prefix}-{vendor_code}-{part#} (MASTER_PLAN §20).
+    assert p.sku == "JAKS-PAI-311148"
     assert p.is_house_brand is False
 
     # Vendor source created, preferred, holds the typed cost.
@@ -164,8 +164,9 @@ def test_post_creates_product_vendor_source_and_cross_ref(client, db_session):
 
 
 def test_post_sku_is_vendor_part_number(client, db_session):
-    """The customer-facing SKU is exactly the typed vendor part # — no masking,
-    no engine/category encoding (MASTER_PLAN §20)."""
+    """The customer-facing SKU is {prefix}-{vendor_code}-{part#} — the typed
+    vendor part # carried under the JAKS/vendor prefix, no engine/category
+    encoding (MASTER_PLAN §20)."""
     vendor = _seed_vendor(db_session)
     cat = _seed_category(db_session, name="Gaskets", code="GSK", level=2)
     r = client.post("/products/new", data={
@@ -182,7 +183,7 @@ def test_post_sku_is_vendor_part_number(client, db_session):
     pid = int(r.headers["location"].rsplit("/", 1)[-1])
 
     p = db_session.query(Product).get(pid)
-    assert p.sku == "MULTIFIT-1"
+    assert p.sku == "JAKS-PAI-MULTIFIT-1"
 
 
 def test_post_private_label_uses_jaks_product_number_as_sku(client, db_session):
@@ -235,7 +236,7 @@ def test_post_without_vendor_part_number_returns_422(client, db_session):
 
 def test_post_vendor_without_sku_digit_still_creates(client, db_session):
     """MASTER_PLAN §20 dropped the opaque vendor digit — a vendor needs no
-    SKU # to create products; the SKU is just the vendor part #."""
+    SKU # to create products; the SKU is {prefix}-{vendor_code}-{part#}."""
     vendor = _seed_vendor(db_session, vendor_number="")
     r = client.post("/products/new", data={
         "vendor_id": str(vendor.id),
@@ -247,7 +248,7 @@ def test_post_vendor_without_sku_digit_still_creates(client, db_session):
     assert r.status_code == 303, r.text
     pid = int(r.headers["location"].rsplit("/", 1)[-1])
     p = db_session.query(Product).get(pid)
-    assert p.sku == "X-2"
+    assert p.sku == "JAKS-PAI-X-2"
 
 
 # ── Duplicate (vendor + part#) on a different product → blocked ──────────────

@@ -22,6 +22,12 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     "company_email":               ("",        "Company Email"),
     "invoice_notes":               ("",        "Default Invoice Notes"),
 
+    # ── SKU generation ────────────────────────────────────────────────────────
+    # vendor scheme = {prefix}-{vendor_code}-{part#}  (JAKS-PAI-340097) — default.
+    # coded scheme  = {prefix}-{ENGINE}-{CATEGORY}-{Vseq} (JAKS-CAT-HBLT-90001).
+    "sku_prefix":                  ("JAKS",    "Customer SKU prefix"),
+    "sku_scheme":                  ("vendor",  "Default SKU scheme: vendor | coded"),
+
     # ── Pricing defaults ──────────────────────────────────────────────────────
     "cc_surcharge_pct":            ("3.0",     "Credit Card Surcharge %"),
     "default_markup_pct":          ("30.0",    "Default Markup %"),
@@ -196,6 +202,8 @@ VISIBLE_KEYS = [
     # Company info
     "company_name", "company_address", "company_phone", "company_email", "company_website",
     "invoice_notes",
+    # SKU generation
+    "sku_prefix", "sku_scheme",
     # Pricing
     "cc_surcharge_pct", "default_markup_pct", "default_fuel_service_charge",
     # Policy

@@ -119,7 +119,7 @@ def test_no_prefix_row_defaults_to_pai(db):
     summ = svc.full_import(_csv([_prod_row("040049X")]), dry_run=False)
     assert summ.get("error") is None and summ["created"] == 1
     p, src = _by_feed_sku(db, "040049X")
-    assert p.sku == "040049X"          # §20: SKU = the (PAI-routed) vendor part #
+    assert p.sku == "JAKS-PAI-040049X"   # default vendor scheme, PAI-routed
     assert src.vendor_id == pai.id
 
 

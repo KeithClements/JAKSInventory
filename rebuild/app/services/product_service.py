@@ -201,13 +201,21 @@ class ProductService(BaseService):
             data.get("customer_core_charge", 0.0),
         )
 
-        # Customer-facing SKU (MASTER_PLAN §20): standard parts use the vendor's
-        # real part number; private-label parts (is_house_brand) use the owner's
-        # own JAKS Product # while the vendor part# still rides on the source for
-        # the PO. No opaque masking — sku_service is shelved (§20.4).
+        # Customer-facing SKU. DEFAULT (vendor scheme): {prefix}-{vendor_code}-{part#}
+        # e.g. JAKS-PAI-340097 — readable + unique per (vendor, part#). CODED scheme
+        # (opt-in per product via data['sku_scheme']='coded', or the sku_scheme
+        # setting): {prefix}-{ENGINE}-{CATEGORY}-{Vseq} via SkuService. Private-label
+        # (is_house_brand) parts keep the owner-typed JAKS Product #.
+        from app.settings_utils import get_setting_value_db
+        from app.services.sku_service import build_vendor_sku, SkuService
         engine_make = (data.get("engine_make") or "").strip()
         engine_model = (data.get("engine_model") or "").strip()
         is_house_brand = bool(data.get("is_house_brand", False))
+        scheme = (data.get("sku_scheme")
+                  or get_setting_value_db(self.db, "sku_scheme", "vendor")).strip().lower()
+        prefix = get_setting_value_db(self.db, "sku_prefix", "JAKS")
+        use_coded = scheme == "coded" and not is_house_brand
+
         if is_house_brand:
             customer_sku = (data.get("jaks_product_number")
                             or data.get("sku") or "").strip().upper()
@@ -215,21 +223,30 @@ class ProductService(BaseService):
                 raise ValueError(
                     "Enter your JAKS Product # for a private-label part."
                 )
+        elif use_coded:
+            if not (vendor.vendor_number or "").strip():
+                raise ValueError(
+                    "The coded SKU scheme needs this vendor's 1-digit SKU number "
+                    "(set it on the vendor form) — or use the default scheme."
+                )
+            customer_sku = None   # minted after the product row exists (needs id + category)
         else:
-            customer_sku = part_number
+            customer_sku = build_vendor_sku(prefix, vendor.vendor_code, part_number)
 
-        # Unique-sku guard: part numbers are not globally unique across vendors,
-        # so fail loud with an actionable message rather than save a duplicate.
-        clash = self.db.query(Product).filter(Product.sku == customer_sku).first()
-        if clash is not None:
-            raise ValueError(
-                f"SKU '{customer_sku}' already exists (product_id={clash.id}). "
-                f"Another vendor may use the same part number — mark this part "
-                f"private-label and give it a distinct JAKS Product #."
-            )
+        # Unique-sku guard for the pre-computed schemes (coded skus are sequenced
+        # and unique by construction). Fail loud rather than save a duplicate.
+        if customer_sku is not None:
+            clash = self.db.query(Product).filter(Product.sku == customer_sku).first()
+            if clash is not None:
+                raise ValueError(
+                    f"SKU '{customer_sku}' already exists (product_id={clash.id}). "
+                    f"Another vendor may use the same part number — mark this part "
+                    f"private-label and give it a distinct JAKS Product #."
+                )
 
+        import uuid as _uuid
         product = Product(
-            sku=customer_sku,
+            sku=customer_sku or f"__SKUTMP__{_uuid.uuid4().hex}",
             title=data.get("title", ""),
             description=data.get("description", ""),
             seo_description=data.get("seo_description", ""),
@@ -257,6 +274,13 @@ class ProductService(BaseService):
         )
         self.db.add(product)
         self.db.flush()  # product.id available below
+
+        if use_coded:
+            # Mint the coded SKU now that the product row (id + category relationship)
+            # exists. assign_new_sku stamps engine_code/category_code/part_seq and a
+            # sequenced, unique sku, replacing the temp placeholder above.
+            SkuService(self.db, self.current_user_id).assign_new_sku(product, vendor)
+            self.db.flush()
 
         # Vendor source — preferred + active. vendor_sku mirrors the typed part#
         # so it stays searchable through the precomputed _norm columns. (Cost is

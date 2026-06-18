@@ -127,10 +127,11 @@ def test_full_import_creates_products_and_relations(db):
     ProductImportService(db, None).full_import(_shopify_csv(), dry_run=False)
     p = _product_by_pai(db, "111")
     assert p is not None
-    # MASTER_PLAN §20: SKU = the vendor's real part #; raw CSV number parked on the source
-    assert p.sku == "111"
+    # Default vendor scheme: SKU = {prefix}-{vendor_code}-{part#}; the raw feed
+    # SKU + part# stay on the source so they remain searchable.
+    assert p.sku == "JAKS-PAI-111"
     _s0 = db.query(ProductVendorSource).filter(ProductVendorSource.product_id == p.id).first()
-    assert _s0.vendor_sku == "JAKS-PAI-111"
+    assert _s0.vendor_sku == "JAKS-PAI-111"   # raw feed SKU parked on the source
     # Pricing mapping — the cardinal rule
     assert p.price_override == 10.99          # Variant Price = OUR sell
     assert p.compare_at_price == 19.68        # Compare At = marketing
@@ -199,8 +200,9 @@ def test_full_import_seeds_product_cost_from_vendor_cost(db):
     text = _jaks_csv("777,PAI,Reman Injector,ENGINE PARTS,Cummins,ISX,950.00,420.00,0,false")
     summ = svc.full_import(text, dry_run=False)
     assert summ.get("error") is None and summ["created"] == 1
-    p = db.query(Product).filter(Product.sku == "777").first()
+    p = _product_by_pai(db, "777")     # sku is now JAKS-PAI-777; look up by part#
     assert p is not None
+    assert p.sku == "JAKS-PAI-777"     # default vendor scheme
     assert p.cost == 420.00            # seeded from the cost column
     assert p.price_override == 950.00  # sell price stays out of cost
     assert p.qty_on_hand == 0          # unreceipted → valuation (qty*cost) is still 0

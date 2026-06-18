@@ -132,8 +132,9 @@ def test_full_import_with_seeded_vendor_works(db):
     assert "error" not in summ
     assert summ["created"] == 1
     p = db.query(Product).first()
-    # MASTER_PLAN §20: SKU = the feed/vendor part number (no minted vendor digit).
-    assert p is not None and p.sku == "JAKS-G-4"
+    # Default vendor scheme: SKU = {prefix}-{vendor_code}-{bare part#} (the feed's
+    # JAKS- prefix is stripped before re-assembly so it is never doubled).
+    assert p is not None and p.sku == "JAKS-PAI-G-4"
     assert db.query(Vendor).count() == 1            # still exactly the seeded vendor
 
 

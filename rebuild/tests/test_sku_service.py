@@ -185,9 +185,9 @@ def _mini_shopify_csv() -> str:
 
 
 def test_e2e_import_produces_vendor_part_number_skus(db_session):
-    """MASTER_PLAN §20: Full Import sets the customer-facing SKU to the vendor's
-    real part number; the raw CSV SKU is still parked on the vendor source so it
-    stays searchable. (The opaque JAKS scheme is shelved — see §20.)"""
+    """Default vendor scheme: Full Import sets the customer-facing SKU to
+    {prefix}-{vendor_code}-{part#}; the raw CSV SKU is still parked on the vendor
+    source so it stays searchable. (The opaque coded scheme is the override — §20.)"""
     db = db_session
     from app.services.product_import_service import ProductImportService
 
@@ -195,7 +195,7 @@ def test_e2e_import_produces_vendor_part_number_skus(db_session):
     ProductImportService(db, None).full_import(_mini_shopify_csv(), dry_run=False)
     src = db.query(ProductVendorSource).filter_by(vendor_part_number="111").first()
     p = src.product
-    assert p.sku == "111"                       # SKU = vendor part #, no masking
+    assert p.sku == "JAKS-PAI-111"              # {prefix}-{vendor_code}-{part#}
     assert src.vendor_sku == "JAKS-PAI-111"     # raw CSV sku parked + searchable
 
 

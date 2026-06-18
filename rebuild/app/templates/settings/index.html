@@ -81,6 +81,29 @@
         <p class="text-xs text-gray-400">These print on quotes, sales orders &amp; invoices. Terms appear near the bottom; the logo is uploaded below.</p>
       </div>
 
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">SKU Generation</h2>
+        {% for s in settings %}
+        {% if s.key == 'sku_prefix' %}
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Customer SKU prefix</label>
+          <input name="sku_prefix" value="{{ s.value }}"
+            class="w-40 rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono uppercase focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        </div>
+        {% elif s.key == 'sku_scheme' %}
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Default SKU scheme (new products)</label>
+          <select name="sku_scheme" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">
+            <option value="vendor" {% if s.value == 'vendor' %}selected{% endif %}>Vendor part # &mdash; JAKS-PAI-340097</option>
+            <option value="coded"  {% if s.value == 'coded'  %}selected{% endif %}>Coded &mdash; JAKS-CAT-HBLT-90001</option>
+          </select>
+        </div>
+        {% endif %}
+        {% endfor %}
+        <p class="text-xs text-gray-400">Used when minting new product SKUs (importer + New Product). The New Product
+          form can override the scheme per item. Coded SKUs need the vendor's 1-digit SKU number set on the vendor form.</p>
+      </div>
+
     </div>{# /company tab #}
 
     {# ═══ PRICING TAB ═══ #}

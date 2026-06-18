@@ -359,6 +359,8 @@ def _new_product_ctx(db: Session) -> dict:
         "engine_makes": ENGINE_MAKES,
         "engine_models_by_make": ENGINE_MODELS_BY_MAKE,
         "default_markup": default_markup,
+        "sku_prefix": get_setting_value_db(db, "sku_prefix", "JAKS"),
+        "default_sku_scheme": (get_setting_value_db(db, "sku_scheme", "vendor") or "vendor").strip().lower(),
     }
 
 
@@ -392,6 +394,8 @@ async def product_create(request: Request, db: Session = Depends(get_db), user_i
         data = _parse_product_form(form)
         # Owner rule: the new form mints the SKU; never trust a manual sku field.
         data.pop("sku", None)
+        # Per-product SKU-scheme override (blank → the sku_scheme setting default).
+        data["sku_scheme"] = str(form.get("sku_scheme", "")).strip().lower()
         product = _svc(db, user_id).create_product(data)
         return RedirectResponse(f"/products/{product.id}", status_code=303)
     except ValueError as exc:

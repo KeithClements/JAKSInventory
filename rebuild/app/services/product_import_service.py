@@ -69,6 +69,15 @@ def _vendor_code_from_sku(sku: str) -> str | None:
     return m.group(1).upper() if m else None
 
 
+def _bare_part_number(raw: str) -> str:
+    """Strip a leading ``JAKS-`` (+ optional vendor-code segment) so re-assembling
+    the customer SKU never doubles it: 'JAKS-PAI-040049' → '040049',
+    'JAKS-G-4' → 'G-4'. Leaves an unprefixed value untouched."""
+    s = (raw or "").strip()
+    m = re.match(r"^JAKS-(?:[A-Z0-9]{2,10}-)?(.+)$", s, re.IGNORECASE)
+    return m.group(1) if m else s
+
+
 def _row_vendor_code(p: dict) -> str:
     """The vendor code for an import row. The JAKS-native export carries an
     explicit ``vendor`` column (PAI / IMB / …) — parse_jaks_export_csv parks it
@@ -762,10 +771,14 @@ class ProductImportService(BaseService):
         vendor_ids_by_code = {c: v.id for c, v in vendors_by_code.items()}
         names_by_code = {c: v.name for c, v in vendors_by_code.items()}
         classifier = ClassificationService(self.db)   # §18.6 — rules cache built once
-        # MASTER_PLAN §20: the customer-facing SKU is the vendor's real part number
-        # (p["pai_part"]) — no opaque masking. Seed a guard with every existing SKU
-        # so a part# that collides with another product is skipped, not crashed on
-        # the UNIQUE(sku) index (part numbers are not globally unique across vendors).
+        # Customer-facing SKU = {prefix}-{vendor_code}-{part#} (e.g. JAKS-PAI-340097)
+        # via the default vendor scheme; the raw feed SKU + part# stay on the vendor
+        # source so they remain searchable. Prefix read once (chunk commits expunge
+        # the session). Seed a guard with every existing SKU so a collision is
+        # skipped, not crashed on the UNIQUE(sku) index.
+        from app.services.sku_service import build_vendor_sku
+        from app.settings_utils import get_setting_value_db
+        _sku_prefix = get_setting_value_db(self.db, "sku_prefix", "JAKS")
         minted_skus: set[str] = {
             (s or "").strip().lower()
             for (s,) in self.db.query(Product.sku).all()
@@ -841,11 +854,13 @@ class ProductImportService(BaseService):
                 app_makes=[_split_two(a)[0] for a in p["apps"]],
                 app_models=[_split_two(a)[1] for a in p["apps"]],
             )
-            # MASTER_PLAN §20 — the customer-facing SKU IS the vendor's real part
-            # number; the raw CSV SKU is still parked on the vendor source
-            # (vendor_sku, below) so it stays searchable. Skip (don't crash) if the
-            # part# collides with an existing SKU.
-            prod_sku = (p["pai_part"] or sku).strip()
+            # Customer-facing SKU = {prefix}-{vendor_code}-{part#} (default vendor
+            # scheme). The raw CSV SKU + part# are parked on the vendor source
+            # (vendor_sku/vendor_part_number, below) so they stay searchable. Skip
+            # (don't crash) if the assembled SKU collides with an existing one.
+            prod_sku = build_vendor_sku(
+                _sku_prefix, row_code, _bare_part_number(p["pai_part"] or sku)
+            )
             if prod_sku.lower() in minted_skus:
                 summary["skipped_sku_collision"] += 1
                 continue

@@ -37,6 +37,9 @@
         categoryId: '',
         isHouseBrand: false,
         jaksProductNumber: '',
+        skuScheme: '{{ default_sku_scheme }}',
+        skuPrefix: '{{ sku_prefix }}',
+        vendorCode: '',
         lookupBusy: false,
         get fieldsValid() {
           if (String(this.vendorId).trim() === '' || String(this.vendorPart).trim() === '') return false;
@@ -49,10 +52,14 @@
             ? this.engineModels[this.engineMake] : [];
         },
         get skuPreview() {
-          // MASTER_PLAN §20: the customer-facing SKU is the vendor's real part #
-          // for standard parts, or the owner-typed JAKS Product # for private label.
+          // Private label → owner's JAKS Product #. Coded → assigned on save (needs
+          // the sequence). Default vendor scheme → prefix-vendorcode-part#.
           if (this.isHouseBrand) return (this.jaksProductNumber || '').trim().toUpperCase() || '—';
-          return (this.vendorPart || '').trim() || '—';
+          const part = (this.vendorPart || '').trim().toUpperCase();
+          if (!part) return '—';
+          if (this.skuScheme === 'coded') return this.skuPrefix + '-… (coded, assigned on save)';
+          const code = (this.vendorCode || '').trim().toUpperCase();
+          return [this.skuPrefix].concat(code ? [code] : []).concat([part]).join('-');
         },
         async lookup() {
           if (String(this.vendorId).trim() === '' || String(this.vendorPart).trim() === '') return;
@@ -86,6 +93,7 @@
         onVendorChange(ev) {
           const opt = ev.target.selectedOptions[0];
           this.vendorName = (opt && opt.dataset.name) || '';
+          this.vendorCode = (opt && opt.dataset.code) || '';
           this.lookup();
         }
       }"
@@ -133,6 +141,7 @@
           {% for v in vendors %}
             <option value="{{ v.id }}"
                     data-name="{{ v.name }}"
+                    data-code="{{ v.vendor_code }}"
                     {% if form_data and form_data.get('vendor_id')|string == v.id|string %}selected{% endif %}>
               {{ v.name }}
             </option>
@@ -330,6 +339,16 @@
       <span class="text-sm font-medium text-gray-700">Private label — use my own product number</span>
     </label>
 
+    {# SKU style for standard (non-private-label) parts. Default from Settings. #}
+    <div x-show="!isHouseBrand">
+      <label class="block text-xs font-medium text-gray-500 mb-1">SKU style</label>
+      <select name="sku_scheme" x-model="skuScheme"
+              class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">
+        <option value="vendor">Vendor part # (e.g. JAKS-PAI-340097)</option>
+        <option value="coded">Coded (e.g. JAKS-CAT-HBLT-90001)</option>
+      </select>
+    </div>
+
     <template x-if="isHouseBrand">
       <div>
         <label class="block text-xs font-medium text-gray-500 mb-1">
@@ -350,8 +369,11 @@
       <div class="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-1">Customer-facing SKU</div>
       <div class="text-2xl font-mono font-bold tracking-tight text-brand-700 tabular-nums"
            x-text="skuPreview"></div>
-      <p class="mt-1 text-xs text-gray-500" x-show="!isHouseBrand">
-        Standard part — the SKU is the vendor's part number.
+      <p class="mt-1 text-xs text-gray-500" x-show="!isHouseBrand && skuScheme === 'vendor'">
+        Standard part — SKU = prefix + vendor code + part number.
+      </p>
+      <p class="mt-1 text-xs text-gray-500" x-show="!isHouseBrand && skuScheme === 'coded'" x-cloak>
+        Coded — the engine/category/sequence SKU is assigned when you save.
       </p>
       <p class="mt-1 text-xs text-purple-700" x-show="isHouseBrand" x-cloak>
         Private label — the SKU is your JAKS Product #; the vendor # stays on the PO.

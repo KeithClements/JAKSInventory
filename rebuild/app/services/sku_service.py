@@ -122,12 +122,26 @@ def derive_category_code(name: str) -> str:
 
 def assemble_sku(category_code: str, vendor_digit: str, part_seq: int,
                  engine_code: str = "") -> str:
-    """Build the SKU string from its parts. Engine segment omitted when blank."""
+    """Build the CODED SKU string from its parts. Engine segment omitted when blank."""
     segs = [SKU_PREFIX]
     if engine_code:
         segs.append(engine_code)
     segs.append(category_code or _GENERIC_CATEGORY_CODE)
     return "-".join(segs) + f"-{vendor_digit}{int(part_seq):0{SEQ_WIDTH}d}"
+
+
+def build_vendor_sku(prefix: str, vendor_code: str, part_number: str) -> str:
+    """DEFAULT customer-facing scheme: ``{PREFIX}-{VENDORCODE}-{part#}``
+    e.g. ``JAKS-PAI-340097``. Readable + transparent (you can see the brand, the
+    supplier, and the real part number) and naturally unique per (vendor, part#)
+    so the same part from two vendors never collides. Segments are uppercased; the
+    part number keeps its exact characters (leading zeros preserved). The vendor
+    segment is omitted only if the vendor has no code."""
+    pfx = (prefix or SKU_PREFIX).strip().upper()
+    vc = (vendor_code or "").strip().upper()
+    pn = (part_number or "").strip().upper()
+    segs = [pfx] + ([vc] if vc else []) + [pn]
+    return "-".join(s for s in segs if s)
 
 
 # Auto-assign preference: 1-8 first, then 0, then 9 last (9 is PAI's by owner

@@ -75,8 +75,8 @@ def test_quick_create_vendor_mode_sku_is_vendor_part_number(Session, client):
     try:
         p = db.query(Product).filter(Product.title == "Upper Gasket Set ISX").first()
         assert p is not None
-        # MASTER_PLAN §20: SKU is the vendor part #, not a masked JAKS scheme.
-        assert p.sku == "311148"
+        # Default vendor scheme: SKU = {prefix}-{vendor_code}-{part#} (MASTER_PLAN §20).
+        assert p.sku == "JAKS-PAI-311148"
         src = db.query(ProductVendorSource).filter(
             ProductVendorSource.product_id == p.id).first()
         assert src is not None and src.vendor_id == vendor_id

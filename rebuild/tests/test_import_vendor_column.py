@@ -86,9 +86,9 @@ def test_full_import_attributes_imb_to_its_own_digit(db):
     imb_src = db.query(ProductVendorSource).filter_by(vendor_part_number="1832665").one()
     pai_prod = db.get(Product, pai_src.product_id)
     imb_prod = db.get(Product, imb_src.product_id)
-    # MASTER_PLAN §20: the SKU IS the vendor's real part number (no opaque digit).
-    assert pai_prod.sku == "040000"
-    assert imb_prod.sku == "1832665", imb_prod.sku
+    # Default vendor scheme: SKU = {prefix}-{vendor_code}-{part#} (no opaque digit).
+    assert pai_prod.sku == "JAKS-PAI-040000"
+    assert imb_prod.sku == "JAKS-IMB-1832665", imb_prod.sku
     # Brand reflects the vendor, not a single hard-coded one.
     assert imb_prod.brand == "Interstate-McBee"
 
@@ -106,16 +106,14 @@ def test_full_import_aborts_when_imb_vendor_missing(db):
     assert db.query(Product).count() == 0     # nothing written
 
 
-def test_twin_sku_same_part_two_vendors_collide_second_skipped(db):
-    """MASTER_PLAN §20: the customer SKU IS the vendor part number, and Product.sku
-    is globally unique — so the SAME part number from two vendors collides. The
-    first row wins; the second is skipped as a collision (counted in
-    skipped_sku_collision, never silently dropped).
+def test_twin_sku_same_part_two_vendors_get_distinct_vendor_prefixed_skus(db):
+    """Default vendor scheme: the customer SKU is {prefix}-{vendor_code}-{part#},
+    so the SAME part number from two different vendors yields two DISTINCT SKUs
+    (JAKS-PAI-5555555 vs JAKS-IMB-5555555). The vendor-code segment disambiguates
+    them, so BOTH rows land as separate products — no collision, nothing dropped.
 
-    NOTE for owner: under §20 a second vendor offering the identical part number
-    does NOT attach as a second source — it is skipped. If both vendors should be
-    sellable on one product, that's a §20 enhancement (attach-source-on-collision),
-    tracked separately — not an importer bug."""
+    (This is exactly why the default scheme is vendor-prefixed: cross-vendor part#
+    overlap no longer forces one vendor out of the catalog.)"""
     db.add(Vendor(name="PAI Industries", vendor_code="PAI", vendor_number="9", is_active=True))
     db.add(Vendor(name="Interstate-McBee", vendor_code="IMB", vendor_number="3", is_active=True))
     db.commit()
@@ -124,11 +122,12 @@ def test_twin_sku_same_part_two_vendors_collide_second_skipped(db):
         "5555555,IMB,GASKET,Gaskets,CUMMINS,N14,,2.10,4.20,,0,EA,1,1.0,10,,,,1,active,2026-06-10T00:00:00+00:00",
     )
     summary = ProductImportService(db, None).full_import(text, dry_run=False)
-    assert summary["created"] == 1, summary
-    assert summary.get("skipped_sku_collision") == 1, summary
+    assert summary["created"] == 2, summary
+    assert not summary.get("skipped_sku_collision"), summary
     srcs = db.query(ProductVendorSource).filter_by(vendor_part_number="5555555").all()
-    assert len(srcs) == 1                 # only the first vendor's source landed
-    assert db.get(Product, srcs[0].product_id).sku == "5555555"   # §20: SKU = bare part #
+    assert len(srcs) == 2                 # both vendors' sources landed
+    skus = {db.get(Product, s.product_id).sku for s in srcs}
+    assert skus == {"JAKS-PAI-5555555", "JAKS-IMB-5555555"}
 
 
 def test_pricing_update_honors_vendor_column_for_cost(db):
