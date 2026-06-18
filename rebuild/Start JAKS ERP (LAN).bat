@@ -1,5 +1,5 @@
 @echo off
-title JAKS Inventory ERP (LAN)
+title Axle ERP (LAN)
 cd /d "%~dp0"
 
 REM ── One-time firewall rule (needs Administrator) ───────────────────────────
@@ -23,7 +23,7 @@ REM ── Find this PC's LAN address to show the URL for other devices ──�
 for /f "delims=" %%i in ('powershell -NoProfile -Command "(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -match '^(192\.168|10\.|172\.(1[6-9]|2[0-9]|3[01]))' } | Select-Object -First 1).IPAddress"') do set LANIP=%%i
 
 echo ============================================
-echo    JAKS Inventory ERP  --  shop network mode
+echo    Axle ERP  --  shop network mode
 echo ============================================
 echo.
 echo    This PC:        http://localhost:8000

@@ -1,8 +1,8 @@
 @echo off
-title JAKS Inventory ERP
+title Axle ERP
 cd /d "%~dp0"
 echo ============================================
-echo    JAKS Inventory ERP
+echo    Axle ERP
 echo ============================================
 echo.
 echo    On this PC:      http://localhost:8000
