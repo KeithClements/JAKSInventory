@@ -30,6 +30,7 @@ from app.constants import (
 from app.deps import get_current_user_id, get_db
 from app.services.document_messaging import (
     build_send_context,
+    itemize_lines,
     perform_document_send,
     render_pdf_or_none,
 )
@@ -460,6 +461,8 @@ async def workspace(
                 customer=quote.customer,
                 total=(quote.subtotal or 0.0),
                 action_url=f"/quotes/{quote.id}/send-message",
+                lines=itemize_lines(_tree_sort_lines(quote.lines),
+                                    include=lambda ln: ln.is_included),
             ),
         },
     )

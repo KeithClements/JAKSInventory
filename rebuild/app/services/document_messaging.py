@@ -47,27 +47,75 @@ def default_email_subject(db: Session, doc_label: str, number: str) -> str:
     return f"{doc_label} {number} from {name}".strip()
 
 
+def _fmt_qty(q) -> str:
+    """2.0 → '2', 1.5 → '1.5' (no trailing .0 noise in the itemized list)."""
+    try:
+        f = float(q)
+    except (TypeError, ValueError):
+        return str(q)
+    return str(int(f)) if f == int(f) else (f"{f:g}")
+
+
+# Normalized line shape used for itemization: {"qty": float, "desc": str, "amount": float}
+
+def itemize_lines(orm_lines, *, qty_attr="qty", desc_attr="description",
+                  unit_attr="unit_price", include=None) -> list:
+    """Normalize a document's ORM lines into the itemization shape. ``include`` is
+    an optional predicate (e.g. quote: only included lines). Lines with a blank
+    description are skipped so the message stays clean."""
+    out = []
+    for ln in orm_lines or []:
+        if include is not None and not include(ln):
+            continue
+        desc = (getattr(ln, desc_attr, "") or "").strip()
+        if not desc:
+            continue
+        qty = getattr(ln, qty_attr, 0) or 0
+        unit = getattr(ln, unit_attr, 0) or 0
+        try:
+            amount = round(float(qty) * float(unit), 2)
+        except (TypeError, ValueError):
+            amount = 0.0
+        out.append({"qty": qty, "desc": desc, "amount": amount})
+    return out
+
 def default_email_body(db: Session, *, doc_label: str, number: str,
-                       customer_name: str, total: float) -> str:
+                       customer_name: str, total: float, lines: list | None = None) -> str:
     name, phone = _company(db)
-    lines = [
+    out = [
         f"Hi {customer_name or 'there'},",
         "",
         f"Please find your {doc_label.lower()} {number} attached"
         f" (total ${total:,.2f}).",
+    ]
+    if lines:
+        out += ["", "Items:"]
+        for ln in lines:
+            out.append(f"  {_fmt_qty(ln['qty'])} x {ln['desc']} — ${ln['amount']:,.2f}")
+        out.append(f"  {'Total':<6} ${total:,.2f}")
+    out += [
         "",
         "Let us know if you have any questions.",
         "",
-        f"Thank you,",
+        "Thank you,",
         name + (f"  |  {phone}" if phone else ""),
     ]
-    return "\n".join(lines)
+    return "\n".join(out)
 
 
-def default_sms_body(db: Session, *, doc_label: str, number: str, total: float) -> str:
+def default_sms_body(db: Session, *, doc_label: str, number: str, total: float,
+                     lines: list | None = None, max_items: int = 6) -> str:
     name, phone = _company(db)
-    tail = f" Reply here or call {phone}." if phone else " Reply here with any questions."
-    return f"{name}: your {doc_label.lower()} {number} is ready — ${total:,.2f}.{tail}"
+    out = [f"{name}: {doc_label} {number}"]
+    if lines:
+        for ln in lines[:max_items]:
+            desc = (ln["desc"] or "")[:40]
+            out.append(f"{_fmt_qty(ln['qty'])}x {desc} ${ln['amount']:,.2f}")
+        if len(lines) > max_items:
+            out.append(f"...(+{len(lines) - max_items} more)")
+    tail = f"Total ${total:,.2f}." + (f" Reply or call {phone}." if phone else "")
+    out.append(tail)
+    return "\n".join(out)
 
 
 def is_log_only(db: Session) -> bool:
@@ -78,8 +126,13 @@ def is_log_only(db: Session) -> bool:
 # ── Dialog context ───────────────────────────────────────────────────────────
 
 def build_send_context(db: Session, *, doc_label: str, doc_number: str,
-                       customer, total: float, action_url: str) -> dict:
-    """Everything documents/_send_dialog.html needs, pre-filled + consent-aware."""
+                       customer, total: float, action_url: str,
+                       lines: list | None = None) -> dict:
+    """Everything documents/_send_dialog.html needs, pre-filled + consent-aware.
+
+    ``lines`` (optional) is a normalized list of {"qty","desc","amount"} dicts; when
+    given, the default email + SMS bodies are itemized. The rep can still edit them.
+    """
     cust_email = (getattr(customer, "email", "") or "").strip() if customer else ""
     cust_phone = (getattr(customer, "phone", "") or "").strip() if customer else ""
     allow_sms = bool(getattr(customer, "allow_sms", False)) if customer else False
@@ -102,8 +155,9 @@ def build_send_context(db: Session, *, doc_label: str, doc_number: str,
             db, doc_label=doc_label, number=doc_number,
             customer_name=(getattr(customer, "company_name", "") or
                            getattr(customer, "contact_name", "") if customer else ""),
-            total=total),
-        "sms_body": default_sms_body(db, doc_label=doc_label, number=doc_number, total=total),
+            total=total, lines=lines),
+        "sms_body": default_sms_body(db, doc_label=doc_label, number=doc_number,
+                                     total=total, lines=lines),
         "log_only": is_log_only(db),
     }
 

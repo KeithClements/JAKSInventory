@@ -41,6 +41,7 @@ from app.models.product import Product
 from app.models.quote import SalesOrder, SOLine
 from app.services.document_messaging import (
     build_send_context,
+    itemize_lines,
     perform_document_send,
     render_pdf_or_none,
 )
@@ -271,6 +272,7 @@ async def so_workspace(
         customer=so.customer,
         total=(getattr(so, "total", None) or so.subtotal or 0.0),
         action_url=f"/sales-orders/{so.id}/send-message",
+        lines=itemize_lines(so.lines),
     )
     return templates.TemplateResponse(
         request,

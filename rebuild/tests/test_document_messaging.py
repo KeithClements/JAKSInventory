@@ -99,6 +99,42 @@ def test_both_channels_consented_logs_two(db):
     assert chans == {CommunicationChannel.EMAIL, CommunicationChannel.SMS}
 
 
+# ── Itemization in the message bodies ────────────────────────────────────────
+
+def test_itemized_bodies_include_lines(db):
+    from app.services.document_messaging import (
+        default_email_body, default_sms_body, itemize_lines,
+    )
+
+    class _L:
+        def __init__(self, qty, desc, unit):
+            self.qty, self.description, self.unit_price, self.is_included = qty, desc, unit, True
+
+    lines = itemize_lines([_L(2, "Radiator", 450.0), _L(1, "Thermostat", 45.0), _L(3, "", 9.0)])
+    # blank-description line is skipped; amounts = qty * unit_price
+    assert lines == [
+        {"qty": 2, "desc": "Radiator", "amount": 900.0},
+        {"qty": 1, "desc": "Thermostat", "amount": 45.0},
+    ]
+    eb = default_email_body(db, doc_label="Quote", number="Q-1",
+                            customer_name="Acme", total=945.0, lines=lines)
+    assert "2 x Radiator" in eb and "$900.00" in eb and "Total" in eb
+    sb = default_sms_body(db, doc_label="Quote", number="Q-1", total=945.0, lines=lines)
+    assert "2x Radiator" in sb and "Total $945.00" in sb
+
+
+def test_itemize_lines_include_predicate(db):
+    from app.services.document_messaging import itemize_lines
+
+    class _L:
+        def __init__(self, qty, desc, unit, inc):
+            self.qty, self.description, self.unit_price, self.is_included = qty, desc, unit, inc
+
+    rows = itemize_lines([_L(1, "Keep", 10.0, True), _L(1, "Drop", 10.0, False)],
+                         include=lambda ln: ln.is_included)
+    assert [r["desc"] for r in rows] == ["Keep"]
+
+
 # ── PDF best-effort: a bad template returns None, never raises ────────────────
 
 def test_render_pdf_or_none_returns_none_on_bad_template():
