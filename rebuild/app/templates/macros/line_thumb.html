@@ -1,0 +1,21 @@
+{#
+  macros/line_thumb.html
+  ======================
+  Small product image thumbnail for line-item rows on the quote / sales-order /
+  invoice workspaces. Mirrors the preview-dock thumbnail (products/_preview_panel.html)
+  but smaller and with object-contain so wide parts (injectors, manifolds, etc.) are
+  shown whole rather than cropped.
+
+  Renders nothing when the line has no product or the product has no image — child
+  lines (core, warranty, upgrade, optional, misc) stay clean.
+
+  Usage:  {% from "macros/line_thumb.html" import line_thumb %}
+          {{ line_thumb(line.product) }}
+#}
+{% macro line_thumb(product, size="h-9 w-9") -%}
+{%- set _img = (product.primary_image or (product.images[0] if (product and product.images) else None)) if product else None -%}
+{%- if _img -%}
+<img src="{{ _img.url }}" alt="" loading="lazy"
+     class="{{ size }} shrink-0 rounded-md object-contain border border-gray-200 bg-gray-50 p-0.5" />
+{%- endif -%}
+{%- endmacro %}

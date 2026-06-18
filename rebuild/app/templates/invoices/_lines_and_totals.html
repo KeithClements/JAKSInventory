@@ -7,6 +7,7 @@
    The right rail's Customer / Totals / QB sync cards live inside the same
    swappable wrapper so a line edit re-renders the totals card too.
 ═════════════════════════════════════════════════════════════════════════════ #}
+{% from "macros/line_thumb.html" import line_thumb %}
 <div id="lines-and-totals" class="flex gap-4 items-start">
 
   {# ═══════════════════════ MAIN COLUMN — Line Items ════════════════════════ #}
@@ -64,8 +65,12 @@
                 {% endif %}
               </td>
 
-              {# Description (editable) — Barlow 12px steel-700 #}
+              {# Description (editable) — Barlow 12px steel-700.
+                 Product thumbnail (if any) sits left of the description block. #}
               <td class="px-2 py-2 align-middle min-w-0">
+                <div class="flex items-center gap-2">
+                {{ line_thumb(line.product) }}
+                <div class="min-w-0 flex-1">
                 {% if editable %}
                 <input type="text" value="{{ line.description }}"
                        hx-post="/invoices/{{ invoice.id }}/lines/{{ line.id }}"
@@ -81,6 +86,8 @@
                 {% if is_core and line.is_locked_to_parent %}
                 <span class="ml-1 text-[10px] text-hub-deep font-medium uppercase tracking-wide">· linked</span>
                 {% endif %}
+                </div>{# /desc block #}
+                </div>{# /thumb+desc flex #}
               </td>
 
               {# Bin — .bin pill; em-dash when no bin/no product #}

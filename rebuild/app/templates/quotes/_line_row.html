@@ -27,6 +27,7 @@
   Warranty child lines are inserted before the chips row (beforebegin target).
   Suggested-sell chips append to tbody (new independent lines).
 #}
+{% from "macros/line_thumb.html" import line_thumb %}
 
 {# ── Per-line computed state ─────────────────────────────────────────────── #}
 {% set _ns = namespace(
@@ -103,8 +104,12 @@
     {% endif %}
   </td>
 
-  {# Description (editable) — option_label shown above input for child lines #}
+  {# Description (editable) — option_label shown above input for child lines.
+     Product thumbnail (if any) sits left of the description block. #}
   <td class="px-2 py-1 min-w-0">
+    <div class="flex items-center gap-2">
+    {{ line_thumb(line.product) }}
+    <div class="min-w-0 flex-1">
     {% if line.option_label %}
     <div class="text-xs font-semibold {{ _ns.desc_prefix_cls or 'text-gray-400' }} mb-0.5 leading-none">
       {{ line.option_label }}
@@ -150,6 +155,8 @@
             title="Unit of measure">{{ line.product.unit_of_measure }}</span>
       {% endif %}
     </div>
+    </div>{# /desc block #}
+    </div>{# /thumb+desc flex #}
   </td>
 
   {# QOH — colored dot + on-hand count; only meaningful for product lines.

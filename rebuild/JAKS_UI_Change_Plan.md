@@ -703,6 +703,17 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 - Modal shell — centered, `max-w-lg rounded-2xl shadow-2xl`
 - Bulk action toolbar — `x-show="selectedCount > 0"` Alpine pattern
 - Empty state block — icon + heading + body + optional CTA
+- `line_thumb` macro (`macros/line_thumb.html`) — small product image at the left of the
+  Description cell on Quote/SO/Invoice line rows (on-screen workspaces). Mirrors the
+  preview-dock thumbnail but `object-contain` (no crop) + `h-9 w-9`. Renders nothing for
+  lines with no product/image (core/warranty/misc stay clean). Added 2026-06-17; 3-screen
+  gate met (quote/SO/invoice). Product detail + image-gallery cards also switched
+  `object-cover` → `object-contain` so wide parts (injectors/manifolds) show whole.
+- `print_line_thumb` macro (`macros/print_line_thumb.html`) — print/PDF counterpart for the
+  customer-facing quote/SO/invoice docs. Emits a plain `<img class="line-thumb">`; each
+  print.html defines `.line-thumb`/`.pd-cell`/`.pd-text` in its own `<style>` (print docs
+  have no Tailwind). 42px, `object-fit:contain`, flex-wrapped so row height tracks the image.
+  Wired into the main line tables plus the quote's Alternatives + Optional add-on tables.
 
 **Goal:** The app should feel like one polished operational ERP system built by one team — not separate pages built by different coders in different sessions.
 

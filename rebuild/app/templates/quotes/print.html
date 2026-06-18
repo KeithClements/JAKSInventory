@@ -5,6 +5,7 @@
 {%- macro line_part_no(product) -%}
 {%- if product -%}{{- product.sku or '' -}}{%- endif -%}
 {%- endmacro -%}
+{% from "macros/print_line_thumb.html" import print_line_thumb %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -208,6 +209,21 @@
       font-family: var(--mono);
       font-size: 10px;
       color: var(--s500);
+    }
+
+    /* Line-item product thumbnail (print) — flex so the row height tracks the
+       image while the part/description text flows to its right. object-fit:contain
+       shows wide parts (injectors/manifolds) whole rather than cropped. */
+    .pd-cell{ display:flex; gap:10px; align-items:flex-start; }
+    .pd-text{ flex:1; min-width:0; }
+    .line-thumb{
+      flex:0 0 42px;
+      width:42px; height:42px;
+      object-fit:contain;
+      border:1px solid var(--s200);
+      border-radius:4px;
+      background:#fff;
+      padding:1px;
     }
 
     .money{ font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
@@ -487,26 +503,29 @@
         <tr>
           <td class="td-num">{% if not is_child %}{{ ns.top_row }}{% endif %}</td>
 
+          {% set part_no = line_part_no(line.product) %}
           <td{% if is_child %} class="child-indent"{% endif %}>
-            {% if line.option_label %}
-              <span class="option-label">{{ line.option_label }}</span><br>
-            {% endif %}
             {% if is_child %}
-              {% if line.line_role == 'core' %}
-                <span class="role-badge">Core</span>
-              {% elif line.line_role == 'warranty' %}
-                <span class="role-badge">Warranty</span>
-              {% elif line.line_role == 'optional' %}
-                <span class="role-badge">Optional</span>
-              {% endif %}
-            {% endif %}
-            {% set part_no = line_part_no(line.product) %}
-            {% if part_no and not is_child %}
-              <div class="pn">{{ part_no }}</div>
-              <div class="ds">{{ line.description }}</div>
-            {% else %}
+              {# Child lines (core / warranty / optional) stay text-only — no thumbnail. #}
+              {% if line.option_label %}<span class="option-label">{{ line.option_label }}</span><br>{% endif %}
+              {% if line.line_role == 'core' %}<span class="role-badge">Core</span>
+              {% elif line.line_role == 'warranty' %}<span class="role-badge">Warranty</span>
+              {% elif line.line_role == 'optional' %}<span class="role-badge">Optional</span>{% endif %}
               <span class="ds" style="color:var(--s700)">{{ line.description }}</span>
               {% if part_no %}<span class="part-num">{{ part_no }}</span>{% endif %}
+            {% else %}
+              <div class="pd-cell">
+                {{ print_line_thumb(line.product) }}
+                <div class="pd-text">
+                  {% if line.option_label %}<span class="option-label">{{ line.option_label }}</span><br>{% endif %}
+                  {% if part_no %}
+                    <div class="pn">{{ part_no }}</div>
+                    <div class="ds">{{ line.description }}</div>
+                  {% else %}
+                    <span class="ds" style="color:var(--s700)">{{ line.description }}</span>
+                  {% endif %}
+                </div>
+              </div>
             {% endif %}
           </td>
 
@@ -597,14 +616,19 @@
         <tr>
           <td class="td-num">{{ loop.index }}</td>
           <td>
-            {% if line.option_label %}<span class="option-label">{{ line.option_label }}</span><br>{% endif %}
-            {% set part_no = line_part_no(line.product) %}
-            {% if part_no %}
-              <div class="pn">{{ part_no }}</div>
-              <div class="ds">{{ line.description }}</div>
-            {% else %}
-              <span class="ds" style="color:var(--s700)">{{ line.description }}</span>
-            {% endif %}
+            <div class="pd-cell">
+              {{ print_line_thumb(line.product) }}
+              <div class="pd-text">
+                {% if line.option_label %}<span class="option-label">{{ line.option_label }}</span><br>{% endif %}
+                {% set part_no = line_part_no(line.product) %}
+                {% if part_no %}
+                  <div class="pn">{{ part_no }}</div>
+                  <div class="ds">{{ line.description }}</div>
+                {% else %}
+                  <span class="ds" style="color:var(--s700)">{{ line.description }}</span>
+                {% endif %}
+              </div>
+            </div>
           </td>
           <td class="r money">{{ line.qty }}{% if line.product and line.product.unit_of_measure and line.product.unit_of_measure != 'EA' %} {{ line.product.unit_of_measure }}{% endif %}</td>
           <td class="r money">${{ "%.2f"|format(line.unit_price) }}</td>
@@ -644,14 +668,19 @@
         <tr>
           <td class="td-num">{{ loop.index }}</td>
           <td>
-            {% if line.option_label %}<span class="option-label">{{ line.option_label }}</span><br>{% endif %}
-            {% set part_no = line_part_no(line.product) %}
-            {% if part_no %}
-              <div class="pn">{{ part_no }}</div>
-              <div class="ds">{{ line.description }}</div>
-            {% else %}
-              <span class="ds" style="color:var(--s700)">{{ line.description }}</span>
-            {% endif %}
+            <div class="pd-cell">
+              {{ print_line_thumb(line.product) }}
+              <div class="pd-text">
+                {% if line.option_label %}<span class="option-label">{{ line.option_label }}</span><br>{% endif %}
+                {% set part_no = line_part_no(line.product) %}
+                {% if part_no %}
+                  <div class="pn">{{ part_no }}</div>
+                  <div class="ds">{{ line.description }}</div>
+                {% else %}
+                  <span class="ds" style="color:var(--s700)">{{ line.description }}</span>
+                {% endif %}
+              </div>
+            </div>
           </td>
           <td class="r money">{{ line.qty }}{% if line.product and line.product.unit_of_measure and line.product.unit_of_measure != 'EA' %} {{ line.product.unit_of_measure }}{% endif %}</td>
           <td class="r money">${{ "%.2f"|format(line.unit_price) }}</td>

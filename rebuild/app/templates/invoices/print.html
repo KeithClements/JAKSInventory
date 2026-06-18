@@ -1,3 +1,4 @@
+{% from "macros/print_line_thumb.html" import print_line_thumb %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -165,6 +166,21 @@
       font-size: 11.5px; margin-top: 1px; line-height: 1.4;
     }
     .money{ font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+
+    /* Line-item product thumbnail (print) — flex so the row height tracks the
+       image while the part/description text flows to its right. object-fit:contain
+       shows wide parts (injectors/manifolds) whole rather than cropped. */
+    .pd-cell{ display:flex; gap:10px; align-items:flex-start; }
+    .pd-text{ flex:1; min-width:0; }
+    .line-thumb{
+      flex:0 0 42px;
+      width:42px; height:42px;
+      object-fit:contain;
+      border:1px solid var(--s200);
+      border-radius:4px;
+      background:#fff;
+      padding:1px;
+    }
 
     .child-indent{ padding-left: 20px !important; }
     .role-badge{
@@ -419,14 +435,22 @@
           <td class="td-num">{% if not line.is_core_line %}{{ ns.row }}{% endif %}</td>
           <td{% if line.is_core_line %} class="child-indent"{% endif %}>
             {% if line.is_core_line %}
+              {# Core child lines stay text-only — no thumbnail. #}
               <span class="role-badge">Core</span>
-            {% endif %}
-            {% if line.product and line.product.sku and not line.is_core_line %}
-              <div class="pn">{{ line.product.sku }}</div>
-              <div class="ds">{{ line.description }}</div>
-            {% else %}
               <span class="ds" style="color:var(--s700)">{{ line.description }}</span>
               {% if line.product and line.product.sku %}<span class="part-num">{{ line.product.sku }}</span>{% endif %}
+            {% else %}
+              <div class="pd-cell">
+                {{ print_line_thumb(line.product) }}
+                <div class="pd-text">
+                  {% if line.product and line.product.sku %}
+                    <div class="pn">{{ line.product.sku }}</div>
+                    <div class="ds">{{ line.description }}</div>
+                  {% else %}
+                    <span class="ds" style="color:var(--s700)">{{ line.description }}</span>
+                  {% endif %}
+                </div>
+              </div>
             {% endif %}
           </td>
           <td class="r money">{{ line.qty }}</td>

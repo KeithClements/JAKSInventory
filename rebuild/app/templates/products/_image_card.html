@@ -10,7 +10,7 @@
   <img src="{{ image.url }}"
        alt="{{ image.alt_text or 'Product image' }}"
        loading="lazy"
-       class="w-full h-40 object-cover" />
+       class="w-full h-40 object-contain p-2" />
 
   {# Primary badge #}
   {% if image.is_primary %}

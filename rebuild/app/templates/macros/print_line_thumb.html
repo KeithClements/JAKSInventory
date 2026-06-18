@@ -1,0 +1,19 @@
+{#
+  macros/print_line_thumb.html
+  ============================
+  Product image thumbnail for the printed / PDF quote, sales-order, and invoice
+  line tables. Print docs are standalone HTML with their own CSS (no Tailwind),
+  so this emits a plain <img class="line-thumb"> — each print template defines
+  .line-thumb / .pd-cell / .pd-text in its own <style> block.
+
+  Renders nothing when there is no product or no image, so misc / core / warranty
+  lines stay text-only. object-fit:contain (set in .line-thumb) shows wide parts
+  whole rather than cropped.
+
+  Usage:  {% from "macros/print_line_thumb.html" import print_line_thumb %}
+          {{ print_line_thumb(line.product) }}
+#}
+{% macro print_line_thumb(product) -%}
+{%- set _img = (product.primary_image or (product.images[0] if (product and product.images) else None)) if product else None -%}
+{%- if _img -%}<img class="line-thumb" src="{{ _img.url }}" alt="">{%- endif -%}
+{%- endmacro %}

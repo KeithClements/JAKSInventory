@@ -6,6 +6,7 @@
    table but with the SO-specific concepts (ordered / invoiced / remaining,
    backorder + PO link, ship qty, core child lines).
 ═══════════════════════════════════════════════════════════════════════════ #}
+{% from "macros/line_thumb.html" import line_thumb %}
 <div id="so-lines-section">
 
   {# Linked-PO state → chip colour + label (Owner 2026-06-01: "On order" only
@@ -103,8 +104,12 @@
               {% endif %}
             </td>
 
-            {# Description (editable) + PO link chip below #}
+            {# Description (editable) + PO link chip below.
+               Product thumbnail (if any) sits left of the description block. #}
             <td class="px-2 py-1 min-w-0">
+              <div class="flex items-center gap-2">
+              {{ line_thumb(line.product) }}
+              <div class="min-w-0 flex-1">
               {% if editable and not done and not cancelled and not is_core %}
               <input type="text" value="{{ line.description }}"
                      hx-post="/sales-orders/{{ so.id }}/lines/{{ line.id }}"
@@ -164,6 +169,8 @@
                 Cancelled
               </span>
               {% endif %}
+              </div>{# /desc block #}
+              </div>{# /thumb+desc flex #}
             </td>
 
             {# Bin — Axle .bin mono steel-400 #}
