@@ -149,15 +149,22 @@ class SmtpProvider:
                 )
             except Exception as exc:
                 log.warning("SMTP attachment failed (%s): %s", path, exc)
+        # EHLO/HELO name: smtplib defaults to socket.getfqdn(), which on a Windows
+        # box is often a bare NetBIOS name → Microsoft 365 rejects it with
+        # "501 5.5.4 Invalid domain name". Send the sender's own domain instead
+        # (always a valid FQDN); fall back to smtplib's default when unknown.
+        helo = (self.from_address.split("@", 1)[-1].strip()
+                if "@" in (self.from_address or "") else "")
+        kw = {"local_hostname": helo} if helo else {}
         try:
             if int(self.port) == 465:
                 with smtplib.SMTP_SSL(self.host, self.port, timeout=20,
-                                      context=ssl.create_default_context()) as s:
+                                      context=ssl.create_default_context(), **kw) as s:
                     if self.username:
                         s.login(self.username, self.password)
                     s.send_message(msg)
             else:
-                with smtplib.SMTP(self.host, self.port, timeout=20) as s:
+                with smtplib.SMTP(self.host, self.port, timeout=20, **kw) as s:
                     if self.use_tls:
                         s.starttls(context=ssl.create_default_context())
                     if self.username:
