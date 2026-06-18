@@ -927,6 +927,13 @@ class ProductImportService(BaseService):
                 # skips existing products, so ERP-side edits are never clobbered.
                 seo_title=(p.get("seo_title") or "")[:255],
                 seo_description=p.get("seo_description") or "",
+                # Q5 — seed the moving-average COGS field from the vendor cost so
+                # margin reports (and invoice-line unit_cost) have a cost basis
+                # BEFORE any PO receipt. Safe: the product is unreceipted
+                # (qty_on_hand=0), so inventory valuation stays $0, and the first
+                # real receipt overwrites this via _apply_moving_average_cost
+                # (old_qty=0 → new average = the receipt cost).
+                cost=_to_float(p.get("cost")) or 0.0,
                 price_override=_to_float(p["price"]),          # OUR sell price
                 compare_at_price=_to_float(p["compare_at"]),   # marketing compare-at
                 # Source-format label: carried explicitly via "source_format"
@@ -1039,6 +1046,14 @@ class ProductImportService(BaseService):
             if not dry_run:
                 src.vendor_cost = new_cost
                 src.last_cost_updated_at = datetime.utcnow()
+                # Q5 — seed Product.cost from the vendor cost on UNRECEIPTED
+                # products (qty_on_hand=0) via the preferred source, so margin
+                # reports have a cost basis before any PO receipt. Receipted
+                # products keep their moving-average COGS (owned by receipts).
+                if src.is_preferred:
+                    _prod = self.db.query(Product).filter(Product.id == pid).first()
+                    if _prod is not None and (_prod.qty_on_hand or 0) == 0:
+                        _prod.cost = new_cost
                 self.db.add(ProductCostHistory(
                     product_id=pid, vendor_id=pai.id, old_cost=old_cost,
                     new_cost=new_cost, changed_by_id=self.current_user_id,
@@ -1287,6 +1302,12 @@ class ProductImportService(BaseService):
                 if cost_change and cost_src is not None:
                     cost_src.vendor_cost = new_cost
                     cost_src.last_cost_updated_at = datetime.utcnow()
+                    # Q5 — refresh the seeded COGS estimate on UNRECEIPTED products
+                    # (qty_on_hand==0) when the preferred source's cost changes, so
+                    # margin reports track the latest vendor cost. Receipted products
+                    # keep their moving-average cost (owned by receipts).
+                    if cost_src.is_preferred and (product.qty_on_hand or 0) == 0:
+                        product.cost = new_cost
                     self.db.add(ProductCostHistory(
                         product_id=pid, vendor_id=cost_vendor.id,
                         old_cost=old_cost_val, new_cost=new_cost,

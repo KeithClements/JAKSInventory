@@ -229,9 +229,13 @@ def test_row_with_no_price_columns_skipped_no_price(db):
 def test_cost_column_with_pai_source_updates_vendor_cost(db):
     """When a `pai_cost` (or `Our Cost`) column is present AND the product
     has a PAI vendor source, sell-mode updates ProductVendorSource.vendor_cost
-    and writes a ProductCostHistory row. product.cost (moving-avg COGS) is
-    NOT touched — that's owned by receipts only."""
+    and writes a ProductCostHistory row. For a RECEIVED product (qty_on_hand>0)
+    product.cost is the moving-average COGS and is NOT touched — that's owned by
+    receipts. (Q5: an UNRECEIPTED product would instead have its cost re-seeded
+    from the vendor cost — covered in test_product_import.py.)"""
     p = _make_product(db, "JAKS-PAI-500", price=10.00, cost=4.50)
+    p.qty_on_hand = 5          # received → product.cost is a real moving-average COGS
+    db.commit()
     _, src = _seed_pai_with_source(db, p.id, vendor_cost=2.50)
     svc = ProductImportService(db, None)
 
@@ -247,7 +251,7 @@ def test_cost_column_with_pai_source_updates_vendor_cost(db):
     assert s["skipped_no_vendor_source"] == 0
     db.refresh(p); db.refresh(src)
     assert p.price_override == 12.00
-    assert p.cost == 4.50, "product.cost (COGS) only changes on receipt"
+    assert p.cost == 4.50, "receipted product.cost (moving-avg COGS) only changes on receipt"
     assert src.vendor_cost == 3.75
     assert db.query(ProductCostHistory).filter_by(product_id=p.id).count() == 1
 

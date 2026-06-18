@@ -179,13 +179,53 @@ def test_pricing_update_pai_cost_updates_source_and_history(db):
     p = _product_by_pai(db, "111")
     src = db.query(ProductVendorSource).filter(ProductVendorSource.product_id == p.id).first()
     assert src.vendor_cost == 5.50
-    assert p.cost == 0.0  # product.cost untouched (moving-avg only)
+    # Q5 — product.cost is SEEDED from the preferred source's vendor cost on
+    # UNRECEIPTED products (qty_on_hand=0) so margin reports have a cost basis
+    # before any PO receipt. (A receipted product keeps its moving-average cost —
+    # see test_pricing_update_does_not_touch_receipted_cost.)
+    assert p.cost == 5.50
     hist = db.query(ProductCostHistory).filter(ProductCostHistory.product_id == p.id).all()
     assert len(hist) == 1 and hist[0].old_cost == 0.0 and hist[0].new_cost == 5.50
     # re-run same cost → unchanged, no new history
     summ2 = svc.pricing_update_pai_cost(cost_csv, dry_run=False)
     assert summ2["unchanged"] == 1 and summ2["costs_updated"] == 0
     assert db.query(ProductCostHistory).count() == 1
+
+
+def test_full_import_seeds_product_cost_from_vendor_cost(db):
+    """Q5 — when the feed carries a cost, full_import seeds Product.cost from it
+    (not from price) so margin works pre-receipt. Valuation stays $0 (qty=0)."""
+    svc = ProductImportService(db, None)
+    text = _jaks_csv("777,PAI,Reman Injector,ENGINE PARTS,Cummins,ISX,950.00,420.00,0,false")
+    summ = svc.full_import(text, dry_run=False)
+    assert summ.get("error") is None and summ["created"] == 1
+    p = db.query(Product).filter(Product.sku == "777").first()
+    assert p is not None
+    assert p.cost == 420.00            # seeded from the cost column
+    assert p.price_override == 950.00  # sell price stays out of cost
+    assert p.qty_on_hand == 0          # unreceipted → valuation (qty*cost) is still 0
+    src = db.query(ProductVendorSource).filter(ProductVendorSource.product_id == p.id).first()
+    assert src.vendor_cost == 420.00   # source carries the same vendor cost
+
+
+def test_pricing_update_does_not_touch_receipted_cost(db):
+    """Q5 guard — once a product is RECEIVED (qty_on_hand>0), Product.cost is the
+    moving-average COGS and a pricing-update must NOT overwrite it (only the
+    vendor source's quoted cost changes)."""
+    svc = ProductImportService(db, None)
+    svc.full_import(_shopify_csv(), dry_run=False)
+    p = _product_by_pai(db, "111")
+    # Simulate a prior receipt: real stock + a moving-average cost.
+    p.qty_on_hand = 5
+    p.cost = 7.25
+    db.commit()
+
+    svc.pricing_update_pai_cost(_csv(["sku", "pai_cost"], [["JAKS-PAI-111", "9.99"]]),
+                               dry_run=False)
+    db.refresh(p)
+    src = db.query(ProductVendorSource).filter(ProductVendorSource.product_id == p.id).first()
+    assert src.vendor_cost == 9.99   # vendor quote updates
+    assert p.cost == 7.25            # moving-average COGS preserved (NOT reseeded)
 
 
 def test_pricing_update_never_creates_products(db):
