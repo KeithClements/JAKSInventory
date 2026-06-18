@@ -40,11 +40,13 @@
         skuScheme: '{{ default_sku_scheme }}',
         skuPrefix: '{{ sku_prefix }}',
         vendorCode: '',
+        vendorPrivateLabel: false,
         lookupBusy: false,
+        // House brand = the checkbox OR the selected vendor being private-label.
+        get houseBrand() { return this.isHouseBrand || this.vendorPrivateLabel; },
         get fieldsValid() {
           if (String(this.vendorId).trim() === '' || String(this.vendorPart).trim() === '') return false;
-          if (this.isHouseBrand && String(this.jaksProductNumber).trim() === '') return false;
-          return true;
+          return true;   // house brand no longer requires a custom JAKS Product #
         },
         get noSpecificEngine() { return !this.engineMake; },
         get modelOptions() {
@@ -52,10 +54,15 @@
             ? this.engineModels[this.engineMake] : [];
         },
         get skuPreview() {
-          // Private label → owner's JAKS Product #. Coded → assigned on save (needs
-          // the sequence). Default vendor scheme → prefix-vendorcode-part#.
-          if (this.isHouseBrand) return (this.jaksProductNumber || '').trim().toUpperCase() || '—';
           const part = (this.vendorPart || '').trim().toUpperCase();
+          // House brand: an owner-typed JAKS Product # wins; otherwise hide the
+          // vendor code and use the house prefix → {prefix}-{prefix}-{part#}.
+          if (this.houseBrand) {
+            const num = (this.jaksProductNumber || '').trim().toUpperCase();
+            if (num) return num;
+            if (!part) return '—';
+            return [this.skuPrefix, this.skuPrefix, part].join('-');
+          }
           if (!part) return '—';
           if (this.skuScheme === 'coded') return this.skuPrefix + '-… (coded, assigned on save)';
           const code = (this.vendorCode || '').trim().toUpperCase();
@@ -94,6 +101,7 @@
           const opt = ev.target.selectedOptions[0];
           this.vendorName = (opt && opt.dataset.name) || '';
           this.vendorCode = (opt && opt.dataset.code) || '';
+          this.vendorPrivateLabel = !!(opt && opt.dataset.privateLabel === '1');
           this.lookup();
         }
       }"
@@ -107,7 +115,12 @@
         isHouseBrand = $el.dataset.houseBrand === '1';
         $nextTick(() => {
           const vsel = $el.querySelector('select[name=vendor_id]');
-          if (vsel) { const opt = vsel.selectedOptions[0]; vendorName = (opt && opt.dataset.name) || ''; }
+          if (vsel) {
+            const opt = vsel.selectedOptions[0];
+            vendorName = (opt && opt.dataset.name) || '';
+            vendorCode = (opt && opt.dataset.code) || '';
+            vendorPrivateLabel = !!(opt && opt.dataset.privateLabel === '1');
+          }
         });
       "
       @submit="if (!fieldsValid) { $event.preventDefault(); }"
@@ -142,6 +155,7 @@
             <option value="{{ v.id }}"
                     data-name="{{ v.name }}"
                     data-code="{{ v.vendor_code }}"
+                    data-private-label="{{ '1' if v.private_label else '' }}"
                     {% if form_data and form_data.get('vendor_id')|string == v.id|string %}selected{% endif %}>
               {{ v.name }}
             </option>
@@ -333,14 +347,24 @@
     {# Private label (MASTER_PLAN §20): standard parts sell under the vendor's
        part #; private-label parts get the owner's own product # as the SKU while
        the vendor part # still rides on the source and prints on the PO. #}
-    <label class="flex items-center gap-2 cursor-pointer select-none">
+    {# When the chosen vendor is flagged private-label, products are house brand
+       automatically — surface it so the masked SKU isn't a surprise. #}
+    <p x-show="vendorPrivateLabel" x-cloak
+       class="text-xs text-purple-700 bg-purple-50 border border-purple-100 rounded-lg px-3 py-2">
+      <span x-text="vendorName || 'This vendor'"></span> is a private-label vendor —
+      its products sell as house brand and the SKU hides the vendor code.
+    </p>
+
+    <label class="flex items-center gap-2 cursor-pointer select-none"
+           :class="vendorPrivateLabel ? 'opacity-60 cursor-not-allowed' : ''">
       <input type="checkbox" name="is_house_brand" x-model="isHouseBrand"
+             :disabled="vendorPrivateLabel"
              class="rounded border-gray-300 text-purple-600 focus:ring-brand-400" />
-      <span class="text-sm font-medium text-gray-700">Private label — use my own product number</span>
+      <span class="text-sm font-medium text-gray-700">Private label — sell as house brand</span>
     </label>
 
     {# SKU style for standard (non-private-label) parts. Default from Settings. #}
-    <div x-show="!isHouseBrand">
+    <div x-show="!houseBrand">
       <label class="block text-xs font-medium text-gray-500 mb-1">SKU style</label>
       <select name="sku_scheme" x-model="skuScheme"
               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">
@@ -349,17 +373,18 @@
       </select>
     </div>
 
-    <template x-if="isHouseBrand">
+    <template x-if="houseBrand">
       <div>
         <label class="block text-xs font-medium text-gray-500 mb-1">
-          JAKS Product # <span class="text-red-500">*</span>
+          JAKS Product # <span class="font-normal text-gray-400 normal-case">(optional)</span>
         </label>
         <input name="jaks_product_number" x-model="jaksProductNumber"
                value="{{ form_data.jaks_product_number if form_data else '' }}"
-               placeholder="e.g. 2239250S3"
+               placeholder="e.g. 2239250S3 — blank uses the masked SKU below"
                class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full font-mono uppercase focus:outline-none focus:ring-2 focus:ring-brand-400" />
         <p class="mt-1 text-[10px] text-gray-400">
-          Your sell-as number — shows on customer documents. The vendor part #
+          Your own sell-as number, if you have one. Leave blank to keep the vendor
+          part # under the house prefix. The vendor part #
           (<span class="font-mono" x-text="vendorPart || '—'"></span>) still prints on the PO.
         </p>
       </div>
@@ -369,14 +394,15 @@
       <div class="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-1">Customer-facing SKU</div>
       <div class="text-2xl font-mono font-bold tracking-tight text-brand-700 tabular-nums"
            x-text="skuPreview"></div>
-      <p class="mt-1 text-xs text-gray-500" x-show="!isHouseBrand && skuScheme === 'vendor'">
+      <p class="mt-1 text-xs text-gray-500" x-show="!houseBrand && skuScheme === 'vendor'">
         Standard part — SKU = prefix + vendor code + part number.
       </p>
-      <p class="mt-1 text-xs text-gray-500" x-show="!isHouseBrand && skuScheme === 'coded'" x-cloak>
+      <p class="mt-1 text-xs text-gray-500" x-show="!houseBrand && skuScheme === 'coded'" x-cloak>
         Coded — the engine/category/sequence SKU is assigned when you save.
       </p>
-      <p class="mt-1 text-xs text-purple-700" x-show="isHouseBrand" x-cloak>
-        Private label — the SKU is your JAKS Product #; the vendor # stays on the PO.
+      <p class="mt-1 text-xs text-purple-700" x-show="houseBrand" x-cloak>
+        House brand — the vendor code is hidden (SKU uses your JAKS Product # if set,
+        else the house prefix); the vendor # stays on the PO.
       </p>
     </div>
   </div>
@@ -544,8 +570,7 @@
       <svg class="w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
         <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
       </svg>
-      <span x-show="!isHouseBrand || String(jaksProductNumber).trim() !== ''">Pick a Vendor and type a Vendor Part # to enable Save</span>
-      <span x-show="isHouseBrand && String(jaksProductNumber).trim() === ''" x-cloak>Enter your JAKS Product # to enable Save</span>
+      <span>Pick a Vendor and type a Vendor Part # to enable Save</span>
     </p>
   </div>
 

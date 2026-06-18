@@ -44,7 +44,10 @@ from sqlalchemy import func
 
 from app.constants import CrossRefStatus, CrossRefType, ProductStatus
 from app.services.classification_service import ClassificationService
-from app.services.sku_service import assemble_sku, derive_category_code, engine_code as _engine_code
+from app.services.sku_service import (
+    assemble_sku, derive_category_code, engine_code as _engine_code,
+    bare_part_number as _bare_part_number,
+)
 from app.models.product import (
     Product, ProductCategory, ProductImage, ProductApplication,
     ProductVendorSource, CrossReference, ProductCostHistory,
@@ -67,15 +70,6 @@ def _vendor_code_from_sku(sku: str) -> str | None:
     """'JAKS-IMB-1832665' → 'IMB'; None when the SKU has no JAKS-<CODE>- prefix."""
     m = _VENDOR_PREFIX_RE.match((sku or "").strip())
     return m.group(1).upper() if m else None
-
-
-def _bare_part_number(raw: str) -> str:
-    """Strip a leading ``JAKS-`` (+ optional vendor-code segment) so re-assembling
-    the customer SKU never doubles it: 'JAKS-PAI-040049' → '040049',
-    'JAKS-G-4' → 'G-4'. Leaves an unprefixed value untouched."""
-    s = (raw or "").strip()
-    m = re.match(r"^JAKS-(?:[A-Z0-9]{2,10}-)?(.+)$", s, re.IGNORECASE)
-    return m.group(1) if m else s
 
 
 def _row_vendor_code(p: dict) -> str:
@@ -700,7 +694,7 @@ class ProductImportService(BaseService):
             "mode": "full_import", "dry_run": dry_run,
             "products_seen": len(rows), "created": 0,
             "pricing_refreshed": 0, "costs_updated": 0, "skipped_existing": 0,
-            "skipped_no_sku": 0, "skipped_sku_collision": 0,
+            "skipped_no_sku": 0, "skipped_sku_collision": 0, "sku_collisions": [],
             "cross_refs": 0, "applications": 0, "images": 0,
             "categories_created": 0, "vendor_sources": 0, "needs_review": 0,
             "classified": 0, "sample": [],
@@ -770,6 +764,11 @@ class ProductImportService(BaseService):
         # expunges the session every 500 rows, detaching these ORM instances.
         vendor_ids_by_code = {c: v.id for c, v in vendors_by_code.items()}
         names_by_code = {c: v.name for c, v in vendors_by_code.items()}
+        # Private-label vendors (DFT/Migao, …): their rows are sold as house brand —
+        # the SKU hides the vendor code, using the house prefix instead.
+        private_label_by_code = {
+            c: bool(getattr(v, "private_label", False)) for c, v in vendors_by_code.items()
+        }
         classifier = ClassificationService(self.db)   # §18.6 — rules cache built once
         # Customer-facing SKU = {prefix}-{vendor_code}-{part#} (e.g. JAKS-PAI-340097)
         # via the default vendor scheme; the raw feed SKU + part# stay on the vendor
@@ -858,11 +857,20 @@ class ProductImportService(BaseService):
             # scheme). The raw CSV SKU + part# are parked on the vendor source
             # (vendor_sku/vendor_part_number, below) so they stay searchable. Skip
             # (don't crash) if the assembled SKU collides with an existing one.
+            # Private-label vendor → hide the vendor code, use the house prefix
+            # instead ({prefix}-{prefix}-{part#}); the product is flagged house brand.
+            row_private = private_label_by_code.get(row_code, False)
+            code_for_sku = _sku_prefix if row_private else row_code
             prod_sku = build_vendor_sku(
-                _sku_prefix, row_code, _bare_part_number(p["pai_part"] or sku)
+                _sku_prefix, code_for_sku, _bare_part_number(p["pai_part"] or sku)
             )
             if prod_sku.lower() in minted_skus:
                 summary["skipped_sku_collision"] += 1
+                # Record WHICH part was dropped so the owner can act (masking two
+                # private-label vendors onto one part# is the common cause).
+                if len(summary["sku_collisions"]) < 50:
+                    summary["sku_collisions"].append(
+                        {"feed_sku": sku, "prod_sku": prod_sku, "vendor_code": row_code})
                 continue
             minted_skus.add(prod_sku.lower())
             # C8 — a reman part whose core charge is UNKNOWN (blank cell, not an
@@ -930,6 +938,7 @@ class ProductImportService(BaseService):
                 needs_review=row_needs_review,                    # §18.6 low-confidence OR C8 reman-core-unknown → Import Review
                 status=ProductStatus.ACTIVE,
                 is_active=True,
+                is_house_brand=row_private,    # private-label vendor → house brand
                 special_order_only=True,
                 weight_lbs=_grams_to_lbs(p["grams"]),
                 supplier_warranty_months=p["warranty_months"],

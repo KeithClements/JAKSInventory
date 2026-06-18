@@ -195,6 +195,7 @@ async def vendor_create(
         name=str(form.get("name", "")).strip(),
         vendor_code=vendor_code,
         vendor_number=digit,
+        private_label=str(form.get("private_label", "")).strip() in ("1", "on", "true"),
         account_number=str(form.get("account_number", "")).strip(),
         contact_name=str(form.get("contact_name", "")).strip(),
         phone=str(form.get("phone", "")).strip(),
@@ -236,6 +237,7 @@ async def vendor_quick_create(
         # digit auto-assigns from the next free one (changeable on the vendor
         # page until the first SKU is minted under it).
         vendor_number=next_free_vendor_digit(db),
+        private_label=str(form.get("private_label", "")).strip() in ("1", "on", "true"),
         phone=str(form.get("phone", "")).strip(),
         account_number=str(form.get("account_number", "")).strip(),
     )
@@ -409,6 +411,7 @@ async def vendor_update(
     v.name = str(form.get("name", "")).strip()
     v.vendor_code = str(form.get("vendor_code", "")).strip().upper()[:4]
     v.vendor_number = digit
+    v.private_label = str(form.get("private_label", "")).strip() in ("1", "on", "true")
     v.account_number = str(form.get("account_number", "")).strip()
     v.contact_name = str(form.get("contact_name", "")).strip()
     v.phone = str(form.get("phone", "")).strip()

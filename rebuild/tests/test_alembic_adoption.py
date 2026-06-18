@@ -26,13 +26,25 @@ from app.models import __all_models__  # noqa: F401 — register models
 _MIGRATIONS_DIR = pathlib.Path(appdb.__file__).resolve().parent / "migrations"
 
 
-def test_head_is_baseline():
+def _head_revision() -> str:
+    """The current Alembic head — computed, not hard-coded, so this suite needs no
+    edit when a new incremental revision is stacked on the baseline."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    cfg = Config()
+    cfg.set_main_option("script_location", str(_MIGRATIONS_DIR))
+    return ScriptDirectory.from_config(cfg).get_current_head()
+
+
+def test_baseline_is_graph_root():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
     cfg = Config()
     cfg.set_main_option("script_location", str(_MIGRATIONS_DIR))
     script = ScriptDirectory.from_config(cfg)
-    assert script.get_current_head() == "0001_baseline"
+    # The migration chain still roots at the adoption baseline, and a head exists.
+    assert "0001_baseline" in script.get_bases()
+    assert script.get_current_head() is not None
 
 
 def test_adopt_skips_in_memory_db():
@@ -63,7 +75,8 @@ def test_adopt_fresh_file_db_stamps_baseline(tmp_path):
         con = sqlite3.connect(str(dbfile))
         ver = con.execute("select version_num from alembic_version").fetchone()[0]
         con.close()
-        assert ver == "0001_baseline"
+        # Fresh build == head schema → stamped at HEAD (db_migrate.adopt).
+        assert ver == _head_revision()
     finally:
         appdb.engine, appdb.SessionLocal = saved_engine, saved_session
 
@@ -84,6 +97,42 @@ def test_adopt_existing_file_db_then_upgrade_is_idempotent(tmp_path):
         con = sqlite3.connect(str(dbfile))
         ver = con.execute("select version_num from alembic_version").fetchone()[0]
         con.close()
-        assert ver == "0001_baseline"
+        # Stamped baseline, then upgraded through any later revisions → at head.
+        assert ver == _head_revision()
+    finally:
+        appdb.engine, appdb.SessionLocal = saved_engine, saved_session
+
+
+def test_adopt_runs_real_add_column_on_pre0002_db(tmp_path):
+    """A genuine pre-0002 DB (column absent) → adopt() must actually run
+    0002_vendor_private_label.upgrade()'s op.add_column, not just stamp. Guards the
+    one piece of net-new migration logic that the create_all-seeded test skips."""
+    saved_engine, saved_session = appdb.engine, appdb.SessionLocal
+    dbfile = tmp_path / "pre0002.db"
+    try:
+        eng = create_engine(f"sqlite:///{dbfile}")
+        appdb.engine = eng
+        appdb.SessionLocal = sessionmaker(bind=eng)
+        Base.metadata.create_all(bind=eng)        # builds head schema (incl. the column)
+        eng.dispose()
+        # Simulate a DB that predates 0002: drop the column (SQLite >= 3.35).
+        con = sqlite3.connect(str(dbfile))
+        con.execute("ALTER TABLE vendors DROP COLUMN private_label")
+        con.commit()
+        cols_before = [r[1] for r in con.execute("PRAGMA table_info(vendors)").fetchall()]
+        con.close()
+        assert "private_label" not in cols_before
+
+        eng = create_engine(f"sqlite:///{dbfile}")
+        appdb.engine = eng
+        appdb.SessionLocal = sessionmaker(bind=eng)
+        dm.adopt(was_fresh=False)                 # stamp baseline + upgrade → runs add_column
+        eng.dispose()
+        con = sqlite3.connect(str(dbfile))
+        cols_after = [r[1] for r in con.execute("PRAGMA table_info(vendors)").fetchall()]
+        ver = con.execute("select version_num from alembic_version").fetchone()[0]
+        con.close()
+        assert "private_label" in cols_after      # the ALTER actually ran
+        assert ver == _head_revision()
     finally:
         appdb.engine, appdb.SessionLocal = saved_engine, saved_session

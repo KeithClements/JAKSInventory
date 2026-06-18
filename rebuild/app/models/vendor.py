@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from sqlalchemy import String, Text, DateTime, Float, Boolean, Integer, ForeignKey, Index, func
+from sqlalchemy import String, Text, DateTime, Float, Boolean, Integer, ForeignKey, Index, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 from app.models.mixins import QBOSyncMixin
@@ -22,6 +22,13 @@ class Vendor(Base):
     # set on the vendor record; distinct from the readable vendor_code (PAI/HHP),
     # which stays on the internal vendor_sku only. '' until assigned.
     vendor_number: Mapped[str] = mapped_column(String(2), nullable=False, default="")
+    # Private label: when True, this vendor's products are sold as our house brand —
+    # the customer-facing SKU HIDES the vendor code and uses the house prefix instead
+    # ({prefix}-{prefix}-{part#}, e.g. JAKS-JAKS-10R1273). Products created/imported
+    # under this vendor are flagged is_house_brand. Per-product override = the
+    # is_house_brand checkbox on the product form. See [[jaks-sku-scheme]].
+    private_label: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0"))
     account_number: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     website: Mapped[str] = mapped_column(String(300), nullable=False, default="")
     # §21 — persisted QBO Vendor binding. qbo_service._resolve_vendor already

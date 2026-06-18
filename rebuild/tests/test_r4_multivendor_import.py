@@ -71,8 +71,9 @@ def db():
         s.close()
 
 
-def _seed_vendor(db, *, name, code, digit):
-    v = Vendor(name=name, vendor_code=code, vendor_number=digit, is_active=True)
+def _seed_vendor(db, *, name, code, digit, private_label=False):
+    v = Vendor(name=name, vendor_code=code, vendor_number=digit, is_active=True,
+               private_label=private_label)
     db.add(v); db.commit(); db.refresh(v)
     return v
 
@@ -109,6 +110,39 @@ def test_mixed_feed_mints_each_vendors_digit(db):
     assert src_imb.vendor_id == imb.id
     assert p_pai.brand == "PAI"
     assert p_imb.brand == "Interstate-McBee"
+
+
+def test_private_label_vendor_import_masks_sku(db):
+    """A private-label vendor (e.g. DFT) imported via full_import → the customer
+    SKU hides the vendor code (house prefix instead) and the product is flagged
+    house brand. The raw feed SKU still parks on the source (searchable)."""
+    _seed_vendor(db, name="Diesel Forward Tech", code="DFT", digit="5",
+                 private_label=True)
+    svc = ProductImportService(db, None)
+    summ = svc.full_import(_csv([_prod_row("JAKS-DFT-10R1273")]), dry_run=False)
+    assert summ.get("error") is None and summ["created"] == 1, summ
+    p, src = _by_feed_sku(db, "JAKS-DFT-10R1273")
+    assert p.sku == "JAKS-JAKS-10R1273"     # vendor code DFT hidden
+    assert p.is_house_brand is True
+    assert src.vendor_sku == "JAKS-DFT-10R1273"   # raw feed sku still searchable
+
+
+def test_two_private_label_vendors_same_part_collide(db):
+    """Masking collapses the vendor code, so two DIFFERENT private-label vendors
+    with the same bare part# both want JAKS-JAKS-<part#>. The first lands; the
+    second is counted as a collision AND recorded in sku_collisions (not silently
+    dropped without a trace)."""
+    _seed_vendor(db, name="Diesel Forward Tech", code="DFT", digit="5",
+                 private_label=True)
+    _seed_vendor(db, name="Migao", code="MIG", digit="6", private_label=True)
+    svc = ProductImportService(db, None)
+    summ = svc.full_import(
+        _csv([_prod_row("JAKS-DFT-7777"), _prod_row("JAKS-MIG-7777")]), dry_run=False)
+    assert summ.get("error") is None
+    assert summ["created"] == 1, summ
+    assert summ["skipped_sku_collision"] == 1, summ
+    assert len(summ["sku_collisions"]) == 1
+    assert summ["sku_collisions"][0]["prod_sku"] == "JAKS-JAKS-7777"
 
 
 def test_no_prefix_row_defaults_to_pai(db):

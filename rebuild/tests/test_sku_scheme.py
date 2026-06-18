@@ -34,8 +34,20 @@ def db():
         s.close()
 
 
-def _vendor(db, code, *, digit=""):
-    v = Vendor(name=f"{code} Supply", vendor_code=code, vendor_number=digit)
+@pytest.fixture(autouse=True)
+def _reset_sku_settings(db):
+    """The module shares one engine, so a test that sets sku_prefix/sku_scheme
+    would otherwise leak into the next. Reset to defaults before every test →
+    order-independent."""
+    set_setting_value_db(db, "sku_prefix", "JAKS")
+    set_setting_value_db(db, "sku_scheme", "vendor")
+    db.commit()
+    yield
+
+
+def _vendor(db, code, *, digit="", private_label=False):
+    v = Vendor(name=f"{code} Supply", vendor_code=code, vendor_number=digit,
+               private_label=private_label)
     db.add(v); db.commit(); db.refresh(v)
     return v
 
@@ -121,3 +133,82 @@ def test_house_brand_uses_owner_number(db):
         "is_house_brand": True, "jaks_product_number": "HB-100",
     })
     assert p.sku == "HB-100"
+
+
+def test_house_brand_without_owner_number_masks_vendor_code(db):
+    """is_house_brand with NO owner-typed number → hide the vendor code, keep the
+    part # under the house prefix: {prefix}-{prefix}-{part#} (JAKS-JAKS-10R1273)."""
+    v = _vendor(db, "DFT")
+    p = ProductService(db).create_product({
+        "vendor_id": v.id, "vendor_part_number": "10R1273", "title": "Reman pump",
+        "is_house_brand": True,
+    })
+    assert p.sku == "JAKS-JAKS-10R1273"
+    assert p.is_house_brand is True
+
+
+# ── private-label VENDOR (DFT / Migao) ───────────────────────────────────────
+
+def test_private_label_vendor_masks_sku_and_flags_house_brand(db):
+    """A vendor flagged private_label → ALL its products are house brand and the
+    SKU hides the vendor code (uses the house prefix instead)."""
+    v = _vendor(db, "DFT", private_label=True)
+    p = ProductService(db).create_product(
+        {"vendor_id": v.id, "vendor_part_number": "pl5001", "title": "Reman"}
+    )
+    assert p.sku == "JAKS-JAKS-PL5001"      # not JAKS-DFT-…
+    assert p.is_house_brand is True
+
+
+def test_create_path_strips_stray_prefix_default(db):
+    """A typed Vendor Part # that already carries a JAKS-<code>- prefix must not
+    double up: JAKS-PAI-778899 stays JAKS-PAI-778899 (not JAKS-PAI-JAKS-PAI-…)."""
+    v = _vendor(db, "PAI")
+    p = ProductService(db).create_product(
+        {"vendor_id": v.id, "vendor_part_number": "JAKS-PAI-778899", "title": "Bolt"}
+    )
+    assert p.sku == "JAKS-PAI-778899"
+
+
+def test_create_path_strips_stray_prefix_house_brand(db):
+    v = _vendor(db, "DFT", private_label=True)
+    p = ProductService(db).create_product(
+        {"vendor_id": v.id, "vendor_part_number": "JAKS-DFT-99X", "title": "x"}
+    )
+    assert p.sku == "JAKS-JAKS-99X"        # not JAKS-JAKS-JAKS-DFT-99X
+
+
+def test_private_label_collision_raises_clear_message(db):
+    """Two private-label vendors with the same bare part# collapse to one masked
+    SKU; the second raises advice that does NOT say 'mark this part private-label'
+    (it already is) — only to give a distinct JAKS Product #."""
+    v1 = _vendor(db, "DFT", private_label=True)
+    v2 = _vendor(db, "MIG", private_label=True)
+    ProductService(db).create_product(
+        {"vendor_id": v1.id, "vendor_part_number": "COLL1", "title": "a"})
+    with pytest.raises(ValueError) as ei:
+        ProductService(db).create_product(
+            {"vendor_id": v2.id, "vendor_part_number": "COLL1", "title": "b"})
+    msg = str(ei.value)
+    assert "distinct JAKS Product #" in msg
+    assert "mark this part private-label" not in msg
+
+
+def test_private_label_vendor_respects_prefix_setting(db):
+    set_setting_value_db(db, "sku_prefix", "AXLE"); db.commit()
+    v = _vendor(db, "MIG", private_label=True)
+    p = ProductService(db).create_product(
+        {"vendor_id": v.id, "vendor_part_number": "55-1", "title": "Gasket"}
+    )
+    assert p.sku == "AXLE-AXLE-55-1"
+
+
+def test_private_label_vendor_still_honors_owner_number(db):
+    """Even under a private-label vendor, an explicit JAKS Product # wins."""
+    v = _vendor(db, "DFT", private_label=True)
+    p = ProductService(db).create_product({
+        "vendor_id": v.id, "vendor_part_number": "10r1273", "title": "Reman",
+        "jaks_product_number": "DOM-9001",
+    })
+    assert p.sku == "DOM-9001"
+    assert p.is_house_brand is True

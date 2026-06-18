@@ -50,9 +50,10 @@ def client(db_session):
 
 
 def _seed_vendor(db, *, name="PAI Industries", code="PAI",
-                 vendor_number="9", is_active=True) -> Vendor:
+                 vendor_number="9", is_active=True, private_label=False) -> Vendor:
     v = Vendor(name=name, vendor_code=code,
-               vendor_number=vendor_number, is_active=is_active)
+               vendor_number=vendor_number, is_active=is_active,
+               private_label=private_label)
     db.add(v)
     db.commit()
     db.refresh(v)
@@ -184,6 +185,60 @@ def test_post_sku_is_vendor_part_number(client, db_session):
 
     p = db_session.query(Product).get(pid)
     assert p.sku == "JAKS-PAI-MULTIFIT-1"
+
+
+def test_post_house_brand_without_number_masks_sku(client, db_session):
+    """Route-level: is_house_brand checked but NO JAKS Product # typed → the SKU
+    masks the vendor code with the house prefix (JAKS-JAKS-{part#}) and the product
+    is flagged house brand. Proves the form-field wiring reaches the masking."""
+    vendor = _seed_vendor(db_session)
+    cat = _seed_category(db_session, name="Pumps", code="PMP")
+    r = client.post("/products/new", data={
+        "vendor_id": str(vendor.id),
+        "vendor_part_number": "10R1273",
+        "is_house_brand": "on",          # no jaks_product_number
+        "title": "Reman pump",
+        "category_id": str(cat.id),
+        "reorder_point": "0",
+        "vendor_core_charge": "0", "customer_core_charge": "0",
+    })
+    assert r.status_code == 303, r.text
+    pid = int(r.headers["location"].rsplit("/", 1)[-1])
+    p = db_session.query(Product).get(pid)
+    assert p.sku == "JAKS-JAKS-10R1273"
+    assert p.is_house_brand is True
+
+
+def test_post_private_label_vendor_masks_sku(client, db_session):
+    """Route-level: a vendor flagged private_label → POST /products/new with just a
+    part # masks the vendor code and flags house brand, with NO checkbox sent."""
+    vendor = _seed_vendor(db_session, name="Diesel Fuel Technologies",
+                          code="DFT", vendor_number="5", private_label=True)
+    cat = _seed_category(db_session, name="Pumps", code="PMP")
+    r = client.post("/products/new", data={
+        "vendor_id": str(vendor.id),
+        "vendor_part_number": "10R1273",
+        "title": "Reman pump",
+        "category_id": str(cat.id),
+        "reorder_point": "0",
+        "vendor_core_charge": "0", "customer_core_charge": "0",
+    })
+    assert r.status_code == 303, r.text
+    pid = int(r.headers["location"].rsplit("/", 1)[-1])
+    p = db_session.query(Product).get(pid)
+    assert p.sku == "JAKS-JAKS-10R1273"   # DFT hidden
+    assert p.is_house_brand is True
+
+
+def test_post_vendor_new_persists_private_label(client, db_session):
+    """Route-level: POST /vendors/new with private_label='1' persists the flag
+    (the checkbox coercion in routers/vendors.py)."""
+    r = client.post("/vendors/new", data={
+        "name": "Migao", "vendor_code": "MIG", "private_label": "1",
+    }, follow_redirects=False)
+    assert r.status_code == 303, r.text
+    v = db_session.query(Vendor).filter(Vendor.vendor_code == "MIG").first()
+    assert v is not None and v.private_label is True
 
 
 def test_post_private_label_uses_jaks_product_number_as_sku(client, db_session):

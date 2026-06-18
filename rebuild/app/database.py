@@ -316,6 +316,11 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     ("warranty_claim_lines", "serial_number", "TEXT NULL"),
     ("warranty_claim_lines", "labor_hours",   "REAL NOT NULL DEFAULT 0"),
     ("warranty_claim_lines", "labor_rate",    "REAL NOT NULL DEFAULT 0"),
+
+    # ── Private-label vendors (DFT/Migao, …): mirror the Alembic 0002 column here
+    #    too, so a swallowed Alembic failure can't leave this ORM-required column
+    #    absent (Vendor.private_label is NOT NULL → every Vendor query would 500). ─
+    ("vendors", "private_label", "BOOLEAN NOT NULL DEFAULT 0"),
 ]
 
 

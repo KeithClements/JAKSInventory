@@ -78,6 +78,23 @@
             {% endif %}
           </div>
 
+          <div class="col-span-2">
+            <label class="inline-flex items-start gap-2 cursor-pointer">
+              <input type="checkbox" name="private_label" value="1"
+                     {% if vendor.private_label %}checked{% endif %}
+                     class="mt-0.5 rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+              <span class="text-sm">
+                <span class="font-medium text-gray-700">Private label (sell as house brand)</span>
+                <span class="block text-xs text-gray-400 normal-case">
+                  Hide this vendor's code in SKUs — use the house prefix instead
+                  (e.g. <span class="font-mono">JAKS-JAKS-10R1273</span> instead of
+                  <span class="font-mono">JAKS-{{ vendor.vendor_code or 'XXX' }}-10R1273</span>).
+                  New products under this vendor are flagged house brand.
+                </span>
+              </span>
+            </label>
+          </div>
+
           <div>
             <label class="form-label">Account Number</label>
             <input name="account_number" value="{{ vendor.account_number }}"

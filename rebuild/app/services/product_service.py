@@ -207,22 +207,30 @@ class ProductService(BaseService):
         # setting): {prefix}-{ENGINE}-{CATEGORY}-{Vseq} via SkuService. Private-label
         # (is_house_brand) parts keep the owner-typed JAKS Product #.
         from app.settings_utils import get_setting_value_db
-        from app.services.sku_service import build_vendor_sku, SkuService
+        from app.services.sku_service import build_vendor_sku, bare_part_number, SkuService
         engine_make = (data.get("engine_make") or "").strip()
         engine_model = (data.get("engine_model") or "").strip()
-        is_house_brand = bool(data.get("is_house_brand", False))
+        # House brand = the per-product checkbox OR the vendor being flagged
+        # private_label (DFT/Migao, etc.). Either way the vendor code is hidden.
+        is_house_brand = (bool(data.get("is_house_brand", False))
+                          or bool(getattr(vendor, "private_label", False)))
         scheme = (data.get("sku_scheme")
                   or get_setting_value_db(self.db, "sku_scheme", "vendor")).strip().lower()
         prefix = get_setting_value_db(self.db, "sku_prefix", "JAKS")
         use_coded = scheme == "coded" and not is_house_brand
+        # Strip any stray {prefix}-{code}- the typed part # may already carry, so
+        # re-assembly never doubles it (symmetric with the importer). Identity-safe
+        # for a normal bare part #.
+        bare = bare_part_number(part_number)
 
         if is_house_brand:
-            customer_sku = (data.get("jaks_product_number")
+            # House brand: an owner-typed JAKS Product # wins (true private label);
+            # otherwise mask the vendor code with the house prefix and KEEP the
+            # vendor part # → {prefix}-{prefix}-{part#}, e.g. JAKS-JAKS-10R1273.
+            owner_number = (data.get("jaks_product_number")
                             or data.get("sku") or "").strip().upper()
-            if not customer_sku:
-                raise ValueError(
-                    "Enter your JAKS Product # for a private-label part."
-                )
+            customer_sku = (owner_number
+                            or build_vendor_sku(prefix, prefix, bare))
         elif use_coded:
             if not (vendor.vendor_number or "").strip():
                 raise ValueError(
@@ -231,13 +239,20 @@ class ProductService(BaseService):
                 )
             customer_sku = None   # minted after the product row exists (needs id + category)
         else:
-            customer_sku = build_vendor_sku(prefix, vendor.vendor_code, part_number)
+            customer_sku = build_vendor_sku(prefix, vendor.vendor_code, bare)
 
         # Unique-sku guard for the pre-computed schemes (coded skus are sequenced
         # and unique by construction). Fail loud rather than save a duplicate.
         if customer_sku is not None:
             clash = self.db.query(Product).filter(Product.sku == customer_sku).first()
             if clash is not None:
+                if is_house_brand:
+                    # The part is already house brand — masking collapsed the vendor
+                    # code, so the only remedy is a distinct owner number.
+                    raise ValueError(
+                        f"SKU '{customer_sku}' already exists (product_id={clash.id}). "
+                        f"Give this private-label part a distinct JAKS Product #."
+                    )
                 raise ValueError(
                     f"SKU '{customer_sku}' already exists (product_id={clash.id}). "
                     f"Another vendor may use the same part number — mark this part "

@@ -144,6 +144,20 @@ def build_vendor_sku(prefix: str, vendor_code: str, part_number: str) -> str:
     return "-".join(s for s in segs if s)
 
 
+_BARE_PART_RE = re.compile(r"^JAKS-(?:[A-Z0-9]{2,10}-)?(.+)$", re.IGNORECASE)
+
+
+def bare_part_number(raw: str) -> str:
+    """Strip a leading ``JAKS-`` (+ optional vendor-code segment) so re-assembling
+    the customer SKU never doubles it: 'JAKS-PAI-040049' → '040049',
+    'JAKS-JAKS-10R1273' → '10R1273', 'JAKS-G-4' → 'G-4'. Leaves an unprefixed value
+    untouched. ONE definition shared by the create path, importer, and regen script
+    so all three mint identical SKUs from the same part #."""
+    s = (raw or "").strip()
+    m = _BARE_PART_RE.match(s)
+    return m.group(1) if m else s
+
+
 # Auto-assign preference: 1-8 first, then 0, then 9 last (9 is PAI's by owner
 # convention — only handed out if PAI somehow never claimed it).
 _DIGIT_PREFERENCE = "123456780" + "9"
