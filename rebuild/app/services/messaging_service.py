@@ -388,12 +388,14 @@ class MessagingService(BaseService):
         body: str = "",
     ) -> SendResult:
         """Send a TEST message to an arbitrary address via the REAL provider so the
-        owner can verify SMTP / Twilio from Settings. Honors the log-only
-        kill-switch (returns LOGGED_ONLY then). No customer / no consent check.
+        owner can verify SMTP / Twilio from Settings. BYPASSES the log-only
+        kill-switch on purpose — a connection test must really transmit so it can
+        be run BEFORE flipping the switch live (a provider that isn't configured
+        still falls back to Null → LOGGED_ONLY). No customer / no consent check.
         Logged with customer_id=None + provider='test' for the audit trail. §22.5
         """
         to = _to_e164(to_address) if channel == CommunicationChannel.SMS else (to_address or "").strip()
-        provider = self._provider_for(channel)
+        provider = self._provider_for(channel, ignore_log_only=True)
         if channel == CommunicationChannel.EMAIL:
             result = provider.send_email(
                 to=to, subject=subject or "Axle ERP test email",
@@ -609,13 +611,18 @@ class MessagingService(BaseService):
     def _setting(self, key: str, default: str = "") -> str:
         return (get_setting_value_db(self.db, key, default) or "").strip()
 
-    def _provider_for(self, channel: str) -> MessagingProvider:
+    def _provider_for(self, channel: str, *, ignore_log_only: bool = False) -> MessagingProvider:
         """Pick the live provider from Settings, defaulting to the safe Null
         provider (log-only). messaging_log_only_mode=true forces Null on every
         channel — the global kill-switch. A misconfigured provider also falls
-        back to Null so a missing credential never raises into a send."""
-        # Global kill-switch: log everything, transmit nothing.
-        if self._setting("messaging_log_only_mode", "true").lower() == "true":
+        back to Null so a missing credential never raises into a send.
+
+        ``ignore_log_only=True`` is used by send_test(): a connection test must
+        really transmit through the configured provider even while normal sends
+        are still safely logged-only — otherwise the owner can never verify a
+        provider before flipping the switch (chicken-and-egg)."""
+        # Global kill-switch: log everything, transmit nothing (except a test).
+        if not ignore_log_only and self._setting("messaging_log_only_mode", "true").lower() == "true":
             return NullMessagingProvider()
 
         from app.services.qbo_client import _decrypt as _secret_decrypt
