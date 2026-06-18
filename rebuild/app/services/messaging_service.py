@@ -65,6 +65,23 @@ class RenderedMessage:
     template_name: str
 
 
+def _to_e164(phone: str) -> str:
+    """Best-effort US E.164 for SMS (Twilio requires +country code). 10 digits →
+    +1XXXXXXXXXX; 11 starting with 1 → +1…; an existing +… is kept; anything else
+    is prefixed with + as a fallback. '' for blank."""
+    raw = (phone or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    if not digits:
+        return ""
+    if raw.startswith("+"):
+        return "+" + digits
+    if len(digits) == 10:
+        return "+1" + digits
+    if len(digits) == 11 and digits.startswith("1"):
+        return "+" + digits
+    return "+" + digits
+
+
 # ── Provider protocol ─────────────────────────────────────────────────────────
 
 @runtime_checkable
@@ -96,6 +113,90 @@ class NullMessagingProvider:
     def send_sms(self, *, to: str, body: str) -> SendResult:
         log.debug("NullMessagingProvider.send_sms to=%r (not sent)", to)
         return SendResult(status=CommunicationStatus.LOGGED_ONLY)
+
+
+class SmtpProvider:
+    """Real email via SMTP (Google Workspace / Microsoft 365 / any SMTP host).
+    STARTTLS on 587 (default) or implicit TLS on 465. Pure stdlib (smtplib)."""
+
+    def __init__(self, *, host: str, port: int, username: str, password: str,
+                 from_address: str, from_name: str = "", use_tls: bool = True):
+        self.host, self.port = host, port
+        self.username, self.password = username, password
+        self.from_address, self.from_name = from_address, from_name
+        self.use_tls = use_tls
+
+    def send_email(self, *, to: str, subject: str, body: str, attachments=None) -> SendResult:
+        import smtplib
+        import ssl
+        from email.message import EmailMessage
+        if not to:
+            return SendResult(status=CommunicationStatus.FAILED, error="No recipient email")
+        msg = EmailMessage()
+        msg["Subject"] = subject or ""
+        msg["From"] = (f"{self.from_name} <{self.from_address}>"
+                       if self.from_name else self.from_address)
+        msg["To"] = to
+        msg.set_content(body)
+        try:
+            if int(self.port) == 465:
+                with smtplib.SMTP_SSL(self.host, self.port, timeout=20,
+                                      context=ssl.create_default_context()) as s:
+                    if self.username:
+                        s.login(self.username, self.password)
+                    s.send_message(msg)
+            else:
+                with smtplib.SMTP(self.host, self.port, timeout=20) as s:
+                    if self.use_tls:
+                        s.starttls(context=ssl.create_default_context())
+                    if self.username:
+                        s.login(self.username, self.password)
+                    s.send_message(msg)
+            return SendResult(status=CommunicationStatus.SENT)
+        except Exception as exc:  # never raise into the caller — log + record FAILED
+            log.warning("SMTP send failed to=%r: %s", to, exc)
+            return SendResult(status=CommunicationStatus.FAILED, error=str(exc)[:300])
+
+    def send_sms(self, *, to: str, body: str) -> SendResult:
+        return SendResult(status=CommunicationStatus.FAILED,
+                          error="SMTP provider cannot send SMS")
+
+
+class TwilioProvider:
+    """Real SMS via the Twilio REST API (httpx — no extra SDK dependency).
+    Requires an A2P 10DLC-registered sending number for US delivery."""
+
+    def __init__(self, *, account_sid: str, auth_token: str, from_number: str):
+        self.account_sid, self.auth_token = account_sid, auth_token
+        self.from_number = from_number
+
+    def send_sms(self, *, to: str, body: str) -> SendResult:
+        import httpx
+        if not to:
+            return SendResult(status=CommunicationStatus.FAILED, error="No recipient phone")
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}/Messages.json"
+        try:
+            r = httpx.post(
+                url, auth=(self.account_sid, self.auth_token),
+                data={"From": self.from_number, "To": to, "Body": body}, timeout=20,
+            )
+            if r.status_code in (200, 201):
+                return SendResult(status=CommunicationStatus.SENT,
+                                  provider_message_id=r.json().get("sid"))
+            # Twilio returns a JSON error body with a 'message'
+            try:
+                detail = r.json().get("message", r.text)
+            except Exception:
+                detail = r.text
+            return SendResult(status=CommunicationStatus.FAILED,
+                              error=f"Twilio {r.status_code}: {str(detail)[:250]}")
+        except Exception as exc:
+            log.warning("Twilio send failed to=%r: %s", to, exc)
+            return SendResult(status=CommunicationStatus.FAILED, error=str(exc)[:300])
+
+    def send_email(self, *, to: str, subject: str, body: str, attachments=None) -> SendResult:
+        return SendResult(status=CommunicationStatus.FAILED,
+                          error="Twilio provider cannot send email")
 
 
 # ── Custom errors ─────────────────────────────────────────────────────────────
@@ -388,13 +489,50 @@ class MessagingService(BaseService):
         if channel == CommunicationChannel.EMAIL:
             return getattr(customer, "email", "") or ""
         if channel == CommunicationChannel.SMS:
-            return re.sub(r"\D", "", getattr(customer, "phone", "") or "")
+            return _to_e164(getattr(customer, "phone", "") or "")
         return ""
 
+    def _setting(self, key: str, default: str = "") -> str:
+        return (get_setting_value_db(self.db, key, default) or "").strip()
+
     def _provider_for(self, channel: str) -> MessagingProvider:
-        """Return the configured provider. Always NullMessagingProvider in Phase 1."""
-        # Phase 2: read messaging_email_provider / messaging_sms_provider from settings
-        # and instantiate real providers. For now always return Null.
+        """Pick the live provider from Settings, defaulting to the safe Null
+        provider (log-only). messaging_log_only_mode=true forces Null on every
+        channel — the global kill-switch. A misconfigured provider also falls
+        back to Null so a missing credential never raises into a send."""
+        # Global kill-switch: log everything, transmit nothing.
+        if self._setting("messaging_log_only_mode", "true").lower() == "true":
+            return NullMessagingProvider()
+
+        from app.services.qbo_client import _decrypt as _secret_decrypt
+
+        if channel == CommunicationChannel.EMAIL:
+            if self._setting("messaging_email_provider", "null").lower() in ("smtp", "m365", "gmail"):
+                host = self._setting("smtp_host")
+                frm = self._setting("smtp_from_address") or self._setting("company_email")
+                if host and frm:
+                    try:
+                        port = int(self._setting("smtp_port", "587") or 587)
+                    except ValueError:
+                        port = 587
+                    return SmtpProvider(
+                        host=host, port=port,
+                        username=self._setting("smtp_username"),
+                        password=_secret_decrypt(self._setting("smtp_password_encrypted")),
+                        from_address=frm, from_name=self._setting("smtp_from_name"),
+                        use_tls=self._setting("smtp_use_tls", "true").lower() == "true",
+                    )
+            return NullMessagingProvider()
+
+        if channel == CommunicationChannel.SMS:
+            if self._setting("messaging_sms_provider", "null").lower() == "twilio":
+                sid = self._setting("twilio_account_sid")
+                token = _secret_decrypt(self._setting("twilio_auth_token_encrypted"))
+                frm = self._setting("twilio_from_number")
+                if sid and token and frm:
+                    return TwilioProvider(account_sid=sid, auth_token=token, from_number=frm)
+            return NullMessagingProvider()
+
         return NullMessagingProvider()
 
     def _write_log(

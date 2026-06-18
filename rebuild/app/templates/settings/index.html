@@ -17,6 +17,7 @@
     <button type="button" @click="tab = 'pricing'"    :class="tab === 'pricing'    ? 'tab-active' : 'tab-inactive'">Pricing</button>
     <button type="button" @click="tab = 'quickbooks'" :class="tab === 'quickbooks' ? 'tab-active' : 'tab-inactive'">QuickBooks</button>
     <button type="button" @click="tab = 'shopify'"    :class="tab === 'shopify'    ? 'tab-active' : 'tab-inactive'">Shopify</button>
+    <button type="button" @click="tab = 'messaging'"  :class="tab === 'messaging'  ? 'tab-active' : 'tab-inactive'">Messaging</button>
     <button type="button" @click="tab = 'tax'"        :class="tab === 'tax'        ? 'tab-active' : 'tab-inactive'">Tax</button>
     <button type="button" @click="tab = 'system'"     :class="tab === 'system'     ? 'tab-active' : 'tab-inactive'">System</button>
     <button type="button" @click="tab = 'reviews'"    :class="tab === 'reviews'    ? 'tab-active' : 'tab-inactive'">Reviews</button>
@@ -345,6 +346,106 @@
         </div>
       </div>
     </div>{# /shopify tab #}
+
+    {# ═══ MESSAGING TAB ═══ #}
+    <div x-show="tab === 'messaging'" x-cloak class="space-y-6">
+      {# Safe-mode kill switch #}
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Sending Mode</h2>
+        <label class="flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" name="messaging_log_only_mode" value="true"
+                 {% if msg.messaging_log_only_mode == 'true' %}checked{% endif %}
+                 class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+          <span><b>Log-only (safe mode)</b> — compose, consent-check and record every message, but do NOT transmit.</span>
+        </label>
+        <p class="text-xs text-gray-400">Leave this ON until your email/SMS credentials below are saved and tested.
+          Uncheck it to start actually sending. Consent rules, opt-out and rate limits still apply when sending is live.</p>
+      </div>
+
+      {# Email (SMTP) #}
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Email (SMTP)</h2>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Email provider</label>
+          <select name="messaging_email_provider" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">
+            <option value="null" {% if msg.messaging_email_provider == 'null' %}selected{% endif %}>Off</option>
+            <option value="smtp" {% if msg.messaging_email_provider in ['smtp','m365','gmail'] %}selected{% endif %}>SMTP (Workspace / Microsoft 365 / Gmail)</option>
+          </select>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">SMTP host</label>
+            <input name="smtp_host" value="{{ msg.smtp_host }}" placeholder="smtp.gmail.com / smtp.office365.com"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">Port</label>
+            <input name="smtp_port" value="{{ msg.smtp_port }}" placeholder="587"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">Username</label>
+            <input name="smtp_username" value="{{ msg.smtp_username }}" placeholder="you@jaksdiesel.com"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">Password / App password
+            {% if msg.smtp_password_is_set %}<span class="text-green-600 normal-case">· saved</span>{% endif %}</label>
+            <input name="smtp_password_encrypted" type="password" value="" autocomplete="off"
+              placeholder="{% if msg.smtp_password_is_set %}leave blank to keep{% else %}app password{% endif %}"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">From address</label>
+            <input name="smtp_from_address" value="{{ msg.smtp_from_address }}" placeholder="parts@jaksdiesel.com"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">From name</label>
+            <input name="smtp_from_name" value="{{ msg.smtp_from_name }}" placeholder="JAK's Diesel Parts"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+        </div>
+        <label class="flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" name="smtp_use_tls" value="true" {% if msg.smtp_use_tls == 'true' %}checked{% endif %}
+                 class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+          Use STARTTLS (port 587). Uncheck only for implicit-TLS port 465.
+        </label>
+        <p class="text-xs text-gray-400">
+          Google Workspace: <span class="font-mono">smtp.gmail.com:587</span>, username = full address, password = a
+          <b>16-char App Password</b> (Google account → Security → 2-Step Verification → App passwords).
+          Microsoft 365: <span class="font-mono">smtp.office365.com:587</span>.
+        </p>
+      </div>
+
+      {# SMS (Twilio) #}
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Texting (Twilio)</h2>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">SMS provider</label>
+          <select name="messaging_sms_provider" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">
+            <option value="null"   {% if msg.messaging_sms_provider == 'null' %}selected{% endif %}>Off</option>
+            <option value="twilio" {% if msg.messaging_sms_provider == 'twilio' %}selected{% endif %}>Twilio</option>
+          </select>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">Account SID</label>
+            <input name="twilio_account_sid" value="{{ msg.twilio_account_sid }}" placeholder="ACxxxxxxxx…"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">Auth token
+            {% if msg.twilio_auth_token_is_set %}<span class="text-green-600 normal-case">· saved</span>{% endif %}</label>
+            <input name="twilio_auth_token_encrypted" type="password" value="" autocomplete="off"
+              placeholder="{% if msg.twilio_auth_token_is_set %}leave blank to keep{% else %}auth token{% endif %}"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">From number (10DLC)</label>
+            <input name="twilio_from_number" value="{{ msg.twilio_from_number }}" placeholder="+13035551234"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+        </div>
+        <p class="text-xs text-gray-400">Use your A2P 10DLC-registered Twilio number in E.164 (+1…). Customer numbers are
+          normalized to E.164 automatically. SMS only sends to customers who consented (allow_sms + consent date).</p>
+      </div>
+
+      {# Rate limits #}
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Rate Limits</h2>
+        <div class="grid grid-cols-2 gap-3">
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">Max outbound / hour (all customers)</label>
+            <input name="messaging_max_outbound_per_hour" value="{{ msg.messaging_max_outbound_per_hour }}"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">Max / customer / day</label>
+            <input name="messaging_max_outbound_per_customer_per_day" value="{{ msg.messaging_max_outbound_per_customer_per_day }}"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+        </div>
+      </div>
+    </div>{# /messaging tab #}
 
     {# ═══ TAX TAB ═══ #}
     <div x-show="tab === 'tax'" x-cloak class="space-y-6">

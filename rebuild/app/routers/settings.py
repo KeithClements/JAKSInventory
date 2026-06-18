@@ -207,6 +207,12 @@ VISIBLE_KEYS = [
     "shopify_store_url", "shopify_api_key", "shopify_api_secret", "shopify_access_token",
     "taxjar_api_key",
     "anthropic_api_key",
+    # Messaging — Email (SMTP) + SMS (Twilio)
+    "messaging_log_only_mode", "messaging_email_provider", "messaging_sms_provider",
+    "messaging_max_outbound_per_hour", "messaging_max_outbound_per_customer_per_day",
+    "smtp_host", "smtp_port", "smtp_username", "smtp_password_encrypted",
+    "smtp_from_address", "smtp_from_name", "smtp_use_tls",
+    "twilio_account_sid", "twilio_auth_token_encrypted", "twilio_from_number",
     # §5.12 — document branding (logo itself is set via POST /settings/logo)
     "document_footer_text", "document_terms_text", "document_show_logo", "document_logo_height",
 ]
@@ -262,7 +268,7 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
     # §21 — secrets are NEVER echoed back into a form value attribute (that
     # leaks them into the page source even behind type=password). Render them
     # blank with an is_set marker; a blank submit keeps the stored value.
-    _SECRET_KEYS = {"qbo_client_secret"}
+    _SECRET_KEYS = {"qbo_client_secret", "smtp_password_encrypted", "twilio_auth_token_encrypted"}
     settings = []
     for k in VISIBLE_KEYS:
         raw = rows.get(k, DEFAULTS[k][0])
@@ -283,6 +289,17 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
         "model": get_ai_model(db),
         "default_model": DEFAULT_MODEL,
     }
+    # Messaging tab — current config (non-secret values + is_set flags for secrets)
+    _msg_keys = [
+        "messaging_log_only_mode", "messaging_email_provider", "messaging_sms_provider",
+        "messaging_max_outbound_per_hour", "messaging_max_outbound_per_customer_per_day",
+        "smtp_host", "smtp_port", "smtp_username", "smtp_from_address", "smtp_from_name",
+        "smtp_use_tls", "twilio_account_sid", "twilio_from_number",
+    ]
+    msg = {k: rows.get(k, DEFAULTS[k][0]) for k in _msg_keys}
+    msg["smtp_password_is_set"] = bool((rows.get("smtp_password_encrypted") or "").strip())
+    msg["twilio_auth_token_is_set"] = bool((rows.get("twilio_auth_token_encrypted") or "").strip())
+
     qp = request.query_params
     flash = {
         "error": qp.get("error", ""),
@@ -298,7 +315,7 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
     }
     return templates.TemplateResponse(
         request, "settings/index.html",
-        {"settings": settings, "qbo": qbo, "flash": flash, "ai": ai_ctx},
+        {"settings": settings, "qbo": qbo, "flash": flash, "ai": ai_ctx, "msg": msg},
     )
 
 
@@ -317,6 +334,7 @@ async def save_settings(request: Request, db: Session = Depends(get_db), _admin=
     _ENCRYPTED_KEYS = {
         "qbo_client_secret", "shopify_access_token",
         "shopify_api_secret", "taxjar_api_key", "anthropic_api_key",
+        "smtp_password_encrypted", "twilio_auth_token_encrypted",
     }
     for key in VISIBLE_KEYS:
         val = form.get(key, "")
