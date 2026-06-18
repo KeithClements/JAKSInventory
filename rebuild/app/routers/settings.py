@@ -307,11 +307,17 @@ async def save_settings(request: Request, db: Session = Depends(get_db), _admin=
     form = await request.form()
     # Secrets Fernet-encrypted at rest. A blank submit means "keep the existing
     # value" (the field renders masked/empty so the admin doesn't re-type it).
-    # Each key's READ path must _decrypt(): qbo_client_secret in qbo_client, and
-    # shopify_access_token in shopify_service (C7). NOTE: shopify_api_secret /
-    # taxjar_api_key / anthropic_api_key are still plaintext — encrypt them here
-    # only after confirming every read site decrypts (tracked as a follow-up).
-    _ENCRYPTED_KEYS = {"qbo_client_secret", "shopify_access_token"}
+    # Each key's READ path must _decrypt() (decrypt passes legacy plaintext
+    # through, so this is backward-compatible):
+    #   • qbo_client_secret   → app/services/qbo_client.py
+    #   • shopify_access_token → app/services/shopify_service.py (C7)
+    #   • anthropic_api_key    → app/services/ai_categorization_service.py
+    #   • shopify_api_secret / taxjar_api_key → currently no reader (unused
+    #     integrations); encrypted here purely to harden them at rest.
+    _ENCRYPTED_KEYS = {
+        "qbo_client_secret", "shopify_access_token",
+        "shopify_api_secret", "taxjar_api_key", "anthropic_api_key",
+    }
     for key in VISIBLE_KEYS:
         val = form.get(key, "")
         if key in _ENCRYPTED_KEYS:

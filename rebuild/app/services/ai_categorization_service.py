@@ -58,7 +58,13 @@ class AICategorizationService(BaseService):
 
     # ── Configuration / gating ────────────────────────────────────────────────
     def api_key(self) -> str:
-        return get_setting_value_db(self.db, "anthropic_api_key", "").strip()
+        # Fernet-encrypted at rest (settings save). _decrypt passes legacy
+        # plaintext through unchanged, so an existing key keeps working until
+        # re-saved.
+        from app.services.qbo_client import _decrypt as _secret_decrypt
+        return _secret_decrypt(
+            get_setting_value_db(self.db, "anthropic_api_key", "").strip()
+        )
 
     def is_enabled(self) -> bool:
         """True only when an Anthropic API key is configured in Settings."""

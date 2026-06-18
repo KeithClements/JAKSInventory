@@ -256,8 +256,11 @@ def test_w4_cost_variance_only_no_qty_over_narrative(jenv):
     assert "Cost variance" in html, (
         "cost_variance state must render the 'Cost variance' badge, not over-billed"
     )
-    assert "Over-billed" not in html, (
-        "cost_variance-only match must NOT show 'Over-billed' badge"
+    # Target the BADGE specifically (rendered as `>Over-billed</span>`), not the
+    # static legend text "Over-billed or cost-variance lines are flagged…" which
+    # always appears in the panel footer regardless of row state.
+    assert ">Over-billed</span>" not in html, (
+        "cost_variance-only match must NOT show the 'Over-billed' badge"
     )
 
 

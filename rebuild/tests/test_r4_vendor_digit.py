@@ -182,17 +182,32 @@ def _feed_csv(sku):
 
 
 def test_digit_frozen_after_first_mint(client, db):
+    """The vendor digit FREEZES once a product is opaque-minted under it (part_seq
+    stamped). NOTE: full_import no longer opaque-mints — since the §20 revert the
+    customer SKU is the vendor's real part #, so import sets sku=part# and never
+    stamps part_seq. The freeze guard (and its vendor-form behaviour) is still
+    shipped for the dormant opaque-SKU scheme, so it is exercised here via the
+    SkuService mint path that actually stamps part_seq."""
+    from app.constants import ProductStatus
+    from app.models.product import ProductVendorSource
+    from app.services.sku_service import SkuService
+
     v = _mk_vendor(db, name="Frozen Co", code="FRZ", digit="5")
-    summ = ProductImportService(db, None).full_import(
-        _feed_csv("JAKS-FRZ-0001"), dry_run=False)
-    assert summ.get("error") is None and summ["created"] == 1
+    p = Product(sku="FRZ-RAW-1", title="Head Bolt", description="x",
+                status=ProductStatus.ACTIVE, is_active=True)
+    db.add(p); db.flush()
+    db.add(ProductVendorSource(product_id=p.id, vendor_id=v.id,
+                               vendor_part_number="FRZ1", is_preferred=True, is_active=True))
+    db.commit()
+    SkuService(db, None).assign_new_sku(p, v)   # stamps part_seq → freezes the digit
+    db.commit()
     assert vendor_digit_locked(db, v.id) is True
 
     r = _update(client, v, "4")
     assert r.status_code == 303 and "saved=1" in r.headers["location"]
     db.expire_all()
     assert db.get(Vendor, v.id).vendor_number == "5", \
-        "digit is FROZEN once a SKU has been minted under it"
+        "digit is FROZEN once a product is minted under it"
 
     # the detail page shows the frozen state instead of an editable field
     page = client.get(f"/vendors/{v.id}").text

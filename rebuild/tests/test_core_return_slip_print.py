@@ -167,8 +167,11 @@ def test_invoice_without_core_has_no_slip(client, db):
     body = resp.text
 
     assert "Invoice" in body              # sanity: the invoice still renders
-    # No companion slip page is rendered (the CSS for it is always present, so
-    # check the rendered element + its sign-off text, not the stylesheet).
+    # No companion slip page is rendered. Check slip-SPECIFIC markers, not
+    # "Customer Signature": every non-void invoice now carries a customer
+    # acknowledgement sign-off block (Received By / Customer Signature), so that
+    # phrase is no longer a valid no-slip signal. "Received By (JAKS)" and
+    # "Potential Credit" appear ONLY on the core-return slip page.
     assert 'class="page-shell core-slip-page"' not in body
-    assert "Customer Signature" not in body
+    assert "Received By (JAKS)" not in body
     assert "Potential Credit" not in body
