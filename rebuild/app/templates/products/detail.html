@@ -996,7 +996,7 @@
                           :id="'ss-result-' + idx"
                           :class="idx === _ai ? 'cust-pick-active' : ''"
                           class="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-gray-50/80 transition-colors">
-                    <span class="font-mono text-xs font-bold text-brand-700 w-24 shrink-0 truncate" x-text="p.sku || p.part_number"></span>
+                    <span class="font-mono text-xs font-bold text-brand-700 shrink-0 whitespace-nowrap" x-text="p.sku || p.part_number"></span>
                     <span class="flex-1 min-w-0 text-sm text-gray-800 truncate" x-text="p.title || p.description"></span>
                     <span class="shrink-0 text-xs text-gray-500 tabular-nums" x-text="'$' + (Number(p.suggested_sell) || 0).toFixed(2)"></span>
                   </button>

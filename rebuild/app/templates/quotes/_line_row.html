@@ -503,50 +503,66 @@
   <td colspan="9" class="px-4 pb-2 pt-0">
     <div class="flex flex-wrap items-center gap-1.5 pl-0.5">
 
-      {# ── Recommended / Required suggestion chips ──────────────────────── #}
+      {# ── Recommended / Required suggestion chips ──────────────────────────
+         Split control per chip:
+           • Main button  → adds the part as a billed line (line_role=suggested),
+                            counted in the quote total.
+           • Caret button → adds it as an OPTION under this line (line_role=optional,
+                            parent_line_id set). Shown on the quote but EXCLUDED from
+                            the total until the customer opts in.
+         The chip face shows a short title + a list-price preview; the SKU and full
+         title live in the hover tooltip.
+         Prices intentionally OMITTED from hx-vals — add_line resolves the customer's
+         tier price via PricingService.sell_price_for_tier (fleet/dealer correctness).
+         The $ on the chip is a list-price preview only.
+      #}
       {% for s in line.product.suggested_sells %}
+        {% if s.relationship_type in ['recommended', 'required'] %}
+          {% set _req   = s.relationship_type == 'required' %}
+          {% set _sp    = s.suggested_product %}
+          {% set _short = (_sp.title or _sp.sku) | truncate(26, True, '…') %}
+          {% set _grp_border = 'border-amber-200' if _req else 'border-gray-200' %}
+          {% set _main_cls   = 'bg-amber-50 text-amber-700 hover:bg-amber-100' if _req
+                               else 'bg-white text-gray-600 hover:bg-gray-100' %}
+          {% set _caret_cls  = 'text-amber-600 hover:bg-amber-100' if _req
+                               else 'text-gray-400 hover:bg-gray-100' %}
 
-        {% if s.relationship_type == 'recommended' %}
-        <button type="button"
-                hx-post="/quotes/{{ line.quote_id }}/lines"
-                {# Prices intentionally OMITTED — add_line resolves the customer's tier
-                   price via PricingService.sell_price_for_tier (fleet/dealer correctness).
-                   Hardcoding selling_price/cost here bypassed tier pricing on the hot path. #}
-                hx-vals='{"product_id": {{ s.suggested_product_id }}, "qty": 1,
-                          "line_type": "product", "line_role": "suggested"}'
-                hx-target="#quote-lines-tbody"
-                hx-swap="beforeend"
-                title="{{ s.suggested_product.title }} — ${{ '%.2f'|format(s.suggested_product.selling_price) }}"
-                class="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white
-                       px-2.5 py-0.5 text-xs font-medium text-gray-600
-                       hover:bg-gray-100 hover:border-gray-300 transition-colors">
-          <svg class="w-2.5 h-2.5 shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/>
-          </svg>
-          {{ s.suggested_product.sku }}
-        </button>
+          <div class="inline-flex items-stretch overflow-hidden rounded-full border {{ _grp_border }}">
 
-        {% elif s.relationship_type == 'required' %}
-        <button type="button"
-                hx-post="/quotes/{{ line.quote_id }}/lines"
-                {# Prices intentionally OMITTED — add_line resolves the customer's tier
-                   price via PricingService.sell_price_for_tier (fleet/dealer correctness).
-                   Hardcoding selling_price/cost here bypassed tier pricing on the hot path. #}
-                hx-vals='{"product_id": {{ s.suggested_product_id }}, "qty": 1,
-                          "line_type": "product", "line_role": "suggested"}'
-                hx-target="#quote-lines-tbody"
-                hx-swap="beforeend"
-                title="{{ s.suggested_product.title }} — ${{ '%.2f'|format(s.suggested_product.selling_price) }} (commonly required)"
-                class="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50
-                       px-2.5 py-0.5 text-xs font-medium text-amber-700
-                       hover:bg-amber-100 transition-colors">
-          <svg class="w-2.5 h-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/>
-          </svg>
-          {{ s.suggested_product.sku }}
-          <span class="text-amber-400 text-xs leading-none">★</span>
-        </button>
+            {# main → add as billed line #}
+            <button type="button"
+                    hx-post="/quotes/{{ line.quote_id }}/lines"
+                    hx-vals='{"product_id": {{ s.suggested_product_id }}, "qty": 1,
+                              "line_type": "product", "line_role": "suggested"}'
+                    hx-target="#quote-lines-tbody"
+                    hx-swap="beforeend"
+                    title="Add to quote — {{ _sp.sku }} · {{ _sp.title }} (${{ '%.2f'|format(_sp.selling_price) }}){{ ' · commonly required' if _req else '' }}"
+                    class="inline-flex items-center gap-1 px-2.5 py-0.5 text-xs font-medium whitespace-nowrap transition-colors {{ _main_cls }}">
+              <svg class="w-2.5 h-2.5 shrink-0 {{ 'text-amber-500' if _req else 'text-gray-400' }}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/>
+              </svg>
+              <span>{{ _short }}</span>
+              {% if _req %}<span class="text-amber-400 leading-none">★</span>{% endif %}
+              <span class="tabular-nums {{ 'text-amber-600' if _req else 'text-gray-400' }}" style="font-size:10px">${{ '%.0f'|format(_sp.selling_price) }}</span>
+            </button>
 
+            {# caret → add as option (shown but not billed until selected) #}
+            <button type="button"
+                    hx-post="/quotes/{{ line.quote_id }}/lines"
+                    hx-vals='{"product_id": {{ s.suggested_product_id }}, "qty": 1,
+                              "line_type": "product", "line_role": "optional",
+                              "parent_line_id": {{ line.id }}}'
+                    hx-target="#chips-{{ line.id }}"
+                    hx-swap="beforebegin"
+                    title="Add as an option — shown on the quote but not added to the total until the customer selects it"
+                    aria-label="Add {{ _sp.sku }} as an option"
+                    class="inline-flex items-center border-l px-1.5 transition-colors {{ _grp_border }} {{ _caret_cls }}">
+              <svg class="w-2.5 h-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"/>
+              </svg>
+            </button>
+
+          </div>
         {% endif %}
       {% endfor %}
 
