@@ -275,6 +275,15 @@ class ShopifyService(BaseService):
             "inventoryItem": {"sku": listing["sku"], "tracked": False,
                               "cost": f'{listing["cost"]:.2f}'},
         }
+        # Variant weight drives Shopify's weight-based shipping rates (the storefront
+        # Freight/Economy/Standard brackets). Lives on the inventory item's
+        # measurement. Only sent when we hold a real weight (> 0) so an unweighted
+        # ERP product never CLOBBERS a weight a merchant set by hand on Shopify —
+        # same don't-overwrite-with-blank discipline as vendor/tags above.
+        _wt = float(listing.get("weight_lbs") or 0)
+        if _wt > 0:
+            variant["inventoryItem"]["measurement"] = {
+                "weight": {"value": _wt, "unit": "POUNDS"}}
         if listing.get("barcode"):
             variant["barcode"] = listing["barcode"]
 

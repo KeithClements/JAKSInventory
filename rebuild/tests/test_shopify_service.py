@@ -96,9 +96,24 @@ def test_product_set_input_shape(db):
     assert v["inventoryItem"]["sku"] == p.sku
     assert v["inventoryItem"]["cost"] == "2.03"
     assert v["price"] == "6.99"
+    # Weight rides on the inventory item's measurement → drives Shopify's
+    # weight-based shipping rates. Must be POUNDS (the storefront brackets are lb).
+    assert v["inventoryItem"]["measurement"]["weight"] == {"value": 0.07, "unit": "POUNDS"}
     assert inp["files"][0]["originalSource"].startswith("https://")
     assert any(m["key"] == "pai_part_no" for m in inp["metafields"])
     assert "id" not in inp                                    # create (no shopify id yet)
+
+
+def test_product_set_input_omits_zero_weight(db):
+    """A 0/blank ERP weight must NOT be sent — sending weight:0 would CLOBBER a
+    weight a merchant set by hand on Shopify. Omitting it leaves the store value
+    untouched (same don't-overwrite-with-blank rule as vendor/tags)."""
+    p = _product(db)
+    p.weight_lbs = 0.0
+    db.commit()
+    svc = ShopifyService(db)
+    inp = svc.to_product_set_input(svc.build_listing(p))
+    assert "measurement" not in inp["variants"][0]["inventoryItem"]
 
 
 def test_idempotent_update_includes_id(db):
