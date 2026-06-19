@@ -1527,6 +1527,7 @@
      State surface (consumed by the modal template):
        isOpen                            — modal visibility
        customerId                        — PK the deal posts against (seeded by the open event)
+       ruleId                            — null in CREATE mode; the rule PK in EDIT mode
        scopeType  ∈ product|category|brand|customer   — the active scope segment
        scopeRef                          — selected category/brand id, or product id once picked
        productQuery                      — text in the SKU/part search (product scope)
@@ -1534,18 +1535,31 @@
        value (number) · qtyMin (number|'') · effectiveFrom · effectiveTo · note
        scopeOptions                      — the 4 segmented scope choices (label/value)
      Methods / getters:
-       open(detail)  — seeds customerId from detail.customerId, resets the form, shows
-       close()       — hides + resets
+       open(detail)  — seeds customerId; in EDIT mode (detail.ruleId set) pre-fills
+                       scopeType/scopeRef/method/value/qtyMin/dates/note from detail;
+                       otherwise resets to a blank CREATE form. Then shows.
+       close()       — hides + clears edit mode
        setScope(v)   — switches scope segment, clears the stale scope-ref
        methodHint    — getter: human hint under the value input
        canSubmit     — getter: value>0 and (scope=customer OR a scope-ref is chosen)
-       onSubmit(e)   — guard hook (UI-Builder/Backend own the actual POST handling)
+       isEdit        — getter: true when ruleId is set (EDIT mode)
+       title         — getter: "Edit deal" in EDIT mode, "Quick Deal" otherwise
+       submitMethod  — getter: 'PATCH' in EDIT mode, 'POST' in CREATE mode
+       submitUrl     — getter: the resolved endpoint —
+                         CREATE → /customers/{customerId}/price-rules
+                         EDIT   → /customers/{customerId}/price-rules/{ruleId}
+                       (UI-Builder reads submitMethod + submitUrl to wire the request)
+       payload       — getter: the field bag {customer_id, scope_type, scope_ref,
+                       price_method, price_value, qty_min, effective_from,
+                       effective_to, note} for a JSON submit
+       onSubmit(e)   — guard hook (UI-Builder/Backend own the actual POST/PATCH)
      Markup⇄margin are NOT auto-converted here — the user enters whichever they
      mean and Backend stores `price_method` + `price_value` canonically (§1). #}
   window.customerPriceDeal = window.customerPriceDeal || function (defaultCustomerId) {
     return {
       isOpen:        false,
       customerId:    defaultCustomerId || null,
+      ruleId:        null,
       scopeType:     'category',
       scopeRef:      '',
       productQuery:  '',
@@ -1563,6 +1577,7 @@
       ],
 
       _reset() {
+        this.ruleId        = null;
         this.scopeType     = 'category';
         this.scopeRef      = '';
         this.productQuery  = '';
@@ -1580,14 +1595,29 @@
           this.customerId = detail.customerId;
         }
         this._reset();
-        /* allow a caller to pre-seed a scope (e.g. "deal on THIS product") */
+        /* EDIT mode — a rule id means we're editing an existing rule. Pre-fill the
+           whole form from the seed so the user edits the live values, and flip the
+           submit target to PATCH (see submitMethod / submitUrl). */
+        if (detail.ruleId !== undefined && detail.ruleId !== null) {
+          this.ruleId = detail.ruleId;
+          if (detail.method) { this.method = detail.method; }
+          if (detail.value !== undefined && detail.value !== null) { this.value = detail.value; }
+          if (detail.qtyMin !== undefined && detail.qtyMin !== null) { this.qtyMin = detail.qtyMin; }
+          if (detail.effectiveFrom) { this.effectiveFrom = detail.effectiveFrom; }
+          if (detail.effectiveTo) { this.effectiveTo = detail.effectiveTo; }
+          if (detail.note) { this.note = detail.note; }
+        }
+        /* CREATE-or-EDIT: allow a caller to pre-seed a scope (e.g. "deal on THIS
+           product", or the editing rule's existing scope). */
         if (detail.scopeType) { this.scopeType = detail.scopeType; }
-        if (detail.scopeRef !== undefined) { this.scopeRef = detail.scopeRef; }
+        if (detail.scopeRef !== undefined && detail.scopeRef !== null) { this.scopeRef = detail.scopeRef; }
         this.isOpen = true;
       },
 
       close() {
         this.isOpen = false;
+        /* clear edit mode so a later "Add deal" opens blank, not stale */
+        this.ruleId = null;
       },
 
       setScope(v) {
@@ -1602,6 +1632,38 @@
           return 'Sell at cost plus this %. Rides the moving-average cost and self-corrects on receipt.';
         }
         return 'Sell at this gross margin %. Rides the moving-average cost and self-corrects on receipt.';
+      },
+
+      /* ── CREATE vs EDIT resolution ──────────────────────────────────────────
+         The modal pre-fills + retargets purely off `ruleId`. UI-Builder reads
+         submitMethod + submitUrl to fire the real request (native form, fetch,
+         or HTMX). payload is the JSON field bag. */
+      get isEdit() {
+        return this.ruleId !== undefined && this.ruleId !== null;
+      },
+      get title() {
+        return this.isEdit ? 'Edit deal' : 'Quick Deal';
+      },
+      get submitMethod() {
+        return this.isEdit ? 'PATCH' : 'POST';
+      },
+      get submitUrl() {
+        if (this.customerId === undefined || this.customerId === null) return '';
+        const base = '/customers/' + this.customerId + '/price-rules';
+        return this.isEdit ? (base + '/' + this.ruleId) : base;
+      },
+      get payload() {
+        return {
+          customer_id:    this.customerId,
+          scope_type:     this.scopeType,
+          scope_ref:      this.scopeType === 'customer' ? null : this.scopeRef,
+          price_method:   this.method,
+          price_value:    Number(this.value),
+          qty_min:        (this.qtyMin === '' || this.qtyMin === null) ? null : Number(this.qtyMin),
+          effective_from: this.effectiveFrom || null,
+          effective_to:   this.effectiveTo || null,
+          note:           this.note || null,
+        };
       },
 
       get canSubmit() {
@@ -1624,6 +1686,94 @@
            query so nothing is silently dropped. */
         if (this.scopeType === 'product' && !this.scopeRef) {
           this.scopeRef = this.productQuery;
+        }
+      },
+    };
+  };
+
+  {# ── Bulk Deal grid factory — Phase 2 ──────────────────────────────────────
+     Binds macros/pricing.html → bulk_deal_form. Manages an array of row objects
+     (each a CATEGORY or BRAND cost-plus deal), with add/remove and a serialize()
+     that flattens the COMPLETE rows to the bulk endpoint's JSON shape:
+
+       { rules: [ { scope_type, scope_ref, price_method, price_value,
+                    qty_min, effective_from, effective_to }, ... ] }
+
+     (customer_id rides as a sibling of `rules` so one POST creates many rules for
+     the one customer.) Scope is CATEGORY/BRAND only — no whole-account/product in
+     bulk. UI-Builder owns the actual POST + reload; this factory only builds the
+     payload and gates Submit. Registered here (not in the swapped fragment) so it's
+     on window before Alpine inits HTMX-swapped content — same race that bit the
+     other factories. #}
+  window.bulkDeal = window.bulkDeal || function (defaultCustomerId) {
+    return {
+      customerId: defaultCustomerId || null,
+      rows: [],
+      _uid: 0,
+
+      init() {
+        /* Start with one blank row so the grid is never empty. */
+        if (!this.rows.length) this.addRow();
+      },
+
+      _blankRow() {
+        return {
+          uid:           ++this._uid,
+          scopeType:     'category',   /* 'category' | 'brand' only */
+          scopeRef:      '',
+          method:        'margin',     /* 'markup' | 'margin' */
+          value:         null,
+          qtyMin:        '',
+          effectiveFrom: '',
+          effectiveTo:   '',
+        };
+      },
+
+      addRow() {
+        this.rows.push(this._blankRow());
+      },
+
+      removeRow(idx) {
+        this.rows.splice(idx, 1);
+        /* never leave the grid with zero rows */
+        if (!this.rows.length) this.addRow();
+      },
+
+      /* A row is "complete" when it has a chosen scope-ref and a positive value. */
+      _rowComplete(row) {
+        return !!row && !!row.scopeRef && Number(row.value) > 0;
+      },
+
+      get completeCount() {
+        return this.rows.filter((r) => this._rowComplete(r)).length;
+      },
+
+      get canSubmit() {
+        return this.completeCount > 0;
+      },
+
+      /* Flatten the COMPLETE rows to the bulk endpoint's JSON shape. Incomplete
+         rows are dropped silently (they're just blank scaffolding). */
+      serialize() {
+        return {
+          customer_id: this.customerId,
+          rules: this.rows.filter((r) => this._rowComplete(r)).map((r) => ({
+            scope_type:     r.scopeType,
+            scope_ref:      r.scopeRef,
+            price_method:   r.method,
+            price_value:    Number(r.value),
+            qty_min:        (r.qtyMin === '' || r.qtyMin === null) ? null : Number(r.qtyMin),
+            effective_from: r.effectiveFrom || null,
+            effective_to:   r.effectiveTo || null,
+          })),
+        };
+      },
+
+      onSubmit(e) {
+        /* Guard only — UI-Builder/Backend own the real submit (they read
+           serialize()). Block an empty submit; otherwise let the handler run. */
+        if (!this.canSubmit) {
+          if (e && e.preventDefault) e.preventDefault();
         }
       },
     };

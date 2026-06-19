@@ -41,6 +41,7 @@ from app.deps import get_current_user_id, get_db
 from app.models.customer import Customer
 from app.services.pricing_service import (
     CustomerPriceRuleService,
+    CustomerPriceRuleBulkValidationError,
     CustomerPriceRuleValidationError,
 )
 
@@ -103,6 +104,68 @@ async def create_price_rule(
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     return JSONResponse(
         jsonable_encoder({"ok": True, "rule": svc.rule_preview(rule)}), status_code=201
+    )
+
+
+async def _bulk_rows(request: Request) -> list | None:
+    """Extract the rule rows from a bulk-create body. Accepts both
+    ``{"rules": [...]}`` and a bare top-level list. Returns the list (possibly
+    empty) or None when the body is malformed / not a list-or-rules-object."""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — malformed JSON
+        return None
+    if isinstance(body, list):
+        return body
+    if isinstance(body, dict):
+        rules = body.get("rules")
+        if rules is None:
+            return None
+        return rules if isinstance(rules, list) else None
+    return None
+
+
+# NOTE: registered BEFORE the /{rule_id} route so the literal "bulk" segment is
+# matched here and never captured as a rule_id path param.
+@router.post("/{customer_id}/price-rules/bulk")
+async def create_price_rules_bulk(
+    customer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Transactional bulk-create of price rules for a customer (all-or-nothing).
+
+    Body: ``{"rules": [ {scope_type, scope_ref, price_method, price_value,
+    qty_min?, effective_from?, effective_to?, note?}, ... ]}`` (a bare top-level
+    list is also accepted). EVERY row is validated first; if ANY row is invalid
+    the whole batch is rejected (400, error list naming each offending index) and
+    NOTHING is written. On success → 201 ``{"ok": True, "created": [<preview>...]}``.
+    """
+    if _customer_or_404(db, customer_id) is None:
+        return JSONResponse({"ok": False, "error": "Customer not found."}, status_code=404)
+    rows = await _bulk_rows(request)
+    if rows is None:
+        return JSONResponse(
+            {"ok": False, "error": "Expected a JSON body {\"rules\": [...]} or a list of rules."},
+            status_code=400,
+        )
+    if len(rows) == 0:
+        return JSONResponse(
+            {"ok": False, "error": "No rules supplied — 'rules' must be a non-empty list."},
+            status_code=400,
+        )
+    svc = CustomerPriceRuleService(db, user_id)
+    try:
+        rules = svc.create_rules_bulk(customer_id, rows)
+    except CustomerPriceRuleBulkValidationError as exc:
+        return JSONResponse({"ok": False, "errors": exc.errors}, status_code=400)
+    except CustomerPriceRuleValidationError as exc:
+        # e.g. empty-rows guard inside the service — surface as a single message.
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse(
+        jsonable_encoder({"ok": True, "created": [svc.rule_preview(r) for r in rules]}),
+        status_code=201,
     )
 
 

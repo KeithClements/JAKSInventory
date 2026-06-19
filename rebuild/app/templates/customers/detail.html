@@ -29,7 +29,7 @@
 {% import "macros/customer_flags.html" as flagmacro %}
 {% import "macros/intelligence.html" as intel %}
 {% import "macros/credit_status.html" as creditmacro %}
-{% from "macros/pricing.html" import pricing_deals_panel, quick_deal_modal %}
+{% from "macros/pricing.html" import pricing_deals_panel, quick_deal_modal, bulk_deal_form %}
 <div class="space-y-4"
      x-data="{ tab: '{{ 'timeline' if not request.query_params.get('tab') else request.query_params.get('tab') }}' }">
 
@@ -588,12 +588,24 @@
     {# ═══════════════════════════════════════════════════════════════════════ #}
     <div class="mt-4"
          {# Intercept the scoped Quick Deal form (the modal is a descendant) so a
-            native POST to a JSON route doesn't navigate the browser to raw JSON. #}
+            native submit to a JSON route doesn't navigate the browser to raw JSON.
+            CREATE-vs-EDIT branch: the modal binds window.customerPriceDeal, which
+            exposes submitMethod (POST|PATCH), submitUrl (…/price-rules[/{id}]) and a
+            JSON payload getter. We read those off the form's Alpine scope so EDIT
+            fires PATCH /…/price-rules/{rule_id} and CREATE keeps POSTing exactly as
+            in Phase 1. JSON body (Content-Type: application/json) matches the JSON
+            price-rule route; on {ok:true} reload, else surface the route's error. #}
          @submit="
            const f = $event.target;
            if (!f.matches('form[action$=\'/price-rules\']')) return;
            $event.preventDefault();
-           fetch(f.action, { method: 'POST', body: new FormData(f), headers: { 'X-Requested-With': 'fetch' } })
+           const scope = (window.Alpine && Alpine.$data) ? Alpine.$data(f) : null;
+           const method = (scope && scope.submitMethod) || 'POST';
+           const url    = (scope && scope.submitUrl) || f.action;
+           const body   = scope ? JSON.stringify(scope.payload) : new FormData(f);
+           const headers = { 'X-Requested-With': 'fetch' };
+           if (scope) headers['Content-Type'] = 'application/json';
+           fetch(url, { method: method, body: body, headers: headers })
              .then(r => r.json().catch(() => ({ ok: r.ok })))
              .then(d => {
                if (d && d.ok) { window.location.reload(); }
@@ -656,6 +668,63 @@
            brands=deal_brands,
            post_url='/customers/' ~ customer_id ~ '/price-rules'
          ) }}
+
+      {# ── Bulk deals (Phase 2) ───────────────────────────────────────────────
+         A collapsed disclosure under the panel — for setting several category- or
+         brand-wide cost-plus deals in one go without cluttering the default view.
+         The bulk_deal_form binds window.bulkDeal; we intercept its @submit to POST
+         serialize() ({customer_id, rules:[…]}) as JSON to /price-rules/bulk. The
+         endpoint is ALL-OR-NOTHING: 201 {ok, created} → reload; 400 {ok:false,
+         errors:[{index,error}]} → surface the bad rows (nothing was written) via a
+         toast naming each 1-based row. We read serialize() off the form's Alpine
+         scope so the empty/incomplete scaffolding rows are dropped. #}
+      <details class="mt-3 group">
+        <summary class="card flex items-center justify-between px-4 py-3 cursor-pointer select-none list-none">
+          <div class="min-w-0">
+            <h3 class="text-sm font-semibold text-gray-900">Bulk deals</h3>
+            <p class="text-[11px] text-gray-400 mt-0.5">Enter several category- or brand-wide deals at once.</p>
+          </div>
+          <svg class="w-4 h-4 text-gray-400 shrink-0 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+          </svg>
+        </summary>
+
+        <div class="mt-3"
+             {# Intercept the bulk grid submit — POST serialize() as JSON; on 201
+                reload, on 400 list the offending rows (all-or-nothing, none saved). #}
+             @submit.prevent="
+               const f = $event.target;
+               if (!f.matches('form')) return;
+               const scope = (window.Alpine && Alpine.$data) ? Alpine.$data(f) : null;
+               const data = scope ? scope.serialize() : null;
+               if (!data || !data.rules || !data.rules.length) {
+                 $dispatch('toast', { kind: 'error', message: 'Add at least one complete deal row first.' });
+                 return;
+               }
+               fetch('/customers/{{ customer_id }}/price-rules/bulk', {
+                 method: 'POST',
+                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'fetch' },
+                 body: JSON.stringify(data),
+               })
+                 .then(r => r.json().then(d => ({ status: r.status, d: d })).catch(() => ({ status: r.status, d: { ok: r.ok } })))
+                 .then(res => {
+                   if (res.d && res.d.ok) { window.location.reload(); return; }
+                   const errs = (res.d && res.d.errors) || [];
+                   const msg = errs.length
+                     ? ('Could not save — ' + errs.map(e => 'row ' + ((e.index|0) + 1) + ': ' + (e.error || 'invalid')).join('; '))
+                     : ((res.d && res.d.error) || 'Could not save these deals.');
+                   $dispatch('toast', { kind: 'error', message: msg });
+                 })
+                 .catch(() => $dispatch('toast', { kind: 'error', message: 'Could not save these deals.' }));
+             ">
+          {{ bulk_deal_form(
+               customer_id=customer_id,
+               categories=deal_categories,
+               brands=deal_brands,
+               post_url='/customers/' ~ customer_id ~ '/price-rules/bulk'
+             ) }}
+        </div>
+      </details>
     </div>
   </div>
 

@@ -576,6 +576,18 @@ class CustomerPriceRuleValidationError(ValueError):
     """Raised when a rule payload fails validation (router maps to HTTP 400)."""
 
 
+class CustomerPriceRuleBulkValidationError(CustomerPriceRuleValidationError):
+    """Raised by ``create_rules_bulk`` when one or more rows fail validation.
+
+    Carries ``errors`` = ``[{"index": i, "error": "..."}, ...]`` naming each
+    offending row so the bulk route can return the per-index error list. Subclasses
+    the single-row error so callers that catch the base type still behave."""
+
+    def __init__(self, errors: list[dict]):
+        self.errors = errors
+        super().__init__(f"{len(errors)} invalid rule(s) in bulk request.")
+
+
 class CustomerPriceRuleService(BaseService):
     """Create / read / update / soft-deactivate customer price rules.
 
@@ -695,6 +707,58 @@ class CustomerPriceRuleService(BaseService):
         self.db.commit()
         self.db.refresh(rule)
         return rule
+
+    def create_rules_bulk(self, customer_id: int, rows: list[dict]) -> list[CustomerPriceRule]:
+        """Transactional bulk create — all-or-nothing.
+
+        Validates EVERY row first (same ``_validate`` as the single-create path).
+        If ANY row fails, raises ``CustomerPriceRuleBulkValidationError`` carrying a
+        per-row error list and writes NOTHING (no partial commit). On success all
+        rows are flushed into ONE transaction and committed together; any failure
+        during the write rolls the whole batch back.
+
+        Returns the freshly-persisted rules (refreshed, with ids) in input order.
+        """
+        if not rows:
+            raise CustomerPriceRuleValidationError("No rules supplied.")
+
+        # Phase 1 — validate every row up front, collecting ALL errors so the
+        # caller can report each offending index. Nothing is written yet.
+        cleaned: list[dict] = []
+        errors: list[dict] = []
+        for i, row in enumerate(rows):
+            if not isinstance(row, dict):
+                errors.append({"index": i, "error": "Each rule must be an object."})
+                continue
+            try:
+                cleaned.append(self._validate(row))
+            except CustomerPriceRuleValidationError as exc:
+                errors.append({"index": i, "error": str(exc)})
+        if errors:
+            raise CustomerPriceRuleBulkValidationError(errors)
+
+        # Phase 2 — single transaction. Flush all (assigns ids without committing),
+        # commit once. Roll the whole batch back on any failure so the
+        # all-or-nothing guarantee holds even on a late DB-level error.
+        created: list[CustomerPriceRule] = []
+        try:
+            for clean, row in zip(cleaned, rows):
+                rule = CustomerPriceRule(
+                    customer_id=customer_id,
+                    created_by=str(row.get("created_by", "") or ""),
+                    is_active=True,
+                    **clean,
+                )
+                self.db.add(rule)
+                created.append(rule)
+            self.db.flush()
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        for rule in created:
+            self.db.refresh(rule)
+        return created
 
     def update_rule(self, rule_id: int, data: dict) -> CustomerPriceRule:
         rule = self.get_rule(rule_id)

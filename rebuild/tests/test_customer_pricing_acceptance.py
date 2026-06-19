@@ -559,3 +559,327 @@ def test_last_price_hint_ignores_draft_and_void(client, db):
     qid = _new_quote_via_http(client, cust.id)
     line = _add_line_service(db, qid, prod.id)
     assert line.pricing_ctx.get("last_price") is None
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# PHASE 2 — bulk-create endpoint + edit (PATCH) flow, clerk-visible / end-to-end.
+#
+# The backend unit suite (tests/test_customer_pricing.py) already asserts the bulk
+# service contract at the row level. Here we complement at the parts-counter level:
+# a clerk POSTs a batch of deals, then watches each one actually price a REAL quote
+# line for the right product; and a clerk EDITS a live deal and watches the new
+# number take over on the next line. Everything below rides the HTTP route + the
+# real add_line funnel — no service shortcuts for the assertions that matter.
+# ════════════════════════════════════════════════════════════════════════════════
+
+
+def _rules_via_route(client, customer_id: int, *, active_only: bool = False) -> list[dict]:
+    """The customer's price-rule previews as a clerk's deal list would show them
+    (real GET route). Used to prove all-or-nothing at the visible surface."""
+    suffix = "?active_only=1" if active_only else ""
+    r = client.get(f"/customers/{customer_id}/price-rules{suffix}")
+    assert r.status_code == 200, r.text
+    return r.json()["rules"]
+
+
+# ── Task 1: bulk happy path — 3 mixed rules → 201 → each applies on a real line ──
+
+def test_bulk_create_mixed_rules_each_applies_on_a_quote_line(client, db):
+    """A clerk posts ONE batch of three different deals (a category margin deal, a
+    brand markup deal, and a whole-account markup deal) → 201; then each deal
+    actually prices the matching product on a live quote line at the right number.
+
+    Products are picked so precedence is unambiguous (each lands on exactly one
+    rule): prod_cat is in the category but carries no brand; prod_brand carries the
+    brand but no category; prod_other matches neither (only the CUSTOMER rule)."""
+    cust = _customer(db)
+    cat = _category(db, "BulkCat")
+
+    # cost 100, category-tagged, no brand → only the CATEGORY rule reaches it.
+    prod_cat = _product(db, cost=100.0, category_id=cat.id, markup_pct=30.0)  # 130 normal
+    # cost 200, branded, no category → only the BRAND rule reaches it.
+    prod_brand = _product(db, cost=200.0, brand="BulkBrand", markup_pct=30.0)  # 260 normal
+    # cost 50, no brand/category → only the whole-account CUSTOMER rule reaches it.
+    prod_other = _product(db, cost=50.0, markup_pct=30.0)  # 65 normal
+
+    r = client.post(
+        f"/customers/{cust.id}/price-rules/bulk",
+        json={"rules": [
+            {"scope_type": "CATEGORY", "scope_ref": str(cat.id),
+             "price_method": "margin", "price_value": 40, "note": "cat deal"},
+            {"scope_type": "BRAND", "scope_ref": "BulkBrand",
+             "price_method": "markup", "price_value": 15},
+            {"scope_type": "CUSTOMER",
+             "price_method": "markup", "price_value": 10},
+        ]},
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["ok"] is True and len(body["created"]) == 3
+
+    qid = _new_quote_via_http(client, cust.id)
+    # CATEGORY margin 40 on cost 100 → 100 / (1 - 0.40) = 166.67
+    assert _primary_line_price_via_http(client, db, qid, prod_cat.id) == 166.67
+    # BRAND markup 15 on cost 200 → 230.00
+    assert _primary_line_price_via_http(client, db, qid, prod_brand.id) == 230.00
+    # CUSTOMER markup 10 on cost 50 → 55.00 (the whole-account deal catches it)
+    assert _primary_line_price_via_http(client, db, qid, prod_other.id) == 55.00
+
+
+# ── Task 2: bulk all-or-nothing via the route — bad row 1 → 400, nothing written ─
+
+def test_bulk_all_or_nothing_via_route_writes_nothing(client, db):
+    """A 3-row batch where index 1 is invalid (margin >= 100) → 400, the error list
+    names index 1, and a follow-up GET of the customer's rules shows ZERO of the
+    batch persisted (not even the two valid rows). The clerk's deal list is the
+    ground truth for 'nothing partially written'."""
+    cust = _customer(db)
+    prod = _product(db, cost=100.0)
+
+    before = _rules_via_route(client, cust.id)
+    assert before == []  # fresh customer, no deals yet
+
+    r = client.post(
+        f"/customers/{cust.id}/price-rules/bulk",
+        json={"rules": [
+            {"scope_type": "PRODUCT", "scope_ref": str(prod.id),
+             "price_method": "markup", "price_value": 10},      # 0 — valid
+            {"scope_type": "CUSTOMER", "price_method": "margin",
+             "price_value": 100},                                # 1 — margin >= 100
+            {"scope_type": "CUSTOMER", "price_method": "markup",
+             "price_value": 5},                                  # 2 — valid
+        ]},
+    )
+    assert r.status_code == 400, r.text
+    body = r.json()
+    assert body["ok"] is False
+    bad_indexes = {e["index"] for e in body["errors"]}
+    assert 1 in bad_indexes              # the offending row is named
+    assert 0 not in bad_indexes          # the valid rows are NOT reported
+    assert 2 not in bad_indexes
+
+    # ALL-OR-NOTHING at the visible surface: the deal list is still empty.
+    after = _rules_via_route(client, cust.id)
+    assert after == []
+
+
+def test_bulk_all_or_nothing_missing_scope_ref(client, db):
+    """A second all-or-nothing flavor: index 1 is invalid because a non-CUSTOMER
+    rule omits scope_ref. 400, index 1 named, and the prior valid row 0 is NOT
+    persisted (the clerk sees no new deals)."""
+    cust = _customer(db)
+    prod = _product(db, cost=100.0)
+
+    r = client.post(
+        f"/customers/{cust.id}/price-rules/bulk",
+        json={"rules": [
+            {"scope_type": "PRODUCT", "scope_ref": str(prod.id),
+             "price_method": "markup", "price_value": 10},      # 0 — valid
+            {"scope_type": "CATEGORY",                           # 1 — no scope_ref
+             "price_method": "markup", "price_value": 20},
+        ]},
+    )
+    assert r.status_code == 400, r.text
+    assert 1 in {e["index"] for e in r.json()["errors"]}
+    assert _rules_via_route(client, cust.id) == []
+
+
+# ── Task 3: bulk bare top-level list body is accepted ───────────────────────────
+
+def test_bulk_bare_list_body_accepted_and_applies(client, db):
+    """The route accepts a bare top-level JSON list (no {"rules": ...} wrapper) →
+    201, the deals persist, and one of them prices a real quote line."""
+    cust = _customer(db)
+    prod = _product(db, cost=100.0, markup_pct=30.0)  # 130 normal
+
+    r = client.post(
+        f"/customers/{cust.id}/price-rules/bulk",
+        json=[
+            {"scope_type": "PRODUCT", "scope_ref": str(prod.id),
+             "price_method": "markup", "price_value": 12},
+            {"scope_type": "CUSTOMER", "price_method": "margin", "price_value": 30},
+        ],
+    )
+    assert r.status_code == 201, r.text
+    assert len(r.json()["created"]) == 2
+    assert len(_rules_via_route(client, cust.id)) == 2
+
+    # The PRODUCT deal (markup 12 on cost 100) wins on a real line → 112.00.
+    qid = _new_quote_via_http(client, cust.id)
+    assert _primary_line_price_via_http(client, db, qid, prod.id) == 112.00
+
+
+# ── Task 4: edit changes the resolved price on the NEXT line ─────────────────────
+
+def test_edit_rule_changes_resolved_price_on_new_line(client, db):
+    """A clerk creates a +10% product deal (line prices at 110.00), then PATCHes the
+    same rule to +25%; a NEW quote line for that product now prices at 125.00. The
+    edit is observed end-to-end on real lines, not just the echoed preview."""
+    cust = _customer(db)
+    prod = _product(db, cost=100.0, markup_pct=30.0)  # 130 normal
+
+    r = client.post(
+        f"/customers/{cust.id}/price-rules",
+        json={"scope_type": "PRODUCT", "scope_ref": str(prod.id),
+              "price_method": "markup", "price_value": 10},
+    )
+    assert r.status_code == 201, r.text
+    rule_id = r.json()["rule"]["rule_id"]
+
+    # Before the edit: cost 100 × 1.10 = 110.00.
+    qid1 = _new_quote_via_http(client, cust.id)
+    assert _primary_line_price_via_http(client, db, qid1, prod.id) == 110.00
+
+    # PATCH the deal to +25%. (update_rule re-validates the FULL payload, so we
+    # resend scope_type/scope_ref/price_method alongside the new value.)
+    r = client.patch(
+        f"/customers/{cust.id}/price-rules/{rule_id}",
+        json={"scope_type": "PRODUCT", "scope_ref": str(prod.id),
+              "price_method": "markup", "price_value": 25},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True
+    assert r.json()["rule"]["price_value"] == 25.0
+
+    # After the edit: a NEW line for the same product prices at 100 × 1.25 = 125.00.
+    qid2 = _new_quote_via_http(client, cust.id)
+    assert _primary_line_price_via_http(client, db, qid2, prod.id) == 125.00
+
+
+def test_edit_rule_can_switch_method_markup_to_margin(client, db):
+    """An edit can also change the METHOD: a markup deal flipped to a margin deal
+    re-prices the next line by the margin formula."""
+    cust = _customer(db)
+    prod = _product(db, cost=100.0, markup_pct=30.0)
+
+    r = client.post(
+        f"/customers/{cust.id}/price-rules",
+        json={"scope_type": "PRODUCT", "scope_ref": str(prod.id),
+              "price_method": "markup", "price_value": 10},  # → 110.00
+    )
+    rule_id = r.json()["rule"]["rule_id"]
+    qid1 = _new_quote_via_http(client, cust.id)
+    assert _primary_line_price_via_http(client, db, qid1, prod.id) == 110.00
+
+    # Flip to margin 40 → 100 / (1 - 0.40) = 166.67.
+    r = client.patch(
+        f"/customers/{cust.id}/price-rules/{rule_id}",
+        json={"scope_type": "PRODUCT", "scope_ref": str(prod.id),
+              "price_method": "margin", "price_value": 40},
+    )
+    assert r.status_code == 200, r.text
+    qid2 = _new_quote_via_http(client, cust.id)
+    assert _primary_line_price_via_http(client, db, qid2, prod.id) == 166.67
+
+
+# ── Task 5: edit validation — bad value → 400 and the rule is unchanged ──────────
+
+def test_edit_rule_invalid_value_400_and_rule_unchanged(client, db):
+    """A PATCH with an invalid value (margin >= 100, then a negative value) → 400,
+    and a re-fetch of the rule shows its value UNCHANGED — and, decisively, a new
+    quote line still prices at the ORIGINAL deal (the bad edit never landed)."""
+    cust = _customer(db)
+    prod = _product(db, cost=100.0, markup_pct=30.0)  # 130 normal
+
+    r = client.post(
+        f"/customers/{cust.id}/price-rules",
+        json={"scope_type": "PRODUCT", "scope_ref": str(prod.id),
+              "price_method": "markup", "price_value": 20},  # → 120.00
+    )
+    rule_id = r.json()["rule"]["rule_id"]
+
+    # Invalid edit #1: margin >= 100.
+    r = client.patch(
+        f"/customers/{cust.id}/price-rules/{rule_id}",
+        json={"scope_type": "PRODUCT", "scope_ref": str(prod.id),
+              "price_method": "margin", "price_value": 100},
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["ok"] is False
+
+    # Invalid edit #2: negative value.
+    r = client.patch(
+        f"/customers/{cust.id}/price-rules/{rule_id}",
+        json={"scope_type": "PRODUCT", "scope_ref": str(prod.id),
+              "price_method": "markup", "price_value": -5},
+    )
+    assert r.status_code == 400, r.text
+
+    # Re-fetch: the stored rule still says markup 20 (neither bad edit landed).
+    listed = _rules_via_route(client, cust.id)
+    hit = next(rr for rr in listed if rr["rule_id"] == rule_id)
+    assert hit["price_method"] == "markup"
+    assert hit["price_value"] == 20.0
+
+    # And the live behavior is unchanged: a new line still prices at 120.00.
+    qid = _new_quote_via_http(client, cust.id)
+    assert _primary_line_price_via_http(client, db, qid, prod.id) == 120.00
+
+
+# ── Task 6: edit scope/qty/date round-trip — raised qty_min re-gates a line ──────
+
+def test_edit_raises_qty_min_and_regate_takes_effect(client, db):
+    """A deal that qualifies at qty 5 is edited to require qty_min 10; a fresh qty-5
+    line that previously got the deal now falls back to the normal sell price, while
+    a qty-10 line gets the (re-gated) deal. The edited gating takes effect on real
+    lines, both directions."""
+    cust = _customer(db)
+    prod = _product(db, cost=100.0, markup_pct=30.0)  # 130 normal
+
+    # Whole-account deal, cost+5% (=105), NO qty gate yet → qty 5 qualifies.
+    r = client.post(
+        f"/customers/{cust.id}/price-rules",
+        json={"scope_type": "CUSTOMER", "price_method": "markup", "price_value": 5},
+    )
+    assert r.status_code == 201, r.text
+    rule_id = r.json()["rule"]["rule_id"]
+
+    qid1 = _new_quote_via_http(client, cust.id)
+    assert _primary_line_price_via_http(client, db, qid1, prod.id, qty=5) == 105.00
+
+    # PATCH: raise the gate to qty_min 10.
+    r = client.patch(
+        f"/customers/{cust.id}/price-rules/{rule_id}",
+        json={"scope_type": "CUSTOMER", "price_method": "markup",
+              "price_value": 5, "qty_min": 10},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["rule"]["qty_min"] == 10.0
+
+    # After the edit: qty 5 NO LONGER qualifies → normal sell price (130.00) …
+    qid2 = _new_quote_via_http(client, cust.id)
+    assert _primary_line_price_via_http(client, db, qid2, prod.id, qty=5) == 130.00
+    # … but qty 10 DOES → the deal (105.00).
+    assert _primary_line_price_via_http(client, db, qid2, prod.id, qty=10) == 105.00
+
+
+def test_edit_effective_dates_expire_a_deal(client, db):
+    """The date half of the scope/qty/date round-trip: an always-on deal is edited
+    to an EXPIRED window; the next line stops getting it (falls back to normal)."""
+    cust = _customer(db)
+    prod = _product(db, cost=100.0, markup_pct=30.0)  # 130 normal
+    today = date.today()
+
+    r = client.post(
+        f"/customers/{cust.id}/price-rules",
+        json={"scope_type": "PRODUCT", "scope_ref": str(prod.id),
+              "price_method": "markup", "price_value": 12},  # → 112.00
+    )
+    rule_id = r.json()["rule"]["rule_id"]
+    qid1 = _new_quote_via_http(client, cust.id)
+    assert _primary_line_price_via_http(client, db, qid1, prod.id) == 112.00
+
+    # PATCH the deal into an EXPIRED window.
+    r = client.patch(
+        f"/customers/{cust.id}/price-rules/{rule_id}",
+        json={"scope_type": "PRODUCT", "scope_ref": str(prod.id),
+              "price_method": "markup", "price_value": 12,
+              "effective_from": str(today - timedelta(days=30)),
+              "effective_to": str(today - timedelta(days=1))},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["rule"]["effective_to"] == str(today - timedelta(days=1))
+
+    # The expired deal no longer applies → normal sell price (130.00).
+    qid2 = _new_quote_via_http(client, cust.id)
+    assert _primary_line_price_via_http(client, db, qid2, prod.id) == 130.00

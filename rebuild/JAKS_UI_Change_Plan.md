@@ -1470,6 +1470,30 @@ UI-Builder + QA). Tracked here so the governance pass has a home.
 
 **Alpine factory — `window.customerPriceDeal(defaultCustomerId)` in `base.html`** (registered with the `customerPicker` / `aiSuggestionPanel` factories so it's on `window` before HTMX-swap init): exposes `isOpen, customerId, scopeType, scopeRef, productQuery, method, value, qtyMin, effectiveFrom, effectiveTo, note, scopeOptions` + `open(detail) / close() / setScope(v) / methodHint / canSubmit / onSubmit(e)`. Open convention: dispatch `open-quick-deal` with `{ customerId }`.
 
+---
+
+##### Phase 2 — bulk entry + edit-an-existing-rule (UI-Architect: **macros + factories landed**)
+
+Two follow-ons to Phase 1, same lane split (Architect ships the primitives, UI-Builder wires the routes, Backend adds the bulk + PATCH endpoints, QA covers precedence + edit round-trip).
+
+**A — Bulk deal grid (`bulk_deal_form` + `window.bulkDeal`):**
+- `bulk_deal_form(customer_id=None, categories=None, brands=None, post_url=None)` in `macros/pricing.html` — a repeatable-row grid for entering many **CATEGORY/BRAND** deals for one customer with a single Submit. Each row: scope segment (Cat⇄Brand) → matching category/brand `<select>`, markup⇄margin segment, value %, optional `qty_min`, optional effective from/to, and a per-row remove. Header "Add row"; footer shows "N of M rows ready" + "Save deals". Scope is **CATEGORY/BRAND only** (no whole-account / per-SKU in bulk — those stay in the Quick Deal modal). Empty-safe; §15 segmented tokens, §6 micro-badge, no `window.confirm`.
+- `window.bulkDeal(defaultCustomerId)` in `base.html` (registered with the other factories) — state `customerId, rows[]` where each row = `{uid, scopeType, scopeRef, method, value, qtyMin, effectiveFrom, effectiveTo}`; methods `init()` (seeds one blank row), `addRow()`, `removeRow(idx)` (never drops below one row), getters `completeCount` / `canSubmit` (≥1 complete row — a row is complete with a `scopeRef` + `value>0`), `serialize()` → the bulk payload, and `onSubmit(e)` guard.
+- **`bulkDeal.serialize()` JSON shape** (UI-Builder POSTs this; Backend owns the endpoint):
+  ```json
+  { "customer_id": 42,
+    "rules": [
+      { "scope_type": "category", "scope_ref": "turbos", "price_method": "margin",
+        "price_value": 30, "qty_min": null, "effective_from": null, "effective_to": null }
+    ] }
+  ```
+  Incomplete rows are dropped silently. `qty_min` / dates are `null` when blank.
+
+**B — Edit an existing rule (reuses the Quick Deal modal):**
+- `customer_price_rule_row(rule)` gained an **Edit** icon-button (next to the margin badge) shown when the rule carries `rule_id` (or `id`). It dispatches `open-quick-deal` seeded with the rule's CURRENT values **and** its `ruleId`:
+  `{ customerId, ruleId, scopeType, scopeRef, method, value, qtyMin, effectiveFrom, effectiveTo, note }` (dates serialized ISO `YYYY-MM-DD`). Needs from the rule context: `rule.rule_id`/`rule.id`, `rule.customer_id`, `rule.scope_ref` (alongside the existing display fields).
+- `window.customerPriceDeal.open(detail)` now detects `detail.ruleId` → **EDIT mode**: pre-fills method/value/qtyMin/dates/note/scope from the seed and flips the submit target. New getters: `isEdit`, `title` ("Edit deal" vs "Quick Deal"), `submitMethod` (`PATCH` vs `POST`), `submitUrl` (`/customers/{id}/price-rules/{ruleId}` vs `/customers/{id}/price-rules`), and `payload` (the JSON field bag). The modal title (`x-text="title"`), submit label ("Save changes" vs "Save deal"), and a guarded hidden `rule_id` field bind these. `close()` clears `ruleId` so a later "Add deal" opens blank. UI-Builder reads `submitMethod` + `submitUrl` (+ `payload`) to fire the request.
+
 **Governance Checklist (Customer Pricing & Deals — §0 pass):**
 - [x] Macros are pure presentation + empty-safe (render harmlessly before Backend wiring)
 - [x] Only §4-permitted color families (brand/red/amber/green/blue/purple/gray); margin RED = below target/cost only
@@ -1480,8 +1504,9 @@ UI-Builder + QA). Tracked here so the governance pass has a home.
 - [x] Modal transitions via `motion.html` macros (`modal_scale` / `backdrop_fade`) — no inline `x-transition`
 - [x] Alpine factory registered in `base.html` (HTMX-swap-safe), not in the swapped fragment
 - [x] Filter-pill scope picker follows §15 active/inactive tab tokens (`bg-brand-700 text-white` / `text-gray-600 hover:bg-gray-200/70`)
-- [ ] **UI-Builder:** panel wired onto `customers/detail.html`; chip + hint wired onto line rows — pending
-- [ ] **Functional gate (§9):** resolved price + chip + margin warn verified end-to-end against live Backend — pending Backend
+- [x] **Phase 2 — bulk grid + edit:** `bulk_deal_form` segmented rows use §15 tokens; Edit button uses §6 icon-affordance tokens; no `window.confirm`; `bulkDeal` factory registered in `base.html` (HTMX-swap-safe); edit reuses the existing §11/§14 modal (no new dialog)
+- [ ] **UI-Builder:** panel wired onto `customers/detail.html`; chip + hint wired onto line rows; **Phase 2** — `bulk_deal_form` placed + `serialize()` POSTed; Edit `submitMethod`/`submitUrl` wired (PATCH) — pending
+- [ ] **Functional gate (§9):** resolved price + chip + margin warn verified end-to-end against live Backend; bulk create + edit round-trip verified — pending Backend
 
 ---
 

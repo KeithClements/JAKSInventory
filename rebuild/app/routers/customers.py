@@ -1483,7 +1483,9 @@ def customer_detail(
         _pv = _rule_svc.rule_preview(_r)  # carries scope_label, margin_pct, below_cost
         pricing_rules.append({
             "rule_id": _r.id,  # per-row Deactivate button POST target
+            "customer_id": c.id,  # Phase 2: Edit dispatch retargets this customer
             "scope_type": _r.scope_type,
+            "scope_ref": _r.scope_ref,  # Phase 2: Edit re-selects the category/brand option
             "scope_label": _pv["scope_label"],
             "price_method": _r.price_method,
             "price_value": _r.price_value,

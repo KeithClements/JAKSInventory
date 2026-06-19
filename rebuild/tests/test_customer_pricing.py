@@ -528,6 +528,139 @@ def test_route_customer_404(client):
     assert r.status_code == 404
 
 
+# ── Bulk create (Phase 2 — transactional all-or-nothing) ────────────────────────
+
+def _rule_count(db, customer_id: int) -> int:
+    return (
+        db.query(CustomerPriceRule)
+        .filter(CustomerPriceRule.customer_id == customer_id)
+        .count()
+    )
+
+
+def test_bulk_create_n_valid_rules_persist_and_resolve(client, db):
+    cust = _customer(db)
+    p1 = _product(db, cost=100.0)
+    p2 = _product(db, cost=200.0)
+    before = _rule_count(db, cust.id)
+
+    r = client.post(
+        f"/customers/{cust.id}/price-rules/bulk",
+        json={"rules": [
+            {"scope_type": "PRODUCT", "scope_ref": str(p1.id),
+             "price_method": "margin", "price_value": 40, "note": "p1 deal"},
+            {"scope_type": "PRODUCT", "scope_ref": str(p2.id),
+             "price_method": "markup", "price_value": 12},
+            {"scope_type": "CUSTOMER", "price_method": "markup", "price_value": 10},
+        ]},
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["ok"] is True
+    created = body["created"]
+    assert len(created) == 3
+    # previews returned, ids assigned
+    assert all(c["rule_id"] for c in created)
+    # PRODUCT preview computed margin at current cost; CUSTOMER is cost-relative
+    by_scope = {c["scope_type"]: c for c in created}
+    assert by_scope[ScopeType.PRODUCT.value]  # at least one product preview present
+    assert by_scope[ScopeType.CUSTOMER.value]["cost_relative"] is True
+
+    # all 3 persisted
+    assert _rule_count(db, cust.id) == before + 3
+
+    # and each subsequently RESOLVES on a quote line (same path add_line uses)
+    ps = PricingService(db, _UID)
+    # p1: 40% margin on cost 100 → 100 / (1-0.40) = 166.67
+    res1 = ps.resolve_customer_price(p1, cust)
+    assert res1.price == 166.67
+    assert res1.source_rule.scope_type == ScopeType.PRODUCT
+    # p2: markup 12 on cost 200 → 224.00 (product rule beats the customer rule)
+    res2 = ps.resolve_customer_price(p2, cust)
+    assert res2.price == 224.00
+    assert res2.source_rule.scope_type == ScopeType.PRODUCT
+
+
+def test_bulk_create_one_invalid_row_is_all_or_nothing(client, db):
+    cust = _customer(db)
+    prod = _product(db, cost=100.0)
+    before = _rule_count(db, cust.id)
+
+    # row index 1 is invalid (missing scope_ref for a BRAND rule); index 2 is also
+    # invalid (margin >= 100) — the error list should name BOTH offending indexes
+    # and NOTHING may be written.
+    r = client.post(
+        f"/customers/{cust.id}/price-rules/bulk",
+        json={"rules": [
+            {"scope_type": "PRODUCT", "scope_ref": str(prod.id),
+             "price_method": "markup", "price_value": 10},          # 0 — valid
+            {"scope_type": "BRAND", "price_method": "markup",
+             "price_value": 10},                                     # 1 — no scope_ref
+            {"scope_type": "CUSTOMER", "price_method": "margin",
+             "price_value": 100},                                    # 2 — margin>=100
+        ]},
+    )
+    assert r.status_code == 400, r.text
+    body = r.json()
+    assert body["ok"] is False
+    bad_indexes = {e["index"] for e in body["errors"]}
+    assert 1 in bad_indexes
+    assert 2 in bad_indexes
+    assert 0 not in bad_indexes  # the valid row is not reported as an error
+
+    # ALL-OR-NOTHING: count unchanged — not even the valid row 0 was written.
+    assert _rule_count(db, cust.id) == before
+
+
+def test_bulk_create_bad_method_is_rejected(client, db):
+    cust = _customer(db)
+    before = _rule_count(db, cust.id)
+    r = client.post(
+        f"/customers/{cust.id}/price-rules/bulk",
+        json={"rules": [
+            {"scope_type": "CUSTOMER", "price_method": "bogus", "price_value": 5},
+        ]},
+    )
+    assert r.status_code == 400
+    assert r.json()["errors"][0]["index"] == 0
+    assert _rule_count(db, cust.id) == before
+
+
+def test_bulk_create_bare_list_body_accepted(client, db):
+    cust = _customer(db)
+    before = _rule_count(db, cust.id)
+    r = client.post(
+        f"/customers/{cust.id}/price-rules/bulk",
+        json=[
+            {"scope_type": "CUSTOMER", "price_method": "markup", "price_value": 15},
+            {"scope_type": "CUSTOMER", "price_method": "margin", "price_value": 30},
+        ],
+    )
+    assert r.status_code == 201, r.text
+    assert len(r.json()["created"]) == 2
+    assert _rule_count(db, cust.id) == before + 2
+
+
+def test_bulk_create_empty_rules_400(client, db):
+    cust = _customer(db)
+    r = client.post(f"/customers/{cust.id}/price-rules/bulk", json={"rules": []})
+    assert r.status_code == 400
+    assert r.json()["ok"] is False
+    # missing 'rules' key entirely → also 400
+    r2 = client.post(f"/customers/{cust.id}/price-rules/bulk", json={})
+    assert r2.status_code == 400
+
+
+def test_bulk_create_unknown_customer_404(client):
+    r = client.post(
+        "/customers/99999999/price-rules/bulk",
+        json={"rules": [
+            {"scope_type": "CUSTOMER", "price_method": "markup", "price_value": 5},
+        ]},
+    )
+    assert r.status_code == 404
+
+
 # ── scope_label helper (macro contract: rule.scope_label) ───────────────────────
 
 def test_scope_label_all_four_scope_types(db):
