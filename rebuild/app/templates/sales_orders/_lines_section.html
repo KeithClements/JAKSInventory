@@ -7,6 +7,7 @@
    backorder + PO link, ship qty, core child lines).
 ═══════════════════════════════════════════════════════════════════════════ #}
 {% from "macros/line_thumb.html" import line_thumb %}
+{% from "macros/pricing.html" import price_rule_chip, last_price_hint %}
 <div id="so-lines-section">
 
   {# Linked-PO state → chip colour + label (Owner 2026-06-01: "On order" only
@@ -225,6 +226,25 @@
               </div>
               {% else %}
               <span class="money {% if done or cancelled %}text-gray-400{% endif %}">${{ '%.2f' % line.unit_price }}</span>
+              {% endif %}
+              {# ── Customer-pricing surface (§5.3): source-deal chip + margin-warn,
+                 or a click-to-apply last-price hint when no rule matched. The apply
+                 button writes this cell's unit_price input and fires `change` so the
+                 existing HTMX handler persists + re-renders. Guarded — empty-safe. #}
+              {% if line.pricing_ctx %}
+              <div class="mt-1 flex flex-wrap items-center justify-end gap-1">
+                {% if line.pricing_ctx.customer_price %}
+                  {{ price_rule_chip(line.pricing_ctx.customer_price) }}
+                {% endif %}
+                {% if line.pricing_ctx.last_price %}
+                  <span @click="
+                          const btn = $event.target.closest('[data-apply-price]');
+                          if (!btn) return;
+                          const inp = $el.closest('td').querySelector('input[name=&quot;unit_price&quot;]');
+                          if (inp) { inp.value = btn.dataset.applyPrice; inp.dispatchEvent(new Event('change', { bubbles: true })); }
+                        ">{{ last_price_hint(line.pricing_ctx) }}</span>
+                {% endif %}
+              </div>
               {% endif %}
             </td>
 

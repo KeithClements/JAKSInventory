@@ -1466,6 +1466,51 @@ def customer_detail(
     )
 
     svc = CustomerService(db)
+
+    # ── Customer-Specific Product Pricing — active deals for the §"Pricing &
+    #    Deals" panel (pricing_deals_panel) + the Quick Deal modal options. ─────
+    # Each rule is a macro-ready dict (customer_price_rule_row contract):
+    #   scope_type, scope_label, price_method, price_value, qty_min,
+    #   effective_from/effective_to (date objects, passed through unchanged),
+    #   is_active, margin_pct, below_target, below_cost, note.
+    from app.services.pricing_service import CustomerPriceRuleService
+    from app.models.product import ProductCategory as _ProductCategory, Brand as _Brand
+
+    _rule_svc = CustomerPriceRuleService(db)
+    _active_rules = _rule_svc.list_rules(customer_id, include_inactive=False)
+    pricing_rules: list[dict] = []
+    for _r in _active_rules:
+        _pv = _rule_svc.rule_preview(_r)  # carries scope_label, margin_pct, below_cost
+        pricing_rules.append({
+            "rule_id": _r.id,  # per-row Deactivate button POST target
+            "scope_type": _r.scope_type,
+            "scope_label": _pv["scope_label"],
+            "price_method": _r.price_method,
+            "price_value": _r.price_value,
+            "qty_min": _r.qty_min,
+            # effective_from/effective_to are ORM date attrs — pass through so the
+            # macro's .strftime() works.
+            "effective_from": _r.effective_from,
+            "effective_to": _r.effective_to,
+            "is_active": _r.is_active,
+            "margin_pct": _pv["margin_pct"],
+            "below_target": _pv["below_target"],
+            "below_cost": _pv["below_cost"],
+            "note": _r.note,
+        })
+
+    # Quick Deal modal scope-picker options: {id, label} pairs.
+    _deal_categories = sorted(
+        db.query(_ProductCategory).filter(_ProductCategory.is_active == True).all(),  # noqa: E712
+        key=lambda cat: cat.full_path.lower(),
+    )
+    deal_categories = [{"id": cat.id, "label": cat.full_path} for cat in _deal_categories]
+    _deal_brands = (
+        db.query(_Brand).filter(_Brand.is_active == True)  # noqa: E712
+        .order_by(_Brand.sort_order, _Brand.name).all()
+    )
+    deal_brands = [{"id": b.name, "label": b.name} for b in _deal_brands]
+
     return templates.TemplateResponse(
         request,
         "customers/detail.html",
@@ -1477,6 +1522,11 @@ def customer_detail(
             "pricing_tiers": list(PricingTier),
             "call_types": list(CallType),
             "call_outcomes": list(CallOutcome),
+            # ── Customer-Specific Product Pricing (pricing_deals_panel + modal) ──
+            "rules": pricing_rules,
+            "customer_id": c.id,
+            "deal_categories": deal_categories,
+            "deal_brands": deal_brands,
             # ── Phase 2 §4 contracts (UI wires the chips/panel) ───────────────
             "customer_types": list(CustomerType),
             "customer_type_labels": CUSTOMER_TYPE_LABELS,

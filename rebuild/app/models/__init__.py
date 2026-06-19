@@ -12,7 +12,7 @@ Leaf models (no FK dependencies) first; junction/child tables last.
 from app.models.setting import Setting
 from app.models.user import User, UserSession
 from app.models.audit import AuditLog
-from app.models.pricing import MarkupTier
+from app.models.pricing import MarkupTier, CustomerPriceRule
 
 # ── Master data ───────────────────────────────────────────────────────────────
 from app.models.vendor import Vendor, VendorContact, VendorCredit, VendorProgram
@@ -108,6 +108,7 @@ __all_models__ = [
     # Foundation
     Setting,
     MarkupTier,
+    CustomerPriceRule,
     User,
     UserSession,
     AuditLog,

@@ -1447,6 +1447,44 @@ Governance verdict: **PASS.**
 
 ---
 
+#### 8-PRICING. Customer Pricing & Deals (Phase 1 — in progress)
+
+Per-customer cost-plus pricing rules surfaced on the customer detail page and on
+quote / SO / invoice lines. Spec: `CUSTOMER_PRICING_DESIGN.md` (§5 UI surfaces).
+This is a NEW screen/area being built lane-parallel (Backend + UI-Architect +
+UI-Builder + QA). Tracked here so the governance pass has a home.
+
+**Lane split (Phase 1):**
+- **Backend:** `customer_price_rule` model/migration; `PricingService.resolve_customer_price` + `last_price_for`; wire into `add_line`; rule CRUD routes; tests.
+- **UI-Architect (this section):** presentation macros + Alpine factory + governance. **Status: macros + factory landed.**
+- **UI-Builder:** wire `pricing_deals_panel` onto `customers/detail.html`; wire `price_rule_chip` + `last_price_hint` onto `quotes/_line_row.html` (and SO/invoice lines).
+- **QA:** precedence matrix (SKU > brand/category > customer), qty breaks, date windows, below-target / below-cost / cost=0, override-of-`price_override`.
+
+**Macros shipped — `app/templates/macros/pricing.html` (pure presentation, empty-safe, §4-compliant):**
+- `margin_badge(margin_pct, below_target=False, below_cost=False, compact=False)` — the reusable margin-at-cost pill (§6 "Margin / score badge" look); RED when `below_target`/`below_cost`, gray "—" when cost unknown.
+- `customer_price_rule_row(rule)` — one row in the deals list: scope micro-tag + label, human method ("cost + 12%" / "30% margin"), `qty_min` "10+" chip, effective-date range, inactive state, margin badge. Reads `rule.{scope_type,scope_label,price_method,price_value,qty_min,effective_from,effective_to,is_active,margin_pct,below_target,below_cost,note}`.
+- `price_rule_chip(ctx)` — line-level "Deal: cost+12% · PAI" chip + "overrides &lt;runner-up&gt;" note. Reads `ctx.{source_rule,overridden_rule,below_target,below_cost}`. Empty when no `source_rule`.
+- `last_price_hint(ctx)` — click-to-apply "Last: $418 · 27% · Inv #1043 · Apr 12" pill (`data-apply-price`); never auto-fills. Reads `ctx.last_price.{unit_price,margin_pct,doc_ref,date}`. Empty when falsy.
+- `pricing_deals_panel(rules, customer_id, target_label)` — customer-detail panel scaffold (header + Add deal + rule list + empty-state). "Add deal" dispatches `open-quick-deal { customerId }`.
+- `quick_deal_modal(customer_id, categories, brands, post_url)` — §3-compliant modal shell (scope picker, markup⇄margin toggle, value, qty_min, dates, note). Mounted ONCE globally in `base.html`.
+
+**Alpine factory — `window.customerPriceDeal(defaultCustomerId)` in `base.html`** (registered with the `customerPicker` / `aiSuggestionPanel` factories so it's on `window` before HTMX-swap init): exposes `isOpen, customerId, scopeType, scopeRef, productQuery, method, value, qtyMin, effectiveFrom, effectiveTo, note, scopeOptions` + `open(detail) / close() / setScope(v) / methodHint / canSubmit / onSubmit(e)`. Open convention: dispatch `open-quick-deal` with `{ customerId }`.
+
+**Governance Checklist (Customer Pricing & Deals — §0 pass):**
+- [x] Macros are pure presentation + empty-safe (render harmlessly before Backend wiring)
+- [x] Only §4-permitted color families (brand/red/amber/green/blue/purple/gray); margin RED = below target/cost only
+- [x] Margin badge matches §6 "Margin / score badge" token (`px-2 py-0.5 rounded-full text-xs font-semibold border`)
+- [x] Scope micro-tag uses §6 manufacturer/micro-badge token; `qty_min` chip uses §4 blue informational
+- [x] Quick Deal modal is §11/§14 compliant: `role="dialog"`, `z-[60]` backdrop + panel, `rounded-2xl shadow-2xl`, `max-w-lg`, `@keydown.escape` closes, focus trap
+- [x] NO `window.confirm` / `hx-confirm` — modal is Alpine-driven; opened via `open-quick-deal` event
+- [x] Modal transitions via `motion.html` macros (`modal_scale` / `backdrop_fade`) — no inline `x-transition`
+- [x] Alpine factory registered in `base.html` (HTMX-swap-safe), not in the swapped fragment
+- [x] Filter-pill scope picker follows §15 active/inactive tab tokens (`bg-brand-700 text-white` / `text-gray-600 hover:bg-gray-200/70`)
+- [ ] **UI-Builder:** panel wired onto `customers/detail.html`; chip + hint wired onto line rows — pending
+- [ ] **Functional gate (§9):** resolved price + chip + margin warn verified end-to-end against live Backend — pending Backend
+
+---
+
 #### 8A. Post-Extraction Cosmetic Cleanup (low priority)
 
 1. **Macro adoption — fold Products/PO inline chips onto `status_chip`.**

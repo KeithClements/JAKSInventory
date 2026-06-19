@@ -1,0 +1,458 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   Customer Pricing & Deals — Phase-1 presentation primitives
+   Spec: CUSTOMER_PRICING_DESIGN.md §5 (UI surfaces)
+   Governance: JAKS_UI_Change_Plan.md §"Customer Pricing & Deals"
+
+   PURE PRESENTATION + EMPTY-SAFE. Every macro renders nothing / sensible
+   defaults when its data is missing, so UI-Builder can drop these in before
+   Backend (PricingService.resolve_customer_price / last_price_for) is wired.
+   Only §4-permitted Tailwind families are used (verified against
+   .claude/skills/jaks-ui-governance/references/class-tokens.md).
+
+   Margin-guard convention (CUSTOMER_PRICING_DESIGN.md §1 "Margin guard"):
+     a rule/line carries a resolved margin% + a `below_target` flag. The margin
+     badge turns RED when below_target (matches the existing margin-badge look —
+     §6 "Margin / score badge": px-2 py-0.5 rounded-full text-xs font-semibold border).
+
+   MACRO INDEX
+     margin_badge(margin_pct, below_target=False, below_cost=False, compact=False)
+                                          → the reusable margin-at-cost badge (red when under target)
+     customer_price_rule_row(rule)        → one row in a customer's deal list
+     price_rule_chip(ctx)                 → compact "Deal: cost+12% · PAI" chip on a quote/SO/invoice line
+     last_price_hint(ctx)                 → click-to-apply "Last: $418 · 27% · Inv #1043 · Apr 12" pill
+     pricing_deals_panel(rules, customer_id=None, target_label=None)
+                                          → "Pricing & Deals" panel scaffold (header + list + Add deal + empty)
+     quick_deal_modal(customer_id=None, categories=None, brands=None, post_url=None)
+                                          → §3-compliant "Quick Deal" modal shell (scope picker, markup⇄margin
+                                            toggle, value, qty_min, dates, note)
+
+   The Alpine factory the modal binds to (`customerPriceDeal`) is registered in
+   base.html (HTMX-swap-safe, per the base.html factory convention). The modal is
+   opened by dispatching the window event `open-quick-deal` (see quick_deal_modal).
+═════════════════════════════════════════════════════════════════════════════ #}
+
+
+{# ── margin_badge — the reusable margin-at-cost badge ─────────────────────────
+   Renders the resolved margin% as a pill. Colour:
+     below_cost   → red, "loss" tone (strongest warn — selling under cost)
+     below_target → red (under the cost-bracket target — the §1 margin guard)
+     healthy      → green
+     unknown      → gray "—" (cost=0 / no cost yet, §6 edge case; renders muted)
+   Matches §6 "Margin / score badge": px-2 py-0.5 rounded-full text-xs font-semibold border.
+   compact=True drops the "margin" word for tight line contexts. #}
+{% macro margin_badge(margin_pct=None, below_target=False, below_cost=False, compact=False) -%}
+{%- if margin_pct is none -%}
+<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold border bg-gray-100 text-gray-500 border-gray-200"
+      title="No cost on file — margin can't be computed">—{% if not compact %}<span class="ml-0.5 font-medium">margin</span>{% endif %}</span>
+{%- elif below_cost -%}
+<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold border bg-red-50 text-red-700 border-red-200"
+      title="Below cost — this sells at a loss">
+  <span class="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0 mr-1"></span>{{ '%.0f'|format(margin_pct) }}%{% if not compact %} below cost{% endif %}</span>
+{%- elif below_target -%}
+<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold border bg-red-50 text-red-700 border-red-200"
+      title="Below the target margin for this cost bracket">
+  <span class="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0 mr-1"></span>{{ '%.0f'|format(margin_pct) }}%{% if not compact %} margin{% endif %}</span>
+{%- else -%}
+<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold border bg-green-50 text-green-700 border-green-200"
+      title="At or above target margin">
+  <span class="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0 mr-1"></span>{{ '%.0f'|format(margin_pct) }}%{% if not compact %} margin{% endif %}</span>
+{%- endif -%}
+{%- endmacro %}
+
+
+{# ── _method_label — human-readable "cost + 12%" / "30% margin" ───────────────
+   Internal helper. price_method ∈ 'markup' | 'margin'. price_value is a number.
+   markup → "cost + 12%"   ·   margin → "30% margin". Defensive on bad input. #}
+{% macro _method_label(price_method, price_value) -%}
+{%- set v = price_value if price_value is not none else 0 -%}
+{%- set vfmt = ('%.1f'|format(v)).rstrip('0').rstrip('.') -%}
+{%- if price_method == 'margin' -%}{{ vfmt }}% margin
+{%- elif price_method == 'markup' -%}cost + {{ vfmt }}%
+{%- else -%}{{ vfmt }}%{%- endif -%}
+{%- endmacro %}
+
+
+{# ── _scope_label — human-readable scope from a rule ──────────────────────────
+   Prefers an explicit rule.scope_label from Backend ("All Turbos", "PAI brand",
+   "SKU JAKS-PAI-340097", "Whole account"). Falls back to a derived label from
+   scope_type when Backend hasn't supplied one. #}
+{% macro _scope_label(rule) -%}
+{%- if rule.scope_label -%}{{ rule.scope_label }}
+{%- else -%}
+{%-   set st = rule.scope_type | lower if rule.scope_type else '' -%}
+{%-   if st == 'product' -%}This product
+{%-   elif st == 'category' -%}A category
+{%-   elif st == 'brand' -%}A brand line
+{%-   elif st == 'customer' -%}Whole account
+{%-   else -%}—{%- endif -%}
+{%- endif -%}
+{%- endmacro %}
+
+
+{# ── customer_price_rule_row(rule) — one deal row ─────────────────────────────
+   For the customer "Pricing & Deals" list. Empty-safe: rule=None renders nothing.
+
+   Expected fields (all optional — CUSTOMER_PRICING_DESIGN.md §3 data model):
+     rule.scope_type    'product'|'category'|'brand'|'customer'
+     rule.scope_label   pre-built human label (preferred)
+     rule.price_method  'markup'|'margin'
+     rule.price_value   number
+     rule.qty_min       number|None  → "10+" chip when present
+     rule.effective_from / rule.effective_to   date|None → date-range pill
+     rule.is_active     bool
+     rule.margin_pct    number|None  → margin-at-cost badge
+     rule.below_target  bool         → badge turns RED
+     rule.below_cost    bool         → badge turns RED (stronger)
+
+   PURE PRESENTATION. No edit/delete wiring here — UI-Builder attaches actions
+   (the row is a <div>, not a table row, so it composes inside the panel list). #}
+{% macro customer_price_rule_row(rule) -%}
+{%- if rule -%}
+{%- set scope_type = (rule.scope_type | lower) if rule.scope_type else '' -%}
+{%- set _scope_tone = {
+  'product':  ('bg-brand-50 text-brand-700', 'Product'),
+  'category': ('bg-blue-50 text-blue-700',   'Category'),
+  'brand':    ('bg-purple-50 text-purple-700','Brand'),
+  'customer': ('bg-gray-100 text-gray-600',  'Account'),
+} -%}
+{%- set st = _scope_tone.get(scope_type, ('bg-gray-100 text-gray-600', 'Scope')) -%}
+{%- set inactive = (rule.is_active is defined and not rule.is_active) -%}
+<div class="flex items-center gap-3 px-3 py-2.5 {{ 'opacity-60' if inactive else '' }}">
+  {# Scope-type micro-tag + label #}
+  <div class="min-w-0 flex-1">
+    <div class="flex items-center gap-2">
+      <span class="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider {{ st[0] }} shrink-0">{{ st[1] }}</span>
+      <span class="text-sm font-medium text-gray-900 truncate" title="{{ _scope_label(rule) | trim }}">{{ _scope_label(rule) | trim }}</span>
+      {%- if rule.qty_min %}
+      <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-blue-700 shrink-0" title="Volume break — applies at {{ rule.qty_min | int }}+ units">{{ rule.qty_min | int }}+</span>
+      {%- endif %}
+      {%- if inactive %}
+      <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-gray-100 text-gray-500 shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-gray-400 shrink-0"></span>Inactive</span>
+      {%- endif %}
+    </div>
+    {# Method + effective-date sub-line #}
+    <div class="flex items-center gap-2 mt-0.5">
+      <span class="text-xs text-gray-500">{{ _method_label(rule.price_method, rule.price_value) | trim }}</span>
+      {%- if rule.effective_from or rule.effective_to %}
+      <span class="text-[11px] text-gray-400">·
+        {%- if rule.effective_from %} from {{ rule.effective_from.strftime('%b %d, %Y') }}{% endif -%}
+        {%- if rule.effective_to %} through {{ rule.effective_to.strftime('%b %d, %Y') }}{% else %}{% if rule.effective_from %} (open){% endif %}{% endif -%}
+      </span>
+      {%- endif %}
+      {%- if rule.note %}
+      <span class="text-[11px] text-gray-400 truncate" title="{{ rule.note }}">· {{ rule.note }}</span>
+      {%- endif %}
+    </div>
+  </div>
+  {# Margin-at-cost badge — RED when below target / cost #}
+  <div class="shrink-0">
+    {{ margin_badge(rule.margin_pct, below_target=rule.below_target, below_cost=rule.below_cost) }}
+  </div>
+</div>
+{%- endif -%}
+{%- endmacro %}
+
+
+{# ── price_rule_chip(ctx) — line-level "source deal" chip ──────────────────────
+   Shown on a quote / SO / invoice LINE that resolved via a customer rule.
+   Names the source deal ("Deal: cost+12% · PAI") and, when a runner-up was
+   overridden, an "overrides <runner-up>" note (CUSTOMER_PRICING_DESIGN.md §5.3,
+   "show both"). Red margin indicator when ctx.below_target.
+
+   ctx keys (PricingService.resolve_customer_price return, surfaced per-line):
+     source_rule       {scope_label, price_method, price_value, scope_type}
+     overridden_rule   {scope_label, price_method, price_value} | None
+     margin_pct        number|None
+     below_target      bool
+     below_cost        bool
+   Empty-safe: renders nothing when ctx or ctx.source_rule is falsy (→ no deal,
+   the line used the normal waterfall; the last-price hint may show instead). #}
+{% macro price_rule_chip(ctx=None) -%}
+{%- set ctx = ctx or {} -%}
+{%- set src = ctx.get('source_rule') if ctx.get is defined else ctx.source_rule -%}
+{%- if src -%}
+{%- set warn = ctx.get('below_target') or ctx.get('below_cost') if ctx.get is defined else (ctx.below_target or ctx.below_cost) -%}
+{%- set ov = ctx.get('overridden_rule') if ctx.get is defined else ctx.overridden_rule -%}
+<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border
+      {{ 'bg-red-50 text-red-700 border-red-200' if warn else 'bg-brand-50 text-brand-700 border-brand-100' }}"
+      title="{% if warn %}Margin below target · {% endif %}Customer deal applied{% if ov %} — overrides {{ ov.scope_label }} ({{ _method_label(ov.price_method, ov.price_value) | trim }}){% endif %}">
+  {%- if warn %}<span class="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0"></span>{% endif -%}
+  <span>Deal: {{ _method_label(src.price_method, src.price_value) | trim }}{% if src.scope_label %} · {{ src.scope_label }}{% endif %}</span>
+</span>
+{%- if ov %}
+<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-500"
+      title="A less-specific deal was overridden">overrides {{ ov.scope_label }}</span>
+{%- endif -%}
+{%- endif -%}
+{%- endmacro %}
+
+
+{# ── last_price_hint(ctx) — click-to-apply last-sold pill ─────────────────────
+   "Last: $418 · 27% · Inv #1043 · Apr 12" from the most-recent finalized invoice
+   line for this customer+product (CUSTOMER_PRICING_DESIGN.md §4 last-price hint).
+   DISPLAY-ONLY + click-to-apply — NEVER auto-fills. Renders nothing when
+   ctx.last_price is falsy.
+
+   ctx.last_price keys (PricingService.last_price_for return):
+     unit_price (float, required) · margin_pct (float|None) · doc_ref (str, e.g. "1043")
+     · date (date|None)
+
+   Click-to-apply: the pill carries data-apply-price so the line's Alpine/JS can
+   read it and drop the value into the unit-price input. UI-Builder wires the
+   @click (it owns the line row); this macro only emits the affordance + payload. #}
+{% macro last_price_hint(ctx=None) -%}
+{%- set ctx = ctx or {} -%}
+{%- set lp = ctx.get('last_price') if ctx.get is defined else ctx.last_price -%}
+{%- if lp and (lp.get('unit_price') if lp.get is defined else lp.unit_price) is not none -%}
+{%- set price = (lp.get('unit_price') if lp.get is defined else lp.unit_price) -%}
+{%- set mp = (lp.get('margin_pct') if lp.get is defined else lp.margin_pct) -%}
+{%- set ref = (lp.get('doc_ref') if lp.get is defined else lp.doc_ref) -%}
+{%- set dt = (lp.get('date') if lp.get is defined else lp.date) -%}
+<button type="button"
+        data-apply-price="{{ '%.2f'|format(price) }}"
+        class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-600 hover:bg-blue-50 hover:text-blue-700 transition-colors"
+        title="Click to apply this customer's last price for this part">
+  <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+  </svg>
+  <span>Last: ${{ '%.2f'|format(price) }}{% if mp is not none %} · {{ '%.0f'|format(mp) }}%{% endif %}{% if ref %} · Inv #{{ ref }}{% endif %}{% if dt %} · {{ dt.strftime('%b %d') }}{% endif %}</span>
+</button>
+{%- endif -%}
+{%- endmacro %}
+
+
+{# ── pricing_deals_panel — customer-detail "Pricing & Deals" panel scaffold ───
+   Header + rules list (loops customer_price_rule_row) + "Add deal" button that
+   opens the Quick Deal modal + empty-state. UI-Builder includes this on the
+   customer detail page and passes the customer's rule list.
+
+   rules        : iterable of rule dicts (see customer_price_rule_row) — may be [].
+   customer_id  : the customer PK, threaded to the modal so the deal posts to the
+                  right customer (seed value for the Quick Deal scope).
+   target_label : optional caption, e.g. "Margins vs the 30% cost-bracket target".
+
+   The "Add deal" button dispatches `open-quick-deal` with the customer_id. The
+   modal (quick_deal_modal) listens for that event. NO window.confirm. #}
+{% macro pricing_deals_panel(rules=None, customer_id=None, target_label=None) %}
+{%- set rules = rules or [] -%}
+<section class="card" aria-labelledby="pricing-deals-heading">
+  {# Header — title + Add deal #}
+  <div class="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+    <div class="min-w-0">
+      <h2 id="pricing-deals-heading" class="text-sm font-semibold text-gray-900">Pricing &amp; Deals</h2>
+      <p class="text-[11px] text-gray-400 mt-0.5">{{ target_label or 'Customer-specific cost-plus rules. Most-specific wins.' }}</p>
+    </div>
+    <button type="button"
+            @click="$dispatch('open-quick-deal', { customerId: {{ customer_id | tojson }} })"
+            class="btn-primary btn-sm shrink-0">
+      <svg class="w-4 h-4 -ml-0.5 mr-1 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+      </svg>Add deal
+    </button>
+  </div>
+
+  {# Rules list — or empty-state #}
+  {%- if rules | length -%}
+  <div class="divide-y divide-gray-100">
+    {%- for rule in rules -%}{{ customer_price_rule_row(rule) }}{%- endfor -%}
+  </div>
+  {%- else -%}
+  <div class="flex flex-col items-center justify-center py-10 px-4 text-center">
+    <div class="w-12 h-12 rounded-2xl bg-gray-100 flex items-center justify-center mb-3">
+      <svg class="w-6 h-6 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 6l3 1m0 0l-.5 9.5a2 2 0 002 2h11a2 2 0 002-2L21 7M6 7h15M9 11v4m4-4v4"/>
+      </svg>
+    </div>
+    <p class="text-sm font-semibold text-gray-700">No deals yet</p>
+    <p class="text-xs text-gray-400 mt-1 mb-4 max-w-xs">Set a category- or brand-wide cost-plus deal for this customer, or a per-SKU exception. Every price rides current cost.</p>
+    <button type="button"
+            @click="$dispatch('open-quick-deal', { customerId: {{ customer_id | tojson }} })"
+            class="btn-secondary btn-sm">Add the first deal</button>
+  </div>
+  {%- endif -%}
+</section>
+{% endmacro %}
+
+
+{# ── quick_deal_modal — §3-compliant "Quick Deal" modal shell ─────────────────
+   Scope picker (Product search / Category / Brand / Whole account), markup⇄margin
+   toggle, value input, optional qty_min, optional effective dates, a note.
+   CUSTOMER_PRICING_DESIGN.md §5.2.
+
+   §3 dialog compliance (class-tokens.md §11 / §14):
+     role="dialog" aria-modal · z-[60] backdrop + panel · rounded-2xl shadow-2xl
+     · max-w-lg · @keydown.escape closes · focus trap (x-trap.noscroll) · NO
+     window.confirm / hx-confirm.
+
+   Binds the `customerPriceDeal()` Alpine factory (registered in base.html so it
+   is on window before Alpine inits HTMX-swapped content). Opened by dispatching
+   the window event `open-quick-deal` with { customerId }.
+
+   Params (all optional — empty-safe):
+     customer_id : default customer PK (factory still accepts it from the event).
+     categories  : iterable of {id|value, label} for the Category select. [] ok.
+     brands      : iterable of {id|value, label} for the Brand select. [] ok.
+     post_url    : form action. When set, the form posts here (UI-Builder/Backend
+                   own the endpoint); when None, the form has no action (inert
+                   shell) so it can be dropped in before the route exists.
+
+   Mount ONCE (base.html mounts it globally). #}
+{% from "macros/motion.html" import modal_scale, backdrop_fade %}
+
+{% macro quick_deal_modal(customer_id=None, categories=None, brands=None, post_url=None) %}
+{%- set categories = categories or [] -%}
+{%- set brands = brands or [] -%}
+<div x-data="window.customerPriceDeal({{ customer_id | tojson }})"
+     @open-quick-deal.window="open($event.detail)"
+     @keydown.escape.window="if (isOpen) close()">
+
+  {# Backdrop — §14 z-[60] #}
+  <div x-show="isOpen" x-cloak
+       @click="close()"
+       aria-hidden="true"
+       class="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm"
+       {{ backdrop_fade() }}></div>
+
+  {# Panel — §11 modal: role=dialog, max-w-lg, rounded-2xl, shadow-2xl #}
+  <div x-show="isOpen" x-cloak
+       role="dialog" aria-modal="true" aria-labelledby="quick-deal-title"
+       class="fixed inset-0 z-[60] flex items-center justify-center p-4 pointer-events-none"
+       {{ modal_scale() }}>
+    <div @click.stop
+         x-trap.noscroll="isOpen"
+         class="w-full max-w-lg rounded-2xl bg-white shadow-2xl overflow-hidden pointer-events-auto">
+
+      <form{% if post_url %} method="post" action="{{ post_url }}"{% endif %} @submit="onSubmit($event)">
+        <input type="hidden" name="customer_id" :value="customerId">
+        <input type="hidden" name="scope_type" :value="scopeType">
+        <input type="hidden" name="scope_ref" :value="scopeRef">
+        <input type="hidden" name="price_method" :value="method">
+
+        {# Header — §11: px-6 py-4 border-b, font-semibold text-sm #}
+        <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+          <h2 id="quick-deal-title" class="font-semibold text-sm text-gray-900">Quick Deal</h2>
+          <button type="button" @click="close()" aria-label="Close"
+                  class="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+
+        {# Body — §11: px-6 py-6 #}
+        <div class="px-6 py-6 space-y-5">
+
+          {# ── Scope picker — 4 segmented choices ─────────────────────────── #}
+          <div>
+            <label class="form-label">Applies to</label>
+            <div class="bg-gray-100 rounded-xl p-1 grid grid-cols-4 gap-0.5">
+              <template x-for="opt in scopeOptions" :key="opt.value">
+                <button type="button" @click="setScope(opt.value)"
+                        :class="scopeType === opt.value
+                          ? 'bg-brand-700 text-white shadow-sm'
+                          : 'text-gray-600 hover:text-gray-900 hover:bg-gray-200/70'"
+                        class="rounded-lg px-2 py-1.5 text-xs font-medium transition-colors"
+                        x-text="opt.label"></button>
+              </template>
+            </div>
+          </div>
+
+          {# Scope-ref input — switches by scope type. Whole-account shows nothing. #}
+          <div x-show="scopeType === 'product'" x-cloak>
+            <label class="form-label">Product</label>
+            <input type="text" x-model="productQuery"
+                   placeholder="Search by SKU or part name…"
+                   class="form-input text-sm"
+                   autocomplete="off">
+            <p class="text-[11px] text-gray-400 mt-1">A per-SKU exception. Use sparingly — category/brand deals scale better.</p>
+          </div>
+
+          <div x-show="scopeType === 'category'" x-cloak>
+            <label class="form-label">Category</label>
+            <select x-model="scopeRef" class="form-select text-sm">
+              <option value="">— Select a category —</option>
+              {%- for c in categories %}
+              <option value="{{ c.id if c.id is defined else c.value }}">{{ c.label if c.label is defined else c }}</option>
+              {%- endfor %}
+            </select>
+          </div>
+
+          <div x-show="scopeType === 'brand'" x-cloak>
+            <label class="form-label">Brand</label>
+            <select x-model="scopeRef" class="form-select text-sm">
+              <option value="">— Select a brand —</option>
+              {%- for b in brands %}
+              <option value="{{ b.id if b.id is defined else b.value }}">{{ b.label if b.label is defined else b }}</option>
+              {%- endfor %}
+            </select>
+          </div>
+
+          <div x-show="scopeType === 'customer'" x-cloak
+               class="flex items-start gap-2 rounded-lg px-3 py-2 text-xs bg-blue-50 border border-blue-200 text-blue-700">
+            <svg class="w-4 h-4 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <span>This deal blankets <strong>every</strong> product on the account, unless a more-specific brand, category, or SKU deal overrides it.</span>
+          </div>
+
+          {# ── Markup ⇄ Margin toggle + value ──────────────────────────────── #}
+          <div>
+            <div class="flex items-center justify-between mb-1">
+              <label class="form-label mb-0">Price method</label>
+              <div class="bg-gray-100 rounded-lg p-0.5 inline-flex">
+                <button type="button" @click="method = 'markup'"
+                        :class="method === 'markup' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'"
+                        class="rounded-md px-2.5 py-1 text-xs font-semibold transition-colors">Markup</button>
+                <button type="button" @click="method = 'margin'"
+                        :class="method === 'margin' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'"
+                        class="rounded-md px-2.5 py-1 text-xs font-semibold transition-colors">Margin</button>
+              </div>
+            </div>
+            <div class="relative">
+              <span class="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-400"
+                    x-text="method === 'markup' ? 'cost +' : ''"></span>
+              <input type="number" name="price_value" x-model.number="value"
+                     min="0" step="0.5" placeholder="0"
+                     class="form-input text-sm pr-8"
+                     :class="method === 'markup' ? 'pl-16' : 'pl-3'">
+              <span class="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-gray-400">%</span>
+            </div>
+            <p class="text-[11px] text-gray-400 mt-1" x-text="methodHint"></p>
+          </div>
+
+          {# ── Optional: qty break + effective dates ───────────────────────── #}
+          <div class="grid grid-cols-3 gap-3">
+            <div>
+              <label class="form-label">Min qty <span class="text-gray-300 font-normal">(opt)</span></label>
+              <input type="number" name="qty_min" x-model.number="qtyMin" min="0" step="1"
+                     placeholder="Any" class="form-input text-sm">
+            </div>
+            <div>
+              <label class="form-label">From <span class="text-gray-300 font-normal">(opt)</span></label>
+              <input type="date" name="effective_from" x-model="effectiveFrom" class="form-input text-sm">
+            </div>
+            <div>
+              <label class="form-label">To <span class="text-gray-300 font-normal">(opt)</span></label>
+              <input type="date" name="effective_to" x-model="effectiveTo" class="form-input text-sm">
+            </div>
+          </div>
+
+          {# ── Note ────────────────────────────────────────────────────────── #}
+          <div>
+            <label class="form-label">Note <span class="text-gray-300 font-normal">(opt)</span></label>
+            <input type="text" name="note" x-model="note" maxlength="120"
+                   placeholder="e.g. Q2 fleet agreement" class="form-input text-sm">
+          </div>
+        </div>
+
+        {# Footer — §11: px-6 py-4 border-t bg-gray-50/60 #}
+        <div class="px-6 py-4 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
+          <button type="button" @click="close()" class="btn-secondary btn-sm">Cancel</button>
+          <button type="submit" class="btn-primary btn-sm" :disabled="!canSubmit"
+                  :class="!canSubmit && 'opacity-50 cursor-not-allowed'">Save deal</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endmacro %}

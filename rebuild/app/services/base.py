@@ -257,6 +257,10 @@ def apply_product_line_defaults(
     *,
     include_price: bool,
     tier_price: float | None = None,
+    customer=None,
+    pricing_service=None,
+    qty: float | None = None,
+    render_ctx: dict | None = None,
 ) -> dict:
     """
     Backfill line-item fields from a product when the caller didn't supply them.
@@ -269,13 +273,30 @@ def apply_product_line_defaults(
     Only fills blanks/zeros, so an explicit value from the caller always wins:
       - ``description`` ← ``product.title`` (falls back to ``sku``)
       - ``unit_cost``   ← ``product.cost``          when missing or 0
-      - ``unit_price``  ← ``tier_price`` when provided (P2 customer-tier discount)
-                          else ``product.selling_price`` (standard / no-tier path)
+      - ``unit_price``  ← Step 0: a matching CustomerPriceRule (per-customer
+                          cost-plus deal) when ``customer`` + ``pricing_service``
+                          are supplied (CUSTOMER_PRICING_DESIGN.md), then falls
+                          back to ``tier_price`` (P2 customer-tier discount), then
+                          ``product.selling_price`` (standard / no-tier path).
                           (customer docs only; pass ``include_price=False`` for POs)
 
     ``tier_price``: caller-supplied tier-adjusted price from
     ``PricingService.sell_price_for_tier()``.  Pass ``None`` for PO lines or when
     the customer has no tier discount configured — falls back to ``selling_price``.
+
+    Customer-specific pricing (Step 0, optional — fully backward compatible):
+      Pass ``customer`` + ``pricing_service`` (a PricingService instance) to let a
+      per-customer price rule win the BLANK-only unit_price backfill. ``qty``
+      drives the volume-break match (defaults to ``data['qty']`` or 1). When a
+      rule resolves a non-None price it overrides ``tier_price`` for the blank
+      backfill ONLY; an explicit caller price still wins. When no rule resolves
+      (or no cost) behaviour is byte-identical to before.
+
+      ``render_ctx`` (a dict the caller threads to the template) receives the
+      chip/badge keys under ``customer_price`` so the UI lane can render the deal
+      chip, margin-warn badge, and overridden-runner-up note. The last-price hint
+      is added under ``last_price`` whenever no rule set the price (and a
+      customer is supplied). This NEVER affects any total/tax math.
 
     Cost SOURCE nuances (preferred-vendor cost, the PO's own vendor source cost)
     stay in each service and run BEFORE this helper; this only backfills from the
@@ -301,10 +322,54 @@ def apply_product_line_defaults(
             price = float(data.get("unit_price", 0) or 0)
         except (TypeError, ValueError):
             price = 0.0
+
+        # ── Step 0: per-customer price rule (CUSTOMER_PRICING_DESIGN.md) ───────
+        # Resolve regardless of whether the caller passed a price, so the chip/
+        # badge render-context is always populated; only USE the resolved price
+        # for the blank-only backfill (an explicit caller price always wins).
+        cp_result = None
+        if customer is not None and pricing_service is not None:
+            try:
+                _q = qty if qty is not None else float(data.get("qty", 1) or 1)
+            except (TypeError, ValueError):
+                _q = 1
+            try:
+                cp_result = pricing_service.resolve_customer_price(product, customer, _q)
+            except Exception:  # noqa: BLE001 — pricing chip must never break add_line
+                cp_result = None
+
         if price == 0.0:
-            # tier_price: caller-supplied tier-adjusted price (wholesale/fleet/dealer
-            # discount via PricingService.sell_price_for_tier).  Falls back to
-            # product.selling_price for standard customers or unconfigured tiers.
-            data["unit_price"] = tier_price if tier_price is not None else product.selling_price
+            cp_price = cp_result.price if cp_result is not None else None
+            if cp_price is not None:
+                # Customer deal wins the blank backfill (Step 0 of the waterfall).
+                data["unit_price"] = cp_price
+            else:
+                # tier_price: caller-supplied tier-adjusted price (wholesale/fleet/
+                # dealer discount via PricingService.sell_price_for_tier).  Falls
+                # back to product.selling_price for standard / unconfigured tiers.
+                data["unit_price"] = tier_price if tier_price is not None else product.selling_price
+
+        # ── Render-context for the UI lane (presentation-only; no math) ───────
+        if render_ctx is not None and customer is not None and pricing_service is not None:
+            if cp_result is not None and cp_result.source_rule is not None:
+                # Reshape source_rule/overridden_rule into the chip-macro dict
+                # shape ({scope_label, scope_type, price_method, price_value}).
+                # The label resolver uses the pricing_service's db; never raises.
+                label_fn = None
+                try:
+                    from app.services.pricing_service import scope_label as _scope_label
+                    _db = getattr(pricing_service, "db", None)
+                    if _db is not None:
+                        label_fn = lambda st, ref: _scope_label(_db, st, ref)  # noqa: E731
+                except Exception:  # noqa: BLE001 — chip is presentation-only
+                    label_fn = None
+                render_ctx["customer_price"] = cp_result.as_dict(label_fn)
+            # Last-price hint whenever a rule did NOT set the price.
+            rule_set_price = bool(cp_result and cp_result.price is not None)
+            if not rule_set_price:
+                try:
+                    render_ctx["last_price"] = pricing_service.last_price_for(customer, product)
+                except Exception:  # noqa: BLE001
+                    render_ctx["last_price"] = None
 
     return data

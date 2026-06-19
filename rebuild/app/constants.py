@@ -126,6 +126,26 @@ class PricingTier(StrEnum):
     DEALER    = "dealer"
 
 
+class ScopeType(StrEnum):
+    """Customer-Specific Product Pricing — the scope a CustomerPriceRule covers.
+    PRODUCT (a single SKU) > BRAND / CATEGORY (a line) > CUSTOMER (the whole
+    account). scope_ref holds the product id / category id / brand string;
+    CUSTOMER rules have scope_ref = NULL."""
+    PRODUCT  = "PRODUCT"
+    CATEGORY = "CATEGORY"
+    BRAND    = "BRAND"
+    CUSTOMER = "CUSTOMER"
+
+
+class PriceMethod(StrEnum):
+    """Customer-Specific Product Pricing — cost-plus method for a price rule.
+    Both ride the moving-avg product.cost:
+      markup → cost × (1 + value/100)
+      margin → cost / (1 - value/100)"""
+    MARKUP = "markup"
+    MARGIN = "margin"
+
+
 class CustomerType(StrEnum):
     """P2-D6 — single customer type, fixed list. The key that maps to the
     type-driven default profiles (customer_type_defaults / P2-D1). OTHER is the
@@ -1094,3 +1114,37 @@ BRANDS: list[str] = [
     "SAMPA",
     "JAK'S",
 ]
+
+
+# ─── Margin-target brackets (Customer-Specific Product Pricing) ────────────────
+# Cost-bracket → target gross-margin % used as the margin guard for customer
+# price rules (CUSTOMER_PRICING_DESIGN.md §1). When a resolved customer price's
+# margin falls BELOW the target for its cost bracket, the UI shows a red badge
+# (warn-only — never blocks the sale). Each row is (min_cost, max_cost, target%);
+# max_cost None = open-ended top bracket. Brackets are [min_cost, max_cost).
+MARGIN_TARGET_BRACKETS: list[tuple[float, float | None, float]] = [
+    (0.0,     25.0,   50.0),
+    (25.0,    100.0,  45.0),
+    (100.0,   500.0,  40.0),
+    (500.0,   2000.0, 35.0),
+    (2000.0,  3000.0, 30.0),
+    (3000.0,  None,   25.0),
+]
+
+
+def target_margin_for_cost(cost: float) -> float:
+    """Target gross-margin % for a product whose moving-avg COGS is ``cost``.
+
+    Walks MARGIN_TARGET_BRACKETS and returns the target % for the bracket that
+    contains ``cost`` ([min, max)). A negative/None cost is treated as 0 and
+    lands in the first bracket; a cost above every bracket lands in the open-ended
+    top bracket (so a value is always returned)."""
+    c = cost if (cost is not None and cost > 0) else 0.0
+    for min_cost, max_cost, target in MARGIN_TARGET_BRACKETS:
+        if c < min_cost:
+            continue
+        if max_cost is not None and c >= max_cost:
+            continue
+        return target
+    # Fallback (cost above the highest finite bracket but no open-ended row found):
+    return MARGIN_TARGET_BRACKETS[-1][2]

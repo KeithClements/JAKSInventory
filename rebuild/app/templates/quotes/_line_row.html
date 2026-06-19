@@ -28,6 +28,7 @@
   Suggested-sell chips append to tbody (new independent lines).
 #}
 {% from "macros/line_thumb.html" import line_thumb %}
+{% from "macros/pricing.html" import price_rule_chip, last_price_hint %}
 
 {# ── Per-line computed state ─────────────────────────────────────────────── #}
 {% set _ns = namespace(
@@ -251,6 +252,26 @@
                focus:bg-white transition-colors"
       />
     </div>
+    {# ── Customer-pricing surface (CUSTOMER_PRICING_DESIGN.md §5.3) ──────────
+       A resolved customer deal → source-rule chip + margin-warn. No rule but a
+       prior sale → click-to-apply last-price hint. The apply button writes the
+       value into this cell's unit_price input and fires `change` so the existing
+       HTMX handler persists + re-renders. Guarded — renders nothing otherwise. #}
+    {% if line.pricing_ctx %}
+    <div class="mt-1 flex flex-wrap items-center justify-end gap-1">
+      {% if line.pricing_ctx.customer_price %}
+        {{ price_rule_chip(line.pricing_ctx.customer_price) }}
+      {% endif %}
+      {% if line.pricing_ctx.last_price %}
+        <span @click="
+                const btn = $event.target.closest('[data-apply-price]');
+                if (!btn) return;
+                const inp = $el.closest('td').querySelector('input[name=&quot;unit_price&quot;]');
+                if (inp) { inp.value = btn.dataset.applyPrice; inp.dispatchEvent(new Event('change', { bubbles: true })); }
+              ">{{ last_price_hint(line.pricing_ctx) }}</span>
+      {% endif %}
+    </div>
+    {% endif %}
   </td>
 
   {# Discount % (editable) #}

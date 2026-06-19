@@ -316,6 +316,9 @@ class InvoiceService(BaseService):
         sort_order = max((ln.sort_order for ln in invoice.lines), default=-1) + 1
 
         merged = {**data, "product_id": product_id}
+        # Render-context dict the line carries to the template (chip/badge/last-price);
+        # presentation-only, never touches totals/tax. See apply_product_line_defaults.
+        _render_ctx: dict = {}
         # Backfill description / cost / price from the product so an immediate-add
         # POST of just product_id + qty yields a complete line.
         if product_id is not None:
@@ -323,14 +326,18 @@ class InvoiceService(BaseService):
             # Tier-adjusted price: wholesale/fleet/dealer customers get a configured
             # discount off the normal sell price; standard customers get None (no-op).
             _tier_price = None
+            _ps = None
+            _cust = None
             if _product:
                 _cust = self.db.query(Customer).filter(Customer.id == invoice.customer_id).first()
                 if _cust:
                     from app.services.pricing_service import PricingService as _PS
-                    _tier_price = _PS(self.db, self.current_user_id).sell_price_for_tier(
-                        _product, _cust.pricing_tier
-                    )
-            apply_product_line_defaults(_product, merged, include_price=True, tier_price=_tier_price)
+                    _ps = _PS(self.db, self.current_user_id)
+                    _tier_price = _ps.sell_price_for_tier(_product, _cust.pricing_tier)
+            apply_product_line_defaults(
+                _product, merged, include_price=True, tier_price=_tier_price,
+                customer=_cust, pricing_service=_ps, render_ctx=_render_ctx,
+            )
         # NOTE: the invoice-level discount (invoice.discount_pct) is applied exactly
         # ONCE at the invoice level (see Invoice.discount_amount / calculate_totals).
         # It must NOT be copied onto the new line here — doing so double-counted the
@@ -339,6 +346,9 @@ class InvoiceService(BaseService):
         # is an independent per-line markdown the user sets explicitly.
 
         line = self._add_line_internal(invoice_id, merged, sort_order)
+        # Attach the transient pricing render-context for templates (chip/badge/
+        # last-price). Not a DB column — lives only on the in-memory instance.
+        line.pricing_ctx = _render_ctx
 
         # Auto-add core child line for top-level PRODUCT lines whose product has core
         if (

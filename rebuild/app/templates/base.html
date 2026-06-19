@@ -1,5 +1,6 @@
 {% from "macros/motion.html" import slide_right, backdrop_fade, dropdown_scale, modal_scale %}
 {% from "macros/confirm_modal.html" import confirm_modal %}
+{% from "macros/pricing.html" import quick_deal_modal %}
 <!DOCTYPE html>
 <html lang="en" class="h-full bg-paper">
 <head>
@@ -1514,6 +1515,119 @@
       },
     };
   };
+
+  {# ── Customer Pricing & Deals — Quick Deal modal / rule-editor factory ──────
+     Defined here (NOT in the macros/pricing.html fragment) so the factory is on
+     `window` before Alpine inits any HTMX-swapped content that references it —
+     same init-before-script race that bit customerPicker / aiSuggestionPanel.
+     The Quick Deal modal (macros/pricing.html → quick_deal_modal) binds
+     x-data="window.customerPriceDeal(defaultCustomerId)" and is opened by
+     dispatching the window event `open-quick-deal` with { customerId }.
+
+     State surface (consumed by the modal template):
+       isOpen                            — modal visibility
+       customerId                        — PK the deal posts against (seeded by the open event)
+       scopeType  ∈ product|category|brand|customer   — the active scope segment
+       scopeRef                          — selected category/brand id, or product id once picked
+       productQuery                      — text in the SKU/part search (product scope)
+       method     ∈ markup|margin        — the markup⇄margin toggle
+       value (number) · qtyMin (number|'') · effectiveFrom · effectiveTo · note
+       scopeOptions                      — the 4 segmented scope choices (label/value)
+     Methods / getters:
+       open(detail)  — seeds customerId from detail.customerId, resets the form, shows
+       close()       — hides + resets
+       setScope(v)   — switches scope segment, clears the stale scope-ref
+       methodHint    — getter: human hint under the value input
+       canSubmit     — getter: value>0 and (scope=customer OR a scope-ref is chosen)
+       onSubmit(e)   — guard hook (UI-Builder/Backend own the actual POST handling)
+     Markup⇄margin are NOT auto-converted here — the user enters whichever they
+     mean and Backend stores `price_method` + `price_value` canonically (§1). #}
+  window.customerPriceDeal = window.customerPriceDeal || function (defaultCustomerId) {
+    return {
+      isOpen:        false,
+      customerId:    defaultCustomerId || null,
+      scopeType:     'category',
+      scopeRef:      '',
+      productQuery:  '',
+      method:        'margin',
+      value:         null,
+      qtyMin:        '',
+      effectiveFrom: '',
+      effectiveTo:   '',
+      note:          '',
+      scopeOptions: [
+        { value: 'product',  label: 'Product' },
+        { value: 'category', label: 'Category' },
+        { value: 'brand',    label: 'Brand' },
+        { value: 'customer', label: 'Account' },
+      ],
+
+      _reset() {
+        this.scopeType     = 'category';
+        this.scopeRef      = '';
+        this.productQuery  = '';
+        this.method        = 'margin';
+        this.value         = null;
+        this.qtyMin        = '';
+        this.effectiveFrom = '';
+        this.effectiveTo   = '';
+        this.note          = '';
+      },
+
+      open(detail) {
+        detail = detail || {};
+        if (detail.customerId !== undefined && detail.customerId !== null) {
+          this.customerId = detail.customerId;
+        }
+        this._reset();
+        /* allow a caller to pre-seed a scope (e.g. "deal on THIS product") */
+        if (detail.scopeType) { this.scopeType = detail.scopeType; }
+        if (detail.scopeRef !== undefined) { this.scopeRef = detail.scopeRef; }
+        this.isOpen = true;
+      },
+
+      close() {
+        this.isOpen = false;
+      },
+
+      setScope(v) {
+        this.scopeType = v;
+        /* a scope switch invalidates the previously chosen ref */
+        this.scopeRef = '';
+        this.productQuery = '';
+      },
+
+      get methodHint() {
+        if (this.method === 'markup') {
+          return 'Sell at cost plus this %. Rides the moving-average cost and self-corrects on receipt.';
+        }
+        return 'Sell at this gross margin %. Rides the moving-average cost and self-corrects on receipt.';
+      },
+
+      get canSubmit() {
+        const v = Number(this.value);
+        if (!(v > 0)) return false;
+        if (this.scopeType === 'customer') return true;
+        if (this.scopeType === 'product') return !!this.productQuery;
+        return !!this.scopeRef;
+      },
+
+      onSubmit(e) {
+        /* Guard only — Backend/UI-Builder own the real submit path (native POST
+           or HTMX). Block an incomplete submit; otherwise let it proceed. */
+        if (!this.canSubmit) {
+          if (e && e.preventDefault) e.preventDefault();
+          return;
+        }
+        /* For the product scope, the chosen product id lands in scopeRef once the
+           UI-Builder's product picker resolves a selection; fall back to the raw
+           query so nothing is silently dropped. */
+        if (this.scopeType === 'product' && !this.scopeRef) {
+          this.scopeRef = this.productQuery;
+        }
+      },
+    };
+  };
 </script>
 
 {# ════════════════════════════════════════════════════════════════════════════
@@ -1523,6 +1637,17 @@
    Replaces: window.confirm(), hx-confirm attributes, per-workspace askConfirmHx().
 ════════════════════════════════════════════════════════════════════════════ #}
 {{ confirm_modal() }}
+
+{# ════════════════════════════════════════════════════════════════════════════
+   GLOBAL QUICK DEAL MODAL — Customer Pricing & Deals (see macros/pricing.html)
+   Mounted once here so the customer-detail "Pricing & Deals" panel (or any future
+   "deal on this product" affordance) can open it by dispatching `open-quick-deal`
+   { customerId } — no per-screen modal markup. Inert until opened. The post_url
+   is intentionally omitted here (global mount has no single customer route); the
+   customer-detail screen may instead render its own scoped quick_deal_modal(...)
+   with a post_url if it needs a native form action. Binds window.customerPriceDeal.
+════════════════════════════════════════════════════════════════════════════ #}
+{{ quick_deal_modal() }}
 
 <script>
 /* ── Submit-pending guard (UX4 + Bug-2 double-click protection) ─────────────

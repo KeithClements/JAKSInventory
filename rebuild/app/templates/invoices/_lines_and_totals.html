@@ -8,6 +8,7 @@
    swappable wrapper so a line edit re-renders the totals card too.
 ═════════════════════════════════════════════════════════════════════════════ #}
 {% from "macros/line_thumb.html" import line_thumb %}
+{% from "macros/pricing.html" import price_rule_chip, last_price_hint %}
 <div id="lines-and-totals" class="flex gap-4 items-start">
 
   {# ═══════════════════════ MAIN COLUMN — Line Items ════════════════════════ #}
@@ -131,6 +132,25 @@
                 </div>
                 {% else %}
                 <span class="money">${{ "%.2f"|format(line.unit_price) }}</span>
+                {% endif %}
+                {# ── Customer-pricing surface (§5.3): source-deal chip + margin-warn,
+                   or a click-to-apply last-price hint when no rule matched. The apply
+                   button writes this cell's unit_price input and fires `change` so the
+                   existing HTMX handler persists + re-renders. Guarded — empty-safe. #}
+                {% if line.pricing_ctx %}
+                <div class="mt-1 flex flex-wrap items-center justify-end gap-1">
+                  {% if line.pricing_ctx.customer_price %}
+                    {{ price_rule_chip(line.pricing_ctx.customer_price) }}
+                  {% endif %}
+                  {% if line.pricing_ctx.last_price %}
+                    <span @click="
+                            const btn = $event.target.closest('[data-apply-price]');
+                            if (!btn) return;
+                            const inp = $el.closest('td').querySelector('input[name=&quot;unit_price&quot;]');
+                            if (inp) { inp.value = btn.dataset.applyPrice; inp.dispatchEvent(new Event('change', { bubbles: true })); }
+                          ">{{ last_price_hint(line.pricing_ctx) }}</span>
+                  {% endif %}
+                </div>
                 {% endif %}
               </td>
 

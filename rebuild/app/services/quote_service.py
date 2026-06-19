@@ -113,6 +113,9 @@ class QuoteService(BaseService):
 
         # upgrade_option lines default to excluded unless caller explicitly set is_included
         merged = {**data, "product_id": product_id, "unit_cost": unit_cost}
+        # Render-context dict the line carries to the template (chip/badge/last-price);
+        # presentation-only, never touches totals/tax. See apply_product_line_defaults.
+        _render_ctx: dict = {}
         # Backfill description / price from the product so an immediate-add POST of
         # just product_id + qty yields a complete line (unit_cost resolved above).
         if product_id is not None:
@@ -120,12 +123,15 @@ class QuoteService(BaseService):
             # Tier-adjusted price: wholesale/fleet/dealer customers get a configured
             # discount off the normal sell price; standard customers get None (no-op).
             _tier_price = None
+            _ps = None
             if _product and customer:
                 from app.services.pricing_service import PricingService as _PS
-                _tier_price = _PS(self.db, self.current_user_id).sell_price_for_tier(
-                    _product, customer.pricing_tier
-                )
-            apply_product_line_defaults(_product, merged, include_price=True, tier_price=_tier_price)
+                _ps = _PS(self.db, self.current_user_id)
+                _tier_price = _ps.sell_price_for_tier(_product, customer.pricing_tier)
+            apply_product_line_defaults(
+                _product, merged, include_price=True, tier_price=_tier_price,
+                customer=customer, pricing_service=_ps, render_ctx=_render_ctx,
+            )
         # Optionals AND upgrade-options default to EXCLUDED from the quote total — the
         # customer opts in. (Owner decision 2026-05-31 "A": optional add-ons are quoted
         # separately, not baked into the base total.)
@@ -142,6 +148,9 @@ class QuoteService(BaseService):
             merged["discount_pct"] = float(customer.discount_pct) if customer else 0.0
 
         line = self._add_line_internal(quote_id, merged, sort_order)
+        # Attach the transient pricing render-context for templates (chip/badge/
+        # last-price). Not a DB column — lives only on the in-memory instance.
+        line.pricing_ctx = _render_ctx
         added: list[QuoteLine] = [line]
 
         # Auto-add core charge child line for top-level PRODUCT lines whose product

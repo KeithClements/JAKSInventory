@@ -51,6 +51,7 @@ from app.routers import credit_memos as credit_memos_router
 from app.routers import shopify as shopify_router
 from app.routers import leadfinder_api as leadfinder_api_router
 from app.routers import public_docs as public_docs_router
+from app.routers import pricing_rules as pricing_rules_router
 
 log = logging.getLogger(__name__)
 
@@ -515,3 +516,4 @@ app.include_router(credit_memos_router.router)
 app.include_router(shopify_router.router)
 app.include_router(leadfinder_api_router.router)
 app.include_router(public_docs_router.router)
+app.include_router(pricing_rules_router.router)
