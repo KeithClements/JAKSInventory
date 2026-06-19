@@ -23,13 +23,70 @@ Out of scope here — we only generate the document.
 """
 from __future__ import annotations
 
+import mimetypes
+from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from fastapi import Request
 from fastapi.responses import RedirectResponse, Response
 from sqlalchemy.orm import Session
 
 from app.settings_utils import get_setting_value_db
+
+
+# ── WeasyPrint local-asset fetcher ────────────────────────────────────────────
+# Absolute path to the mounted /static directory (mirrors the StaticFiles mount
+# in app/main.py: BASE_DIR / "static", where BASE_DIR is the app package dir).
+_STATIC_ROOT = Path(__file__).resolve().parent.parent / "static"
+
+# WeasyPrint's guesser doesn't know modern web fonts; pin the ones we self-host.
+_MIME_OVERRIDES = {".woff2": "font/woff2", ".woff": "font/woff", ".css": "text/css"}
+
+
+def _local_static_path(url: str) -> Path | None:
+    """Map a ``/static/…``-pointing URL to its file under ``app/static``.
+
+    Returns ``None`` for anything that is not our own static mount (external CDN
+    images, ``data:`` URIs, fonts.googleapis.com, …). Resolves the candidate and
+    confirms it stays inside the static root so a crafted ``../`` ``src`` cannot
+    escape onto the wider filesystem.
+    """
+    try:
+        path = unquote(urlsplit(url).path or "")
+    except ValueError:
+        return None
+    # base_url makes a relative src like "/static/uploads/logo.png" absolute
+    # ("http://host/static/uploads/logo.png"); we match on the path either way.
+    if not path.startswith("/static/"):
+        return None
+    candidate = (_STATIC_ROOT / path[len("/static/"):]).resolve()
+    try:
+        candidate.relative_to(_STATIC_ROOT.resolve())
+    except ValueError:
+        return None                                   # path traversal → refuse
+    return candidate if candidate.is_file() else None
+
+
+def static_url_fetcher(url, *args, **kwargs):
+    """WeasyPrint ``url_fetcher`` that serves the app's own ``/static`` assets
+    straight from disk.
+
+    Without this, WeasyPrint resolves ``/static/…`` srcs to an HTTP request back
+    to the same single-process uvicorn server — which is blocked synchronously
+    inside ``write_pdf()`` on the event loop — so those requests hang and the
+    logo plus any locally-uploaded product thumbnail silently drop from the PDF.
+    External URLs (e.g. the PAI image CDN) fall through to WeasyPrint's default
+    fetcher and are retrieved normally over the network.
+    """
+    local = _local_static_path(url)
+    if local is not None:
+        mime = _MIME_OVERRIDES.get(local.suffix.lower()) or \
+            mimetypes.guess_type(str(local))[0] or "application/octet-stream"
+        return {"string": local.read_bytes(), "mime_type": mime,
+                "redirected_url": url}
+    from weasyprint import default_url_fetcher  # type: ignore
+    return default_url_fetcher(url, *args, **kwargs)
 
 
 # ── Company settings dict ─────────────────────────────────────────────────────
@@ -176,7 +233,10 @@ def render_pdf_or_fallback(
     )
     try:
         from weasyprint import HTML  # type: ignore
-        pdf_bytes = HTML(string=html_str, base_url=str(request.base_url)).write_pdf()
+        pdf_bytes = HTML(
+            string=html_str, base_url=str(request.base_url),
+            url_fetcher=static_url_fetcher,
+        ).write_pdf()
     except Exception:
         return RedirectResponse(fallback_print_url, status_code=302)
 

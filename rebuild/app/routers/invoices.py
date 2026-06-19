@@ -37,7 +37,9 @@ from app.services.document_messaging import (
     render_pdf_or_none,
 )
 from app.services.public_links import public_doc_url
-from app.services.document_render import get_company_dict, get_prepared_by
+from app.services.document_render import (
+    get_company_dict, get_prepared_by, static_url_fetcher,
+)
 from app.models.customer import Customer
 from app.models.invoice import Invoice, InvoiceLine
 from app.models.product import Product, CrossReference, ProductSerialNumber
@@ -1060,7 +1062,10 @@ def invoice_pdf(invoice_id: int, request: Request, db: Session = Depends(get_db)
     )
     try:
         from weasyprint import HTML
-        pdf_bytes = HTML(string=html_str, base_url=str(request.base_url)).write_pdf()
+        pdf_bytes = HTML(
+            string=html_str, base_url=str(request.base_url),
+            url_fetcher=static_url_fetcher,
+        ).write_pdf()
     except (OSError, ImportError, Exception):
         return RedirectResponse(f"/invoices/{invoice_id}/print", status_code=302)
 

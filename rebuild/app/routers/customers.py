@@ -2061,7 +2061,11 @@ def customer_statement_pdf(
     )
     try:
         from weasyprint import HTML
-        pdf_bytes = HTML(string=html_str, base_url=str(request.base_url)).write_pdf()
+        from app.services.document_render import static_url_fetcher
+        pdf_bytes = HTML(
+            string=html_str, base_url=str(request.base_url),
+            url_fetcher=static_url_fetcher,
+        ).write_pdf()
     except Exception:
         return RedirectResponse(
             f"/customers/{customer_id}/statement/print?start={start}&end={end}",

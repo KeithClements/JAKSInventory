@@ -178,7 +178,9 @@ def render_pdf_or_none(env, template_name: str, base_url: str, **ctx) -> bytes |
     try:
         html_str = env.get_template(template_name).render(**ctx)
         from weasyprint import HTML
-        return HTML(string=html_str, base_url=base_url).write_pdf()
+        from app.services.document_render import static_url_fetcher
+        return HTML(string=html_str, base_url=base_url,
+                    url_fetcher=static_url_fetcher).write_pdf()
     except Exception as exc:  # ImportError / OSError (GTK) / template / render
         log.info("PDF render unavailable for %s: %s", template_name, exc)
         return None

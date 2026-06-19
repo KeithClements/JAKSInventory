@@ -35,7 +35,9 @@ from app.services.document_messaging import (
     render_pdf_or_none,
 )
 from app.services.public_links import public_doc_url
-from app.services.document_render import get_company_dict, get_prepared_by
+from app.services.document_render import (
+    get_company_dict, get_prepared_by, static_url_fetcher,
+)
 from app.models.customer import Customer
 from app.models.quote import Quote
 from app.services.quote_service import QuoteService
@@ -561,7 +563,10 @@ async def quote_pdf(
 
     try:
         from weasyprint import HTML
-        pdf_bytes = HTML(string=html_str, base_url=str(request.base_url)).write_pdf()
+        pdf_bytes = HTML(
+            string=html_str, base_url=str(request.base_url),
+            url_fetcher=static_url_fetcher,
+        ).write_pdf()
     except (OSError, ImportError, Exception):
         # WeasyPrint system libraries (GTK/Pango) not available on this host.
         # Fall back to browser print-to-PDF.
