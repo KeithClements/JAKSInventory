@@ -29,7 +29,13 @@ from sqlalchemy import func as sa_func
 from app.models.competitor import CompetitorPrice
 from app.models.customer import Customer
 from app.models.invoice import Invoice, InvoiceLine
-from app.models.product import CrossReference, Product, ProductApplication, ProductVendorSource
+from app.models.product import (
+    CrossReference,
+    Product,
+    ProductApplication,
+    ProductCategory,
+    ProductVendorSource,
+)
 from app.models.purchase_order import PurchaseOrder
 from app.models.quote import Quote, SalesOrder
 from app.models.vendor import Vendor
@@ -278,19 +284,43 @@ class SearchService(BaseService):
                 if len(results) >= limit:
                     break
 
-        # 6. Description keyword (lowest priority — raw prose, not part-normalized)
-        if len(results) < limit:
-            desc_hits = (
-                base_q.filter(
+        # 6. Keyword search (lowest priority — raw prose, not part-normalized).
+        #    MULTI-TERM: the query is split on whitespace and EVERY token must
+        #    match somewhere across the human-readable fields — title,
+        #    description, manufacturer, engine make, brand and category name.
+        #    This is why "stud cat" finds an "EXHAUST MANIFOLD STUD KIT" whose
+        #    manufacturer is "Caterpillar": "stud" hits the title and "cat" hits
+        #    the manufacturer, even though no single field contains the phrase
+        #    "stud cat". A single-token query degrades to the old title/desc
+        #    contains-search, just widened to the manufacturer/brand/category
+        #    fields too. Ranked below every part-number / cross-ref / engine
+        #    match so a real part number always wins.
+        tokens = [t for t in q.split() if t]
+        if len(results) < limit and tokens:
+            kw_q = base_q.outerjoin(
+                ProductCategory, Product.category_id == ProductCategory.id
+            )
+            for tok in tokens:
+                like = f"%{tok}%"
+                kw_q = kw_q.filter(
                     or_(
-                        Product.title.ilike(f"%{q}%"),
-                        Product.description.ilike(f"%{q}%"),
+                        Product.title.ilike(like),
+                        Product.description.ilike(like),
+                        Product.manufacturer.ilike(like),
+                        Product.engine_manufacturer.ilike(like),
+                        Product.brand.ilike(like),
+                        ProductCategory.name.ilike(like),
                     )
                 )
+            # Rank a contiguous phrase hit in the title first (so "exhaust
+            # manifold stud" beats a product where those words are merely
+            # scattered), then by title for a stable order.
+            kw_hits = (
+                kw_q.order_by(Product.title.ilike(f"%{q}%").desc(), Product.title)
                 .limit(limit)
                 .all()
             )
-            for p in desc_hits:
+            for p in kw_hits:
                 if p.id not in seen:
                     seen.add(p.id)
                     results.append(_to_result(p, "description"))
