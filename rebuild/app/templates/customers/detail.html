@@ -645,40 +645,10 @@
       {% set target_label = 'Customer-specific cost-plus rules — margins shown at current cost, red under target.' %}
       {% include "customers/_pricing_deals_panel.html" %}
 
-      {# Per-rule deactivate controls. The panel macro is pure presentation and
-         carries no row actions, so we surface a compact "active deals" manager
-         beneath it. Renders only when the rule dicts carry `rule_id` (the
-         deactivate route is rule-scoped); inert otherwise — see cross-lane note. #}
-      {% set _deactivatable = (rules | default([])) | selectattr('rule_id', 'defined') | selectattr('rule_id') | list %}
-      {% if _deactivatable %}
-      <div class="card mt-3">
-        <div class="px-4 py-2.5 border-b border-gray-100">
-          <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Manage active deals</h3>
-        </div>
-        <ul class="divide-y divide-gray-100">
-          {% for rule in _deactivatable %}
-          <li class="flex items-center justify-between gap-3 px-4 py-2.5">
-            <span class="text-sm text-gray-700 truncate">
-              {{ rule.scope_label or (rule.scope_type | title) }}
-              <span class="text-xs text-gray-400">·
-                {% if rule.price_method == 'margin' %}{{ rule.price_value }}% margin{% else %}cost + {{ rule.price_value }}%{% endif %}
-              </span>
-            </span>
-            <button type="button"
-                    @click="window.jakConfirm({
-                      title: 'Deactivate this deal?',
-                      body: 'The rule stops applying to new lines but is kept for history. You can add a fresh deal anytime.',
-                      cta: 'Deactivate', danger: true,
-                      confirmEvent: 'deal-deactivate-confirm',
-                      ruleId: {{ rule.rule_id | tojson }}
-                    })"
-                    class="btn-secondary btn-sm shrink-0 text-red-600 hover:text-red-700"
-                    title="Deactivate this deal">Deactivate</button>
-          </li>
-          {% endfor %}
-        </ul>
-      </div>
-      {% endif %}
+      {# The per-rule "Manage active deals" deactivate manager now lives INSIDE the
+         swap target (customers/_pricing_deals_panel.html) so it refreshes in place
+         on every HTMX panel swap. The @deal-deactivate-confirm.window handler above
+         still owns the customer-scoped deactivate fetch. #}
 
       {# Scoped Quick Deal modal for THIS customer — native form action posts to
          the customer's price-rules route; the @submit handler above intercepts it. #}

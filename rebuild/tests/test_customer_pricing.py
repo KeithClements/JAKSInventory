@@ -6,9 +6,9 @@ Customer-Specific Product Pricing — Phase 1 backend (CUSTOMER_PRICING_DESIGN.m
 Covers:
   * MARGIN_TARGET_BRACKETS / target_margin_for_cost lookup.
   * PricingService.resolve_customer_price — precedence matrix
-    (PRODUCT > BRAND/CATEGORY > CUSTOMER), category-descendant match,
+    (PRODUCT > BRAND > CATEGORY > CUSTOMER), category-descendant match,
     qty-break boundary, expired/inactive rules ignored, below_target /
-    below_cost flags, cost=0 fallthrough, brand-vs-category fewest-SKUs tiebreak.
+    below_cost flags, cost=0 fallthrough, brand-beats-category fixed ladder.
   * Rule overrides product.price_override (Step 0 wins).
   * PricingService.last_price_for — latest finalized invoice line.
   * apply_product_line_defaults backward-compat: NO rules → byte-identical price.
@@ -193,12 +193,12 @@ def test_precedence_product_beats_brand_beats_category_beats_customer(db):
     # runner-up is the whole-customer rule
     assert res.overridden_rule.scope_type == ScopeType.CUSTOMER
 
-    # add brand → markup 30 → but brand & category TIE on specificity rank;
-    # fewest-SKUs breaks it. Brand "Garrett" covers 1 product; category covers 1
-    # too here — both 1, so newest wins. Make brand newer by adding it last.
+    # add brand → markup 30 → BRAND beats CATEGORY on the fixed ladder, so the
+    # brand rule now wins (130) and the category rule becomes the runner-up.
     _rule(db, cust, ScopeType.BRAND, scope_ref="Garrett", method=PriceMethod.MARKUP, value=30.0)
     res = PricingService(db, _UID).resolve_customer_price(prod, cust)
-    assert res.source_rule.scope_type in (ScopeType.BRAND, ScopeType.CATEGORY)
+    assert res.price == 130.00 and res.source_rule.scope_type == ScopeType.BRAND
+    assert res.overridden_rule.scope_type == ScopeType.CATEGORY
 
     # add product (most specific) → markup 50 → 150 wins over everything
     _rule(db, cust, ScopeType.PRODUCT, scope_ref=prod.id, method=PriceMethod.MARKUP, value=50.0)
@@ -340,21 +340,25 @@ def test_rule_overrides_price_override(db):
     assert ctx["customer_price"]["price"] == 120.00
 
 
-def test_brand_vs_category_fewest_skus_tiebreak(db):
+def test_brand_beats_category_fixed_ladder(db):
+    """BRAND > CATEGORY is a fixed ladder: a brand deal wins over a category deal
+    even when the brand covers MORE SKUs than the category — the old fewest-SKUs
+    tiebreak would have picked the category here."""
     cust = _customer(db)
     cat = _category(db, "Filters")
-    # target product: brand "Bosch", in category "Filters"
+    # target: brand "Bosch", in category "Filters"
     target = _product(db, cost=100.0, brand="Bosch", category_id=cat.id)
-    # Make the CATEGORY broad (3 products) and the BRAND narrow (1 product) so
-    # the brand rule (fewest SKUs) wins the tie.
-    _product(db, cost=50.0, brand="Other", category_id=cat.id)
-    _product(db, cost=50.0, brand="Other", category_id=cat.id)
+    # BRAND broad (3 Bosch products), CATEGORY narrow (just the target) — so
+    # fewest-SKUs would have favored the category; the ladder must override.
+    _product(db, cost=50.0, brand="Bosch")
+    _product(db, cost=50.0, brand="Bosch")
     _rule(db, cust, ScopeType.CATEGORY, scope_ref=cat.id, method=PriceMethod.MARKUP, value=20.0)
     _rule(db, cust, ScopeType.BRAND, scope_ref="Bosch", method=PriceMethod.MARKUP, value=40.0)
     res = PricingService(db, _UID).resolve_customer_price(target, cust)
-    # brand covers 1 SKU, category covers 3 → brand wins → markup 40 → 140
+    # brand wins by the ladder → markup 40 → 140; category is the runner-up
     assert res.source_rule.scope_type == ScopeType.BRAND
     assert res.price == 140.00
+    assert res.overridden_rule.scope_type == ScopeType.CATEGORY
     assert res.overridden_rule.scope_type == ScopeType.CATEGORY
 
 

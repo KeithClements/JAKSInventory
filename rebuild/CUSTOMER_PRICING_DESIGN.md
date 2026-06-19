@@ -80,14 +80,14 @@ New table → auto-created by `create_all()`. **Verify before build:** whether t
 
 1. Gather customer's rules matching the product: by `product_id`, by its category, by its brand/vendor, or whole-customer.
 2. Filter: `is_active`, date window (`effective_from ≤ as_of ≤ effective_to`, NULLs open), `qty_min ≤ qty` (NULL = any).
-3. Rank by **specificity: PRODUCT > BRAND/CATEGORY > CUSTOMER**. Within a tier: higher qualifying `qty_min` wins, then newest.
+3. Rank by **specificity: PRODUCT > BRAND > CATEGORY > CUSTOMER** (a fixed ladder). Within a scope: higher qualifying `qty_min` wins, then newest.
 4. Winner → compute price from `price_method`/`price_value` against current `cost`.
 5. Return the **runner-up** (next scope down) too, for "show both."
 6. Compute resolved margin% vs the bracket target → `below_target` / `below_cost` flags.
 
 **Returns:** `{ price, source_rule, overridden_rule, margin_pct, below_target, below_cost }`
 
-**Brand-vs-category tiebreak (confirm at build):** when both a BRAND and CATEGORY rule hit the same part, neither is universally more specific. Tiebreak to the rule covering the **fewest SKUs**; surface the other as "also applies."
+**Brand-vs-category order (DECIDED 2026-06-19):** when both a BRAND and CATEGORY rule hit the same part, the **BRAND deal wins** — a fixed `PRODUCT > BRAND > CATEGORY > CUSTOMER` ladder (predictable beats "narrowest scope wins"); the category rule is surfaced as the overridden runner-up. (Implemented in `PricingService._SCOPE_RANK`; the earlier fewest-SKUs tiebreak was removed.)
 
 ### Last-price hint — `PricingService.last_price_for(customer, product)`
 Most-recent finalized invoice line for this customer+product → `{ unit_price, margin_pct, doc_ref, date }`. Display-only, click-to-apply. Never auto-fills.

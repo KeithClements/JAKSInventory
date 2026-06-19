@@ -375,26 +375,6 @@ class PricingService(BaseService):
             stack.extend(children.get(cur, []))
         return out
 
-    def _rule_sku_count(self, rule: CustomerPriceRule) -> int:
-        """How many active products a rule's scope covers — the brand-vs-category
-        tiebreak (fewest SKUs wins). PRODUCT = 1; CUSTOMER = the whole catalog."""
-        q = self.db.query(Product).filter(Product.is_active == True)  # noqa: E712
-        if rule.scope_type == ScopeType.PRODUCT:
-            return 1
-        if rule.scope_type == ScopeType.BRAND:
-            return q.filter(Product.brand == (rule.scope_ref or "")).count()
-        if rule.scope_type == ScopeType.CATEGORY:
-            try:
-                root = int(rule.scope_ref) if rule.scope_ref is not None else None
-            except (TypeError, ValueError):
-                return 0
-            if root is None:
-                return 0
-            cat_ids = self._descendant_category_ids(root)
-            return q.filter(Product.category_id.in_(cat_ids)).count()
-        # CUSTOMER — whole catalog
-        return q.count()
-
     def _rule_matches_product(self, rule: CustomerPriceRule, product: Product) -> bool:
         """True when a rule's scope covers this product (scope match only —
         date/qty/active filtering happens in resolve_customer_price)."""
@@ -418,11 +398,13 @@ class PricingService(BaseService):
             return product.category_id in self._descendant_category_ids(root)
         return False
 
-    # Specificity rank: higher number = more specific. PRODUCT beats BRAND/CATEGORY
-    # (which tie) beats CUSTOMER.
+    # Specificity rank: higher number = more specific. Fixed ladder
+    # PRODUCT > BRAND > CATEGORY > CUSTOMER — when a brand deal AND a category deal
+    # both hit a part, the BRAND deal wins (owner-chosen 2026-06: predictable beats
+    # "narrowest scope wins").
     _SCOPE_RANK = {
-        ScopeType.PRODUCT: 3,
-        ScopeType.BRAND: 2,
+        ScopeType.PRODUCT: 4,
+        ScopeType.BRAND: 3,
         ScopeType.CATEGORY: 2,
         ScopeType.CUSTOMER: 1,
     }
@@ -444,10 +426,10 @@ class PricingService(BaseService):
         Matching: PRODUCT→product.id, CATEGORY→category + all descendant
         categories, BRAND→product.brand, CUSTOMER→all. Filters: is_active, the
         date window (NULLs open, ``as_of`` defaults to today), and qty_min ≤ qty
-        (NULL = any). Ranking: PRODUCT > BRAND/CATEGORY > CUSTOMER, then higher
-        qualifying qty_min, then newest created_at; a brand-vs-category tie goes
-        to the rule covering the fewest SKUs. ``overridden_rule`` is the
-        next-most-specific qualifying rule (the "show both" runner-up).
+        (NULL = any). Ranking: PRODUCT > BRAND > CATEGORY > CUSTOMER (a fixed
+        ladder — a brand deal beats a category deal when both hit a part), then
+        higher qualifying qty_min, then newest created_at. ``overridden_rule`` is
+        the next-most-specific qualifying rule (the "show both" runner-up).
         """
         if product is None or customer is None:
             return CustomerPriceResult()
@@ -481,34 +463,24 @@ class PricingService(BaseService):
             return CustomerPriceResult()
 
         # Sort by the precedence ladder. We rank descending so the winner is [0].
-        #  1. specificity (PRODUCT > BRAND/CATEGORY > CUSTOMER)
+        #  1. specificity (PRODUCT > BRAND > CATEGORY > CUSTOMER — fixed ladder)
         #  2. higher qualifying qty_min wins  (None treated as -inf)
         #  3. newest created_at
-        #  4. brand-vs-category tie → fewest SKUs (lower count wins)
         def _qty_key(r: CustomerPriceRule) -> float:
             return r.qty_min if r.qty_min is not None else float("-inf")
 
         def _created_key(r: CustomerPriceRule):
             return r.created_at or _MIN_DT
 
-        # Pre-compute SKU counts only for the contended (rank-2) tier to avoid
-        # counting the whole catalog for every rule.
-        sku_count_cache: dict[int, int] = {}
-
-        def _sku_count(r: CustomerPriceRule) -> int:
-            key = id(r)
-            if key not in sku_count_cache:
-                sku_count_cache[key] = self._rule_sku_count(r)
-            return sku_count_cache[key]
-
         def _sort_key(r: CustomerPriceRule):
-            # Negate sku_count so that, ascending within a reverse=True sort,
-            # FEWER skus ranks higher. We build a tuple sorted descending.
+            # Tuple sorted descending (reverse=True): more-specific scope first,
+            # then higher qualifying qty_min, then newest. BRAND > CATEGORY is a
+            # fixed ladder in _SCOPE_RANK, so the two never tie — no SKU-count
+            # tiebreak needed.
             return (
                 self._SCOPE_RANK.get(r.scope_type, 0),
                 _qty_key(r),
                 _created_key(r),
-                -_sku_count(r),
             )
 
         ordered = sorted(qualifying, key=_sort_key, reverse=True)
