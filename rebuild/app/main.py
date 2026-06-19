@@ -50,6 +50,7 @@ from app.routers import import_review as import_review_router
 from app.routers import credit_memos as credit_memos_router
 from app.routers import shopify as shopify_router
 from app.routers import leadfinder_api as leadfinder_api_router
+from app.routers import public_docs as public_docs_router
 
 log = logging.getLogger(__name__)
 
@@ -77,7 +78,9 @@ async def enforce_login(request: Request, call_next):
         if _is_test_env():                             # test bypass — in-memory engine only
             return await call_next(request)
     path = request.url.path
-    if path in _AUTH_EXEMPT or path.startswith("/static/") or path.startswith("/api/leadfinder"):
+    if (path in _AUTH_EXEMPT or path.startswith("/static/")
+            or path.startswith("/api/leadfinder") or path.startswith("/p/")):
+        # /p/ = §22.7 public signed document links (the token is the credential).
         return await call_next(request)
     from app.auth import SESSION_COOKIE, read_session_token
     if read_session_token(request.cookies.get(SESSION_COOKIE)) is None:
@@ -511,3 +514,4 @@ app.include_router(import_review_router.router)
 app.include_router(credit_memos_router.router)
 app.include_router(shopify_router.router)
 app.include_router(leadfinder_api_router.router)
+app.include_router(public_docs_router.router)

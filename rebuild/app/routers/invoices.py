@@ -36,6 +36,7 @@ from app.services.document_messaging import (
     perform_document_send,
     render_pdf_or_none,
 )
+from app.services.public_links import public_doc_url
 from app.services.document_render import get_company_dict, get_prepared_by
 from app.models.customer import Customer
 from app.models.invoice import Invoice, InvoiceLine
@@ -179,6 +180,7 @@ def _workspace_context(
         total=(invoice.total or 0.0),
         action_url=f"/invoices/{invoice.id}/send-message",
         lines=itemize_lines(invoice.lines),
+        view_url=public_doc_url(db, "invoice", invoice.id),
     )
 
     return {

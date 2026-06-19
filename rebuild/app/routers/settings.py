@@ -148,6 +148,9 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     "messaging_max_outbound_per_hour": ("100", "Sanity rate limit per hour"),
     "messaging_max_outbound_per_customer_per_day": ("3",
         "Avoid spamming a single customer"),
+    # §22.7 — public, internet-reachable base for customer document links
+    # (e.g. https://axle.jaksdiesel.com). Empty = no links emitted in messages.
+    "public_base_url":             ("",        "Public URL for customer document links"),
 
     # R12 — SMTP (Phase 2 use, placeholders now)
     "smtp_host":                   ("",        ""),
@@ -222,6 +225,7 @@ VISIBLE_KEYS = [
     "smtp_host", "smtp_port", "smtp_username", "smtp_password_encrypted",
     "smtp_from_address", "smtp_from_name", "smtp_use_tls",
     "twilio_account_sid", "twilio_api_key_sid", "twilio_auth_token_encrypted", "twilio_from_number",
+    "public_base_url",
     # §5.12 — document branding (logo itself is set via POST /settings/logo)
     "document_footer_text", "document_terms_text", "document_show_logo", "document_logo_height",
 ]
@@ -304,6 +308,7 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
         "messaging_max_outbound_per_hour", "messaging_max_outbound_per_customer_per_day",
         "smtp_host", "smtp_port", "smtp_username", "smtp_from_address", "smtp_from_name",
         "smtp_use_tls", "twilio_account_sid", "twilio_api_key_sid", "twilio_from_number",
+        "public_base_url",
     ]
     msg = {k: rows.get(k, DEFAULTS[k][0]) for k in _msg_keys}
     msg["smtp_password_is_set"] = bool((rows.get("smtp_password_encrypted") or "").strip())

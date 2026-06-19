@@ -80,7 +80,8 @@ def itemize_lines(orm_lines, *, qty_attr="qty", desc_attr="description",
     return out
 
 def default_email_body(db: Session, *, doc_label: str, number: str,
-                       customer_name: str, total: float, lines: list | None = None) -> str:
+                       customer_name: str, total: float, lines: list | None = None,
+                       view_url: str | None = None) -> str:
     name, phone = _company(db)
     out = [
         f"Hi {customer_name or 'there'},",
@@ -93,6 +94,8 @@ def default_email_body(db: Session, *, doc_label: str, number: str,
         for ln in lines:
             out.append(f"  {_fmt_qty(ln['qty'])} x {ln['desc']} — ${ln['amount']:,.2f}")
         out.append(f"  {'Total':<6} ${total:,.2f}")
+    if view_url:
+        out += ["", f"View it online: {view_url}"]
     out += [
         "",
         "Let us know if you have any questions.",
@@ -104,7 +107,8 @@ def default_email_body(db: Session, *, doc_label: str, number: str,
 
 
 def default_sms_body(db: Session, *, doc_label: str, number: str, total: float,
-                     lines: list | None = None, max_items: int = 6) -> str:
+                     lines: list | None = None, max_items: int = 6,
+                     view_url: str | None = None) -> str:
     name, phone = _company(db)
     out = [f"{name}: {doc_label} {number}"]
     if lines:
@@ -115,6 +119,8 @@ def default_sms_body(db: Session, *, doc_label: str, number: str, total: float,
             out.append(f"...(+{len(lines) - max_items} more)")
     tail = f"Total ${total:,.2f}." + (f" Reply or call {phone}." if phone else "")
     out.append(tail)
+    if view_url:
+        out.append(f"View: {view_url}")
     return "\n".join(out)
 
 
@@ -127,11 +133,12 @@ def is_log_only(db: Session) -> bool:
 
 def build_send_context(db: Session, *, doc_label: str, doc_number: str,
                        customer, total: float, action_url: str,
-                       lines: list | None = None) -> dict:
+                       lines: list | None = None, view_url: str | None = None) -> dict:
     """Everything documents/_send_dialog.html needs, pre-filled + consent-aware.
 
     ``lines`` (optional) is a normalized list of {"qty","desc","amount"} dicts; when
-    given, the default email + SMS bodies are itemized. The rep can still edit them.
+    given, the default email + SMS bodies are itemized. ``view_url`` (optional) is a
+    public signed link appended to both bodies (§22.7). The rep can still edit them.
     """
     cust_email = (getattr(customer, "email", "") or "").strip() if customer else ""
     cust_phone = (getattr(customer, "phone", "") or "").strip() if customer else ""
@@ -155,9 +162,9 @@ def build_send_context(db: Session, *, doc_label: str, doc_number: str,
             db, doc_label=doc_label, number=doc_number,
             customer_name=(getattr(customer, "company_name", "") or
                            getattr(customer, "contact_name", "") if customer else ""),
-            total=total, lines=lines),
+            total=total, lines=lines, view_url=view_url),
         "sms_body": default_sms_body(db, doc_label=doc_label, number=doc_number,
-                                     total=total, lines=lines),
+                                     total=total, lines=lines, view_url=view_url),
         "log_only": is_log_only(db),
     }
 

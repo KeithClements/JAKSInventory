@@ -45,6 +45,7 @@ from app.services.document_messaging import (
     perform_document_send,
     render_pdf_or_none,
 )
+from app.services.public_links import public_doc_url
 from app.services.document_render import get_prepared_by  # noqa: F401 (used below)
 from app.services.document_render import (
     customer_address_lines,
@@ -273,6 +274,7 @@ async def so_workspace(
         total=(getattr(so, "total", None) or so.subtotal or 0.0),
         action_url=f"/sales-orders/{so.id}/send-message",
         lines=itemize_lines(so.lines),
+        view_url=public_doc_url(db, "sales_order", so.id),
     )
     return templates.TemplateResponse(
         request,

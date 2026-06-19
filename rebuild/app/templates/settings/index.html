@@ -462,6 +462,20 @@
           customers who consented (allow_sms + consent date).</p>
       </div>
 
+      {# Public document links (§22.7) #}
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Customer document links</h2>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Public base URL</label>
+          <input name="public_base_url" value="{{ msg.public_base_url }}"
+            placeholder="https://axle.jaksdiesel.com  (leave blank to disable links)"
+            class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        </div>
+        <p class="text-xs text-gray-400">When set, sent texts/emails include a secure, expiring
+          <strong>“View document”</strong> link (a signed <code>/p/d/…</code> URL that needs no login and serves only that one
+          PDF). Only works once this app is reachable at that address from the internet — <strong>leave blank</strong> until then.</p>
+      </div>
+
       {# Rate limits #}
       <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
         <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Rate Limits</h2>
