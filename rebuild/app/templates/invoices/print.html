@@ -247,6 +247,13 @@
       font-family: var(--mono); font-size: 10px; color: var(--s500);
     }
 
+    /* ── Account-pricing note (§5 — gated; absent by default) ────────────── */
+    .acct-price-note{
+      margin-top: 8px;
+      font-size: 10.5px; color: var(--s500);
+      font-style: italic; line-height: 1.5;
+    }
+
     /* ── Notes ───────────────────────────────────────────────────────────── */
     .notes-section{
       margin-top: 18px; padding-top: 14px;
@@ -414,6 +421,11 @@
 
   </div>
 
+  {# CUSTOMER_PRICING_DESIGN.md §5 — optional "Your account price" label. Default
+     silent: when the setting is off OR the customer has no active price rule the
+     gate is False and the output below is byte-for-byte unchanged. #}
+  {% set show_acct_price = company.account_price_label is defined and company.account_price_label(invoice.customer) %}
+
   {# ── Line Items ──────────────────────────────────────────────────────────── #}
   <table class="lines">
     <thead>
@@ -421,7 +433,7 @@
         <th class="c" style="width:26px">#</th>
         <th>Part / Description</th>
         <th class="r" style="width:48px">Qty</th>
-        <th class="r" style="width:88px">Unit</th>
+        <th class="r" style="width:88px">{% if show_acct_price %}Your Price{% else %}Unit{% endif %}</th>
         <th class="r" style="width:92px">Ext</th>
       </tr>
     </thead>
@@ -466,6 +478,11 @@
       {% endfor %}
     </tbody>
   </table>
+
+  {# CUSTOMER_PRICING_DESIGN.md §5 — one-line account-pricing note (gated). #}
+  {% if show_acct_price %}
+  <p class="acct-price-note">Pricing reflects your account agreement.</p>
+  {% endif %}
 
   {# ── Totals (right-aligned, 3.1in, ink rule above grand) ─────────────────── #}
   <div class="tot-wrap">

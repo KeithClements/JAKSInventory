@@ -76,6 +76,16 @@
           </div>
           <p class="text-[11px] text-gray-400 mt-1">Default 56. Larger = bigger logo on quotes, sales orders &amp; invoices.</p>
         </div>
+        {% elif s.key == 'pricing_show_account_price_label' %}
+        <div>
+          <label class="flex items-center gap-2 text-sm text-gray-600">
+            <input type="checkbox" name="pricing_show_account_price_label" value="true" {% if s.value == 'true' %}checked{% endif %}
+              class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+            Show &ldquo;Your Price&rdquo; label on customer documents
+          </label>
+          <p class="text-[11px] text-gray-400 mt-1 ml-6">For customers with an account-pricing agreement, the price column reads
+            &ldquo;Your Price&rdquo; and a short note is added. Off by default — prices print silently.</p>
+        </div>
         {% endif %}
         {% endfor %}
         <p class="text-xs text-gray-400">These print on quotes, sales orders &amp; invoices. Terms appear near the bottom; the logo is uploaded below.</p>

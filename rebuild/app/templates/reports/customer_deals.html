@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}Customer Deals — Axle{% endblock %}
+{% block heading %}Customer Deals{% endblock %}
+
+{% block content %}
+{% set active_report = 'customer-deals' %}
+<div class="max-w-6xl space-y-4">
+  {% include "reports/_nav.html" %}
+
+  {# ── Filter row ────────────────────────────────────────────────────────── #}
+  <form method="get" action="/reports/customer-deals"
+        class="flex flex-wrap items-end gap-3 bg-white border border-gray-200 rounded-xl p-3">
+    <div>
+      <label class="form-label">Customer ID</label>
+      <input type="number" name="customer_id" min="1"
+             value="{{ customer_id if customer_id is not none else '' }}"
+             placeholder="All customers" class="form-input w-44"/>
+    </div>
+    <div>
+      <label class="form-label">Expiring within (days)</label>
+      <input type="number" name="expiring_within_days" min="0"
+             value="{{ expiring_within_days }}" class="form-input w-44"/>
+    </div>
+    <button type="submit" class="btn-primary btn-sm">Update</button>
+  </form>
+
+  <p class="text-xs text-gray-400">
+    As of {{ today.strftime('%B %d, %Y') }} · Active price rules only · Margin shown
+    at the product's current cost (PRODUCT-scope rules); category / brand / account
+    rules are cost-relative.
+  </p>
+
+  {# ── Summary tiles ─────────────────────────────────────────────────────── #}
+  <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+    <div class="stat-card-brand">
+      <p class="stat-label">Active Deals</p>
+      <p class="stat-value text-brand-700">{{ rows | length }}</p>
+    </div>
+    <div class="stat-card {% if below_target_count > 0 %}stat-card-red{% endif %}">
+      <p class="stat-label">Below Target</p>
+      <p class="stat-value {% if below_target_count > 0 %}text-red-700{% else %}text-gray-400{% endif %}">{{ below_target_count }}</p>
+      <p class="stat-sub">at current cost</p>
+    </div>
+    <div class="stat-card {% if expiring_count > 0 %}stat-card-amber{% endif %}">
+      <p class="stat-label">Expiring Soon</p>
+      <p class="stat-value {% if expiring_count > 0 %}text-amber-600{% else %}text-gray-400{% endif %}">{{ expiring_count }}</p>
+      <p class="stat-sub">within {{ expiring_within_days }}d</p>
+    </div>
+  </div>
+
+  {# ── Deal rows ─────────────────────────────────────────────────────────── #}
+  {% if rows %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Active Price Rules</h2>
+      <span class="text-xs text-gray-400">{{ rows | length }} deal{{ 's' if rows | length != 1 }}</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">Customer</th>
+            <th class="tbl-th">Scope</th>
+            <th class="tbl-th">Deal</th>
+            <th class="tbl-th-r">Min Qty</th>
+            <th class="tbl-th">Effective</th>
+            <th class="tbl-th-r">Margin @ Cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr class="tbl-row">
+            <td class="tbl-td font-medium text-gray-900">
+              <a href="/customers/{{ row.customer_id }}" class="tbl-link text-sm">{{ row.customer_name }}</a>
+            </td>
+            <td class="tbl-td text-sm text-gray-700">
+              <span class="inline-flex items-center rounded-full bg-gray-100 text-gray-600 text-xs font-medium px-2 py-0.5 uppercase tracking-wide">{{ row.scope_type }}</span>
+              <span class="ml-1">{{ row.scope_label }}</span>
+            </td>
+            <td class="tbl-td text-sm text-gray-700">
+              {% if row.price_method|string|lower == 'margin' %}
+                {{ '%.1f' % row.price_value }}% margin
+              {% else %}
+                cost +{{ '%.1f' % row.price_value }}%
+              {% endif %}
+              {% if row.note %}<span class="block text-xs text-gray-400 truncate max-w-xs">{{ row.note }}</span>{% endif %}
+            </td>
+            <td class="tbl-td-r text-gray-600 tabular-nums">
+              {% if row.qty_min is not none %}{{ '%g' % row.qty_min }}+{% else %}<span class="text-gray-300">any</span>{% endif %}
+            </td>
+            <td class="tbl-td text-sm text-gray-600">
+              {% if row.effective_from or row.effective_to %}
+                {{ row.effective_from.strftime('%b %d, %Y') if row.effective_from else 'open' }}
+                –
+                {% if row.effective_to %}
+                  <span class="{% if row.expiring_soon %}text-amber-600 font-semibold{% endif %}">{{ row.effective_to.strftime('%b %d, %Y') }}</span>
+                  {% if row.expiring_soon %}
+                  <span class="inline-flex items-center rounded-full bg-amber-100 text-amber-700 text-xs font-semibold px-2 py-0.5 ml-1">expiring</span>
+                  {% endif %}
+                {% else %}open{% endif %}
+              {% else %}
+                <span class="text-gray-300">open-ended</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td-r tabular-nums">
+              {% if row.margin_at_current_cost is not none %}
+                <span class="{% if row.below_cost %}text-red-700 font-bold{% elif row.below_target %}text-red-600 font-semibold{% else %}text-green-700{% endif %}">
+                  {{ '%.1f' % row.margin_at_current_cost }}%
+                </span>
+                {% if row.below_cost %}
+                <span class="block text-xs text-red-700 font-semibold">below cost</span>
+                {% elif row.below_target %}
+                <span class="block text-xs text-red-600">below target</span>
+                {% endif %}
+              {% else %}
+                <span class="text-gray-300">cost-relative</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="card flex flex-col items-center justify-center py-16">
+    <p class="text-gray-500 font-medium">No active customer deals</p>
+    <p class="text-gray-400 text-sm mt-1">
+      Add a price rule from a customer's Pricing &amp; Deals panel
+      {% if customer_id is not none %}or clear the customer filter{% endif %}.
+    </p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

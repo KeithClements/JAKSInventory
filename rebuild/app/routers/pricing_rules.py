@@ -37,8 +37,11 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
+from fastapi.templating import Jinja2Templates
+
 from app.deps import get_current_user_id, get_db
 from app.models.customer import Customer
+from app.models.product import ProductCategory, Brand
 from app.services.pricing_service import (
     CustomerPriceRuleService,
     CustomerPriceRuleBulkValidationError,
@@ -48,6 +51,93 @@ from app.services.pricing_service import (
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/customers", tags=["pricing-rules"])
+templates = Jinja2Templates(directory="app/templates")
+
+
+def build_customer_rules_context(db: Session, customer: Customer) -> dict:
+    """Build the "Pricing & Deals" panel context for one customer.
+
+    Single source of truth for the per-rule dicts the customer-detail view and
+    the HTMX panel-refresh responses both render. Returns exactly the shape the
+    pricing_deals_panel macro (via _pricing_deals_panel.html) consumes:
+
+        {
+          "rules":           [ {rule_id, customer_id, scope_type, scope_ref,
+                                 scope_label, price_method, price_value, qty_min,
+                                 effective_from, effective_to, is_active,
+                                 margin_pct, below_target, below_cost, note}, ... ],
+          "deal_categories": [ {id, label}, ... ],   # Quick Deal Category select
+          "deal_brands":     [ {id, label}, ... ],   # Quick Deal Brand select
+          "customer_id":     int,
+        }
+
+    Only ACTIVE rules are listed (matches the panel's add/edit/deactivate flow —
+    a deactivated rule drops out of the panel after the swap). effective_from /
+    effective_to are passed through as ORM date attrs so the macro's .strftime()
+    works.
+    """
+    rule_svc = CustomerPriceRuleService(db)
+    active_rules = rule_svc.list_rules(customer.id, include_inactive=False)
+    rules: list[dict] = []
+    for r in active_rules:
+        pv = rule_svc.rule_preview(r)  # carries scope_label, margin_pct, below_cost
+        rules.append({
+            "rule_id": r.id,            # per-row Deactivate button POST target
+            "customer_id": customer.id,  # Phase 2: Edit dispatch retargets this customer
+            "scope_type": r.scope_type,
+            "scope_ref": r.scope_ref,   # Phase 2: Edit re-selects the category/brand option
+            "scope_label": pv["scope_label"],
+            "price_method": r.price_method,
+            "price_value": r.price_value,
+            "qty_min": r.qty_min,
+            "effective_from": r.effective_from,
+            "effective_to": r.effective_to,
+            "is_active": r.is_active,
+            "margin_pct": pv["margin_pct"],
+            "below_target": pv["below_target"],
+            "below_cost": pv["below_cost"],
+            "note": r.note,
+        })
+
+    # Quick Deal modal scope-picker options: {id, label} pairs.
+    _deal_categories = sorted(
+        db.query(ProductCategory).filter(ProductCategory.is_active == True).all(),  # noqa: E712
+        key=lambda cat: cat.full_path.lower(),
+    )
+    deal_categories = [{"id": cat.id, "label": cat.full_path} for cat in _deal_categories]
+    _deal_brands = (
+        db.query(Brand).filter(Brand.is_active == True)  # noqa: E712
+        .order_by(Brand.sort_order, Brand.name).all()
+    )
+    deal_brands = [{"id": b.name, "label": b.name} for b in _deal_brands]
+
+    return {
+        "rules": rules,
+        "deal_categories": deal_categories,
+        "deal_brands": deal_brands,
+        "customer_id": customer.id,
+    }
+
+
+def _is_htmx(request: Request) -> bool:
+    """True when the request came from an HTMX-driven panel mutation. The panel
+    handlers send `HX-Request: true`; absence keeps the legacy JSON contract."""
+    return str(request.headers.get("HX-Request", "")).lower() == "true"
+
+
+def _panel_response(request: Request, db: Session, customer: Customer, status_code: int = 200):
+    """Render the "Pricing & Deals" panel partial with a freshly-built context so
+    HTMX can swap #pricing-deals-panel after a successful mutation."""
+    ctx = build_customer_rules_context(db, customer)
+    return templates.TemplateResponse(
+        request,
+        "customers/_pricing_deals_panel.html",
+        {
+            **ctx,
+            "target_label": "Customer-specific cost-plus rules — margins shown at current cost, red under target.",
+        },
+        status_code=status_code,
+    )
 
 
 async def _payload(request: Request) -> dict:
@@ -93,8 +183,12 @@ async def create_price_rule(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    """Create a price rule for a customer."""
-    if _customer_or_404(db, customer_id) is None:
+    """Create a price rule for a customer.
+
+    HTMX (HX-Request header) → re-rendered #pricing-deals-panel partial (the
+    client swaps it in place). Otherwise → the legacy JSON {ok, rule} contract."""
+    customer = _customer_or_404(db, customer_id)
+    if customer is None:
         return JSONResponse({"ok": False, "error": "Customer not found."}, status_code=404)
     data = await _payload(request)
     svc = CustomerPriceRuleService(db, user_id)
@@ -102,6 +196,8 @@ async def create_price_rule(
         rule = svc.create_rule(customer_id, data)
     except CustomerPriceRuleValidationError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    if _is_htmx(request):
+        return _panel_response(request, db, customer, status_code=201)
     return JSONResponse(
         jsonable_encoder({"ok": True, "rule": svc.rule_preview(rule)}), status_code=201
     )
@@ -142,7 +238,8 @@ async def create_price_rules_bulk(
     the whole batch is rejected (400, error list naming each offending index) and
     NOTHING is written. On success → 201 ``{"ok": True, "created": [<preview>...]}``.
     """
-    if _customer_or_404(db, customer_id) is None:
+    customer = _customer_or_404(db, customer_id)
+    if customer is None:
         return JSONResponse({"ok": False, "error": "Customer not found."}, status_code=404)
     rows = await _bulk_rows(request)
     if rows is None:
@@ -163,6 +260,8 @@ async def create_price_rules_bulk(
     except CustomerPriceRuleValidationError as exc:
         # e.g. empty-rows guard inside the service — surface as a single message.
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    if _is_htmx(request):
+        return _panel_response(request, db, customer, status_code=201)
     return JSONResponse(
         jsonable_encoder({"ok": True, "created": [svc.rule_preview(r) for r in rules]}),
         status_code=201,
@@ -178,8 +277,12 @@ async def update_price_rule(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    """Update a price rule (PATCH for JSON clients; POST alias for form/HTMX)."""
-    if _customer_or_404(db, customer_id) is None:
+    """Update a price rule (PATCH for JSON clients; POST alias for form/HTMX).
+
+    HTMX (HX-Request header) → re-rendered #pricing-deals-panel partial.
+    Otherwise → the legacy JSON {ok, rule} contract."""
+    customer = _customer_or_404(db, customer_id)
+    if customer is None:
         return JSONResponse({"ok": False, "error": "Customer not found."}, status_code=404)
     svc = CustomerPriceRuleService(db, user_id)
     rule = svc.get_rule(rule_id)
@@ -190,6 +293,8 @@ async def update_price_rule(
         rule = svc.update_rule(rule_id, data)
     except CustomerPriceRuleValidationError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    if _is_htmx(request):
+        return _panel_response(request, db, customer)
     return JSONResponse(jsonable_encoder({"ok": True, "rule": svc.rule_preview(rule)}))
 
 
@@ -197,15 +302,22 @@ async def update_price_rule(
 def deactivate_price_rule(
     customer_id: int,
     rule_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    """Soft-deactivate a price rule (is_active=False; kept for history/audit)."""
-    if _customer_or_404(db, customer_id) is None:
+    """Soft-deactivate a price rule (is_active=False; kept for history/audit).
+
+    HTMX (HX-Request header) → re-rendered #pricing-deals-panel partial (the
+    deactivated rule drops out of the active list). Otherwise → legacy JSON."""
+    customer = _customer_or_404(db, customer_id)
+    if customer is None:
         return JSONResponse({"ok": False, "error": "Customer not found."}, status_code=404)
     svc = CustomerPriceRuleService(db, user_id)
     rule = svc.get_rule(rule_id)
     if rule is None or rule.customer_id != customer_id:
         return JSONResponse({"ok": False, "error": "Price rule not found."}, status_code=404)
     rule = svc.deactivate_rule(rule_id)
+    if _is_htmx(request):
+        return _panel_response(request, db, customer)
     return JSONResponse(jsonable_encoder({"ok": True, "rule": svc.rule_preview(rule)}))

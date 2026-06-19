@@ -187,6 +187,13 @@ DEFAULTS: dict[str, tuple[str, str]] = {
                                     "Terms & conditions printed near the bottom of Quote/SO/Invoice PDFs"),
     "document_show_logo":          ("true",    "Show the company logo on document headers"),
     "document_logo_height":        ("56",      "Logo height on document headers (px, 24-160)"),
+    # CUSTOMER_PRICING_DESIGN.md §5 — optional "Your account price" print label.
+    # Default OFF / silent: when "false" the price column header + note are
+    # byte-for-byte unchanged. When "true" AND the document's customer has an
+    # active CustomerPriceRule, customer-facing docs relabel "Price"→"Your Price"
+    # and add a one-line "Pricing reflects your account agreement." note.
+    "pricing_show_account_price_label": ("false",
+        "Show 'Your Price' label on customer documents (customers with account pricing)"),
 
     # Company info extras
     "company_website":             ("",        "Company website URL"),
@@ -228,6 +235,8 @@ VISIBLE_KEYS = [
     "public_base_url",
     # §5.12 — document branding (logo itself is set via POST /settings/logo)
     "document_footer_text", "document_terms_text", "document_show_logo", "document_logo_height",
+    # CUSTOMER_PRICING_DESIGN.md §5 — optional "Your account price" print label
+    "pricing_show_account_price_label",
 ]
 
 

@@ -1,0 +1,24 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   Customer "Pricing & Deals" panel — swap target (Phase 3, Stream 1)
+   Spec: CUSTOMER_PRICING_DESIGN.md §5.1
+
+   The ONE definition of the panel's swap region. Rendered:
+     • on initial customer-detail load  → {% include %} from detail.html
+     • after a create/edit/deactivate/bulk mutation → returned by the
+       price-rule routes when the request carries `HX-Request: true`, so the
+       client can swap #pricing-deals-panel innerHTML in place (no full reload).
+
+   The wrapping <div id="pricing-deals-panel"> is the swap target. The Quick Deal
+   modal, the per-rule deactivate manager, and the bulk disclosure live in
+   detail.html OUTSIDE this target — they don't get re-rendered on swap.
+
+   Context (built by build_customer_rules_context in pricing_rules.py):
+     rules        : list of macro-ready rule dicts (customer_price_rule_row)
+     customer_id  : the customer PK
+     target_label : optional panel caption
+   Pure presentation — no Alpine factories defined here (base.html owns those).
+═════════════════════════════════════════════════════════════════════════════ #}
+{% from "macros/pricing.html" import pricing_deals_panel %}
+<div id="pricing-deals-panel">
+  {{ pricing_deals_panel(rules, customer_id=customer_id, target_label=target_label or 'Customer-specific cost-plus rules — margins shown at current cost, red under target.') }}
+</div>

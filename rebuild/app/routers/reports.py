@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 
 from app.deps import get_db
 from app.services.report_service import ReportService
+from app.services import pricing_reports_service
 
 log = logging.getLogger(__name__)
 
@@ -837,6 +838,80 @@ def reports_lost_sales_export(
             for r in data["rows"]
         ],
         f"lost_sales_{start_date.isoformat()}_{end_date.isoformat()}.csv",
+    )
+
+
+# ── Customer Deals (Customer-Specific Pricing — Phase 3 §7) ──────────────────
+
+@router.get("/customer-deals", response_class=HTMLResponse)
+def reports_customer_deals(
+    request: Request,
+    customer_id: int | None = None,
+    expiring_within_days: int = 30,
+    db: Session = Depends(get_db),
+):
+    """Every active customer price rule, with margin-at-current-cost and an
+    expiring-soon flag. Filters: ?customer_id=, ?expiring_within_days=."""
+    today = date.today()
+    error_message = None
+    rows: list = []
+    try:
+        rows = pricing_reports_service.customer_deals(
+            db,
+            customer_id=customer_id,
+            expiring_within_days=expiring_within_days,
+            today=today,
+        )
+    except Exception:
+        log.exception("reports_customer_deals failed (customer_id=%s)", customer_id)
+        error_message = "Could not load customer deals data. Check server logs for details."
+
+    expiring_count = sum(1 for r in rows if r.get("expiring_soon"))
+    below_target_count = sum(1 for r in rows if r.get("below_target"))
+
+    return templates.TemplateResponse(
+        request,
+        "reports/customer_deals.html",
+        {
+            "today": today,
+            "rows": rows,
+            "customer_id": customer_id,
+            "expiring_within_days": expiring_within_days,
+            "expiring_count": expiring_count,
+            "below_target_count": below_target_count,
+            "error_message": error_message,
+        },
+    )
+
+
+# ── Margin Leakage (Customer-Specific Pricing — Phase 3 §7) ──────────────────
+
+@router.get("/margin-leakage", response_class=HTMLResponse)
+def reports_margin_leakage(
+    request: Request,
+    since: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Finalized invoice product-lines that sold below their cost-bracket target
+    margin, worst gap first. Filter: ?since=YYYY-MM-DD."""
+    since_date = _parse_date(since)
+    error_message = None
+    rows: list = []
+    try:
+        rows = pricing_reports_service.margin_leakage(db, since=since_date)
+    except Exception:
+        log.exception("reports_margin_leakage failed (since=%s)", since_date)
+        error_message = "Could not load margin leakage data. Check server logs for details."
+
+    return templates.TemplateResponse(
+        request,
+        "reports/margin_leakage.html",
+        {
+            "today": date.today(),
+            "rows": rows,
+            "since": since_date,
+            "error_message": error_message,
+        },
     )
 
 

@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Margin Leakage — Axle{% endblock %}
+{% block heading %}Margin Leakage{% endblock %}
+
+{% block content %}
+{% set active_report = 'margin-leakage' %}
+<div class="max-w-6xl space-y-4">
+  {% include "reports/_nav.html" %}
+
+  {# ── Filter row ────────────────────────────────────────────────────────── #}
+  <form method="get" action="/reports/margin-leakage"
+        class="flex flex-wrap items-end gap-3 bg-white border border-gray-200 rounded-xl p-3">
+    <div>
+      <label class="form-label">Sold since</label>
+      <input type="date" name="since" value="{{ since.isoformat() if since else '' }}"
+             class="form-input w-44"/>
+    </div>
+    <button type="submit" class="btn-primary btn-sm">Update</button>
+  </form>
+
+  <p class="text-xs text-gray-400">
+    Finalized invoice lines (drafts and voids excluded) where the sold margin fell
+    BELOW its cost-bracket target. "Rule today?" re-checks the customer's CURRENT
+    price rules against the product — it is approximate / current-state, not what
+    was applied at the time of sale. Worst gap first.
+  </p>
+
+  {# ── Summary tiles ─────────────────────────────────────────────────────── #}
+  {% set rule_flagged = rows | selectattr('rule_applies') | list | length %}
+  <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+    <div class="stat-card {% if rows %}stat-card-red{% endif %}">
+      <p class="stat-label">Leaking Lines</p>
+      <p class="stat-value {% if rows %}text-red-700{% else %}text-gray-400{% endif %}">{{ rows | length }}</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Worst Gap</p>
+      <p class="stat-value text-red-600 tabular-nums">
+        {% if rows %}{{ '%.1f' % rows[0].gap }}%{% else %}—{% endif %}
+      </p>
+      <p class="stat-sub">below target</p>
+    </div>
+    <div class="stat-card {% if rule_flagged > 0 %}stat-card-amber{% endif %}">
+      <p class="stat-label">Under a Deal Today</p>
+      <p class="stat-value {% if rule_flagged > 0 %}text-amber-600{% else %}text-gray-400{% endif %}">{{ rule_flagged }}</p>
+      <p class="stat-sub">current price rule matches</p>
+    </div>
+  </div>
+
+  {# ── Leakage rows ──────────────────────────────────────────────────────── #}
+  {% if rows %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Lines Below Target Margin</h2>
+      <span class="text-xs text-gray-400">{{ rows | length }} line{{ 's' if rows | length != 1 }}</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">Invoice</th>
+            <th class="tbl-th">Date</th>
+            <th class="tbl-th">Customer</th>
+            <th class="tbl-th">Product</th>
+            <th class="tbl-th-r">Qty</th>
+            <th class="tbl-th-r">Unit Price</th>
+            <th class="tbl-th-r">Cost</th>
+            <th class="tbl-th-r">Margin</th>
+            <th class="tbl-th-r">Target</th>
+            <th class="tbl-th-r">Gap</th>
+            <th class="tbl-th">Rule today?</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          {# Severity: the worst leaks (gap >= 15 pts) glow red; the rest amber. #}
+          <tr class="tbl-row {% if row.gap >= 15 %}bg-red-50{% endif %}">
+            <td class="tbl-td">
+              <a href="/invoices/{{ row.invoice_id }}" class="tbl-link text-sm font-mono">{{ row.invoice_number }}</a>
+            </td>
+            <td class="tbl-td text-sm text-gray-500 whitespace-nowrap">
+              {% if row.invoice_date %}{{ row.invoice_date.strftime('%b %d, %Y') }}{% else %}—{% endif %}
+            </td>
+            <td class="tbl-td text-sm text-gray-700">
+              <a href="/customers/{{ row.customer_id }}" class="tbl-link">{{ row.customer_name }}</a>
+            </td>
+            <td class="tbl-td text-sm text-gray-700 max-w-xs">
+              {% if row.product_id %}
+              <a href="/products/{{ row.product_id }}" class="font-mono text-xs text-brand-700 hover:underline">{{ row.sku }}</a>
+              {% else %}
+              <span class="font-mono text-xs text-gray-400">{{ row.sku }}</span>
+              {% endif %}
+              <span class="block text-xs text-gray-400 truncate">{{ row.label }}</span>
+            </td>
+            <td class="tbl-td-r text-gray-600 tabular-nums">{{ row.qty }}</td>
+            <td class="tbl-td-r text-gray-700 tabular-nums">${{ '%.2f' % row.unit_price }}</td>
+            <td class="tbl-td-r text-gray-600 tabular-nums">${{ '%.2f' % row.cost }}</td>
+            <td class="tbl-td-r tabular-nums font-semibold {% if row.margin_pct < 0 %}text-red-700{% else %}text-red-600{% endif %}">
+              {{ '%.1f' % row.margin_pct }}%
+            </td>
+            <td class="tbl-td-r text-gray-500 tabular-nums">{{ '%.1f' % row.target_pct }}%</td>
+            <td class="tbl-td-r tabular-nums font-bold {% if row.gap >= 15 %}text-red-700{% else %}text-amber-600{% endif %}">
+              −{{ '%.1f' % row.gap }}
+            </td>
+            <td class="tbl-td text-sm">
+              {% if row.rule_applies %}
+              <span class="inline-flex items-center rounded-full bg-amber-100 text-amber-700 text-xs font-semibold px-2 py-0.5">deal matches</span>
+              {% else %}
+              <span class="text-gray-300 text-xs">—</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="card flex flex-col items-center justify-center py-16">
+    <svg class="w-12 h-12 text-green-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    </svg>
+    <p class="text-gray-500 font-medium">No margin leakage</p>
+    <p class="text-gray-400 text-sm mt-1">Every finalized line in range met its target margin.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

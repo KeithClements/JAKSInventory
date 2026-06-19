@@ -115,6 +115,32 @@ def get_prepared_by(db: Session, user_id: int | None) -> str:
     return (user.name or "").strip() or "JAKS"
 
 
+def customer_has_active_price_rules(db: Session, customer: Any) -> bool:
+    """True when ``customer`` has at least one ACTIVE ``CustomerPriceRule``.
+
+    Cheap existence check (single ``SELECT 1 … LIMIT 1``) used to gate the
+    optional "Your account price" print label. Date windows and qty breaks are
+    intentionally NOT evaluated here — the label only asserts that an account
+    pricing agreement exists, not that a given line matched a rule today. Any
+    active rule (even a future-dated one) is a real, honoured agreement.
+
+    None-safe: a missing customer or a customer with no id → False.
+    """
+    cust_id = getattr(customer, "id", None)
+    if cust_id is None:
+        return False
+    from app.models.pricing import CustomerPriceRule
+    return (
+        db.query(CustomerPriceRule.id)
+        .filter(
+            CustomerPriceRule.customer_id == cust_id,
+            CustomerPriceRule.is_active == True,  # noqa: E712
+        )
+        .first()
+        is not None
+    )
+
+
 def get_company_dict(db: Session) -> dict[str, Any]:
     """Standard company block used across every document template.
 
@@ -123,7 +149,27 @@ def get_company_dict(db: Session) -> dict[str, Any]:
     regression). ``company_logo_path`` is stored relative to ``static/`` (e.g.
     ``uploads/logo_xyz.png``) by the upload route; it resolves to a ``/static``
     URL here. ``show_logo`` lets the owner suppress the logo without deleting it.
+
+    CUSTOMER_PRICING_DESIGN.md §5 — the optional "Your account price" print
+    label is surfaced two ways, both default-silent:
+      • ``show_account_price_label`` — the raw setting
+        (``pricing_show_account_price_label``, default "false").
+      • ``account_price_label(customer)`` — a bound callable templates use to
+        gate the label per-document. Returns True only when the setting is ON
+        **and** that document's customer has ≥1 active CustomerPriceRule. When
+        the setting is OFF it short-circuits to False without any query, so the
+        printed output is byte-for-byte unchanged (default silent).
     """
+    show_account_price_label = (
+        get_setting_value_db(db, "pricing_show_account_price_label", "false")
+        or "false"
+    ).strip().lower() == "true"
+
+    def _account_price_label(customer: Any) -> bool:
+        if not show_account_price_label:
+            return False
+        return customer_has_active_price_rules(db, customer)
+
     logo_path = (get_setting_value_db(db, "company_logo_path", "") or "").strip()
     show_logo = (get_setting_value_db(db, "document_show_logo", "true") or "true").strip().lower() == "true"
     logo_url = f"/static/{logo_path.lstrip('/')}" if logo_path else None
@@ -146,6 +192,9 @@ def get_company_dict(db: Session) -> dict[str, Any]:
         "logo_height": logo_height,
         "footer_text": get_setting_value_db(db, "document_footer_text", ""),
         "terms_text":  get_setting_value_db(db, "document_terms_text", ""),
+        # CUSTOMER_PRICING_DESIGN.md §5 — optional "Your account price" label
+        "show_account_price_label": show_account_price_label,
+        "account_price_label":      _account_price_label,
     }
 
 

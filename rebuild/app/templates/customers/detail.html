@@ -603,13 +603,26 @@
            const method = (scope && scope.submitMethod) || 'POST';
            const url    = (scope && scope.submitUrl) || f.action;
            const body   = scope ? JSON.stringify(scope.payload) : new FormData(f);
-           const headers = { 'X-Requested-With': 'fetch' };
+           {# HX-Request → the route returns the #pricing-deals-panel partial; on
+              success we swap it in place (no full reload). On 400 the route still
+              returns JSON {ok:false,error}, which we surface as a toast. #}
+           const headers = { 'X-Requested-With': 'fetch', 'HX-Request': 'true' };
            if (scope) headers['Content-Type'] = 'application/json';
            fetch(url, { method: method, body: body, headers: headers })
-             .then(r => r.json().catch(() => ({ ok: r.ok })))
-             .then(d => {
-               if (d && d.ok) { window.location.reload(); }
-               else { $dispatch('toast', { kind: 'error', message: (d && d.error) || 'Could not save the deal.' }); }
+             .then(r => r.ok
+               ? r.text().then(html => ({ ok: true, html: html }))
+               : r.json().then(d => ({ ok: false, error: d && d.error })).catch(() => ({ ok: false })))
+             .then(res => {
+               if (res.ok) {
+                 {# The partial ships its own <div id="pricing-deals-panel"> wrapper,
+                    so replace the whole element (outerHTML) — innerHTML would nest a
+                    duplicate id. #}
+                 const panel = document.getElementById('pricing-deals-panel');
+                 if (panel) { panel.outerHTML = res.html; }
+                 if (scope && scope.close) { scope.close(); }
+               } else {
+                 $dispatch('toast', { kind: 'error', message: res.error || 'Could not save the deal.' });
+               }
              })
              .catch(() => $dispatch('toast', { kind: 'error', message: 'Could not save the deal.' }));
          "
@@ -618,12 +631,19 @@
          @deal-deactivate-confirm.window="
            const id = $event.detail && $event.detail.ruleId;
            if (id === undefined || id === null) return;
-           fetch('/customers/{{ customer.id }}/price-rules/' + id + '/deactivate', { method: 'POST', headers: { 'X-Requested-With': 'fetch' } })
-             .then(r => { if (r.ok) { window.location.reload(); } else { $dispatch('toast', { kind: 'error', message: 'Could not deactivate the deal.' }); } })
+           fetch('/customers/{{ customer.id }}/price-rules/' + id + '/deactivate', { method: 'POST', headers: { 'X-Requested-With': 'fetch', 'HX-Request': 'true' } })
+             .then(r => { if (!r.ok) throw new Error(); return r.text(); })
+             .then(html => {
+               const panel = document.getElementById('pricing-deals-panel');
+               if (panel) { panel.outerHTML = html; }
+             })
              .catch(() => $dispatch('toast', { kind: 'error', message: 'Could not deactivate the deal.' }));
          ">
 
-      {{ pricing_deals_panel(rules, customer_id=customer_id, target_label='Customer-specific cost-plus rules — margins shown at current cost, red under target.') }}
+      {# Swap target #pricing-deals-panel — the price-rule routes return THIS same
+         partial (HX-Request) so create/edit/deactivate/bulk refresh it in place. #}
+      {% set target_label = 'Customer-specific cost-plus rules — margins shown at current cost, red under target.' %}
+      {% include "customers/_pricing_deals_panel.html" %}
 
       {# Per-rule deactivate controls. The panel macro is pure presentation and
          carries no row actions, so we surface a compact "active deals" manager
@@ -703,12 +723,22 @@
                }
                fetch('/customers/{{ customer_id }}/price-rules/bulk', {
                  method: 'POST',
-                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'fetch' },
+                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'fetch', 'HX-Request': 'true' },
                  body: JSON.stringify(data),
                })
-                 .then(r => r.json().then(d => ({ status: r.status, d: d })).catch(() => ({ status: r.status, d: { ok: r.ok } })))
+                 {# 201 → the route returns the #pricing-deals-panel partial (HX-Request);
+                    swap it in place. 400 → JSON {ok:false, errors:[{index,error}]};
+                    surface the offending rows (all-or-nothing, none were saved). #}
+                 .then(r => r.ok
+                   ? r.text().then(html => ({ ok: true, html: html }))
+                   : r.json().then(d => ({ ok: false, d: d })).catch(() => ({ ok: false, d: null })))
                  .then(res => {
-                   if (res.d && res.d.ok) { window.location.reload(); return; }
+                   if (res.ok) {
+                     const panel = document.getElementById('pricing-deals-panel');
+                     if (panel) { panel.outerHTML = res.html; }
+                     if (scope && scope.reset) { scope.reset(); }
+                     return;
+                   }
                    const errs = (res.d && res.d.errors) || [];
                    const msg = errs.length
                      ? ('Could not save — ' + errs.map(e => 'row ' + ((e.index|0) + 1) + ': ' + (e.error || 'invalid')).join('; '))
