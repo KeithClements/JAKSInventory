@@ -12,6 +12,7 @@
      customer's tax-exempt status; the clerk can toggle it here (HTMX POST to
      /quotes/{id}/toggle-tax). Quote Total = subtotal + tax.
 #}
+{% from "macros/intelligence.html" import mgn_mkup %}
 {# ── kv rows ───────────────────────────────────────────────────────────────── #}
 <div class="py-1.5">
   <div class="kv">
@@ -53,3 +54,25 @@
   <span class="l">Quote Total</span>
   <span class="v">${{ '%.2f' % total }}</span>
 </div>
+
+{# ── Deal economics — STAFF ONLY ────────────────────────────────────────────────
+   Cost / profit / blended margin↔markup for the whole quote. Gated by the per-user
+   Show-margin toggle (base.html, OFF by default) and NEVER rendered on the customer
+   print. Lives inside #quote-totals, so it refreshes with every line change. #}
+{% if total_cost is defined %}
+{%- set _bmgn = (total_profit / subtotal * 100) if subtotal else 0 -%}
+{%- set _bmkup = (total_profit / total_cost * 100) if total_cost else 0 -%}
+<div class="border-t border-steel-150 px-1 pt-2 mt-1 space-y-1" x-show="showMargin" x-cloak>
+  <div class="kv">
+    <span>Total Cost</span>
+    <span class="money" style="color:var(--steel-500,#64748b);">${{ '%.2f' % total_cost }}</span>
+  </div>
+  <div class="kv">
+    <span><span x-show="marginMode !== 'markup'">Profit · Margin</span><span x-show="marginMode === 'markup'" x-cloak>Profit · Markup</span></span>
+    <span class="money" style="font-weight:700;color:{{ '#15803d' if total_profit >= 0 else '#b91c1c' }};">
+      {{ '−' if total_profit < 0 else '' }}${{ '%.2f' % (total_profit | abs) }}
+      <span style="font-weight:600;opacity:.85;"> · {{ mgn_mkup(_bmgn, _bmkup, total_cost > 0, suffix=false) }}</span>
+    </span>
+  </div>
+</div>
+{% endif %}

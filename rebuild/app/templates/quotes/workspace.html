@@ -375,17 +375,9 @@
            hx-trigger="refreshTotals">
         {% include "quotes/_totals.html" %}
       </div>
-      {# Margin block — gated by base.html showMargin (admin toggle). The progress
-         bar width keys off line_count<1?0:50 just to give a visual; real margin %
-         is not on the existing quote context, so the numeric stays at 0 until the
-         backend exposes it (no fabricated data). #}
-      <div class="margin border-t border-steel-150" x-show="showMargin" x-cloak>
-        <div class="row">
-          <span>Margin</span>
-          <b>—</b>
-        </div>
-        <div class="bar"><i style="width:0%"></i></div>
-      </div>
+      {# Deal economics (cost / profit / blended margin↔markup) now render INSIDE
+         #quote-totals via quotes/_totals.html — so they refresh on every line change
+         and honor the Show-margin + Margin/Markup header toggles. #}
     </div>
 
     {# QuickBooks sync card — .sync LED. #}

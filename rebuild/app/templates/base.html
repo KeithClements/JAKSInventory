@@ -429,6 +429,9 @@
     {# P2-D3 — per-user Show-margin toggle. Persisted, OFF by default. Consumed app-wide
        via x-show="showMargin" (inherited from this root scope). See JAKS_UI_Change_Plan.md §8M. #}
     showMargin: localStorage.getItem('showMargin') === '1',
+    {# Margin ↔ Markup display mode — pairs with showMargin. Persisted, default 'margin'.
+       Consumed app-wide via x-show="marginMode === 'markup'" / "!== 'markup'". #}
+    marginMode: localStorage.getItem('marginMode') || 'margin',
     logCallOpen: false,
     createSlideOpen: false,
     createSlideTitle: '',
@@ -455,6 +458,10 @@
     toggleMargin() {
       this.showMargin = !this.showMargin;
       localStorage.setItem('showMargin', this.showMargin ? '1' : '0');
+    },
+    setMarginMode(m) {
+      this.marginMode = (m === 'markup') ? 'markup' : 'margin';
+      localStorage.setItem('marginMode', this.marginMode);
     },
     // ── Event-driven toast (Pattern A) ──────────────────────────────────
     // Triggered by HX-Trigger toast payloads (a message plus a kind, e.g. success).
@@ -607,6 +614,18 @@
         </svg>
         <span>Margin</span>
       </button>
+
+      {# Margin ↔ Markup display switch — only shown when Show-margin is on. Flips
+         every economics % between margin (profit ÷ sell) and markup (profit ÷ cost). #}
+      <div x-show="showMargin" x-cloak
+           class="hidden md:inline-flex items-center h-9 rounded-lg border border-stone-200 overflow-hidden shrink-0 text-xs font-semibold">
+        <button type="button" @click="setMarginMode('margin')"
+                :class="marginMode !== 'markup' ? 'bg-brand-50 text-brand-700' : 'bg-white text-gray-400 hover:text-gray-600'"
+                class="px-2.5 h-full transition-colors" title="Show margin % (profit ÷ sell)">Margin</button>
+        <button type="button" @click="setMarginMode('markup')"
+                :class="marginMode === 'markup' ? 'bg-brand-50 text-brand-700' : 'bg-white text-gray-400 hover:text-gray-600'"
+                class="px-2.5 h-full border-l border-stone-200 transition-colors" title="Show markup % (profit ÷ cost)">Markup</button>
+      </div>
 
       {# Notifications bell #}
       <div class="relative hidden md:flex" @click.away="notifOpen = false">

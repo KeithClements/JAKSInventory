@@ -70,11 +70,18 @@ def _totals_ctx(quote: Quote) -> dict:
     gross = round(sum(ln.unit_price * ln.qty for ln in included), 2)
     subtotal = quote.subtotal           # line_total already applies per-line disc
     discount_amount = round(gross - subtotal, 2)
+    # Staff-only deal economics (gated client-side by the Show-margin toggle; never
+    # on the customer print). Cost = sum of included line costs; profit = the
+    # discounted line revenue (subtotal) minus that cost.
+    total_cost = round(sum((ln.unit_cost or 0.0) * ln.qty for ln in included), 2)
+    total_profit = round(subtotal - total_cost, 2)
     return {
         "gross": gross,
         "discount_amount": discount_amount,
         "subtotal": subtotal,
         "line_count": len(included),
+        "total_cost": total_cost,
+        "total_profit": total_profit,
         # §21 — quote tax (decision 6.16)
         "quote": quote,
         "is_taxable": quote.is_taxable,

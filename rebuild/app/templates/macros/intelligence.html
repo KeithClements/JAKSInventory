@@ -94,3 +94,13 @@
 ] -%}
 {{ intelligence_panel(metrics, cols=cols) }}
 {% endmacro %}
+
+
+{# ── Margin ↔ Markup value (per-user `marginMode`, base.html — default 'margin') ─
+   Renders margin% by default; flips to markup% when the header Margin/Markup switch
+   is set to markup. markup is undefined at zero cost → renders '—'. Inherits
+   `marginMode` from the root <body> Alpine scope, so no per-screen wiring is needed.
+   `suffix` adds the " mgn"/" mkup" label; pass false for a bare percentage. #}
+{% macro mgn_mkup(margin_pct, markup_pct, cost_ok=True, suffix=true) -%}
+<span x-show="marginMode !== 'markup'">{{ '%.0f'|format(margin_pct or 0) }}%{{ ' mgn' if suffix else '' }}</span><span x-show="marginMode === 'markup'" x-cloak>{% if cost_ok %}{{ '%.0f'|format(markup_pct or 0) }}%{{ ' mkup' if suffix else '' }}{% else %}—{% endif %}</span>
+{%- endmacro %}

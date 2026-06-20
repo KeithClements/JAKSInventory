@@ -29,6 +29,7 @@
 #}
 {% from "macros/line_thumb.html" import line_thumb %}
 {% from "macros/pricing.html" import price_rule_chip, last_price_hint %}
+{% from "macros/intelligence.html" import mgn_mkup %}
 
 {# ── Per-line computed state ─────────────────────────────────────────────── #}
 {% set _ns = namespace(
@@ -270,6 +271,19 @@
                 if (inp) { inp.value = btn.dataset.applyPrice; inp.dispatchEvent(new Event('change', { bubbles: true })); }
               ">{{ last_price_hint(line.pricing_ctx) }}</span>
       {% endif %}
+    </div>
+    {% endif %}
+    {# ── Deal economics — STAFF ONLY (base.html showMargin, OFF by default; never on
+       the customer print). Cost + $ profit + margin↔markup for this line. #}
+    {% if line.line_type == 'product' %}
+    {%- set _lc = (line.unit_cost or 0.0) * line.qty -%}
+    {%- set _lp = (line.unit_price - (line.unit_cost or 0.0)) * line.qty -%}
+    {%- set _lmgn = ((line.unit_price - (line.unit_cost or 0.0)) / line.unit_price * 100) if line.unit_price else 0 -%}
+    {%- set _lmkup = ((line.unit_price - (line.unit_cost or 0.0)) / line.unit_cost * 100) if line.unit_cost else 0 -%}
+    <div x-show="showMargin" x-cloak class="mt-1 text-right text-[11px] tabular-nums text-gray-500">
+      <span class="text-gray-400">cost</span> ${{ '%.2f' % _lc }}
+      · <span class="font-semibold {{ 'text-green-600' if _lp >= 0 else 'text-red-600' }}">{{ '+' if _lp >= 0 else '−' }}${{ '%.2f' % (_lp | abs) }}</span>
+      · {{ mgn_mkup(_lmgn, _lmkup, (line.unit_cost or 0) > 0) }}
     </div>
     {% endif %}
   </td>
