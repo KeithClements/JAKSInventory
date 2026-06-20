@@ -79,6 +79,34 @@ def _match_summary(po: PurchaseOrder) -> dict:
     return POService.compute_match_summary(po)
 
 
+def _volume_discount_ctx(po: PurchaseOrder) -> dict:
+    """Vendor volume-discount state for the lines-section nudge / applied row.
+    `vol_program` is the eligible (not-yet-applied) program for the Apply nudge;
+    `vol_applied` flags that the discount is on; `vol_savings` is the actual
+    rounded dollars off (parts only)."""
+    applied = (po.volume_discount_pct or 0.0) > 0
+    list_subtotal = POService._list_subtotal(po)
+    program = POService.eligible_volume_program(po)
+    if applied:
+        savings = round(
+            sum(
+                ((ln.list_unit_cost or ln.unit_cost) - ln.unit_cost) * ln.qty_ordered
+                for ln in po.lines
+            ),
+            2,
+        )
+    elif program is not None:
+        savings = round(list_subtotal * (program.discount_percent or 0.0) / 100.0, 2)
+    else:
+        savings = 0.0
+    return {
+        "vol_program": program,
+        "vol_applied": applied,
+        "vol_list_subtotal": list_subtotal,
+        "vol_savings": savings,
+    }
+
+
 def _workspace_ctx(po: PurchaseOrder) -> dict:
     editable   = po.status in (POStatus.DRAFT, POStatus.VERBAL_ORDER)
     # §21 — VERBAL_ORDER POs are receivable directly. A phone/verbal order with
@@ -97,6 +125,7 @@ def _workspace_ctx(po: PurchaseOrder) -> dict:
         "unreceived_lines": [ln for ln in po.lines if ln.qty_outstanding > 0] if can_receive else [],
         "received_lines":   [ln for ln in po.lines if ln.qty_received > 0 and (ln.qty_received - (ln.qty_billed or 0)) > 0] if can_bill else [],
         "match": match,
+        **_volume_discount_ctx(po),
     }
 
 
@@ -779,6 +808,31 @@ async def po_delete_line(po_id: int, line_id: int, request: Request, db: Session
     return _lines_response(po_id, request, db)
 
 
+# ── Vendor volume discount (apply / remove) ──────────────────────────────────
+# Both re-render #po-lines-section, so the nudge → applied-row (and back) swap
+# happens in place. Errors (PO not editable, no eligible program) fail soft —
+# the section just re-renders unchanged.
+
+@router.post("/{po_id}/apply-volume-discount", response_class=HTMLResponse)
+async def po_apply_volume_discount(po_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    svc = POService(db, current_user_id=user_id)
+    try:
+        svc.apply_volume_discount(po_id)
+    except ValueError as exc:
+        log.warning("apply_volume_discount error on PO %s: %s", po_id, exc)
+    return _lines_response(po_id, request, db)
+
+
+@router.post("/{po_id}/remove-volume-discount", response_class=HTMLResponse)
+async def po_remove_volume_discount(po_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    svc = POService(db, current_user_id=user_id)
+    try:
+        svc.remove_volume_discount(po_id)
+    except ValueError as exc:
+        log.warning("remove_volume_discount error on PO %s: %s", po_id, exc)
+    return _lines_response(po_id, request, db)
+
+
 # ── Product search ───────────────────────────────────────────────────────────
 # The per-doc /purchase-orders/_/product-search HTML endpoint was removed after
 # the §8H migration (its partial purchase_orders/_product_search_results.html is
@@ -1416,6 +1470,7 @@ def _po_print_context(po: PurchaseOrder, db: Session) -> dict:
         "dropship_addr_lines": dropship_addr_lines,
         "bill_to": addrs["bill_to"],
         "ship_to": addrs["ship_to"],
+        **_volume_discount_ctx(po),
     }
 
 

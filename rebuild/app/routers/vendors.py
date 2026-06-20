@@ -10,9 +10,12 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.constants import PaymentTerms, POStatus, VendorBillStatus, VendorContactRole, VendorCreditStatus
+from app.constants import (
+    PaymentTerms, POStatus, VendorBillStatus, VendorContactRole,
+    VendorCreditStatus, VendorProgramType,
+)
 from app.deps import get_db, get_current_user_id
-from app.models.vendor import Vendor, VendorContact, VendorCredit
+from app.models.vendor import Vendor, VendorContact, VendorCredit, VendorProgram
 from app.models.purchase_order import PurchaseOrder, VendorBill
 from app.models.product import ProductVendorSource
 from app.services.sku_service import next_free_vendor_digit, vendor_digit_locked
@@ -380,6 +383,8 @@ def vendor_detail(vendor_id: int, request: Request, db: Session = Depends(get_db
             "payment_terms": PAYMENT_TERMS,
             # R4 — SKU digit frozen once products have minted under it
             "digit_locked": vendor_digit_locked(db, v.id),
+            # Discount Programs card — type options for the add/edit form
+            "program_types": list(VendorProgramType),
         },
     )
 
@@ -608,3 +613,109 @@ def vendor_contact_delete(
     contact.is_primary = False
     db.commit()
     return RedirectResponse(f"/vendors/{vendor_id}?saved=1#contacts", status_code=303)
+
+
+# ── Vendor Discount Programs (volume/tier discounts + rebates) ────────────────
+# Reuses the existing vendor_programs table. The PO workspace reads the active
+# program whose threshold the PO's parts subtotal meets and offers an "Apply
+# X% discount" button (POService.eligible_volume_program). Plain form-POSTs
+# that 303-redirect to ?saved#programs (no HTMX partial); the detail route
+# already passes `vendor` (with `.programs`) to the template.
+
+def _normalize_program_type(ptype: str) -> str:
+    return ptype if ptype in {t.value for t in VendorProgramType} else VendorProgramType.VOLUME_REBATE
+
+
+def _opt_float(raw: str) -> float | None:
+    raw = (raw or "").strip().replace(",", "").lstrip("$")
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        return None
+
+
+@router.post("/{vendor_id}/programs", response_class=RedirectResponse)
+def vendor_program_create(
+    vendor_id: int,
+    program_name: str = Form(...),
+    program_type: str = Form(VendorProgramType.VOLUME_REBATE),
+    threshold_amount: str = Form(""),
+    discount_percent: str = Form(""),
+    notes: str = Form(""),
+    is_active: bool = Form(False),
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Add a discount program. A new program defaults to active."""
+    vendor = db.query(Vendor).filter(Vendor.id == vendor_id).first()
+    if vendor is None:
+        return RedirectResponse("/vendors/", status_code=303)
+    program_name = program_name.strip()
+    if not program_name:
+        return RedirectResponse(
+            f"/vendors/{vendor_id}?error={url_quote('Program name is required.')}#programs",
+            status_code=303,
+        )
+    db.add(VendorProgram(
+        vendor_id=vendor_id,
+        program_name=program_name,
+        program_type=_normalize_program_type(program_type),
+        threshold_amount=_opt_float(threshold_amount),
+        discount_percent=_opt_float(discount_percent),
+        notes=notes.strip(),
+        is_active=True,  # new programs start active
+    ))
+    db.commit()
+    return RedirectResponse(f"/vendors/{vendor_id}?saved=1#programs", status_code=303)
+
+
+@router.post("/{vendor_id}/programs/{program_id}", response_class=RedirectResponse)
+def vendor_program_update(
+    vendor_id: int,
+    program_id: int,
+    program_name: str = Form(...),
+    program_type: str = Form(VendorProgramType.VOLUME_REBATE),
+    threshold_amount: str = Form(""),
+    discount_percent: str = Form(""),
+    notes: str = Form(""),
+    is_active: bool = Form(False),
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Edit a program's fields. The is_active checkbox doubles as enable/disable."""
+    program = (
+        db.query(VendorProgram)
+        .filter(VendorProgram.id == program_id, VendorProgram.vendor_id == vendor_id)
+        .first()
+    )
+    if program is None:
+        return RedirectResponse(f"/vendors/{vendor_id}", status_code=303)
+    program_name = program_name.strip()
+    if program_name:
+        program.program_name = program_name
+    program.program_type = _normalize_program_type(program_type)
+    program.threshold_amount = _opt_float(threshold_amount)
+    program.discount_percent = _opt_float(discount_percent)
+    program.notes = notes.strip()
+    program.is_active = bool(is_active)
+    db.commit()
+    return RedirectResponse(f"/vendors/{vendor_id}?saved=1#programs", status_code=303)
+
+
+@router.post("/{vendor_id}/programs/{program_id}/delete", response_class=RedirectResponse)
+def vendor_program_delete(
+    vendor_id: int,
+    program_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Hard-delete a program (config row — no history to preserve)."""
+    program = (
+        db.query(VendorProgram)
+        .filter(VendorProgram.id == program_id, VendorProgram.vendor_id == vendor_id)
+        .first()
+    )
+    if program is not None:
+        db.delete(program)
+        db.commit()
+    return RedirectResponse(f"/vendors/{vendor_id}?saved=1#programs", status_code=303)

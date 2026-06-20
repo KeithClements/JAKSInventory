@@ -321,6 +321,13 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     #    too, so a swallowed Alembic failure can't leave this ORM-required column
     #    absent (Vendor.private_label is NOT NULL → every Vendor query would 500). ─
     ("vendors", "private_label", "BOOLEAN NOT NULL DEFAULT 0"),
+
+    # ── Vendor volume discount (PAI 5% over $5k, …): mirror the Alembic 0004
+    #    columns here too. volume_discount_pct snapshots the % applied to a PO;
+    #    list_unit_cost holds each line's pre-discount price (reversible). The
+    #    rule itself reuses the existing vendor_programs table (no new column). ─
+    ("purchase_orders", "volume_discount_pct", "REAL NOT NULL DEFAULT 0"),
+    ("po_lines",        "list_unit_cost",      "REAL NULL"),
 ]
 
 

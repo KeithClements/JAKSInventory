@@ -1451,6 +1451,11 @@ class POService(BaseService):
         po = self._get_po_or_404(line.po_id)
         if po.status not in (POStatus.DRAFT, POStatus.VERBAL_ORDER):
             raise ValueError(f"Cannot edit lines on a {po.status} PO")
+        # A manual unit_cost edit overrides any applied volume discount on THIS
+        # line: drop its list snapshot so "Remove discount" can't later clobber
+        # the hand-typed cost. Re-clicking Apply will re-snapshot at the new value.
+        if "unit_cost" in data and line.list_unit_cost is not None:
+            line.list_unit_cost = None
         for field in ("description", "qty_ordered", "unit_cost", "core_charge_per_unit", "notes"):
             if field in data:
                 setattr(line, field, data[field])
@@ -1474,6 +1479,104 @@ class POService(BaseService):
         # C9 — removing a verbal-order line drops it from on-order.
         self._resync_on_order_if_verbal(po, _pid)
         self.db.commit()
+
+    # ── Vendor volume discount ────────────────────────────────────────────────
+    # A vendor agrees to discount every part when a PO crosses a spend threshold
+    # (e.g. PAI: 5% off when the order exceeds $5,000). The rule lives on the
+    # vendor as a VendorProgram (threshold_amount + discount_percent). Applying it
+    # LOWERS each line's unit_cost (parts only — core charges and freight-in are
+    # left alone), snapshotting the pre-discount price in POLine.list_unit_cost so
+    # it is fully reversible. Lowering the real cost is deliberate: it flows into
+    # landed cost / resale margin AND keeps the 3-way match clean when the vendor
+    # bills the discounted price (POLine.unit_cost already matches).
+
+    @staticmethod
+    def _list_subtotal(po: PurchaseOrder) -> float:
+        """Pre-discount parts subtotal — uses each line's list price when a
+        discount is applied, else its current unit_cost. Eligibility is measured
+        against this so applying the discount can never drop the PO back under
+        its own threshold and un-qualify itself."""
+        return round(
+            sum(
+                (ln.list_unit_cost if ln.list_unit_cost is not None else ln.unit_cost)
+                * ln.qty_ordered
+                for ln in po.lines
+            ),
+            2,
+        )
+
+    @staticmethod
+    def eligible_volume_program(po: PurchaseOrder):
+        """The vendor's best active volume-discount program whose threshold the
+        PO's list subtotal meets, or None. 'Best' = highest discount_percent.
+        Static (reads only po + po.vendor.programs) so the PO workspace context
+        can call it for the nudge without spinning up a service."""
+        list_subtotal = POService._list_subtotal(po)
+        best = None
+        for prog in (po.vendor.programs if po.vendor else []):
+            if not prog.is_active:
+                continue
+            pct = prog.discount_percent or 0.0
+            if pct <= 0:
+                continue
+            if list_subtotal + 1e-6 < (prog.threshold_amount or 0.0):
+                continue
+            if best is None or pct > (best.discount_percent or 0.0):
+                best = prog
+        return best
+
+    def apply_volume_discount(self, po_id: int) -> PurchaseOrder:
+        """Apply the vendor's eligible volume discount to every line. Idempotent
+        re-apply recomputes from the snapshotted list price, so it also sweeps in
+        any lines added since the discount was first applied."""
+        po = self._get_po_or_404(po_id)
+        if po.status not in (POStatus.DRAFT, POStatus.VERBAL_ORDER):
+            raise ValueError(f"Cannot apply a discount to a {po.status} PO")
+        program = self.eligible_volume_program(po)
+        if program is None:
+            raise ValueError("No eligible vendor volume discount for this PO")
+        pct = float(program.discount_percent or 0.0)
+        if pct <= 0:
+            raise ValueError("Vendor program has no discount percent")
+        for line in po.lines:
+            # Snapshot the list price once; re-apply recomputes from the snapshot.
+            if line.list_unit_cost is None:
+                line.list_unit_cost = line.unit_cost
+            line.unit_cost = round(line.list_unit_cost * (1 - pct / 100.0), 2)
+        po.volume_discount_pct = pct
+        self.db.flush()
+        self.audit(
+            entity_type=EntityType.PURCHASE_ORDER,
+            entity_id=po_id,
+            action=AuditAction.EDITED,
+            old_value="volume discount: none",
+            new_value=f"volume discount {pct:g}% applied (parts only)",
+        )
+        self.db.commit()
+        return po
+
+    def remove_volume_discount(self, po_id: int) -> PurchaseOrder:
+        """Restore every discounted line to its pre-discount list price."""
+        po = self._get_po_or_404(po_id)
+        if po.status not in (POStatus.DRAFT, POStatus.VERBAL_ORDER):
+            raise ValueError(f"Cannot change the discount on a {po.status} PO")
+        had = po.volume_discount_pct or 0.0
+        for line in po.lines:
+            if line.list_unit_cost is not None:
+                line.unit_cost = line.list_unit_cost
+                line.list_unit_cost = None
+        po.volume_discount_pct = 0.0
+        self.db.flush()
+        if had:
+            self.audit(
+                entity_type=EntityType.PURCHASE_ORDER,
+                entity_id=po_id,
+                action=AuditAction.EDITED,
+                old_value=f"volume discount {had:g}% applied",
+                new_value="volume discount: removed",
+            )
+        self.db.commit()
+        return po
 
     def _get_po_or_404(self, po_id: int) -> PurchaseOrder:
         po = self.db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()

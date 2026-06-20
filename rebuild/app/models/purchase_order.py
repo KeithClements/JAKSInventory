@@ -62,6 +62,16 @@ class PurchaseOrder(QBOSyncMixin, Base):
     # ── Costs ────────────────────────────────────────────────────────────────
     freight_in_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
+    # Vendor volume discount snapshot: the % actually applied to THIS PO's line
+    # costs (0 = none). Snapshotted from the vendor's VendorProgram at apply time
+    # so a later edit to the vendor's rule never rewrites a historical PO. The
+    # pre-discount price lives per-line in POLine.list_unit_cost (reversible +
+    # lets the UI show the struck list price). Parts only — core charges and
+    # freight-in are never discounted. See POService.apply_volume_discount.
+    volume_discount_pct: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default=text("0")
+    )
+
     # ── Dates ────────────────────────────────────────────────────────────────
     ordered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     expected_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -136,6 +146,12 @@ class POLine(Base):
     qty_billed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     unit_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     core_charge_per_unit: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    # Pre-discount unit cost — set when a vendor volume discount is applied so the
+    # discount is reversible and the original list price can be shown struck out.
+    # NULL = no discount on this line; when set, unit_cost holds the discounted
+    # value (= round(list_unit_cost * (1 - pct/100), 2)).
+    list_unit_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Allocated freight-in cost per unit (computed by POService after receipt)
     landed_cost_per_unit: Mapped[float | None] = mapped_column(Float, nullable=True)

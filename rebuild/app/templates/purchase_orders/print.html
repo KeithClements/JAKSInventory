@@ -315,6 +315,18 @@
   {# ── Totals ───────────────────────────────────────────────────────────── #}
   <div class="tot-wrap">
     <div class="tots">
+      {% if vol_applied %}
+      {# Volume-discount waterfall — po.subtotal already nets the discount, so the
+         Subtotal line below is the discounted figure. #}
+      <div class="row">
+        <span class="lbl">List Subtotal</span>
+        <span class="val">${{ "%.2f"|format(vol_list_subtotal) }}</span>
+      </div>
+      <div class="row">
+        <span class="lbl">Volume Discount ({{ '%g'|format(po.volume_discount_pct) }}%)</span>
+        <span class="val">−${{ "%.2f"|format(vol_savings) }}</span>
+      </div>
+      {% endif %}
       <div class="row">
         <span class="lbl">Subtotal</span>
         <span class="val">${{ "%.2f"|format(po.subtotal) }}</span>

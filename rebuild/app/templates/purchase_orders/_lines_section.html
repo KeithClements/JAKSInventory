@@ -1,4 +1,43 @@
 <div id="po-lines-section">
+
+  {# ── Vendor volume discount: nudge (eligible) → applied strip ──────────────
+     The whole section is the HTMX swap target, so Apply/Remove re-render this
+     banner in place. Parts only — core charges and freight-in are untouched. #}
+  {% if vol_applied %}
+  <div class="mb-3 flex items-center justify-between gap-3 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5">
+    <div class="flex items-center gap-2 text-sm text-green-800">
+      <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+      <span>
+        {{ po.vendor.name }} volume discount
+        <span class="font-semibold">{{ '%g' | format(po.volume_discount_pct) }}%</span>
+        applied to all parts — <span class="font-semibold tabular-nums">−${{ '%.2f' | format(vol_savings) }}</span>
+      </span>
+    </div>
+    {% if editable %}
+    <button type="button"
+            hx-post="/purchase-orders/{{ po.id }}/remove-volume-discount"
+            hx-target="#po-lines-section" hx-swap="outerHTML"
+            class="text-xs font-medium text-gray-500 hover:text-red-600 transition-colors shrink-0">Remove</button>
+    {% endif %}
+  </div>
+  {% elif editable and vol_program %}
+  <div class="mb-3 flex items-center justify-between gap-3 rounded-lg border border-brand-200 bg-brand-50 px-4 py-2.5">
+    <div class="flex items-center gap-2 text-sm text-brand-800">
+      <svg class="w-4 h-4 text-brand-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7 7h.01M7 3h5a1.99 1.99 0 011.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.99 1.99 0 013 12V7a4 4 0 014-4z"/></svg>
+      <span>
+        This PO qualifies for {{ po.vendor.name }}'s
+        <span class="font-semibold">{{ '%g' | format(vol_program.discount_percent) }}% volume discount</span>
+        (orders over <span class="tabular-nums">${{ "{:,.0f}".format(vol_program.threshold_amount or 0) }}</span>)
+        — saves about <span class="font-semibold tabular-nums">${{ '%.2f' | format(vol_savings) }}</span>.
+      </span>
+    </div>
+    <button type="button"
+            hx-post="/purchase-orders/{{ po.id }}/apply-volume-discount"
+            hx-target="#po-lines-section" hx-swap="outerHTML"
+            class="btn-primary btn-sm shrink-0">Apply {{ '%g' | format(vol_program.discount_percent) }}% discount</button>
+  </div>
+  {% endif %}
+
   <div class="card">
     <div class="card-header">
       <h2 class="card-title">Line Items</h2>
@@ -73,16 +112,24 @@
 
             <td class="px-4 py-4 align-middle text-sm text-gray-700 text-right tabular-nums">
               {% if editable %}
-              <input type="number" value="{{ '%.2f' | format(line.unit_cost) }}" name="unit_cost"
-                     step="0.01" min="0"
-                     hx-post="/purchase-orders/{{ po.id }}/lines/{{ line.id }}"
-                     hx-target="#po-lines-section"
-                     hx-swap="outerHTML"
-                     hx-trigger="change delay:400ms"
-                     class="w-24 rounded border border-transparent px-1.5 py-1 text-sm text-right font-mono
-                            hover:border-gray-200 focus:border-brand-400 focus:ring-1 focus:ring-brand-400
-                            focus:outline-none bg-transparent tabular-nums" />
+              <div class="flex flex-col items-end gap-0.5">
+                <input type="number" value="{{ '%.2f' | format(line.unit_cost) }}" name="unit_cost"
+                       step="0.01" min="0"
+                       hx-post="/purchase-orders/{{ po.id }}/lines/{{ line.id }}"
+                       hx-target="#po-lines-section"
+                       hx-swap="outerHTML"
+                       hx-trigger="change delay:400ms"
+                       class="w-24 rounded border border-transparent px-1.5 py-1 text-sm text-right font-mono
+                              hover:border-gray-200 focus:border-brand-400 focus:ring-1 focus:ring-brand-400
+                              focus:outline-none bg-transparent tabular-nums" />
+                {% if line.list_unit_cost is not none and line.list_unit_cost > line.unit_cost %}
+                <span class="text-[10px] text-gray-400 line-through tabular-nums" title="List price before volume discount">${{ '%.2f' | format(line.list_unit_cost) }}</span>
+                {% endif %}
+              </div>
               {% else %}
+              {% if line.list_unit_cost is not none and line.list_unit_cost > line.unit_cost %}
+              <span class="text-[10px] text-gray-400 line-through tabular-nums mr-1" title="List price before volume discount">${{ '%.2f' | format(line.list_unit_cost) }}</span>
+              {% endif %}
               <span class="text-sm tabular-nums">${{ '%.2f' | format(line.unit_cost) }}</span>
               {% endif %}
             </td>
@@ -138,6 +185,21 @@
         </tbody>
 
         <tfoot class="border-t border-gray-100 bg-gray-50/50">
+          {% if vol_applied %}
+          {# Volume-discount waterfall: list → discount → (discounted) subtotal.
+             po.subtotal already reflects the discounted unit costs, so the
+             "Subtotal" row below is the net figure. #}
+          <tr>
+            <td colspan="{{ 5 if editable else 4 }}" class="px-4 py-1.5 text-right text-xs text-gray-400">List Subtotal</td>
+            <td class="px-4 py-1.5 text-right text-xs text-gray-500 tabular-nums">${{ '%.2f' | format(vol_list_subtotal) }}</td>
+            <td colspan="{{ 3 if editable else (2 + (1 if po.core_total > 0 else 0)) }}"></td>
+          </tr>
+          <tr>
+            <td colspan="{{ 5 if editable else 4 }}" class="px-4 py-1.5 text-right text-xs text-green-600">Volume discount ({{ '%g' | format(po.volume_discount_pct) }}%)</td>
+            <td class="px-4 py-1.5 text-right text-xs text-green-600 tabular-nums">−${{ '%.2f' | format(vol_savings) }}</td>
+            <td colspan="{{ 3 if editable else (2 + (1 if po.core_total > 0 else 0)) }}"></td>
+          </tr>
+          {% endif %}
           <tr>
             <td colspan="{{ 5 if editable else 4 }}" class="px-4 py-2.5 text-right text-xs text-gray-500 font-medium">Subtotal</td>
             <td class="px-4 py-2.5 text-right text-sm font-bold text-gray-800 tabular-nums">${{ '%.2f' | format(po.subtotal) }}</td>
