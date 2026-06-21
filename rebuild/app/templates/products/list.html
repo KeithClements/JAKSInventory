@@ -410,6 +410,15 @@
               {% if p.special_order_only %}
               <span class="inline-block px-1 py-0 rounded text-[10px] font-semibold bg-sky-50 text-sky-600 border border-sky-100">SO</span>
               {% endif %}
+              {# Vendor availability — out_of_stock hides from storefront push;
+                 discontinued products are deactivated (won't list here). #}
+              {% if p.vendor_availability == 'out_of_stock' %}
+              <span class="inline-block px-1 py-0 rounded text-[10px] font-semibold bg-red-50 text-red-600 border border-red-100"
+                    title="Vendor reports this part out of stock — hidden from the storefront push">Vendor OOS</span>
+              {% elif p.vendor_availability == 'discontinued' %}
+              <span class="inline-block px-1 py-0 rounded text-[10px] font-semibold bg-gray-100 text-gray-600 border border-gray-200"
+                    title="Vendor discontinued this part">Disc.</span>
+              {% endif %}
             </div>
           </td>
 

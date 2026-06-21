@@ -237,6 +237,13 @@ class Product(Base):
     last_enriched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     enrichment_source: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     needs_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Denormalized effective vendor availability (worst-case roll-up across this
+    # product's active vendor sources — see ProductImportService). '' = unknown.
+    # Cached here (like qty_on_hand) so the product list badge + the Shopify
+    # bulk-push exclusion filter are one indexed read, not a per-row source join.
+    # Source of truth is ProductVendorSource.availability_status; the importer is
+    # the only writer and keeps the two in sync.
+    vendor_availability: Mapped[str] = mapped_column(String(20), nullable=False, default="")
 
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -390,6 +397,13 @@ class ProductVendorSource(Base):
     vendor_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     is_preferred: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     lead_time_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Per-vendor supply status from the scraper feed (constants.VendorAvailability:
+    # in_stock / out_of_stock / discontinued). NULL = unknown / never reported —
+    # the importer never zeroes a known value from a blank cell. This is the vendor's
+    # availability, NOT our own stock (qty_on_hand, ledger-owned). The product-level
+    # denormalized roll-up lives on Product.vendor_availability.
+    availability_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    availability_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_cost_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

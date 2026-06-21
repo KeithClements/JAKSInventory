@@ -23,6 +23,17 @@ class ProductStatus(StrEnum):
     SPECIAL_ORDER = "special_order"
 
 
+class VendorAvailability(StrEnum):
+    """Per-vendor supply status reported by the scraper feed (NOT our own stock,
+    which is the InventoryTransaction ledger). Blank/None = unknown (importer
+    leaves it untouched). Drives the owner-locked "full automation" policy:
+    out_of_stock → product hidden from the storefront push; discontinued →
+    product deactivated. See ProductImportService._apply_availability_to_product."""
+    IN_STOCK      = "in_stock"
+    OUT_OF_STOCK  = "out_of_stock"
+    DISCONTINUED  = "discontinued"
+
+
 class ProductReturnPolicy(StrEnum):
     STANDARD      = "standard"
     NON_RETURNABLE = "non_returnable"

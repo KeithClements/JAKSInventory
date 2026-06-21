@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 import re
 
-from app.constants import BRANDS, Permission
+from app.constants import BRANDS, Permission, VendorAvailability
 from app.models.product import Product
 from app.services.base import BaseService
 from app.settings_utils import get_setting_value_db
@@ -650,6 +650,10 @@ class ShopifyService(BaseService):
         GID (i.e. is linked). Used by the scheduled/nightly sync."""
         ids = [r[0] for r in self.db.query(Product.id).filter(
             Product.is_active == True,  # noqa: E712
+            # Vendor full-automation policy: a part the vendor can't supply
+            # (out_of_stock / discontinued) is excluded from the storefront feed.
+            Product.vendor_availability.notin_(
+                (VendorAvailability.OUT_OF_STOCK, VendorAvailability.DISCONTINUED)),
             Product.shopify_inventory_item_id.like("gid://%")).all()]
         return self.sync_inventory(ids)
 
@@ -665,6 +669,10 @@ class ShopifyService(BaseService):
         if product_ids is None:
             product_ids = [r[0] for r in self.db.query(Product.id).filter(
                 Product.is_active == True,  # noqa: E712
+                # Vendor full-automation policy: skip parts the vendor lists as
+                # out_of_stock / discontinued (an explicit id list still wins).
+                Product.vendor_availability.notin_(
+                    (VendorAvailability.OUT_OF_STOCK, VendorAvailability.DISCONTINUED)),
                 Product.shopify_product_id.like("gid://%")).all()]
         content = self.update_batch(product_ids)
         stock = self.sync_inventory(product_ids)

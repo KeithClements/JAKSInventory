@@ -20,7 +20,7 @@
             <input type="radio" name="mode" value="full" x-model="mode" class="form-checkbox mt-0.5"/>
             <span>
               <span class="block text-sm font-semibold text-gray-800">Full Product Import</span>
-              <span class="block text-xs text-gray-500">Create new products from the PAI scraper (Shopify export). Skips SKUs that already exist.</span>
+              <span class="block text-xs text-gray-500">Create new products AND refresh sell price / cost / vendor availability on ones that already exist. One file can carry new + changed + availability rows.</span>
             </span>
           </label>
           <label class="flex-1 flex items-start gap-2.5 rounded-lg border px-3 py-2.5 cursor-pointer"
@@ -53,7 +53,7 @@
         </div>
         <div class="mt-2 text-xs text-gray-500 space-y-2">
           <p x-show="sourceType==='sell'">
-            Re-runs the scraper's standard Shopify CSV against existing products. Reads <code>Variant SKU</code> + <code>Variant Price</code> + <code>Variant Compare At Price</code> always; <strong>also</strong> reads <code>Our Cost</code>/<code>pai_cost</code> and <code>Manufacturer</code> when the scraper emits them. Updates only what's present in the file — never creates products. Shopify image-only rows are silently skipped. See <code>SCRAPER_REQUIREMENTS.md</code> for the columns the scraper should emit.
+            Re-runs the scraper's standard Shopify CSV against existing products. Reads <code>Variant SKU</code> + <code>Variant Price</code> + <code>Variant Compare At Price</code> always; <strong>also</strong> reads <code>Our Cost</code>/<code>pai_cost</code>, <code>Manufacturer</code>, and <code>availability</code> when the scraper emits them. <code>availability=out_of_stock</code> hides the part from the storefront push; <code>discontinued</code> deactivates it. Updates only what's present in the file — never creates products (use <em>Full Product Import</em> to add new parts in the same file). Shopify image-only rows are silently skipped. See <code>SCRAPER_REQUIREMENTS.md</code> for the columns the scraper should emit.
           </p>
           <p x-show="sourceType==='pai_cost'">Needs a SKU column + a true cost column (<code>pai_cost</code>, <code>vendor_cost</code>, or <code>cost</code>). Updates the PAI vendor_cost and appends cost history. (The Shopify export has no cost column — use <em>Sell price</em> for that.)</p>
           <p x-show="sourceType==='competitor'">Columns: <code>sku</code>, <code>competitor_name</code>, <code>competitor_part_number</code>, <code>competitor_brand</code>, <code>price</code>, <code>shipping_price</code>, <code>core_charge</code>, <code>availability_status</code>, <code>url</code>, <code>source</code>, <code>confidence</code>, <code>notes</code>. Updates competitor_prices + appends price history.</p>

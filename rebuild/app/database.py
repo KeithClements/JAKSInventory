@@ -328,6 +328,14 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     #    rule itself reuses the existing vendor_programs table (no new column). ─
     ("purchase_orders", "volume_discount_pct", "REAL NOT NULL DEFAULT 0"),
     ("po_lines",        "list_unit_cost",      "REAL NULL"),
+
+    # ── Vendor availability sync (scraper feed): mirror the Alembic 0005 columns
+    #    here too, so a swallowed Alembic failure can't leave Product.vendor_availability
+    #    absent (it's NOT NULL → every Product query would 500). Per-vendor status
+    #    on the source; denormalized worst-case roll-up on the product. ──────────
+    ("product_vendor_sources", "availability_status",     "TEXT NULL"),
+    ("product_vendor_sources", "availability_updated_at", "DATETIME NULL"),
+    ("products",               "vendor_availability",     "TEXT NOT NULL DEFAULT ''"),
 ]
 
 

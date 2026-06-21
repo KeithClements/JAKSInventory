@@ -42,7 +42,9 @@ from datetime import datetime
 
 from sqlalchemy import func
 
-from app.constants import CrossRefStatus, CrossRefType, ProductStatus
+from app.constants import (
+    CrossRefStatus, CrossRefType, ProductStatus, VendorAvailability,
+)
 from app.services.classification_service import ClassificationService
 from app.services.sku_service import (
     assemble_sku, derive_category_code, engine_code as _engine_code,
@@ -185,6 +187,7 @@ CANONICAL_IMPORT_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("is_reman",           "Is Reman",            "1/true/yes — activates the core lifecycle"),
     ("unit_of_measure",    "Unit of Measure",     "Defaults to EA"),
     ("pack_qty",           "Pack Qty",            "Defaults to 1"),
+    ("availability",       "Vendor Availability", "in_stock / out_of_stock / discontinued — out hides from storefront, discontinued deactivates"),
 )
 CANONICAL_FIELD_KEYS = {k for k, _, _ in CANONICAL_IMPORT_FIELDS}
 
@@ -236,7 +239,65 @@ _HEADER_GUESSES: dict[str, str] = {
     "uom": "unit_of_measure", "unit": "unit_of_measure",
     "unit of measure": "unit_of_measure",
     "pack qty": "pack_qty", "pack": "pack_qty", "qty per pack": "pack_qty",
+    # vendor availability
+    "availability": "availability", "vendor availability": "availability",
+    "availability status": "availability", "stock status": "availability",
+    "in stock": "availability", "stock state": "availability",
 }
+
+
+# ── Vendor availability (scraper feed) ────────────────────────────────────────
+# Free-text feed value → canonical VendorAvailability. Tokens are normalized to
+# lowercase letters-only (digits/punct dropped), so "Out of Stock" / "out-of-stock"
+# / "OOS" all land together. An UNRECOGNIZED token returns "" (unknown) so the
+# importer leaves the existing value untouched — never guesses a status.
+_AVAIL_DISC = {
+    "discontinued", "disc", "dead", "obsolete", "nla", "no_longer_available",
+    "eol", "cancelled", "canceled", "deleted", "dropped",
+}
+_AVAIL_OUT = {
+    "out_of_stock", "out", "oos", "backorder", "backordered", "back_order",
+    "unavailable", "no", "n", "sold_out", "outofstock", "nostock", "no_stock",
+    "on_backorder",
+}
+_AVAIL_IN = {
+    "in_stock", "instock", "in", "available", "yes", "y", "stock", "stocked",
+    "active", "avail", "available_now", "ready",
+}
+
+
+def normalize_availability(raw) -> str:
+    """Map a feed availability cell → a VendorAvailability value, or '' (unknown).
+
+    '' means "don't touch" — a blank cell or an unrecognized token never changes
+    the stored status, so the scraper can omit the column per-row safely."""
+    token = re.sub(r"[^a-z]+", "_", str(raw or "").strip().lower()).strip("_")
+    if not token:
+        return ""
+    if token in _AVAIL_DISC:
+        return VendorAvailability.DISCONTINUED
+    if token in _AVAIL_OUT:
+        return VendorAvailability.OUT_OF_STOCK
+    if token in _AVAIL_IN:
+        return VendorAvailability.IN_STOCK
+    return ""
+
+
+def _effective_availability(statuses: list[str]) -> str:
+    """Worst-case roll-up across a product's sources, but kept conservative:
+    any in-stock source wins (product is sellable); else any out-of-stock wins
+    (hide, may return); only when EVERY known source is discontinued do we call
+    the product discontinued (→ deactivate). Unknown/'' values are ignored."""
+    vals = [s for s in statuses if s]
+    if not vals:
+        return ""
+    if any(s == VendorAvailability.IN_STOCK for s in vals):
+        return VendorAvailability.IN_STOCK
+    if any(s == VendorAvailability.OUT_OF_STOCK for s in vals):
+        return VendorAvailability.OUT_OF_STOCK
+    if all(s == VendorAvailability.DISCONTINUED for s in vals):
+        return VendorAvailability.DISCONTINUED
+    return VendorAvailability.OUT_OF_STOCK  # mixed (no in-stock) → safe: hide, don't kill
 
 
 def _norm_header(h: str) -> str:
@@ -358,6 +419,10 @@ class ProductImportService(BaseService):
                     "barcode": _get(row, "variant barcode"),
                     "grams": _get(row, "variant grams"),
                     "status": _get(row, "status"),
+                    # Vendor supply status (optional scraper column). Blank/unknown
+                    # leaves the ERP value untouched; see normalize_availability.
+                    "availability": _get(row, "availability", "vendor availability",
+                                         "availability status", "stock status"),
                     # Shopify exports carry these natively; the scraper feed may
                     # too. Blank when absent — create-time fill only, so hand
                     # edits in the ERP's SEO card are never overwritten.
@@ -465,6 +530,9 @@ class ProductImportService(BaseService):
                 "barcode":        "",
                 "grams":          grams_raw,
                 "status":         r.get("status", "active").strip() or "active",
+                # Vendor supply status (optional col). Blank/unknown = don't touch.
+                "availability":   (r.get("availability") or r.get("vendor_availability")
+                                   or r.get("stock_status") or "").strip(),
                 "pai_part":       sku,                               # raw PAI # for traceability
                 "oem":            oem,
                 "apps":           apps,
@@ -649,6 +717,7 @@ class ProductImportService(BaseService):
                 "barcode":         vals.get("barcode", "").strip(),
                 "grams":           grams_raw,
                 "status":          vals.get("status", "active").strip() or "active",
+                "availability":    vals.get("availability", "").strip(),
                 "pai_part":        vals.get("vendor_part_number", "").strip() or sku,
                 "oem":             oem,
                 "apps":            apps,
@@ -697,7 +766,10 @@ class ProductImportService(BaseService):
             "skipped_no_sku": 0, "skipped_sku_collision": 0, "sku_collisions": [],
             "cross_refs": 0, "applications": 0, "images": 0,
             "categories_created": 0, "vendor_sources": 0, "needs_review": 0,
-            "classified": 0, "sample": [],
+            "classified": 0,
+            "availability_updated": 0, "out_of_stock_flagged": 0,
+            "discontinued_deactivated": 0, "reactivation_suggested": 0,
+            "sample": [],
         }
         if not rows:
             return summary
@@ -816,7 +888,20 @@ class ProductImportService(BaseService):
                     summary["pricing_refreshed"] += 1
                 if has_cost:
                     summary["costs_updated"] += 1
-                if not has_price and not has_cost:
+
+                # Vendor availability (+ full-automation policy). Counts in dry-run,
+                # writes on commit. Loaded only when the row actually carries a
+                # recognized status, so a normal price-only feed pays nothing.
+                avail_did = bool(normalize_availability(p.get("availability")))
+                if avail_did:
+                    a_product = self.db.get(Product, prod_id)
+                    if a_product is not None:
+                        self._apply_availability_to_product(
+                            a_product, p.get("availability"), summary,
+                            source=self.db.get(ProductVendorSource, src_id),
+                            dry_run=dry_run,
+                        )
+                if not has_price and not has_cost and not avail_did:
                     summary["skipped_existing"] += 1
 
                 if not dry_run:
@@ -893,6 +978,14 @@ class ProductImportService(BaseService):
             summary["applications"] += n_app
             summary["images"] += n_img
             summary["vendor_sources"] += 1
+            # Vendor availability on a brand-new product (single source → eff = canon).
+            new_avail = normalize_availability(p.get("availability"))
+            if new_avail:
+                summary["availability_updated"] += 1
+                if new_avail == VendorAvailability.DISCONTINUED:
+                    summary["discontinued_deactivated"] += 1   # created deactivated
+                elif new_avail == VendorAvailability.OUT_OF_STOCK:
+                    summary["out_of_stock_flagged"] += 1
 
             if len(summary["sample"]) < 5:
                 summary["sample"].append({
@@ -976,16 +1069,27 @@ class ProductImportService(BaseService):
                 is_reman=p_is_reman,
                 unit_of_measure=p_uom,
                 pack_qty=p.get("pack_qty") or 1,
+                # Vendor availability roll-up (single source on a new product).
+                vendor_availability=new_avail,
             )
+            # Full-automation policy at create time: a part the vendor already lists
+            # as discontinued is created deactivated (kept for catalog/history).
+            if new_avail == VendorAvailability.DISCONTINUED:
+                product.is_active = False
+                product.status = ProductStatus.DISCONTINUED
             self.db.add(product)
             self.db.flush()
 
-            self.db.add(ProductVendorSource(
+            new_src = ProductVendorSource(
                 product_id=product.id, vendor_id=row_vendor_id,
                 vendor_part_number=p["pai_part"], vendor_sku=sku,
                 vendor_cost=_to_float(p.get("cost")) or 0.0,
                 is_preferred=True,
-            ))
+            )
+            if new_avail:
+                new_src.availability_status = new_avail
+                new_src.availability_updated_at = datetime.utcnow()
+            self.db.add(new_src)
             # Dedupe OEM refs on the number: feeds list the same part number under
             # multiple brands (e.g. VOLVO + MACK share an OEM #), but the R3 unique
             # index is (product_id, ref_type, ref_number) — the second insert would
@@ -1137,6 +1241,8 @@ class ProductImportService(BaseService):
             "unchanged": 0, "over_threshold_skipped": 0,
             "costs_updated": 0, "skipped_no_vendor_source": 0,
             "manufacturer_updated": 0, "manufacturer_unmapped_sample": [],
+            "availability_updated": 0, "out_of_stock_flagged": 0,
+            "discontinued_deactivated": 0, "reactivation_suggested": 0,
             "sample": [], "over_threshold_sample": [],
         }
 
@@ -1174,6 +1280,8 @@ class ProductImportService(BaseService):
         _OUR_COST_KEYS = ("our cost", "our_cost") + _COST_KEYS  # adds our cost
         _MFG_KEYS = ("manufacturer", "engine make", "engine_make",
                      "engine_manufacturer", "make")
+        _AVAIL_KEYS = ("availability", "vendor availability", "vendor_availability",
+                       "stock status", "stock_status", "stock", "stock state")
         # Case-insensitive canonical mapping: "CUMMINS" / "cummins" → "Cummins"
         _mfg_lookup = {m.lower(): m for m in _MFG_CANON}
         seen_handles: set[str] = set()
@@ -1184,11 +1292,12 @@ class ProductImportService(BaseService):
             compare_raw = _get(row, *_COMPARE_KEYS)
             cost_raw = _get(row, *_OUR_COST_KEYS)
             mfg_raw = _get(row, *_MFG_KEYS)
+            avail_raw = _get(row, *_AVAIL_KEYS)
 
             # Shopify image-only rows: SKU blank AND no useful columns. The
             # Handle column links them to the parent — count, never warn.
             if not sku and not price_raw and not compare_raw \
-                    and not cost_raw and not mfg_raw:
+                    and not cost_raw and not mfg_raw and not avail_raw:
                 summary["image_rows_skipped"] += 1
                 continue
             if not sku:
@@ -1219,8 +1328,9 @@ class ProductImportService(BaseService):
                 # so we don't lose data on a truly unknown make.
                 new_mfg = mfg_in
 
+            avail_canon = normalize_availability(avail_raw)
             if (new_price is None and new_compare is None
-                    and new_cost is None and not mfg_in):
+                    and new_cost is None and not mfg_in and not avail_canon):
                 summary["skipped_no_price"] += 1
                 continue
             summary["matched"] += 1
@@ -1229,6 +1339,21 @@ class ProductImportService(BaseService):
             if product is None:
                 summary["skipped_no_product"] += 1
                 continue
+
+            # Vendor availability (+ full-automation policy). Independent of the
+            # price/cost/manufacturer writes — applied even on a row that carries
+            # only availability. Resolve the source the same way cost does (the
+            # `vendor` column wins, else the SKU prefix).
+            avail_did = bool(avail_canon)
+            if avail_did:
+                av_code = (_get(row, "vendor") or "").strip().upper() or _vendor_code_from_sku(sku)
+                av_vendor = _vendor_for(av_code)
+                av_src = self.db.query(ProductVendorSource).filter(
+                    ProductVendorSource.product_id == pid,
+                    ProductVendorSource.vendor_id == av_vendor.id,
+                ).first() if av_vendor is not None else None
+                self._apply_availability_to_product(
+                    product, avail_raw, summary, source=av_src, dry_run=dry_run)
 
             old_price = product.price_override
             old_compare = product.compare_at_price
@@ -1289,7 +1414,7 @@ class ProductImportService(BaseService):
                             cost_change = True
 
             if (not price_change and not compare_change
-                    and not mfg_change and not cost_change):
+                    and not mfg_change and not cost_change and not avail_did):
                 # If only an over-threshold row landed here, we already counted it.
                 if not over_threshold:
                     summary["unchanged"] += 1
@@ -1520,6 +1645,73 @@ class ProductImportService(BaseService):
                 prod.manufacturer = mfg
         self.db.commit() if not dry_run else self.db.rollback()
         return summary
+
+    # ══ Vendor availability — owner-locked "full automation" policy ════════════
+    def _apply_availability_to_product(
+        self, product: Product, raw_status, summary: dict, *,
+        source: ProductVendorSource | None = None, dry_run: bool,
+    ) -> None:
+        """Apply a feed availability cell to an EXISTING product (+ its vendor
+        source) and enforce the owner's full-automation policy:
+
+          • out_of_stock  → product hidden from the storefront push (via the
+                            denormalized Product.vendor_availability the Shopify
+                            bulk-sync filters on). Non-destructive, auto-reverses
+                            when the feed reports it back in stock.
+          • discontinued  → product deactivated (is_active=False, status=DISCONTINUED).
+                            Only when EVERY active source is discontinued.
+          • back in stock → if the product was previously deactivated, we do NOT
+                            silently re-activate (that's the dangerous direction);
+                            we flag needs_review so the owner reactivates on purpose.
+
+        Counts always increment (so dry-run previews are accurate); writes are
+        gated on dry_run. A blank/unknown cell is a no-op."""
+        canon = normalize_availability(raw_status)
+        if not canon:
+            return
+        summary["availability_updated"] = summary.get("availability_updated", 0) + 1
+
+        # Effective status = roll-up across the product's active sources, with the
+        # source we're stamping contributing `canon` (its new value).
+        statuses: list[str] = []
+        for s_obj in self.db.query(ProductVendorSource).filter(
+            ProductVendorSource.product_id == product.id,
+            ProductVendorSource.is_active == True,  # noqa: E712
+        ):
+            if source is not None and s_obj.id == source.id:
+                statuses.append(canon)
+            elif s_obj.availability_status:
+                statuses.append(s_obj.availability_status)
+        if source is None or source.id is None:
+            statuses.append(canon)
+        eff = _effective_availability(statuses) or canon
+
+        deactivate = (eff == VendorAvailability.DISCONTINUED and product.is_active)
+        reactivate_flag = (
+            eff == VendorAvailability.IN_STOCK
+            and not product.is_active
+            and (product.status or "") == ProductStatus.DISCONTINUED
+        )
+        if deactivate:
+            summary["discontinued_deactivated"] = summary.get("discontinued_deactivated", 0) + 1
+        elif eff == VendorAvailability.OUT_OF_STOCK:
+            summary["out_of_stock_flagged"] = summary.get("out_of_stock_flagged", 0) + 1
+        elif reactivate_flag:
+            summary["reactivation_suggested"] = summary.get("reactivation_suggested", 0) + 1
+
+        if dry_run:
+            return
+        if source is not None:
+            source.availability_status = canon
+            source.availability_updated_at = datetime.utcnow()
+        product.vendor_availability = eff
+        if deactivate:
+            product.is_active = False
+            product.status = ProductStatus.DISCONTINUED
+        elif reactivate_flag:
+            # Came back in stock while deactivated — surface for a human, don't
+            # auto-resurrect (the owner may have killed it for another reason).
+            product.needs_review = True
 
     # ══ helpers ════════════════════════════════════════════════════════════════
     def _resolve_category(self, type_name: str, cache: dict, summary: dict, dry_run: bool) -> int | None:

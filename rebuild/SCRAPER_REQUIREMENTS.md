@@ -20,9 +20,18 @@ Adds to your Shopify-format export (everything else unchanged):
 |-----------------------|------------------------------|-------------------|--------------------------------------------------------|
 | `Our Cost`            | Authenticated dealer price   | `4.20`            | Writes `ProductVendorSource.vendor_cost` (PAI vendor) + cost-history row |
 | `Manufacturer`        | Engine make for the part     | `Cummins`         | Writes `Product.manufacturer` (canonicalized)          |
+| `availability`        | Vendor portal stock state    | `out_of_stock`    | Writes per-vendor availability; **auto-hides OOS parts from the storefront push, auto-deactivates discontinued parts** |
+| `change_type`         | Your own delta bookkeeping   | `price`           | Optional / ignored by the ERP — lets you ship *delta-only* files (see below) |
 
-Both columns are **optional** — the ERP only updates each field when its column is
-present in the row, so you can roll them in independently.
+All four columns are **optional** — the ERP only updates each field when its column is
+present (and non-blank) in the row, so you can roll them in independently. Any column
+the ERP doesn't recognize is silently ignored, so extra bookkeeping columns are safe.
+
+> **Adding NEW products in the same file:** the *Pricing Update* import never creates
+> products. To add new parts AND refresh price/cost/availability on existing ones in a
+> single pass, use **Full Product Import** — it creates missing SKUs and updates the
+> rest. So one combined export (new + changed + availability) goes through Full Import;
+> a price/availability-only refresh of the existing catalog goes through Pricing Update.
 
 ---
 
@@ -122,6 +131,72 @@ catalog level until this column exists.
 
 ---
 
+## Column 3: `availability`
+
+The vendor's supply state for the part — **not** our stock (we don't carry these;
+they're special-order). This is the signal that a part can or can't be sourced.
+
+### Where to get it
+The authenticated vendor portal shows it on the part page: "In Stock", "Out of
+Stock / Backordered", or "Discontinued / No Longer Available". Use whatever field
+drives your own buy/no-buy decision.
+
+### How to emit it
+- Header: literally `availability` (also accepted: `vendor_availability`,
+  `stock_status`, `stock`).
+- Value: free text — the ERP normalizes it. Recognized buckets:
+  - **in stock** → `in_stock`, `in stock`, `available`, `yes`, `stock`
+  - **out of stock** → `out_of_stock`, `out of stock`, `oos`, `backorder`,
+    `backordered`, `unavailable`, `sold out`
+  - **discontinued** → `discontinued`, `disc`, `obsolete`, `nla`, `eol`,
+    `no longer available`
+- Blank cell or any unrecognized word = **"don't touch"** — the ERP leaves the
+  stored status alone. It never guesses.
+
+### What the ERP does (owner-locked policy: full automation)
+- **`out_of_stock`** → the product is **hidden from the storefront push**
+  (excluded from the Shopify bulk sync/publish via a cached flag). Nothing is
+  deleted; when a later feed reports it `in_stock` again, it returns to the push
+  automatically.
+- **`discontinued`** → the product is **deactivated** (`is_active=false`,
+  status `discontinued`). It drops out of the catalog/storefront feed. This only
+  fires when *every* active vendor source for the product is discontinued.
+- **back `in_stock` after being discontinued/deactivated** → the ERP does **not**
+  silently re-activate it (that's the dangerous direction). It flags the product
+  **needs review** so the owner reactivates it on purpose.
+- Result counts appear in the import summary: `availability_updated`,
+  `out_of_stock_flagged`, `discontinued_deactivated`, `reactivation_suggested`.
+
+> ⚠️ Because `discontinued` deactivates, only send it when the vendor truly drops
+> the part. If you'd rather the ERP auto-detect a part that simply *vanished* from
+> the feed, you must send a **full** catalog sweep (not a delta) — a missing row is
+> not the same as an explicit `discontinued`, and the ERP never deactivates on
+> absence.
+
+---
+
+## Delta exports & `change_type` (export only the changes)
+
+You don't have to re-send the whole 13k-row catalog every run. The ERP import is
+**idempotent** — a row whose price/cost/availability already matches is reported as
+`unchanged` and nothing is written — so a smaller "only what changed since last run"
+file is safe and faster.
+
+- Keep your own snapshot of the last export and diff against it; emit a row only
+  when something moved (price, cost, availability) or the part is new.
+- Optionally tag each row with a `change_type` column (`new` / `price` / `cost` /
+  `availability` / `discontinued`) for your own bookkeeping. **The ERP ignores it**
+  and acts on the row's actual contents, so it's purely informational.
+- One caveat (repeated from above): a delta file can't tell the ERP a part was
+  *silently* discontinued — you must send an explicit `availability=discontinued`
+  row for that part, or run a periodic full sweep.
+
+Recommended cadence: a light **delta** (price + availability) frequently, plus an
+occasional **full sweep** through Full Product Import to catch new parts and
+reconcile discontinuations.
+
+---
+
 ## Worked example — same CSV, two new columns
 
 A current scraper row (truncated to the relevant columns):
@@ -164,6 +239,8 @@ compare_updated: 9       costs_updated: 11982        ← new
 manufacturer_updated: 12647                          ← new
 skipped_no_pai_source: 6                             ← new
 manufacturer_unmapped_sample: [{sku, manufacturer}]  ← new (rare)
+availability_updated: 213     out_of_stock_flagged: 188     ← new
+discontinued_deactivated: 25  reactivation_suggested: 0     ← new
 unchanged: 1077          over_threshold_skipped: 2
 ```
 
@@ -177,6 +254,10 @@ one shouldn't poison the others), so the rail won't suppress those.
 
 - [ ] `Our Cost` column appended to the standard Shopify export
 - [ ] `Manufacturer` column appended to the standard Shopify export
+- [ ] `availability` column appended (in_stock / out_of_stock / discontinued)
+- [ ] (optional) delta export wired — only changed/new rows, with `change_type` tag
+- [ ] Confirmed: a discontinued part is sent as an explicit `availability=discontinued`
+      row (not just dropped from the file), OR a periodic full sweep is scheduled
 - [ ] Dealer cost extracted from the authenticated PAI page (matches the price you'd
       pay an invoice at)
 - [ ] Manufacturer detected from the part's engine platform (not from the part's
