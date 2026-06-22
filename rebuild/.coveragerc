@@ -1,0 +1,17 @@
+# Coverage config for the JAKS Inventory rebuild app.
+# Measure with:  pytest --cov=app --cov-report=term-missing
+#           or:  coverage run --source=app -m pytest && coverage report
+[run]
+source = app
+branch = True
+omit =
+    app/seeds.py
+    */tests/*
+
+[report]
+show_missing = True
+skip_empty = True
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError
