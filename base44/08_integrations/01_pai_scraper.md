@@ -59,6 +59,11 @@ results: list[PAIPartResult] = await search_pai_portal(part_number)
 | `in_stock` | bool | aggregate |
 | `total_available` | int | sum across warehouses |
 | `not_available` | bool | hard "unavailable" flag |
+| `alternate_sku` | str | PAI's recommended substitute from the "Alternate" panel (cross-reference) |
+| `alternate_description` | str | alternate listing description |
+| `alternate_your_price` | Decimal | alternate logged-in customer price |
+| `alternate_in_stock` | bool | alternate aggregate availability |
+| `alternate_url` | str | alternate deep link |
 
 ---
 
