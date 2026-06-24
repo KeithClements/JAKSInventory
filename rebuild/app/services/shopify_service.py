@@ -554,20 +554,33 @@ class ShopifyService(BaseService):
     )
     _SYNC_REF = "gid://jaks-erp/InventorySync/1"   # shows JAKS in Shopify's stock history
 
+    _LOCATIONS_ID_ONLY = "query { locations(first: 10) { nodes { id } } }"
+
     def _location_id(self) -> str:
         """The Shopify location GID we sync stock to (single warehouse). Cached in
         the shopify_location_id setting; resolved from the locations query on first
-        use (prefer an active, online-order-fulfilling location)."""
+        use (prefer an active, online-order-fulfilling location).
+
+        Falls back to an ID-ONLY query when the token lacks the read_locations
+        scope — the name/isActive/fulfillsOnlineOrders fields require it, so the
+        rich query is denied, but `id` alone is allowed and is all the inventory
+        writes need. A single-warehouse store resolves correctly either way."""
         cached = get_setting_value_db(self.db, "shopify_location_id", "").strip()
         if cached.startswith("gid://"):
             return cached
+        loc = ""
         data = self._graphql(self._LOCATIONS_QUERY, {})
         nodes = (((data.get("data") or {}).get("locations") or {}).get("nodes") or [])
-        if not nodes:
-            return ""
-        pick = (next((n for n in nodes if n.get("isActive") and n.get("fulfillsOnlineOrders")), None)
-                or next((n for n in nodes if n.get("isActive")), None) or nodes[0])
-        loc = pick.get("id") or ""
+        if nodes:
+            pick = (next((n for n in nodes if n.get("isActive") and n.get("fulfillsOnlineOrders")), None)
+                    or next((n for n in nodes if n.get("isActive")), None) or nodes[0])
+            loc = pick.get("id") or ""
+        if not loc.startswith("gid://"):
+            # read_locations not granted → the rich query is denied. Retry with the
+            # id-only query (allowed) and take the first warehouse.
+            d2 = self._graphql(self._LOCATIONS_ID_ONLY, {})
+            n2 = (((d2.get("data") or {}).get("locations") or {}).get("nodes") or [])
+            loc = (n2[0].get("id") if n2 else "") or ""
         if loc.startswith("gid://"):
             from app.settings_utils import set_setting_value_db
             set_setting_value_db(self.db, "shopify_location_id", loc)

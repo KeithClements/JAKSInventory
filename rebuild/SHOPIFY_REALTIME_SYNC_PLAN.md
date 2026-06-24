@@ -10,6 +10,7 @@
 - **KEY FINDING:** the engine is **inert until availability data is imported** — `vendor_availability` is blank for all live products, so a dry-run audit hides 0. The ~46 live-OOS parts stay live until the scraper's availability is imported (one-time catch-up, or the first Phase-3 section run).
 - **Decisions locked:** one-click = **double-click `.bat`** on the scraper side; push = **fully automatic** on section completion; re-list = **only listings the ERP itself hid**; **sold-out state for top sellers** wanted → **Phase 5**.
 - **Op note:** any `.bat`/script that pushes must export `JAKS_FERNET_KEY` so the Shopify token decrypts.
+- **IMB pipeline + ERP write-path VERIFIED (2026-06-24).** The ERP had never actually pushed (all prior Shopify writes went through Claude Code/MCP). Verified the ERP token against the LIVE store: `write_products`+`write_inventory` granted (hide/re-list + stock authorized), 20/20 sampled product links resolve, 20/20 cached statuses match live. **Found + fixed 1 gap:** token lacks `read_locations`, so the stock-sync `locations` query was denied → `_location_id()` now falls back to an id-only query (verified resolves the warehouse). **IMB extended:** `scrape_imb.py` (full-catalog refresh via the price API, auto-login, no CAPTCHA — the FAST lane) + `Refresh IMB + Push.bat`. IMB bridge dry-run: 10,292/10,297 matched → **3,733 IMB out-of-stock flagged** (IMB had zero availability sync before). **Timing reality:** push is minutes but gated by the scrape — PAI ~4-day cycle (slow page scrape), IMB daily-capable (fast API).
 - **Phase 2 — BUILT, TESTED (uncommitted, ERP).** Auto-SEO. `AIDescriptionService.backfill_seo()` generates + **persists** `seo_description` (+ `seo_title` when blank) — the write-back the manual "Suggest with AI" button never did. `scripts/backfill_seo.py` (dry-run default, `--apply/--limit/--overwrite/--ids`); `import_and_push.py --seo` fills a section before push (opt-in, cost-gated). Key-name reconcile so one Anthropic key serves SEO + the Smart-Import classifier. **6,114 of 30,931 products need SEO** (rest already have it). 10 tests; full suite **2,316 green**.
 
 **Owner decisions (locked in interview):**
@@ -144,10 +145,11 @@ The scraper's job ends at "write an accurate CSV." The ERP's job is "make the st
 **Known limits (documented in the `.bat`):** PAI login is CAPTCHA-gated → needs a saved session; vanished-from-catalog parts aren't auto-retired daily (run the Weekly Checkup or `--sweep`); brand-new parts go to the ERP review queue, not the store; per-section push is not yet delta (Phase 1) so it re-pushes the section's price/stock each run (~minutes, unattended).
 3.x **TODO:** fix the stale `SCRAPER_EXPORT_SPEC.md` (still says `in_stock` is "always 1") to document the new `availability` column contract.
 
-### Phase 4 — Frequency & freshness tuning
-4.1 **IMB availability is cheap** (server-to-server `GetPriceAndAvailability` API, no bot risk) → poll it more often than the heavy PAI page scrape; consider an availability-only IMB refresh several times a day.
-4.2 **PAI is a 2–4 hr full page scrape** → keep at 1–2×/day as chosen; a lightweight availability-only PAI poll is a stretch goal.
-4.3 **Fast lane:** prioritize re-checking parts that recently sold or sit in open quotes/SOs, so the things most likely to oversell are the freshest.
+### Phase 4 — Frequency & freshness tuning — ◑ PARTLY DONE (IMB fast lane built)
+4.1 ✅ **IMB is the fast lane** (price API + auto-login, no CAPTCHA) → `scrape_imb.py` + `Refresh IMB + Push.bat` refresh the WHOLE IMB catalog unattended; run daily or more often. (10,297 IMB parts; 3,733 currently out-of-stock.)
+4.2 **PAI is the slow lane** (HTML page scrape, CAPTCHA login) → the daily section `.bat` gives a ~4-day full-catalog cycle. The push after a scrape is minutes, but freshness is bounded by the scrape — PAI availability is NOT real-time (a known, inherent limit).
+4.3 **Fast lane (open):** prioritize re-checking parts that recently sold or sit in open quotes/SOs.
+4.4 **Token note:** the ERP custom-app token has `write_products`+`write_inventory` (enough for hide/re-list/stock) but NOT `read_locations` — `_location_id()` falls back to an id-only locations query. Adding `read_locations` to the app would also work but isn't required.
 
 ---
 
