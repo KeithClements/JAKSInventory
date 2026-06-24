@@ -10,6 +10,7 @@
 - **KEY FINDING:** the engine is **inert until availability data is imported** — `vendor_availability` is blank for all live products, so a dry-run audit hides 0. The ~46 live-OOS parts stay live until the scraper's availability is imported (one-time catch-up, or the first Phase-3 section run).
 - **Decisions locked:** one-click = **double-click `.bat`** on the scraper side; push = **fully automatic** on section completion; re-list = **only listings the ERP itself hid**; **sold-out state for top sellers** wanted → **Phase 5**.
 - **Op note:** any `.bat`/script that pushes must export `JAKS_FERNET_KEY` so the Shopify token decrypts.
+- **Phase 2 — BUILT, TESTED (uncommitted, ERP).** Auto-SEO. `AIDescriptionService.backfill_seo()` generates + **persists** `seo_description` (+ `seo_title` when blank) — the write-back the manual "Suggest with AI" button never did. `scripts/backfill_seo.py` (dry-run default, `--apply/--limit/--overwrite/--ids`); `import_and_push.py --seo` fills a section before push (opt-in, cost-gated). Key-name reconcile so one Anthropic key serves SEO + the Smart-Import classifier. **6,114 of 30,931 products need SEO** (rest already have it). 10 tests; full suite **2,316 green**.
 
 **Owner decisions (locked in interview):**
 - Out of stock at vendor → **hide the listing completely** (Shopify status DRAFT).
@@ -123,11 +124,12 @@ The scraper's job ends at "write an accurate CSV." The ERP's job is "make the st
 1.2 `sync_linked` becomes **changed-only**: push a product only when its hash differs from last push. Turns a ~13k full re-push into "the few hundred that actually changed." This is the disciplined, ERP-side version of your "last sent note" idea.
 1.3 For occasional full-catalog runs, add an optional `bulkOperationRunMutation` path (async JSONL, billed as one op — confirmed usable from our own token; the old "bulk blocked" note was the MCP tool surface only, not self-hosted scripts).
 
-### Phase 2 — Auto-SEO (every product, fully automatic)
-2.1 New `backfill_seo()` worker: find products with blank `seo_description`, call `AIDescriptionService.suggest_for_product()`, **write the result straight to `Product.seo_description`** (today the generator only returns a suggestion to a form — it never persists, so this write-back is the missing piece).
-2.2 Run it (a) on product create/first-publish, and (b) as a sweep inside the import bridge so newly-imported parts get copy before they go live.
-2.3 Pushed to Shopify as native `seo.description` by the existing `_build_listing()` path — already wired, no Shopify-side change.
-2.4 Reconcile the two Anthropic-key setting names (`anthropic_api_key_encrypted` vs `anthropic_api_key`) so one configured key serves both the description and categorization services.
+### Phase 2 — Auto-SEO — ✅ DONE (built, tested; uncommitted, ERP)
+2.1 ✅ `AIDescriptionService.backfill_seo(product_ids=None, *, limit, dry_run, overwrite, progress)` — finds active products with blank `seo_description`, calls `suggest_for_product()`, and **writes the meta straight to `Product.seo_description`** (+ `seo_title` when blank). Commits per product (resumable); fail-soft per product; a missing key stops early. NEVER touches the customer-facing `title`/`description`.
+2.2 ✅ `scripts/backfill_seo.py` = bulk catalog backfill (dry-run default; `--apply/--limit/--overwrite/--ids`; reports token cost). `import_and_push.py --seo` fills a section's missing SEO before the push (opt-in — off by default so the daily run stays cheap).
+2.3 ✅ Pushed to Shopify as native `seo.description` by the existing `_build_listing()` path — no Shopify-side change.
+2.4 ✅ Reconciled the key names: `ai_categorization_service.api_key()` falls back to `get_anthropic_api_key()` (the `anthropic_api_key_encrypted` the Settings page writes), so one key serves both.
+**Status:** 6,114 of 30,931 active products need SEO. Owner runs `scripts/backfill_seo.py --apply` (needs `JAKS_FERNET_KEY` + the Anthropic key, both already configured). Auto-on-create for brand-new products = a small future follow-up (the engine is ready).
 
 ### Phase 3 — The one-click `.bat` bridge — ✅ DONE (built, tested, reviewed; uncommitted, BOTH repos)
 *Turns "manual upload" into one double-click.* Bridges over **local disk + in-process Python** (no HTTP), sidestepping the session-login + CSRF wall.

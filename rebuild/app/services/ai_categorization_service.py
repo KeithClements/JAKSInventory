@@ -62,9 +62,15 @@ class AICategorizationService(BaseService):
         # plaintext through unchanged, so an existing key keeps working until
         # re-saved.
         from app.services.qbo_client import _decrypt as _secret_decrypt
-        return _secret_decrypt(
-            get_setting_value_db(self.db, "anthropic_api_key", "").strip()
-        )
+        raw = get_setting_value_db(self.db, "anthropic_api_key", "").strip()
+        if raw:
+            return _secret_decrypt(raw)
+        # Fall back to the key the Settings -> AI page actually writes
+        # (anthropic_api_key_encrypted, via ai_description_service) so ONE
+        # configured key serves both the SEO generator and this classifier —
+        # otherwise setting the key in Settings leaves this path unconfigured.
+        from app.services.ai_description_service import get_anthropic_api_key
+        return get_anthropic_api_key(self.db) or ""
 
     def is_enabled(self) -> bool:
         """True only when an Anthropic API key is configured in Settings."""

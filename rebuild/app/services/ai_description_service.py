@@ -393,3 +393,100 @@ class AIDescriptionService(BaseService):
             "tokens_in": int(tokens_in or 0),
             "tokens_out": int(tokens_out or 0),
         }
+
+    # ── Bulk SEO backfill (generate AND persist) ──────────────────────────────
+    # suggest_for_product() only RETURNS copy to the form — nothing persists until
+    # a human accepts + saves. backfill_seo() writes the generated meta straight to
+    # Product.seo_description (and seo_title when blank) so the whole catalog can be
+    # auto-SEO'd, and the import bridge can fill a section before it goes live. The
+    # generated meta is then pushed to Shopify's native SEO field by the existing
+    # ShopifyService._build_listing path — no extra wiring. Conservative: only fills
+    # BLANK fields (never clobbers curated SEO) unless overwrite=True.
+    _SEO_DESC_MAX = 320
+    _SEO_TITLE_MAX = 255
+
+    def _facts_for(self, p) -> dict[str, Any]:
+        """Map a Product onto suggest_for_product() kwargs — mirrors the manual
+        /products/ai-suggest endpoint. Deliberately omits the vendor NAME so a
+        hidden supplier (PAI) never leaks into customer-facing SEO copy; the
+        manufacturer + engine fitment + part number drive the description."""
+        src = p.preferred_vendor_source
+        cat = p.category
+        category_path = (getattr(cat, "full_path", None) or cat.name) if cat is not None else None
+        return {
+            "vendor_part_number": (src.vendor_part_number or None) if src is not None else None,
+            "manufacturer": (p.manufacturer or p.engine_manufacturer or None),
+            "brand": p.brand or None,
+            "category_path": category_path,
+            "engine_make": p.engine_manufacturer or None,
+            "engine_model": p.engine_model or None,
+            "current_title": p.title or None,
+            "current_description": (p.description or None),
+        }
+
+    def backfill_seo(self, product_ids: list[int] | None = None, *,
+                     limit: int | None = None, dry_run: bool = False,
+                     overwrite: bool = False, progress=None) -> dict[str, Any]:
+        """Generate + PERSIST seo_description (and seo_title when blank) for active
+        products that lack SEO copy. product_ids=None → the whole catalog (an
+        explicit list scopes it, e.g. one import section). Commits per product so a
+        long run is resumable; fail-soft per product; a missing API key stops the
+        run early (nothing else can succeed). dry_run counts what WOULD be generated
+        and writes nothing. Returns a summary."""
+        from app.models.product import Product
+        if not self.is_configured():
+            return {"ok": False, "error": "no_api_key",
+                    "message": "Configure your Anthropic API key in Settings -> AI."}
+
+        q = self.db.query(Product).filter(Product.is_active == True)  # noqa: E712
+        if product_ids is not None:
+            if not product_ids:
+                return {"ok": True, "considered": 0, "generated": 0,
+                        "skipped_have_seo": 0, "failed": 0, "dry_run": dry_run,
+                        "tokens_in": 0, "tokens_out": 0, "errors": []}
+            q = q.filter(Product.id.in_(product_ids))
+        if not overwrite:
+            q = q.filter((Product.seo_description == "")
+                         | (Product.seo_description.is_(None)))
+        q = q.order_by(Product.id)
+        if limit:
+            q = q.limit(limit)
+        products = q.all()
+
+        summary = {"ok": True, "considered": len(products), "generated": 0,
+                   "skipped_have_seo": 0, "failed": 0, "dry_run": dry_run,
+                   "tokens_in": 0, "tokens_out": 0, "errors": []}
+        for p in products:
+            if dry_run:
+                summary["generated"] += 1   # would generate
+                continue
+            res = self.suggest_for_product(**self._facts_for(p))
+            if res.get("error"):
+                if res["error"] == "no_api_key":   # fatal — stop the whole run
+                    summary["ok"] = False
+                    summary["error"] = res["error"]
+                    summary["message"] = res.get("message")
+                    break
+                summary["failed"] += 1
+                if len(summary["errors"]) < 10:
+                    summary["errors"].append({"sku": p.sku, "error": res.get("message")})
+                continue
+            summary["tokens_in"] += res.get("tokens_in", 0)
+            summary["tokens_out"] += res.get("tokens_out", 0)
+            meta = (res.get("meta_description") or "").strip()
+            seo_title = (res.get("title") or "").strip()
+            wrote = False
+            if meta and (overwrite or not (p.seo_description or "").strip()):
+                p.seo_description = meta[:self._SEO_DESC_MAX]
+                wrote = True
+            if seo_title and not (p.seo_title or "").strip():
+                p.seo_title = seo_title[:self._SEO_TITLE_MAX]
+                wrote = True
+            if wrote:
+                self.db.commit()
+                summary["generated"] += 1
+            else:
+                summary["skipped_have_seo"] += 1
+            if progress:
+                progress(f"{summary['generated']}/{summary['considered']} {p.sku}")
+        return summary

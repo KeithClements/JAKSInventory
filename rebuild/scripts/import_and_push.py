@@ -21,6 +21,9 @@ Options:
                      price/stock refresh. Fast + targeted; the nightly sync still
                      refreshes price/stock catalog-wide. Use for quick availability
                      catch-ups or very large sections.
+  --seo              on --apply, first generate AI SEO for this section's products
+                     that lack it (costs Anthropic tokens), so they go live with
+                     copy. Off by default to keep the daily run cheap.
 
 NOTE: the Shopify token is Fernet-encrypted, so JAKS_FERNET_KEY must be set in the
 environment (the .bat sets it) or the push step reports "not configured".
@@ -81,6 +84,7 @@ def _print(title: str, res: dict, keys: list[str]) -> None:
 def main(argv: list[str]) -> int:
     apply = "--apply" in argv
     reconcile_only = "--reconcile-only" in argv
+    do_seo = "--seo" in argv
     paths = [a for a in argv if not a.startswith("-")]
     if not paths:
         print("usage: python -m scripts.import_and_push <csv> [--apply] [--reconcile-only]")
@@ -131,6 +135,20 @@ def main(argv: list[str]) -> int:
                   "decrypted. Storefront NOT updated. Set the key (the .bat does this "
                   "automatically) and re-run: scripts.audit_shopify_availability --apply.")
             return 1
+
+        # 1b) Optional: fill missing SEO for this section BEFORE the push, so the
+        #     parts go live with copy. Off by default (it costs Anthropic tokens).
+        if do_seo:
+            from app.services.ai_description_service import AIDescriptionService
+            ai = AIDescriptionService(db, None)
+            if not ai.is_configured():
+                print("\n--seo requested, but no Anthropic key is configured (or "
+                      "JAKS_FERNET_KEY is unset) - skipping SEO.")
+            else:
+                seo_res = ai.backfill_seo(ids)
+                _print("SEO BACKFILL", seo_res,
+                       ["considered", "generated", "skipped_have_seo", "failed",
+                        "tokens_in", "tokens_out"])
 
         # 2) PUSH — make the storefront match. reconcile-only = availability only
         #    (fast); otherwise also refresh price/stock for this section's parts.
