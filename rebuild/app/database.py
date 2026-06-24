@@ -336,6 +336,11 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     ("product_vendor_sources", "availability_status",     "TEXT NULL"),
     ("product_vendor_sources", "availability_updated_at", "DATETIME NULL"),
     ("products",               "vendor_availability",     "TEXT NOT NULL DEFAULT ''"),
+
+    # ── Availability → live storefront reconcile (Alembic 0006): mirror the
+    #    "ERP hid this listing" flag here too. NOT NULL → a missing column would
+    #    500 every Product query; the flag gates the safe auto-re-list direction. ─
+    ("products",               "shopify_hidden_by_erp",   "BOOLEAN NOT NULL DEFAULT 0"),
 ]
 
 

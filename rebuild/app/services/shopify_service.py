@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 import re
 
-from app.constants import BRANDS, Permission, VendorAvailability
+from app.constants import BRANDS, Permission, ProductStatus, VendorAvailability
 from app.models.product import Product
 from app.services.base import BaseService
 from app.settings_utils import get_setting_value_db
@@ -652,8 +652,11 @@ class ShopifyService(BaseService):
             Product.is_active == True,  # noqa: E712
             # Vendor full-automation policy: a part the vendor can't supply
             # (out_of_stock / discontinued) is excluded from the storefront feed.
+            # Mirror _desired_hidden exactly (a DISCONTINUED-status product is hidden
+            # by the reconcile, so it must not get a stock push to its hidden listing).
             Product.vendor_availability.notin_(
                 (VendorAvailability.OUT_OF_STOCK, VendorAvailability.DISCONTINUED)),
+            Product.status != ProductStatus.DISCONTINUED,
             Product.shopify_inventory_item_id.like("gid://%")).all()]
         return self.sync_inventory(ids)
 
@@ -666,13 +669,23 @@ class ShopifyService(BaseService):
         if not self.is_configured():
             return {"ok": False, "error": "Shopify not configured — set shopify_store_url "
                     "and shopify_access_token in Settings."}
+        # 0) Make storefront VISIBILITY match vendor supply FIRST: hide listings for
+        #    parts the vendor can't supply (still-ACTIVE → DRAFT) and re-list parts
+        #    we previously hid that are back in stock. This runs over ALL linked
+        #    products (an explicit id list still scopes it) — independent of the
+        #    availability exclusion the price/stock refresh below uses, because the
+        #    parts to HIDE are exactly the ones that exclusion filters out.
+        reconcile = self.reconcile_availability(product_ids)
         if product_ids is None:
             product_ids = [r[0] for r in self.db.query(Product.id).filter(
                 Product.is_active == True,  # noqa: E712
                 # Vendor full-automation policy: skip parts the vendor lists as
                 # out_of_stock / discontinued (an explicit id list still wins).
+                # Mirrors _desired_hidden — a DISCONTINUED-status product is hidden
+                # by the reconcile above, so it must not also get a price/stock push.
                 Product.vendor_availability.notin_(
                     (VendorAvailability.OUT_OF_STOCK, VendorAvailability.DISCONTINUED)),
+                Product.status != ProductStatus.DISCONTINUED,
                 Product.shopify_product_id.like("gid://%")).all()]
         content = self.update_batch(product_ids)
         stock = self.sync_inventory(product_ids)
@@ -680,9 +693,196 @@ class ShopifyService(BaseService):
                 "content_updated": content.get("updated", 0),
                 "price_skipped": content.get("price_skipped", 0),
                 "stock_synced": stock.get("synced", 0),
-                "failed": content.get("failed", 0) + stock.get("failed", 0),
+                "hidden": reconcile.get("hidden", 0),
+                "relisted": reconcile.get("relisted", 0),
+                "failed": (content.get("failed", 0) + stock.get("failed", 0)
+                           + reconcile.get("failed", 0)),
                 "content_errors": (content.get("errors") or [])[:5],
-                "stock_errors": (stock.get("errors") or [])[:5]}
+                "stock_errors": (stock.get("errors") or [])[:5],
+                "reconcile_errors": (reconcile.get("errors") or [])[:5]}
+
+    # ══ Availability reconcile — make the LIVE storefront match vendor supply ══
+    # The import flags a part out_of_stock/discontinued, but flagging alone does
+    # NOT pull a listing that is ALREADY LIVE on Shopify down (the recurring sync
+    # merely stops *refreshing* it — the live listing stays ACTIVE and buyable).
+    # This closes that gap. Two directions, both gated + fail-soft:
+    #   • HIDE   — an unavailable part whose listing is still ACTIVE → productUpdate
+    #              status:DRAFT (DRAFT also unpublishes it from the Online Store).
+    #   • RELIST — a back-in-stock part whose listing is DRAFT *and the ERP itself
+    #              hid it* → REST publish (status:active + published:true).
+    # The shopify_hidden_by_erp gate guarantees we never auto-resurrect a listing a
+    # human drafted for any other reason (owner decision 2026-06-24).
+    def _desired_hidden(self, p: Product) -> bool:
+        """True when the storefront listing should be HIDDEN because the vendor
+        can't supply the part. Mirrors ProductImportService's full-automation
+        policy: explicit out_of_stock/discontinued, a deactivated product, or a
+        discontinued status all mean 'off the storefront'."""
+        if (p.vendor_availability or "").strip() in (
+                VendorAvailability.OUT_OF_STOCK, VendorAvailability.DISCONTINUED):
+            return True
+        if not p.is_active:
+            return True
+        if (p.status or "") == ProductStatus.DISCONTINUED:
+            return True
+        return False
+
+    @staticmethod
+    def _numeric_id(gid: str) -> str:
+        """gid://shopify/Product/123456 → '123456' (REST needs the numeric id)."""
+        return (gid or "").rsplit("/", 1)[-1].strip()
+
+    def _rest_product_update(self, numeric_id: str, fields: dict) -> tuple[bool, str]:
+        """REST PUT products/{id}.json — used for the publish-to-Online-Store flip
+        (status + published). The ERP token has write_products but NOT
+        write_publications, so the GraphQL publishablePublish path is unavailable;
+        REST 'published:true' is the proven workaround (.shopify-work/publish_rest.py).
+        Fail-soft: returns (ok, err)."""
+        import httpx
+        if not numeric_id.isdigit():
+            return False, f"non-numeric product id: {numeric_id!r}"
+        url = (f"https://{self._store_domain()}/admin/api/{_API_VERSION}"
+               f"/products/{numeric_id}.json")
+        body = {"product": {"id": int(numeric_id), **fields}}
+        try:
+            resp = httpx.put(
+                url, json=body,
+                headers={"X-Shopify-Access-Token": self._token(),
+                         "Content-Type": "application/json"},
+                timeout=30.0,
+            )
+            if resp.status_code >= 400:
+                return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+            return True, ""
+        except Exception as exc:  # noqa: BLE001 — fail-soft on any network error
+            return False, f"network error: {exc}"
+
+    def reconcile_availability(self, product_ids: list[int] | None = None,
+                              *, dry_run: bool = False) -> dict:
+        """Make each LINKED listing's live visibility match vendor supply.
+        product_ids=None → every linked product (an explicit list scopes it).
+        Admin-gated, fail-soft. dry_run computes the plan and writes nothing — the
+        one-time audit uses it. Returns {ok, considered, hidden, relisted, failed,
+        dry_run, errors, sample}."""
+        if self.current_user_id is not None:
+            self.assert_can(Permission.PUBLISH_SHOPIFY)
+        if not self.is_configured():
+            return {"ok": False, "error": "Shopify not configured — set shopify_store_url "
+                    "and shopify_access_token in Settings."}
+        # Candidate set = every LINKED product (real product GID). We must include
+        # OOS/discontinued products — they are exactly the ones to hide — so this
+        # deliberately does NOT apply the availability exclusion the sync uses.
+        q = self.db.query(Product).filter(Product.shopify_product_id.like("gid://%"))
+        if product_ids is not None:
+            if not product_ids:
+                return {"ok": True, "considered": 0, "hidden": 0, "relisted": 0,
+                        "failed": 0, "dry_run": dry_run, "errors": [], "sample": []}
+            q = q.filter(Product.id.in_(product_ids))
+
+        summary = {"ok": True, "considered": 0, "hidden": 0, "relisted": 0,
+                   "failed": 0, "dry_run": dry_run, "errors": [], "sample": []}
+        for p in q.all():
+            summary["considered"] += 1
+            live = (p.shopify_status or "").strip().upper()
+            want_hidden = self._desired_hidden(p)
+            # DELIBERATE: if a human re-activated an OOS part on Shopify, this
+            # re-hides it (vendor still can't supply it → the owner's "never
+            # oversell" priority wins over a manual re-activation). It is NOT silent
+            # — every hide is counted + sampled in the returned summary. Flip this
+            # to leave-and-flag if the owner ever wants manual re-activation to win.
+            if want_hidden and live == "ACTIVE":
+                action = "hide"
+            elif (not want_hidden) and live == "DRAFT" and p.shopify_hidden_by_erp:
+                action = "relist"   # only re-list listings the ERP itself hid
+            else:
+                continue
+
+            if dry_run:
+                summary["hidden" if action == "hide" else "relisted"] += 1
+                if len(summary["sample"]) < 25:
+                    summary["sample"].append({"sku": p.sku, "action": action})
+                continue
+
+            if action == "hide":
+                d = self._graphql(self._PRODUCT_UPDATE, {"input": {
+                    "id": p.shopify_product_id, "status": "DRAFT"}})
+                errs = (((d.get("data") or {}).get("productUpdate") or {})
+                        .get("userErrors") or d.get("errors"))
+                if errs:
+                    summary["failed"] += 1
+                    if len(summary["errors"]) < 10:
+                        summary["errors"].append(
+                            {"sku": p.sku, "action": "hide", "error": str(errs)[:200]})
+                    continue
+                p.shopify_status = "DRAFT"
+                p.shopify_hidden_by_erp = True
+                summary["hidden"] += 1
+            else:  # relist
+                ok, err = self._rest_product_update(
+                    self._numeric_id(p.shopify_product_id),
+                    {"status": "active", "published": True})
+                if not ok:
+                    summary["failed"] += 1
+                    if len(summary["errors"]) < 10:
+                        summary["errors"].append(
+                            {"sku": p.sku, "action": "relist", "error": err})
+                    continue
+                p.shopify_status = "ACTIVE"
+                p.shopify_hidden_by_erp = False
+                summary["relisted"] += 1
+
+            # Persist this change IMMEDIATELY — the Shopify side effect already
+            # happened and is irreversible. A coarse chunk-commit would risk a crash
+            # between the live hide and the DB write, which would lose
+            # shopify_hidden_by_erp and strand the listing as DRAFT-forever (the HIDE
+            # branch needs live==ACTIVE to re-set the flag, and RE-LIST needs the
+            # flag — so it could never be auto-re-listed). One commit per CHANGED
+            # product (not per considered) keeps this cheap.
+            self.db.commit()
+            if len(summary["sample"]) < 25:
+                summary["sample"].append({"sku": p.sku, "action": action})
+        return summary
+
+    def refresh_live_status(self) -> dict:
+        """Read-only walk of the live store; refresh the cached shopify_status (and
+        backfill any missing variant/inventory GIDs) for every LINKED product by
+        matching its stored product GID. Makes the availability reconcile
+        authoritative against the LIVE store, not a possibly-stale cache. Admin-gated,
+        fail-soft."""
+        if self.current_user_id is not None:
+            self.assert_can(Permission.PUBLISH_SHOPIFY)
+        if not self.is_configured():
+            return {"ok": False, "error": "Shopify not configured."}
+        self._last_error = ""
+        variants = self._fetch_all_variants()
+        if variants is None:
+            return {"ok": False,
+                    "error": getattr(self, "_last_error", "") or "variant fetch failed"}
+        by_pid: dict[str, dict] = {}
+        for v in variants:
+            if v.get("product_id"):
+                by_pid.setdefault(v["product_id"], v)   # first variant carries product status
+        seen = updated = 0
+        for p in (self.db.query(Product)
+                  .filter(Product.shopify_product_id.like("gid://%")).all()):
+            v = by_pid.get(p.shopify_product_id)
+            if not v:
+                continue
+            seen += 1
+            new_status = (v.get("status") or "")[:20]
+            if new_status and new_status.upper() != (p.shopify_status or "").upper():
+                p.shopify_status = new_status
+                updated += 1
+            if (not (p.shopify_variant_id or "").startswith("gid://")
+                    and (v.get("variant_id") or "").startswith("gid://")):
+                p.shopify_variant_id = v["variant_id"]
+            if (not (p.shopify_inventory_item_id or "").startswith("gid://")
+                    and (v.get("inventory_item_id") or "").startswith("gid://")):
+                p.shopify_inventory_item_id = v["inventory_item_id"]
+            if seen % 500 == 0:
+                self.db.commit()
+        self.db.commit()
+        return {"ok": True, "linked_seen": seen, "status_updated": updated,
+                "store_variants": len(variants)}
 
     # ══ Phase A — Connect & Link (read-only against Shopify) ══════════════════
     # The store already carries the catalog (scraper-fed, old JAKS-PAI-#### SKUs).
@@ -883,7 +1083,9 @@ def run_background_shopify_sync(user_id: int | None = None,
             set_setting_value_db(
                 db, "shopify_last_sync_summary",
                 f"{res.get('content_updated', 0)} listings, "
-                f"{res.get('stock_synced', 0)} stock, {res.get('failed', 0)} failed")
+                f"{res.get('stock_synced', 0)} stock, "
+                f"{res.get('hidden', 0)} hidden, {res.get('relisted', 0)} re-listed, "
+                f"{res.get('failed', 0)} failed")
         else:
             set_setting_value_db(db, "shopify_last_sync_error",
                                  str(res.get("error", ""))[:300])

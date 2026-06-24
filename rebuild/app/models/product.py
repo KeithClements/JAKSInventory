@@ -244,6 +244,12 @@ class Product(Base):
     # Source of truth is ProductVendorSource.availability_status; the importer is
     # the only writer and keeps the two in sync.
     vendor_availability: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    # True when the ERP ITSELF hid this listing on Shopify (flipped it to DRAFT)
+    # because the vendor went out_of_stock/discontinued. Gates the SAFE direction
+    # of the availability reconcile: only a listing WE auto-hid is auto-re-listed
+    # when the part comes back in stock — a listing a human drafted for any other
+    # reason is never auto-resurrected. See ShopifyService.reconcile_availability.
+    shopify_hidden_by_erp: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
