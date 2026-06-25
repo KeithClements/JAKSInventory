@@ -461,18 +461,34 @@ class ShopifyService(BaseService):
             price_synced = True
         return {"ok": True, "price_synced": price_synced, "product": {"id": pid}}
 
-    def update_batch(self, product_ids: list[int]) -> dict:
+    @staticmethod
+    def _tick(progress, stage: str, done: int, total: int) -> None:
+        """Fire an OPTIONAL progress callback fail-soft. The callback is purely
+        observational (it feeds the live job bar with ``[done/total]`` lines); a
+        buggy or slow one must never break or stall a live Shopify push, so every
+        call is wrapped and swallowed on error."""
+        if progress is None:
+            return
+        try:
+            progress(stage, done, total)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def update_batch(self, product_ids: list[int], *, progress=None) -> dict:
         """Partial-update many linked listings (price + SEO + tags). Fail-soft.
         ``price_skipped`` counts rows that updated tags/SEO but had no variant GID
         so the price could not be pushed — surfaced so a run never silently
-        under-syncs the headline field."""
+        under-syncs the headline field. ``progress`` (optional) is called as
+        ``progress("price/SEO", done, total)`` after each listing for live feedback."""
         summary = {"requested": len(product_ids), "updated": 0,
                    "price_skipped": 0, "failed": 0, "errors": []}
-        for pid in product_ids:
+        total = len(product_ids)
+        for i, pid in enumerate(product_ids, 1):
             p = self.db.get(Product, pid)
             if not p:
                 summary["failed"] += 1
                 summary["errors"].append({"product_id": pid, "error": "not found"})
+                self._tick(progress, "price/SEO", i, total)
                 continue
             res = self.update_listing_fields(p)
             if res.get("ok"):
@@ -482,6 +498,7 @@ class ShopifyService(BaseService):
             else:
                 summary["failed"] += 1
                 summary["errors"].append({"product_id": pid, "sku": p.sku, "error": res.get("error")})
+            self._tick(progress, "price/SEO", i, total)
         return summary
 
     def publish_batch(self, product_ids: list[int], *, status: str = "DRAFT") -> dict:
@@ -609,7 +626,7 @@ class ShopifyService(BaseService):
         errs = self._set_errs(d)
         return (not errs, str(errs)[:200] if errs else "")
 
-    def sync_inventory(self, product_ids: list[int]) -> dict:
+    def sync_inventory(self, product_ids: list[int], *, progress=None) -> dict:
         """Overwrite Shopify's on-hand with each product's sellable qty_available.
         Admin-gated, fail-soft. Batches the absolute SET (<=250/call); any item the
         store hasn't tracked/activated yet is self-healed per-item then retried.
@@ -638,8 +655,10 @@ class ShopifyService(BaseService):
                 continue
             items.append((p, iid, self._sellable_qty(p)))
 
-        for start in range(0, len(items), 250):
+        total_items = len(items)
+        for start in range(0, total_items, 250):
             chunk = items[start:start + 250]
+            self._tick(progress, "stock", min(start + len(chunk), total_items), total_items)
             d = self._graphql(self._SET_ON_HAND, {"input": {
                 "reason": "correction", "referenceDocumentUri": self._SYNC_REF,
                 "setQuantities": [{"inventoryItemId": iid, "locationId": loc,
@@ -674,11 +693,12 @@ class ShopifyService(BaseService):
         return self.sync_inventory(ids)
 
     # ══ Unified recurring sync (the "Sync now" + nightly action) ══════════════
-    def sync_linked(self, product_ids: list[int] | None = None) -> dict:
+    def sync_linked(self, product_ids: list[int] | None = None, *, progress=None) -> dict:
         """Keep ALREADY-LINKED listings fresh: re-push price + SEO + tags (the safe
         partial update) AND overwrite stock. Does NOT publish new products or touch
         title/description/images/publish-status. product_ids=None → every active
-        linked product. Fail-soft; the called methods enforce the admin gate."""
+        linked product. Fail-soft; the called methods enforce the admin gate.
+        ``progress`` (optional) is threaded to each sub-step for live job-bar feedback."""
         if not self.is_configured():
             return {"ok": False, "error": "Shopify not configured — set shopify_store_url "
                     "and shopify_access_token in Settings."}
@@ -688,7 +708,7 @@ class ShopifyService(BaseService):
         #    products (an explicit id list still scopes it) — independent of the
         #    availability exclusion the price/stock refresh below uses, because the
         #    parts to HIDE are exactly the ones that exclusion filters out.
-        reconcile = self.reconcile_availability(product_ids)
+        reconcile = self.reconcile_availability(product_ids, progress=progress)
         if product_ids is None:
             product_ids = [r[0] for r in self.db.query(Product.id).filter(
                 Product.is_active == True,  # noqa: E712
@@ -700,8 +720,8 @@ class ShopifyService(BaseService):
                     (VendorAvailability.OUT_OF_STOCK, VendorAvailability.DISCONTINUED)),
                 Product.status != ProductStatus.DISCONTINUED,
                 Product.shopify_product_id.like("gid://%")).all()]
-        content = self.update_batch(product_ids)
-        stock = self.sync_inventory(product_ids)
+        content = self.update_batch(product_ids, progress=progress)
+        stock = self.sync_inventory(product_ids, progress=progress)
         return {"ok": True, "products": len(product_ids),
                 "content_updated": content.get("updated", 0),
                 "price_skipped": content.get("price_skipped", 0),
@@ -770,7 +790,7 @@ class ShopifyService(BaseService):
             return False, f"network error: {exc}"
 
     def reconcile_availability(self, product_ids: list[int] | None = None,
-                              *, dry_run: bool = False) -> dict:
+                              *, dry_run: bool = False, progress=None) -> dict:
         """Make each LINKED listing's live visibility match vendor supply.
         product_ids=None → every linked product (an explicit list scopes it).
         Admin-gated, fail-soft. dry_run computes the plan and writes nothing — the
@@ -793,8 +813,11 @@ class ShopifyService(BaseService):
 
         summary = {"ok": True, "considered": 0, "hidden": 0, "relisted": 0,
                    "failed": 0, "dry_run": dry_run, "errors": [], "sample": []}
-        for p in q.all():
+        rows = q.all()
+        total = len(rows)
+        for i, p in enumerate(rows, 1):
             summary["considered"] += 1
+            self._tick(progress, "reconcile", i, total)
             live = (p.shopify_status or "").strip().upper()
             want_hidden = self._desired_hidden(p)
             # DELIBERATE: if a human re-activated an OOS part on Shopify, this

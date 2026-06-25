@@ -692,9 +692,9 @@ def test_sync_linked_resolves_linked_and_merges(db, monkeypatch):
     svc = ShopifyService(db)
     monkeypatch.setattr(svc, "is_configured", lambda: True)
     seen = {}
-    monkeypatch.setattr(svc, "update_batch", lambda ids: (seen.update(upd=list(ids)) or
+    monkeypatch.setattr(svc, "update_batch", lambda ids, progress=None: (seen.update(upd=list(ids)) or
         {"updated": 1, "price_skipped": 0, "failed": 0, "errors": []}))
-    monkeypatch.setattr(svc, "sync_inventory", lambda ids: (seen.update(inv=list(ids)) or
+    monkeypatch.setattr(svc, "sync_inventory", lambda ids, progress=None: (seen.update(inv=list(ids)) or
         {"synced": 1, "failed": 0, "errors": []}))
     res = svc.sync_linked()                               # None → resolve linked ids
     assert res["ok"] and res["content_updated"] == 1 and res["stock_synced"] == 1
@@ -704,6 +704,25 @@ def test_sync_linked_resolves_linked_and_merges(db, monkeypatch):
 def test_sync_linked_failsoft_unconfigured(db):
     res = ShopifyService(db).sync_linked([1])
     assert res["ok"] is False and "not configured" in res["error"].lower()
+
+
+def test_update_batch_fires_progress_callback(db, monkeypatch):
+    """update_batch calls the OPTIONAL progress callback once per listing as
+    ('price/SEO', done, total) — the hook that drives the live job bar — and a
+    callback that raises is swallowed (fail-soft: never breaks the push)."""
+    p1, p2 = _product(db), _product(db)
+    svc = ShopifyService(db)
+    monkeypatch.setattr(svc, "update_listing_fields",
+                        lambda p: {"ok": True, "price_synced": True})
+    ticks = []
+    svc.update_batch([p1.id, p2.id], progress=lambda *a: ticks.append(a))
+    assert ticks == [("price/SEO", 1, 2), ("price/SEO", 2, 2)]
+
+    def boom(*a):
+        raise RuntimeError("bad consumer")
+
+    res = svc.update_batch([p1.id], progress=boom)   # must not raise
+    assert res["updated"] == 1
 
 
 # ── Clean image supersedes watermarked (2026-06-13) ─────────────────────────────

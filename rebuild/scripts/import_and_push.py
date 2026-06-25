@@ -36,7 +36,9 @@ import sys
 # Force UTF-8 stdout so a legacy .bat console (cp1252) never crashes on output.
 for _s in (sys.stdout, sys.stderr):
     try:
-        _s.reconfigure(encoding="utf-8", errors="replace")
+        # line_buffering=True flushes each line as it is printed so the AxleForge
+        # job bar can stream progress live (the launcher also sets PYTHONUNBUFFERED).
+        _s.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
     except Exception:
         pass
 
@@ -68,6 +70,26 @@ def _csv_product_ids(text: str, imp) -> list[int]:
             seen.add(pid)
             ids.append(pid)
     return ids
+
+
+def _make_progress():
+    """A throttled progress printer for the long push loops. The push services call
+    it as ``cb(stage, done, total)`` on every item; we emit at most ~50 ``[done/total]``
+    lines per stage (plus the first and the last) so the live AxleForge job bar — which
+    advances on the ``[n/m]`` marker — moves without flooding the run log."""
+    state = {"stage": None}
+
+    def cb(stage, done, total):
+        if not total or total <= 0:
+            return
+        new_stage = stage != state["stage"]
+        if new_stage:
+            state["stage"] = stage
+        step = max(1, total // 50)
+        if new_stage or done >= total or done % step == 0:
+            print(f"  [{done}/{total}] {stage}", flush=True)
+
+    return cb
 
 
 def _print(title: str, res: dict, keys: list[str]) -> None:
@@ -106,6 +128,7 @@ def main(argv: list[str]) -> int:
 
         # 1) IMPORT (price + cost + vendor availability). Never creates products
         #    (pricing_update_sell refreshes existing only) — new parts go to review.
+        print("Importing CSV (price + cost + availability)…", flush=True)
         res_imp = imp.pricing_update_sell(text, dry_run=not apply)
         _print("IMPORT (pricing_update_sell)" + ("" if apply else " - DRY RUN"), res_imp,
                ["matched", "prices_updated", "costs_updated", "availability_updated",
@@ -152,12 +175,15 @@ def main(argv: list[str]) -> int:
 
         # 2) PUSH — make the storefront match. reconcile-only = availability only
         #    (fast); otherwise also refresh price/stock for this section's parts.
+        #    Pass a throttled progress printer so the live job bar moves during the
+        #    long per-product loops (otherwise the run is silent until it finishes).
+        prog = _make_progress()
         if reconcile_only:
-            res = shop.reconcile_availability(ids)
+            res = shop.reconcile_availability(ids, progress=prog)
             _print("RECONCILE (hide / re-list)", res,
                    ["considered", "hidden", "relisted", "failed"])
         else:
-            res = shop.sync_linked(ids)
+            res = shop.sync_linked(ids, progress=prog)
             _print("PUSH (reconcile + price/SEO/stock)", res,
                    ["products", "hidden", "relisted", "content_updated",
                     "stock_synced", "price_skipped", "failed"])
