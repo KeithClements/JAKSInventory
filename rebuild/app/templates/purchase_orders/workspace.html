@@ -671,7 +671,9 @@
   {% endif %}
 
   {% if po.bills %}
-  <div id="vendor-bills" class="card scroll-mt-4">
+  {# x-data lives on the card so a bill row's Edit button and its expandable edit
+     row (sibling <tr>s) share one toggle keyed by bill id. #}
+  <div id="vendor-bills" class="card scroll-mt-4" x-data="{ editingBill: null }">
     <div class="card-header">
       <h2 class="card-title">Vendor Bills</h2>
       <span class="text-xs text-gray-400">{{ po.bills | length }} bill{{ 's' if po.bills | length != 1 }}</span>
@@ -710,6 +712,16 @@
                 Mark Paid
               </button>
               {% else %}<span class="badge-gray">Pending</span>{% endif %}
+              {# Phase 2 — correct a posted bill (header + line qty/cost). Paid bills
+                 are excluded (use a vendor credit); discrepancy bills use the
+                 line-level Correct flow in the detail row below. #}
+              {% if bill.status in ('pending', 'approved') %}
+              <button type="button"
+                      @click="editingBill = (editingBill === {{ bill.id }} ? null : {{ bill.id }})"
+                      class="ml-2 px-2 py-1 text-[11px] font-semibold text-gray-600 border border-gray-200 rounded-md hover:bg-gray-50 transition-colors">
+                Edit
+              </button>
+              {% endif %}
             </td>
             {# ── R3 — QuickBooks bill push (mirrors the payment-detail chip idiom):
                synced → green chip; APPROVED/PAID + unsynced → fail-soft push
@@ -738,6 +750,58 @@
               {% endif %}
             </td>
           </tr>
+          {# Phase 2 — inline bill-correction row. Toggled by the Edit button; posts
+             to /edit (server requires a reason, re-validates the 3-way match, and
+             re-flags an already-synced bill for QBO). #}
+          {% if bill.status in ('pending', 'approved') %}
+          <tr x-show="editingBill === {{ bill.id }}" x-cloak class="bg-blue-50/30">
+            <td colspan="6" class="px-4 py-3">
+              <form method="post" action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/edit" class="space-y-3">
+                <div class="flex flex-wrap gap-3">
+                  <div>
+                    <label class="form-label">Bill #</label>
+                    <input type="text" name="bill_number" value="{{ bill.bill_number or '' }}" class="form-input font-mono w-40" />
+                  </div>
+                  <div>
+                    <label class="form-label">Bill date</label>
+                    <input type="date" name="bill_date" value="{{ bill.bill_date.strftime('%Y-%m-%d') if bill.bill_date else '' }}" class="form-input" />
+                  </div>
+                  <div>
+                    <label class="form-label">Due date</label>
+                    <input type="date" name="due_date" value="{{ bill.due_date.strftime('%Y-%m-%d') if bill.due_date else '' }}" class="form-input" />
+                  </div>
+                </div>
+                <table class="w-full text-xs border-t border-gray-100 pt-2">
+                  <thead>
+                    <tr class="text-gray-400">
+                      <th class="text-left py-1 font-medium">Item</th>
+                      <th class="text-right font-medium">Billed qty</th>
+                      <th class="text-right font-medium">Unit cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for bl in bill.lines %}
+                    <tr>
+                      <td class="py-1 font-mono text-gray-600">{{ bl.po_line.product.sku if bl.po_line and bl.po_line.product else (bl.po_line.description if bl.po_line else '—') }}</td>
+                      <td class="text-right"><input type="number" name="qty_{{ bl.id }}" value="{{ bl.qty_billed }}" min="0" class="form-input w-20 text-right tabular-nums" /></td>
+                      <td class="text-right"><input type="number" name="cost_{{ bl.id }}" value="{{ '%.2f' | format(bl.unit_cost) }}" step="0.01" min="0" class="form-input w-24 text-right font-mono tabular-nums" /></td>
+                    </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+                <div class="flex items-end gap-2">
+                  <div class="flex-1">
+                    <label class="form-label">Reason (required)</label>
+                    <input type="text" name="reason" required maxlength="200"
+                           placeholder="Why is this bill being corrected?" class="form-input w-full" />
+                  </div>
+                  <button type="submit" class="btn-primary btn-sm">Save bill</button>
+                  <button type="button" @click="editingBill = null" class="btn-ghost btn-sm">Cancel</button>
+                </div>
+              </form>
+            </td>
+          </tr>
+          {% endif %}
           {# Discrepancy detail row — expands below the bill when status is discrepancy #}
           {% if bill.status == 'discrepancy' %}
           <tr class="bg-red-50/30">

@@ -1376,6 +1376,80 @@ async def po_correct_match_line(
     return RedirectResponse(f"/purchase-orders/{po_id}?ok=match_corrected", status_code=303)
 
 
+@router.post("/{po_id}/bills/{bill_id}/edit", response_class=RedirectResponse)
+async def po_edit_bill(
+    po_id: int, bill_id: int,
+    request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """
+    Phase 2 — correct a posted vendor bill: header (bill_number / bill_date /
+    due_date) and per-line qty/cost. Re-validates the 3-way match, re-derives the
+    PO billed status, and re-flags an already-synced bill for QBO. Reason required.
+
+    Form fields:
+      bill_number · bill_date (YYYY-MM-DD) · due_date (YYYY-MM-DD) · reason (required)
+      per line:  qty_<bill_line_id>  ·  cost_<bill_line_id>
+    Header / line fields are only applied when present in the body.
+    """
+    form = await request.form()
+    reason = str(form.get("reason", "")).strip()
+
+    def _parse_date(key: str):
+        raw = str(form.get(key, "")).strip()
+        if not raw:
+            return None
+        try:
+            return datetime.strptime(raw, "%Y-%m-%d")
+        except ValueError:
+            return None
+
+    header: dict = {}
+    if "bill_number" in form:
+        header["bill_number"] = str(form.get("bill_number", "")).strip()
+    if "bill_date" in form:
+        header["bill_date"] = _parse_date("bill_date")
+    if "due_date" in form:
+        header["due_date"] = _parse_date("due_date")
+
+    # Per-line edits arrive as qty_<id> / cost_<id>; group by bill_line id.
+    by_line: dict[int, dict] = {}
+    for key in form.keys():
+        for prefix, field in (("qty_", "qty_billed"), ("cost_", "unit_cost")):
+            if key.startswith(prefix) and key[len(prefix):].isdigit():
+                raw = str(form.get(key, "")).strip()
+                if raw == "":
+                    continue
+                blid = int(key[len(prefix):])
+                try:
+                    val = int(raw) if field == "qty_billed" else float(raw)
+                except (ValueError, TypeError):
+                    return RedirectResponse(
+                        f"/purchase-orders/{po_id}?error={url_quote('Enter valid numbers for the corrected cost / qty.')}",
+                        status_code=303,
+                    )
+                by_line.setdefault(blid, {"bill_line_id": blid})[field] = val
+    line_edits = list(by_line.values())
+
+    svc = POService(db, current_user_id=user_id)
+    try:
+        svc.edit_vendor_bill(bill_id, reason=reason, header=header or None, line_edits=line_edits)
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote(str(exc))}",
+            status_code=303,
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error editing bill %s on PO %s", bill_id, po_id)
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote('Unexpected error — bill was not edited.')}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/purchase-orders/{po_id}?ok=bill_edited", status_code=303)
+
+
 # ── Bill-to / Ship-to ───────────────────────────────────────────────────────
 
 def _active_company_locations(db: Session) -> list:

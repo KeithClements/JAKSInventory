@@ -881,6 +881,155 @@ class POService(BaseService):
         if all(ln.qty_billed >= ln.qty_received for ln in received_lines):
             po.status = POStatus.BILLED
 
+    def _resync_po_billed_status(self, po: PurchaseOrder) -> None:
+        """Re-derive a PO's billed status after a bill EDIT (Phase 2). Unlike
+        _advance_po_billed_if_done (one-way, used at bill creation), this also rolls
+        the PO back off BILLED when an edit drops billed qty below received — so a
+        corrected bill can never leave a PO stuck 'billed' when it no longer is."""
+        if po.status not in (POStatus.RECEIVED, POStatus.PARTIAL, POStatus.BILLED):
+            return
+        received_lines = [ln for ln in po.lines if ln.qty_received > 0]
+        fully_billed = bool(received_lines) and all(
+            ln.qty_billed >= ln.qty_received for ln in received_lines
+        )
+        if fully_billed:
+            po.status = POStatus.BILLED
+        elif po.status == POStatus.BILLED:
+            # An edit pulled billed qty below received — back out of BILLED.
+            po.status = (
+                POStatus.RECEIVED
+                if all(ln.qty_outstanding == 0 for ln in po.lines)
+                else POStatus.PARTIAL
+            )
+
+    def edit_vendor_bill(
+        self,
+        bill_id: int,
+        reason: str,
+        header: dict | None = None,
+        line_edits: list[dict] | None = None,
+    ) -> VendorBill:
+        """
+        Phase 2 — correct a posted vendor bill after creation: header fields
+        (bill_number / bill_date / due_date) and per-line qty_billed / unit_cost.
+        A reason is required and the change is audited old→new.
+
+        After applying edits the 3-way match is RE-VALIDATED (VendorBillLine.
+        has_discrepancy is computed live from the PO line), so:
+          * any new mismatch → status DISCREPANCY (must be resolved before approval);
+          * an already-APPROVED bill that stays clean keeps its approval;
+          * otherwise the bill sits at PENDING.
+        The owning PO's billed status is re-derived (it can roll back off BILLED).
+
+        QBO: if the bill was already pushed (qbo_id set), it is re-flagged
+        qbo_sync_status=PENDING so the correction re-syncs (the update push itself
+        is wired in Phase 3).
+
+        PAID bills are not edited here — paying is terminal in this system; correct
+        a paid bill with a vendor credit instead.
+        """
+        self.assert_can(Permission.APPROVE_VENDOR_BILL)
+        if not reason.strip():
+            raise ValueError("A reason is required to edit a vendor bill.")
+
+        bill = self.db.query(VendorBill).filter(VendorBill.id == bill_id).first()
+        if bill is None:
+            raise ValueError(f"VendorBill {bill_id} not found")
+        if bill.status == VendorBillStatus.PAID:
+            raise ValueError(
+                "This bill is already paid — issue a vendor credit to adjust it."
+            )
+
+        before_status = bill.status
+        before = {
+            "bill_number": bill.bill_number,
+            "total": bill.total_amount,
+            "status": before_status,
+            "lines": {bl.id: {"qty": bl.qty_billed, "cost": bl.unit_cost} for bl in bill.lines},
+        }
+
+        header = header or {}
+        if "bill_number" in header:
+            new_no = (header["bill_number"] or "").strip() or None
+            if new_no:
+                normalized = new_no.lower()
+                dup = (
+                    self.db.query(VendorBill)
+                    .filter(
+                        VendorBill.vendor_id == bill.vendor_id,
+                        VendorBill.id != bill.id,
+                    )
+                    .all()
+                )
+                if any((b.bill_number or "").strip().lower() == normalized for b in dup):
+                    raise ValueError(
+                        f"Bill #{new_no} already exists for this vendor — a vendor "
+                        "invoice number cannot be reused."
+                    )
+            bill.bill_number = new_no
+        if "bill_date" in header:
+            bill.bill_date = header["bill_date"]
+        if "due_date" in header:
+            bill.due_date = header["due_date"]
+
+        affected_po_lines: dict[int, POLine] = {}
+        for ed in (line_edits or []):
+            bl = next((b for b in bill.lines if b.id == ed.get("bill_line_id")), None)
+            if bl is None:
+                raise ValueError(f"Bill line {ed.get('bill_line_id')} not found on this bill.")
+            if "qty_billed" in ed:
+                q = int(ed["qty_billed"])
+                if q < 0:
+                    raise ValueError("Billed qty cannot be negative.")
+                bl.qty_billed = q
+            if "unit_cost" in ed:
+                c = round(float(ed["unit_cost"]), 2)
+                if c < 0:
+                    raise ValueError("Cost cannot be negative.")
+                bl.unit_cost = c
+            if bl.po_line is not None:
+                affected_po_lines[bl.po_line.id] = bl.po_line
+
+        # Cumulative billed qty per PO line is the sum across ALL its bill lines
+        # (a line can be split across bills) — recompute from source, never +=.
+        for pol in affected_po_lines.values():
+            pol.qty_billed = sum(b.qty_billed for b in pol.bill_lines)
+
+        self.db.flush()
+
+        bill.total_amount = round(sum(bl.line_total for bl in bill.lines), 2)
+        if bill.has_discrepancy:
+            bill.status = VendorBillStatus.DISCREPANCY
+        elif before_status == VendorBillStatus.APPROVED:
+            bill.status = VendorBillStatus.APPROVED  # re-approve if still clean
+        else:
+            bill.status = VendorBillStatus.PENDING
+
+        if bill.po_id:
+            po = self.db.query(PurchaseOrder).filter(PurchaseOrder.id == bill.po_id).first()
+            if po:
+                self._resync_po_billed_status(po)
+
+        # Re-sync to QBO only if it was already pushed; the update itself is Phase 3.
+        if bill.qbo_id:
+            bill.qbo_sync_status = QBOSyncStatus.PENDING
+
+        self.audit(
+            entity_type=EntityType.PURCHASE_ORDER,
+            entity_id=bill.po_id or 0,
+            action=AuditAction.EDITED,
+            old_value=before,
+            new_value={
+                "bill_id": bill_id,
+                "bill_number": bill.bill_number,
+                "total": bill.total_amount,
+                "status": bill.status,
+            },
+            notes=reason.strip(),
+        )
+        self.db.commit()
+        return bill
+
     def approve_bill(self, bill_id: int, override_reason: str = "") -> None:
         """
         Approve vendor bill after discrepancy review. Marks for QBO sync.
