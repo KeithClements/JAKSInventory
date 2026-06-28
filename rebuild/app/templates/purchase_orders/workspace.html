@@ -222,7 +222,11 @@
 
           <div class="min-w-32">
             <label class="form-label">Freight In</label>
-            {% if editable %}
+            {# Freight stays correctable after the PO is sent — vendor freight is
+               often known only when the parts (or the bill) arrive. Editable
+               through SENT/PARTIAL/RECEIVED; locks with the rest of the header at
+               BILLED/CANCELLED. Mirrors save_header's gate. #}
+            {% if editable or po.status in ('sent', 'partial', 'received') %}
             <input type="number" name="freight_in_cost" step="0.01" min="0"
                    value="{{ '%.2f' | format(po.freight_in_cost) }}"
                    class="form-input text-right font-mono" />

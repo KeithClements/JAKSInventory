@@ -75,6 +75,71 @@ def test_vendor_confirmed_checkbox_round_trips(Session, client):
         db.close()
 
 
+def test_freight_editable_after_send_and_audited(Session, client):
+    """Phase 1 — freight stays correctable once the PO is SENT, and the change
+    is captured in the audit log (who/when/old→new)."""
+    from app.models.audit import AuditLog
+    from app.constants import EntityType, AuditAction
+
+    po_id, _ = _seed_po(Session)
+
+    # Place the order → SENT.
+    r = client.post(f"/purchase-orders/{po_id}/send", follow_redirects=False)
+    assert r.status_code == 303
+
+    # Correct the freight AFTER sending (was 0.00 on the draft).
+    r = client.post(f"/purchase-orders/{po_id}/header", data={"freight_in_cost": "47.50"})
+    assert r.status_code == 204
+
+    db = Session()
+    try:
+        po = db.get(PurchaseOrder, po_id)
+        assert po.status == POStatus.SENT
+        assert po.freight_in_cost == pytest.approx(47.50)
+
+        rows = (
+            db.query(AuditLog)
+            .filter(
+                AuditLog.entity_type == EntityType.PURCHASE_ORDER,
+                AuditLog.entity_id == po_id,
+                AuditLog.action == AuditAction.EDITED,
+            )
+            .all()
+        )
+        assert any(
+            "freight_in_cost=0.00" in (r.old_value or "")
+            and "freight_in_cost=47.50" in (r.new_value or "")
+            for r in rows
+        ), "expected a freight old→new audit row on the SENT PO"
+    finally:
+        db.close()
+
+    # Re-posting the SAME freight must NOT write a second audit row (autosave
+    # resends the current value on every field blur).
+    before = _freight_audit_count(Session, po_id)
+    r = client.post(f"/purchase-orders/{po_id}/header", data={"freight_in_cost": "47.50"})
+    assert r.status_code == 204
+    assert _freight_audit_count(Session, po_id) == before
+
+
+def _freight_audit_count(Session, po_id):
+    from app.models.audit import AuditLog
+    from app.constants import EntityType, AuditAction
+    db = Session()
+    try:
+        return (
+            db.query(AuditLog)
+            .filter(
+                AuditLog.entity_type == EntityType.PURCHASE_ORDER,
+                AuditLog.entity_id == po_id,
+                AuditLog.action == AuditAction.EDITED,
+            )
+            .count()
+        )
+    finally:
+        db.close()
+
+
 def test_place_order_commits_without_hanging(Session, client):
     po_id, product_id = _seed_po(Session)
 

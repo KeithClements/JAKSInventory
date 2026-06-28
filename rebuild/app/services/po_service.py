@@ -1417,7 +1417,28 @@ class POService(BaseService):
         if "vendor_confirmed" in data:
             po.vendor_confirmed = bool(data["vendor_confirmed"])
         if "freight_in_cost" in data:
-            po.freight_in_cost = float(data["freight_in_cost"] or 0.0)
+            new_freight = float(data["freight_in_cost"] or 0.0)
+            old_freight = float(po.freight_in_cost or 0.0)
+            # Only act on a real change — the header autosave resends the current
+            # freight on every field blur, so an unchanged value must not write an
+            # audit row.
+            if abs(new_freight - old_freight) >= 0.005:
+                po.freight_in_cost = new_freight
+                # Freight is a money-path field: it lands in COGS at receipt and
+                # feeds the vendor bill. A correction made after the PO is
+                # committed (SENT onward) is audited who/when/old→new. NOTE: when
+                # the PO's units are already received, this corrects the PO/bill
+                # figure only — the on-hand COGS true-up rides with the bill-
+                # correction phase, not this autosave.
+                if po.status not in (POStatus.DRAFT, POStatus.VERBAL_ORDER):
+                    self.audit(
+                        entity_type=EntityType.PURCHASE_ORDER,
+                        entity_id=po.id,
+                        action=AuditAction.EDITED,
+                        old_value=f"freight_in_cost={old_freight:.2f}",
+                        new_value=f"freight_in_cost={new_freight:.2f}",
+                        notes=f"Freight adjusted on {po.status} PO {po.po_number}",
+                    )
         if "expected_at" in data:
             po.expected_at = data["expected_at"]
         # ── Bill-to / ship-to. ship_to_type owns which fields apply; the others
