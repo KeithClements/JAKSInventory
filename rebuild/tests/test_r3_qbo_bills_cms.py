@@ -378,6 +378,49 @@ def test_push_bill_failure_marks_sync_failed_and_never_raises(db, monkeypatch):
     assert len(fresh.lines) == 1 and fresh.lines[0].line_total == pytest.approx(120.0)
 
 
+# ── 1b. push_vendor_bill — re-sync a corrected bill (Phase 3 update path) ─────
+
+def test_push_bill_updates_already_synced_when_reflagged(db, monkeypatch):
+    # A bill corrected after sync is re-flagged qbo_sync_status=PENDING; the push
+    # then UPDATES the existing QBO Bill in place rather than skipping it.
+    fake = _install(monkeypatch, FakeQBO(vendors={"Resync Vendor": "QBO-VEND-1"}))
+    _connect(db)
+    vend = _vendor(db, name="Resync Vendor")
+    bill = _bill(db, vend.id, lines=[(2, 50.0)])
+    bill.qbo_id = "QBO-BILL-1"
+    bill.qbo_sync_status = QBOSyncStatus.PENDING
+    db.commit()
+
+    res = QBOSyncService(db).push_vendor_bill(bill.id)
+    assert res.get("ok") is True and res.get("updated") is True, res
+    assert res.get("qbo_id") == "QBO-BILL-1"
+
+    # The update body must carry the QBO update contract: Id + SyncToken + sparse.
+    payload = fake.created["Bill"]
+    assert payload["Id"] == "QBO-BILL-1"
+    assert "SyncToken" in payload
+    assert payload["sparse"] is False
+
+    db.expire_all()
+    fresh = db.query(VendorBill).filter(VendorBill.id == bill.id).first()
+    assert fresh.qbo_sync_status == QBOSyncStatus.SYNCED
+    assert fresh.qbo_id == "QBO-BILL-1"
+
+
+def test_push_bill_skips_synced_bill_with_no_pending_change(db, monkeypatch):
+    fake = _install(monkeypatch, FakeQBO(vendors={"V": "QBO-VEND-1"}))
+    _connect(db)
+    vend = _vendor(db, name="V")
+    bill = _bill(db, vend.id)
+    bill.qbo_id = "QBO-BILL-9"
+    bill.qbo_sync_status = QBOSyncStatus.SYNCED
+    db.commit()
+
+    res = QBOSyncService(db).push_vendor_bill(bill.id)
+    assert res == {"ok": True, "skipped": "already synced", "qbo_id": "QBO-BILL-9"}
+    assert "Bill" not in fake.created  # nothing posted to QBO
+
+
 # ── 2. push_credit_memo — happy path + CORE_CHARGE item mapping ───────────────
 
 def test_push_credit_memo_happy_path_marks_synced_and_payload_shape(db, monkeypatch):

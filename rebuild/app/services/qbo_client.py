@@ -380,3 +380,22 @@ class QBOClient:
         created entity dict (unwrapped from its top-level key)."""
         data = self.request("POST", entity.lower(), json=payload)
         return data.get(entity, data) if isinstance(data, dict) else {}
+
+    def read(self, entity: str, qbo_id: str) -> dict:
+        """GET a single entity by id (used to fetch the current SyncToken before
+        an update). Returns the entity dict."""
+        data = self.request("GET", f"{entity.lower()}/{qbo_id}")
+        return data.get(entity, data) if isinstance(data, dict) else {}
+
+    def update(self, entity: str, qbo_id: str, payload: dict) -> dict:
+        """Full update of an existing entity. QBO requires the current SyncToken
+        on every write, so fetch it first, then POST the full desired body with
+        Id + SyncToken (sparse=false → QBO replaces the object, Line array
+        included). Returns the updated entity dict."""
+        current = self.read(entity, qbo_id)
+        body = dict(payload)
+        body["Id"] = str(qbo_id)
+        body["SyncToken"] = str(current.get("SyncToken", "0"))
+        body["sparse"] = False
+        data = self.request("POST", entity.lower(), json=body)
+        return data.get(entity, data) if isinstance(data, dict) else {}

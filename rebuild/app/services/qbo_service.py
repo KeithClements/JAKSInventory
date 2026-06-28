@@ -392,7 +392,10 @@ class QBOSyncService(BaseService):
         bill = self.db.query(VendorBill).filter(VendorBill.id == bill_id).first()
         if bill is None:
             return {"ok": False, "error": f"Vendor bill {bill_id} not found"}
-        if bill.qbo_id:
+        # Already synced and unchanged → nothing to do. A bill corrected after
+        # sync is re-flagged qbo_sync_status=PENDING (Phase 2 edit_vendor_bill),
+        # which falls through to an UPDATE below instead of being skipped.
+        if bill.qbo_id and bill.qbo_sync_status != QBOSyncStatus.PENDING:
             return {"ok": True, "skipped": "already synced", "qbo_id": bill.qbo_id}
         if bill.status not in _PUSHABLE_BILL_STATUSES:
             return self._refuse_doc(
@@ -407,6 +410,16 @@ class QBOSyncService(BaseService):
             vendor_ref = self._resolve_vendor(client, vendor)
             account_id = self._resolve_bill_expense_account(client)
             payload = self._build_bill_payload(bill, vendor_ref, account_id)
+            if bill.qbo_id:
+                # Re-sync of a corrected bill: full update in place (keeps the
+                # same QBO Bill, replacing its lines/header with the correction).
+                updated = client.update("Bill", bill.qbo_id, payload)
+                qbo_id = str(updated.get("Id", "") or bill.qbo_id).strip()
+                self._mark_doc_synced(bill, qbo_id)
+                self._audit_push(_ENTITY_VENDOR_BILL, bill_id, ok=True,
+                                 detail=f"Updated QBO Bill {qbo_id} (correction re-synced)")
+                log.info("vendor bill %s updated in QBO as %s", bill_id, qbo_id)
+                return {"ok": True, "qbo_id": qbo_id, "updated": True}
             created = client.create("Bill", payload)
             qbo_id = str(created.get("Id", "")).strip()
             if not qbo_id:
