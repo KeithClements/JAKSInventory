@@ -126,6 +126,37 @@
                 <span class="text-[10px] text-gray-400 line-through tabular-nums" title="List price before volume discount">${{ '%.2f' | format(line.list_unit_cost) }}</span>
                 {% endif %}
               </div>
+              {% elif cost_correctable and not line.bill_lines %}
+              {# Phase 2 — correct a mis-keyed cost after the PO is sent. Records-only
+                 (no inventory re-cost); reason required + audited server-side. Lines
+                 already on a vendor bill drop to the plain read-only branch below and
+                 must be fixed through Correct & Reconcile instead. #}
+              <div x-data="{ editing: false }" class="inline-flex flex-col items-end gap-0.5">
+                <button type="button" x-show="!editing" @click="editing = true"
+                        class="group inline-flex items-center gap-1 text-sm tabular-nums text-gray-700 hover:text-brand-600"
+                        title="Correct this cost">
+                  {% if line.list_unit_cost is not none and line.list_unit_cost > line.unit_cost %}
+                  <span class="text-[10px] text-gray-400 line-through tabular-nums">${{ '%.2f' | format(line.list_unit_cost) }}</span>
+                  {% endif %}
+                  <span>${{ '%.2f' | format(line.unit_cost) }}</span>
+                  <span class="text-gray-300 group-hover:text-brand-500 text-xs leading-none">✎</span>
+                </button>
+                <form x-show="editing" x-cloak
+                      hx-post="/purchase-orders/{{ po.id }}/lines/{{ line.id }}/correct-cost"
+                      hx-target="#po-lines-section" hx-swap="outerHTML"
+                      class="flex flex-col items-end gap-1 bg-gray-50 border border-gray-200 rounded-md p-2 mt-1">
+                  <input type="number" name="unit_cost" step="0.01" min="0"
+                         value="{{ '%.2f' | format(line.unit_cost) }}"
+                         class="form-input w-24 text-right font-mono py-1" />
+                  <input type="text" name="reason" required maxlength="200"
+                         placeholder="Reason (required)"
+                         class="form-input w-44 text-xs py-1" />
+                  <div class="flex items-center gap-1">
+                    <button type="submit" class="btn-primary btn-sm">Save</button>
+                    <button type="button" @click="editing = false" class="btn-ghost btn-sm">Cancel</button>
+                  </div>
+                </form>
+              </div>
               {% else %}
               {% if line.list_unit_cost is not none and line.list_unit_cost > line.unit_cost %}
               <span class="text-[10px] text-gray-400 line-through tabular-nums mr-1" title="List price before volume discount">${{ '%.2f' | format(line.list_unit_cost) }}</span>

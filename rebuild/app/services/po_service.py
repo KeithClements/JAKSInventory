@@ -1486,6 +1486,78 @@ class POService(BaseService):
         self.db.commit()
         return line
 
+    def correct_po_line_cost(self, line_id: int, new_unit_cost: float, reason: str) -> POLine:
+        """
+        Phase 2 — correct a PO line's unit cost AFTER the order is committed
+        (SENT / PARTIAL / RECEIVED), e.g. a mis-keyed cost found post-send. A
+        reason is required and the change is audited old→new.
+
+        Records-only, by deliberate design (mirrors correct_match_line, which is
+        documented "does NOT re-cost already-received inventory"): the moving-
+        average cost booked at receipt is left untouched, because the receipt path
+        is the only valid writer of product.cost (R11 Option A — see
+        InventoryService._apply_moving_average_cost). The correction fixes the PO
+        record and flows to the ledger through the vendor bill (and QBO), which is
+        the books of record — not through a second, lot-less re-costing of on-hand
+        inventory.
+
+        Routing guards keep the money model coherent:
+          * DRAFT / VERBAL_ORDER → use update_line (free editing before commit).
+          * BILLED / CANCELLED   → blocked here.
+          * A line already on a vendor bill → must go through correct_match_line so
+            the 3-way-match invariant (PO cost == billed cost) can't be broken
+            behind AP's back.
+        """
+        self.assert_can(Permission.APPROVE_VENDOR_BILL)
+        if not reason.strip():
+            raise ValueError("A reason is required to correct a PO cost.")
+        line = self.db.query(POLine).filter(POLine.id == line_id).first()
+        if line is None:
+            raise ValueError(f"Line {line_id} not found")
+        po = self._get_po_or_404(line.po_id)
+        if po.status in (POStatus.DRAFT, POStatus.VERBAL_ORDER):
+            raise ValueError("Use the line editor on a draft/verbal PO.")
+        if po.status == POStatus.CANCELLED:
+            raise ValueError("Cannot correct a line on a cancelled PO.")
+        # A bill flips the PO to BILLED; either way, once a line carries bill lines
+        # the cost must be fixed through Correct & Reconcile so the PO and the bill
+        # stay matched (the 3-way-match invariant) rather than silently diverging.
+        if po.status == POStatus.BILLED or line.bill_lines:
+            raise ValueError(
+                "This line is already on a vendor bill — use Correct & Reconcile "
+                "on the bill so the PO and bill stay matched."
+            )
+        new_cost = round(float(new_unit_cost), 2)
+        if new_cost < 0:
+            raise ValueError("Cost cannot be negative.")
+        old_cost = line.unit_cost
+        if abs(new_cost - old_cost) < 0.005:
+            return line  # no-op — nothing changed, write no audit row
+
+        # A manual correction overrides any applied volume-discount snapshot on
+        # this line (same rule as update_line) so "Remove discount" can't later
+        # clobber the corrected cost.
+        if line.list_unit_cost is not None:
+            line.list_unit_cost = None
+        line.unit_cost = new_cost
+
+        note = reason.strip()
+        if line.qty_received > 0:
+            note += (
+                f" [records-only: {line.qty_received} unit(s) already received keep "
+                "their booked cost; the correction flows to the vendor bill / QBO]"
+            )
+        self.audit(
+            entity_type=EntityType.PURCHASE_ORDER,
+            entity_id=po.id,
+            action=AuditAction.EDITED,
+            old_value=f"line[{line_id}].unit_cost={old_cost:.2f}",
+            new_value=f"line[{line_id}].unit_cost={new_cost:.2f}",
+            notes=note,
+        )
+        self.db.commit()
+        return line
+
     def delete_line(self, line_id: int) -> None:
         """Delete a line. Only on DRAFT or VERBAL_ORDER."""
         line = self.db.query(POLine).filter(POLine.id == line_id).first()

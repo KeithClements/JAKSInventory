@@ -109,6 +109,10 @@ def _volume_discount_ctx(po: PurchaseOrder) -> dict:
 
 def _workspace_ctx(po: PurchaseOrder) -> dict:
     editable   = po.status in (POStatus.DRAFT, POStatus.VERBAL_ORDER)
+    # Phase 2 — costs stay correctable after the order is committed (a mis-keyed
+    # cost found post-send). Not free-form line editing (that's `editable`); a
+    # per-line "correct cost" affordance gated to lines not yet on a vendor bill.
+    cost_correctable = po.status in (POStatus.SENT, POStatus.PARTIAL, POStatus.RECEIVED)
     # §21 — VERBAL_ORDER POs are receivable directly. A phone/verbal order with
     # same-day delivery is a daily diesel-counter event; forcing staff through a
     # "Place Order" (→ SENT) step first is needless friction and inflates
@@ -119,6 +123,7 @@ def _workspace_ctx(po: PurchaseOrder) -> dict:
     return {
         "po": po,
         "editable": editable,
+        "cost_correctable": cost_correctable,
         "can_receive": can_receive,
         "can_bill": can_bill,
         "POStatus": POStatus,
@@ -795,6 +800,26 @@ async def po_update_line(po_id: int, line_id: int, request: Request, db: Session
     except ValueError as exc:
         log.warning("update_line error on line %s: %s", line_id, exc)
 
+    return _lines_response(po_id, request, db)
+
+
+@router.post("/{po_id}/lines/{line_id}/correct-cost", response_class=HTMLResponse)
+async def po_correct_line_cost(po_id: int, line_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    """Phase 2 — correct a line's unit cost on a SENT/PARTIAL/RECEIVED PO (a
+    mis-keyed cost found after the order was placed). Reason is required; the
+    service audits old→new and keeps the change records-only (no inventory
+    re-cost). Errors fail soft — the section just re-renders unchanged."""
+    form = await request.form()
+    svc = POService(db, current_user_id=user_id)
+    reason = str(form.get("reason", "")).strip()
+    try:
+        new_cost = float(str(form.get("unit_cost", "")).strip())
+    except (ValueError, TypeError):
+        return _lines_response(po_id, request, db)
+    try:
+        svc.correct_po_line_cost(line_id, new_cost, reason)
+    except ValueError as exc:
+        log.warning("correct_po_line_cost error on line %s: %s", line_id, exc)
     return _lines_response(po_id, request, db)
 
 
