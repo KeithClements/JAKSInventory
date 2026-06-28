@@ -750,6 +750,7 @@ class POService(BaseService):
         bill_date: datetime | None,
         due_date: datetime | None,
         lines: list[dict],  # [{po_line_id, qty_billed, unit_cost}]
+        freight_amount: float | None = None,
     ) -> VendorBill:
         """
         Create a vendor bill from vendor invoice.
@@ -757,6 +758,14 @@ class POService(BaseService):
         billed qty > PO-ordered qty (D-4b — over-receipt can't authorise paying
         beyond the order), or billed unit cost varying from the PO/receipt cost.
         Auto-approves only when no discrepancies.
+
+        freight_amount — vendor-billed freight charged on the SAME invoice as the
+        parts (e.g. PAI). It is added to total_amount so the recorded payable
+        matches the vendor's invoice; it does NOT affect the 3-way match (freight
+        is a known PO cost, not a line variance). When None, it defaults to the
+        PO's freight_in_cost NET of freight already billed on prior bills of that
+        PO (so splitting a PO across bills never double-counts freight); pass 0.0
+        explicitly when a separate carrier bills the freight.
 
         R1-5 — rejects a duplicate bill_number for the same vendor (case/
         whitespace-insensitive): the same vendor invoice entered twice would
@@ -833,9 +842,28 @@ class POService(BaseService):
 
             total += round(qty_billed * unit_cost, 2)
 
+        # Resolve vendor-billed freight. Default = the PO's freight NET of what
+        # prior bills of the same PO already carried, so a PO split across several
+        # bills never double-counts freight (and a fully-billed PO defaults to 0).
+        if freight_amount is None:
+            freight = 0.0
+            if po_id:
+                bill_po = self.db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()
+                if bill_po:
+                    already = sum(
+                        float(b.freight_amount or 0.0)
+                        for b in self.db.query(VendorBill)
+                        .filter(VendorBill.po_id == po_id, VendorBill.id != bill.id)
+                        .all()
+                    )
+                    freight = max(0.0, round(float(bill_po.freight_in_cost or 0.0) - already, 2))
+        else:
+            freight = max(0.0, round(float(freight_amount), 2))
+
         has_qty_discrepancy = has_qty_over_received or has_qty_over_ordered
         has_discrepancy = has_qty_discrepancy or has_cost_discrepancy
-        bill.total_amount = round(total, 2)
+        bill.freight_amount = freight
+        bill.total_amount = round(total + freight, 2)
         bill.status = VendorBillStatus.DISCREPANCY if has_discrepancy else VendorBillStatus.APPROVED
 
         if has_discrepancy:
@@ -866,7 +894,12 @@ class POService(BaseService):
             entity_type=EntityType.PURCHASE_ORDER,
             entity_id=po_id or 0,
             action=AuditAction.CREATED,
-            new_value={"bill_number": bill_number, "total": total, "discrepancy": has_discrepancy},
+            new_value={
+                "bill_number": bill_number,
+                "total": bill.total_amount,
+                "freight": freight,
+                "discrepancy": has_discrepancy,
+            },
         )
         self.db.commit()
         return bill
@@ -944,6 +977,7 @@ class POService(BaseService):
         before = {
             "bill_number": bill.bill_number,
             "total": bill.total_amount,
+            "freight": bill.freight_amount,
             "status": before_status,
             "lines": {bl.id: {"qty": bl.qty_billed, "cost": bl.unit_cost} for bl in bill.lines},
         }
@@ -971,6 +1005,11 @@ class POService(BaseService):
             bill.bill_date = header["bill_date"]
         if "due_date" in header:
             bill.due_date = header["due_date"]
+        if header.get("freight_amount") is not None:
+            f = round(float(header["freight_amount"]), 2)
+            if f < 0:
+                raise ValueError("Freight cannot be negative.")
+            bill.freight_amount = f
 
         affected_po_lines: dict[int, POLine] = {}
         for ed in (line_edits or []):
@@ -997,7 +1036,9 @@ class POService(BaseService):
 
         self.db.flush()
 
-        bill.total_amount = round(sum(bl.line_total for bl in bill.lines), 2)
+        bill.total_amount = round(
+            sum(bl.line_total for bl in bill.lines) + float(bill.freight_amount or 0.0), 2
+        )
         if bill.has_discrepancy:
             bill.status = VendorBillStatus.DISCREPANCY
         elif before_status == VendorBillStatus.APPROVED:
@@ -1023,6 +1064,7 @@ class POService(BaseService):
                 "bill_id": bill_id,
                 "bill_number": bill.bill_number,
                 "total": bill.total_amount,
+                "freight": bill.freight_amount,
                 "status": bill.status,
             },
             notes=reason.strip(),
@@ -1336,9 +1378,11 @@ class POService(BaseService):
         bill_line.unit_cost = prospective_bill_cost
         line.qty_billed = cumulative_qty
 
-        # Bill-side edits change what we owe — recompute the bill total from lines.
+        # Bill-side edits change what we owe — recompute the bill total from lines
+        # (vendor-billed freight rides on top, unchanged by a line correction).
         bill.total_amount = round(
-            sum(bl.qty_billed * bl.unit_cost for bl in bill.lines), 2
+            sum(bl.qty_billed * bl.unit_cost for bl in bill.lines)
+            + float(bill.freight_amount or 0.0), 2
         )
 
         line.match_resolution = MatchResolution.CORRECTED

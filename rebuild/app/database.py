@@ -341,6 +341,12 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     #    "ERP hid this listing" flag here too. NOT NULL → a missing column would
     #    500 every Product query; the flag gates the safe auto-re-list direction. ─
     ("products",               "shopify_hidden_by_erp",   "BOOLEAN NOT NULL DEFAULT 0"),
+
+    # ── Vendor-billed freight on the bill (Alembic 0007): the vendor (e.g. PAI)
+    #    charges freight on the same invoice as the parts. Part of total_amount so
+    #    the AP payable matches the vendor's invoice; defaults from PO freight_in.
+    #    NOT NULL → a missing column would 500 every VendorBill query. ────────────
+    ("vendor_bills",           "freight_amount",          "REAL NOT NULL DEFAULT 0"),
 ]
 
 

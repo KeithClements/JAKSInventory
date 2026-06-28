@@ -293,6 +293,14 @@ class VendorBill(QBOSyncMixin, Base):
         String(20), nullable=False, default=VendorBillStatus.PENDING
     )
     total_amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # Vendor-billed freight — e.g. PAI puts the freight charge on the SAME invoice
+    # as the parts. Defaults from the PO's freight_in_cost at bill creation (net of
+    # freight already billed on prior bills of that PO) and is editable on
+    # correction. It is PART of total_amount (the AP payable, so the bill matches
+    # the vendor's invoice) and posts to QBO as its own freight-in expense line.
+    # Freight billed by a SEPARATE carrier should be zeroed here and entered as its
+    # own bill — the parts lines (and the 3-way match) are unaffected either way.
+    freight_amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
     # ── QBO Sync ──────────────────────────────────────────────────────────────
     # qbo_sync_status, qbo_last_synced_at, qbo_sync_error, qbo_sync_retry_count
@@ -315,6 +323,12 @@ class VendorBill(QBOSyncMixin, Base):
     @property
     def has_discrepancy(self) -> bool:
         return any(ln.has_discrepancy for ln in self.lines)
+
+    @property
+    def parts_subtotal(self) -> float:
+        """Sum of the billed parts lines, before freight. total_amount =
+        parts_subtotal + freight_amount."""
+        return round(sum(ln.line_total for ln in self.lines), 2)
 
 
 class VendorBillLine(Base):

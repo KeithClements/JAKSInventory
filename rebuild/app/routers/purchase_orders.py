@@ -1128,6 +1128,18 @@ async def po_create_bill(po_id: int, request: Request, db: Session = Depends(get
             status_code=303,
         )
 
+    # Vendor-billed freight (PAI puts it on the same invoice). Field present →
+    # use it (incl. an explicit 0 when a carrier bills freight separately);
+    # absent → None so the service defaults from the PO's freight_in_cost.
+    freight_amount: float | None = None
+    if "freight_amount" in form:
+        freight_raw = str(form.get("freight_amount", "")).strip()
+        if freight_raw != "":
+            try:
+                freight_amount = float(freight_raw)
+            except (ValueError, TypeError):
+                freight_amount = None
+
     try:
         svc.create_vendor_bill(
             po_id=po_id,
@@ -1136,6 +1148,7 @@ async def po_create_bill(po_id: int, request: Request, db: Session = Depends(get
             bill_date=bill_date,
             due_date=due_date,
             lines=lines,
+            freight_amount=freight_amount,
         )
     except ValueError as exc:
         db.rollback()
@@ -1411,6 +1424,16 @@ async def po_edit_bill(
         header["bill_date"] = _parse_date("bill_date")
     if "due_date" in form:
         header["due_date"] = _parse_date("due_date")
+    if "freight_amount" in form:
+        freight_raw = str(form.get("freight_amount", "")).strip()
+        if freight_raw != "":
+            try:
+                header["freight_amount"] = round(float(freight_raw), 2)
+            except (ValueError, TypeError):
+                return RedirectResponse(
+                    f"/purchase-orders/{po_id}?error={url_quote('Enter a valid freight amount.')}",
+                    status_code=303,
+                )
 
     # Per-line edits arrive as qty_<id> / cost_<id>; group by bill_line id.
     by_line: dict[int, dict] = {}

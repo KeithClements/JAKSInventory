@@ -103,7 +103,8 @@ QBO_ACCOUNT_FIELDS: list[dict] = [
      "used": "Reserved — used when PO/bill inventory posting is enabled."},
     {"key": "qbo_freight_in_account",      "label": "Freight In",
      "types": ["Cost of Goods Sold", "Expense"],
-     "used": "Reserved — used when freight-in landed cost is posted."},
+     "used": "Active — vendor-billed freight on a bill posts here (falls back to "
+             "the COGS account when unset)."},
     {"key": "qbo_freight_out_account",     "label": "Freight Out / Delivery",
      "types": ["Expense", "Income"],
      "used": "Reserved — used for outbound freight to customers."},
@@ -409,7 +410,8 @@ class QBOSyncService(BaseService):
             vendor = self.db.query(Vendor).filter(Vendor.id == bill.vendor_id).first()
             vendor_ref = self._resolve_vendor(client, vendor)
             account_id = self._resolve_bill_expense_account(client)
-            payload = self._build_bill_payload(bill, vendor_ref, account_id)
+            freight_account_id = self._resolve_freight_in_account(client, account_id)
+            payload = self._build_bill_payload(bill, vendor_ref, account_id, freight_account_id)
             if bill.qbo_id:
                 # Re-sync of a corrected bill: full update in place (keeps the
                 # same QBO Bill, replacing its lines/header with the correction).
@@ -440,10 +442,14 @@ class QBOSyncService(BaseService):
             return {"ok": False, "error": msg}
 
     def _build_bill_payload(self, bill: VendorBill, vendor_ref: dict,
-                            account_id: str) -> dict:
+                            account_id: str, freight_account_id: str | None = None) -> dict:
         """QBO Bill body: AccountBasedExpenseLine per bill line, all posting to
         the configured expense/COGS account. Part # + description ride along in
-        each line's Description (same convention as the invoice push)."""
+        each line's Description (same convention as the invoice push).
+
+        Vendor-billed freight (bill.freight_amount — freight the vendor put on the
+        same invoice as the parts) posts as its own line to the freight-in account
+        so the QBO Bill total equals total_amount and matches the vendor invoice."""
         lines: list[dict] = []
         for ln in bill.lines:
             amount = round(float(ln.line_total), 2)
@@ -463,6 +469,16 @@ class QBOSyncService(BaseService):
                 "Description": desc[:1000],
                 "AccountBasedExpenseLineDetail": {
                     "AccountRef": {"value": account_id},
+                },
+            })
+        freight = round(float(getattr(bill, "freight_amount", 0.0) or 0.0), 2)
+        if freight > 0:
+            lines.append({
+                "DetailType": "AccountBasedExpenseLineDetail",
+                "Amount": freight,
+                "Description": "Freight In (vendor-billed)",
+                "AccountBasedExpenseLineDetail": {
+                    "AccountRef": {"value": freight_account_id or account_id},
                 },
             })
         if not lines:
@@ -736,6 +752,20 @@ class QBOSyncService(BaseService):
             "(or point the qbo_bill_expense_account setting at an existing "
             "expense/COGS account), then retry."
         )
+
+    def _resolve_freight_in_account(self, client: QBOClient, fallback_account_id: str) -> str:
+        """QBO Account id that vendor-billed freight posts to. Owner sets it via
+        the qbo_freight_in_account setting; when unset (or the named account
+        doesn't exist) we fall back to the bill expense account so freight still
+        posts to the books rather than blocking the whole bill push over a missing
+        freight account."""
+        name = get_setting_value_db(self.db, "qbo_freight_in_account", "").strip()
+        if not name:
+            return fallback_account_id
+        rows = client.query(f"select Id, Name from Account where Name = '{_q(name)}'")
+        if rows and rows[0].get("Id"):
+            return str(rows[0]["Id"])
+        return fallback_account_id
 
     def _build_invoice_payload(self, inv: Invoice, customer_ref: dict,
                                item_ids: dict[str, str],

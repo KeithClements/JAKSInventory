@@ -582,7 +582,7 @@
                 <td class="px-4 py-4 align-middle text-right tabular-nums">
                   <input type="number" name="unit_cost_{{ line.id }}" step="0.01" min="0"
                          value="{{ '%.2f' | format(line.unit_cost) }}"
-                         class="w-24 form-input text-right" />
+                         class="w-32 form-input text-right" />
                 </td>
                 <td class="px-4 py-4 align-middle text-right text-sm font-medium tabular-nums text-gray-700">
                   ${{ '%.2f' | format(line.qty_received * line.unit_cost) }}
@@ -591,6 +591,24 @@
               {% endfor %}
             </tbody>
           </table>
+        </div>
+
+        {# Vendor-billed freight — defaults to the PO's freight still unbilled, so
+           the bill total matches the vendor's invoice when freight rides on the
+           same invoice (e.g. PAI). Zero it when a separate carrier bills freight. #}
+        {% set billed_freight = po.bills | sum(attribute='freight_amount') %}
+        {% set freight_default = (po.freight_in_cost or 0) - billed_freight %}
+        {% set freight_default = freight_default if freight_default > 0 else 0 %}
+        <div class="flex flex-col items-end gap-1 border-t border-gray-100 pt-4">
+          <div class="w-48">
+            <label class="form-label">Freight on this bill ($)</label>
+            <input type="number" name="freight_amount" step="0.01" min="0"
+                   value="{{ '%.2f' | format(freight_default) }}"
+                   class="w-full form-input text-right tabular-nums" />
+            <p class="text-[11px] text-gray-400 mt-1 text-right">
+              PO freight-in ${{ '%.2f' | format(po.freight_in_cost or 0) }}{% if billed_freight %} · ${{ '%.2f' | format(billed_freight) }} already billed{% endif %}
+            </p>
+          </div>
         </div>
 
         {# Discrepancy warning — shown when any qty_billed > qty_received #}
@@ -696,7 +714,15 @@
             <td class="px-4 py-4 align-middle text-sm text-gray-700 font-mono text-xs font-semibold">{{ bill.bill_number or '—' }}</td>
             <td class="px-4 py-4 align-middle text-sm text-gray-600">{{ bill.bill_date.strftime('%b %d, %Y') if bill.bill_date else '—' }}</td>
             <td class="px-4 py-4 align-middle text-sm text-gray-600">{{ bill.due_date.strftime('%b %d, %Y') if bill.due_date else '—' }}</td>
-            <td class="px-4 py-4 align-middle text-right text-sm font-medium tabular-nums">${{ '%.2f' | format(bill.total_amount) }}</td>
+            <td class="px-4 py-4 align-middle text-right text-sm font-medium tabular-nums">
+              ${{ '%.2f' | format(bill.total_amount) }}
+              {% if bill.freight_amount %}
+              <span class="block text-[10px] font-normal text-gray-400 mt-0.5"
+                    title="Parts ${{ '%.2f' | format(bill.parts_subtotal) }} + vendor-billed freight ${{ '%.2f' | format(bill.freight_amount) }}">
+                incl. ${{ '%.2f' | format(bill.freight_amount) }} freight
+              </span>
+              {% endif %}
+            </td>
             <td class="px-4 py-4 align-middle text-sm text-gray-700">
               {% if bill.status == 'paid' %}<span class="badge-green">Paid</span>
               {% elif bill.status == 'discrepancy' %}<span class="badge-red">Discrepancy</span>
@@ -780,6 +806,12 @@
                     <label class="form-label">Due date</label>
                     <input type="date" name="due_date" value="{{ bill.due_date.strftime('%Y-%m-%d') if bill.due_date else '' }}" class="form-input" />
                   </div>
+                  <div>
+                    <label class="form-label">Freight ($)</label>
+                    <input type="number" name="freight_amount" step="0.01" min="0"
+                           value="{{ '%.2f' | format(bill.freight_amount or 0) }}"
+                           class="form-input w-32 text-right tabular-nums" />
+                  </div>
                 </div>
                 <table class="w-full text-xs border-t border-gray-100 pt-2">
                   <thead>
@@ -794,7 +826,7 @@
                     <tr>
                       <td class="py-1 font-mono text-gray-600">{{ bl.po_line.product.sku if bl.po_line and bl.po_line.product else (bl.po_line.description if bl.po_line else '—') }}</td>
                       <td class="text-right"><input type="number" name="qty_{{ bl.id }}" value="{{ bl.qty_billed }}" min="0" class="form-input w-20 text-right tabular-nums" /></td>
-                      <td class="text-right"><input type="number" name="cost_{{ bl.id }}" value="{{ '%.2f' | format(bl.unit_cost) }}" step="0.01" min="0" class="form-input w-24 text-right font-mono tabular-nums" /></td>
+                      <td class="text-right"><input type="number" name="cost_{{ bl.id }}" value="{{ '%.2f' | format(bl.unit_cost) }}" step="0.01" min="0" class="form-input w-32 text-right font-mono tabular-nums" /></td>
                     </tr>
                     {% endfor %}
                   </tbody>
