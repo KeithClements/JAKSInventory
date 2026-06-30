@@ -12,14 +12,15 @@ import io
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.constants import CrossRefType, SuggestedSellType
 from app.deps import get_db, get_current_user_id, require_admin
 from app.models.competitor import CompetitorPrice
 from app.models.product import (
-    CrossReference, Product, ProductImage, ProductVendorSource, SuggestedSell,
+    CrossReference, Product, ProductApplication, ProductCategory, ProductImage,
+    ProductVendorSource, SuggestedSell,
 )
 from app.models.vendor import Vendor
 from app.services.product_service import ProductService
@@ -83,70 +84,188 @@ def _descendant_category_ids(db: Session, root_id: int) -> list[int]:
     return out
 
 
-def _product_search_filter(db: Session, q: str):
-    """R3 — boolean predicate for the products-list search box.
+def _looks_like_partno(token: str) -> bool:
+    """A word is only worth checking against the 220k+ cross-ref / vendor /
+    competitor part-number surfaces if it actually carries a digit — pure words
+    like "spacer" never live there, so we skip the leading-wildcard scan for
+    them (big win on plain keyword searches)."""
+    return any(ch.isdigit() for ch in token)
 
-    Keeps the original sku/title/manufacturer/brand ``ilike`` (plus the
-    de-dashed SKU branch) AND adds EXISTS subqueries against the same
-    normalized part-number surfaces the line adder's SearchService searches:
-    ``cross_references.ref_number`` (OEM / competitor / vendor-alt),
-    ``product_vendor_sources.vendor_part_number`` / ``vendor_sku``, and
-    ``competitor_prices.competitor_part_number``.  Normalization is SHARED
-    (``search_service._norm_col`` + ``utils.normalize_part``) so separators
-    and parens match exactly like the quote line adder — "3683512(C)" stored
-    matches the query "3683512C" and vice versa.
-    """
-    like = f"%{q}%"
-    _filter = (
-        Product.sku.ilike(like)
-        | Product.title.ilike(like)
-        | Product.manufacturer.ilike(like)
-        | Product.brand.ilike(like)
+
+def _token_partno_filter(db: Session, token: str):
+    """Correlated-EXISTS predicate matching ONE token against the normalized
+    part-number surfaces — the precomputed, indexed ``*_norm`` columns the line
+    adder's SearchService uses (sku / OEM cross-ref / vendor part # / competitor
+    part #). Normalization is SHARED (``utils.normalize_part`` + ``_norm_col``)
+    so "3683512(C)" stored matches a typed "3683512C" and vice versa."""
+    nq = normalize_part(token)
+    if not nq:
+        return None
+    nlike = f"%{nq}%"
+    return (
+        Product.sku_norm.like(nlike)          # de-dashed SKU ("141234" finds "14-1234")
+        | db.query(CrossReference.id).filter(
+            CrossReference.product_id == Product.id,
+            CrossReference.ref_number_norm.like(nlike),
+        ).exists()
+        | db.query(ProductVendorSource.id).filter(
+            ProductVendorSource.product_id == Product.id,
+            ProductVendorSource.is_active == True,  # noqa: E712
+            ProductVendorSource.vendor_part_number_norm.like(nlike)
+            | ProductVendorSource.vendor_sku_norm.like(nlike),
+        ).exists()
+        | db.query(CompetitorPrice.id).filter(
+            CompetitorPrice.product_id == Product.id,
+            CompetitorPrice.is_active == True,  # noqa: E712
+            _norm_col(CompetitorPrice.competitor_part_number).like(nlike),
+        ).exists()
     )
-    # De-dashed SKU branch so "141234" finds "14-1234" and "ok1" finds "OK-1".
-    _q_clean = re.sub(r"[^a-zA-Z0-9]", "", q)
-    if _q_clean:
-        _dedashed_sku = func.replace(func.replace(Product.sku, "-", ""), " ", "")
-        _filter = _filter | _dedashed_sku.ilike(f"%{_q_clean}%")
 
-    # Normalized part-number lookups (correlated EXISTS — predicate only, no
-    # SearchService result pipeline: the list needs a filter, not ranking).
-    nq = normalize_part(q)
-    if nq:
-        nlike = f"%{nq}%"
-        # Match the PRECOMPUTED normalized columns (DB-trigger maintained) instead
-        # of normalizing every row in-query — turns a multi-second scan of 216k+
-        # cross-references into a plain indexed-column read. Identical results:
-        # the stored value uses the same separator set as _norm_col.
-        _xref_hit = (
-            db.query(CrossReference.id)
-            .filter(
-                CrossReference.product_id == Product.id,
-                CrossReference.ref_number_norm.like(nlike),
-            )
-            .exists()
+
+def _token_engine_filter(db: Session, token: str):
+    """Correlated-EXISTS against engine fitment (``product_applications``) for
+    ONE token — so "C15", "ISX", "DD15" surface every part that fits that engine
+    even when the engine lives only in the fitment table, not a product field.
+    This is what the Products list was missing entirely."""
+    tl = token.lower()
+    make_model = func.lower(
+        ProductApplication.engine_make + " " + ProductApplication.engine_model
+    )
+    return (
+        db.query(ProductApplication.id)
+        .filter(
+            ProductApplication.product_id == Product.id,
+            or_(
+                func.lower(ProductApplication.engine_make).like(f"%{tl}%"),
+                func.lower(ProductApplication.engine_model).like(f"%{tl}%"),
+                make_model.like(f"%{tl}%"),
+            ),
         )
-        _pvs_hit = (
-            db.query(ProductVendorSource.id)
-            .filter(
-                ProductVendorSource.product_id == Product.id,
-                ProductVendorSource.is_active == True,  # noqa: E712
-                ProductVendorSource.vendor_part_number_norm.like(nlike)
-                | ProductVendorSource.vendor_sku_norm.like(nlike),
-            )
-            .exists()
+        .exists()
+    )
+
+
+def _token_filter(db: Session, token: str):
+    """Everything ONE typed word can match: the human-readable product fields
+    (title / description / manufacturer / engine make / brand / SKU / category
+    name), engine fitment, and — when the word carries a digit — the normalized
+    part-number surfaces. Mirrors SearchService's keyword tier so the list and
+    the line adder agree on what "a word matches"."""
+    like = f"%{token}%"
+    f = (
+        Product.title.ilike(like)
+        | Product.description.ilike(like)
+        | Product.manufacturer.ilike(like)
+        | Product.engine_manufacturer.ilike(like)
+        | Product.brand.ilike(like)
+        | Product.sku.ilike(like)
+    )
+    # Category name (correlated EXISTS — a part can be found by its category).
+    f = f | db.query(ProductCategory.id).filter(
+        ProductCategory.id == Product.category_id,
+        ProductCategory.name.ilike(like),
+    ).exists()
+    # Engine fitment.
+    f = f | _token_engine_filter(db, token)
+    # Part-number surfaces — only for tokens that could be a part number.
+    if _looks_like_partno(token):
+        pf = _token_partno_filter(db, token)
+        if pf is not None:
+            f = f | pf
+    return f
+
+
+def _product_search_filter(db: Session, q: str):
+    """Boolean predicate for the products-list search box.
+
+    MULTI-TERM: the query is split on whitespace and EVERY word must match
+    SOMEWHERE — title, description, manufacturer, engine make/model fitment,
+    brand, category, SKU, OEM cross-ref, vendor part #, or competitor part #.
+    Each added word therefore *narrows* the result (AND across words, OR across
+    fields), so a counter person who doesn't know the part number can type
+    "cat spacer" — "cat" hits the Caterpillar manufacturer / fitment and
+    "spacer" hits the title — or "c15 spacer" to narrow to the C15 engine. This
+    brings the list to parity with the Ctrl+K omnibox and the quote/SO line
+    adder (both already backed by SearchService).
+    """
+    tokens = [t for t in q.split() if t]
+    if not tokens:
+        return Product.id.isnot(None)  # no real query → match-all (caller guards q)
+
+    per_token = and_(*[_token_filter(db, t) for t in tokens])
+
+    # A pasted part number can contain spaces/dashes ("368 3512" → "3683512").
+    # When the multi-word query is really ONE part number, normalizing the whole
+    # string (which strips the internal separators) recovers that match — kept
+    # as an OR alongside the per-word AND so it never blocks a real word search.
+    if len(tokens) > 1 and _looks_like_partno(q):
+        whole = _token_partno_filter(db, q)
+        if whole is not None:
+            return or_(per_token, whole)
+    return per_token
+
+
+def _compute_match_hints(db: Session, products: list, q: str) -> dict[int, str]:
+    """A short "why it matched" label per page row, shown ONLY when the match is
+    not already visible in the row's SKU/title — e.g. the part matched because
+    its manufacturer is Caterpillar or because it fits a C15. Computed in Python
+    over the (≤100) page rows with a single engine-fitment preload, so counter
+    staff trust a fuzzy hit instead of reading it as a wrong result."""
+    tokens = [t for t in q.split() if t]
+    if not tokens or not products:
+        return {}
+
+    pids = [p.id for p in products]
+    apps_by_pid: dict[int, list[tuple[str, str]]] = {}
+    for pid, mk, ml in (
+        db.query(
+            ProductApplication.product_id,
+            ProductApplication.engine_make,
+            ProductApplication.engine_model,
         )
-        _comp_hit = (
-            db.query(CompetitorPrice.id)
-            .filter(
-                CompetitorPrice.product_id == Product.id,
-                CompetitorPrice.is_active == True,  # noqa: E712
-                _norm_col(CompetitorPrice.competitor_part_number).like(nlike),
-            )
-            .exists()
-        )
-        _filter = _filter | _xref_hit | _pvs_hit | _comp_hit
-    return _filter
+        .filter(ProductApplication.product_id.in_(pids))
+        .all()
+    ):
+        apps_by_pid.setdefault(pid, []).append((mk or "", ml or ""))
+
+    hints: dict[int, str] = {}
+    for p in products:
+        title_l = (p.title or "").lower()
+        sku_norm = normalize_part(p.sku or "")
+        bits: list[str] = []
+        for tok in tokens:
+            tl = tok.lower()
+            ntok = normalize_part(tok)
+            # Already visible in the row's title or SKU → no explanation needed.
+            if tl in title_l:
+                continue
+            if ntok and ntok in sku_norm:
+                continue
+            label = None
+            # 1) A product field the row doesn't surface (manufacturer/brand).
+            for fld in (p.manufacturer, p.engine_manufacturer, p.brand):
+                if fld and tl in fld.lower():
+                    label = fld.strip()
+                    break
+            # 2) Engine fitment (lives only in the applications table).
+            if label is None:
+                for mk, ml in apps_by_pid.get(p.id, []):
+                    if tl in mk.lower() or tl in ml.lower() or tl in f"{mk} {ml}".lower():
+                        eng = (ml or mk).strip()
+                        label = f"Fits {eng}" if eng else None
+                        break
+            # 3) Category.
+            if label is None and p.category and tl in (p.category.name or "").lower():
+                label = p.category.name.strip()
+            # 4) Description / part-number cross-ref — generic umbrellas.
+            if label is None:
+                label = "in description" if (p.description and tl in p.description.lower()) else "cross-ref"
+            label = label[:28]
+            if label and label not in bits:
+                bits.append(label)
+        if bits:
+            hints[p.id] = " · ".join(bits[:2])  # keep it to two reasons, max
+    return hints
 
 
 # ── List ─────────────────────────────────────────────────────────────────────
@@ -218,6 +337,29 @@ def product_list(
         joinedload(Product.vendor_sources).joinedload(ProductVendorSource.vendor),
     )
 
+    # Best-match-first: when searching, a relevance score orders the matched set
+    # BEFORE the chosen Sort dropdown (which then breaks ties). A contiguous
+    # title/SKU hit ranks highest, then per-word title coverage, then a softer
+    # manufacturer/engine/brand hit — so "cat spacer" floats the parts whose NAME
+    # is closest to the words above parts that merely fit a Caterpillar engine.
+    rel_order: list = []
+    if q:
+        _toks = [t for t in q.split() if t]
+        _nqf = normalize_part(q)
+        _terms = [case((Product.title.ilike(f"%{q}%"), 6), else_=0)]
+        if _nqf:
+            _terms.append(case((Product.sku_norm.like(f"%{_nqf}%"), 6), else_=0))
+        for _t in _toks:
+            _terms.append(case((Product.title.ilike(f"%{_t}%"), 3), else_=0))
+            _terms.append(case((
+                Product.manufacturer.ilike(f"%{_t}%")
+                | Product.engine_manufacturer.ilike(f"%{_t}%")
+                | Product.brand.ilike(f"%{_t}%"), 1), else_=0))
+        _relevance = _terms[0]
+        for _term in _terms[1:]:
+            _relevance = _relevance + _term
+        rel_order = [_relevance.desc()]
+
     # Sort: SKU (default) · Vendor · Category — ALL paged in SQL (LIMIT/OFFSET).
     # Previously vendor/category did .all() over the full (13k+) matched set and
     # sorted/sliced in Python, spiking RAM and stalling the counter. We now sort
@@ -238,7 +380,7 @@ def product_list(
         )
         products = (
             q_eager.order_by(
-                _pref_vendor_name.is_(None), func.lower(_pref_vendor_name), Product.sku
+                *rel_order, _pref_vendor_name.is_(None), func.lower(_pref_vendor_name), Product.sku
             )
             .limit(PAGE_SIZE).offset(offset).all()
         )
@@ -251,13 +393,13 @@ def product_list(
         )
         products = (
             q_eager.order_by(
-                _cat_name.is_(None), func.lower(_cat_name), Product.sku
+                *rel_order, _cat_name.is_(None), func.lower(_cat_name), Product.sku
             )
             .limit(PAGE_SIZE).offset(offset).all()
         )
     else:
         sort = "sku"  # normalize unknown values back to the default
-        products = q_eager.order_by(Product.sku).limit(PAGE_SIZE).offset(offset).all()
+        products = q_eager.order_by(*rel_order, Product.sku).limit(PAGE_SIZE).offset(offset).all()
 
     page_start = (offset + 1) if total else 0
     page_end = min(offset + PAGE_SIZE, total)
@@ -304,9 +446,13 @@ def product_list(
     _pricing_svc = _PS(db)
     sell_price_map: dict[int, float] = {p.id: _pricing_svc.sell_price_for(p) for p in products}
 
+    # "Why it matched" hints — only computed when there's a query, over the page rows.
+    match_hints = _compute_match_hints(db, products, q) if q else {}
+
     return templates.TemplateResponse(request, "products/list.html", {
         "products": products,
         "sell_price_map": sell_price_map,
+        "match_hints": match_hints,
         "q": q,
         "tab": tab,
         "sort": sort,

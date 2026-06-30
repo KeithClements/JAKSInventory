@@ -1535,6 +1535,119 @@
     };
   };
 
+  {# ── Product pricing — Markup ⇄ Margin ⇄ Price three-way editor ─────────────
+     Powers the Pricing card on BOTH the New Product (products/new.html) and Edit
+     Product (products/detail.html) forms. The owner can price a part by typing ANY
+     of the three boxes — Markup %, Margin %, or the exact sell Price — and the
+     other two recompute live off the current cost. Defined here (not inline) so the
+     two forms share ONE source of truth for the math and there's no init race.
+
+     Owner decision (2026-06-24): the exact Price RECALCULATES from cost — typing a
+     dollar amount back-solves the markup, which then floats with cost exactly like
+     markup / margin do. There is NO fixed-price pin EXCEPT the unavoidable case
+     where cost is still 0 (a markup can't yield a non-zero price), where the typed
+     price is carried as a price_override so a part can be listed before its cost is
+     known. As soon as a real cost exists the price floats again.
+
+     Persistence — NO backend change. Two hidden inputs submit the same two columns
+     the form has always posted; the three visible boxes only compute them:
+       markup_pct      ← markupSubmit  (the cost-plus anchor; blank => default markup)
+       price_override  ← overrideSubmit (blank whenever there's a cost basis; only
+                          set to pin a price when cost is 0)
+     Pricing is left UNTOUCHED unless the owner actually edits a pricing box
+     (`touched`), so saving an unrelated field (e.g. the detail-page autosave) can
+     never silently re-base an existing override.
+
+     config: { cost, markup, priceOverride, defaultMarkup } — strings / null ok. #}
+  window.productPricing = window.productPricing || function (cfg) {
+    cfg = cfg || {};
+    var num = function (v) { return (v === '' || v === null || v === undefined) ? null : Number(v); };
+    var r2  = function (x) { return Math.round((Number(x) || 0) * 100) / 100; };
+    return {
+      cost: Number(cfg.cost) || 0,
+      defaultMarkup: Number(cfg.defaultMarkup) || 30,
+      markup: num(cfg.markup),   // the persisted cost-plus anchor (null => default)
+      margin: null,              // derived, but also directly editable
+      price: null,               // derived, but also directly editable
+      // 'markup' => price floats with cost; 'price' => price pinned (cost is 0,
+      // carried as an override). Margin entry is cost-plus, so it anchors on markup.
+      anchor: 'markup',
+      touched: false,
+      _origMarkup: num(cfg.markup),
+      _origOverride: num(cfg.priceOverride),
+
+      init() {
+        if (this._origOverride !== null && this._origOverride > 0) {
+          // Seed the boxes from the stored exact price so the number is unchanged
+          // on load; keep it pinned until the owner actually edits a pricing box.
+          this.price = this._origOverride;
+          this._deriveFromPrice();
+          this.anchor = 'price';
+        } else {
+          this._deriveFromMarkup();
+          this.anchor = 'markup';
+        }
+      },
+
+      get effMarkup() { return (this.markup === null || this.markup === '') ? this.defaultMarkup : Number(this.markup); },
+
+      // ── recompute the OTHER two boxes from the named one (never the edited box,
+      //    so x-model keeps the caret/decimals the owner is mid-typing) ──
+      _deriveFromMarkup() {
+        var c = Number(this.cost) || 0;
+        this.price = r2(c * (1 + this.effMarkup / 100));
+        this.margin = this.price > 0 ? r2((this.price - c) / this.price * 100) : null;
+      },
+      _deriveFromMargin() {
+        var c = Number(this.cost) || 0, g = Number(this.margin);
+        if (this.margin === null || g >= 100) return;   // blank / impossible (>=100% margin)
+        this.price = r2(c / (1 - g / 100));
+        this.markup = c > 0 ? r2((this.price - c) / c * 100) : null;
+      },
+      _deriveFromPrice() {
+        var c = Number(this.cost) || 0, p = Number(this.price) || 0;
+        this.markup = c > 0 ? r2((p - c) / c * 100) : null;
+        this.margin = p > 0 ? r2((p - c) / p * 100) : null;
+      },
+
+      // ── @input handlers (x-model has already written the edited box) ──
+      onMarkup() { this.touched = true; this.anchor = 'markup'; this._deriveFromMarkup(); },
+      onMargin() { this.touched = true; this.anchor = 'margin'; this._deriveFromMargin(); },
+      onPrice()  {
+        this.touched = true;
+        this._deriveFromPrice();
+        // Exact price floats off the derived markup when there's a cost basis; with
+        // no cost yet there's nothing to float against, so pin it via the override.
+        this.anchor = (Number(this.cost) > 0) ? 'markup' : 'price';
+      },
+
+      // ── live cost change (new.html Vendor Cost field / detail.html Our Cost) ──
+      onCostChange(v) {
+        this.cost = Number(v) || 0;
+        if (this.anchor === 'price') { this._deriveFromPrice(); }   // pinned → markup/margin move
+        else { this._deriveFromMarkup(); }                          // anchored on markup → price floats
+      },
+
+      // ── readout ──
+      get hasInput()  { return (Number(this.cost) > 0) || (Number(this.price) > 0); },
+      get sellPrice() { return Number(this.price) || 0; },
+      get marginPct() { var s = this.sellPrice, c = Number(this.cost) || 0; return s ? r2((s - c) / s * 100) : null; },
+      get isPinned()  { return this.anchor === 'price'; },
+      get usingDefault() { return this.markup === null || this.markup === ''; },
+
+      // ── submitted values (hidden inputs) — leave pricing alone unless touched ──
+      get markupSubmit() {
+        if (!this.touched) return this._origMarkup === null ? '' : this._origMarkup;
+        if (this.anchor === 'price') return '';            // pinned → markup blank, override carries it
+        return (this.markup === null || this.markup === '') ? '' : this.markup;
+      },
+      get overrideSubmit() {
+        if (!this.touched) return this._origOverride === null ? '' : this._origOverride;
+        return (this.anchor === 'price' && Number(this.price) > 0) ? this.price : '';
+      },
+    };
+  };
+
   {# ── Customer Pricing & Deals — Quick Deal modal / rule-editor factory ──────
      Defined here (NOT in the macros/pricing.html fragment) so the factory is on
      `window` before Alpine inits any HTMX-swapped content that references it —

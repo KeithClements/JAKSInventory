@@ -131,7 +131,7 @@
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
       </svg>
-      <input name="q" value="{{ q }}" placeholder="Search parts… number, description, cross-ref"
+      <input name="q" value="{{ q }}" placeholder="Search parts… name, number, engine (C15), cross-ref"
              class="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-md bg-white
                     focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400
                     placeholder:text-gray-400" />
@@ -425,6 +425,18 @@
           {# Title + sub-line #}
           <td class="px-4 py-4 align-middle max-w-xs">
             <p class="text-sm font-medium text-gray-900 truncate leading-snug">{{ p.title or '—' }}</p>
+            {# "Why it matched" hint — shown when the match isn't visible in the
+               SKU/title (e.g. matched on manufacturer or engine fitment). #}
+            {% set _hint = (match_hints | default({})).get(p.id) %}
+            {% if _hint %}
+            <span class="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-brand-50 text-brand-700 border border-brand-100"
+                  title="Matched your search on: {{ _hint }}">
+              <svg class="w-3 h-3 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
+              </svg>
+              {{ _hint }}
+            </span>
+            {% endif %}
             {% if p.brand and p.brand != p.manufacturer %}
             <p class="text-xs text-gray-400 mt-0.5 truncate">{{ p.brand }}</p>
             {% elif p.category %}
@@ -575,7 +587,7 @@
   </div>
   {% if q %}
   <p class="text-sm font-semibold text-gray-700">No products match "{{ q }}"</p>
-  <p class="text-xs text-gray-400 mt-1 mb-4">Try a different SKU, title, or manufacturer.</p>
+  <p class="text-xs text-gray-400 mt-1 mb-4">Try fewer words, or search by part name, number, engine (e.g. C15), or cross-ref.</p>
   <a href="?tab={{ tab }}" class="btn-secondary btn-sm">Clear search</a>
   {% elif tab == 'low_stock' %}
   <p class="text-sm font-semibold text-gray-700">No low-stock products</p>

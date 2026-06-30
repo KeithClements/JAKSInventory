@@ -411,42 +411,56 @@
   <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
     <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Pricing</h2>
 
-    {# Pricing math reads vendor_cost (the input lives in the Vendor Source card).
-       Listens for the `vendor-cost-changed` event the input dispatches, so the
-       "You Charge" readout updates as the owner types upstream. Markup +
-       price_override stay here. PricingService.sell_price_for math:
-       price_override wins, else cost × (1 + markup/100), blank markup → default. #}
-    <div x-data="{
+    {# Pricing reads vendor_cost (the input lives in the Vendor Source card) via the
+       `vendor-cost-changed` event so the readout tracks the owner typing upstream.
+       Markup % ⇄ Margin % ⇄ Price ($) are all editable and cross-linked — type any
+       one, the other two recompute off cost. The shared window.productPricing
+       factory (base.html) owns the math; two hidden inputs submit the same
+       markup_pct + price_override columns the form has always posted. #}
+    <div x-data="window.productPricing({
            cost: {% if form_data and form_data.get('vendor_cost') not in (None, '') %}{{ form_data.vendor_cost|float(0) }}{% else %}0{% endif %},
            markup: {% if form_data and form_data.get('markup_pct') not in (None, '') %}{{ form_data.markup_pct|float(0) }}{% else %}null{% endif %},
-           override: {% if form_data and form_data.get('price_override') not in (None, '') %}{{ form_data.price_override|float(0) }}{% else %}null{% endif %},
-           defaultMarkup: {{ default_markup|float(30) }},
-           get usingOverride() { return this.override !== null && this.override !== '' && Number(this.override) > 0; },
-           get effMarkup() { return (this.markup === null || this.markup === '') ? this.defaultMarkup : Number(this.markup); },
-           get hasInput() { return this.usingOverride || Number(this.cost) > 0; },
-           get sellPrice() { return this.usingOverride ? Number(this.override) : Math.round((Number(this.cost)||0) * (1 + this.effMarkup/100) * 100) / 100; },
-           get marginPct() { const s = this.sellPrice, c = Number(this.cost)||0; return (!s || !c) ? null : Math.round((s-c)/s*1000)/10; }
-         }"
-         @vendor-cost-changed.window="cost = Number($event.detail.value) || 0">
-      <div class="grid grid-cols-2 gap-4">
+           priceOverride: {% if form_data and form_data.get('price_override') not in (None, '') %}{{ form_data.price_override|float(0) }}{% else %}null{% endif %},
+           defaultMarkup: {{ default_markup|float(30) }}
+         })"
+         @vendor-cost-changed.window="onCostChange($event.detail.value)">
+
+      {# Hidden submit fields — the three visible boxes only compute these two. #}
+      <input type="hidden" name="markup_pct" :value="markupSubmit" />
+      <input type="hidden" name="price_override" :value="overrideSubmit" />
+
+      <div class="grid grid-cols-3 gap-4">
         <div>
           <label class="block text-xs font-medium text-gray-500 mb-1">
-            Markup % <span class="text-gray-400 font-normal">(blank = {{ default_markup }}% default)</span>
+            Markup % <span class="text-gray-400 font-normal">(blank = {{ default_markup }}%)</span>
           </label>
-          <input name="markup_pct" type="number" step="0.1" min="0"
-                 x-model.number="markup"
-                 value="{{ form_data.markup_pct if form_data else '' }}"
+          {# step="any": the box is auto-filled by productPricing with a 2-decimal
+             value (r2), which would violate step="0.1" and silently block submit
+             via HTML5 constraint validation. Display-only (no name) — markupSubmit
+             carries the real value. #}
+          <input type="number" step="any" min="0"
+                 x-model.number="markup" @input="onMarkup()"
                  placeholder="{{ default_markup }}"
                  class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
         </div>
         <div>
           <label class="block text-xs font-medium text-gray-500 mb-1">
-            Price Override ($) <span class="text-gray-400 font-normal">(skips markup)</span>
+            Margin % <span class="text-gray-400 font-normal">(of sell)</span>
           </label>
-          <input name="price_override" type="number" step="0.01" min="0"
-                 x-model.number="override"
-                 value="{{ form_data.price_override if form_data else '' }}"
-                 placeholder="Leave blank"
+          {# step="any": auto-filled with a 2-decimal margin (e.g. 23.08) that
+             would violate step="0.1" and silently block Save. Display-only. #}
+          <input type="number" step="any" min="0" max="99.9"
+                 x-model.number="margin" @input="onMargin()"
+                 placeholder="—"
+                 class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">
+            Price ($) <span class="text-gray-400 font-normal">(exact)</span>
+          </label>
+          <input type="number" step="0.01" min="0"
+                 x-model.number="price" @input="onPrice()"
+                 placeholder="0.00"
                  class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
         </div>
       </div>
@@ -458,11 +472,11 @@
                x-text="hasInput ? ('$' + sellPrice.toFixed(2)) : '—'"></div>
         </div>
         <div class="text-right text-xs text-gray-500 space-y-0.5">
-          <div x-show="usingOverride" class="text-gray-600">via price override</div>
-          <div x-show="!usingOverride && hasInput">
+          <div x-show="isPinned" class="text-amber-600">pinned — add a cost to price by markup / margin</div>
+          <div x-show="!isPinned && hasInput">
             <span class="tabular-nums" x-text="'$' + (Number(cost)||0).toFixed(2)"></span> vendor cost
-            × <span class="tabular-nums" x-text="effMarkup + '%'"></span> markup<span
-              x-show="markup === null || markup === ''"> (default)</span>
+            × <span class="tabular-nums" x-text="effMarkup.toFixed(1) + '%'"></span> markup<span
+              x-show="usingDefault"> (default)</span>
           </div>
           <div x-show="marginPct !== null">
             Margin <span class="font-semibold tabular-nums"
