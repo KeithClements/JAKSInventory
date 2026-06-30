@@ -130,7 +130,10 @@ window.jakConfirmModal = window.jakConfirmModal || function () {
       if (o.formId) {
         /* form-submit mode */
         const f = document.getElementById(o.formId);
-        if (f) f.submit();
+        /* requestSubmit() (not submit()) fires the native `submit` event so the
+           global CSRF listener stamps the hidden _csrf field before the POST.
+           A bare .submit() skips the event → "CSRF token missing or invalid". */
+        if (f) f.requestSubmit();
       } else if (o.hxDelete) {
         /* htmx-ajax DELETE mode — use when hx-target is an absolute selector */
         htmx.ajax('DELETE', o.hxDelete, {

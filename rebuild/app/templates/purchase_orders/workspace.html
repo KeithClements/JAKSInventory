@@ -1108,7 +1108,7 @@
         <button type="button"
                 @click="confirm.hxPost
                           ? htmx.ajax('POST', confirm.hxPost, { target: confirm.hxTarget, swap: confirm.hxSwap })
-                          : document.getElementById(confirm.formId).submit();
+                          : document.getElementById(confirm.formId).requestSubmit();
                         confirm.open = false"
                 :class="confirm.danger ? 'bg-red-600 hover:bg-red-700' : 'bg-brand-700 hover:bg-brand-600'"
                 class="px-3 py-1.5 rounded-lg text-xs font-semibold text-white transition-colors"
