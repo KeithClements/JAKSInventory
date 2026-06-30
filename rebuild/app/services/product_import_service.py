@@ -594,6 +594,104 @@ class ProductImportService(BaseService):
         "custom vendor feed."
     )
 
+    # ══ P4 feed_mode contract (cross-repo with AxleForge export_jaks) ══════════
+    # The scraper's FULL-IMPORT csv now stamps a trailing ``feed_mode`` column
+    # with the constant ``full_import`` on every row. When present it is
+    # AUTHORITATIVE over the header-based detect_format heuristic: it states the
+    # file's INTENT (create/enrich vs pricing-only) explicitly so the ERP never
+    # has to infer it from the column shape.
+    #
+    #   • feed_mode == 'full_import'    → the create/enrich import path (full_import)
+    #   • feed_mode == 'pricing_update' → the never-create pricing path
+    #                                     (pricing_update_sell)
+    #   • column ABSENT                 → fall back to the existing header-based
+    #                                     detect_format (ZERO change for today's
+    #                                     files, which carry no feed_mode column)
+    #   • present but CONTRADICTS the file shape (a 'pricing_update' value on a
+    #     JAKS full-import-shaped file, or 'full_import' on a pricing-only file),
+    #     or an UNRECOGNIZED value → REFUSE the whole file (nothing changed),
+    #     mirroring the detect_format=='unknown' refuse path.
+    FEED_MODE_FULL = "full_import"
+    FEED_MODE_PRICING = "pricing_update"
+    _VALID_FEED_MODES = {FEED_MODE_FULL, FEED_MODE_PRICING}
+
+    FEED_MODE_UNKNOWN_VALUE_ERROR = (
+        "Unrecognized feed_mode value in the import file. Expected "
+        "'full_import' or 'pricing_update'. Refusing to import — nothing was "
+        "changed. Check the file's feed_mode column."
+    )
+    FEED_MODE_CONTRADICTION_ERROR = (
+        "The file's feed_mode column contradicts its columns: a "
+        "'pricing_update' feed must not carry the full create/enrich columns, "
+        "and a 'full_import' feed must carry the full product columns. "
+        "Refusing to import — nothing was changed."
+    )
+
+    @classmethod
+    def detect_feed_mode(cls, text: str) -> str:
+        """Return the file's declared feed_mode, or '' when the column is absent.
+
+        Reads the ``feed_mode`` cell of the FIRST data row (the scraper stamps the
+        same constant on every row; the header alone can't carry the value). An
+        empty/whitespace cell is treated as absent ('') so a stray blank column
+        never changes behavior. The value is NOT validated here — callers decide
+        whether an unrecognized value is a refuse condition, keeping this a pure
+        reader."""
+        headers = {h.lower() for h in cls.csv_headers(text)}
+        if "feed_mode" not in headers:
+            return ""
+        reader = csv.DictReader(io.StringIO(text))
+        for raw in reader:
+            row = {(_norm(k)): v for k, v in raw.items()}
+            val = (row.get("feed_mode") or "").strip().lower()
+            if val:
+                return val
+        return ""
+
+    # Columns that exist ONLY in the JAKS create/enrich (full-import) export and
+    # never in a pricing-only delta feed. Their presence means the file carries
+    # the full product record — so a 'pricing_update' feed_mode on a file that
+    # has them is a contradiction (the file is full-shaped but claims pricing).
+    _FULL_IMPORT_ONLY_HEADERS = frozenset(
+        {"is_reman", "engine_models", "oem_refs", "core_charge",
+         "unit_of_measure", "warranty_years", "category"})
+
+    @classmethod
+    def _feed_mode_refusal(cls, text: str, feed_mode: str, dry_run: bool):
+        """Return a refuse-summary dict when the declared feed_mode is invalid or
+        contradicts the file's column shape, else None (the file may proceed).
+
+        Mirrors the detect_format=='unknown' refuse path: nothing is parsed or
+        written, and the caller returns the summary verbatim.
+
+          • Unrecognized value (not full_import / pricing_update) → refuse.
+          • 'pricing_update' on a file carrying the full create/enrich columns
+            (the full-import shape) → refuse: a pricing feed must be SKU+price
+            only, never the whole product record.
+          • 'full_import' on a file that has NONE of the create/enrich columns
+            (i.e. not actually a full-import-shaped file) → refuse: we won't run
+            the create path against a pricing-only-shaped feed.
+        """
+        if feed_mode not in cls._VALID_FEED_MODES:
+            return {
+                "mode": "full_import", "dry_run": dry_run,
+                "products_seen": 0, "created": 0,
+                "error": cls.FEED_MODE_UNKNOWN_VALUE_ERROR,
+            }
+        headers = {h.lower() for h in cls.csv_headers(text)}
+        has_full_shape = bool(headers & cls._FULL_IMPORT_ONLY_HEADERS)
+        contradiction = (
+            (feed_mode == cls.FEED_MODE_PRICING and has_full_shape)
+            or (feed_mode == cls.FEED_MODE_FULL and not has_full_shape)
+        )
+        if contradiction:
+            return {
+                "mode": "full_import", "dry_run": dry_run,
+                "products_seen": 0, "created": 0,
+                "error": cls.FEED_MODE_CONTRADICTION_ERROR,
+            }
+        return None
+
     # ══ R3: generic mapped-CSV support (custom vendor feeds) ═══════════════════
     @staticmethod
     def csv_headers(text: str) -> list[str]:
@@ -742,6 +840,28 @@ class ProductImportService(BaseService):
         # When text is provided, auto-detect format: JAKS native (pai_part_no header)
         # or legacy Shopify multi-row.
         if rows is None:
+            # ── P4 feed_mode contract ───────────────────────────────────────
+            # An explicit feed_mode column is AUTHORITATIVE over the header
+            # heuristic. Honored ONLY on the text-driven path; the rows=…
+            # apply path (import_review) is unaffected, so its behavior is
+            # byte-identical. When the column is ABSENT, feed_mode is "" and
+            # everything below runs exactly as before (zero change for today's
+            # files). The dispatch:
+            #   • pricing_update → delegate to the never-create pricing path
+            #     and return ITS summary (full_import must never create here).
+            #   • full_import    → fall through to the existing create/enrich path.
+            #   • unknown value / contradiction with the file shape → refuse.
+            feed_mode = self.detect_feed_mode(text) if text else ""
+            if feed_mode:
+                refusal = self._feed_mode_refusal(text, feed_mode, dry_run)
+                if refusal is not None:
+                    return refusal
+                if feed_mode == self.FEED_MODE_PRICING:
+                    # AUTHORITATIVE: a pricing_update feed never creates — route
+                    # to the dedicated never-create path regardless of how the
+                    # caller invoked us.
+                    return self.pricing_update_sell(text, dry_run=dry_run)
+                # else feed_mode == FEED_MODE_FULL → fall through to create/enrich.
             fmt = self.detect_format(text) if text else "shopify"
             # C1 — an unrecognized header must NEVER fall through to a parser
             # that drops every row in silence. Surface the format mismatch as a

@@ -24,6 +24,15 @@ Options:
   --seo              on --apply, first generate AI SEO for this section's products
                      that lack it (costs Anthropic tokens), so they go live with
                      copy. Off by default to keep the daily run cheap.
+  --json             on a DRY RUN, after the human-readable report, print ONE extra
+                     machine-readable line ("RESULT_JSON: {…}") with the full
+                     CROSS-REPO CONTRACT metric set (matched / *_updated counts plus
+                     the price/cost blast-radius magnitudes) so the scraper can gate
+                     the push on the size of the change. No effect under --apply.
+  --new-products-out <path>
+                     on a DRY RUN, write the SKUs that matched no ERP product (the
+                     skipped_no_product rows) to <path> as a one-column CSV
+                     ("sku" header), so the scraper can route them to onboarding.
 
 NOTE: the Shopify token is Fernet-encrypted, so JAKS_FERNET_KEY must be set in the
 environment (the .bat sets it) or the push step reports "not configured".
@@ -92,6 +101,52 @@ def _make_progress():
     return cb
 
 
+def _result_json(res: dict) -> str:
+    """Build the single CROSS-REPO CONTRACT RESULT_JSON line from a dry-run
+    pricing_update_sell summary. Every key in the contract is emitted; any
+    missing numeric defaults to 0 so the scraper never sees an absent key.
+    total_rows falls back to the summary's "rows" (same value, contract name)."""
+    import json
+    int_keys = ("matched", "prices_updated", "costs_updated",
+                "availability_updated", "out_of_stock_flagged",
+                "discontinued_deactivated", "reactivation_suggested",
+                "skipped_no_product", "reprice_rows", "cost_anomaly_rows")
+    float_keys = ("price_drop_max_pct", "price_rise_max_pct", "cost_rise_max_pct")
+    payload: dict = {k: int(res.get(k, 0) or 0) for k in int_keys}
+    payload["total_rows"] = int(res.get("total_rows", res.get("rows", 0)) or 0)
+    for k in float_keys:
+        payload[k] = float(res.get(k, 0.0) or 0.0)
+    # Pin the contract's exact key ORDER for a stable, greppable line.
+    ordered = {
+        "matched": payload["matched"],
+        "prices_updated": payload["prices_updated"],
+        "costs_updated": payload["costs_updated"],
+        "availability_updated": payload["availability_updated"],
+        "out_of_stock_flagged": payload["out_of_stock_flagged"],
+        "discontinued_deactivated": payload["discontinued_deactivated"],
+        "reactivation_suggested": payload["reactivation_suggested"],
+        "skipped_no_product": payload["skipped_no_product"],
+        "total_rows": payload["total_rows"],
+        "price_drop_max_pct": payload["price_drop_max_pct"],
+        "price_rise_max_pct": payload["price_rise_max_pct"],
+        "reprice_rows": payload["reprice_rows"],
+        "cost_rise_max_pct": payload["cost_rise_max_pct"],
+        "cost_anomaly_rows": payload["cost_anomaly_rows"],
+    }
+    return "RESULT_JSON: " + json.dumps(ordered, separators=(",", ":"))
+
+
+def _write_new_products(path: str, skus: list[str]) -> None:
+    """Write the no-match SKUs (skipped_no_product rows) to a one-column CSV so
+    the scraper can route them to onboarding. Header 'sku' + one row per SKU."""
+    import csv as _csv
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["sku"])
+        for sku in skus:
+            w.writerow([sku])
+
+
 def _print(title: str, res: dict, keys: list[str]) -> None:
     print(f"\n== {title} ==")
     for k in keys:
@@ -103,13 +158,28 @@ def _print(title: str, res: dict, keys: list[str]) -> None:
             print(f"    - {e}")
 
 
+def _opt_value(argv: list[str], name: str) -> str | None:
+    """Pull the value for a ``--name <value>`` option (space form only — matches
+    the simple flag style this script already uses). Returns None if absent."""
+    if name in argv:
+        i = argv.index(name)
+        if i + 1 < len(argv):
+            return argv[i + 1]
+    return None
+
+
 def main(argv: list[str]) -> int:
     apply = "--apply" in argv
     reconcile_only = "--reconcile-only" in argv
     do_seo = "--seo" in argv
-    paths = [a for a in argv if not a.startswith("-")]
+    want_json = "--json" in argv
+    new_products_out = _opt_value(argv, "--new-products-out")
+    # Bare positionals are the CSV path — but the value that FOLLOWS
+    # --new-products-out is its argument, not the CSV, so exclude it.
+    paths = [a for a in argv if not a.startswith("-") and a != new_products_out]
     if not paths:
-        print("usage: python -m scripts.import_and_push <csv> [--apply] [--reconcile-only]")
+        print("usage: python -m scripts.import_and_push <csv> [--apply] "
+              "[--reconcile-only] [--json] [--new-products-out <path>]")
         return 2
     csv_path = paths[0]
     if not pathlib.Path(csv_path).exists():
@@ -142,6 +212,14 @@ def main(argv: list[str]) -> int:
             print("\nDRY RUN - nothing imported or pushed. The counts above are what "
                   "--apply WOULD write; it would then hide the now-OOS parts that are "
                   "currently live on Shopify and re-list any we previously hid.")
+            # --new-products-out: hand the no-match SKUs to the scraper for onboarding.
+            if new_products_out:
+                skus = res_imp.get("skipped_skus") or []
+                _write_new_products(new_products_out, skus)
+                print(f"\nWrote {len(skus)} new-product SKU(s) to {new_products_out}")
+            # --json: one machine-readable contract line for the scraper's push gate.
+            if want_json:
+                print(_result_json(res_imp))
             return 0
 
         if not shop.is_configured():
