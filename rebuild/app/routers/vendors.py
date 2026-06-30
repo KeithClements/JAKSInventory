@@ -26,6 +26,41 @@ templates = Jinja2Templates(directory="app/templates")
 PAYMENT_TERMS = list(PaymentTerms)
 
 
+def _vendor_duplicate_error(db: Session, name: str, vendor_code: str,
+                            *, vendor_id: int | None = None) -> str:
+    """Risk #2 — block a duplicate vendor before insert/update. Returns a clear
+    error message, or '' when the (name, vendor_code) pair is usable.
+
+      * name           — rejected if it case-insensitively matches another ACTIVE
+                         vendor (mirrors the partial unique index WHERE is_active=1).
+      * vendor_code    — rejected if a non-empty code exactly matches any other
+                         vendor (mirrors the partial unique index WHERE code != '').
+
+    `vendor_id`, when given, excludes the row being edited from the probe."""
+    name = (name or "").strip()
+    vendor_code = (vendor_code or "").strip()
+    if name:
+        clash_q = db.query(Vendor).filter(
+            func.lower(Vendor.name) == name.lower(),
+            Vendor.is_active == True,  # noqa: E712
+        )
+        if vendor_id is not None:
+            clash_q = clash_q.filter(Vendor.id != vendor_id)
+        clash = clash_q.first()
+        if clash is not None:
+            return (f"A vendor named \"{clash.name}\" already exists. "
+                    f"Use the existing vendor or deactivate it first.")
+    if vendor_code:
+        clash_q = db.query(Vendor).filter(Vendor.vendor_code == vendor_code)
+        if vendor_id is not None:
+            clash_q = clash_q.filter(Vendor.id != vendor_id)
+        clash = clash_q.first()
+        if clash is not None:
+            return (f"Vendor code \"{vendor_code}\" is already used by "
+                    f"{clash.name} — vendor codes must be unique.")
+    return ""
+
+
 def _resolve_vendor_digit(db: Session, submitted: str, *, current: str = "",
                           vendor_id: int | None = None) -> tuple[str, str]:
     """R4 owner workflow — the vendor form takes the FEED CODE (PAI / IMB) and
@@ -184,10 +219,14 @@ async def vendor_create(
     user_id: int = Depends(get_current_user_id),
 ):
     form = await request.form()
+    name = str(form.get("name", "")).strip()
     vendor_code = str(form.get("vendor_code", "")).strip().upper()[:4]
-    # R4 — feed code → SKU digit conversion: blank digit auto-assigns the
-    # next free one; explicit digits are validated + uniqueness-checked.
-    digit, derr = _resolve_vendor_digit(db, str(form.get("vendor_number", "")))
+    # Risk #2 — reject a duplicate active name / non-empty vendor_code before insert.
+    derr = _vendor_duplicate_error(db, name, vendor_code)
+    if not derr:
+        # R4 — feed code → SKU digit conversion: blank digit auto-assigns the
+        # next free one; explicit digits are validated + uniqueness-checked.
+        digit, derr = _resolve_vendor_digit(db, str(form.get("vendor_number", "")))
     if derr:
         return templates.TemplateResponse(
             request, "vendors/new.html",
@@ -195,7 +234,7 @@ async def vendor_create(
              "form_data": {k: str(v) for k, v in form.items()}},
             status_code=422)
     v = Vendor(
-        name=str(form.get("name", "")).strip(),
+        name=name,
         vendor_code=vendor_code,
         vendor_number=digit,
         private_label=str(form.get("private_label", "")).strip() in ("1", "on", "true"),
@@ -231,6 +270,13 @@ async def vendor_quick_create(
     if not name or not vendor_code:
         return HTMLResponse(
             '<p class="text-sm text-red-600 font-medium px-5 py-3">Vendor name and code are required.</p>',
+            status_code=422,
+        )
+    # Risk #2 — reject a duplicate active name / non-empty vendor_code before insert.
+    derr = _vendor_duplicate_error(db, name, vendor_code)
+    if derr:
+        return HTMLResponse(
+            f'<p class="text-sm text-red-600 font-medium px-5 py-3">{html.escape(derr)}</p>',
             status_code=422,
         )
     v = Vendor(
@@ -400,6 +446,16 @@ async def vendor_update(
     if not v:
         return RedirectResponse("/vendors/", status_code=303)
     form = await request.form()
+    # Risk #2 — reject an edit that would duplicate another ACTIVE vendor's name
+    # or another vendor's non-empty code (mirrors the DB unique indexes, which
+    # would otherwise 500 on commit). Excludes this row from the probe.
+    _new_name = str(form.get("name", "")).strip()
+    _new_code = str(form.get("vendor_code", "")).strip().upper()[:4]
+    _dup_err = _vendor_duplicate_error(db, _new_name, _new_code, vendor_id=v.id)
+    if _dup_err:
+        db.rollback()
+        return RedirectResponse(
+            f"/vendors/{vendor_id}?error={url_quote(_dup_err)}", status_code=303)
     # R4 — the digit is FROZEN once SKUs have been minted under it (changing
     # it would split the vendor's SKU namespace); until then it behaves like
     # create: blank keeps/auto-assigns, explicit digits validate + dedupe.

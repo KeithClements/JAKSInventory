@@ -301,6 +301,34 @@ class SalesOrder(QBOSyncMixin, Base):
         return round(sum(ln.line_total for ln in self.lines), 2)
 
     @property
+    def taxable_base(self) -> float:
+        """C1 — taxable line totals (excludes cores/freight/fees per
+        NON_TAXABLE_LINE_TYPES). Zero when the SO is marked non-taxable.
+        Mirrors Quote.taxable_base so the SO total reflects the tax intent
+        agreed at SO time rather than re-deriving it at fulfillment."""
+        if not self.is_taxable:
+            return 0.0
+        from app.constants import NON_TAXABLE_LINE_TYPES
+        return round(
+            sum(
+                ln.line_total for ln in self.lines
+                if ln.line_type not in NON_TAXABLE_LINE_TYPES
+            ),
+            2,
+        )
+
+    @property
+    def tax_amount(self) -> float:
+        """C1 — estimated sales tax on the SO (taxable_base × snapshot rate)."""
+        return round(self.taxable_base * (self.tax_rate_snapshot or 0.0) / 100, 2)
+
+    @property
+    def total(self) -> float:
+        """C1 — SO Total includes estimated tax (was subtotal-only). The
+        Pay-in-Full deposit gate measures against this tax-inclusive figure."""
+        return round(self.subtotal + self.tax_amount, 2)
+
+    @property
     def is_fully_invoiced(self) -> bool:
         # C6 — exclude fully-cancelled, never-invoiced lines. cancel_line sets
         # qty_ordered = qty_invoiced, so a cancelled-before-invoicing line is

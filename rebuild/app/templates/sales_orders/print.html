@@ -323,8 +323,11 @@
     <tbody>
       {%- set ns = namespace(row=0) -%}
       {% for line in so.lines %}
-        {%- if line.qty_cancelled and line.qty_cancelled >= line.qty_ordered -%}
-          {# skip fully cancelled lines #}
+        {%- if line.qty_cancelled and line.qty_ordered <= 0 -%}
+          {# C6 — skip fully-cancelled lines (cancel_line froze qty_ordered to
+             qty_invoiced, so a never-invoiced cancelled line has qty_ordered 0).
+             A partially-invoiced-then-cancelled line keeps qty_ordered = the
+             invoiced qty and still prints, with the "N cancelled" tag below. #}
         {%- else -%}
           {%- set ns.row = ns.row + 1 -%}
           <tr>

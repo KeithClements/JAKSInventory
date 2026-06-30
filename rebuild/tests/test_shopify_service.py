@@ -43,7 +43,13 @@ def _product(db):
     n = next(_seq)
     cat = ProductCategory(name="O-Ring", code="ORING")
     db.add(cat); db.flush()
-    pai = Vendor(name="PAI Industries", vendor_code="PAI", vendor_number="9")
+    # Vendors now carry partial UNIQUE indexes on vendor_code (WHERE vendor_code
+    # != '') and name (WHERE is_active = 1). Tests that build multiple products in
+    # one DB (update_batch / republish_batch) would collide on a hardcoded
+    # "PAI"/"PAI Industries", so give every vendor a distinct code + name. The
+    # vendor part number / vendor_sku / vendor_number stay fixed — those are what
+    # the listing + matcher assertions depend on, not the vendor_code itself.
+    pai = Vendor(name=f"PAI Industries {n}", vendor_code=f"V{n}", vendor_number="9")
     db.add(pai); db.flush()
     p = Product(
         sku=f"JAKS-CAT-ORING-9{n:04d}", title="O-RING",

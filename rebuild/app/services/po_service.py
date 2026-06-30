@@ -757,7 +757,9 @@ class POService(BaseService):
         Flags discrepancies on any line: billed qty > received qty, cumulative
         billed qty > PO-ordered qty (D-4b — over-receipt can't authorise paying
         beyond the order), or billed unit cost varying from the PO/receipt cost.
-        Auto-approves only when no discrepancies.
+        Risk #5 — a clean (no-discrepancy) bill lands PENDING, not APPROVED: it
+        still routes through AP for an explicit Approve (approve_bill) before it
+        is payable / QBO-eligible. A discrepancy bill lands DISCREPANCY as before.
 
         freight_amount — vendor-billed freight charged on the SAME invoice as the
         parts (e.g. PAI). It is added to total_amount so the recorded payable
@@ -864,7 +866,11 @@ class POService(BaseService):
         has_discrepancy = has_qty_discrepancy or has_cost_discrepancy
         bill.freight_amount = freight
         bill.total_amount = round(total + freight, 2)
-        bill.status = VendorBillStatus.DISCREPANCY if has_discrepancy else VendorBillStatus.APPROVED
+        # Risk #5 — a clean 3-way match no longer auto-APPROVES. A matching bill
+        # still routes through AP for an explicit human Approve (approve_bill,
+        # gated on APPROVE_VENDOR_BILL) before it is payable / QBO-eligible. Only
+        # the DISCREPANCY path is unchanged (it already required AP resolution).
+        bill.status = VendorBillStatus.DISCREPANCY if has_discrepancy else VendorBillStatus.PENDING
 
         if has_discrepancy:
             po = self.db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first() if po_id else None
@@ -885,10 +891,10 @@ class POService(BaseService):
                 po_number=po_number,
                 detail=" and ".join(_reasons) + " on one or more lines",
             )
-        elif po_id:
-            po = self.db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()
-            if po:
-                self._advance_po_billed_if_done(po)
+        # Risk #5 — the PO is NOT advanced to BILLED at bill creation anymore: a
+        # clean bill now lands PENDING and only advances the PO on explicit
+        # approval (approve_bill → _advance_po_billed_if_done). This keeps the AP
+        # gate meaningful (PO stays RECEIVED/PARTIAL until the bill is approved).
 
         self.audit(
             entity_type=EntityType.PURCHASE_ORDER,
@@ -916,7 +922,7 @@ class POService(BaseService):
 
     def _resync_po_billed_status(self, po: PurchaseOrder) -> None:
         """Re-derive a PO's billed status after a bill EDIT (Phase 2). Unlike
-        _advance_po_billed_if_done (one-way, used at bill creation), this also rolls
+        _advance_po_billed_if_done (one-way, used at bill approval), this also rolls
         the PO back off BILLED when an edit drops billed qty below received — so a
         corrected bill can never leave a PO stuck 'billed' when it no longer is."""
         if po.status not in (POStatus.RECEIVED, POStatus.PARTIAL, POStatus.BILLED):

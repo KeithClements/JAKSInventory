@@ -54,9 +54,25 @@ def _count_customers(SessionLocal, name: str) -> int:
         db.close()
 
 
+# Phase-0 Lane G — main.py.enforce_password_rotation 303-redirects any signed-in
+# user still on a DEFAULT password to /account for every non-exempt path. The
+# seeded admin/bookkeeper users read these env vars at startup (_seed_default_user
+# via JAKS_ADMIN_PASSWORD / JAKS_BOOKKEEPER_PASSWORD), so seeding them with
+# NON-default passwords keeps the gate from intercepting the /admin/backup POSTs.
+ADMIN_PW = "Acceptance-Admin-Pw-9!"
+BOOKKEEPER_PW = "Acceptance-Book-Pw-9!"
+
+
 @pytest.fixture()
 def isolated_app(tmp_path, monkeypatch):
     """Point the app + the backup service at an isolated FILE-based SQLite DB."""
+    # Set BEFORE the TestClient(app) context below triggers on_startup ->
+    # _seed_default_user, which reads these env vars to set the seeded hashes. With
+    # non-default passwords the enforce_password_rotation middleware leaves these
+    # signed-in users alone instead of redirecting every POST to /account.
+    monkeypatch.setenv("JAKS_ADMIN_PASSWORD", ADMIN_PW)
+    monkeypatch.setenv("JAKS_BOOKKEEPER_PASSWORD", BOOKKEEPER_PW)
+
     db_file = tmp_path / "data" / "jaks.db"
     db_file.parent.mkdir(parents=True)
 
@@ -97,7 +113,7 @@ def isolated_app(tmp_path, monkeypatch):
         # admin so the backup/restore round-trip below reaches the route.
         import app.auth as auth
         auth.reset_secret_cache()
-        login = client.post("/login", data={"username": "admin", "password": "admin"},
+        login = client.post("/login", data={"username": "admin", "password": ADMIN_PW},
                             follow_redirects=False)
         assert login.status_code == 303, login.text[:200]
         yield client, SessionLocal, db_file
@@ -173,7 +189,7 @@ def test_restore_requires_admin_role(isolated_app):
     database — restore overwrites live data, so it is gated to ADMIN only."""
     client, _SessionLocal, _db_file = isolated_app
     # The fixture signed in as admin; switch to the seeded bookkeeper (non-admin).
-    r = client.post("/login", data={"username": "bookkeeper", "password": "bookkeeper"},
+    r = client.post("/login", data={"username": "bookkeeper", "password": BOOKKEEPER_PW},
                     follow_redirects=False)
     assert r.status_code == 303, r.text[:200]
 

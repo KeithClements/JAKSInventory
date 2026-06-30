@@ -99,3 +99,24 @@ def require_admin(user=Depends(get_current_user)):
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="Administrator role required.")
     return user
+
+
+def require_reports_access(user=Depends(get_current_user)):
+    """Gate a route to ADMIN or BOOKKEEPING users only — HTTP 403 otherwise.
+
+    Reports and the dashboard expose sensitive financials — cost basis, margins,
+    AR/AP aging, sales tax collected, and captured competitor pricing. A counter
+    clerk (SALES) or READ_ONLY user must not be able to read or export that data.
+
+    Built on ``get_current_user`` so it inherits the same login enforcement and
+    the in-memory test bypass (DEFAULT_USER_ID #1 is a seeded ADMIN, so existing
+    in-memory route tests keep passing). Returns the user for optional route use.
+    """
+    from app.constants import UserRole
+
+    if user.role not in (UserRole.ADMIN, UserRole.BOOKKEEPING):
+        raise HTTPException(
+            status_code=403,
+            detail="Reports access requires the administrator or bookkeeping role.",
+        )
+    return user

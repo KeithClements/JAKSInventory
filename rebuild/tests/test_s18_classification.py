@@ -115,9 +115,22 @@ def test_full_import_applies_classification(db):
 
 def test_full_import_flags_unclassifiable_as_needs_review(db):
     # No keyword rules exist → cannot confidently place deeper → needs_review.
-    ProductImportService(db, None).full_import(_csv_one(), dry_run=False)
+    # NEW CONTRACT (S22 / §23): the direct full-import path no longer auto-mints a
+    # level-1 category from the free-text scraper Type column. With NO seeded
+    # categories, the "ENGINE PARTS" Type matches nothing, so it is SKIPPED (not
+    # created), the product is left uncategorized, and that — on top of the missing
+    # keyword rules — flags the row needs_review. The import summary surfaces the
+    # skip via categories_skipped / category_needs_review.
+    summ = ProductImportService(db, None).full_import(_csv_one(), dry_run=False)
     p = db.query(Product).first()   # sku is now the regenerated JAKS scheme value (one product imported)
     assert p.needs_review is True
     assert p.engine_manufacturer == "Cummins"          # engine make still derived
-    # Shopify Type still created/assigned the broad top-level category.
-    assert p.category is not None and p.category.name == "ENGINE PARTS"
+    # Non-allowlisted Type is NOT auto-created: product stays uncategorized.
+    assert p.category_id is None
+    assert p.category is None
+    assert db.query(ProductCategory).filter(
+        ProductCategory.name == "ENGINE PARTS").first() is None
+    # Summary reports the skipped Type + the needs_review-because-uncategorized.
+    assert summ["categories_skipped"] >= 1
+    assert "ENGINE PARTS" in summ["skipped_category_names"]
+    assert summ["category_needs_review"] >= 1

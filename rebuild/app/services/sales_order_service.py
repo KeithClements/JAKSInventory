@@ -275,6 +275,11 @@ class SalesOrderService(BaseService):
             raise ValueError(f"Sales order {so.so_number} is already cancelled")
 
         self._release_line_commitment(line, so.so_number)
+        # C6 — record the cancelled portion BEFORE freezing qty_ordered, so the
+        # print view can skip fully-cancelled lines and tag partially-invoiced
+        # ones with "N cancelled". Once qty_ordered is frozen to qty_invoiced the
+        # difference is lost, so qty_cancelled must be captured here first.
+        line.qty_cancelled = max(0, line.qty_ordered - line.qty_invoiced)
         # Freeze at what's already invoiced — remaining qty is gone
         line.qty_ordered = line.qty_invoiced
 
@@ -286,6 +291,8 @@ class SalesOrderService(BaseService):
             if not (child.is_auto_generated and child.is_locked_to_parent):
                 continue
             self._release_line_commitment(child, so.so_number)
+            # C6 — same as the parent: capture cancelled qty before freezing.
+            child.qty_cancelled = max(0, child.qty_ordered - child.qty_invoiced)
             child.qty_ordered = child.qty_invoiced
 
         # Recompute SO status. Cancelling the backordered remainder of an order
@@ -455,7 +462,10 @@ class SalesOrderService(BaseService):
         # "Pay in Full" $4,000 special order can ship with $0 actually received.
         # DEPOSIT / NONE modes are net-terms and intentionally skip this gate.
         if so.payment_mode == SOPaymentMode.FULL:
-            so_value = so.subtotal
+            # C1 — gate on the tax-inclusive total, not subtotal. A taxable
+            # "Pay in Full" order whose deposit only covers the pre-tax subtotal
+            # must not ship: the customer still owes the sales tax.
+            so_value = so.total
             if (so.deposit_amount or 0.0) + 0.01 < so_value:
                 raise ValueError(
                     f"Sales order {so.so_number} is set to Pay in Full but only "

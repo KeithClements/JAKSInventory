@@ -374,6 +374,10 @@ class QBOSyncService(BaseService):
             "Line": lines,
             "PrivateNote": f"JAKS payment #{pmt.id} ({pmt.payment_method})",
         }
+        # R6 — record the payment in QBO under the date it was actually taken,
+        # never "today". Mirrors the vendor-bill TxnDate pattern.
+        if getattr(pmt, "payment_date", None):
+            payload["TxnDate"] = pmt.payment_date.strftime("%Y-%m-%d")
         if getattr(pmt, "check_number", ""):
             payload["PaymentRefNum"] = str(pmt.check_number)[:21]
         return payload
@@ -810,6 +814,13 @@ class QBOSyncService(BaseService):
             "PrivateNote": f"JAKS {inv.invoice_number} (id={inv.id})",
             "GlobalTaxCalculation": "TaxExcluded",
         }
+        # R6 — post to QBO under the invoice's authoritative date, never "today".
+        # A pushable invoice is always finalized, so locked_at (the finalize stamp)
+        # is the issue date; created_at is a defensive fallback. Mirrors the
+        # vendor-bill TxnDate pattern (_build_bill_payload).
+        txn_date = inv.locked_at or inv.created_at
+        if txn_date:
+            payload["TxnDate"] = txn_date.strftime("%Y-%m-%d")
         tax_amount = round(float(inv.tax_amount), 2)
         if push_tax and inv.is_taxable and tax_amount > 0:
             # Override QBO's tax engine with the JAKS-computed amount. If this QBO

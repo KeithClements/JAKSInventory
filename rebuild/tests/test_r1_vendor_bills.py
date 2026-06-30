@@ -203,10 +203,15 @@ class TestMarkBillPaid:
         vendor = _make_vendor(db)
         product = _make_product(db)
         po, line = _make_po(db, vendor, product)
-        bill = _bill(db, vendor, po, line, bill_number="PAY-1")  # clean → APPROVED
+        bill = _bill(db, vendor, po, line, bill_number="PAY-1")  # clean → PENDING
+        assert bill.status == VendorBillStatus.PENDING
+
+        svc = POService(db, current_user_id=_UID)  # admin → APPROVE_VENDOR_BILL
+        svc.approve_bill(bill.id)                  # PENDING → APPROVED
+        db.refresh(bill)
         assert bill.status == VendorBillStatus.APPROVED
 
-        POService(db, current_user_id=_UID).mark_bill_paid(bill.id)
+        svc.mark_bill_paid(bill.id)
         db.refresh(bill)
         assert bill.status == VendorBillStatus.PAID
 
@@ -240,8 +245,9 @@ class TestMarkBillPaid:
         vendor = _make_vendor(db)
         product = _make_product(db)
         po, line = _make_po(db, vendor, product)
-        bill = _bill(db, vendor, po, line, bill_number="PAY-2")
+        bill = _bill(db, vendor, po, line, bill_number="PAY-2")  # clean → PENDING
         svc = POService(db, current_user_id=_UID)
+        svc.approve_bill(bill.id)   # PENDING → APPROVED before it can be paid
         svc.mark_bill_paid(bill.id)
 
         with pytest.raises(ValueError, match="Only approved bills"):
@@ -260,8 +266,12 @@ class TestPayBillRoute:
         vendor = _make_vendor(db)
         product = _make_product(db)
         po, line = _make_po(db, vendor, product)
-        bill = _bill(db, vendor, po, line, bill_number="ROUTE-1")
+        bill = _bill(db, vendor, po, line, bill_number="ROUTE-1")  # clean → PENDING
         po_id, bill_id = po.id, bill.id
+
+        # Risk #5: a clean bill is PENDING; it must be APPROVED before it's payable.
+        POService(db, current_user_id=_UID).approve_bill(bill_id)
+        db.expire_all()
 
         resp = _client.post(
             f"/purchase-orders/{po_id}/bills/{bill_id}/pay",

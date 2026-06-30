@@ -118,8 +118,9 @@ def test_freight_defaults_from_po_and_lands_in_total(db):
     assert bill.parts_subtotal == 200.0
     assert bill.freight_amount == 160.0
     assert bill.total_amount == 360.0
-    # Clean parts match → freight does NOT flip it to discrepancy.
-    assert bill.status == VendorBillStatus.APPROVED
+    # Clean parts match → freight does NOT flip it to discrepancy. Risk #5: a
+    # clean bill lands PENDING (explicit AP Approve), never DISCREPANCY here.
+    assert bill.status == VendorBillStatus.PENDING
 
 
 def test_zero_freight_override_is_carrier_billed_case(db):

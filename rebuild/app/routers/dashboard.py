@@ -10,7 +10,7 @@ from sqlalchemy import extract, func
 from sqlalchemy.orm import Session, joinedload
 
 from app.constants import CoreDirection, CoreStatus, InvoiceStatus, POStatus, QuoteOutcome, QuoteStatus, SOStatus, QuoteFollowupStatus
-from app.deps import get_db
+from app.deps import get_db, require_reports_access
 from app.models.invoice import Invoice, InvoiceLine, Payment
 from app.models.quote import Quote, QuoteLine, SalesOrder
 from app.models.purchase_order import PurchaseOrder
@@ -24,7 +24,14 @@ router = APIRouter(tags=["dashboard"])
 templates = Jinja2Templates(directory="app/templates")
 
 
-@router.get("/", response_class=HTMLResponse)
+@router.get(
+    "/",
+    response_class=HTMLResponse,
+    # Risk #1 — the dashboard surfaces AR balance, today's payments, monthly
+    # revenue, top customers and per-invoice margins. Same ADMIN/BOOKKEEPING gate
+    # as the reports router; SALES/READ_ONLY users get HTTP 403.
+    dependencies=[Depends(require_reports_access)],
+)
 def dashboard(request: Request, db: Session = Depends(get_db)):
     today = date.today()
 

@@ -535,6 +535,38 @@ _PENDING_UNIQUE_INDEXES: list[tuple[str, str, str, str, str]] = [
         "carrier records before the Lead Finder dedup backstop can be created",
     ),
     (
+        # Risk #2 (revision 0008) — no two ACTIVE vendors share a name. Partial:
+        # deactivated vendors' names repeat freely. If live data already has
+        # dupes, this SKIPS with a warning so startup never wedges; the owner
+        # merges/deactivates, then it creates next boot. Name must match
+        # Vendor.__table_args__ (app/models/vendor.py).
+        "uq_vendors_name_active",
+        "vendors",
+        "SELECT COUNT(*) FROM ("
+        "SELECT 1 FROM vendors WHERE is_active = 1 "
+        "GROUP BY name HAVING COUNT(*) > 1)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_vendors_name_active "
+        "ON vendors (name) "
+        "WHERE is_active = 1",
+        "multiple ACTIVE vendors share the same name — deactivate or merge the "
+        "duplicate vendor records",
+    ),
+    (
+        # Risk #2 (revision 0008) — a non-blank vendor_code is globally unique
+        # (it drives the internal vendor_sku). Partial: the '' default repeats
+        # freely. Name must match Vendor.__table_args__ (app/models/vendor.py).
+        "uq_vendors_vendor_code",
+        "vendors",
+        "SELECT COUNT(*) FROM ("
+        "SELECT 1 FROM vendors WHERE vendor_code != '' "
+        "GROUP BY vendor_code HAVING COUNT(*) > 1)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_vendors_vendor_code "
+        "ON vendors (vendor_code) "
+        "WHERE vendor_code != ''",
+        "multiple vendors share the same non-blank vendor_code — blank out or "
+        "renumber the duplicates",
+    ),
+    (
         # C10 — one customer per real email (case-insensitive). Partial: blank
         # emails repeat freely. If live data already has dupes, this SKIPS with a
         # warning so startup never wedges; the owner merges, then it creates next boot.

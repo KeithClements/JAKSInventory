@@ -10,6 +10,27 @@ from app.constants import PaymentTerms, VendorContactRole, VendorCreditType, Ven
 
 class Vendor(Base):
     __tablename__ = "vendors"
+    __table_args__ = (
+        # Risk #2 — DB backstop: no two ACTIVE vendors may share a name (case is
+        # preserved in the column; the router probe is case-insensitive). Partial
+        # so a deactivated vendor's name can be reused / a re-created vendor can
+        # take the same name as an inactive one. Name must match
+        # _PENDING_UNIQUE_INDEXES in app/database.py (the defensive live-DB path).
+        Index(
+            "uq_vendors_name_active", "name",
+            unique=True,
+            sqlite_where=text("is_active = 1"),
+        ),
+        # Risk #2 — DB backstop: a non-blank vendor_code must be globally unique
+        # (it drives the internal vendor_sku JAKS-[CODE]-[PART#]). Partial so the
+        # '' default (an unconfigured vendor) repeats freely. Name must match
+        # _PENDING_UNIQUE_INDEXES in app/database.py.
+        Index(
+            "uq_vendors_vendor_code", "vendor_code",
+            unique=True,
+            sqlite_where=text("vendor_code != ''"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)

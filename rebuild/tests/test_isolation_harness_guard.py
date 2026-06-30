@@ -25,6 +25,10 @@ _EXEMPT = {
     # to exercise app/db_migrate.adopt() (the file-DB path can't use the shared
     # in-memory harness); it saves/restores the app globals itself.
     "test_alembic_adoption.py",
+    # Reports/dashboard RBAC test needs a FILE-based SQLite DB so deps._is_test_env()
+    # is False and real auth/RBAC runs (mirrors test_backup_acceptance.py); it
+    # saves/restores the app globals + dependency_overrides itself.
+    "test_s22_reports_authz.py",
 }
 
 _TARGETS = sorted(

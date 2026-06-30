@@ -766,6 +766,13 @@ class ProductImportService(BaseService):
             "skipped_no_sku": 0, "skipped_sku_collision": 0, "sku_collisions": [],
             "cross_refs": 0, "applications": 0, "images": 0,
             "categories_created": 0, "vendor_sources": 0, "needs_review": 0,
+            # Risk #7 guard: the direct full-import path no longer mints level-1
+            # categories from the free-text scraper Type column. categories_skipped
+            # counts distinct non-allowlisted Types refused (names in
+            # skipped_category_names); category_needs_review counts rows left
+            # uncategorized and flagged needs_review as a result.
+            "categories_skipped": 0, "skipped_category_names": [],
+            "category_needs_review": 0,
             "classified": 0,
             "availability_updated": 0, "out_of_stock_flagged": 0,
             "discontinued_deactivated": 0, "reactivation_suggested": 0,
@@ -963,7 +970,15 @@ class ProductImportService(BaseService):
             # $0 core. Flag the product for review and surface a dedicated count
             # so the owner can fill the real core amount before selling.
             core_unknown_reman = bool(p.get("core_unknown_reman"))
-            row_needs_review = cls["needs_review"] or core_unknown_reman
+            # Risk #7: the product's final category is `cls["category_id"] or cat_id`
+            # (below). If the classifier didn't place it AND the feed Type wasn't an
+            # allowlisted (existing) category, _resolve_category refused to mint one,
+            # so the product is uncategorized — flag it needs_review so the owner maps
+            # it on purpose instead of it being silently dropped into a junk Type node.
+            category_unresolved = not (cls["category_id"] or cat_id)
+            if category_unresolved:
+                summary["category_needs_review"] = summary.get("category_needs_review", 0) + 1
+            row_needs_review = cls["needs_review"] or core_unknown_reman or category_unresolved
             if row_needs_review:
                 summary["needs_review"] += 1
             if core_unknown_reman:
@@ -1244,7 +1259,28 @@ class ProductImportService(BaseService):
             "availability_updated": 0, "out_of_stock_flagged": 0,
             "discontinued_deactivated": 0, "reactivation_suggested": 0,
             "sample": [], "over_threshold_sample": [],
+            # ── CROSS-REPO CONTRACT magnitude metrics (the dry-run safety gate) ──
+            # Computed every run (dry-run AND apply) from the same old-vs-new
+            # price/cost the writes use, so import_and_push --json can surface the
+            # blast radius BEFORE anything is pushed:
+            #   total_rows           — rows in the CSV (== "rows", repeated for the
+            #                          contract's exact key set)
+            #   price_drop_max_pct /
+            #   price_rise_max_pct   — largest single sell-price down/up move, as a
+            #                          POSITIVE percent (0.0 when none)
+            #   reprice_rows         — rows whose sell price would move by >5%
+            #   cost_rise_max_pct    — largest single cost INCREASE percent
+            #   cost_anomaly_rows    — rows whose NEW cost is > 3× the current cost
+            #                          (the list-price-scraped-as-cost class)
+            #   skipped_skus         — the SKUs that matched no ERP product, capped,
+            #                          so import_and_push can route them to onboarding
+            "total_rows": len(reader),
+            "price_drop_max_pct": 0.0, "price_rise_max_pct": 0.0,
+            "reprice_rows": 0,
+            "cost_rise_max_pct": 0.0, "cost_anomaly_rows": 0,
+            "skipped_skus": [],
         }
+        _SKIPPED_SKUS_CAP = 5000   # bound the onboarding list on a huge no-match feed
 
         def _count_no_source(code: str | None) -> None:
             """Aggregate + per-vendor labeled key so the owner can tell PAI
@@ -1306,6 +1342,8 @@ class ProductImportService(BaseService):
             pid = sku_to_id.get(_norm(sku))
             if pid is None:
                 summary["skipped_no_product"] += 1
+                if len(summary["skipped_skus"]) < _SKIPPED_SKUS_CAP:
+                    summary["skipped_skus"].append(sku)   # → onboarding (import_and_push)
                 continue
             # Same-SKU repeats (rare — Shopify variant rows): act once.
             if sku in seen_handles:
@@ -1368,6 +1406,23 @@ class ProductImportService(BaseService):
             mfg_change = (new_mfg is not None
                           and (old_mfg or "").strip() != new_mfg)
 
+            # ── CONTRACT: sell-price blast-radius (computed BEFORE the threshold
+            # rail mutates price_change, so the metric reflects the TRUE scraped
+            # move even on a row the rail later suppresses). Needs a positive prior
+            # price to express a percent; first-ever prices have no baseline.
+            if price_change and old_price is not None and old_price > 0:
+                _signed = (new_price - old_price) / old_price * 100.0
+                _mag = abs(_signed)
+                # Only moves that clear the >5% reprice rail count toward the
+                # blast-radius magnitudes (a sub-5% nudge is noise, not a move
+                # the scraper should gate its push on).
+                if _mag > 5.0:
+                    summary["reprice_rows"] += 1
+                    if _signed < 0 and _mag > summary["price_drop_max_pct"]:
+                        summary["price_drop_max_pct"] = _mag
+                    elif _signed > 0 and _mag > summary["price_rise_max_pct"]:
+                        summary["price_rise_max_pct"] = _mag
+
             # Threshold rail — applies only to price_override moves where
             # there IS a prior price to compare against. Cost & manufacturer
             # are independent: a bad scrape of one shouldn't suppress the
@@ -1412,6 +1467,17 @@ class ProductImportService(BaseService):
                         old_cost_val = cost_src.vendor_cost or 0.0
                         if abs(old_cost_val - new_cost) >= 0.005:
                             cost_change = True
+                        # ── CONTRACT: cost blast-radius. Both flags need a
+                        # positive prior cost; a 0→x first cost has no ratio to
+                        # measure against (and isn't the "list price scraped as
+                        # cost" class we're guarding for).
+                        if old_cost_val > 0:
+                            if new_cost > old_cost_val * 3.0:
+                                summary["cost_anomaly_rows"] += 1
+                            if new_cost > old_cost_val:
+                                _crise = (new_cost - old_cost_val) / old_cost_val * 100.0
+                                if _crise > summary["cost_rise_max_pct"]:
+                                    summary["cost_rise_max_pct"] = _crise
 
             if (not price_change and not compare_change
                     and not mfg_change and not cost_change and not avail_did):
@@ -1463,6 +1529,10 @@ class ProductImportService(BaseService):
                         changed_by_id=self.current_user_id,
                         notes=f"Scraper refresh ({cost_vendor.vendor_code or cost_vendor.name} cost)",
                     ))
+
+        # Round the CONTRACT magnitude percents for a clean RESULT_JSON line.
+        for _k in ("price_drop_max_pct", "price_rise_max_pct", "cost_rise_max_pct"):
+            summary[_k] = round(summary[_k], 1)
 
         self.db.commit() if not dry_run else self.db.rollback()
         return summary
@@ -1715,21 +1785,35 @@ class ProductImportService(BaseService):
 
     # ══ helpers ════════════════════════════════════════════════════════════════
     def _resolve_category(self, type_name: str, cache: dict, summary: dict, dry_run: bool) -> int | None:
+        """Resolve the scraper Type column to an EXISTING category by name.
+
+        Risk #7 guard (S22): the direct full-import path used to auto-create a
+        level-1 category for every distinct Shopify "Type" string. A scraper feed
+        carries free-text Type values ("Misc", "Test", "Cat 3406 Head Gasket", …)
+        which polluted the taxonomy with arbitrary top-level nodes. We now REFUSE
+        to mint categories from the feed: the allowlist is the set of existing
+        categories (``cache`` is name→id over every ProductCategory row, seeded
+        from app/seeds.py + any the owner curated). A Type that matches one is used
+        normally; a Type that matches nothing leaves the product uncategorized and
+        signals the caller to flag the row needs_review (mirrors how Smart Import
+        sets ``category_issue``). The skip count is surfaced in the summary."""
         name = (type_name or "").strip()
         if not name:
             return None
         key = name.lower()
         if key in cache:
             return cache[key]
-        summary["categories_created"] += 1
-        if dry_run:
-            cache[key] = None
-            return None
-        cat = ProductCategory(name=name[:200], level=1, is_active=True)
-        self.db.add(cat)
-        self.db.flush()
-        cache[key] = cat.id
-        return cat.id
+        # Non-allowlisted Type → do NOT create a top-level category. Record the
+        # skip (deduped by distinct Type name) and leave the product uncategorized;
+        # the caller flags the row needs_review so the owner maps it on purpose.
+        summary["categories_skipped"] = summary.get("categories_skipped", 0) + 1
+        skipped_names = summary.setdefault("skipped_category_names", [])
+        if name not in skipped_names and len(skipped_names) < 50:
+            skipped_names.append(name)
+        # Cache the refusal as None so a repeated Type in the same feed is counted
+        # once and resolves consistently (idempotent within the run).
+        cache[key] = None
+        return None
 
     def _sku_cat_code(self, cat_id: int | None, fallback_name: str, cache: dict) -> str:
         """Category code for the SKU: the node's explicit ``code`` if set, else

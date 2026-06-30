@@ -33,13 +33,21 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
-from app.deps import get_db
+from app.deps import get_db, require_reports_access
 from app.services.report_service import ReportService
 from app.services import pricing_reports_service
 
 log = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/reports", tags=["reports"])
+# Risk #1 — every report (and CSV export and legacy redirect) exposes cost basis,
+# margins, AR/AP aging, sales tax, and captured competitor pricing. Gate the WHOLE
+# router to ADMIN/BOOKKEEPING via a router-level dependency so no individual route
+# can be added later without the gate. SALES/READ_ONLY users get HTTP 403.
+router = APIRouter(
+    prefix="/reports",
+    tags=["reports"],
+    dependencies=[Depends(require_reports_access)],
+)
 templates = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent.parent / "templates")
 )

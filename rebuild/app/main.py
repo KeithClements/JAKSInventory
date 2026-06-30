@@ -89,6 +89,74 @@ async def enforce_login(request: Request, call_next):
     return await call_next(request)
 
 
+# ── §23 / Lane G — Default-password rotation gate (Risk #8/#14) ────────────────
+# A non-dismissable redirect gate: while a signed-in user's account STILL verifies
+# its well-known default password (admin/admin or bookkeeper/bookkeeper), every
+# authenticated navigation is forced to the change-password screen (/account) until
+# the password is rotated. Once changed, normal navigation resumes automatically.
+#
+# This replaces the old log-only warning (_warn_if_default_admin_password) with an
+# enforced gate so a pre-employee / internet-adjacent instance can never be left
+# wide open just because the launch banner was ignored. Honors the same test bypass
+# as enforce_login (JAKS_SKIP_AUTH + in-memory engine only).
+#
+# Default credential map: username → its shipped default password. Mirrors the seed
+# defaults in _seed_default_user (JAKS_ADMIN_PASSWORD / JAKS_BOOKKEEPER_PASSWORD
+# fall back to "admin" / "bookkeeper").
+_DEFAULT_CREDENTIALS = {"admin": "admin", "bookkeeper": "bookkeeper"}
+
+# Paths the gated user MUST still reach so they can actually rotate the password
+# (the change-password form, its POST handler, and logout). Static assets too so
+# the /account page renders. Everything else redirects to /account.
+_PW_GATE_EXEMPT = frozenset({"/account", "/account/password", "/logout", "/login"})
+
+
+def account_uses_default_password(user) -> bool:
+    """True if ``user``'s stored hash still verifies its shipped default password."""
+    from app.auth import verify_password
+    default_pw = _DEFAULT_CREDENTIALS.get((user.username or "").strip().lower())
+    if default_pw is None:
+        return False
+    return verify_password(default_pw, user.password_hash)
+
+
+@app.middleware("http")
+async def enforce_password_rotation(request: Request, call_next):
+    # Test bypass — identical contract to enforce_login (in-memory engine only) so
+    # the business-logic suite is unaffected; the gate has its own dedicated test
+    # that un-sets JAKS_SKIP_AUTH to exercise the real path.
+    if os.getenv("JAKS_SKIP_AUTH"):
+        from app.deps import _is_test_env
+        if _is_test_env():
+            return await call_next(request)
+
+    path = request.url.path
+    if (path in _PW_GATE_EXEMPT or path.startswith("/static/")
+            or path.startswith("/api/leadfinder") or path.startswith("/p/")):
+        return await call_next(request)
+
+    from app.auth import SESSION_COOKIE, read_session_token
+    uid = read_session_token(request.cookies.get(SESSION_COOKIE))
+    if uid is None:
+        # Unauthenticated — enforce_login (inner) handles the /login redirect.
+        return await call_next(request)
+
+    db = _appdb.SessionLocal()
+    try:
+        from app.models.user import User
+        user = db.query(User).filter(User.id == uid).first()
+        if user is not None and account_uses_default_password(user):
+            # HTMX partials need HX-Redirect so the browser navigates rather than
+            # swapping the /account page into a fragment slot.
+            if request.headers.get("HX-Request"):
+                from fastapi.responses import Response
+                return Response(status_code=200, headers={"HX-Redirect": "/account"})
+            return RedirectResponse("/account", status_code=303)
+    finally:
+        db.close()
+    return await call_next(request)
+
+
 # ── §21.3 Internet-exposed hardening (owner decision 6.16 #5) ──────────────────
 # Registered AFTER enforce_login so, by middleware stack order, security headers
 # is OUTERMOST (stamps every response incl. redirects/403s) and CSRF sits OUTSIDE
@@ -333,6 +401,11 @@ def _warn_if_default_admin_password(db: Session) -> None:
     unknowingly left wide open. Skipped for in-memory test engines. The owner
     changes it at /account after signing in, or sets JAKS_ADMIN_PASSWORD before
     first run.
+
+    Lane G (§23) promoted this from a log-only warning into an *enforced* gate:
+    the ``enforce_password_rotation`` middleware now redirects any signed-in user
+    whose account still verifies a default password to /account until it is
+    rotated. This log line remains for ops visibility at startup.
     """
     import logging
     from app.auth import verify_password

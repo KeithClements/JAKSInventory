@@ -70,7 +70,8 @@ def test_edit_clean_bill_cost_creates_discrepancy(Session):
     db = Session()
     try:
         po_id, _, bill_id, bl_id = _billed_po(db, cost=100.0)
-        assert db.get(VendorBill, bill_id).status == VendorBillStatus.APPROVED
+        # Risk #5: a clean bill lands PENDING (explicit AP Approve), not APPROVED.
+        assert db.get(VendorBill, bill_id).status == VendorBillStatus.PENDING
 
         POService(db, _UID).edit_vendor_bill(
             bill_id, reason="keyed wrong cost",
@@ -127,7 +128,11 @@ def test_edit_reducing_billed_qty_rolls_po_back_off_billed(Session):
     db = Session()
     try:
         po_id, _, bill_id, bl_id = _billed_po(db, qty=4)
-        # Fully received + fully billed → PO is BILLED.
+        # Risk #5: a clean bill lands PENDING and does NOT advance the PO; AP must
+        # approve it for the PO to reach BILLED (the precondition for this test).
+        POService(db, _UID).approve_bill(bill_id)
+        db.expire_all()
+        # Fully received + fully billed (and approved) → PO is BILLED.
         assert db.get(PurchaseOrder, po_id).status == POStatus.BILLED
 
         POService(db, _UID).edit_vendor_bill(
@@ -187,8 +192,9 @@ def test_edit_audits_old_to_new(Session):
 def test_paid_bill_cannot_be_edited(Session):
     db = Session()
     try:
-        po_id, _, bill_id, bl_id = _billed_po(db)  # clean → APPROVED
+        po_id, _, bill_id, bl_id = _billed_po(db)  # clean → PENDING
         svc = POService(db, _UID)
+        svc.approve_bill(bill_id)   # PENDING → APPROVED before it can be paid
         svc.mark_bill_paid(bill_id)
         with pytest.raises(ValueError, match="already paid"):
             svc.edit_vendor_bill(bill_id, reason="too late",

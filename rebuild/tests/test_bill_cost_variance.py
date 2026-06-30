@@ -68,11 +68,14 @@ def _bill(db, vendor, po, line, *, billed_cost, qty_billed):
 
 # ── cost variance flags discrepancy ───────────────────────────────────────────
 
-def test_matching_cost_auto_approves(db):
-    # Billed at the exact ordered cost + correct qty → no discrepancy → APPROVED.
+def test_matching_cost_lands_pending(db):
+    # Billed at the exact ordered cost + correct qty → no discrepancy. Risk #5:
+    # a clean match no longer auto-APPROVES; it lands PENDING for an explicit
+    # AP Approve (approve_bill). The important assertion is that no discrepancy
+    # is raised — the bill cleared the 3-way match.
     vendor, po, line = _po_with_received_line(db, ordered_cost=10.0, qty=5)
     bill = _bill(db, vendor, po, line, billed_cost=10.0, qty_billed=5)
-    assert bill.status == VendorBillStatus.APPROVED
+    assert bill.status == VendorBillStatus.PENDING
     assert bill.has_discrepancy is False
 
 
@@ -92,12 +95,14 @@ def test_cost_undercharge_also_flags(db):
     assert bill.status == VendorBillStatus.DISCREPANCY
 
 
-def test_subcent_difference_within_tolerance_approves(db):
-    # A difference smaller than tolerance (e.g. rounding) must NOT flag.
+def test_subcent_difference_within_tolerance_does_not_flag(db):
+    # A difference smaller than tolerance (e.g. rounding) must NOT flag — the
+    # bill clears the match and lands PENDING (Risk #5: no auto-approve).
     vendor, po, line = _po_with_received_line(db, ordered_cost=10.0, qty=5)
     tiny = COST_VARIANCE_TOLERANCE / 2
     bill = _bill(db, vendor, po, line, billed_cost=10.0 + tiny, qty_billed=5)
-    assert bill.status == VendorBillStatus.APPROVED
+    assert bill.status == VendorBillStatus.PENDING
+    assert bill.has_discrepancy is False
 
 
 # ── approve_bill blocks the cost discrepancy ──────────────────────────────────
@@ -177,23 +182,25 @@ def test_over_po_qty_bill_flags_discrepancy(db):
 def test_over_receipt_billed_within_order_qty_approves(db):
     """
     Guard: ordered=5, received=7 (over-receipt), billed=5.
-    Billing within the ordered qty must remain APPROVED even when more
+    Billing within the ordered qty must NOT flag a discrepancy even when more
     was received — the over-receipt warning is separate from over-billing.
+    Risk #5: a clean match lands PENDING (no auto-approve), not APPROVED.
     """
     vendor, po, line = _po_with_over_received_line(db, ordered=5, received=7, unit_cost=10.0)
     bill = _bill(db, vendor, po, line, billed_cost=10.0, qty_billed=5)
-    assert bill.status == VendorBillStatus.APPROVED, (
-        f"Billing within the ordered qty (bill=5, ordered=5, recv=7) must be "
-        f"APPROVED; got {bill.status!r}."
+    assert bill.status == VendorBillStatus.PENDING, (
+        f"Billing within the ordered qty (bill=5, ordered=5, recv=7) must clear "
+        f"the match and land PENDING; got {bill.status!r}."
     )
     assert bill.has_discrepancy is False
 
 
-def test_clean_match_still_approves(db):
-    """Guard: ordered=5, received=5, billed=5 — the normal path stays APPROVED."""
+def test_clean_match_lands_pending(db):
+    """Guard: ordered=5, received=5, billed=5 — the normal path clears the match.
+    Risk #5: a clean bill lands PENDING (explicit AP Approve), not APPROVED."""
     vendor, po, line = _po_with_received_line(db, ordered_cost=10.0, qty=5)
     bill = _bill(db, vendor, po, line, billed_cost=10.0, qty_billed=5)
-    assert bill.status == VendorBillStatus.APPROVED
+    assert bill.status == VendorBillStatus.PENDING
     assert bill.has_discrepancy is False
 
 
@@ -240,7 +247,8 @@ def test_split_bills_cannot_each_slip_under_po_ceiling(db):
     # flag — split bills can't dodge the PO ceiling one slice at a time.
     vendor, po, line = _po_with_over_received_line(db, ordered=5, received=7)
     first = _bill(db, vendor, po, line, billed_cost=10.0, qty_billed=4)
-    assert first.status == VendorBillStatus.APPROVED       # cumulative 4 ≤ 5
+    # cumulative 4 ≤ 5 → clean match → PENDING (Risk #5: no auto-approve)
+    assert first.status == VendorBillStatus.PENDING
     db.refresh(line)
     second = _bill(db, vendor, po, line, billed_cost=10.0, qty_billed=3)
     assert second.status == VendorBillStatus.DISCREPANCY   # cumulative 7 > 5

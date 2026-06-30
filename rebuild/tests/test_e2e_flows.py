@@ -388,15 +388,29 @@ def test_e2e_f_receive_then_bill_auto_approves(db):
 
     db.expire_all()
     bill_r = db.query(VendorBill).filter(VendorBill.id == bill.id).first()
-    assert bill_r.status == VendorBillStatus.APPROVED, (
-        "a clean 3-way match (billed qty == received qty) must AUTO-APPROVE the "
-        f"bill; got {bill_r.status}"
+    # Risk #5: a clean 3-way match no longer auto-APPROVES — it clears the match
+    # and lands PENDING for an explicit AP Approve. The PO stays RECEIVED until
+    # the bill is approved (the approve step below advances it to BILLED).
+    assert bill_r.status == VendorBillStatus.PENDING, (
+        "a clean 3-way match (billed qty == received qty) must clear the match "
+        f"and land PENDING; got {bill_r.status}"
     )
     assert bill_r.total_amount == 120.0          # 10 * 12.00
     po_r = db.query(PurchaseOrder).filter(PurchaseOrder.id == po.id).first()
-    assert po_r.status == POStatus.BILLED, (
-        "a PO whose every received line is fully billed must advance to BILLED; "
+    assert po_r.status != POStatus.BILLED, (
+        "a PENDING (unapproved) bill must NOT advance the PO to BILLED; "
         f"got {po_r.status}"
+    )
+
+    # AP explicitly approves the clean bill → now payable, PO advances to BILLED.
+    svc.approve_bill(bill.id)
+    db.expire_all()
+    bill_r = db.query(VendorBill).filter(VendorBill.id == bill.id).first()
+    assert bill_r.status == VendorBillStatus.APPROVED
+    po_r = db.query(PurchaseOrder).filter(PurchaseOrder.id == po.id).first()
+    assert po_r.status == POStatus.BILLED, (
+        "a PO whose every received line is fully billed must advance to BILLED "
+        f"on bill approval; got {po_r.status}"
     )
 
 
@@ -497,10 +511,11 @@ def test_e2e_h_cost_variance_flags_discrepancy(db):
 
 
 @pytest.mark.acceptance
-def test_e2e_h_within_cost_tolerance_still_approves(db):
-    """Cost variance < COST_VARIANCE_TOLERANCE ($0.01) → still APPROVED.
+def test_e2e_h_within_cost_tolerance_does_not_flag(db):
+    """Cost variance < COST_VARIANCE_TOLERANCE ($0.01) → no discrepancy.
 
-    Rounding differences below the tolerance must not block auto-approval.
+    Rounding differences below the tolerance must not flag the bill. Risk #5:
+    a cleared match lands PENDING (explicit AP Approve), not auto-APPROVED.
     """
     from app.constants import VendorBillStatus
     from app.models.purchase_order import VendorBill, COST_VARIANCE_TOLERANCE
@@ -527,7 +542,8 @@ def test_e2e_h_within_cost_tolerance_still_approves(db):
 
     db.expire_all()
     bill_r = db.query(VendorBill).filter(VendorBill.id == bill.id).first()
-    assert bill_r.status == VendorBillStatus.APPROVED, (
+    assert bill_r.status == VendorBillStatus.PENDING, (
         f"Cost delta {billed_cost - line.unit_cost:.4f} is below tolerance "
-        f"{COST_VARIANCE_TOLERANCE}; must still auto-approve; got {bill_r.status!r}"
+        f"{COST_VARIANCE_TOLERANCE}; must not flag (clears match → PENDING); "
+        f"got {bill_r.status!r}"
     )

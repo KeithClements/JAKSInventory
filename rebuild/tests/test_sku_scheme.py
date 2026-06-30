@@ -21,12 +21,16 @@ from app.services.sku_service import build_vendor_sku
 from app.settings_utils import set_setting_value_db
 from tests.conftest import activate, fresh_engine
 
-_ENGINE = fresh_engine()
-
 
 @pytest.fixture()
 def db():
-    SessionLocal = activate(_ENGINE)
+    # Function-scoped engine: each test gets its own fresh in-memory DB so
+    # vendors never accumulate across tests. This is required now that vendors
+    # carry partial UNIQUE indexes on vendor_code (WHERE vendor_code != '') and
+    # name (WHERE is_active = 1) — a shared module DB would collide whenever two
+    # tests reuse the same vendor_code (PAI / DFT / MIG appear in several). It is
+    # also the pattern the sibling test_shopify_service.py already uses.
+    SessionLocal = activate(fresh_engine())
     s = SessionLocal()
     try:
         yield s
@@ -36,9 +40,8 @@ def db():
 
 @pytest.fixture(autouse=True)
 def _reset_sku_settings(db):
-    """The module shares one engine, so a test that sets sku_prefix/sku_scheme
-    would otherwise leak into the next. Reset to defaults before every test →
-    order-independent."""
+    """Seed the SKU settings each test expects. (Each test already gets a fresh
+    function-scoped engine, so this is per-test defaults, not leak cleanup.)"""
     set_setting_value_db(db, "sku_prefix", "JAKS")
     set_setting_value_db(db, "sku_scheme", "vendor")
     db.commit()

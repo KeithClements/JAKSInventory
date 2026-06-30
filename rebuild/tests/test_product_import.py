@@ -124,6 +124,14 @@ def test_full_import_dry_run_writes_nothing(db):
 
 
 def test_full_import_creates_products_and_relations(db):
+    # NEW CONTRACT (S22 / §23): the direct full-import path no longer auto-mints a
+    # level-1 category from the free-text scraper Type column — a Type only
+    # classifies when it matches an EXISTING category. This test's intent is to
+    # verify products/relations + classification of the Type, so pre-seed the
+    # categories the feed's Type values reference ("ENGINE PARTS", "GASKETS").
+    db.add(ProductCategory(name="ENGINE PARTS", level=1, is_active=True))
+    db.add(ProductCategory(name="GASKETS", level=1, is_active=True))
+    db.commit()
     ProductImportService(db, None).full_import(_shopify_csv(), dry_run=False)
     p = _product_by_pai(db, "111")
     assert p is not None

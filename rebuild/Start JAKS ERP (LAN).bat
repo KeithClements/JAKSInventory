@@ -53,6 +53,11 @@ if not exist "%KEYFILE%" (
 )
 for /f "usebackq delims=" %%K in ("%KEYFILE%") do set "JAKS_FERNET_KEY=%%K"
 
+REM ── Production posture: enforce auth + the default-password change gate, and
+REM keep dev-only conveniences off. (The login enforcement / change-password gate
+REM in app/main.py treat this as a real, internet-adjacent deployment.)
+set "JAKS_ENV=production"
+
 start "" /b cmd /c "timeout /t 4 >nul && start http://localhost:8000/"
 
 REM 0.0.0.0 = listen for the whole local network (firewall still gatekeeps).

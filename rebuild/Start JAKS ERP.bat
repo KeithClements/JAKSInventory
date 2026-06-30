@@ -9,7 +9,7 @@ echo    On this PC:      http://localhost:8000
 echo    Phone / laptop:  http://THIS-PC's-IP:8000  (IPv4 addresses below)
 ipconfig | findstr /c:"IPv4"
 echo.
-echo    Login:   admin / admin
+echo    Sign in with your account at the login page.
 echo.
 echo    Keep this window open while you work.
 echo    Close it (or press Ctrl+C) to stop the server.
@@ -31,6 +31,11 @@ if not exist "%KEYFILE%" (
     echo Generated a new encryption key at "%KEYFILE%" ^(back this up safely^).
 )
 for /f "usebackq delims=" %%K in ("%KEYFILE%") do set "JAKS_FERNET_KEY=%%K"
+
+REM ── Production posture: enforce auth + the default-password change gate, and
+REM keep dev-only conveniences off. (The login enforcement / change-password gate
+REM in app/main.py treat this as a real, internet-adjacent deployment.)
+set "JAKS_ENV=production"
 
 REM Open the browser a few seconds after the server starts booting.
 start "" /b cmd /c "timeout /t 4 >nul && start http://localhost:8000/"
