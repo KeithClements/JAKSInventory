@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+{% block title %}Receive Shipment — Axle{% endblock %}
+{% block heading %}Receive Shipment{% endblock %}
+
+{% block header_actions %}
+  <a href="/purchase-orders/receiving" class="btn-secondary btn-sm">Receiving Queue</a>
+{% endblock %}
+
+{% block content %}
+{% from "macros/empty_state.html" import empty_state %}
+
+{# Flash messages (query params set by the POST handler) #}
+{% set _ok = request.query_params.get('ok') %}
+{% set _error = request.query_params.get('error') %}
+{% set _info = request.query_params.get('info') %}
+
+<div class="space-y-4">
+
+  {% if _ok %}
+  <div class="rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800">{{ _ok }}</div>
+  {% endif %}
+  {% if _error %}
+  <div class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-800">{{ _error }}</div>
+  {% endif %}
+  {% if _info %}
+  <div class="rounded-lg bg-blue-50 border border-blue-200 px-4 py-3 text-sm text-blue-800">{{ _info }}</div>
+  {% endif %}
+
+  {% if vendor is none %}
+  {# ══════════════════════════ VENDOR PICKER ══════════════════════════════════
+     One truck usually fulfills several of a single vendor's open POs. Pick the
+     vendor whose shipment just arrived; the next screen lists every open line
+     across all of that vendor's receivable POs in one form. #}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Choose a vendor</h2>
+      <span class="text-xs text-gray-400">Receive a delivery against all of one vendor's open POs at once</span>
+    </div>
+    {% if vendor_picks %}
+    <div class="divide-y divide-gray-100">
+      {% for pick in vendor_picks %}
+      <a href="/purchase-orders/receive-shipment?vendor_id={{ pick.vendor.id }}"
+         class="flex items-center justify-between gap-4 px-6 py-4 hover:bg-gray-50/80 transition-colors group">
+        <div class="min-w-0">
+          <p class="text-sm font-semibold text-gray-800 group-hover:text-brand-700 truncate">{{ pick.vendor.name }}</p>
+          {% if pick.vendor.vendor_code %}
+          <p class="font-mono text-[11px] text-gray-400 mt-0.5">{{ pick.vendor.vendor_code }}</p>
+          {% endif %}
+        </div>
+        <div class="flex items-center gap-4 shrink-0">
+          <span class="text-xs text-gray-500 tabular-nums">
+            {{ pick.po_count }} PO{{ 's' if pick.po_count != 1 }} ·
+            {{ pick.line_count }} line{{ 's' if pick.line_count != 1 }} open
+          </span>
+          <svg class="w-4 h-4 text-gray-300 group-hover:text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/>
+          </svg>
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    {{ empty_state(
+      'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z',
+      '', '',
+      'Nothing to receive',
+      'No vendor has an open purchase order awaiting receipt right now.',
+      '<a href="/purchase-orders/" class="btn-secondary btn-sm">View all purchase orders</a>'
+    ) }}
+    {% endif %}
+  </div>
+
+  {% else %}
+  {# ══════════════════════ MULTI-PO RECEIVE FORM ══════════════════════════════
+     Every open line across this vendor's receivable POs, grouped by PO, in ONE
+     form. Line inputs are named recv_/condition_/serials_{line.id} exactly like
+     the per-PO receive form — line ids are globally unique, so one submit
+     receives across POs. The service updates each PO's status independently. #}
+
+  <div class="flex items-center justify-between gap-3">
+    <div>
+      <p class="text-lg font-semibold text-gray-800">{{ vendor.name }}</p>
+      <p class="text-xs text-gray-400">
+        {{ groups | length }} open PO{{ 's' if groups | length != 1 }} ·
+        {{ total_lines }} line{{ 's' if total_lines != 1 }} to receive
+      </p>
+    </div>
+    <a href="/purchase-orders/receive-shipment" class="text-xs text-gray-400 hover:text-gray-600 transition-colors">← Change vendor</a>
+  </div>
+
+  {% if groups %}
+  <div x-data="{}">
+    <form method="post" action="/purchase-orders/receive-shipment" class="space-y-4">
+      <input type="hidden" name="vendor_id" value="{{ vendor.id }}" />
+
+      <div class="flex items-center justify-between gap-3">
+        <p class="text-xs text-gray-400">Enter the quantity actually received — lines left at 0 are skipped.</p>
+        <button type="button"
+                class="text-xs font-semibold text-brand-700 hover:text-brand-800 underline shrink-0"
+                @click="$el.closest('form').querySelectorAll('input[name^=recv_]').forEach(i => i.value = i.max)">
+          Receive All
+        </button>
+      </div>
+
+      {% for g in groups %}
+      {% set po = g.po %}
+      <div class="card">
+        <div class="card-header flex items-center justify-between gap-3">
+          <div class="flex items-center gap-3">
+            <a href="/purchase-orders/{{ po.id }}"
+               class="font-mono text-sm font-bold text-brand-700 hover:text-brand-900 hover:underline">{{ po.po_number }}</a>
+            <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-xs font-semibold
+                         {% if g.status_kind == 'partial' %}bg-amber-100 text-amber-700{% else %}bg-blue-50 text-blue-700{% endif %}">
+              <span class="w-1.5 h-1.5 rounded-full {% if g.status_kind == 'partial' %}bg-amber-500{% else %}bg-blue-500{% endif %} shrink-0"></span>
+              {{ g.status_label }}
+            </span>
+          </div>
+          <span class="text-xs text-gray-400">
+            {% if po.expected_at %}Expected {{ po.expected_at.strftime('%b %d, %Y') }}{% endif %}
+          </span>
+        </div>
+        <div class="card-body">
+          <div class="space-y-3">
+            {% for line in g.open_lines %}
+            <div class="flex items-center gap-4 py-1">
+              <span class="font-mono text-xs text-brand-700 w-28 shrink-0">
+                {{ line.product.sku if line.product else '—' }}
+              </span>
+              <span class="flex-1 text-sm text-gray-700">
+                {{ line.description or (line.product.title if line.product else '—') }}
+              </span>
+              <span class="text-xs text-gray-400 shrink-0">{{ line.qty_outstanding }} outstanding</span>
+              <div class="flex flex-col shrink-0 gap-1">
+                <input type="number" name="recv_{{ line.id }}"
+                       min="0" max="{{ line.qty_outstanding }}" value="0"
+                       class="w-20 form-input text-right" />
+                <input type="text" name="condition_{{ line.id }}"
+                       placeholder="Condition notes…"
+                       class="w-44 text-xs border border-gray-200 rounded px-2 py-1 text-gray-500
+                              focus:outline-none focus:ring-1 focus:ring-brand-400" />
+                {% if line.product and line.product.has_serial_number %}
+                <textarea name="serials_{{ line.id }}" rows="2"
+                          placeholder="Serial #s (comma or newline separated) — optional"
+                          class="w-44 text-xs border border-gray-200 rounded px-2 py-1 text-gray-500
+                                 focus:outline-none focus:ring-1 focus:ring-brand-400"></textarea>
+                {% endif %}
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+
+      {# Shared shipment metadata — one carrier/tracking/notes for the whole delivery #}
+      <div class="card">
+        <div class="card-body space-y-4">
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="form-label">Tracking Number</label>
+              <input name="tracking_number" placeholder="Optional" class="form-input" />
+            </div>
+            <div>
+              <label class="form-label">Carrier</label>
+              <select name="carrier" class="form-select">
+                <option value="">— Optional —</option>
+                <option value="ups">UPS</option>
+                <option value="fedex">FedEx</option>
+                <option value="ltl">LTL Freight</option>
+                <option value="local_delivery">Local Delivery</option>
+                <option value="vendor_drop_ship">Vendor Drop Ship</option>
+                <option value="customer_pickup">Customer Pickup</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label class="form-label">Receipt Notes</label>
+            <textarea name="notes" rows="2" class="form-textarea"
+                      placeholder="Condition notes, shortages, damages…"></textarea>
+          </div>
+          <button type="submit" class="btn-primary">Receive &amp; Update Inventory</button>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  {% else %}
+  {{ empty_state(
+    'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z',
+    '', '',
+    'Nothing left to receive',
+    'This vendor has no open lines awaiting receipt.',
+    '<a href="/purchase-orders/receiving" class="btn-secondary btn-sm">Back to receiving queue</a>'
+  ) }}
+  {% endif %}
+
+  {% endif %}
+</div>
+{% endblock %}

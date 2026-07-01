@@ -344,6 +344,182 @@ def po_receiving_queue(request: Request, q: str = "", db: Session = Depends(get_
     )
 
 
+# ── Multi-PO "Receive Shipment" (one truck, one action, spans a vendor's POs) ─
+#
+# The per-PO /{po_id}/receive path stays for single-PO receiving. This vendor-
+# scoped screen lets a clerk receive a delivery that fulfills SEVERAL of one
+# vendor's open POs in a single action — the model already supports it
+# (POReceipt.vendor_id; POReceiptLine.po_id per line). §23.3 Phase 1.
+# NOTE: both routes are static two-segment paths, registered before the
+# /{po_id} routes below, so "receive-shipment" never binds as a po_id.
+
+@router.get("/receive-shipment", response_class=HTMLResponse)
+def po_receive_shipment_form(
+    request: Request, vendor_id: int | None = None, db: Session = Depends(get_db)
+):
+    svc = POService(db)
+    if vendor_id is None:
+        # Vendor picker — every vendor with at least one open receivable line.
+        pos = (
+            db.query(PurchaseOrder)
+            .options(joinedload(PurchaseOrder.vendor), joinedload(PurchaseOrder.lines))
+            .filter(PurchaseOrder.status.in_(POService.RECEIVABLE_STATUSES))
+            .all()
+        )
+        picks: dict[int, dict] = {}
+        for po in pos:
+            if not po.vendor:
+                continue
+            open_lines = [ln for ln in po.lines if ln.qty_outstanding > 0]
+            if not open_lines:
+                continue
+            entry = picks.setdefault(
+                po.vendor_id, {"vendor": po.vendor, "po_count": 0, "line_count": 0}
+            )
+            entry["po_count"] += 1
+            entry["line_count"] += len(open_lines)
+        vendor_picks = sorted(picks.values(), key=lambda e: (e["vendor"].name or "").lower())
+        return templates.TemplateResponse(
+            request, "purchase_orders/receive_shipment.html",
+            {"vendor": None, "vendor_picks": vendor_picks},
+        )
+
+    vendor = db.get(Vendor, vendor_id)
+    if vendor is None:
+        return RedirectResponse("/purchase-orders/receive-shipment", status_code=303)
+    groups = svc.get_open_receivable_lines_for_vendor(vendor_id)
+    for g in groups:
+        st = g["po"].status
+        g["status_kind"] = "partial" if st == POStatus.PARTIAL else "open"
+        g["status_label"] = "Partial" if st == POStatus.PARTIAL else "Open"
+    total_lines = sum(len(g["open_lines"]) for g in groups)
+    return templates.TemplateResponse(
+        request, "purchase_orders/receive_shipment.html",
+        {"vendor": vendor, "groups": groups, "total_lines": total_lines},
+    )
+
+
+@router.post("/receive-shipment", response_class=RedirectResponse)
+async def po_receive_shipment(
+    request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    form = await request.form()
+    raw_vendor = str(form.get("vendor_id", "")).strip()
+    if not raw_vendor.isdigit():
+        return RedirectResponse("/purchase-orders/receive-shipment", status_code=303)
+    vendor_id = int(raw_vendor)
+    _back = f"/purchase-orders/receive-shipment?vendor_id={vendor_id}"
+
+    # Collect recv_/condition_/serials_ for every line across the vendor's POs.
+    po_line_quantities: dict[int, int] = {}
+    condition_notes_map: dict[int, str] = {}
+    serials_map: dict[int, list[str]] = {}
+    for key in list(form.keys()):
+        if not key.startswith("recv_"):
+            continue
+        lid_raw = key[len("recv_"):]
+        if not lid_raw.isdigit():
+            continue
+        lid = int(lid_raw)
+        raw = str(form.get(key, "")).strip()
+        qty = int(raw) if raw.isdigit() else 0
+        if qty > 0:
+            po_line_quantities[lid] = qty
+        cond = str(form.get(f"condition_{lid}", "")).strip()
+        if cond:
+            condition_notes_map[lid] = cond
+        parsed = parse_serials(str(form.get(f"serials_{lid}", "") or ""))
+        if parsed:
+            serials_map[lid] = parsed
+
+    # Same guard as the per-PO route: an all-zero submit is not a receipt.
+    if not po_line_quantities:
+        return RedirectResponse(
+            f"{_back}&error={url_quote('No receive quantities entered — lines left at 0 are skipped.')}",
+            status_code=303,
+        )
+
+    receipt = None
+    try:
+        svc = POService(db, current_user_id=user_id)
+        receipt = svc.create_receipt(
+            vendor_id=vendor_id,
+            po_line_quantities=po_line_quantities,
+            data={
+                "tracking_number": str(form.get("tracking_number", "")).strip() or None,
+                "carrier": str(form.get("carrier", "")).strip() or None,
+                "notes": str(form.get("notes", "")).strip(),
+                "condition_notes_map": condition_notes_map,
+            },
+        )
+    except PermissionError:
+        db.rollback()
+        return RedirectResponse(
+            f"{_back}&error={url_quote('You do not have permission to receive POs. Ask an admin or bookkeeper.')}",
+            status_code=303,
+        )
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(f"{_back}&error={url_quote(str(exc))}", status_code=303)
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error receiving shipment for vendor %s", vendor_id)
+        return RedirectResponse(
+            f"{_back}&error={url_quote('Unexpected error — receipt was not recorded.')}",
+            status_code=303,
+        )
+
+    # Serial capture — a follow-up transaction (mirrors the per-PO route); a
+    # serial problem can never undo the already-committed goods receipt.
+    info_notes: list[str] = []
+    if serials_map and receipt is not None:
+        try:
+            serial_svc = SerialService(db, current_user_id=user_id)
+            receipt_line_by_po_line = {rl.po_line_id: rl for rl in receipt.lines}
+            line_by_id = {rl.po_line.id: rl.po_line for rl in receipt.lines}
+            for po_line_id, serials in serials_map.items():
+                line = line_by_id.get(po_line_id)
+                if line is None or not line.product_id:
+                    continue
+                product = line.product
+                if not product or not product.has_serial_number:
+                    continue
+                label = product.sku or f"line {po_line_id}"
+                qty_received = po_line_quantities.get(po_line_id, 0)
+                if qty_received <= 0:
+                    continue
+                receipt_line = receipt_line_by_po_line.get(po_line_id)
+                result = serial_svc.record_received_serials(
+                    product_id=line.product_id,
+                    serials=serials,
+                    po_receipt_line_id=receipt_line.id if receipt_line else None,
+                )
+                if result["skipped"]:
+                    info_notes.append(
+                        f"{label}: {len(result['skipped'])} duplicate serial(s) skipped."
+                    )
+                if len(serials) != qty_received:
+                    info_notes.append(
+                        f"{label}: {len(serials)} serial(s) entered for {qty_received} unit(s) received."
+                    )
+            db.commit()
+        except Exception:
+            db.rollback()
+            log.exception(
+                "Serial capture failed for vendor %s shipment — receipt already recorded",
+                vendor_id,
+            )
+            info_notes = ["Serial numbers could not be recorded — the goods receipt itself was saved."]
+
+    pos_count = len({rl.po_id for rl in receipt.lines})
+    msg = f"Received {len(po_line_quantities)} line(s) across {pos_count} PO(s)."
+    redirect = f"{_back}&ok={url_quote(msg)}"
+    if info_notes:
+        redirect += f"&info={url_quote(' '.join(info_notes))}"
+    return RedirectResponse(redirect, status_code=303)
+
+
 # ── 3-Way Match Queue ───────────────────────────────────────────────────────
 #
 # Cross-PO queue of POs whose lines carry a match variance needing AP review
