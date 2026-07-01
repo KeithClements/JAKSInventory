@@ -13,6 +13,8 @@ single CustomerMetricsService definition (P2-Q1) so every surface agrees.
 """
 from __future__ import annotations
 
+import re
+
 from app.constants import (
     CustomerFlag, CustomerStatus, CustomerType, PaymentTerms, PricingTier,
     PreferredContactMethod, CUSTOMER_STORED_FLAGS,
@@ -20,6 +22,43 @@ from app.constants import (
 from app.models.customer import Customer, CustomerTypeDefault
 from app.services.base import BaseService
 from app.services.customer_metrics_service import CustomerMetricsService
+
+
+# ── Phone / email validation helpers (QA: dedup-by-phone + server-side email) ──
+# Module-level pure functions so the router, the service, and the tests all share
+# ONE normalization rule. Kept here (this lane's scoped file) rather than in the
+# shared app/utils.py.
+
+# A US phone is 10 digits; an 11-digit number that starts with a leading "1"
+# (the country code) is the SAME line as its 10-digit form. We strip the leading
+# country-code "1" so "1-720-555-1234" and "(720) 555-1234" collapse together.
+def normalize_phone(raw: str | None) -> str:
+    """Return the comparable digit string for a phone number.
+
+    Strips every non-digit (spaces, dashes, parens, dots, '+'), then drops a
+    single leading US country-code '1' when the result is 11 digits so that
+    "+1 (720) 555-1234", "1-720-555-1234", "720.555.1234" and "7205551234" all
+    normalize to the same key. Returns "" for blank/None — callers treat an
+    empty key as "no phone on file" and never collide those together."""
+    digits = re.sub(r"\D", "", raw or "")
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    return digits
+
+
+# Pragmatic, dependency-free email check (RFC-5322 is intentionally not the bar):
+# exactly one "@", a non-empty local part with no spaces, and a domain that has
+# at least one dot with a 2+ char TLD. Rejects "notanemail", "a@b", "a b@c.com".
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
+
+
+def is_valid_email(raw: str | None) -> bool:
+    """True when ``raw`` looks like a deliverable email address. A BLANK value is
+    NOT valid here — callers decide whether blank is allowed (it is, on create/
+    update) and only invoke this when a value was actually provided. Stdlib-only;
+    no new dependency."""
+    em = (raw or "").strip()
+    return bool(_EMAIL_RE.match(em))
 
 
 # ── Flag storage policy ─────────────────────────────────────────────────────────
@@ -368,6 +407,37 @@ class CustomerService(BaseService):
     # ════════════════════════════════════════════════════════════════════════
     # Last-Contacted helper (#5)
     # ════════════════════════════════════════════════════════════════════════
+
+    # ════════════════════════════════════════════════════════════════════════
+    # Dedup helpers (QA: phone parity with the email dedup)
+    # ════════════════════════════════════════════════════════════════════════
+
+    def find_by_phone(self, phone: str | None, exclude_id: int | None = None) -> Customer | None:
+        """Return an ACTIVE customer whose phone normalizes to the same digits as
+        ``phone`` (ignoring spaces/dashes/parens and a leading country-code '1'),
+        or None. Parallels the router's _find_customer_by_email but for phone —
+        the key counter staff actually look people up by.
+
+        A blank/normalization-empty phone is EXEMPT: it returns None so the many
+        customers with no phone on file never collapse into one another. Unlike
+        email this is NOT a unique DB key, so the caller treats a hit as a soft
+        warn (override-able), not a hard block."""
+        key = normalize_phone(phone)
+        if not key:
+            return None
+        # Pre-filter in SQL to non-blank phones on active rows, then compare on
+        # the normalized key in Python (SQLite can't strip punctuation in-query
+        # and phone formats are inconsistent across imports).
+        q = self.db.query(Customer).filter(
+            Customer.is_active == True,  # noqa: E712
+            Customer.phone != "",
+        )
+        if exclude_id:
+            q = q.filter(Customer.id != exclude_id)
+        for cand in q.all():
+            if normalize_phone(cand.phone) == key:
+                return cand
+        return None
 
     def last_contacted(self, customer_id: int):
         """Return the most recent ``CustomerCallLog.logged_at`` datetime for

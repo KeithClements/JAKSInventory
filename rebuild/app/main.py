@@ -162,9 +162,18 @@ async def enforce_password_rotation(request: Request, call_next):
 # is OUTERMOST (stamps every response incl. redirects/403s) and CSRF sits OUTSIDE
 # auth (issues its cookie even on the unauthenticated /login redirect). Both honor
 # the test bypass (JAKS_SKIP_AUTH + in-memory engine).
-from app.security import CSRFMiddleware, security_headers_middleware  # noqa: E402
+from app.security import (  # noqa: E402
+    CSRFMiddleware,
+    security_headers_middleware,
+    resolve_current_user,
+)
 app.add_middleware(CSRFMiddleware)
 app.middleware("http")(security_headers_middleware)
+# Resolve request.state.current_user from the session cookie so base.html can
+# render the real signed-in user's initials + Account / Sign-out menu. Registered
+# last → runs INNERMOST of the @middleware("http") stack, so state is populated
+# before the route/template runs, and AFTER enforce_login has admitted the request.
+app.middleware("http")(resolve_current_user)
 
 
 @app.on_event("startup")
@@ -590,3 +599,34 @@ app.include_router(shopify_router.router)
 app.include_router(leadfinder_api_router.router)
 app.include_router(public_docs_router.router)
 app.include_router(pricing_rules_router.router)
+
+
+# ── Friendly 404 for browsers (QA — raw {"detail":"Not Found"} JSON) ───────────
+# A missing page used to return raw JSON with a blank <title>. For a request that
+# accepts HTML (a real browser navigation) render a branded page that extends
+# base.html and links back to the dashboard; for API / fetch / HTMX requests keep
+# the existing JSON body so programmatic callers are unaffected. Other HTTP errors
+# fall through to FastAPI's default handler unchanged.
+from starlette.exceptions import HTTPException as _StarletteHTTPException  # noqa: E402
+from fastapi.exception_handlers import (  # noqa: E402
+    http_exception_handler as _default_http_exception_handler,
+)
+
+_error_templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
+
+@app.exception_handler(_StarletteHTTPException)
+async def custom_http_exception_handler(request: Request, exc: _StarletteHTTPException):
+    wants_html = "text/html" in request.headers.get("accept", "")
+    is_htmx = request.headers.get("HX-Request") is not None
+    if exc.status_code == 404 and wants_html and not is_htmx:
+        # current_user may not be resolved (the user-resolution middleware runs
+        # outside the exception-handler boundary on some error paths), so make it
+        # safe for base.html's avatar block.
+        if getattr(request.state, "current_user", None) is None:
+            request.state.current_user = None
+        return _error_templates.TemplateResponse(
+            request, "errors/404.html", status_code=404, context={}
+        )
+    # Everything else → FastAPI's default JSON handler (unchanged behavior).
+    return await _default_http_exception_handler(request, exc)

@@ -22,6 +22,13 @@
      HTMX    1.9.12  (unchanged version, now local)
      Chart.js 4.4.3  (unchanged version, now local)
      To upgrade: download new min.js to app/static/vendor/, update src below. ─ #}
+  {# @alpinejs/focus 3.14.9 (exact match to Alpine) — provides x-trap so the
+     pricing/quick-deal modal's focus-trapping works AND the console no longer
+     warns "x-trap directive without the Focus plugin". Self-registers via the
+     `alpine:init` event, so it MUST be loaded (also `defer`) BEFORE Alpine so its
+     listener is in place when Alpine boots. Served from /static → satisfies the
+     CSP script-src 'self'. (Lane A / QA #6.) #}
+  <script defer src="/static/vendor/alpine-focus.3.14.9.min.js"></script>
   <script defer src="/static/vendor/alpine.3.14.9.min.js"></script>
   <script defer src="/static/vendor/htmx.1.9.12.min.js"></script>
   <script defer src="/static/vendor/chart.4.4.3.umd.min.js"></script>
@@ -682,11 +689,67 @@
         <span class="hidden lg:inline">Log Call</span>
       </button>
 
-      {# User avatar — initials pill #}
-      <div class="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 select-none bg-brand-700"
-           style="box-shadow: 0 1px 3px rgba(0,0,0,0.25);"
-           title="Keith">
-        K
+      {# User menu — initials avatar + dropdown (Account settings / Sign out).
+         Initials + name come from request.state.current_user, set by the
+         resolve_current_user middleware (app/security.py). Falls back to "?" /
+         "Account" for an anonymous render so this never errors. (Lane A / QA #4.) #}
+      {% set _cu = request.state.current_user if request.state is defined and request.state.current_user is defined else None %}
+      {% set _cu_name = (_cu.name or _cu.username) if _cu else '' %}
+      {% set _cu_username = _cu.username if _cu else '' %}
+      {% set _cu_initials = namespace(v='') %}
+      {% if _cu_name %}
+        {% for _word in _cu_name.split() if _word[0] is defined %}
+          {% if _cu_initials.v|length < 2 %}{% set _cu_initials.v = _cu_initials.v ~ _word[0]|upper %}{% endif %}
+        {% endfor %}
+      {% endif %}
+      {% set _cu_initials_str = _cu_initials.v if _cu_initials.v else (_cu_username[0]|upper if _cu_username else '?') %}
+      <div class="relative shrink-0" x-data="{ userMenuOpen: false }" @click.away="userMenuOpen = false"
+           @keydown.escape.window="userMenuOpen = false">
+        <button type="button"
+                @click="userMenuOpen = !userMenuOpen"
+                :aria-expanded="userMenuOpen"
+                aria-haspopup="menu"
+                class="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold
+                       select-none bg-brand-700 hover:bg-brand-600 transition-colors
+                       focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-1"
+                style="box-shadow: 0 1px 3px rgba(0,0,0,0.25);"
+                title="{{ _cu_name or 'Account' }}">
+          {{ _cu_initials_str }}
+        </button>
+
+        {# Dropdown panel #}
+        <div x-show="userMenuOpen" x-cloak
+             role="menu"
+             class="absolute top-full right-0 mt-2 w-56 bg-white rounded-xl shadow-xl
+                    border border-gray-200 z-50 overflow-hidden"
+             {{ dropdown_scale() }}>
+          <div class="px-4 py-3 border-b border-gray-100">
+            <p class="text-sm font-semibold text-gray-800 truncate">{{ _cu_name or 'Signed in' }}</p>
+            {% if _cu_username %}
+            <p class="text-xs text-gray-400 truncate font-mono">@{{ _cu_username }}</p>
+            {% endif %}
+          </div>
+          <a href="/account" role="menuitem"
+             class="flex items-center gap-2.5 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors">
+            <svg class="w-4 h-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.75">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+              <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+            </svg>
+            Account settings
+          </a>
+          <div class="border-t border-gray-100"></div>
+          {# /logout is POST — use a form so the global CSRF stamper adds _csrf
+             (the requestSubmit() helper). #}
+          <form method="post" action="/logout" role="none">
+            <button type="submit" role="menuitem"
+                    class="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 transition-colors text-left">
+              <svg class="w-4 h-4 text-red-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.75">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
+              </svg>
+              Sign out
+            </button>
+          </form>
+        </div>
       </div>
 
       {# Per-page action buttons injected by child templates #}

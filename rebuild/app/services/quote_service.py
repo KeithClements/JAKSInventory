@@ -45,12 +45,20 @@ class QuoteService(BaseService):
         validity_days = int(data.get("validity_days", 30))
 
         # §21 (6.16) — default quote tax from the customer (mirrors invoice draft):
-        # tax-exempt customers → non-taxable; otherwise taxable at their rate. The
-        # clerk can toggle per quote afterward. Snapshot the rate at quote time.
+        # a taxable (non-exempt) customer ⇒ the quote DEFAULTS taxable; a tax-exempt
+        # customer ⇒ exempt. The taxable flag follows is_tax_exempt ALONE — it does
+        # NOT depend on the configured rate, so a taxable customer whose rate is 0
+        # (no jurisdiction rate set yet) still shows "Taxable" (the totals template
+        # renders "0% (no rate set)" rather than the misleading "Exempt"). The clerk
+        # can still toggle per quote afterward. Snapshot the rate at quote time.
+        # A caller may force the flag explicitly (imports / data migration).
         from app.models.customer import Customer
         customer = self.db.query(Customer).filter(Customer.id == customer_id).first()
-        is_taxable = bool(customer) and (not customer.is_tax_exempt) and (customer.tax_rate > 0)
-        tax_rate = customer.tax_rate if (customer and is_taxable) else 0.0
+        if "is_taxable" in data:
+            is_taxable = bool(data["is_taxable"])
+        else:
+            is_taxable = bool(customer) and (not customer.is_tax_exempt)
+        tax_rate = customer.tax_rate if (customer and not customer.is_tax_exempt) else 0.0
 
         quote = Quote(
             quote_number=quote_number,

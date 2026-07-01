@@ -31,8 +31,10 @@
   </div>
   <div class="kv items-center">
     <span class="flex items-center gap-1.5">
-      Tax{% if is_taxable and tax_rate %} <span style="color:var(--steel-400,#7c838b);">({{ '%.3g' % tax_rate }}%)</span>{% endif %}
-      {# Clerk toggle — taxable/exempt per quote (defaults from the customer) #}
+      Tax{% if is_taxable %} <span style="color:var(--steel-400,#7c838b);">{% if tax_rate %}({{ '%.3g' % tax_rate }}%){% else %}(0% — no rate set){% endif %}</span>{% endif %}
+      {# Clerk toggle — taxable/exempt per quote (defaults from the customer).
+         "Taxable" with no rate is NOT exempt: it shows "0% — no rate set" so a
+         missing jurisdiction rate isn't mislabeled as a tax-exempt customer. #}
       <button type="button"
               hx-post="/quotes/{{ quote.id }}/toggle-tax"
               hx-target="#quote-totals" hx-swap="innerHTML"

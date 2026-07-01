@@ -9,6 +9,16 @@
 {% set prefill = prefill | default({}) %}
 {% set dup_matches = dup_matches | default([]) %}
 {% set email_conflict = email_conflict | default(none) %}
+{% set phone_conflict = phone_conflict | default(none) %}
+{% set email_error = email_error | default(none) %}
+
+{# ── Invalid email (server-side validation) — the browser only enforces
+     type=email; a scripted/old-browser POST otherwise saves a bad address. #}
+{% if email_error %}
+<div class="rounded-xl bg-red-50 border border-red-200 px-4 py-3 max-w-2xl mb-6">
+  <p class="text-sm font-semibold text-red-800">{{ email_error }}</p>
+</div>
+{% endif %}
 
 {# ── Hard email conflict (C10) — a customer with this email already exists.
      Unlike the soft company-name warning this CANNOT be overridden (the email
@@ -64,6 +74,40 @@
             Create Anyway
           </button>
           <span class="text-xs text-amber-600">or change the company name below.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Possible-duplicate warning (PHONE) ───────────────────────────────────────
+       A customer with this phone already exists. Counter staff look people up by
+       phone, so a shared phone fragments AR just like a duplicate name. Phone is
+       not a unique key, so this WARNS (override-able via the same confirm_duplicate
+       flag), with a "View Existing →" affordance like the email-conflict banner. #}
+  {% if phone_conflict %}
+  <div class="rounded-xl bg-amber-50 border border-amber-200 px-4 py-3">
+    <div class="flex items-start gap-2">
+      <svg class="w-5 h-5 shrink-0 mt-0.5 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
+        <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+      </svg>
+      <div class="min-w-0 flex-1">
+        <p class="text-sm font-semibold text-amber-800">A customer with this phone already exists.</p>
+        <p class="text-xs text-amber-700 mt-0.5">Counter lookups go by phone — use the existing record so it stays on one account:</p>
+        <div class="mt-2 flex items-center justify-between gap-2 rounded bg-white/70 border border-amber-100 px-3 py-2">
+          <span class="min-w-0 truncate text-sm font-medium text-gray-800">
+            {{ phone_conflict.company_name }}
+            {% if phone_conflict.phone %}<span class="text-xs text-gray-400">· {{ phone_conflict.phone }}</span>{% endif %}
+          </span>
+          <a href="/customers/{{ phone_conflict.id }}"
+             class="shrink-0 text-xs font-semibold text-brand-700 hover:underline">View Existing →</a>
+        </div>
+        <div class="mt-3 flex items-center gap-2">
+          <button type="submit" @click="confirmDup = true"
+                  class="px-4 py-2 text-sm font-semibold rounded-lg bg-amber-600 text-white hover:bg-amber-700 transition-colors">
+            Create Anyway
+          </button>
+          <span class="text-xs text-amber-600">or change the phone below.</span>
         </div>
       </div>
     </div>

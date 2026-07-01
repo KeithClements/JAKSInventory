@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ invoice.invoice_number }} — JAKS Inventory{% endblock %}
+{% block title %}{{ invoice.invoice_number }} — Axle{% endblock %}
 {% block heading %}{{ invoice.invoice_number }}{% endblock %}
 
 {% block header_actions %}
@@ -228,10 +228,18 @@
           </tr>
           {% if invoice.is_taxable %}
           <tr>
+            {# Taxable with no jurisdiction rate set shows "0% (no rate set)" rather
+               than implying the customer is exempt. #}
             <td colspan="4" class="px-4 py-1.5 text-right text-xs text-gray-400">
-              Tax ({{ invoice.tax_rate }}%)
+              {% if invoice.tax_rate and invoice.tax_rate > 0 %}Tax ({{ invoice.tax_rate }}%){% else %}Tax (0% — no rate set){% endif %}
             </td>
             <td class="px-4 py-1.5 text-right text-sm tabular-nums">${{ '%.2f' % invoice.tax_amount }}</td>
+            <td></td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="4" class="px-4 py-1.5 text-right text-xs text-gray-400">Tax</td>
+            <td class="px-4 py-1.5 text-right text-sm tabular-nums text-gray-400">exempt</td>
             <td></td>
           </tr>
           {% endif %}

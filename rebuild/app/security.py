@@ -200,10 +200,13 @@ class CSRFMiddleware:
 _CSP = (
     "default-src 'self'; "
     "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
-    # §21 — fonts are self-hosted under /static/fonts, so no external font/style
-    # origins are needed. 'unsafe-inline' stays for inline style= attributes.
-    "style-src 'self' 'unsafe-inline'; "
-    "font-src 'self' data:; "
+    # The brand fonts are self-hosted under /static/fonts, but several pages
+    # (login + the print views) still pull Oswald/Barlow/IBM-Plex from the Google
+    # Fonts CDN. Allow the stylesheet origin (fonts.googleapis.com → style-src) and
+    # the font-file origin (fonts.gstatic.com → font-src) so that typography loads.
+    # 'unsafe-inline' stays for inline style= attributes. (QA — Google Fonts/CSP.)
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src 'self' data: https://fonts.gstatic.com; "
     "img-src 'self' data: https:; "
     "connect-src 'self'; "
     "frame-ancestors 'none'; "
@@ -213,6 +216,20 @@ _CSP = (
 )
 
 
+def _is_authenticated_request(request: Request) -> bool:
+    """True when the request carries a valid signed session cookie.
+
+    Used to scope the ``Cache-Control: no-store`` header to authenticated pages
+    only (the login page and static assets stay normally cacheable). Never raises
+    — a decode failure is treated as unauthenticated.
+    """
+    try:
+        from app.auth import SESSION_COOKIE, read_session_token
+        return read_session_token(request.cookies.get(SESSION_COOKIE)) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
 async def security_headers_middleware(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -220,4 +237,50 @@ async def security_headers_middleware(request: Request, call_next):
     response.headers.setdefault("Referrer-Policy", "same-origin")
     if os.getenv("JAKS_DISABLE_CSP") != "1":
         response.headers.setdefault("Content-Security-Policy", _CSP)
+
+    # ── Cache-Control: no-store on authenticated HTML (QA — shared terminal) ──
+    # On a shared parts-counter terminal the browser Back button after logout can
+    # otherwise resurface a cached protected page. We stamp no-store ONLY on HTML
+    # responses to authenticated requests; static assets (long-cacheable) and the
+    # login page (unauthenticated) are intentionally left alone so normal caching
+    # is preserved. Uses raw cookie presence + the existing session decoder so it
+    # never depends on request.state being populated.
+    ctype = response.headers.get("content-type", "")
+    path = request.url.path
+    if (
+        ctype.startswith("text/html")
+        and not path.startswith("/static/")
+        and _is_authenticated_request(request)
+    ):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
     return response
+
+
+# ── Current-user resolution (template chrome: avatar / account menu) ───────────
+# The app has no global Jinja2 template context (each router builds its own
+# Jinja2Templates), so there was nowhere for base.html to learn WHO is signed in
+# — the header avatar was hardcoded. This lightweight middleware decodes the same
+# signed session cookie used by app.deps.get_current_user_id and stashes the
+# resolved User (or None) on ``request.state.current_user`` so base.html can render
+# real initials + an Account/Sign-out menu. It NEVER blocks or redirects: a missing
+# / invalid cookie just yields None and the page renders as anonymous.
+async def resolve_current_user(request: Request, call_next):
+    request.state.current_user = None
+    try:
+        from app.auth import SESSION_COOKIE, read_session_token
+        uid = read_session_token(request.cookies.get(SESSION_COOKIE))
+        if uid is not None:
+            import app.database as _appdb
+            from app.models.user import User
+            db = _appdb.SessionLocal()
+            try:
+                request.state.current_user = (
+                    db.query(User).filter(User.id == uid).first()
+                )
+            finally:
+                db.close()
+    except Exception:  # noqa: BLE001 — chrome resolution must never 500 a request
+        request.state.current_user = None
+    return await call_next(request)

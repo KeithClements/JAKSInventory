@@ -492,7 +492,17 @@
            hasCore: {{ 'true' if form_data and form_data.get('has_core') else 'false' }},
            vendorCore: {{ (form_data.get('vendor_core_charge', 0) | float(0)) if form_data else 0 }},
            customerCore: {{ (form_data.get('customer_core_charge', 0) | float(0)) if form_data else 0 }},
-           get coreFlag() { return this.hasCore && Number(this.customerCore || 0) < Number(this.vendorCore || 0); }
+           // Only flag a REAL money-guard violation: a core must actually be
+           // enabled AND the customer charge must be strictly LESS than the vendor
+           // charge. Coerce both to numbers (a blank/string input must read as 0,
+           // never NaN) so the warning never shows on a brand-new form where the
+           // core is off and both charges are 0 — the spurious banner QA saw.
+           get coreFlag() {
+             if (!this.hasCore) return false;
+             const cust = Number(this.customerCore) || 0;
+             const vend = Number(this.vendorCore) || 0;
+             return cust < vend;
+           }
          }">
       <label class="flex items-center gap-2 cursor-pointer select-none">
         <input type="checkbox" name="has_core" x-model="hasCore"

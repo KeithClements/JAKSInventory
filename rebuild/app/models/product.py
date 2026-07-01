@@ -312,6 +312,27 @@ class Product(Base):
 
     # ── Computed properties ───────────────────────────────────────────────────
     @property
+    def effective_cost(self) -> float:
+        """Pricing-basis cost.
+
+        Normally the moving-average COGS (``cost``), which is written only on the
+        first PO receipt. For a part that has not yet been received (COGS still 0)
+        this falls back to the preferred — else any active — vendor source's quoted
+        cost so quotes and document lines price off the known purchase cost instead
+        of $0. Once stock is received, ``cost`` becomes the real moving average and
+        this returns it unchanged (no vendor-source access in that common path).
+        """
+        if self.cost and self.cost > 0:
+            return self.cost
+        src = self.preferred_vendor_source
+        if src and src.vendor_cost and src.vendor_cost > 0:
+            return src.vendor_cost
+        for s in self.vendor_sources:
+            if s.is_active and s.vendor_cost and s.vendor_cost > 0:
+                return s.vendor_cost
+        return self.cost or 0.0
+
+    @property
     def selling_price(self) -> float:
         """
         Quick estimated sell price using the product's own markup_pct.
@@ -323,11 +344,14 @@ class Product(Base):
         which the search results, product CSV export, and pickers now use.
         A 0 % markup is honored as a real value (sell at cost); only an unset
         (NULL) markup falls back to the estimate here.
+
+        Prices off ``effective_cost`` so an un-received special-order part quotes at
+        vendor-cost × markup rather than $0 (was QA HIGH #3).
         """
         if self.price_override and self.price_override > 0:
             return self.price_override
         markup = self.markup_pct if self.markup_pct is not None else 30.0
-        return round(self.cost * (1 + markup / 100), 2)
+        return round(self.effective_cost * (1 + markup / 100), 2)
 
     @property
     def margin_percent(self) -> float | None:

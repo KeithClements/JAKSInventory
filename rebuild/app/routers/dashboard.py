@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import calendar
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -24,6 +24,50 @@ router = APIRouter(tags=["dashboard"])
 templates = Jinja2Templates(directory="app/templates")
 
 
+def _local_day_utc_window(now: datetime | None = None) -> tuple[date, datetime, datetime]:
+    """Return ``(local_today, utc_start, utc_end)`` for the shop's LOCAL day.
+
+    Why this exists
+    ---------------
+    Payments are stamped with ``datetime.utcnow()`` (naive UTC). The dashboard's
+    "Today's Cash" card must show what was collected *today in the shop's local
+    day*, not the UTC day. For a US-Mountain shop, any payment taken after
+    ~5–6pm local is stamped on the *next* UTC calendar date, so a naive
+    ``func.date(payment_date) == date.today()`` compare silently drops it and the
+    card reads $0.
+
+    The fix: pick the local calendar day, find the local midnight..midnight
+    boundaries, then convert those two local instants back to *naive UTC* — the
+    half-open ``[utc_start, utc_end)`` window that bounds the local day in the
+    same (naive-UTC) basis the column is stored in. Filtering
+    ``utc_start <= payment_date < utc_end`` then captures exactly the payments
+    that belong to the local day, regardless of the local↔UTC offset.
+
+    Assumption (documented intentionally): the server runs in the *shop's*
+    timezone. We read the local UTC offset from the OS via
+    ``datetime.now().astimezone()`` — the standard single-location ERP setup. If
+    the box is ever run in UTC while the shop is not, this reverts to UTC-day
+    behaviour (the pre-fix status quo) rather than misbehaving; it would then
+    need an explicit configured timezone.
+
+    ``now`` is injectable so tests can pin a reference instant and stay
+    timezone-robust on any CI box.
+    """
+    if now is None:
+        now = datetime.now()
+    # Local offset of the server box (tz-aware "now" carries the offset).
+    local_tz = now.astimezone().tzinfo
+    local_today = now.date()
+    # Local midnight (start) and next local midnight (end), made tz-aware.
+    local_start = datetime(local_today.year, local_today.month, local_today.day, tzinfo=local_tz)
+    local_end = local_start + timedelta(days=1)
+    # Translate the local-day bounds into *naive* UTC instants, matching how
+    # payment_date is stored (utcnow() → naive UTC).
+    utc_start = local_start.astimezone(timezone.utc).replace(tzinfo=None)
+    utc_end = local_end.astimezone(timezone.utc).replace(tzinfo=None)
+    return local_today, utc_start, utc_end
+
+
 @router.get(
     "/",
     response_class=HTMLResponse,
@@ -33,12 +77,22 @@ templates = Jinja2Templates(directory="app/templates")
     dependencies=[Depends(require_reports_access)],
 )
 def dashboard(request: Request, db: Session = Depends(get_db)):
-    today = date.today()
+    # "Today" is the shop's LOCAL day. We also derive the UTC instants that
+    # bound that local day so we can filter payment_date (stored as naive UTC
+    # via utcnow()) without losing evening-local payments that roll over to the
+    # next UTC date. `today` (local) still drives the date-based cards below
+    # (overdue, monthly buckets) so they read in the owner's local calendar.
+    today, _today_utc_start, _today_utc_end = _local_day_utc_window()
 
-    # Today's collected payments
+    # Today's collected payments — half-open UTC window [start, end) bounding the
+    # local day. Replaces the old `func.date(payment_date) == today` compare,
+    # which extracted the *UTC* calendar date and dropped evening-local payments.
     today_payments = (
         db.query(func.sum(Payment.amount_received))
-        .filter(func.date(Payment.payment_date) == today)
+        .filter(
+            Payment.payment_date >= _today_utc_start,
+            Payment.payment_date < _today_utc_end,
+        )
         .scalar() or 0.0
     )
 

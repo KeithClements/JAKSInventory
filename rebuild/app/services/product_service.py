@@ -81,6 +81,41 @@ class ProductService(BaseService):
                 f"returned."
             )
 
+    @staticmethod
+    def _validate_pricing(cost=None, markup_pct=None, price_override=None,
+                          vendor_cost=None) -> None:
+        """
+        Money fields can never be negative. The new-product / edit forms only set
+        ``min=0`` client-side, so a hand-crafted or autofilled POST could still
+        push a negative cost (QA 2026-06-29: ``cost=-50`` saved silently). Reject
+        any negative money value here so create, update, autosave, AND quick-create
+        all inherit the guard.
+
+        Zero is allowed on purpose — ``cost`` is legitimately 0 before the first
+        receipt (moving-avg COGS), and a 0 % markup / $0 override are real values.
+        Only values supplied in this call are checked (None = "not being set"), so
+        a partial update that omits a field never trips on a stored value.
+        """
+        for label, value in (
+            ("Cost", cost),
+            ("Markup %", markup_pct),
+            ("Price override", price_override),
+            ("Vendor cost", vendor_cost),
+        ):
+            if value is None:
+                continue
+            try:
+                num = float(value)
+            except (TypeError, ValueError):
+                # Non-numeric strings are caught upstream by the form parser; a
+                # non-numeric reaching here just isn't a negative-value violation.
+                continue
+            if num < 0:
+                raise ValueError(
+                    f"{label} can't be negative (got {num:,.2f}). Use 0 if there is "
+                    f"no value yet."
+                )
+
     def create_product(self, data: dict) -> Product:
         """
         Create a new product record.
@@ -114,6 +149,12 @@ class ProductService(BaseService):
         if existing:
             raise ValueError(f"SKU '{sku}' already exists (product_id={existing.id})")
 
+        self._validate_pricing(
+            cost=data.get("cost"),
+            markup_pct=data.get("markup_pct"),
+            price_override=data.get("price_override"),
+            vendor_cost=data.get("vendor_cost"),
+        )
         self._validate_core_charges(
             bool(data.get("has_core", False)),
             data.get("vendor_core_charge", 0.0),
@@ -195,6 +236,12 @@ class ProductService(BaseService):
                 f"(product {existing_sku})."
             )
 
+        self._validate_pricing(
+            cost=data.get("cost"),
+            markup_pct=data.get("markup_pct"),
+            price_override=data.get("price_override"),
+            vendor_cost=data.get("vendor_cost"),
+        )
         self._validate_core_charges(
             bool(data.get("has_core", False)),
             data.get("vendor_core_charge", 0.0),
@@ -352,6 +399,16 @@ class ProductService(BaseService):
         Audits every call with old/new snapshot.
         """
         product = self._get_or_404(product_id)
+
+        # Reject negative money before any mutation. Only fields actually present in
+        # ``data`` are checked (others are None → skipped), so a partial save/autosave
+        # that omits a price field never trips on an untouched stored value.
+        self._validate_pricing(
+            cost=data.get("cost"),
+            markup_pct=data.get("markup_pct"),
+            price_override=data.get("price_override"),
+            vendor_cost=data.get("vendor_cost"),
+        )
 
         # Validate the *effective* core charges (incoming value, else current) before
         # any mutation so a bad save is rejected cleanly with nothing partially written.

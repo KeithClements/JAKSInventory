@@ -502,7 +502,15 @@
         <span class="lbl">Tax ({{ invoice.tax_rate_snapshot or invoice.tax_rate }}%)</span>
         <span class="val">${{ "%.2f"|format(invoice.tax_amount) }}</span>
       </div>
-      {% elif invoice.is_taxable == false or (invoice.tax_amount == 0 and invoice.customer and invoice.customer.tax_exempt) %}
+      {# Distinguish exempt from "taxable, no rate configured": a non-exempt
+         document with 0 tax shows "Sales tax 0% (no rate set)"; only a genuinely
+         exempt customer/document shows "Tax exempt". #}
+      {% elif invoice.is_taxable %}
+      <div class="row">
+        <span class="lbl">Sales Tax (0% — no rate set)</span>
+        <span class="val">$0.00</span>
+      </div>
+      {% else %}
       <div class="exempt-note">Tax exempt</div>
       {% endif %}
       <div class="grand">

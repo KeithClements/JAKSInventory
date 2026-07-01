@@ -582,11 +582,18 @@
         <span class="lbl">Subtotal</span>
         <span class="val">${{ "%.2f"|format(subtotal) }}</span>
       </div>
-      {# §21 — show estimated sales tax so a taxable customer is not under-quoted #}
+      {# §21 — show estimated sales tax so a taxable customer is not under-quoted.
+         A taxable quote with no jurisdiction rate set shows "0% (no rate set)"
+         rather than dropping the line entirely (which read as exempt). #}
       {% if quote.is_taxable and quote.tax_amount > 0 %}
       <div class="row">
         <span class="lbl">Sales Tax{% if quote.tax_rate_snapshot %} ({{ "%.3g"|format(quote.tax_rate_snapshot) }}%){% endif %}</span>
         <span class="val">${{ "%.2f"|format(quote.tax_amount) }}</span>
+      </div>
+      {% elif quote.is_taxable %}
+      <div class="row">
+        <span class="lbl">Sales Tax (0% — no rate set)</span>
+        <span class="val">$0.00</span>
       </div>
       {% endif %}
       <div class="grand">

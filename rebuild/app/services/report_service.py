@@ -37,7 +37,7 @@ from app.constants import (
 from app.models.core import CoreCharge, CoreSlip
 from app.models.customer import Customer
 from app.models.invoice import Invoice, InvoiceLine
-from app.models.product import Product
+from app.models.product import Product, ProductCategory
 from app.models.purchase_order import PurchaseOrder, POLine
 from app.models.quote import LostSaleLog, Quote, SalesOrder, SOLine
 from app.services.base import BaseService
@@ -603,43 +603,172 @@ class ReportService(BaseService):
         }
 
     # ── 4. Inventory Valuation ───────────────────────────────────────────────
+    #
+    # Valuation rule (UNCHANGED — both the summary and the detail paths mirror it
+    # exactly so the headline number ties out across every view):
+    #   * Active products only (Product.is_active == True).
+    #   * value per part = round(qty_on_hand * cost, 2)   (cost = moving-avg COGS).
+    #   * total_value    = sum of those per-part values (negative-qty rows included,
+    #                      exactly as before — they net the valuation down).
+    #   * total_units / in_stock_skus count only qty_on_hand > 0.
+    #   * zero_cost_count counts qty_on_hand > 0 AND cost <= 0.
+    #
+    # Perf: the headline totals + the by-category breakdown are computed in SQL with
+    # GROUP BY (get_inventory_valuation_summary) so the page never materialises all
+    # ~31k products. Detail rows are paginated / category-scoped on demand.
 
-    def get_inventory_valuation(self) -> dict[str, Any]:
+    def _inventory_warning_case(self):
+        """SQLAlchemy CASE classifying a product into 'zero_cost' | 'negative_qty' | ''."""
+        from sqlalchemy import case
+        return case(
+            (Product.qty_on_hand < 0, "negative_qty"),
+            ((Product.qty_on_hand > 0) & (func.coalesce(Product.cost, 0.0) <= 0), "zero_cost"),
+            else_="",
+        )
+
+    def get_inventory_valuation_summary(self) -> dict[str, Any]:
+        """
+        Fast, fully-aggregated inventory valuation — computed in SQL (GROUP BY),
+        never materialising the ~31k product rows in Python.
+
+        Returns:
+          {
+            "totals": {sku_count, in_stock_skus, total_units, total_value, zero_cost_count},
+            "by_category": [
+              {
+                "category_id": int | None, "category": str,
+                "sku_count": int, "in_stock_skus": int,
+                "total_units": int, "total_value": float, "zero_cost_count": int,
+              }, ...  # sorted by total_value desc
+            ],
+          }
+        """
+        from sqlalchemy import case
+
+        # round(qty*cost, 2) per row, summed — matches the per-row rounding the old
+        # Python path used (SQLite ROUND then SUM keeps cents identical at this scale).
+        value_expr = func.sum(
+            func.round(Product.qty_on_hand * func.coalesce(Product.cost, 0.0), 2)
+        )
+        in_stock_expr = func.sum(case((Product.qty_on_hand > 0, 1), else_=0))
+        units_expr = func.sum(case((Product.qty_on_hand > 0, Product.qty_on_hand), else_=0))
+        zero_cost_expr = func.sum(
+            case(
+                ((Product.qty_on_hand > 0) & (func.coalesce(Product.cost, 0.0) <= 0), 1),
+                else_=0,
+            )
+        )
+
+        rows = (
+            self.db.query(
+                Product.category_id.label("category_id"),
+                ProductCategory.name.label("category_name"),
+                func.count(Product.id).label("sku_count"),
+                in_stock_expr.label("in_stock_skus"),
+                units_expr.label("total_units"),
+                value_expr.label("total_value"),
+                zero_cost_expr.label("zero_cost_count"),
+            )
+            .outerjoin(ProductCategory, Product.category_id == ProductCategory.id)
+            .filter(Product.is_active == True)  # noqa: E712
+            .group_by(Product.category_id, ProductCategory.name)
+            .all()
+        )
+
+        by_category: list[dict[str, Any]] = []
+        tot_sku = tot_instock = tot_units = tot_zero = 0
+        tot_value = 0.0
+        for r in rows:
+            value = round(float(r.total_value or 0.0), 2)
+            by_category.append({
+                "category_id":   r.category_id,
+                "category":      r.category_name or "Uncategorized",
+                "sku_count":     int(r.sku_count or 0),
+                "in_stock_skus": int(r.in_stock_skus or 0),
+                "total_units":   int(r.total_units or 0),
+                "total_value":   value,
+                "zero_cost_count": int(r.zero_cost_count or 0),
+            })
+            tot_sku     += int(r.sku_count or 0)
+            tot_instock += int(r.in_stock_skus or 0)
+            tot_units   += int(r.total_units or 0)
+            tot_zero    += int(r.zero_cost_count or 0)
+            tot_value   += value
+
+        by_category.sort(key=lambda c: c["total_value"], reverse=True)
+
+        totals = {
+            "sku_count":       tot_sku,
+            "in_stock_skus":   tot_instock,
+            "total_units":     tot_units,
+            "total_value":     round(tot_value, 2),
+            "zero_cost_count": tot_zero,
+        }
+        return {"totals": totals, "by_category": by_category}
+
+    def get_inventory_valuation(
+        self,
+        *,
+        page: int | None = None,
+        page_size: int | None = None,
+        category_id: int | None = None,
+        uncategorized: bool = False,
+    ) -> dict[str, Any]:
         """
         Per-active-product valuation snapshot.
 
         Per spec:
           - Active products only.
           - Return qty_on_hand, avg cost (Product.cost), last_cost, total value.
-          - Bottom totals.
+          - Bottom totals (full-population, computed in SQL — independent of paging).
           - Flag zero/negative cost with warning field.
+
+        Pagination / drill-down (all optional — when page/page_size are omitted the
+        method returns EVERY active row exactly as before, so the CSV export and the
+        original callers keep their contract):
+          - page / page_size  -> server-side window of detail rows.
+          - category_id        -> restrict detail rows to one category (drill-down).
+          - uncategorized      -> restrict detail rows to products with no category.
 
         Returns:
           {
-            "rows": [
-              {
-                "product": Product, "sku": str, "title": str,
-                "qty_on_hand": int, "qty_committed": int, "qty_available": int,
-                "avg_cost": float, "last_cost": float,
-                "total_value": float,
-                "warning": str | None,   # "zero_cost" | "negative_qty" | None
-              }, ...
-            ],
-            "totals": {
-              "sku_count": int,
-              "in_stock_skus": int,
-              "total_units": int,
-              "total_value": float,
-              "zero_cost_count": int,
-            },
+            "rows": [ {product, sku, title, qty_on_hand, qty_committed,
+                       qty_available, avg_cost, last_cost, total_value,
+                       warning}, ... ],     # highest-value first
+            "totals": {sku_count, in_stock_skus, total_units, total_value,
+                       zero_cost_count},    # whole active population (not the page)
+            "page": int, "page_size": int | None, "total_rows": int,
+            "total_pages": int, "category_id": int | None,
           }
         """
-        products = (
+        # Totals are always the full-population SQL aggregate — never the page.
+        totals = self.get_inventory_valuation_summary()["totals"]
+
+        q = (
             self.db.query(Product)
             .filter(Product.is_active == True)  # noqa: E712
-            .order_by(Product.sku)
-            .all()
         )
+        if uncategorized:
+            q = q.filter(Product.category_id.is_(None))
+        elif category_id is not None:
+            q = q.filter(Product.category_id == category_id)
+
+        # Highest-value SKUs first (most useful), computed in SQL so paging windows
+        # over the right order. NULLs (no cost) sort last via coalesce.
+        value_order = (Product.qty_on_hand * func.coalesce(Product.cost, 0.0)).desc()
+        q = q.order_by(value_order, Product.sku)
+
+        total_rows = q.count()
+
+        if page_size is not None:
+            page = max(1, page or 1)
+            total_pages = max(1, (total_rows + page_size - 1) // page_size)
+            page = min(page, total_pages)
+            products = q.offset((page - 1) * page_size).limit(page_size).all()
+        else:
+            page = 1
+            total_pages = 1
+            products = q.all()
 
         rows: list[dict[str, Any]] = []
         for p in products:
@@ -668,26 +797,15 @@ class ReportService(BaseService):
                 "warning": warning,
             })
 
-        # Sort so the highest-value SKUs appear first (most useful for the table)
-        rows.sort(key=lambda r: r["total_value"], reverse=True)
-
-        totals = {
-            "sku_count":       len(rows),
-            "in_stock_skus":   sum(1 for r in rows if r["qty_on_hand"] > 0),
-            "total_units":     sum(r["qty_on_hand"] for r in rows if r["qty_on_hand"] > 0),
-            "total_value":     round(sum(r["total_value"] for r in rows), 2),
-            "zero_cost_count": sum(1 for r in rows if r["warning"] == "zero_cost"),
+        return {
+            "rows": rows,
+            "totals": totals,
+            "page": page,
+            "page_size": page_size,
+            "total_rows": total_rows,
+            "total_pages": total_pages,
+            "category_id": category_id,
         }
-
-        # Smoke check: total_value must equal sum of qty × avg_cost per row
-        computed = round(sum(r["qty_on_hand"] * r["avg_cost"] for r in rows), 2)
-        if abs(computed - totals["total_value"]) > 0.02:
-            log.warning(
-                "Inventory valuation drift: computed=%.2f totals.total_value=%.2f",
-                computed, totals["total_value"],
-            )
-
-        return {"rows": rows, "totals": totals}
 
     # ── 5. Open POs ──────────────────────────────────────────────────────────
 

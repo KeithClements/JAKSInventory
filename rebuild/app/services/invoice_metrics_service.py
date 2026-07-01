@@ -31,7 +31,8 @@ from __future__ import annotations
 from sqlalchemy import func
 
 from app.constants import (
-    PARTS_LINE_TYPES, CoreDirection, CoreStatus, WarrantyStatus, InvoiceStatus,
+    PARTS_LINE_TYPES, CoreDirection, CoreStatus, LineType, WarrantyStatus,
+    InvoiceStatus,
 )
 from app.models.invoice import Invoice, InvoiceLine
 from app.models.core import CoreCharge
@@ -126,8 +127,19 @@ class InvoiceMetricsService(BaseService):
         return profit, margin_pct
 
     def _core_liability(self, invc: Invoice) -> float:
-        """Open customer-owed core deposits on this invoice (same join the
-        After-Sale card / finalise stamp use)."""
+        """Open customer-owed core deposits on this invoice.
+
+        After finalize, CoreCharge rows exist (finalise() stamps one per core child
+        line, direction=CUSTOMER_OWES_RETURN), so we read the authoritative open
+        balance from them — the same join the After-Sale card uses.
+
+        Before finalize (DRAFT), no CoreCharge row exists yet, so the join returns
+        nothing and the figure would read $0.00 even though the invoice already
+        carries a priced core line — the gap a headed-browser QA flagged ($250 core
+        line showing Core Liability $0.00). Fall back to the invoice's own
+        CORE_CHARGE lines in that case so the panel reflects the deposit the
+        customer will owe back (line_total = unit_price × qty), matching the Core
+        Charges figure the totals panel already shows for the same draft."""
         cores = (
             self.db.query(CoreCharge)
             .join(InvoiceLine, CoreCharge.invoice_line_id == InvoiceLine.id)
@@ -138,7 +150,19 @@ class InvoiceMetricsService(BaseService):
             )
             .all()
         )
-        return round(sum(c.customer_unit_charge * c.qty_outstanding for c in cores), 2)
+        if cores:
+            return round(sum(c.customer_unit_charge * c.qty_outstanding for c in cores), 2)
+
+        # Draft fallback — no CoreCharge rows yet. Sum the priced CORE_CHARGE lines
+        # directly so a $250 core line on a draft reads $250.00 rather than $0.00.
+        return round(
+            sum(
+                ln.line_total
+                for ln in invc.lines
+                if ln.line_type == LineType.CORE_CHARGE
+            ),
+            2,
+        )
 
     def _warranty_exposure(self, invc: Invoice) -> float:
         """Credit amount of still-open warranty claims tied to this invoice."""

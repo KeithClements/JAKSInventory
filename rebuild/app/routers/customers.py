@@ -30,7 +30,9 @@ from app.models.core import CoreCharge
 from app.models.invoice import Invoice, PaymentAllocation
 from app.models.quote import Quote, SalesOrder
 from app.services.crm_service import CRMService
-from app.services.customer_service import CustomerService
+from app.services.customer_service import (
+    CustomerService, is_valid_email, normalize_phone,
+)
 from app.services.customer_metrics_service import CustomerMetricsService
 from app.services.messaging_service import MessagingService
 from app.services.quote_service import QuoteService
@@ -104,6 +106,18 @@ def _find_customer_by_email(
     if exclude_id:
         q = q.filter(Customer.id != exclude_id)
     return q.first()
+
+
+def _find_customer_by_phone(
+    db: Session, phone: str, exclude_id: int | None = None
+) -> Customer | None:
+    """QA — return an existing ACTIVE customer whose phone normalizes to the same
+    digits as ``phone`` (counter staff look people up by phone, so a shared phone
+    is the same fragmentation the email check prevents). Blank phone → no match
+    (phoneless customers never collide). Unlike email this is NOT a unique DB key,
+    so the caller WARNS with a "Create Anyway" override rather than hard-blocking.
+    Delegates the normalization rule to CustomerService.find_by_phone."""
+    return CustomerService(db).find_by_phone(phone, exclude_id=exclude_id)
 
 
 # ── List tab definitions (JAKS_UI_Change_Plan.md §2) ─────────────────────────
@@ -736,6 +750,22 @@ async def customer_create(
     form = await request.form()
     company_name = str(form.get("company_name", "")).strip()
     email = str(form.get("email", "")).strip()
+    phone = str(form.get("phone", "")).strip()
+
+    # QA — server-side email-format validation. The browser only enforces
+    # type=email; a scripted/old-browser POST of "notanemail" otherwise saves.
+    # Blank stays allowed (matches the column default ''); only validate a value.
+    if email and not is_valid_email(email):
+        return templates.TemplateResponse(
+            request,
+            "customers/new.html",
+            {
+                **_new_customer_ctx(db),
+                "email_error": "Please enter a valid email address (e.g. name@example.com).",
+                "prefill": {k: str(v) for k, v in form.items()},
+            },
+            status_code=422,
+        )
 
     # C10 — HARD email dedup. A duplicate email means split AR / inconsistent
     # credit hold / duplicate QBO push, so this is a block (not a "create
@@ -755,15 +785,21 @@ async def customer_create(
 
     # Duplicate protection — warn instead of silently creating a near-duplicate,
     # unless the user explicitly chose "Create Anyway" (confirm_duplicate=1).
-    if company_name and str(form.get("confirm_duplicate", "")) != "1":
-        dup_matches = _find_duplicate_customers(db, company_name)
-        if dup_matches:
+    # Covers BOTH a similar company name AND a shared phone (counter staff look
+    # customers up by phone, so a duplicate phone fragments AR exactly like a
+    # duplicate name). Phone is not a unique DB key, so it warns (override-able)
+    # rather than hard-blocking like email.
+    if str(form.get("confirm_duplicate", "")) != "1":
+        dup_matches = _find_duplicate_customers(db, company_name) if company_name else []
+        phone_conflict = _find_customer_by_phone(db, phone)
+        if dup_matches or phone_conflict is not None:
             return templates.TemplateResponse(
                 request,
                 "customers/new.html",
                 {
                     **_new_customer_ctx(db),
                     "dup_matches": dup_matches,
+                    "phone_conflict": phone_conflict,
                     "prefill": {k: str(v) for k, v in form.items()},
                 },
             )
@@ -835,13 +871,28 @@ async def customer_quick_create(request: Request, db: Session = Depends(get_db),
 
     _action = str(form.get("_action", "save"))
 
+    # QA — server-side email-format validation (parity with the full form). The
+    # quick-create email field is type=email only client-side; blank stays OK.
+    _qc_email = str(form.get("email", "")).strip()
+    if _qc_email and not is_valid_email(_qc_email):
+        return HTMLResponse(
+            '<p class="text-sm text-red-600 font-medium px-5 py-3">'
+            'Please enter a valid email address (e.g. name@example.com).</p>',
+            status_code=422,
+        )
+
     # ── Duplicate protection ──────────────────────────────────────────────────
     # Unless the user explicitly chose "Create Anyway" (confirm_duplicate=1), warn
-    # about existing/similar company names instead of silently creating a dupe.
-    # Re-render the form with the entered values preserved + a warning banner.
+    # about existing/similar company names OR a shared phone instead of silently
+    # creating a dupe. The phone match is folded into the same dup_matches list
+    # the warning banner + "Create Anyway" button already render (a counter person
+    # looks customers up by phone, so a shared phone fragments AR like a dup name).
     confirm_duplicate = str(form.get("confirm_duplicate", "")) == "1"
     if not confirm_duplicate:
         dup_matches = _find_duplicate_customers(db, company_name)
+        phone_conflict = _find_customer_by_phone(db, str(form.get("phone", "")).strip())
+        if phone_conflict is not None and not any(m.id == phone_conflict.id for m in dup_matches):
+            dup_matches = [*dup_matches, phone_conflict]
         if dup_matches:
             return templates.TemplateResponse(
                 request,
@@ -1554,15 +1605,38 @@ async def customer_update(
 
     form = await request.form()
 
+    # QA — server-side email-format validation (parity with create). Blank stays
+    # allowed; reject a malformed value before mutating anything.
+    _new_email = str(form.get("email", "")).strip()
+    if _new_email and not is_valid_email(_new_email):
+        return RedirectResponse(
+            f"/customers/{customer_id}?error="
+            + url_quote("Please enter a valid email address (e.g. name@example.com)."),
+            status_code=303,
+        )
+
     # C10 — block editing email to one another customer already owns (the unique
     # index would otherwise 500 at commit). Check before mutating anything.
-    _new_email = str(form.get("email", "")).strip()
     if _new_email:
         _conflict = _find_customer_by_email(db, _new_email, exclude_id=customer_id)
         if _conflict is not None:
             return RedirectResponse(
                 f"/customers/{customer_id}?error="
                 + url_quote(f"Another customer already uses that email: {_conflict.company_name}"),
+                status_code=303,
+            )
+
+    # QA — block editing phone to one another ACTIVE customer already owns
+    # (counter staff look people up by phone). Self excluded; blank exempt. Phone
+    # is not a unique DB key, so unlike email there's no commit-time backstop —
+    # this pre-check is the guard. The operator changes the phone or merges.
+    _new_phone = str(form.get("phone", "")).strip()
+    if _new_phone:
+        _phone_conflict = _find_customer_by_phone(db, _new_phone, exclude_id=customer_id)
+        if _phone_conflict is not None:
+            return RedirectResponse(
+                f"/customers/{customer_id}?error="
+                + url_quote(f"Another customer already uses that phone: {_phone_conflict.company_name}"),
                 status_code=303,
             )
 

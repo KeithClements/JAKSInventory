@@ -74,18 +74,21 @@ class SalesOrderService(BaseService):
             self.db.query(_Quote).filter(_Quote.id == quote_id).first()
             if quote_id else None
         )
+        # The SO's taxable flag follows the source's taxable INTENT, not whether a
+        # rate happens to be set: a taxable (non-exempt) customer / quote ⇒ the SO
+        # defaults taxable even at a 0 rate ("0% (no rate set)" downstream, never the
+        # misleading "Exempt"). fulfill_and_invoice only forwards the SO tax to the
+        # invoice when a positive rate was captured, so a 0-rate taxable SO falls
+        # back to the live-customer derivation at invoice time (no contradiction).
         if _src_quote is not None:
-            # Require a positive rate to call it taxable — Quote.is_taxable
-            # defaults True even when no rate is set, which would otherwise
-            # produce a contradictory "taxable, 0% rate" SO.
             _q_rate = float(_src_quote.tax_rate_snapshot or 0.0)
-            _so_is_taxable = bool(_src_quote.is_taxable) and _q_rate > 0
+            _so_is_taxable = bool(_src_quote.is_taxable)
             _so_tax_rate = _q_rate if _so_is_taxable else 0.0
         else:
             _cust = self.db.query(_Customer).filter(_Customer.id == customer_id).first()
             _cust_exempt = bool(getattr(_cust, "is_tax_exempt", False)) if _cust else False
             _cust_rate = float(getattr(_cust, "tax_rate", 0.0) or 0.0) if _cust else 0.0
-            _so_is_taxable = (not _cust_exempt) and _cust_rate > 0
+            _so_is_taxable = not _cust_exempt
             _so_tax_rate = _cust_rate if _so_is_taxable else 0.0
 
         so = SalesOrder(

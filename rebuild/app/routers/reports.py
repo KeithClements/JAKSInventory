@@ -424,18 +424,61 @@ def reports_sales_by_product(
 
 # ── Inventory Valuation ───────────────────────────────────────────────────────
 
+_INV_VAL_PAGE_SIZE = 100
+
+
 @router.get("/inventory-valuation", response_class=HTMLResponse)
-def reports_inventory_valuation(request: Request, db: Session = Depends(get_db)):
+def reports_inventory_valuation(
+    request: Request,
+    db: Session = Depends(get_db),
+    page: int = 1,
+    category_id: int | None = None,
+    uncategorized: bool = False,
+):
+    """Inventory valuation report.
+
+    Loads a fast SQL-aggregated summary (totals + by-category breakdown) and ONE
+    server-side page of detail rows — never the full ~31k-row population. Drill
+    down by passing ``category_id`` (or ``uncategorized=1``); page through detail
+    rows with ``page``.
+    """
     error_message = None
     rows: list = []
+    by_category: list = []
     totals = {"sku_count": 0, "in_stock_skus": 0, "total_units": 0, "total_value": 0.0, "zero_cost_count": 0}
+    page_size = _INV_VAL_PAGE_SIZE
+    total_rows = 0
+    total_pages = 1
+    page = max(1, page)
     try:
-        data = ReportService(db).get_inventory_valuation()
-        rows = data["rows"]
-        totals = data["totals"]
+        svc = ReportService(db)
+        summary = svc.get_inventory_valuation_summary()
+        totals = summary["totals"]
+        by_category = summary["by_category"]
+
+        detail = svc.get_inventory_valuation(
+            page=page,
+            page_size=page_size,
+            category_id=category_id,
+            uncategorized=uncategorized,
+        )
+        rows = detail["rows"]
+        page = detail["page"]
+        total_rows = detail["total_rows"]
+        total_pages = detail["total_pages"]
     except Exception:
         log.exception("reports_inventory_valuation failed")
         error_message = "Could not load inventory data. Check server logs for details."
+
+    # Name of the active drill-down category (for the heading), if any.
+    active_category_name = None
+    if uncategorized:
+        active_category_name = "Uncategorized"
+    elif category_id is not None:
+        active_category_name = next(
+            (c["category"] for c in by_category if c["category_id"] == category_id),
+            "Category",
+        )
 
     return templates.TemplateResponse(
         request,
@@ -443,8 +486,16 @@ def reports_inventory_valuation(request: Request, db: Session = Depends(get_db))
         {
             "today": date.today(),
             "rows": rows,
+            "by_category": by_category,
             "totals": totals,
             "error_message": error_message,
+            "page": page,
+            "page_size": page_size,
+            "total_rows": total_rows,
+            "total_pages": total_pages,
+            "category_id": category_id,
+            "uncategorized": uncategorized,
+            "active_category_name": active_category_name,
         },
     )
 

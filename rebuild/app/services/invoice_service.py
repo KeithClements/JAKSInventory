@@ -64,9 +64,16 @@ class InvoiceService(BaseService):
         year = datetime.utcnow().year
         inv_number = bump_counter(self.db, "next_invoice_number", "INV", year)
 
-        # Tax defaults — tax_exempt customers force is_taxable=False regardless of rate
-        is_taxable = (not customer.is_tax_exempt) and (customer.tax_rate > 0)
-        tax_rate = customer.tax_rate if is_taxable else 0.0
+        # Tax defaults — the taxable flag follows the customer's is_tax_exempt ALONE:
+        # a taxable (non-exempt) customer ⇒ the draft DEFAULTS taxable; an exempt
+        # customer ⇒ exempt. It does NOT depend on the configured rate, so a taxable
+        # customer whose rate is 0 (no jurisdiction rate set yet) still shows
+        # "Taxable" at 0% (the totals template renders "0% (no rate set)" instead of
+        # the misleading "Exempt"). The clerk can still uncheck "Taxable" (D-1 — the
+        # invoice-level flag stays authoritative once set). The rate snapshot is the
+        # customer's rate (0 when exempt).
+        is_taxable = not customer.is_tax_exempt
+        tax_rate = customer.tax_rate if not customer.is_tax_exempt else 0.0
 
         # Due date from payment terms
         due_date = None
@@ -142,7 +149,11 @@ class InvoiceService(BaseService):
         cust_tax_rate = (
             0.0 if cust_tax_exempt else (customer.tax_rate or 0.0)
         )
-        is_taxable_legacy = data.get("is_taxable", not cust_tax_exempt and cust_tax_rate > 0)
+        # The taxable flag follows the customer's is_tax_exempt ALONE (a non-exempt
+        # customer ⇒ taxable, even at a 0 rate — "0% (no rate set)", not "Exempt").
+        # A caller (quote→invoice / SO fulfillment / import) may override is_taxable
+        # and tax_rate explicitly, which wins so the quoted/agreed tax carries forward.
+        is_taxable_legacy = data.get("is_taxable", not cust_tax_exempt)
         tax_rate_legacy = data.get("tax_rate", cust_tax_rate)
 
         # O6 — customer.card_surcharge_pct overrides the system default when set.
@@ -270,9 +281,11 @@ class InvoiceService(BaseService):
         old_customer_id = invoice.customer_id
         invoice.customer_id = new_customer_id
 
-        # Always update terms / tax defaults / due date — these reflect the account
-        invoice.is_taxable = (not new_customer.is_tax_exempt) and (new_customer.tax_rate > 0)
-        invoice.tax_rate = new_customer.tax_rate if invoice.is_taxable else 0.0
+        # Always update terms / tax defaults / due date — these reflect the account.
+        # Taxable flag follows the new customer's is_tax_exempt ALONE (taxable even
+        # at a 0 rate); the rate snapshot is the new customer's rate (0 when exempt).
+        invoice.is_taxable = not new_customer.is_tax_exempt
+        invoice.tax_rate = new_customer.tax_rate if not new_customer.is_tax_exempt else 0.0
         if new_customer.payment_terms == PaymentTerms.NET_30:
             invoice.due_date = datetime.utcnow() + timedelta(days=30)
         elif new_customer.payment_terms == PaymentTerms.NET_60:
@@ -483,9 +496,16 @@ class InvoiceService(BaseService):
                 if ln.unit_price is None or ln.unit_price < 0:
                     errors.append(f"{label}: amount is missing or negative.")
 
-        # Tax sanity: if taxable, rate must be > 0
-        if invoice.is_taxable and (invoice.tax_rate is None or invoice.tax_rate <= 0):
-            errors.append("Invoice is marked taxable but no tax rate is set.")
+        # Tax sanity: a taxable invoice with NO rate configured (rate 0 / None) is
+        # NOT a hard error — a non-exempt customer defaults taxable even before a
+        # jurisdiction rate is entered, and finalizing simply collects $0 tax
+        # ("0% (no rate set)"). Only a negative rate is nonsensical. (Previously a
+        # 0 rate blocked finalize, which — now that the taxable flag follows
+        # is_tax_exempt alone — would wedge every taxable customer whose rate is
+        # still 0. The customer can enter a rate later or the clerk can uncheck
+        # "Taxable"; neither should be forced just to post the sale.)
+        if invoice.is_taxable and invoice.tax_rate is not None and invoice.tax_rate < 0:
+            errors.append("Invoice tax rate cannot be negative.")
 
         # Total sanity
         if invoice.total < 0:

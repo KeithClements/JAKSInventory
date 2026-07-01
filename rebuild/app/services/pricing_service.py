@@ -214,12 +214,23 @@ class PricingService(BaseService):
 
     def sell_price_for(self, product: Product) -> float:
         """Settings-aware sell price for a product: honor price_override first,
-        else cost × (1 + resolve_markup_pct/100). Use this everywhere a product's
+        else basis × (1 + resolve_markup_pct/100). Use this everywhere a product's
         estimated sell price is shown (search results, CSV export, pickers) so the
-        number always reflects the current default markup setting."""
+        number always reflects the current default markup setting.
+
+        ``basis`` is the moving-average COGS (``product.cost``); for an un-received
+        part whose COGS is still 0, it falls back to the preferred/any-active vendor
+        source cost so the estimate isn't $0 (QA HIGH #3). The fallback query only
+        runs for the cost==0 case, so received-stock paths (e.g. the 31k-row CSV
+        export) keep their zero-query behaviour."""
         if product.price_override and product.price_override > 0:
             return product.price_override
-        return calc_sell_price(product.cost, self.resolve_markup_pct(product))
+        basis = product.cost
+        if not basis or basis <= 0:
+            fallback = self.get_best_vendor_cost(product.id)
+            if fallback and fallback > 0:
+                basis = fallback
+        return calc_sell_price(basis, self.resolve_markup_pct(product))
 
     # ── Customer-tier pricing (P2 — Customer.pricing_tier) ────────────────────
 

@@ -82,18 +82,24 @@
     </div>
     {% endif %}
 
-    {# Tax row — always shown; dimmed when not taxable / zero #}
+    {# Tax row — always shown; dimmed when not taxable / zero.
+       Distinguish two zero-tax cases so a missing rate isn't mislabeled "exempt":
+         • taxable but no rate configured → "0% (no rate set)"
+         • customer/document is exempt    → "exempt" #}
     {% if totals.tax_amount > 0 %}
     <div class="kv">
       <span>Sales Tax ({{ "%g" | format(invoice.tax_rate) }}%)</span>
       <span class="money">${{ "%.2f"|format(totals.tax_amount) }}</span>
     </div>
+    {% elif totals.is_taxable_display %}
+    <div class="kv">
+      <span style="color:var(--steel-400,#7c838b);">Sales Tax (0% — no rate set)</span>
+      <span class="money" style="color:var(--steel-400,#7c838b);">$0.00</span>
+    </div>
     {% else %}
     <div class="kv">
       <span style="color:var(--steel-400,#7c838b);">Tax</span>
-      <span class="money" style="color:var(--steel-400,#7c838b);">
-        {% if totals.is_taxable_display %}—{% else %}exempt{% endif %}
-      </span>
+      <span class="money" style="color:var(--steel-400,#7c838b);">exempt</span>
     </div>
     {% endif %}
 
