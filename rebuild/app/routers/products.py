@@ -495,14 +495,15 @@ def product_preview_panel(
 
 def _new_product_ctx(db: Session) -> dict:
     """Render-context shared by GET /products/new and its 422 re-render."""
-    from app.constants import ENGINE_MAKES, ENGINE_MODELS_BY_MAKE
+    from app.constants import ENGINE_MODELS_BY_MAKE
+    from app.services.category_service import engine_make_names
     default_markup = get_setting_value_db(db, "default_markup_pct", "30.0")
     return {
         "vendors": _vendors(db),
         "categories": _categories(db),
         "category_tree": ProductService(db).category_tree(),  # #7 nested picker
         "manufacturers": MANUFACTURERS,
-        "engine_makes": ENGINE_MAKES,
+        "engine_makes": engine_make_names(db),
         "engine_models_by_make": ENGINE_MODELS_BY_MAKE,
         "default_markup": default_markup,
         "sku_prefix": get_setting_value_db(db, "sku_prefix", "JAKS"),
@@ -1063,6 +1064,20 @@ def product_backfill_manufacturers(
     return ProductImportService(db, user_id).backfill_manufacturers(dry_run=dry_run)
 
 
+@router.post("/reclassify-all")
+def product_reclassify_all(
+    dry_run: bool = Form(True),
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+    _admin=Depends(require_admin),
+):
+    """§23.3 Phase 1 #5 — re-sweep the catalog with the CURRENT classification
+    rules, filling only blank category/engine make/engine model (never
+    overwrites an already-set value). Dry-run by default."""
+    from app.services.product_import_service import ProductImportService
+    return ProductImportService(db, user_id).reclassify_all(dry_run=dry_run)
+
+
 # ── Detail / Update / Deactivate / Reactivate ─────────────────────────────────
 
 @router.get("/{product_id}", response_class=HTMLResponse)
@@ -1077,7 +1092,8 @@ def product_detail(
     p = db.query(Product).filter(Product.id == product_id).first()
     if not p:
         return RedirectResponse("/products/", status_code=303)
-    from app.constants import ENGINE_MAKES, ENGINE_MODELS_BY_MAKE
+    from app.constants import ENGINE_MODELS_BY_MAKE
+    from app.services.category_service import engine_make_names
     return templates.TemplateResponse(request, "products/detail.html", {
         "product": p,
         "vendors": _vendors(db),
@@ -1087,7 +1103,7 @@ def product_detail(
         "cross_ref_types": list(CrossRefType),
         "suggested_sell_types": list(SuggestedSellType),
         "default_markup": float(get_setting_value_db(db, "default_markup_pct", "30.0")),
-        "engine_makes": ENGINE_MAKES,                # §21 application picker
+        "engine_makes": engine_make_names(db),        # §21 application picker
         "engine_models_by_make": ENGINE_MODELS_BY_MAKE,
         "ok": ok or (saved and "Saved.") or "",
         "error": error,

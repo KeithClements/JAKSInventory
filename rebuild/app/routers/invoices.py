@@ -26,10 +26,11 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.constants import (
-    ENGINE_MAKES, ENGINE_MODELS_BY_MAKE,
+    ENGINE_MODELS_BY_MAKE,
     InvoiceStatus, LineType, PaymentMethod, QBOSyncStatus,
 )
 from app.deps import get_current_user_id, get_db
+from app.services.category_service import engine_make_names
 from app.services.document_messaging import (
     build_send_context,
     itemize_lines,
@@ -201,7 +202,7 @@ def _workspace_context(
         "PaymentMethod": PaymentMethod,
         # Standardized engine make/model cascading picker (header vehicle block —
         # same wiring as the quote workspace).
-        "engine_makes": ENGINE_MAKES,
+        "engine_makes": engine_make_names(db),
         "engine_models_by_make": ENGINE_MODELS_BY_MAKE,
         # Customer balance chips
         "cust_open_balance": bal["open_balance"],

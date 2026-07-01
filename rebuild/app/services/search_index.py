@@ -33,6 +33,9 @@ _TARGETS = [
     ("product_vendor_sources", "vendor_part_number", "vendor_part_number_norm"),
     ("product_vendor_sources", "vendor_sku", "vendor_sku_norm"),
     ("products", "sku", "sku_norm"),   # §21 — indexed SKU search
+    # §23.3 Phase 1 #2 — competitor (HHP/ATL/IMB) part-number search was the
+    # last unindexed _norm_col() call in search_service; instant like the rest.
+    ("competitor_prices", "competitor_part_number", "competitor_part_number_norm"),
 ]
 
 

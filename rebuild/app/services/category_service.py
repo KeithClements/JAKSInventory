@@ -449,3 +449,21 @@ class CategoryService(BaseService):
         else:
             self.db.delete(m)
         self.db.commit()
+
+
+def engine_make_names(db: Session, *, include_other: bool = True) -> list[str]:
+    """§23.3 Phase 1 #5 — the engine_picker macro's Make dropdown, sourced from
+    the owner-maintained Manufacturer table instead of the hardcoded
+    constants.ENGINE_MAKES list. Product.manufacturer filters already read this
+    table (see routers/products.py); the picker used a SEPARATE static list
+    that could silently drift the moment an owner edited manufacturers via
+    Category Maintenance. seed_manufacturers() deliberately excludes "Other"
+    (a UI free-text escape hatch, not a real manufacturer row) — appended here
+    so the picker's "always reachable custom value" invariant still holds.
+    constants.ENGINE_MODELS_BY_MAKE stays a constant (models aren't DB-backed);
+    a make with no models entry gracefully falls back to ['Other'] in the
+    macro's own JS (engine_picker.html modelOptions getter)."""
+    names = [m.name for m in CategoryService(db).manufacturers(include_inactive=False)]
+    if include_other and "Other" not in names:
+        names.append("Other")
+    return names

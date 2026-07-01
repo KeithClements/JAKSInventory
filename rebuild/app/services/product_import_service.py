@@ -40,7 +40,7 @@ import re
 from collections import OrderedDict
 from datetime import datetime
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from app.constants import (
     CrossRefStatus, CrossRefType, ProductStatus, VendorAvailability,
@@ -53,6 +53,7 @@ from app.services.sku_service import (
 from app.models.product import (
     Product, ProductCategory, ProductImage, ProductApplication,
     ProductVendorSource, CrossReference, ProductCostHistory,
+    _norm_part_value as _norm_oem,
 )
 from app.models.competitor import CompetitorPrice, CompetitorPriceHistory
 from app.models.vendor import Vendor
@@ -886,6 +887,12 @@ class ProductImportService(BaseService):
             "skipped_no_sku": 0, "skipped_sku_collision": 0, "sku_collisions": [],
             "cross_refs": 0, "applications": 0, "images": 0,
             "categories_created": 0, "vendor_sources": 0, "needs_review": 0,
+            # §23.3 Phase 1 #6 — cross-vendor OEM dedup: rows that matched an
+            # EXISTING product (from another vendor's feed) via OEM cross-
+            # reference and added a vendor source instead of a duplicate
+            # product; rows whose OEM numbers spanned >1 existing product
+            # (left uncreated as normal, since the match was ambiguous).
+            "matched_by_xref": 0, "xref_match_ambiguous": 0,
             # Risk #7 guard: the direct full-import path no longer mints level-1
             # categories from the free-text scraper Type column. categories_skipped
             # counts distinct non-allowlisted Types refused (names in
@@ -925,6 +932,38 @@ class ProductImportService(BaseService):
                 key = ((vc or "").strip().upper(), s.strip().lower())
                 if key not in existing:
                     existing[key] = (prod_id, src_id)
+
+        # §23.3 Phase 1 #6 — cross-vendor OEM dedup. The (vendor_code, vendor_sku)
+        # key above is intentionally vendor-namespaced (a part number repeats
+        # across vendors), so a PAI import and a LATER IMB import of the SAME
+        # physical part never collide on it and each mints its own Product — a
+        # silent catalog duplicate. Snapshot every existing OEM CrossReference
+        # (normalized number → owning product) ONCE per run so a row whose OEM
+        # number already belongs to a product from ANOTHER vendor's feed adds a
+        # vendor source to that product instead of creating a duplicate. A norm
+        # that already resolves to >1 distinct product (pre-existing catalog
+        # dupes) is deliberately left out — auto-merging into one of several
+        # ambiguous matches could silently pick the wrong product.
+        oem_product_by_norm: dict[str, int] = {}
+        _oem_ambiguous_norms: set[str] = set()
+        for norm_val, ref_num, prod_id in (
+            self.db.query(
+                CrossReference.ref_number_norm, CrossReference.ref_number,
+                CrossReference.product_id,
+            )
+            .filter(CrossReference.ref_type == CrossRefType.OEM)
+            .all()
+        ):
+            n = norm_val or _norm_oem(ref_num)
+            if not n:
+                continue
+            if n in oem_product_by_norm and oem_product_by_norm[n] != prod_id:
+                _oem_ambiguous_norms.add(n)
+                continue
+            oem_product_by_norm[n] = prod_id
+        for n in _oem_ambiguous_norms:
+            oem_product_by_norm.pop(n, None)
+
         cat_cache = {c.name.strip().lower(): c.id for c in self.db.query(ProductCategory).all()}
         # SKU-scheme guardrail (owner-locked 2026-06-06: ONE digit per vendor):
         # each row's vendor comes from its feed-SKU prefix (JAKS-PAI-… /
@@ -1057,6 +1096,96 @@ class ProductImportService(BaseService):
                 continue
 
             row_vendor_id = vendor_ids_by_code[row_code]
+
+            # §23.3 Phase 1 #6 — cross-vendor OEM dedup. Not matched by
+            # (vendor_code, vendor_sku) above, so this LOOKS like a new part —
+            # but if one of its OEM numbers already belongs to a product from
+            # a DIFFERENT vendor's feed, it's the SAME physical part re-listed
+            # by a second vendor (the classic PAI/IMB overlap). Add this vendor
+            # as a source on that product instead of minting a duplicate.
+            oem_norms_this_row = {
+                _norm_oem(_split_two(it)[1]) for it in p["oem"] if _split_two(it)[1]
+            }
+            _xref_matches = {
+                oem_product_by_norm[n] for n in oem_norms_this_row
+                if n in oem_product_by_norm
+            }
+            if len(_xref_matches) > 1:
+                summary["xref_match_ambiguous"] += 1
+            elif len(_xref_matches) == 1:
+                xref_product_id = next(iter(_xref_matches))
+                summary["matched_by_xref"] += 1
+                if len(summary["sample"]) < 5:
+                    summary["sample"].append({
+                        "sku": sku, "title": p["title"],
+                        "matched_existing_product_id": xref_product_id,
+                        "via": "oem_cross_reference",
+                    })
+                if dry_run:
+                    continue
+
+                new_cost = _to_float(p.get("cost")) or 0.0
+                new_avail = normalize_availability(p.get("availability"))
+                # This vendor may already carry an ACTIVE source on the matched
+                # product under a different vendor_sku (e.g. the vendor
+                # renumbered the part) — the (product_id, vendor_id) unique
+                # index allows only one, so refresh it rather than insert a
+                # second and crash the flush.
+                dup_src = (
+                    self.db.query(ProductVendorSource)
+                    .filter(
+                        ProductVendorSource.product_id == xref_product_id,
+                        ProductVendorSource.vendor_id == row_vendor_id,
+                        ProductVendorSource.is_active == True,  # noqa: E712
+                    )
+                    .first()
+                )
+                if dup_src is not None:
+                    dup_src.vendor_part_number = p["pai_part"] or dup_src.vendor_part_number
+                    dup_src.vendor_sku = sku
+                    if new_cost:
+                        dup_src.vendor_cost = new_cost
+                    if new_avail:
+                        dup_src.availability_status = new_avail
+                        dup_src.availability_updated_at = datetime.utcnow()
+                else:
+                    new_src = ProductVendorSource(
+                        product_id=xref_product_id, vendor_id=row_vendor_id,
+                        vendor_part_number=p["pai_part"], vendor_sku=sku,
+                        vendor_cost=new_cost,
+                        is_preferred=False,   # the existing source stays preferred
+                    )
+                    if new_avail:
+                        new_src.availability_status = new_avail
+                        new_src.availability_updated_at = datetime.utcnow()
+                    self.db.add(new_src)
+
+                # Merge any OEM numbers this row carries that the matched
+                # product doesn't already have (first-brand-wins, same rule
+                # as the create path's dedupe below).
+                current_oems = {
+                    (n or "").strip().lower()
+                    for (n,) in self.db.query(CrossReference.ref_number)
+                    .filter(
+                        CrossReference.product_id == xref_product_id,
+                        CrossReference.ref_type == CrossRefType.OEM,
+                    ).all()
+                }
+                for it in p["oem"]:
+                    brand, num = _split_two(it)
+                    nk = (num or "").strip().lower()
+                    if num and nk not in current_oems:
+                        current_oems.add(nk)
+                        self.db.add(CrossReference(
+                            product_id=xref_product_id, ref_type=CrossRefType.OEM,
+                            ref_number=num, brand=brand, status="proven",
+                        ))
+
+                committed += 1
+                if committed % 500 == 0:
+                    self.db.commit()
+                    self.db.expunge_all()
+                continue
 
             cat_id = self._resolve_category(p["type"], cat_cache, summary, dry_run)
             # §18.6 — refine below the Shopify-Type category + derive engine make.
@@ -1833,6 +1962,84 @@ class ProductImportService(BaseService):
                 summary["sample"].append({"sku": prod.sku, "manufacturer": mfg})
             if not dry_run:
                 prod.manufacturer = mfg
+        self.db.commit() if not dry_run else self.db.rollback()
+        return summary
+
+    def reclassify_all(self, *, dry_run: bool = True) -> dict:
+        """§23.3 Phase 1 #5 — re-run ClassificationService.classify() (the SAME
+        rules import-time uses) across every active product whose category or
+        engine make/model is still BLANK, using whatever ProductApplication /
+        title / tags data the product has today. Classification rules and
+        category keyword mappings evolve after a product was first imported —
+        this lets an owner re-sweep the catalog with the current rules without
+        re-importing.
+
+        Conservative by the same standard as backfill_manufacturers: this ONLY
+        fills a blank field, never overwrites one a human (or a prior import)
+        already set — a confirmed category_id, engine_manufacturer, or
+        engine_model is never touched even if the classifier now suggests
+        something different. needs_review is left alone; the owner still
+        clears it via the normal Import Review workflow."""
+        classifier = ClassificationService(self.db)
+        summary = {
+            "mode": "reclassify_all", "dry_run": dry_run,
+            "scanned": 0, "reclassified": 0, "unchanged": 0,
+            "category_filled": 0, "engine_manufacturer_filled": 0,
+            "engine_model_filled": 0, "sample": [],
+        }
+        candidates = (
+            self.db.query(Product)
+            .filter(
+                Product.is_active == True,  # noqa: E712
+                or_(
+                    Product.category_id.is_(None),
+                    func.coalesce(Product.engine_manufacturer, "") == "",
+                ),
+            )
+            .all()
+        )
+        if not candidates:
+            return summary
+        ids = [p.id for p in candidates]
+        apps_by_pid: dict[int, list[tuple[str, str]]] = {}
+        for pid, make, model in (
+            self.db.query(
+                ProductApplication.product_id,
+                ProductApplication.engine_make, ProductApplication.engine_model,
+            ).filter(ProductApplication.product_id.in_(ids)).all()
+        ):
+            apps_by_pid.setdefault(pid, []).append((make, model))
+
+        _SUMMARY_KEY = {
+            "category_id": "category_filled",
+            "engine_manufacturer": "engine_manufacturer_filled",
+            "engine_model": "engine_model_filled",
+        }
+        for prod in candidates:
+            summary["scanned"] += 1
+            apps = apps_by_pid.get(prod.id, [])
+            cls = classifier.classify(
+                title=prod.title or "", tags=prod.search_keywords or "",
+                app_makes=[a[0] for a in apps], app_models=[a[1] for a in apps],
+            )
+            changes: dict = {}
+            if prod.category_id is None and cls["category_id"]:
+                changes["category_id"] = cls["category_id"]
+            if not (prod.engine_manufacturer or "").strip() and cls["engine_manufacturer"]:
+                changes["engine_manufacturer"] = cls["engine_manufacturer"]
+            if not (prod.engine_model or "").strip() and cls["engine_model"]:
+                changes["engine_model"] = cls["engine_model"]
+            if not changes:
+                summary["unchanged"] += 1
+                continue
+            summary["reclassified"] += 1
+            for field in changes:
+                summary[_SUMMARY_KEY[field]] += 1
+            if len(summary["sample"]) < 10:
+                summary["sample"].append({"sku": prod.sku, "changes": changes})
+            if not dry_run:
+                for field, val in changes.items():
+                    setattr(prod, field, val)
         self.db.commit() if not dry_run else self.db.rollback()
         return summary
 

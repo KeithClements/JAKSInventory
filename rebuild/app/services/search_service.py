@@ -233,11 +233,18 @@ class SearchService(BaseService):
             #    R2: a customer calling with an HHP/ATL/IMB number finds our part
             #    even when no CrossReference row exists yet. Surfaces the matched
             #    number the same way cross-ref matches do (cross_ref_number).
+            #    §23.3 Phase 1 #2 — reads the precomputed, INDEXED
+            #    competitor_part_number_norm column (kept in sync by the
+            #    CompetitorPrice before_insert/update listener + backfilled on
+            #    startup by search_index.ensure_search_norm_columns) instead of
+            #    normalizing every row with a SQL function on each keystroke —
+            #    the same fix already applied to sku_norm / ref_number_norm /
+            #    vendor_*_norm above.
             if len(results) < limit:
                 comp_hits = (
                     self.db.query(CompetitorPrice, Product)
                     .join(Product, CompetitorPrice.product_id == Product.id)
-                    .filter(_norm_col(CompetitorPrice.competitor_part_number).like(f"%{nq}%"))
+                    .filter(CompetitorPrice.competitor_part_number_norm.like(f"%{nq}%"))
                     .filter(CompetitorPrice.is_active == True)  # noqa: E712
                     .filter(Product.is_active == True if not include_inactive else True)  # noqa: E712
                     .limit(limit)

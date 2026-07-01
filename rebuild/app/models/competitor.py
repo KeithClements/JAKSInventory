@@ -24,11 +24,12 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
-    String, Text, Float, Boolean, ForeignKey, DateTime, Index, UniqueConstraint, func,
+    String, Text, Float, Boolean, ForeignKey, DateTime, Index, UniqueConstraint, func, event,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.models.product import _norm_part_value
 
 
 class CompetitorPrice(Base):
@@ -49,6 +50,13 @@ class CompetitorPrice(Base):
 
     competitor_name: Mapped[str] = mapped_column(String(200), nullable=False)
     competitor_part_number: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    # §23.3 Phase 1 #2 — precomputed normalized part number for fast, INDEXED
+    # search (separators stripped, lower-cased), kept in sync by the
+    # before_insert/before_update listener below. Same convention as
+    # CrossReference.ref_number_norm / ProductVendorSource.vendor_*_norm /
+    # Product.sku_norm (app/models/product.py) — must stay in step with
+    # search_index._NORM_SEPARATORS and search_service._NORM_SEPARATORS.
+    competitor_part_number_norm: Mapped[str | None] = mapped_column(String(100), nullable=True)
     competitor_brand: Mapped[str] = mapped_column(String(200), nullable=False, default="")
 
     price: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
@@ -108,6 +116,17 @@ class CompetitorPriceHistory(Base):
     competitor_price: Mapped["CompetitorPrice"] = relationship(
         "CompetitorPrice", back_populates="history"
     )
+
+
+# §23.3 Phase 1 #2 — keep competitor_part_number_norm in sync with
+# competitor_part_number on every ORM write. Mirrors the CrossReference /
+# ProductVendorSource / Product listeners in app/models/product.py — same
+# _norm_part_value function so the stored value matches what search_service
+# looks up (byte-for-byte), just precomputed instead of normalized per query.
+@event.listens_for(CompetitorPrice, "before_insert")
+@event.listens_for(CompetitorPrice, "before_update")
+def _competitor_price_set_norm(_mapper, _conn, target):  # noqa: ANN001
+    target.competitor_part_number_norm = _norm_part_value(target.competitor_part_number)
 
 
 # Late import for type-checker/relationship resolution (string-based at runtime).

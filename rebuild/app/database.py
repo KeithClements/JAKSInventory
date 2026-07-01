@@ -347,6 +347,11 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     #    the AP payable matches the vendor's invoice; defaults from PO freight_in.
     #    NOT NULL → a missing column would 500 every VendorBill query. ────────────
     ("vendor_bills",           "freight_amount",          "REAL NOT NULL DEFAULT 0"),
+
+    # ── §23.3 Phase 1 #2 — precomputed normalized competitor part number for
+    #    indexed search (also added + backfilled by
+    #    search_index.ensure_search_norm_columns on startup). Mirrors sku_norm. ──
+    ("competitor_prices",      "competitor_part_number_norm", "TEXT NULL"),
 ]
 
 

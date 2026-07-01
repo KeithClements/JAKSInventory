@@ -111,28 +111,57 @@
   </div>
 
   {# ── Utilities ───────────────────────────────────────────────────────────── #}
-  <div class="card" x-data="mfgBackfill()">
+  <div class="card">
     <div class="card-header"><h2 class="card-title">Catalog Utilities</h2></div>
-    <div class="card-body space-y-3">
-      <div>
-        <p class="text-sm font-semibold text-gray-800">Derive manufacturers from descriptions</p>
-        <p class="text-xs text-gray-500 mt-0.5">
-          Fills the blank Manufacturer field on existing products from what's already stored —
-          OEM reference brands, applications, title, keywords. One clear make wins; multi-make
-          parts stay blank; never overwrites a manufacturer you set by hand.
-        </p>
+    <div class="card-body space-y-5">
+      <div x-data="mfgBackfill()" class="space-y-3">
+        <div>
+          <p class="text-sm font-semibold text-gray-800">Derive manufacturers from descriptions</p>
+          <p class="text-xs text-gray-500 mt-0.5">
+            Fills the blank Manufacturer field on existing products from what's already stored —
+            OEM reference brands, applications, title, keywords. One clear make wins; multi-make
+            parts stay blank; never overwrites a manufacturer you set by hand.
+          </p>
+        </div>
+        <div class="flex items-center gap-3">
+          <button type="button" @click="run(true)" :disabled="busy" class="btn-secondary btn-sm">
+            <span x-show="!busy">Preview</span><span x-show="busy" x-cloak>Working…</span>
+          </button>
+          <button type="button" @click="run(false)" :disabled="busy || !result" class="btn-primary btn-sm"
+                  title="Preview first, then apply">Apply</button>
+          <span x-show="result" x-cloak class="text-xs text-gray-600"
+                x-text="result ? (result.dry_run ? 'Preview: ' : 'Applied: ') + result.filled + ' filled · '
+                        + result.multi_make_skipped + ' multi-make skipped · ' + result.no_signal + ' no signal' : ''"></span>
+        </div>
+        <div x-show="err" x-cloak class="text-xs text-red-600" x-text="err"></div>
       </div>
-      <div class="flex items-center gap-3">
-        <button type="button" @click="run(true)" :disabled="busy" class="btn-secondary btn-sm">
-          <span x-show="!busy">Preview</span><span x-show="busy" x-cloak>Working…</span>
-        </button>
-        <button type="button" @click="run(false)" :disabled="busy || !result" class="btn-primary btn-sm"
-                title="Preview first, then apply">Apply</button>
-        <span x-show="result" x-cloak class="text-xs text-gray-600"
-              x-text="result ? (result.dry_run ? 'Preview: ' : 'Applied: ') + result.filled + ' filled · '
-                      + result.multi_make_skipped + ' multi-make skipped · ' + result.no_signal + ' no signal' : ''"></span>
+
+      {# §23.3 Phase 1 #5 — re-sweep the catalog with the CURRENT classification
+         rules; only fills a still-blank category/engine make/engine model,
+         same "never overwrite a confirmed value" contract as the utility above. #}
+      <div x-data="reclassifyAll()" class="space-y-3 border-t border-gray-100 pt-4">
+        <div>
+          <p class="text-sm font-semibold text-gray-800">Re-classify with current rules</p>
+          <p class="text-xs text-gray-500 mt-0.5">
+            Re-runs category + engine make/model detection across every product still missing
+            one, using today's classification rules (they improve after products were first
+            imported). Only fills blanks; never overwrites a category or engine make/model
+            you (or a prior import) already set.
+          </p>
+        </div>
+        <div class="flex items-center gap-3">
+          <button type="button" @click="run(true)" :disabled="busy" class="btn-secondary btn-sm">
+            <span x-show="!busy">Preview</span><span x-show="busy" x-cloak>Working…</span>
+          </button>
+          <button type="button" @click="run(false)" :disabled="busy || !result" class="btn-primary btn-sm"
+                  title="Preview first, then apply">Apply</button>
+          <span x-show="result" x-cloak class="text-xs text-gray-600"
+                x-text="result ? (result.dry_run ? 'Preview: ' : 'Applied: ') + result.reclassified + ' reclassified · '
+                        + result.category_filled + ' category · ' + result.engine_manufacturer_filled + ' engine make · '
+                        + result.engine_model_filled + ' engine model' : ''"></span>
+        </div>
+        <div x-show="err" x-cloak class="text-xs text-red-600" x-text="err"></div>
       </div>
-      <div x-show="err" x-cloak class="text-xs text-red-600" x-text="err"></div>
     </div>
   </div>
 
@@ -171,6 +200,16 @@
 </div>
 
 <script>
+// §21.3 CSRF (double-submit cookie) — base.html's own csrfToken() is scoped
+// inside its IIFE and isn't reachable here, and htmx:configRequest only stamps
+// hx-*/htmx requests, not plain fetch(). Same cookie + header base.html uses,
+// duplicated locally (fixes a pre-existing 403 on BOTH utility cards below —
+// a bare fetch() POST here never carried the token before this fix).
+function _csrfToken() {
+  var m = document.cookie.match(/(?:^|;\s*)jaks_csrf=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : "";
+}
+
 function mfgBackfill() {
   return {
     busy: false, result: null, err: null,
@@ -179,7 +218,28 @@ function mfgBackfill() {
       const fd = new FormData();
       fd.append('dry_run', dryRun ? 'true' : 'false');
       try {
-        const resp = await fetch('/products/backfill-manufacturers', { method: 'POST', body: fd });
+        const resp = await fetch('/products/backfill-manufacturers', {
+          method: 'POST', body: fd, headers: { 'X-CSRF-Token': _csrfToken() },
+        });
+        if (!resp.ok) { this.err = 'Failed (HTTP ' + resp.status + ').'; }
+        else { this.result = await resp.json(); }
+      } catch (e) { this.err = 'Error: ' + e; }
+      finally { this.busy = false; }
+    }
+  };
+}
+
+function reclassifyAll() {
+  return {
+    busy: false, result: null, err: null,
+    async run(dryRun) {
+      this.busy = true; this.err = null;
+      const fd = new FormData();
+      fd.append('dry_run', dryRun ? 'true' : 'false');
+      try {
+        const resp = await fetch('/products/reclassify-all', {
+          method: 'POST', body: fd, headers: { 'X-CSRF-Token': _csrfToken() },
+        });
         if (!resp.ok) { this.err = 'Failed (HTTP ' + resp.status + ').'; }
         else { this.result = await resp.json(); }
       } catch (e) { this.err = 'Error: ' + e; }

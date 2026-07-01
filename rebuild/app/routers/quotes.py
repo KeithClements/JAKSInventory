@@ -25,9 +25,10 @@ from sqlalchemy.orm import Session
 from app.constants import (
     QuoteOutcome, QuoteStatus, SOPaymentMode, LineRole,
     LostReason, LOST_REASON_LABELS,
-    ENGINE_MAKES, ENGINE_MODELS_BY_MAKE,
+    ENGINE_MODELS_BY_MAKE,
 )
 from app.deps import get_current_user_id, get_db
+from app.services.category_service import engine_make_names
 from app.services.document_messaging import (
     build_send_context,
     itemize_lines,
@@ -458,7 +459,7 @@ async def workspace(
             "lost_reason_labels": LOST_REASON_LABELS,
             "LostReason": LostReason,
             # Standardized engine make/model cascading picker (header).
-            "engine_makes": ENGINE_MAKES,
+            "engine_makes": engine_make_names(db),
             "engine_models_by_make": ENGINE_MODELS_BY_MAKE,
             # Seam 3 — customer relationship context while quoting
             **_quote_customer_ctx(db, quote),

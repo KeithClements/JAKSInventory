@@ -32,10 +32,11 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.constants import (
-    ENGINE_MAKES, ENGINE_MODELS_BY_MAKE,
+    ENGINE_MODELS_BY_MAKE,
     LineType, PaymentMethod, SOPaymentMode, SOStatus,
 )
 from app.deps import get_current_user_id, get_db
+from app.services.category_service import engine_make_names
 from app.models.customer import Customer, CustomerAddress
 from app.models.product import Product
 from app.models.quote import SalesOrder, SOLine
@@ -72,7 +73,7 @@ def _get_so_or_404(db: Session, so_id: int) -> SalesOrder:
     return so
 
 
-def _workspace_ctx(request: Request, so: SalesOrder) -> dict:
+def _workspace_ctx(request: Request, so: SalesOrder, db: Session) -> dict:
     editable = so.status in (SOStatus.OPEN, SOStatus.PARTIAL, SOStatus.HOLD)
     can_fulfill = so.status in (SOStatus.OPEN, SOStatus.PARTIAL)
     return {
@@ -85,7 +86,7 @@ def _workspace_ctx(request: Request, so: SalesOrder) -> dict:
         "LineType": LineType,
         # Standardized engine make/model cascading picker (header vehicle block —
         # same wiring as the quote workspace).
-        "engine_makes": ENGINE_MAKES,
+        "engine_makes": engine_make_names(db),
         "engine_models_by_make": ENGINE_MODELS_BY_MAKE,
     }
 
@@ -252,7 +253,7 @@ async def so_workspace(
 ):
     from app.services.document_links import related_documents
     so = _get_so_or_404(db, so_id)
-    ctx = _workspace_ctx(request, so)
+    ctx = _workspace_ctx(request, so, db)
     ctx["linked_documents"] = related_documents(db, so)
     # §5.10 — SO↔PO status rollup per linked line (UI renders the chip + ETA)
     ctx["po_link_map"] = SalesOrderMetricsService(db).po_link_map(so)
@@ -373,7 +374,7 @@ async def so_add_line(
     return templates.TemplateResponse(
         request,
         "sales_orders/_lines_section.html",
-        _workspace_ctx(request, so),
+        _workspace_ctx(request, so, db),
     )
 
 
@@ -411,7 +412,7 @@ async def so_update_line(
     return templates.TemplateResponse(
         request,
         "sales_orders/_lines_section.html",
-        _workspace_ctx(request, so),
+        _workspace_ctx(request, so, db),
     )
 
 
@@ -433,7 +434,7 @@ async def so_delete_line(
     return templates.TemplateResponse(
         request,
         "sales_orders/_lines_section.html",
-        _workspace_ctx(request, so),
+        _workspace_ctx(request, so, db),
     )
 
 
@@ -456,7 +457,7 @@ async def so_create_po_for_line(
     except ValueError as exc:
         db.rollback()
         so = _get_so_or_404(db, so_id)
-        ctx = _workspace_ctx(request, so)
+        ctx = _workspace_ctx(request, so, db)
         ctx["order_error"] = str(exc)
         return templates.TemplateResponse(
             request, "sales_orders/_lines_section.html", ctx
