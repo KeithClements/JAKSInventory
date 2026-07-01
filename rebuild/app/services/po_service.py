@@ -373,7 +373,11 @@ class POService(BaseService):
         )
         freight_adders = self._compute_freight_adders(received_lines)
 
-        po = None  # populated on first processed line; used for status update after loop
+        # Every PO touched by this receipt, keyed by id. A single receipt can
+        # span multiple POs from the same vendor (POReceipt.vendor_id;
+        # POReceiptLine.po_id per line), so we must re-evaluate the status of
+        # EACH involved PO after the loop — not just the last one seen.
+        pos_touched: dict[int, PurchaseOrder] = {}
         for po_line_id, qty in po_line_quantities.items():
             if qty <= 0:
                 continue
@@ -382,7 +386,16 @@ class POService(BaseService):
             if po_line is None:
                 raise ValueError(f"POLine {po_line_id} not found")
 
-            po = po_line.po  # all lines belong to the same PO; captured for post-loop status update
+            po = po_line.po  # PO owning THIS line (may differ across lines in a multi-PO receipt)
+            # A receipt carries ONE vendor_id (POReceipt) — every line must belong
+            # to a PO of that same vendor. Guards the multi-PO receive path from
+            # accidentally landing cross-vendor lines onto one vendor's receipt.
+            if po.vendor_id != vendor_id:
+                raise ValueError(
+                    f"POLine {po_line_id} belongs to vendor {po.vendor_id}, not the "
+                    f"receipt vendor {vendor_id}; a receipt spans a single vendor only."
+                )
+            pos_touched[po.id] = po
             is_drop_ship = po.is_drop_ship
 
             # Record receipt line (with optional per-line condition notes)
@@ -482,16 +495,20 @@ class POService(BaseService):
                 # R7 — FIFO-allocate to linked SO lines before excess goes to stock
                 self._allocate_to_linked_sos(po_line_id, qty, po.po_number)
 
-        # Mark PO status once after all lines are processed.
-        # Evaluated here (not inside the loop) to avoid redundant DB writes
-        # on multi-line receipts. PO closes when every line is fully settled.
-        if po is not None:
+        # Mark each touched PO's status once, after all lines are processed.
+        # Evaluated here (not inside the loop) to avoid redundant DB writes on
+        # multi-line receipts. Each PO closes (RECEIVED) only when EVERY one of
+        # its own lines is fully settled (received + cancelled >= ordered),
+        # otherwise PARTIAL — evaluated independently per PO so a multi-PO
+        # receipt can close one PO while leaving another partial.
+        if pos_touched:
             self.db.flush()
-            all_settled = all(
-                (ln.qty_received + ln.qty_cancelled) >= ln.qty_ordered
-                for ln in po.lines
-            )
-            po.status = POStatus.RECEIVED if all_settled else POStatus.PARTIAL
+            for po in pos_touched.values():
+                all_settled = all(
+                    (ln.qty_received + ln.qty_cancelled) >= ln.qty_ordered
+                    for ln in po.lines
+                )
+                po.status = POStatus.RECEIVED if all_settled else POStatus.PARTIAL
 
         self.audit(
             entity_type=EntityType.PO_RECEIPT,
@@ -739,6 +756,40 @@ class POService(BaseService):
             )
             .all()
         )
+
+    # Statuses a PO can still be received against (mirrors the receive route
+    # guard): verbal/phone orders receive directly, SENT and PARTIAL continue.
+    RECEIVABLE_STATUSES = (POStatus.VERBAL_ORDER, POStatus.SENT, POStatus.PARTIAL)
+
+    def get_open_receivable_lines_for_vendor(self, vendor_id: int) -> list[dict]:
+        """Every open PO line a vendor could still deliver, grouped by PO — the
+        data behind the multi-PO "Receive Shipment" screen.
+
+        A PO is receivable in VERBAL_ORDER / SENT / PARTIAL status. A line is
+        still OPEN while its outstanding quantity is positive
+        (``qty_received + qty_cancelled < qty_ordered``) — so a line whose
+        remainder was cancelled correctly drops off (consistent with the
+        settlement test in ``create_receipt``). POs with no open line are
+        omitted. Returns ``[{"po": PurchaseOrder, "open_lines": [POLine, ...]}]``
+        ordered oldest-PO-first (receive the earliest orders first)."""
+        pos = (
+            self.db.query(PurchaseOrder)
+            .filter(
+                PurchaseOrder.vendor_id == vendor_id,
+                PurchaseOrder.status.in_(self.RECEIVABLE_STATUSES),
+            )
+            .order_by(PurchaseOrder.created_at.asc(), PurchaseOrder.id.asc())
+            .all()
+        )
+        out: list[dict] = []
+        for po in pos:
+            open_lines = [
+                ln for ln in po.lines
+                if (ln.qty_received + ln.qty_cancelled) < ln.qty_ordered
+            ]
+            if open_lines:
+                out.append({"po": po, "open_lines": open_lines})
+        return out
 
     # ── Billing (3-way match) ─────────────────────────────────────────────────
 
