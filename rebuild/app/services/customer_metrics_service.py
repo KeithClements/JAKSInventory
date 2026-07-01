@@ -110,7 +110,11 @@ class CustomerMetricsService(BaseService):
             lifetime = round(gross - credits_total.get(cid, 0.0), 2)
             ytd = round(gross_ytd - credits_ytd.get(cid, 0.0), 2)
             aov = round(gross / count, 2) if count else 0.0
-            available = round(limit - open_ar, 2) if limit > 0 else None
+            # §23.3 Phase 1 — net the customer's held account credit into their
+            # available headroom. Money we already hold on their behalf (account
+            # credits) offsets AR exposure, so it raises how much they can still
+            # charge before we're on the hook past their limit.
+            available = round(limit - open_ar + credit_balance, 2) if limit > 0 else None
             open_ar = round(open_ar, 2)
             on_hold = bool(cust and CustomerFlag.CREDIT_HOLD in cust.flag_keys)
 

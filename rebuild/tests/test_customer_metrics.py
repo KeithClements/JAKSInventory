@@ -163,7 +163,9 @@ def test_open_ar_and_available_credit(db, rich_customer):
     m = CustomerMetricsService(db).metrics_for(rich_customer)
     assert m["open_ar"] == 1200.0                  # 200 + 0 (paid) + 1000 (last-yr open)
     assert m["credit_limit"] == 1000.0
-    assert m["available_credit"] == -200.0         # 1000 - 1200 (over limit)
+    # §23.3 Phase 1 — available now NETS the customer's held account credit:
+    # 1000 (limit) - 1200 (open AR) + 25 (credit_balance) = -175 (still over limit).
+    assert m["available_credit"] == -175.0
     assert m["credit_balance"] == 25.0
 
 

@@ -360,7 +360,11 @@ class CustomerService(BaseService):
         if limit <= 0:
             return False
         open_ar = CustomerMetricsService(self.db).open_ar(customer.id)
-        return (open_ar + float(amount or 0.0)) > limit + 1e-6
+        # §23.3 Phase 1 — held account credit offsets the customer's exposure, so
+        # test the prospective charge against AR NET of credits (consistent with
+        # the available_credit computation in credit_status / CustomerMetrics).
+        credit_balance = float(customer.credit_balance or 0.0)
+        return (open_ar - credit_balance + float(amount or 0.0)) > limit + 1e-6
 
     def credit_status(self, customer: Customer, prospective_amount: float = 0.0) -> dict:
         """Full credit picture for a customer, optionally testing a prospective
@@ -380,8 +384,12 @@ class CustomerService(BaseService):
         """
         limit = float(customer.credit_limit or 0.0)
         open_ar = CustomerMetricsService(self.db).open_ar(customer.id)
+        # §23.3 Phase 1 — held account credit offsets AR exposure in every part of
+        # the credit picture (available headroom, the over-limit test, and the
+        # projected-balance message) so all three stay mutually consistent.
+        credit_balance = float(customer.credit_balance or 0.0)
         has_limit = limit > 0
-        available = round(limit - open_ar, 2) if has_limit else None
+        available = round(limit - open_ar + credit_balance, 2) if has_limit else None
         on_hold = self.is_on_credit_hold(customer)
         over_limit = self.would_exceed_credit(customer, prospective_amount)
 
@@ -389,7 +397,7 @@ class CustomerService(BaseService):
         if on_hold:
             messages.append("Customer is on Credit Hold.")
         if over_limit:
-            projected = round(open_ar + float(prospective_amount or 0.0), 2)
+            projected = round(open_ar - credit_balance + float(prospective_amount or 0.0), 2)
             messages.append(
                 f"This would put the balance at ${projected:,.2f}, over the "
                 f"${limit:,.2f} credit limit."

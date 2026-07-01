@@ -14,6 +14,7 @@ import logging
 from urllib.parse import quote as url_quote
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -197,29 +198,24 @@ async def _parse_batch_request(request: Request) -> tuple[list[int], str | None]
     return ids, (str(mode).strip().lower() if mode else None)
 
 
-@router.post("/invoices/push-batch")
-async def qbo_push_batch(
-    request: Request,
-    db: Session = Depends(get_db),
-    user_id: int = Depends(get_current_user_id),
-):
-    """Bulk-push invoices to QBO. Accepts a list of invoice IDs (JSON
-    ``{"invoice_ids":[...]}`` or form ``invoice_ids``) OR ``mode=all_unsynced``
-    (every finalized invoice with qbo_sync_status != 'synced').
+def _run_push_batch(
+    svc: QBOSyncService, ids: list[int], mode: str | None
+) -> list[dict]:
+    """Blocking QBO push loop, run OFF the event loop (see the route below).
 
-    Each invoice is pushed INDEPENDENTLY via the existing
-    QBOSyncService.push_invoice (which commits / marks per invoice) — there is no
-    shared transaction, so one failure never rolls back the others. Returns
-    per-invoice results: {id, ok, qbo_id|error}."""
-    svc = QBOSyncService(db, current_user_id=user_id)
-    ids, mode = await _parse_batch_request(request)
+    Each ``push_invoice`` is a SYNCHRONOUS ``httpx`` round-trip to Intuit
+    (``qbo_client``). Looping N of them inline inside the ``async`` route would
+    block the event loop for the whole batch — freezing every other request on
+    this (LAN-served) server for the duration (§23.3 Phase 1). This runs in a
+    worker thread instead. Each invoice is pushed INDEPENDENTLY (push_invoice
+    commits / marks per invoice), so one failure never rolls back the others."""
     if mode in _ALL_UNSYNCED_MODES:
         # §21 — pending_only: skip ERROR invoices so a bulk "Sync All" doesn't
         # re-hammer Intuit with known failures (the background retry worker
         # re-attempts those on its own schedule, under a retry ceiling).
         ids = svc.unsynced_invoice_ids(pending_only=True)
 
-    results = []
+    results: list[dict] = []
     for iid in ids:
         r = svc.push_invoice(iid)
         ok = bool(r.get("ok"))
@@ -231,6 +227,25 @@ async def qbo_push_batch(
         else:
             entry["error"] = r.get("error", "")
         results.append(entry)
+    return results
+
+
+@router.post("/invoices/push-batch")
+async def qbo_push_batch(
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Bulk-push invoices to QBO. Accepts a list of invoice IDs (JSON
+    ``{"invoice_ids":[...]}`` or form ``invoice_ids``) OR ``mode=all_unsynced``
+    (every finalized invoice with qbo_sync_status != 'synced').
+
+    The blocking push loop is offloaded to a worker thread via
+    ``run_in_threadpool`` so a bulk push never freezes the event loop
+    (§23.3 Phase 1). Returns per-invoice results: {id, ok, qbo_id|error}."""
+    svc = QBOSyncService(db, current_user_id=user_id)
+    ids, mode = await _parse_batch_request(request)
+    results = await run_in_threadpool(_run_push_batch, svc, ids, mode)
 
     return JSONResponse({
         "count": len(results),
