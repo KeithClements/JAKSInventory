@@ -144,7 +144,13 @@
         hx-swap="outerHTML"
         hx-trigger="change from:input,select,textarea,checkbox delay:300ms, submit"
         class="card">
+    {# Optimistic-lock version (R9) — refreshed from X-Updated-At by the
+       header-save listener below, so only another session's save conflicts. #}
+    <input type="hidden" name="_updated_at" value="{{ invoice.updated_at.isoformat() if invoice.updated_at else '' }}">
     <div class="card-body py-3">
+      {# Header-save failures (409 conflict / validation) land here — htmx won't
+         swap a 4xx into #totals-panel, so this strip is the visible surface. #}
+      <div id="inv-header-save-error" class="hidden mb-2 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700"></div>
 
       {# Row 1 — primary info #}
       <div class="flex items-center gap-x-5 gap-y-2 flex-wrap text-sm">
@@ -975,6 +981,34 @@
     </div>
   </div>
   {% endif %}
+
+{# ── Header-save listener (R9 optimistic locking) ────────────────────────────
+   After every /header save: on success adopt the server's fresh updated_at
+   (X-Updated-At) so the next autosave never self-conflicts; on failure show
+   the server's message — htmx doesn't swap 4xx responses, so without this the
+   409 conflict (or a validation 400) would be silently invisible. #}
+<script>
+  if (!window.__invHeaderSaveBound) {
+    window.__invHeaderSaveBound = true;
+    document.body.addEventListener('htmx:afterRequest', function (evt) {
+      var path = (evt.detail.pathInfo && evt.detail.pathInfo.requestPath) || '';
+      if (!/\/invoices\/\d+\/header$/.test(path)) return;
+      var xhr = evt.detail.xhr;
+      var err = document.getElementById('inv-header-save-error');
+      var hid = document.querySelector('#inv-header-form input[name="_updated_at"]');
+      if (xhr && xhr.status >= 200 && xhr.status < 300) {
+        if (err) { err.classList.add('hidden'); err.textContent = ''; }
+        var ts = xhr.getResponseHeader('X-Updated-At');
+        if (ts && hid) hid.value = ts;
+      } else if (err) {
+        err.textContent = (xhr && xhr.status === 409)
+          ? 'This invoice was changed by another user — reload the page to pick up their changes, then re-apply your edit.'
+          : 'Save failed — your last header change was not saved.';
+        err.classList.remove('hidden');
+      }
+    });
+  }
+</script>
 
 </div>
 {% endblock %}

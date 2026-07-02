@@ -99,9 +99,10 @@
    BULK ACTION BAR — §7 Primitive 4
 ══════════════════════════════════════════════════════════════════════════════ #}
 {% call bulk_toolbar() %}
-  <button disabled title="CSV export — coming soon" class="text-xs font-medium text-gray-400 cursor-not-allowed">
+  <a href="/payments/export.csv?tab={{ active_tab }}&q={{ q|urlencode }}"
+     class="text-xs font-medium text-brand-700 hover:text-brand-900 transition-colors">
     Export CSV
-  </button>
+  </a>
 {% endcall %}
 
 {# ══════════════════════════════════════════════════════════════════════════════

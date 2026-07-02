@@ -115,53 +115,58 @@ def reports_index(request: Request, db: Session = Depends(get_db)):
     today = date.today()
     month_start = today.replace(day=1)
 
-    error_message = None
-    ar_total = ar_over_90 = inv_value = inv_skus = 0.0
-    po_count = core_overdue = 0
-    po_value = core_amount = mtd_revenue = mtd_margin = 0.0
-    mtd_margin_pct = None
-    overdue_total = 0.0
-    overdue_count = 0
-    mtd_tax_collected = 0.0
-    lost_count = 0
-    low_stock_count = 0
-    low_stock_order_cost = 0.0
-    dead_stock_count = 0
-    dead_stock_value = 0.0
+    # Per-metric isolation: one poisoned report must not 500 the whole landing
+    # page (it used to — a single try around all ten fetches). Each fetch logs
+    # its own failure and falls back to `{}` so the extraction below yields
+    # None, which the template renders as an em-dash.
+    failed: list[str] = []
 
-    try:
-        ar = svc.get_ar_aging()
-        inv = svc.get_inventory_valuation()
-        pos = svc.get_open_pos()
-        cores = svc.get_core_charges_outstanding()
-        sales_mtd = svc.get_sales_by_customer(month_start, today)
-        ar_total     = ar["totals"]["total"]
-        ar_over_90   = ar["totals"]["over_90"]
-        inv_value    = inv["totals"]["total_value"]
-        inv_skus     = inv["totals"]["in_stock_skus"]
-        po_count     = pos["totals"]["po_count"]
-        po_value     = pos["totals"]["outstanding_value"]
-        core_amount  = cores["totals"]["amount"]
-        core_overdue = cores["totals"]["overdue_count"]
-        mtd_revenue  = sales_mtd["totals"]["gross_sales"]
-        mtd_margin   = sales_mtd["totals"]["margin"]
-        mtd_margin_pct = sales_mtd["totals"].get("margin_pct")
-        overdue_data = svc.get_overdue_invoices()
-        overdue_total = overdue_data["totals"]["total_owed"]
-        overdue_count = overdue_data["totals"]["invoice_count"]
-        tax_data = svc.get_sales_tax_collected(month_start, today)
-        mtd_tax_collected = tax_data["totals"]["tax_collected"]
-        lost_mtd = svc.get_lost_sales(month_start, today)
-        lost_count = lost_mtd["totals"]["count"]
-        low_stock = svc.get_low_stock()
-        low_stock_count = low_stock["totals"]["item_count"]
-        low_stock_order_cost = low_stock["totals"]["total_order_cost"]
-        dead_stock = svc.get_dead_stock()
-        dead_stock_count = dead_stock["totals"]["item_count"]
-        dead_stock_value = dead_stock["totals"]["total_tied_up_value"]
-    except Exception:
-        log.exception("reports_index: ReportService failed")
-        error_message = "Could not load report snapshot. Check server logs for details."
+    def _totals(label: str, fn) -> dict:
+        try:
+            return fn()["totals"]
+        except Exception:
+            log.exception("reports_index: %s failed", label)
+            failed.append(label)
+            return {}
+
+    _ar    = _totals("ar_aging", svc.get_ar_aging)
+    _inv   = _totals("inventory_valuation", svc.get_inventory_valuation)
+    _pos   = _totals("open_pos", svc.get_open_pos)
+    _cores = _totals("outstanding_cores", svc.get_core_charges_outstanding)
+    _sales = _totals("sales_by_customer", lambda: svc.get_sales_by_customer(month_start, today))
+    _over  = _totals("overdue_invoices", svc.get_overdue_invoices)
+    _tax   = _totals("sales_tax", lambda: svc.get_sales_tax_collected(month_start, today))
+    _lost  = _totals("lost_sales", lambda: svc.get_lost_sales(month_start, today))
+    _low   = _totals("low_stock", svc.get_low_stock)
+    _dead  = _totals("dead_stock", svc.get_dead_stock)
+
+    ar_total             = _ar.get("total")
+    ar_over_90           = _ar.get("over_90")
+    inv_value            = _inv.get("total_value")
+    inv_skus             = _inv.get("in_stock_skus")
+    po_count             = _pos.get("po_count")
+    po_value             = _pos.get("outstanding_value")
+    core_amount          = _cores.get("amount")
+    core_overdue         = _cores.get("overdue_count")
+    mtd_revenue          = _sales.get("gross_sales")
+    mtd_margin           = _sales.get("margin")
+    mtd_margin_pct       = _sales.get("margin_pct")
+    overdue_total        = _over.get("total_owed")
+    overdue_count        = _over.get("invoice_count")
+    mtd_tax_collected    = _tax.get("tax_collected")
+    lost_count           = _lost.get("count")
+    low_stock_count      = _low.get("item_count")
+    low_stock_order_cost = _low.get("total_order_cost")
+    dead_stock_count     = _dead.get("item_count")
+    dead_stock_value     = _dead.get("total_tied_up_value")
+
+    error_message = None
+    if failed:
+        error_message = (
+            "Some snapshot figures could not be loaded ("
+            + ", ".join(failed)
+            + "). Check server logs for details."
+        )
 
     return templates.TemplateResponse(
         request,

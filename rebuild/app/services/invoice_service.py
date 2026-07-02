@@ -18,6 +18,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
+from sqlalchemy import update as sa_update
+
 from app.constants import (
     AuditAction, EntityType, FREIGHT_LINE_TYPES, InventoryTxnType,
     InvoiceLockReason, InvoiceStatus, LineType, NON_TAXABLE_LINE_TYPES,
@@ -645,6 +647,25 @@ class InvoiceService(BaseService):
 
         invoice = self._get_or_404(invoice_id)
 
+        # Atomic status claim (audit risk #10) — one conditional UPDATE closes
+        # the double-submit window: two concurrent finalize calls can BOTH pass
+        # the DRAFT validation above and each would decrement inventory and
+        # post AR. SQLite applies the UPDATE atomically, so exactly one caller
+        # sees rowcount 1 and proceeds; the loser raises before any mutation.
+        # synchronize_session=False: the ORM object's status is set explicitly
+        # at the end of this method, keeping the winner's flow unchanged.
+        claimed = self.db.execute(
+            sa_update(Invoice)
+            .where(Invoice.id == invoice_id, Invoice.status == InvoiceStatus.DRAFT)
+            .values(status=InvoiceStatus.OPEN)
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount != 1:
+            raise ValueError(
+                f"Invoice {invoice.invoice_number} is already finalized or is "
+                f"being finalized by another user."
+            )
+
         from app.models.quote import SOLine  # local import to avoid cycle
 
         # R1 — ensure tax snapshot is set (in case caller passed a draft with
@@ -686,6 +707,12 @@ class InvoiceService(BaseService):
         # tax_rate_snapshot is left intact so re-checking "Taxable" restores the rate.
         invoice.is_taxable = invoice.is_taxable and any(ln.is_taxable for ln in invoice.lines)
 
+        # Single qty_on_hand writer (audit risk #9) — cache mutation + ledger row
+        # go through InventoryService.apply_stock_delta. Lazy import mirrors
+        # po_service (module-load cycle guard).
+        from app.services.inventory_service import InventoryService
+        inv_stock = InventoryService(self.db, self.current_user_id)
+
         for ln in invoice.lines:
             if ln.line_type != LineType.PRODUCT:
                 continue
@@ -693,12 +720,18 @@ class InvoiceService(BaseService):
             # Snapshot cost (immutable after this point)
             if product and ln.unit_cost == 0.0:
                 ln.unit_cost = product.cost
-            # Decrement inventory (allow going negative only when explicitly overridden)
+            # Decrement inventory + INVOICE_SALE ledger row (cache floors at 0
+            # unless the negative-inventory override was granted above)
             if product:
-                if allow_negative_inventory:
-                    product.qty_on_hand = product.qty_on_hand - ln.qty
-                else:
-                    product.qty_on_hand = max(0, product.qty_on_hand - ln.qty)
+                inv_stock.apply_stock_delta(
+                    product,
+                    -ln.qty,
+                    InventoryTxnType.INVOICE_SALE,
+                    EntityType.INVOICE,
+                    invoice_id,
+                    notes=f"Invoice {invoice.invoice_number}",
+                    clamp_floor_zero=not allow_negative_inventory,
+                )
 
                 # R6 — release qty_committed only if fulfill_and_invoice didn't already
                 # do so. After fulfill_and_invoice runs, so_line.qty_committed holds
@@ -710,18 +743,6 @@ class InvoiceService(BaseService):
                     if so_line and so_line.qty_committed >= ln.qty:
                         so_line.qty_committed = max(0, so_line.qty_committed - ln.qty)
                         product.qty_committed = max(0, product.qty_committed - ln.qty)
-
-                txn = InventoryTransaction(
-                    product_id=product.id,
-                    transaction_type=InventoryTxnType.INVOICE_SALE,
-                    qty_change=-ln.qty,
-                    qty_after=product.qty_on_hand,
-                    reference_type=EntityType.INVOICE,
-                    reference_id=invoice_id,
-                    performed_by_id=self.current_user_id,
-                    notes=f"Invoice {invoice.invoice_number}",
-                )
-                self.db.add(txn)
 
                 # Low-stock notification when post-decrement qty is at or below reorder point
                 if (
@@ -1075,6 +1096,29 @@ class InvoiceService(BaseService):
                 f"applied payments. Reverse payments first, then void."
             )
 
+        # Atomic status claim (audit risk #10) — mirror of finalise(): closes
+        # the double-void window where two concurrent calls both pass the
+        # status checks above and each restores inventory (double-increment).
+        # Claimable set = every status the guards above allow through (not
+        # VOID, not PAID). Exactly one caller flips the row to VOID; the loser
+        # raises before any mutation.
+        claimed = self.db.execute(
+            sa_update(Invoice)
+            .where(
+                Invoice.id == invoice_id,
+                Invoice.status.in_(
+                    [InvoiceStatus.DRAFT, InvoiceStatus.OPEN, InvoiceStatus.PARTIAL]
+                ),
+            )
+            .values(status=InvoiceStatus.VOID)
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount != 1:
+            raise ValueError(
+                f"Invoice {invoice.invoice_number} is already void or is being "
+                f"voided by another user."
+            )
+
         # Use original sale transactions to know exactly how much to put back
         sale_txns: dict[int, int] = {}
         for orig in (
@@ -1093,6 +1137,11 @@ class InvoiceService(BaseService):
                 if ln.line_type == LineType.PRODUCT and ln.product_id and ln.qty > 0:
                     sale_txns[ln.product_id] = sale_txns.get(ln.product_id, 0) + ln.qty
 
+        # Single qty_on_hand writer (audit risk #9) — restore the cache + write
+        # the CORRECTION ledger row through InventoryService.apply_stock_delta.
+        from app.services.inventory_service import InventoryService
+        inv_stock = InventoryService(self.db, self.current_user_id)
+
         already_reversed: set[int] = set()
         for ln in invoice.lines:
             if ln.line_type != LineType.PRODUCT or not ln.product_id:
@@ -1106,18 +1155,14 @@ class InvoiceService(BaseService):
                 continue
             product = self.db.query(Product).filter(Product.id == pid).first()
             if product:
-                product.qty_on_hand += actual_qty
-                txn = InventoryTransaction(
-                    product_id=product.id,
-                    transaction_type=InventoryTxnType.CORRECTION,
-                    qty_change=actual_qty,
-                    qty_after=product.qty_on_hand,
-                    reference_type=EntityType.INVOICE,
-                    reference_id=invoice_id,
-                    performed_by_id=self.current_user_id,
+                inv_stock.apply_stock_delta(
+                    product,
+                    actual_qty,
+                    InventoryTxnType.CORRECTION,
+                    EntityType.INVOICE,
+                    invoice_id,
                     notes=f"Void: {invoice.invoice_number} — {reason}",
                 )
-                self.db.add(txn)
 
         for allocation in invoice.allocations:
             allocation.is_reversed = True

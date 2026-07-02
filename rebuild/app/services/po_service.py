@@ -500,7 +500,18 @@ class POService(BaseService):
             if not is_drop_ship and po_line.product_id:
                 product = self.db.query(Product).filter(Product.id == po_line.product_id).first()
                 if product:
-                    product.qty_on_hand += qty
+                    # Cache + PO_RECEIPT ledger row via the single qty_on_hand
+                    # writer (audit risk #9). Must run BEFORE the moving-average
+                    # update: _apply_moving_average_cost reads the
+                    # POST-increment qty_on_hand (subtracts qty back out).
+                    inv_svc.apply_stock_delta(
+                        product,
+                        qty,
+                        InventoryTxnType.PO_RECEIPT,
+                        EntityType.PO_RECEIPT,
+                        receipt.id,
+                        notes=f"PO {po.po_number}, line {po_line_id}",
+                    )
                     product.qty_on_order = max(0, product.qty_on_order - qty)
 
                     # R11 — moving weighted average cost update
@@ -511,18 +522,6 @@ class POService(BaseService):
                             product, qty, po_line.unit_cost,
                             freight_adder=freight_adder,
                         )
-
-                    txn = InventoryTransaction(
-                        product_id=product.id,
-                        transaction_type=InventoryTxnType.PO_RECEIPT,
-                        qty_change=qty,
-                        qty_after=product.qty_on_hand,
-                        reference_type=EntityType.PO_RECEIPT,
-                        reference_id=receipt.id,
-                        performed_by_id=self.current_user_id,
-                        notes=f"PO {po.po_number}, line {po_line_id}",
-                    )
-                    self.db.add(txn)
 
                 # Record cost change if the PO cost differs from vendor source
                 if po_line.unit_cost > 0:

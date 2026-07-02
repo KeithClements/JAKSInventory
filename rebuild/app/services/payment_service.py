@@ -284,12 +284,19 @@ class PaymentService(BaseService):
                 "unit_cost": 0.0,
             }],
         )
-        # create_invoice leaves the fee invoice in DRAFT; finalise it so it
-        # becomes a live A/R document the customer actually owes. Fails soft —
-        # a DRAFT fee invoice is recoverable, a crashed NSF workflow is not.
+        # create_invoice leaves the fee invoice in DRAFT (and already committed it,
+        # along with the payment.nsf_fee/status changes above); finalise it so it
+        # becomes a live A/R document the customer actually owes. Fails soft — a
+        # DRAFT fee invoice is recoverable, a crashed NSF workflow is not.
+        # finalise()'s first mutation is now an atomic DRAFT→OPEN status claim, so
+        # a mid-finalise failure must be ROLLED BACK — otherwise the trailing
+        # commit would persist a half-finalized OPEN invoice (no locked_at, no
+        # cost snapshot). Rollback discards only the pending claim; the fee invoice
+        # stays a recoverable DRAFT.
         try:
             inv_svc.finalise(nsf_invoice.id)
         except Exception as exc:
+            self.db.rollback()
             log.warning("NSF invoice %s could not be auto-finalized: %s", nsf_invoice.id, exc)
 
         self.audit(

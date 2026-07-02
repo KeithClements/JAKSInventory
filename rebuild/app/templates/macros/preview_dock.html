@@ -11,8 +11,12 @@
   x-show="previewId !== null"
   x-cloak
   {{ slide_up() }}
-  class="fixed bottom-0 right-0 bg-white border-t-2 border-gray-200 shadow-2xl z-30"
-  :class="sidebarCollapsed ? 'left-14' : 'left-sidebar'"
+  {# Below lg the sidebar is hidden/overlaid, so the dock must span the full
+     viewport (left-0). The sidebar offset applies at lg+ only — lg:left-14 /
+     lg:left-sidebar are defined in base.html's inline style block because
+     compiled app.css lacks lg:left-* variants (same rules build:css would emit). #}
+  class="fixed bottom-0 left-0 right-0 bg-white border-t-2 border-gray-200 shadow-2xl z-30"
+  :class="sidebarCollapsed ? 'lg:left-14' : 'lg:left-sidebar'"
   style="max-height: 260px; overflow-y: auto;">
 
   {# Panel header #}

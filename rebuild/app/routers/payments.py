@@ -7,13 +7,15 @@ from the invoice detail page (single invoice).
 """
 from __future__ import annotations
 
+import csv
+import io
 import logging
 from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import quote as url_quote
 
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
@@ -29,6 +31,25 @@ router = APIRouter(prefix="/payments", tags=["payments"])
 templates = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent.parent / "templates")
 )
+
+# Valid status-tab slugs — shared by the list view and its CSV export.
+_VALID_PMT_TABS = {"", PaymentStatus.APPLIED, PaymentStatus.REVERSED, PaymentStatus.NSF}
+
+
+def _apply_payment_list_filters(query, active_tab: str, q: str):
+    """Shared tab/q filter chain for the payment list AND its CSV export — one
+    implementation so "export what I see" can never drift from the list view.
+    Caller must have already joined Customer."""
+    if active_tab:
+        query = query.filter(Payment.status == active_tab)
+    if q:
+        query = query.filter(
+            or_(
+                Customer.company_name.ilike(f"%{q}%"),
+                Payment.check_number.ilike(f"%{q}%"),
+            )
+        )
+    return query
 
 
 # ── New Payment (multi-invoice) ───────────────────────────────────────────────
@@ -206,23 +227,14 @@ def payment_list(
         PaymentStatus.NSF:       _raw.get(PaymentStatus.NSF,      0),
     }
 
-    _VALID = {"", PaymentStatus.APPLIED, PaymentStatus.REVERSED, PaymentStatus.NSF}
-    active_tab = tab if tab in _VALID else (status if status in _VALID else "")
+    active_tab = tab if tab in _VALID_PMT_TABS else (status if status in _VALID_PMT_TABS else "")
 
     query = (
         db.query(Payment)
         .join(Customer)
         .options(selectinload(Payment.allocations))  # fix N+1 on amount_unallocated
     )
-    if active_tab:
-        query = query.filter(Payment.status == active_tab)
-    if q:
-        query = query.filter(
-            or_(
-                Customer.company_name.ilike(f"%{q}%"),
-                Payment.check_number.ilike(f"%{q}%"),
-            )
-        )
+    query = _apply_payment_list_filters(query, active_tab, q)
     # Sort (#4 — whitelisted keys, asc/desc).
     _P_SORT = {
         "date":     Payment.payment_date,
@@ -267,6 +279,86 @@ def payment_list(
             "PaymentMethod":     PaymentMethod,
             "invoice_nums_map":  dict(invoice_nums_map),
         },
+    )
+
+
+# ── Export CSV — MUST stay registered before /{payment_id} ───────────────────
+
+@router.get("/export.csv")
+def payment_export_csv(
+    tab: str = "",
+    q: str = "",
+    # `status` kept for parity with the list view's legacy param.
+    status: str = "",
+    db: Session = Depends(get_db),
+):
+    """
+    Stream the current filtered payment list as a CSV download.
+    Respects the same tab/q filters as the list view so "export what I see"
+    works, and streams ALL matching rows — not just the visible page.
+    (Same pattern as /invoices/export.csv and /products/export.csv.)
+    """
+    from collections import defaultdict
+
+    from sqlalchemy.orm import joinedload
+
+    active_tab = tab if tab in _VALID_PMT_TABS else (status if status in _VALID_PMT_TABS else "")
+    query = (
+        db.query(Payment)
+        .join(Customer)
+        .options(
+            joinedload(Payment.customer),
+            selectinload(Payment.allocations),  # amount_allocated/unallocated walk these
+        )
+    )
+    query = _apply_payment_list_filters(query, active_tab, q)
+    payments = query.order_by(Payment.payment_date.desc(), Payment.id.desc()).all()
+
+    # Applied invoice numbers per payment (active allocations only) — one join
+    # query, mirroring the list view's §2B bulk map.
+    _pmt_ids = [p.id for p in payments]
+    _alloc_rows = (
+        db.query(PaymentAllocation.payment_id, Invoice.invoice_number)
+        .join(Invoice, PaymentAllocation.invoice_id == Invoice.id)
+        .filter(
+            PaymentAllocation.payment_id.in_(_pmt_ids),
+            PaymentAllocation.is_reversed == False,  # noqa: E712
+        )
+        .all()
+    ) if _pmt_ids else []
+    inv_nums: dict = defaultdict(list)
+    for pmt_id, inv_num in _alloc_rows:
+        inv_nums[pmt_id].append(inv_num)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "payment_id", "payment_date", "customer", "method", "check_number",
+        "status", "amount_received", "surcharge", "amount_applied",
+        "amount_unapplied", "nsf_fee", "applied_invoices", "reversal_reason",
+    ])
+    for pmt in payments:
+        writer.writerow([
+            pmt.id,
+            pmt.payment_date.strftime("%Y-%m-%d") if pmt.payment_date else "",
+            pmt.customer.company_name if pmt.customer else "",
+            pmt.payment_method,
+            pmt.check_number or "",
+            pmt.status,
+            f"{pmt.amount_received:.2f}",
+            f"{pmt.surcharge_amount:.2f}",
+            f"{pmt.amount_allocated:.2f}",
+            f"{pmt.amount_unallocated:.2f}",
+            f"{pmt.nsf_fee:.2f}",
+            "; ".join(inv_nums.get(pmt.id, [])),
+            pmt.reversal_reason or "",
+        ])
+
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=payments.csv"},
     )
 
 

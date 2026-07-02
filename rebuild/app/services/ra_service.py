@@ -337,24 +337,20 @@ class RAService(BaseService):
             return
 
         from app.models.product import Product
-        from app.models.inventory import InventoryTransaction
+        from app.services.inventory_service import InventoryService
 
         product = self.db.query(Product).filter(Product.id == line.product_id).first()
         if not product:
             return
 
-        old_qty = product.qty_on_hand
-        product.qty_on_hand = (product.qty_on_hand or 0) + qty
-
-        txn = InventoryTransaction(
-            product_id=line.product_id,
-            transaction_type=InventoryTxnType.RETURN_TO_STOCK,
-            qty_change=qty,
-            qty_after=product.qty_on_hand,
-            reference_type=EntityType.RETURN_AUTHORIZATION,
-            reference_id=line.ra_id,
+        # Cache + RETURN_TO_STOCK ledger row via the single qty_on_hand writer
+        # (audit risk #9).
+        InventoryService(self.db, self.current_user_id).apply_stock_delta(
+            product,
+            qty,
+            InventoryTxnType.RETURN_TO_STOCK,
+            EntityType.RETURN_AUTHORIZATION,
+            line.ra_id,
             notes=f"Customer return — {ra_number}",
-            performed_by_id=self.current_user_id,
         )
-        self.db.add(txn)
         self.db.flush()

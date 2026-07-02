@@ -279,17 +279,80 @@ class QBOSyncService(BaseService):
             )
         ]
 
+    def failed_payment_ids(self, max_retries: int = 5) -> list[int]:
+        """ERROR-status APPLIED payments under the retry ceiling (reversed/NSF
+        payments are excluded — push_payment refuses those by design)."""
+        return [
+            pid for (pid,) in (
+                self.db.query(Payment.id)
+                .filter(
+                    Payment.status == PaymentStatus.APPLIED,
+                    Payment.qbo_sync_status == QBOSyncStatus.ERROR,
+                    Payment.qbo_sync_retry_count < max_retries,
+                )
+                .order_by(Payment.id)
+                .all()
+            )
+        ]
+
+    def failed_vendor_bill_ids(self, max_retries: int = 5) -> list[int]:
+        """ERROR-status APPROVED/PAID vendor bills under the retry ceiling."""
+        return [
+            bid for (bid,) in (
+                self.db.query(VendorBill.id)
+                .filter(
+                    VendorBill.status.in_(_PUSHABLE_BILL_STATUSES),
+                    VendorBill.qbo_sync_status == QBOSyncStatus.ERROR,
+                    VendorBill.qbo_sync_retry_count < max_retries,
+                )
+                .order_by(VendorBill.id)
+                .all()
+            )
+        ]
+
+    def failed_credit_memo_ids(self, max_retries: int = 5) -> list[int]:
+        """ERROR-status non-reversed credit memos under the retry ceiling."""
+        return [
+            cid for (cid,) in (
+                self.db.query(CreditMemo.id)
+                .filter(
+                    CreditMemo.status != CreditMemoStatus.REVERSED,
+                    CreditMemo.qbo_sync_status == QBOSyncStatus.ERROR,
+                    CreditMemo.qbo_sync_retry_count < max_retries,
+                )
+                .order_by(CreditMemo.id)
+                .all()
+            )
+        ]
+
     def retry_failed_pushes(self, limit: int = 25) -> dict:
-        """§21 — re-push ERROR invoices (under the retry ceiling). Returns a
-        summary; never raises (per-invoice push is already fail-soft)."""
-        ids = self.failed_invoice_ids()[:limit]
-        ok = 0
-        for iid in ids:
-            if self.push_invoice(iid).get("ok"):
-                ok += 1
-        if ids:
-            log.info("QBO retry worker: re-pushed %d/%d failed invoices", ok, len(ids))
-        return {"attempted": len(ids), "succeeded": ok}
+        """§21 — re-push ERROR documents of EVERY synced entity type (invoices,
+        payments, vendor bills, credit memos), each under its retry ceiling and
+        each capped at ``limit`` per tick. Runs as whatever actor constructed
+        the service — the background worker uses the system actor
+        (current_user_id=None), which passes the REPUSH_QBO gate by design.
+        Returns per-entity + total counts; never raises (every push is
+        fail-soft)."""
+        out: dict = {"attempted": 0, "succeeded": 0, "entities": {}}
+        for entity, id_fn, push in (
+            ("invoices", self.failed_invoice_ids, self.push_invoice),
+            ("payments", self.failed_payment_ids, self.push_payment),
+            ("vendor_bills", self.failed_vendor_bill_ids, self.push_vendor_bill),
+            ("credit_memos", self.failed_credit_memo_ids, self.push_credit_memo),
+        ):
+            ids = id_fn()[:limit]
+            ok = sum(1 for doc_id in ids if push(doc_id).get("ok"))
+            out["entities"][entity] = {"attempted": len(ids), "succeeded": ok}
+            out["attempted"] += len(ids)
+            out["succeeded"] += ok
+        if out["attempted"]:
+            log.info(
+                "QBO retry worker: re-pushed %d/%d failed documents (%s)",
+                out["succeeded"], out["attempted"],
+                ", ".join(f"{k}={v['succeeded']}/{v['attempted']}"
+                          for k, v in out["entities"].items() if v["attempted"]),
+            )
+        return out
 
     # ── payment push ────────────────────────────────────────────────────────
     def push_payment(self, payment_id: int) -> dict:
@@ -444,15 +507,21 @@ class QBOSyncService(BaseService):
         Undeposited Funds; this receipt must land in the SAME account for the
         combined deposit to match — so it also omits DepositToAccountRef.
 
-        Idempotent by DocNumber: Payment has no column to store the receipt id,
-        so a repush queries for the deterministic DocNumber and reuses the
-        existing receipt instead of double-counting the surcharge.
+        Idempotent, two layers: Payment.qbo_surcharge_receipt_id is checked
+        FIRST (set → return it, zero API calls), closing the query-then-create
+        window where two near-simultaneous pushes could each see "no receipt"
+        from the DocNumber query and double-book the surcharge. Pre-column
+        receipts (id never persisted) still recover via the deterministic
+        DocNumber query; either path persists the id to the column.
 
         Best-effort; never raises and never fails the (already committed)
         payment sync — a failure is logged + audited and returns None."""
         surcharge = round(float(getattr(pmt, "surcharge_amount", 0.0) or 0.0), 2)
         if surcharge <= 0:
             return None
+        stored = (pmt.qbo_surcharge_receipt_id or "").strip()
+        if stored:
+            return stored
         doc_number = self._surcharge_doc_number(pmt)
         try:
             client = QBOClient(self.db)
@@ -460,7 +529,9 @@ class QBOSyncService(BaseService):
                 f"select Id, DocNumber from SalesReceipt where DocNumber = '{_q(doc_number)}'"
             )
             if rows and rows[0].get("Id"):
-                return str(rows[0]["Id"])
+                # Legacy receipt (pushed before the column existed) — persist the
+                # id so the NEXT push skips the API entirely.
+                return self._store_surcharge_receipt_id(pmt, str(rows[0]["Id"]))
             customer_ref = self._resolve_customer(client, pmt.customer)
             item_id = self._resolve_surcharge_item(client)
             payload: dict = {
@@ -485,6 +556,7 @@ class QBOSyncService(BaseService):
             qbo_id = str(created.get("Id", "")).strip()
             if not qbo_id:
                 raise QBOError(f"QBO did not return a sales receipt Id: {created}")
+            self._store_surcharge_receipt_id(pmt, qbo_id)
             self._audit_push(
                 EntityType.PAYMENT, pmt.id, ok=True,
                 detail=f"Card surcharge ${surcharge:.2f} pushed to QBO as SalesReceipt {qbo_id}",
@@ -499,6 +571,13 @@ class QBOSyncService(BaseService):
                 detail=f"Surcharge SalesReceipt push failed (payment itself synced): {msg}",
             )
             return None
+
+    def _store_surcharge_receipt_id(self, pmt: Payment, receipt_id: str) -> str:
+        """Persist the SalesReceipt id alongside the payment's other sync fields
+        (mark_synced has already committed by the time the receipt push runs)."""
+        pmt.qbo_surcharge_receipt_id = receipt_id
+        self.db.commit()
+        return receipt_id
 
     def _resolve_surcharge_item(self, client: QBOClient) -> str:
         """'JAKS Card Surcharge' item id, created on first use — installs whose
@@ -1145,13 +1224,53 @@ class QBOSyncService(BaseService):
         }
 
     # ── status for the Settings UI ────────────────────────────────────────────
+    def _sync_counts(self, model, *gates) -> dict[str, int]:
+        """{pending, failed, synced} for one QBOSyncMixin model, restricted to
+        the rows the push methods would actually accept (``gates``) so a draft
+        invoice / pending bill never inflates the 'pending sync' number."""
+        counts = dict(
+            self.db.query(model.qbo_sync_status, func.count(model.id))
+            .filter(*gates)
+            .group_by(model.qbo_sync_status)
+            .all()
+        )
+        return {
+            "pending": int(counts.get(QBOSyncStatus.PENDING, 0)),
+            "failed": int(counts.get(QBOSyncStatus.ERROR, 0)),
+            "synced": int(counts.get(QBOSyncStatus.SYNCED, 0)),
+        }
+
+    def needs_manual_reversal(self) -> dict:
+        """Payments that synced to QBO (qbo_payment_id set) and were LATER
+        reversed/NSF'd here. Sync is one-way (JAKS → QBO, create-only), so QBO
+        still shows that cash as received until a human voids the QBO payment —
+        and the JAKS-SC-{id} surcharge SalesReceipt when one was pushed."""
+        ids = [
+            pid for (pid,) in (
+                self.db.query(Payment.id)
+                .filter(
+                    Payment.qbo_payment_id.isnot(None),
+                    Payment.qbo_payment_id != "",
+                    Payment.status.in_([PaymentStatus.REVERSED, PaymentStatus.NSF]),
+                )
+                .order_by(Payment.id)
+                .all()
+            )
+        ]
+        return {"count": len(ids), "ids": ids}
+
     def connection_summary(self) -> dict:
         from app.services import qbo_client as qc
         cfg = qc.load_config(self.db)
-        counts = dict(
-            self.db.query(Invoice.qbo_sync_status, func.count(Invoice.id))
-            .group_by(Invoice.qbo_sync_status).all()
-        )
+        entities = {
+            "invoices": self._sync_counts(Invoice, Invoice.status.in_(_PUSHABLE_STATUSES)),
+            "payments": self._sync_counts(Payment, Payment.status == PaymentStatus.APPLIED),
+            "vendor_bills": self._sync_counts(
+                VendorBill, VendorBill.status.in_(_PUSHABLE_BILL_STATUSES)),
+            "credit_memos": self._sync_counts(
+                CreditMemo, CreditMemo.status != CreditMemoStatus.REVERSED),
+        }
+        reversal = self.needs_manual_reversal()
         return {
             "connected": cfg.is_connected,
             "has_credentials": cfg.has_credentials,
@@ -1159,7 +1278,15 @@ class QBOSyncService(BaseService):
             "realm_id": cfg.realm_id,
             "redirect_uri": cfg.redirect_uri,
             "connected_at": get_setting_value_db(self.db, "qbo_connected_at", ""),
-            "pending": int(counts.get(QBOSyncStatus.PENDING, 0)),
-            "synced": int(counts.get(QBOSyncStatus.SYNCED, 0)),
-            "error": int(counts.get(QBOSyncStatus.ERROR, 0)),
+            # Back-compat flat keys = INVOICE counts (pre-existing consumers:
+            # dashboard chip, settings card, /qbo/status). "error" keeps its
+            # legacy name; per-entity blocks use "failed".
+            "pending": entities["invoices"]["pending"],
+            "synced": entities["invoices"]["synced"],
+            "error": entities["invoices"]["failed"],
+            "entities": entities,
+            "pending_total": sum(e["pending"] for e in entities.values()),
+            "failed_total": sum(e["failed"] for e in entities.values()),
+            "needs_reversal": reversal["count"],
+            "needs_reversal_ids": reversal["ids"],
         }

@@ -1,19 +1,28 @@
 {# dashboard/_followups_widget.html
-   Dashboard "Follow-ups due" widget partial.
+   "Follow-ups due" widget partial — CRM activity follow-ups (CRMService.follow_ups_due).
    Context: due (list[Activity]), today (date).
 
-   Backend stub — UI-Builder builds the full widget UI here.
-   Each item exposes: id, customer_id, customer.company_name, note, follow_up_date.
+   Rendered two ways with the same context contract:
+     - server-side include on the dashboard rail (dashboard.html)
+     - HTMX partial via GET /activities/follow-ups (refresh after followUpDone)
+   Each item exposes: id, customer_id, customer.company_name, notes, follow_up_date.
 #}
 {% if not due %}
 <p class="text-sm text-gray-400 px-4 py-3">No follow-ups due today.</p>
 {% else %}
 <ul class="divide-y divide-gray-100">
   {% for item in due %}
+  {% set overdue = item.follow_up_date and today and item.follow_up_date < today %}
   <li class="px-4 py-2 flex items-center gap-3">
-    <span class="text-xs text-gray-400">{{ item.follow_up_date }}</span>
-    <span class="text-sm text-gray-700 grow truncate">{{ item.notes }}</span>
-    <form method="post" action="/activities/{{ item.id }}/follow-up-done">
+    <span class="text-xs font-mono shrink-0 {% if overdue %}text-red-600 font-semibold{% else %}text-gray-400{% endif %}"
+          {% if overdue %}title="Overdue"{% endif %}>{{ item.follow_up_date.strftime('%b %d') if item.follow_up_date else '—' }}</span>
+    <div class="min-w-0 flex-1">
+      <a href="/customers/{{ item.customer_id }}?tab=activity" class="text-sm font-semibold text-ink hover:underline block truncate">
+        {{ item.customer.company_name if item.customer else 'Customer #' ~ item.customer_id }}
+      </a>
+      {% if item.notes %}<p class="text-xs text-gray-500 truncate">{{ item.notes }}</p>{% endif %}
+    </div>
+    <form method="post" action="/activities/{{ item.id }}/follow-up-done" class="shrink-0">
       <button type="submit" class="text-xs text-blue-600 hover:underline">Done</button>
     </form>
   </li>

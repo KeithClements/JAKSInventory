@@ -20,13 +20,15 @@ Workspace pattern:
 """
 from __future__ import annotations
 
+import csv
+import io
 import logging
 import time
 from pathlib import Path
 from urllib.parse import quote as url_quote
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -36,6 +38,7 @@ from app.constants import (
     LineType, PaymentMethod, SOPaymentMode, SOStatus,
 )
 from app.deps import get_current_user_id, get_db
+from app.services.base import ConcurrentEditError
 from app.services.category_service import engine_make_names
 from app.models.customer import Customer, CustomerAddress
 from app.models.quote import SalesOrder, SOLine
@@ -70,6 +73,27 @@ def _get_so_or_404(db: Session, so_id: int) -> SalesOrder:
     if so is None:
         raise HTTPException(status_code=404, detail="Sales order not found")
     return so
+
+
+def _apply_so_list_filters(query, active_tab: str, q: str):
+    """Shared tab/q filter chain for the SO list AND its CSV export — one
+    implementation so "export what I see" can never drift from the list view.
+    Caller must have already joined Customer."""
+    if active_tab:
+        query = query.filter(SalesOrder.status == active_tab)
+    if q:
+        _qd = q.replace("-", "").replace(" ", "")
+        query = query.filter(
+            or_(
+                SalesOrder.so_number.ilike(f"%{q}%"),
+                # de-dash so "so20260001" still finds "SO-2026-0001"
+                func.replace(func.replace(SalesOrder.so_number, "-", ""), " ", "").ilike(f"%{_qd}%"),
+                Customer.company_name.ilike(f"%{q}%"),
+                SalesOrder.customer_po_number.ilike(f"%{q}%"),
+                SalesOrder.esn.ilike(f"%{q}%"),
+            )
+        )
+    return query
 
 
 def _workspace_ctx(request: Request, so: SalesOrder, db: Session) -> dict:
@@ -124,20 +148,7 @@ async def list_sales_orders(
     active_tab = tab or status
 
     query = db.query(SalesOrder).join(Customer)
-    if active_tab:
-        query = query.filter(SalesOrder.status == active_tab)
-    if q:
-        _qd = q.replace("-", "").replace(" ", "")
-        query = query.filter(
-            or_(
-                SalesOrder.so_number.ilike(f"%{q}%"),
-                # de-dash so "so20260001" still finds "SO-2026-0001"
-                func.replace(func.replace(SalesOrder.so_number, "-", ""), " ", "").ilike(f"%{_qd}%"),
-                Customer.company_name.ilike(f"%{q}%"),
-                SalesOrder.customer_po_number.ilike(f"%{q}%"),
-                SalesOrder.esn.ilike(f"%{q}%"),
-            )
-        )
+    query = _apply_so_list_filters(query, active_tab, q)
     # §21 — pagination (was a silent limit(150)).
     from app.utils import compute_pager
     query = query.order_by(SalesOrder.created_at.desc())
@@ -157,6 +168,67 @@ async def list_sales_orders(
             # §5.1 — SO dashboard strip metrics (UI renders the tiles)
             "so_metrics": SalesOrderMetricsService(db).dashboard_metrics(),
         },
+    )
+
+
+# ── Export CSV — MUST stay registered before /{so_id} ────────────────────────
+
+@router.get("/export.csv")
+def so_export_csv(
+    tab: str = "",
+    q: str = "",
+    # `status` kept for parity with the list view's legacy param.
+    status: str = "",
+    db: Session = Depends(get_db),
+):
+    """
+    Stream the current filtered SO list as a CSV download.
+    Respects the same tab/q filters as the list view so "export what I see"
+    works, and streams ALL matching rows — not just the visible page.
+    (Same pattern as /invoices/export.csv and /products/export.csv.)
+    """
+    from sqlalchemy.orm import joinedload, selectinload
+
+    active_tab = tab or status
+    query = (
+        db.query(SalesOrder)
+        .join(Customer)
+        .options(
+            joinedload(SalesOrder.customer),
+            selectinload(SalesOrder.lines),  # subtotal/qty rollups walk .lines
+        )
+    )
+    query = _apply_so_list_filters(query, active_tab, q)
+    orders = query.order_by(SalesOrder.created_at.desc()).all()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "so_number", "status", "customer", "customer_po_number", "esn",
+        "payment_mode", "deposit_amount", "lines",
+        "qty_ordered", "qty_fulfilled", "subtotal", "ordered",
+    ])
+    for so in orders:
+        writer.writerow([
+            so.so_number,
+            so.status,
+            so.customer.company_name if so.customer else "",
+            so.customer_po_number or "",
+            so.esn or "",
+            so.payment_mode,
+            f"{so.deposit_amount:.2f}",
+            len(so.lines),
+            sum(ln.qty_ordered for ln in so.lines),
+            sum(ln.qty_fulfilled for ln in so.lines),
+            f"{so.subtotal:.2f}",
+            so.created_at.strftime("%Y-%m-%d") if so.created_at else "",
+        ])
+
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=sales_orders.csv"},
     )
 
 
@@ -317,9 +389,16 @@ async def so_update_header(
     submitted_updated_at = form.get("_updated_at")
     try:
         SalesOrderService(db, user_id).update_header(so_id, data, submitted_updated_at)
+    except ConcurrentEditError as exc:
+        db.rollback()
+        return HTMLResponse(str(exc), status_code=409)
     except ValueError as exc:
         return HTMLResponse(f'<div class="text-xs text-red-600">{exc}</div>', status_code=400)
-    return HTMLResponse("", status_code=204)
+    # X-Updated-At lets the workspace refresh its hidden version field after every
+    # successful save so the next autosave never self-conflicts (R9, PO pattern).
+    so = db.query(SalesOrder).filter(SalesOrder.id == so_id).first()
+    fresh_ts = so.updated_at.isoformat() if so and so.updated_at else ""
+    return HTMLResponse("", status_code=204, headers={"X-Updated-At": fresh_ts})
 
 
 # ── Line CRUD (HTMX) ──────────────────────────────────────────────────────────

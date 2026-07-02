@@ -144,6 +144,12 @@ class CreditMemoAllocation(Base):
     )
     is_reversed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # When applying a CM creates a synthetic ACCOUNT_CREDIT PaymentAllocation,
+    # this links the two so reverse_credit_memo can join on it directly instead
+    # of the legacy LIKE-on-notes heuristic. NULL for pre-link rows.
+    linked_payment_allocation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("payment_allocations.id"), nullable=True
+    )
 
     credit_memo: Mapped[CreditMemo] = relationship(
         "CreditMemo", back_populates="allocations"

@@ -30,6 +30,7 @@ from app.constants import (
     InvoiceStatus, LineType, PaymentMethod, QBOSyncStatus,
 )
 from app.deps import get_current_user_id, get_db
+from app.services.base import ConcurrentEditError
 from app.services.category_service import engine_make_names
 from app.services.document_messaging import (
     build_send_context,
@@ -696,8 +697,17 @@ async def invoice_update_header(
         except ValueError:
             data["due_date"] = None
 
+    # Optimistic locking (R9) — hidden field carries the updated_at the user
+    # loaded; template JS refreshes it from X-Updated-At after each save so
+    # the autosave never conflicts with itself.
+    submitted_updated_at = str(form.get("_updated_at", "")).strip() or None
     try:
-        InvoiceService(db, user_id).update_header(invoice_id, data)
+        InvoiceService(db, user_id).update_header(invoice_id, data, submitted_updated_at)
+    except ConcurrentEditError as exc:
+        db.rollback()
+        return HTMLResponse(
+            f'<div class="text-xs text-red-600">{exc}</div>', status_code=409
+        )
     except ValueError as exc:
         db.rollback()
         return HTMLResponse(
@@ -705,11 +715,13 @@ async def invoice_update_header(
         )
 
     inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
-    return templates.TemplateResponse(
+    resp = templates.TemplateResponse(
         request,
         "invoices/_totals_panel.html",
         _workspace_context(db, request, inv, user_id),
     )
+    resp.headers["X-Updated-At"] = inv.updated_at.isoformat() if inv.updated_at else ""
+    return resp
 
 
 # ── Change customer (HTMX) ────────────────────────────────────────────────────

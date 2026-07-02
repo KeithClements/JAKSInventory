@@ -8,11 +8,24 @@
   'expired':   'badge-amber',
 } %}
 
+{# 1366×768 counter screens: the h-14 topbar can't wrap, so below 1440px the
+   long action labels swap for short ones and the convenience back-link drops.
+   Scoped style (not a Tailwind utility) — the purged app.css has no ≥1440
+   variants and templates must not require a CSS rebuild. #}
+<style>
+  .hdr-full { display: none; }
+  .hdr-abbr { display: inline; }
+  @media (min-width: 1440px) {
+    .hdr-full { display: inline; }
+    .hdr-abbr { display: none; }
+  }
+</style>
+
 <div class="flex items-center gap-2 flex-wrap justify-end"
      x-data="{ moreOpen: false, showSO: false, showLost: false, sendOpen: false, reason: '' }">
 
-  {# §8B Zone 1 — back link, leftmost (same-tab nav) #}
-  <a href="/quotes/" class="hidden lg:inline mr-auto text-sm link-subtle">← All quotes</a>
+  {# §8B Zone 1 — back link, leftmost (same-tab nav; ≥1440px only) #}
+  <a href="/quotes/" class="hdr-full mr-auto text-sm link-subtle">← All quotes</a>
 
   <span class="{{ quote_status_badges.get(quote.status, 'badge-gray') }}">
     {{ quote.status | title }}{% if quote.is_expired and quote.status == 'sent' %} · Expired{% endif %}
@@ -31,7 +44,7 @@
 
     <div class="relative inline-block">
       <button type="button" @click="showSO = !showSO" class="btn-secondary btn-sm">
-        → Sales Order ▾
+        → <span class="hdr-full">Sales Order</span><span class="hdr-abbr">SO</span> ▾
       </button>
       <div x-show="showSO" x-cloak @click.away="showSO = false"
            class="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 p-4 w-56">
@@ -61,7 +74,7 @@
 
     <div class="relative inline-block">
       <button type="button" @click="showSO = !showSO" class="btn-primary btn-sm">
-        → Sales Order ▾
+        → <span class="hdr-full">Sales Order</span><span class="hdr-abbr">SO</span> ▾
       </button>
       <div x-show="showSO" x-cloak @click.away="showSO = false"
            class="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 p-4 w-56">
@@ -145,7 +158,7 @@
     <button type="button"
             @click="jakConfirm({ title: 'Convert to invoice?', body: 'Convert{% if quote.status == QuoteStatus.DRAFT %} this quote directly{% endif %} to an invoice?', cta: 'Convert to Invoice', danger: false, formId: 'quote-convert-invoice-form' })"
             class="btn-amber btn-sm">
-      Convert to Invoice →
+      <span class="hdr-full">Convert to Invoice →</span><span class="hdr-abbr">Invoice →</span>
     </button>
   </form>
   {% endif %}

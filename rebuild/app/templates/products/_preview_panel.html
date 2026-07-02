@@ -101,9 +101,12 @@
       <div class="space-y-1.5">
         <div class="flex items-center justify-between">
           <span class="text-xs text-gray-500">On Hand</span>
+          {# is_low_stock inlined + None-guarded: the property compares
+             qty_on_hand <= reorder_point and raises TypeError when either is
+             NULL (legacy import rows) — same truthiness guard as Available below #}
           <span class="text-sm font-bold tabular-nums
-            {% if p.qty_on_hand == 0 %}text-red-600{% elif p.is_low_stock %}text-amber-600{% else %}text-gray-900{% endif %}">
-            {{ p.qty_on_hand }}
+            {% if not p.qty_on_hand %}text-red-600{% elif p.reorder_point and p.qty_on_hand <= p.reorder_point %}text-amber-600{% else %}text-gray-900{% endif %}">
+            {{ p.qty_on_hand or 0 }}
           </span>
         </div>
         <div class="flex items-center justify-between">

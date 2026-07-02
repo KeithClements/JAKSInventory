@@ -14,11 +14,23 @@
 } %}
 {% set pill = status_pill_map.get(invoice.status, ('chip-draft', invoice.status|upper)) %}
 
+{# 1366×768 counter screens: the h-14 topbar can't wrap — below 1440px swap
+   long action labels for short ones and drop the convenience back-link.
+   Scoped style (not a Tailwind utility): purged app.css has no ≥1440 variants. #}
+<style>
+  .hdr-full { display: none; }
+  .hdr-abbr { display: inline; }
+  @media (min-width: 1440px) {
+    .hdr-full { display: inline; }
+    .hdr-abbr { display: none; }
+  }
+</style>
+
 <div class="flex items-center gap-2 flex-wrap justify-end"
      x-data="{ moreOpen: false, sendOpen: false }">
 
-  {# Zone 1 — back link, leftmost #}
-  <a href="/invoices/" class="hidden lg:inline mr-auto text-sm link-subtle">← All invoices</a>
+  {# Zone 1 — back link, leftmost (≥1440px only) #}
+  <a href="/invoices/" class="hdr-full mr-auto text-sm link-subtle">← All invoices</a>
 
   {# Status chip — Axle .chip-axle (dot + Oswald label) #}
   <span class="chip-axle {{ pill[0] }}"><span class="dot"></span>{{ pill[1] }}</span>
@@ -109,7 +121,7 @@
   {# OPEN / PARTIAL → Record Payment (opens the existing payment modal) #}
   <button type="button" class="btn-amber btn-sm"
           @click="$dispatch('open-payment')">
-    Record Payment
+    <span class="hdr-full">Record Payment</span><span class="hdr-abbr">Payment</span>
   </button>
   {% endif %}
   {# PAID / VOID → no amber CTA (Print already shown above) #}

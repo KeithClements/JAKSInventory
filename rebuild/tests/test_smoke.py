@@ -96,8 +96,9 @@ SMOKE_PAGES = [
     ("/reports/sales/", "sales report"),
     ("/reports/inventory/", "inventory report"),
 
-    # Global search
-    ("/search", "search"),
+    # Global search — the Ctrl+K overlay JSON endpoint (the legacy /search
+    # header-dropdown page was removed with its template).
+    ("/search/overlay?q=test", "search"),
 ]
 
 

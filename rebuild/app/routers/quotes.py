@@ -28,6 +28,7 @@ from app.constants import (
     ENGINE_MODELS_BY_MAKE,
 )
 from app.deps import get_current_user_id, get_db
+from app.services.base import ConcurrentEditError
 from app.services.category_service import engine_make_names
 from app.services.document_messaging import (
     build_send_context,
@@ -128,8 +129,20 @@ async def list_quotes(
         .scalar()
         or 0
     )
+    # "open" = the live pipeline (terminal statuses excluded). This is the exact
+    # count the dashboard's Open Quotes KPI shows, so its card links here (?tab=open).
+    _OPEN_QUOTE_EXCLUDED = [
+        QuoteStatus.CONVERTED, QuoteStatus.DECLINED, QuoteStatus.EXPIRED,
+    ]
+    _open_count: int = (
+        db.query(func.count(Quote.id))
+        .filter(Quote.status.notin_(_OPEN_QUOTE_EXCLUDED))
+        .scalar()
+        or 0
+    )
     counts: dict = {
         "": sum(_status_counts.values()),
+        "open":                _open_count,
         QuoteStatus.DRAFT:     _status_counts.get(QuoteStatus.DRAFT, 0),
         QuoteStatus.SENT:      _status_counts.get(QuoteStatus.SENT, 0),
         QuoteStatus.CONVERTED: _status_counts.get(QuoteStatus.CONVERTED, 0),
@@ -151,6 +164,9 @@ async def list_quotes(
             Quote.outcome == QuoteOutcome.PENDING,
             Quote.status.notin_([QuoteStatus.CONVERTED, QuoteStatus.DECLINED]),
         )
+    elif active_tab == "open":
+        # Live pipeline — matches the dashboard Open Quotes KPI exactly.
+        query = query.filter(Quote.status.notin_(_OPEN_QUOTE_EXCLUDED))
     elif active_tab:
         query = query.filter(Quote.status == active_tab)
     if q:
@@ -403,15 +419,15 @@ def _quote_customer_ctx(db, quote) -> dict:
                 "cust_last_purchase": None,
                 "cust_lifetime_sales": 0.0}
     m = CustomerMetricsService(db).metrics_for(cid)
-    # Use the InvoiceMetricsService helper for last_purchase and lifetime
-    # (it already does this per-customer keyed on any invoice).
+    inv_metrics = InvoiceMetricsService(db)
     return {
-        # Item 12 — these read the WRONG keys before (outstanding_cores /
-        # last_purchase), which CustomerMetricsService never emits, so the quote
-        # workspace intelligence panel was permanently blank. Correct keys are
-        # outstanding_core_credits / last_invoice_date (see METRIC_KEYS).
-        "cust_outstanding_cores": m.get("outstanding_core_credits", 0),
-        "cust_last_purchase": m.get("last_invoice_date"),
+        # Item 12 — this dict previously read keys CustomerMetricsService never
+        # emits (outstanding_cores / last_purchase), so the panel showed 0 cores
+        # / no last purchase ALWAYS. The panel wants a core COUNT and a purchase
+        # DATE — the authoritative helpers live on InvoiceMetricsService
+        # (outstanding_core_credits on CustomerMetricsService is a $ amount).
+        "cust_outstanding_cores": inv_metrics._outstanding_cores(cid),
+        "cust_last_purchase": inv_metrics._last_purchase(cid),
         "cust_lifetime_sales": m.get("lifetime_sales", 0.0),
     }
 
@@ -631,7 +647,9 @@ async def update_quote_header(
             },
             updated_at,
         )
-    except ValueError as exc:
+    # ConcurrentEditError (optimistic lock, R9) is a RuntimeError — it needs
+    # its own catch alongside ValueError; both surface via the ?error banner.
+    except (ConcurrentEditError, ValueError) as exc:
         db.rollback()
         return RedirectResponse(
             f"/quotes/{quote_id}?error={url_quote(str(exc))}", status_code=303,
@@ -1011,7 +1029,7 @@ async def autosave_quote(
 ):
     """HTMX autosave — called every 2.5s on header field changes."""
     try:
-        QuoteService(db, user_id).update_header(
+        quote = QuoteService(db, user_id).update_header(
             quote_id,
             {
                 "notes": notes, "internal_notes": internal_notes,
@@ -1024,7 +1042,21 @@ async def autosave_quote(
             },
             updated_at,
         )
-        return HTMLResponse('<span class="text-xs text-green-600 font-medium">&#10003; Saved</span>')
+        # X-Updated-At lets the autosave JS refresh its hidden updated_at so
+        # the NEXT save carries the fresh version and never self-conflicts.
+        fresh_ts = quote.updated_at.isoformat() if quote.updated_at else ""
+        return HTMLResponse(
+            '<span class="text-xs text-green-600 font-medium">&#10003; Saved</span>',
+            headers={"X-Updated-At": fresh_ts},
+        )
+    except ConcurrentEditError as exc:
+        # Optimistic lock (R9): someone else saved this quote since the page
+        # loaded. 409 — the sticky save bar shows the reload prompt.
+        db.rollback()
+        return HTMLResponse(
+            f'<span class="text-xs text-red-500 font-medium">{exc}</span>',
+            status_code=409,
+        )
     except Exception:
         db.rollback()
         log.exception("Autosave failed for quote %s", quote_id)

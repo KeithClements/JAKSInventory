@@ -20,6 +20,7 @@ Moving-average cost (R11):
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from app.constants import (
@@ -35,8 +36,102 @@ from app.models.inventory_transfer import InventoryTransfer
 from app.models.product import Product
 from app.services.base import BaseService
 
+log = logging.getLogger(__name__)
+
 
 class InventoryService(BaseService):
+
+    # ── Document-flow stock writer (single entry point) ──────────────────────
+
+    def apply_stock_delta(
+        self,
+        product: Product,
+        delta: int,
+        txn_type: str,
+        reference_type: str,
+        reference_id: int,
+        notes: str = "",
+        *,
+        reason: str | None = None,
+        clamp_floor_zero: bool = False,
+    ) -> InventoryTransaction:
+        """
+        THE single writer of the Product.qty_on_hand cache for document flows
+        (invoice finalize/void, PO receipt, RA return-to-stock, vendor-return
+        ship). Mutates the cache AND writes the matching InventoryTransaction
+        ledger row together so the two can never diverge at a call site.
+
+        clamp_floor_zero: the CACHE floors at 0 but the ledger row still
+        records the FULL delta — pre-existing contract at the invoice-finalize
+        (no negative-inventory override) and vendor-return-ship call sites:
+        the ledger records what the document did; those paths never drive the
+        cache negative. resync_qty_on_hand reconciles any resulting gap.
+
+        No permission gate — callers gate their own document action
+        (FINALIZE_INVOICE, RECEIVE_PO, ...); this is plumbing beneath those
+        gates. No flush/commit — participates in the caller's transaction.
+        """
+        if delta == 0:
+            raise ValueError("apply_stock_delta requires a non-zero delta")
+
+        # `or 0` guards a NULL legacy cache (matches the RA writer this absorbed).
+        new_qty = (product.qty_on_hand or 0) + delta
+        if clamp_floor_zero:
+            new_qty = max(0, new_qty)
+        product.qty_on_hand = new_qty
+
+        txn = InventoryTransaction(
+            product_id=product.id,
+            transaction_type=txn_type,
+            qty_change=delta,
+            qty_after=product.qty_on_hand,
+            reference_type=reference_type,
+            reference_id=reference_id,
+            reason=reason,
+            performed_by_id=self.current_user_id,
+            notes=notes,
+        )
+        self.db.add(txn)
+        return txn
+
+    # ── Nightly cache-vs-ledger resync ────────────────────────────────────────
+
+    def resync_all_products(self) -> dict:
+        """
+        Re-derive every product's qty_on_hand cache from the ledger.
+
+        CROSS-LANE CONTRACT: the nightly scheduler calls EXACTLY
+        ``InventoryService(db).resync_all_products()`` and reads the
+        ``checked`` / ``drifted`` / ``fixed`` keys — do not rename either.
+
+        Drifted products are fixed via ProductService.resync_qty_on_hand
+        (which audit-logs each correction). The ledger sum is compared FIRST
+        so clean products produce no audit row — resync_qty_on_hand audits
+        even a zero delta (right for one-off recovery, wrong for a
+        20k-product nightly sweep). Commits once at the end.
+        """
+        from app.services.product_service import ProductService
+
+        product_svc = ProductService(self.db, self.current_user_id)
+        checked = drifted = fixed = 0
+        for pid, cached_qty in (
+            self.db.query(Product.id, Product.qty_on_hand).order_by(Product.id).all()
+        ):
+            checked += 1
+            ledger_qty = product_svc.get_qty_on_hand(pid)
+            if (cached_qty or 0) == ledger_qty:
+                continue
+            drifted += 1
+            old_qty, new_qty = product_svc.resync_qty_on_hand(pid)
+            log.warning(
+                "resync_all_products: qty_on_hand drift on product %s — "
+                "cache %s → ledger %s (fixed)",
+                pid, old_qty, new_qty,
+            )
+            fixed += 1
+
+        self.db.commit()
+        return {"checked": checked, "drifted": drifted, "fixed": fixed}
 
     # ── Public API ────────────────────────────────────────────────────────────
 

@@ -115,12 +115,27 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         .scalar() or 0
     )
 
-    # Open quotes (draft)
+    # Open quotes — quotes still in play. Same status logic as the quotes-list
+    # tabs: converted / declined / expired are terminal; draft / sent / accepted
+    # are the live pipeline. (Was draft-only, which under-counted the heartbeat.)
     open_quotes = (
         db.query(func.count(Quote.id))
-        .filter(Quote.status == "draft")
+        .filter(Quote.status.notin_([
+            QuoteStatus.CONVERTED, QuoteStatus.DECLINED, QuoteStatus.EXPIRED,
+        ]))
         .scalar() or 0
     )
+
+    # CRM follow-ups due (Activity rows with follow_up_date <= today, not done) —
+    # CRMService.follow_ups_due() is the same source the /activities/follow-ups
+    # widget uses, so the KPI card and the rail list always agree.
+    from app.services.crm_service import CRMService
+    crm_followups = CRMService(db).follow_ups_due()
+    crm_followups_overdue = sum(
+        1 for a in crm_followups
+        if a.follow_up_date is not None and a.follow_up_date < today
+    )
+    crm_followups_total = len(crm_followups)
 
     # Open SOs (open / partial / hold — not fulfilled, invoiced, or cancelled)
     open_sos = (
@@ -359,6 +374,9 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         "top_customers": top_customers,          # Seam 4
         "open_followups": open_followups,         # Seam 4 — dict {status: count}
         "open_followups_total": open_followups_total,
+        "crm_followups": crm_followups[:8],       # rail list (due first — service orders asc)
+        "crm_followups_total": crm_followups_total,
+        "crm_followups_overdue": crm_followups_overdue,
         "today": today,
         "monthly_labels_json": json.dumps(monthly_labels),
         "monthly_totals_json": json.dumps(monthly_totals),

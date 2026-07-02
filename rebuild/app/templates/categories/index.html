@@ -148,7 +148,10 @@
                 <button type="submit" class="btn-ghost">{{ 'Deactivate' if cat.is_active else 'Activate' }}</button>
               </form>
 
-              <form method="post" action="/categories/category/{{ cat.id }}/delete" class="inline">
+              {# sq attr + tojson: tojson emits a double-quoted JS string and
+                 unicode-escapes apostrophes, so names cannot break attr or JS #}
+              <form method="post" action="/categories/category/{{ cat.id }}/delete" class="inline"
+                    onsubmit='return confirm("Delete category " + {{ cat.name|tojson }} + "? It is removed if empty, or deactivated if it still has products or sub-nodes.")'>
                 <button type="submit" class="btn-ghost text-red-500 hover:text-red-700 hover:bg-red-50">Delete</button>
               </form>
             </div>
@@ -319,7 +322,10 @@
               {% if brands|length > 1 %}
               <button type="button" @click="merge = !merge" class="btn-ghost" :class="merge ? 'text-brand-700 bg-brand-50' : ''">Merge</button>
               {% endif %}
-              <form method="post" action="/categories/brand/{{ b.id }}/delete" class="inline">
+              {# sq attr + tojson: tojson emits a double-quoted JS string and
+                 unicode-escapes apostrophes, so names cannot break attr or JS #}
+              <form method="post" action="/categories/brand/{{ b.id }}/delete" class="inline"
+                    onsubmit='return confirm("Delete brand " + {{ b.name|tojson }} + "? It is removed if unused, or deactivated if products still carry it.")'>
                 <button type="submit" class="btn-ghost text-red-500 hover:text-red-700 hover:bg-red-50">Delete</button>
               </form>
             </div>
@@ -454,7 +460,10 @@
               {% if manufacturers|length > 1 %}
               <button type="button" @click="merge = !merge" class="btn-ghost" :class="merge ? 'text-brand-700 bg-brand-50' : ''">Merge</button>
               {% endif %}
-              <form method="post" action="/categories/manufacturer/{{ m.id }}/delete" class="inline">
+              {# sq attr + tojson: tojson emits a double-quoted JS string and
+                 unicode-escapes apostrophes, so names cannot break attr or JS #}
+              <form method="post" action="/categories/manufacturer/{{ m.id }}/delete" class="inline"
+                    onsubmit='return confirm("Delete manufacturer " + {{ m.name|tojson }} + "? It is removed if unused, or deactivated if products still reference it.")'>
                 <button type="submit" class="btn-ghost text-red-500 hover:text-red-700 hover:bg-red-50">Delete</button>
               </form>
             </div>

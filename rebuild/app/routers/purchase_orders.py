@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.constants import POStatus, POShipToType
 from app.deps import get_db, get_current_user_id
@@ -24,6 +24,7 @@ from app.services.document_render import (
     render_pdf_or_fallback,
     vendor_address_lines,
 )
+from app.services.base import ConcurrentEditError
 from app.services.po_service import POService
 from app.services.serial_service import SerialService, parse_serials
 
@@ -142,6 +143,34 @@ def _workspace_ctx(po: PurchaseOrder) -> dict:
 # number, and a per-row preview dock (loaded via /purchase-orders/preview/{id}).
 
 
+def _filtered_pos(db: Session, tab: str, q: str) -> list[PurchaseOrder]:
+    """One tab/q filter shared by the list view and its CSV export so
+    'export what I see' matches the table exactly."""
+    query = (
+        db.query(PurchaseOrder)
+        # selectinload(lines): the CSV export + subtotal/total properties walk
+        # .lines per row — without this each exported PO fires a lazy-load SELECT
+        # (N+1). Mirrors the SO export.
+        .options(joinedload(PurchaseOrder.vendor), selectinload(PurchaseOrder.lines))
+        .order_by(PurchaseOrder.created_at.desc())
+    )
+    statuses = TAB_GROUPS.get(tab, [])
+    if statuses:  # empty list = "all" → no filter
+        query = query.filter(PurchaseOrder.status.in_(statuses))
+    if q:
+        like = f"%{q.strip()}%"
+        _qd = q.replace("-", "").replace(" ", "")
+        _po_dedash = func.replace(func.replace(PurchaseOrder.po_number, "-", ""), " ", "")
+        query = query.outerjoin(Vendor, PurchaseOrder.vendor_id == Vendor.id).filter(
+            PurchaseOrder.po_number.ilike(like)
+            # de-dash so "po20260001" still finds "PO-2026-0001"
+            | _po_dedash.ilike(f"%{_qd}%")
+            | PurchaseOrder.vendor_confirmation_number.ilike(like)
+            | Vendor.name.ilike(like)
+        )
+    return query.all()
+
+
 @router.get("/", response_class=HTMLResponse)
 def po_list(
     request: Request,
@@ -176,28 +205,7 @@ def po_list(
         "cancelled": _group_count("cancelled"),
     }
 
-    # Filtered query
-    query = (
-        db.query(PurchaseOrder)
-        .options(joinedload(PurchaseOrder.vendor))
-        .order_by(PurchaseOrder.created_at.desc())
-    )
-    statuses = TAB_GROUPS.get(tab, [])
-    if statuses:  # empty list = "all" → no filter
-        query = query.filter(PurchaseOrder.status.in_(statuses))
-    if q:
-        like = f"%{q.strip()}%"
-        _qd = q.replace("-", "").replace(" ", "")
-        _po_dedash = func.replace(func.replace(PurchaseOrder.po_number, "-", ""), " ", "")
-        query = query.outerjoin(Vendor, PurchaseOrder.vendor_id == Vendor.id).filter(
-            PurchaseOrder.po_number.ilike(like)
-            # de-dash so "po20260001" still finds "PO-2026-0001"
-            | _po_dedash.ilike(f"%{_qd}%")
-            | PurchaseOrder.vendor_confirmation_number.ilike(like)
-            | Vendor.name.ilike(like)
-        )
-
-    pos = query.all()
+    pos = _filtered_pos(db, tab, q)
     return templates.TemplateResponse(
         request,
         "purchase_orders/list.html",
@@ -210,6 +218,59 @@ def po_list(
             "POStatus": POStatus,
             "now": datetime.utcnow(),
         },
+    )
+
+
+# ── Export CSV — multi-segment path, registered before /{po_id} ──────────────
+
+@router.get("/export.csv")
+def po_export_csv(
+    tab: str = "all",
+    q: str = "",
+    # `status` kept for backward-compat, same as the list view.
+    status: str = "",
+    db: Session = Depends(get_db),
+):
+    """Stream the current filtered PO list as a CSV download. Mirrors the list
+    view's tab/q filters (same pattern as /products/export.csv and
+    /customers/export.csv) so "export what I see" matches exactly."""
+    import csv
+    import io
+
+    from fastapi.responses import StreamingResponse
+
+    if status and tab == "all":
+        tab = _STATUS_TO_TAB.get(status, "all")
+    if tab not in TAB_GROUPS:
+        tab = "all"
+
+    pos = _filtered_pos(db, tab, q)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "po_number", "vendor", "status", "created", "expected",
+        "vendor_confirmation_number", "lines", "subtotal", "freight_in", "total",
+    ])
+    for p in pos:
+        writer.writerow([
+            p.po_number,
+            p.vendor.name if p.vendor else "",
+            p.status,
+            p.created_at.strftime("%Y-%m-%d") if p.created_at else "",
+            p.expected_at.strftime("%Y-%m-%d") if p.expected_at else "",
+            p.vendor_confirmation_number or "",
+            len(p.lines),
+            f"{p.subtotal:.2f}",
+            f"{(p.freight_in_cost or 0.0):.2f}",
+            f"{p.total:.2f}",
+        ])
+
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=purchase_orders.csv"},
     )
 
 
@@ -894,11 +955,23 @@ async def po_header_save(po_id: int, request: Request, db: Session = Depends(get
         for k in ("bill_to_location_id", "ship_to_type", "ship_to_location_id",
                   "ship_to_snapshot", "drop_ship_customer_id", "drop_ship_address_id"):
             data.pop(k, None)
+    # Optimistic locking (R9) — the workspace form carries the updated_at the
+    # user loaded; a mismatch means someone else saved since. The template JS
+    # refreshes the hidden field from X-Updated-At after every successful save
+    # so the autosave never conflicts with itself.
+    submitted_updated_at = str(form.get("_updated_at", "")).strip() or None
     try:
-        svc.save_header(po_id, data)
+        svc.save_header(po_id, data, submitted_updated_at)
+    except ConcurrentEditError as exc:
+        db.rollback()
+        return HTMLResponse(
+            f'<div class="text-xs text-red-600">{exc}</div>', status_code=409
+        )
     except ValueError:
         pass
-    return HTMLResponse("", status_code=204)
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()
+    fresh_ts = po.updated_at.isoformat() if po and po.updated_at else ""
+    return HTMLResponse("", status_code=204, headers={"X-Updated-At": fresh_ts})
 
 
 # ── Line CRUD (HTMX) ──────────────────────────────────────────────────────────

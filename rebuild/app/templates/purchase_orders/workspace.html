@@ -13,6 +13,18 @@
 } %}
 
 {% block header_actions %}
+  {# 1366×768 counter screens: the h-14 topbar can't wrap — below 1440px swap
+     long action labels for short ones and drop the convenience back-link.
+     Scoped style (not a Tailwind utility): purged app.css has no ≥1440 variants. #}
+  <style>
+    .hdr-full { display: none; }
+    .hdr-abbr { display: inline; }
+    @media (min-width: 1440px) {
+      .hdr-full { display: inline; }
+      .hdr-abbr { display: none; }
+    }
+  </style>
+
   <span class="{{ status_pill[po.status][0] }}">{{ status_pill[po.status][1] }}</span>
 
   <a href="/purchase-orders/{{ po.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
@@ -25,7 +37,7 @@
   {% set _subj = 'Purchase Order ' ~ po.po_number %}
   {% set _body = 'Hello,\n\nPlease find attached our purchase order ' ~ po.po_number ~ '. Please confirm receipt and the expected ship date.\n\nThank you.' %}
   <div x-data="{ open: false }" class="relative">
-    <button type="button" @click="open = !open" data-no-pending class="btn-secondary btn-sm">Email to Vendor</button>
+    <button type="button" @click="open = !open" data-no-pending class="btn-secondary btn-sm"><span class="hdr-full">Email to Vendor</span><span class="hdr-abbr">Email</span></button>
     <div x-show="open" x-cloak @click.outside="open = false"
          class="absolute right-0 mt-2 w-80 rounded-xl border border-gray-100 bg-white p-4 text-left shadow-2xl z-[70]">
       {% if po.vendor.email %}
@@ -76,7 +88,7 @@
     </button>
   {% endif %}
 
-  <a href="/purchase-orders/" class="text-sm text-gray-500 hover:text-gray-700">← Purchase Orders</a>
+  <a href="/purchase-orders/" class="hdr-full text-sm text-gray-500 hover:text-gray-700">← Purchase Orders</a>
 {% endblock %}
 
 {% block content %}
@@ -159,14 +171,31 @@
     <form hx-post="/purchase-orders/{{ po.id }}/header"
           hx-swap="none"
           hx-trigger="change from:input,select,textarea delay:600ms, submit"
-          x-data="{ ...customerPicker('po-dropship-results'), _saving: false, shipType: '{{ effective_ship_to_type | default('location') }}', customerId: '{{ po.drop_ship_customer_id or '' }}' }"
+          x-data="{ ...customerPicker('po-dropship-results'), _saving: false, _saveError: '', shipType: '{{ effective_ship_to_type | default('location') }}', customerId: '{{ po.drop_ship_customer_id or '' }}' }"
           x-init="
             _wireResults();
             $el.addEventListener('htmx:beforeRequest', function(e){ if (e.detail.requestConfig && (e.detail.requestConfig.path||'').indexOf('/header') !== -1) _saving = true; });
-            $el.addEventListener('htmx:afterRequest',  function(e){ if (e.detail.requestConfig && (e.detail.requestConfig.path||'').indexOf('/header') !== -1) _saving = false; });
+            $el.addEventListener('htmx:afterRequest',  function(e){
+              if (!(e.detail.requestConfig && (e.detail.requestConfig.path||'').indexOf('/header') !== -1)) return;
+              _saving = false;
+              var xhr = e.detail.xhr;
+              if (xhr && xhr.status >= 200 && xhr.status < 300) {
+                _saveError = '';
+                /* Optimistic lock (R9): adopt the fresh version so the next autosave never self-conflicts. */
+                var ts = xhr.getResponseHeader('X-Updated-At');
+                var hid = $el.querySelector('input[name=&quot;_updated_at&quot;]');
+                if (ts && hid) hid.value = ts;
+              } else {
+                _saveError = (xhr && xhr.status === 409)
+                  ? 'Changed by another user — reload the page, then re-apply your edit.'
+                  : 'Save failed — your last change was not saved.';
+              }
+            });
           "
           @customer-selected.window="onCustomerSelected($event.detail)"
           class="card card-body space-y-3">
+      {# Optimistic-lock version (R9) — refreshed from X-Updated-At after each save #}
+      <input type="hidden" name="_updated_at" value="{{ po.updated_at.isoformat() if po.updated_at else '' }}">
 
       {# Row 1: Vendor + key fields + total #}
       <div class="flex flex-wrap items-start gap-4">
@@ -363,7 +392,12 @@
           <template x-if="_saving">
             <span>Saving…</span>
           </template>
-          <template x-if="!_saving">
+          {# R9 — surfaced header-save failure (409 conflict / error). hx-swap is
+             "none", so without this the failure would be invisible. #}
+          <template x-if="!_saving && _saveError">
+            <span class="text-red-600 font-medium" x-text="_saveError"></span>
+          </template>
+          <template x-if="!_saving && !_saveError">
             <span class="inline-flex items-center gap-1">
               <svg class="w-3 h-3 text-green-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
                 <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>

@@ -424,6 +424,17 @@
       border-radius: 99px;
     }
     .sidebar-nav::-webkit-scrollbar-thumb:hover { background: #454b52; }
+
+    /* ── Preview dock offsets (macros/preview_dock.html) ──────────────────
+       Below lg the sidebar is hidden/overlaid, so the dock spans full width
+       (left-0 utility). Compiled app.css has no lg:left-* variants and CSS
+       is purged; these mirror .left-14 / .left-sidebar at the lg breakpoint,
+       byte-identical to what `npm run build:css` would emit once it scans
+       the class names (duplicate rules are harmless). */
+    @media (min-width: 1024px) {
+      .lg\:left-14 { left: 3.5rem; }
+      .lg\:left-sidebar { left: 232px; }
+    }
   </style>
 </head>
 
@@ -504,7 +515,7 @@
       }
     }
   }"
-  @keydown.window="if ((event.ctrlKey || event.metaKey) && event.key === 'k') { event.preventDefault(); cmdKOpen = true; }"
+  @keydown.window="if ((event.ctrlKey || event.metaKey) && event.key === 'k' && !logCallOpen && !createSlideOpen) { event.preventDefault(); cmdKOpen = true; }"
   @keydown.escape.window="logCallOpen = false; if (createSlideOpen) closeCreateSlide(); sidebarOpen = false; cmdKOpen = false; notifOpen = false"
   @keydown.f2.window="
     if (!$event.target.matches('input,textarea,select,[contenteditable]') && !$event.ctrlKey && !$event.metaKey && !$event.altKey) {
@@ -519,6 +530,14 @@
     if ($event.detail && $event.detail.title) createSlideTitle = $event.detail.title;
   "
   @record-created.window="createSlideDirty = false; createSlideOpen = false"
+  {# A11y: quick-create form arrives by HTMX after the x-trap engages (skeleton
+     has no fields) — move focus to the first field once real content lands. #}
+  @htmx:after-swap.window="
+    if (createSlideOpen && $event.detail.target && $event.detail.target.id === 'create-slide-content') {
+      const _f = $event.detail.target.querySelector('input:not([type=hidden]), select, textarea');
+      if (_f) _f.focus();
+    }
+  "
   {# Reset content to loading skeleton 300ms after close — prevents stale form flash on re-open #}
   @slide-over-closed="setTimeout(() => {
     const el = document.getElementById('create-slide-content');
@@ -1125,16 +1144,22 @@
   {{ backdrop_fade() }}
 ></div>
 
-{# Panel #}
+{# Panel — dialog semantics + x-trap (focus first field via [autofocus], focus
+   returns to the trigger on deactivate, Tab cycles inside). Escape close is
+   the body-level @keydown.escape.window handler. Pattern: pricing.html §11. #}
 <div
   x-show="logCallOpen"
   x-cloak
+  role="dialog"
+  aria-modal="true"
+  aria-label="Log a Call"
+  x-trap.noscroll="logCallOpen"
   class="fixed inset-y-0 right-0 z-50 flex flex-col bg-white shadow-2xl w-96"
   {{ slide_right() }}
 >
   <div class="flex items-center justify-between px-5 py-4 border-b border-gray-200 shrink-0">
     <h2 class="text-base font-semibold text-gray-900">Log a Call</h2>
-    <button @click="logCallOpen = false" class="text-gray-400 hover:text-gray-600">
+    <button @click="logCallOpen = false" aria-label="Close" class="text-gray-400 hover:text-gray-600">
       <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
       </svg>
@@ -1163,6 +1188,9 @@
             name="_customer_display"
             placeholder="Search by name or phone…"
             autocomplete="off"
+            {# x-trap initialFocus target — first field, not the close X. Hidden at
+               page load (x-show panel), so the browser's load-time autofocus is a no-op. #}
+            autofocus
             :value="displayName"
             @input="pickInput($el.value)"
             @keydown.down.prevent="pickMove(1)"
@@ -1262,16 +1290,23 @@
   {{ backdrop_fade() }}
 ></div>
 
-{# Panel #}
+{# Panel — dialog semantics + x-trap. Content arrives via HTMX after the trap
+   engages, so first-field focus happens in the body-level @htmx:after-swap
+   handler (the skeleton has no fields). Focus returns to the trigger on close;
+   Escape close is the body-level @keydown.escape.window handler. #}
 <div
   x-show="createSlideOpen"
   x-cloak
+  role="dialog"
+  aria-modal="true"
+  :aria-label="createSlideTitle || 'Create record'"
+  x-trap.noscroll="createSlideOpen"
   class="fixed inset-y-0 right-0 z-50 flex flex-col bg-white shadow-2xl w-96"
   {{ slide_right() }}
 >
   <div class="flex items-center justify-between px-5 py-4 border-b border-gray-200 shrink-0">
     <h2 class="text-base font-semibold text-gray-900" x-text="createSlideTitle"></h2>
-    <button @click="closeCreateSlide()" class="text-gray-400 hover:text-gray-600">
+    <button @click="closeCreateSlide()" aria-label="Close" class="text-gray-400 hover:text-gray-600">
       <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
       </svg>
@@ -2113,6 +2148,30 @@
     var t = csrfToken();
     if (t) evt.detail.headers["X-CSRF-Token"] = t;
   });
+  // Raw fetch(): wrap window.fetch so every SAME-ORIGIN unsafe-method call
+  // (POST/PUT/PATCH/DELETE) carries the token. A hand-written fetch is neither
+  // an HTMX request nor a native <form> submit, so without this it would silently
+  // 403 in a real session (this bug class has bitten the product importer and the
+  // quote autosave). Only adds the header when absent and never touches GET or
+  // cross-origin requests. XHR (if any) is unaffected — none exist in templates.
+  var _origFetch = window.fetch;
+  window.fetch = function (input, init) {
+    try {
+      init = init || {};
+      var method = (init.method || (typeof input === "object" && input && input.method) || "GET").toUpperCase();
+      var url = (typeof input === "string") ? input : (input && input.url) || "";
+      var sameOrigin = url === "" || url.charAt(0) === "/" || url.indexOf(window.location.origin) === 0;
+      if (sameOrigin && method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+        var t = csrfToken();
+        if (t) {
+          var h = new Headers((init && init.headers) || (typeof input === "object" && input && input.headers) || {});
+          if (!h.has("X-CSRF-Token")) h.set("X-CSRF-Token", t);
+          init = Object.assign({}, init, { headers: h });
+        }
+      }
+    } catch (e) { /* never let the shim break a request */ }
+    return _origFetch.call(this, input, init);
+  };
   // Native forms: inject/refresh a hidden _csrf field just before submit.
   document.addEventListener("submit", function (evt) {
     var form = evt.target;

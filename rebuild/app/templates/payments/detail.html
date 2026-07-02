@@ -63,6 +63,26 @@
 </div>
 {% endif %}
 
+{# ── Needs manual reversal in QuickBooks ──
+   Sync is one-way create-only (JAKS → QBO): a payment that synced and was
+   LATER reversed/NSF'd here still shows as received cash in QBO until a human
+   voids it there. connection_summary().needs_reversal counts these. #}
+{% if payment.qbo_payment_id and payment.status in (PaymentStatus.REVERSED, PaymentStatus.NSF) %}
+<div class="mb-4 px-4 py-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+  <p class="font-semibold">Needs manual fix in QuickBooks</p>
+  <p class="mt-1">
+    This payment was synced to QuickBooks (QBO payment id
+    <span class="font-mono">{{ payment.qbo_payment_id }}</span>) and later
+    {% if payment.status == PaymentStatus.NSF %}returned NSF{% else %}reversed{% endif %}
+    here — Axle never writes back to QuickBooks, so void or delete that QBO payment manually.
+    {% if payment.surcharge_amount and payment.surcharge_amount > 0 %}
+      Also remove the card-surcharge sales receipt
+      (DocNumber <span class="font-mono">JAKS-SC-{{ payment.id }}</span>).
+    {% endif %}
+  </p>
+</div>
+{% endif %}
+
 <div class="max-w-4xl space-y-4">
 
   {# ── Summary card ── #}

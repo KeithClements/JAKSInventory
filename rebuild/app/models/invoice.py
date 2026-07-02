@@ -282,6 +282,9 @@ class Payment(QBOSyncMixin, Base):
     # qbo_sync_status, qbo_last_synced_at, qbo_sync_error, qbo_sync_retry_count
     # are inherited from QBOSyncMixin.
     qbo_payment_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Surcharge SalesReceipt id (DocNumber JAKS-SC-{id}) — persisted so a repush
+    # checks locally before the query-then-create window (double-click guard).
+    qbo_surcharge_receipt_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

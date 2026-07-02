@@ -43,8 +43,8 @@
 </div>
 {% endif %}
 
-{# ── KPI row — 4 equal Axle stat cards ───────────────────────────────────── #}
-<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+{# ── KPI row — 5 equal Axle stat cards ───────────────────────────────────── #}
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-4">
 
   {# Today's Cash — revenue accent #}
   <div class="stat-card" title="Total customer payments received today, across all methods">
@@ -59,6 +59,19 @@
     <div class="stat-value">${{ "{:,.0f}".format(ar_balance) }}</div>
     <div class="stat-sub">
       {% if overdue_count > 0 %}{{ overdue_count }} overdue invoice{{ 's' if overdue_count != 1 }}{% else %}No overdue invoices{% endif %}
+    </div>
+  </div>
+
+  {# Open Quotes + follow-ups — the sales heartbeat #}
+  <div class="stat-card" title="Quotes still in play (not converted, declined, or expired) and CRM follow-ups due">
+    <div class="stat-label">Open Quotes</div>
+    <div class="stat-value"><a href="/quotes/?tab=open" class="hover:underline">{{ open_quotes }}</a></div>
+    <div class="stat-sub">
+      {% if crm_followups_total > 0 %}
+      <a href="#followups-due" class="hover:underline {% if crm_followups_overdue > 0 %}text-red-600 font-semibold{% endif %}">
+        {{ crm_followups_total }} follow-up{{ 's' if crm_followups_total != 1 }} due{% if crm_followups_overdue > 0 %} · {{ crm_followups_overdue }} overdue{% endif %}
+      </a>
+      {% else %}No follow-ups due{% endif %}
     </div>
   </div>
 
@@ -79,6 +92,71 @@
   </div>
 
 </div>
+
+{# ── Monthly revenue chart — renders the period-selectable series the router
+     already computes (?period=3m/6m/ytd/12m). Data crosses into JS via data-*
+     attributes (autoescape-safe), never inline JSON in a <script>. #}
+<div class="card mb-4">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Monthly Revenue</h2>
+      <p class="text-xs text-steel-500 mt-0.5">Finalized invoices · {{ period_label }} · this month ${{ "{:,.0f}".format(monthly_current) }}</p>
+    </div>
+    <div class="flex items-center gap-0.5 bg-gray-100 rounded-lg p-0.5">
+      {% for p, plabel in [('3m', '3M'), ('6m', '6M'), ('ytd', 'YTD'), ('12m', '12M')] %}
+      <a href="/?period={{ p }}&inv={{ inv_mode }}"
+         class="px-2 py-0.5 text-xs font-semibold rounded-md transition-colors {% if period == p %}bg-white text-brand-700 shadow-sm{% else %}text-steel-500 hover:text-steel-700{% endif %}">{{ plabel }}</a>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="px-4 pb-4" style="height: 190px;">
+    <canvas id="revenue-chart"
+            data-labels="{{ monthly_labels_json }}"
+            data-totals="{{ monthly_totals_json }}"
+            aria-label="Monthly revenue bar chart ({{ period_label }})" role="img"></canvas>
+  </div>
+</div>
+<script>
+  // Chart.js is loaded `defer` from base.html (self-hosted vendor bundle), so it
+  // is NOT defined yet when this inline script parses — init must wait for
+  // DOMContentLoaded (deferred scripts run before that event fires).
+  document.addEventListener('DOMContentLoaded', function () {
+    var el = document.getElementById('revenue-chart');
+    if (!el || typeof Chart === 'undefined') return; // vendor bundle missing → card degrades to header text
+    new Chart(el, {
+      type: 'bar',
+      data: {
+        labels: JSON.parse(el.dataset.labels),
+        datasets: [{
+          data: JSON.parse(el.dataset.totals),
+          backgroundColor: '#5a6630',  /* mil — matches sidebar active state */
+          hoverBackgroundColor: '#b6cf45',  /* mil-glow */
+          borderRadius: 3,
+          maxBarThickness: 48
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: function (c) { return '$' + Number(c.parsed.y).toLocaleString(); }
+            }
+          }
+        },
+        scales: {
+          y: {
+            beginAtZero: true,
+            ticks: { callback: function (v) { return '$' + Number(v).toLocaleString(); } }
+          },
+          x: { grid: { display: false } }
+        }
+      }
+    });
+  });
+</script>
 
 {# ── Main row: flex-1 table + 320px Needs-Attention rail ─────────────────── #}
 <div class="flex flex-col lg:flex-row gap-4 items-stretch">
@@ -246,13 +324,33 @@
       {% endif %}
     </div>
 
+    {# Follow-ups Due — CRM activity follow-ups (CRMService.follow_ups_due), the
+       anchor target of the Open Quotes KPI sub-link. Server-rendered include of
+       the shared widget partial (same one /activities/follow-ups serves via HTMX). #}
+    <div class="card" id="followups-due">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">Follow-ups Due</h2>
+        </div>
+        <span class="text-xs text-steel-400 font-mono">{{ crm_followups_total }} due</span>
+      </div>
+      {% set due = crm_followups %}
+      {% include "dashboard/_followups_widget.html" %}
+    </div>
+
     {# QuickBooks sync card — §21 real connection state (was hardcoded "ready") #}
     <div class="card" style="padding: 12px 14px;">
       <a href="/settings/?tab=quickbooks" class="sync" style="text-decoration:none;color:inherit;">
         {% if qbo and qbo.connected %}
-          <span class="led" {% if qbo.error %}style="background:#dc2626;"{% endif %}></span>
+          {# failed_total/pending_total span all synced entity types (invoices,
+             payments, bills, CMs); needs_reversal = synced-then-reversed payments
+             a human must fix in QBO. #}
+          <span class="led" {% if qbo.failed_total or qbo.needs_reversal %}style="background:#dc2626;"{% endif %}></span>
           <span><b>QuickBooks</b>
-            {%- if qbo.error %} {{ qbo.error }} sync error{% elif qbo.pending %} {{ qbo.pending }} pending{% else %} synced{% endif %}</span>
+            {%- if qbo.needs_reversal %} {{ qbo.needs_reversal }} need manual reversal
+            {%- elif qbo.failed_total %} {{ qbo.failed_total }} sync error
+            {%- elif qbo.pending_total %} {{ qbo.pending_total }} pending
+            {%- else %} synced{% endif %}</span>
         {% else %}
           <span class="led" style="background:#9ca3af;"></span>
           <span><b>QuickBooks</b> not connected</span>

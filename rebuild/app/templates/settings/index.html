@@ -725,11 +725,28 @@
       </div>
 
       {% if qbo and qbo.connected %}
+      {# Per-entity sync counts (connection_summary().entities) — the retry
+         worker covers all four, so failures anywhere must be visible here. #}
       <div class="flex flex-wrap gap-4 text-xs text-gray-500">
-        <span>Synced: <b class="text-gray-700">{{ qbo.synced }}</b></span>
-        <span>Pending: <b class="text-gray-700">{{ qbo.pending }}</b></span>
-        <span>Errors: <b class="{% if qbo.error %}text-red-600{% else %}text-gray-700{% endif %}">{{ qbo.error }}</b></span>
+        {% for label, e in [('Invoices', qbo.entities.invoices),
+                            ('Payments', qbo.entities.payments),
+                            ('Vendor bills', qbo.entities.vendor_bills),
+                            ('Credit memos', qbo.entities.credit_memos)] %}
+        <span>{{ label }}:
+          <b class="text-gray-700">{{ e.synced }}</b> synced
+          {%- if e.pending %} · <b class="text-gray-700">{{ e.pending }}</b> pending{% endif %}
+          {%- if e.failed %} · <b class="text-red-600">{{ e.failed }}</b> failed{% endif %}</span>
+        {% endfor %}
       </div>
+      {% if qbo.needs_reversal %}
+      <div class="rounded-lg bg-red-50 border border-red-200 text-red-700 px-4 py-2 text-xs">
+        <b>{{ qbo.needs_reversal }} payment{{ 's' if qbo.needs_reversal != 1 else '' }}
+        reversed/NSF after syncing to QuickBooks</b> — QBO still shows that cash as
+        received. Void the QBO payment (and any JAKS-SC surcharge receipt) manually:
+        payment id{{ 's' if qbo.needs_reversal != 1 else '' }}
+        {% for pid in qbo.needs_reversal_ids %}<a class="underline font-mono" href="/payments/{{ pid }}">#{{ pid }}</a>{% if not loop.last %}, {% endif %}{% endfor %}.
+      </div>
+      {% endif %}
       {% endif %}
 
       <div class="flex flex-wrap items-center gap-2 pt-1">

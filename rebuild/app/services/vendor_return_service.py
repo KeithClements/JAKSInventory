@@ -31,7 +31,6 @@ from app.constants import (
     VendorCreditMemoTrigger,
     VendorReturnLineOutcome, VendorReturnStatus,
 )
-from app.models.inventory import InventoryTransaction
 from app.models.product import Product
 from app.models.vendor import Vendor
 from app.models.vendor_return import VendorReturn, VendorReturnLine
@@ -179,26 +178,27 @@ class VendorReturnService(BaseService):
         vr.rma_number = rma_number.strip()
         vr.shipped_at = datetime.utcnow()
 
-        # Decrement inventory for each line
+        # Decrement inventory for each line — cache (floored at 0, pre-existing
+        # behavior) + ledger row via the single qty_on_hand writer (audit risk #9).
         if decrement_inventory:
+            from app.services.inventory_service import InventoryService
+            inv_svc = InventoryService(self.db, self.current_user_id)
             for line in vr.lines:
                 if not line.product_id or line.qty <= 0:
                     continue
                 product = self.db.query(Product).filter(Product.id == line.product_id).first()
                 if product is None:
                     continue
-                product.qty_on_hand = max(0, product.qty_on_hand - line.qty)
-                self.db.add(InventoryTransaction(
-                    product_id=product.id,
-                    transaction_type=InventoryTxnType.MANUAL_ADJUSTMENT,
-                    qty_change=-line.qty,
-                    qty_after=product.qty_on_hand,
-                    reference_type=EntityType.VENDOR_RETURN,
-                    reference_id=vr.id,
-                    reason="vendor_return_shipped",
-                    performed_by_id=self.current_user_id,
+                inv_svc.apply_stock_delta(
+                    product,
+                    -line.qty,
+                    InventoryTxnType.MANUAL_ADJUSTMENT,
+                    EntityType.VENDOR_RETURN,
+                    vr.id,
                     notes=f"Shipped to vendor on VR {vr.vr_number}",
-                ))
+                    reason="vendor_return_shipped",
+                    clamp_floor_zero=True,
+                )
 
         self.db.flush()
         self.audit(

@@ -362,6 +362,16 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     #    too. NOT NULL → a missing column would 500 every Product query. Set on
     #    operator price edits; pricing_update_sell skips locked sell prices. ────
     ("products",               "price_override_locked",   "BOOLEAN NOT NULL DEFAULT 0"),
+
+    # ── Surcharge-receipt idempotency (Alembic 0010): persist the QBO SalesReceipt
+    #    id locally so a repush checks this column before the query-then-create
+    #    window (double-click double-booking guard). ─────────────────────────────
+    ("payments",               "qbo_surcharge_receipt_id", "VARCHAR(100) NULL"),
+
+    # ── Credit-memo reversal integrity (Alembic 0011): CM allocation → its
+    #    synthetic ACCOUNT_CREDIT payment allocation, replacing the LIKE-on-notes
+    #    reversal heuristic. NULL for pre-link rows (legacy fallback applies). ───
+    ("credit_memo_allocations", "linked_payment_allocation_id", "INTEGER NULL"),
 ]
 
 

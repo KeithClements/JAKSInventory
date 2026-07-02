@@ -206,6 +206,7 @@ def on_startup() -> None:
     _start_shopify_scheduler()
     _start_overdue_core_scheduler()
     _start_qbo_retry_scheduler()
+    _start_inventory_resync_scheduler()
 
 
 def _ensure_search_norm_columns(db: Session) -> None:
@@ -539,12 +540,35 @@ def _start_overdue_core_scheduler() -> None:
     log.info("daily overdue-core scheduler started")
 
 
+def _qbo_retry_tick() -> dict | None:
+    """One pass of the QBO retry worker, extracted from the thread loop so tests
+    can drive it directly. Re-pushes ERROR-status invoices, payments, vendor
+    bills, and credit memos (each under its retry ceiling) as the system actor
+    (current_user_id=None — passes the REPUSH_QBO gate by design) while QBO is
+    connected. Returns the retry summary (None when disconnected/failed); never
+    raises."""
+    try:
+        db = _appdb.SessionLocal()
+        try:
+            from app.services.qbo_service import QBOSyncService
+            svc = QBOSyncService(db, current_user_id=None)
+            if not svc.connection_summary().get("connected"):
+                return None
+            return svc.retry_failed_pushes()
+        finally:
+            db.close()
+    except Exception:
+        log.exception("QBO retry scheduler tick failed (continuing)")
+        return None
+
+
 def _start_qbo_retry_scheduler() -> None:
-    """§21 — background retry for ERROR-status QBO invoice pushes. "Sync Failed"
-    invoices previously sat until someone manually re-pushed; this re-attempts
-    them (under the per-invoice retry ceiling) every ~30 min while QBO is
-    connected. Each push is already fail-soft and never touches the money path.
-    Skipped under the in-memory test engine; never raises."""
+    """§21 — background retry for ERROR-status QBO pushes (invoices, payments,
+    vendor bills, credit memos). "Sync Failed" documents previously sat until
+    someone manually re-pushed; this re-attempts them (under the per-document
+    retry ceiling) every ~30 min while QBO is connected. Each push is already
+    fail-soft and never touches the money path. Skipped under the in-memory
+    test engine; never raises."""
     import threading
     import time as _time
 
@@ -553,21 +577,82 @@ def _start_qbo_retry_scheduler() -> None:
 
     def _loop() -> None:
         while True:
-            try:
-                db = _appdb.SessionLocal()
-                try:
-                    from app.services.qbo_service import QBOSyncService
-                    svc = QBOSyncService(db, current_user_id=None)
-                    if svc.connection_summary().get("connected"):
-                        svc.retry_failed_pushes()
-                finally:
-                    db.close()
-            except Exception:
-                log.exception("QBO retry scheduler tick failed (continuing)")
+            _qbo_retry_tick()
             _time.sleep(1800)   # every 30 minutes
 
     threading.Thread(target=_loop, daemon=True, name="qbo-retry-worker").start()
     log.info("QBO retry scheduler started (idle until connected)")
+
+
+# Log the not-yet-shipped resync method exactly once (the scheduler ticks daily
+# forever — a missing method must not spam the log or crash the thread).
+_inventory_resync_missing_logged = False
+
+
+def _run_inventory_resync(db: Session) -> dict | None:
+    """One inventory-drift resync pass (extracted so tests can drive it without
+    the thread). Calls InventoryService.resync_all_products() — shipping from a
+    concurrent lane, so it is resolved defensively via getattr: missing → log
+    once and idle, never crash. Returns its {'checked','drifted','fixed'}
+    summary (None when unavailable/failed); never raises."""
+    global _inventory_resync_missing_logged
+    try:
+        from app.services.inventory_service import InventoryService
+
+        svc = InventoryService(db, current_user_id=None)
+        resync = getattr(svc, "resync_all_products", None)
+        if not callable(resync):
+            if not _inventory_resync_missing_logged:
+                _inventory_resync_missing_logged = True
+                log.warning(
+                    "InventoryService.resync_all_products is not available — "
+                    "the daily inventory resync is idle until it ships")
+            return None
+        counts = resync() or {}
+        if counts.get("drifted"):
+            log.warning(
+                "inventory resync: %s of %s product(s) had DRIFTED on-hand "
+                "counts (%s fixed)",
+                counts.get("drifted"), counts.get("checked"), counts.get("fixed"),
+            )
+        else:
+            log.info("inventory resync clean: %s", counts)
+        return counts
+    except Exception:
+        log.exception("inventory resync failed (continuing)")
+        return None
+
+
+def _start_inventory_resync_scheduler() -> None:
+    """Daily ledger-vs-cache drift resync for product on-hand counts (mirrors
+    _start_overdue_core_scheduler: daemon thread, once-per-day tick, in-memory
+    test-engine skip, never raises into startup)."""
+    import threading
+    import time as _time
+
+    if ":memory:" in str(_appdb.engine.url):
+        return
+
+    def _loop() -> None:
+        last_run_date = None
+        while True:
+            try:
+                now = datetime.now()
+                # Fire once per day at/after 05:00 local (before business hours,
+                # staggered off the 06:00 overdue-core scan).
+                if now.hour >= 5 and last_run_date != now.date():
+                    last_run_date = now.date()
+                    db = _appdb.SessionLocal()
+                    try:
+                        _run_inventory_resync(db)
+                    finally:
+                        db.close()
+            except Exception:
+                log.exception("daily inventory-resync scheduler tick failed (continuing)")
+            _time.sleep(1800)   # re-check every 30 minutes
+
+    threading.Thread(target=_loop, daemon=True, name="inventory-resync-daily").start()
+    log.info("daily inventory resync scheduler started")
 
 
 app.include_router(dashboard.router)

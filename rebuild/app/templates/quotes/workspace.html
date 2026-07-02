@@ -45,6 +45,10 @@
 
 {# ── Quote header: info strip + balance chips + notes ─────────────────────── #}
 <form id="quote-header-form" action="/quotes/{{ quote.id }}" method="post" onsubmit="return false">
+{# Optimistic-lock version (R9) — the autosave JS refreshes this from the
+   response's X-Updated-At header after every successful save, so only a save
+   from ANOTHER session/user trips the conflict. #}
+<input type="hidden" name="updated_at" value="{{ quote.updated_at.isoformat() if quote.updated_at else '' }}">
 <div class="bg-white rounded-xl border border-gray-200 shadow-sm mb-3">
 
   {# Row 1: Customer · metadata · edit controls · balance chips (all one line) #}
@@ -396,8 +400,9 @@
 {# ── Sticky save bar (Save Standard v2) — honest dirty-state pill + manual Save + toast.
    saveState is driven by the autosave JS via window 'quote-save-state' events; the Save
    button force-flushes via 'quote-save-flush'. Green ONLY after a confirmed save. ── #}
-<div x-data="{ saveState: 'clean', toast: false, savedAt: '' }"
-     @quote-save-state.window="saveState = $event.detail; if ($event.detail === 'clean') savedAt = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })"
+<div x-data="{ saveState: 'clean', toast: false, savedAt: '', errMsg: '' }"
+     @quote-save-state.window="saveState = $event.detail; if ($event.detail === 'clean') { savedAt = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); errMsg = '' }"
+     @quote-save-conflict.window="errMsg = $event.detail"
      @quote-saved-toast.window="toast = true; setTimeout(() => toast = false, 2200)"
      class="sticky bottom-0 z-20 mt-3 flex items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white/95 backdrop-blur px-4 py-2.5 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
   <span class="text-xs flex items-center gap-1.5"
@@ -405,7 +410,8 @@
     <span class="w-1.5 h-1.5 rounded-full"
           :class="{ 'bg-amber-400': saveState==='dirty', 'bg-green-400': saveState==='clean', 'bg-gray-300 animate-pulse': saveState==='saving', 'bg-red-500': saveState==='error' }"></span>
     {# Save Standard v2: pill shows the last-saved time once a save has confirmed this session (green ONLY when truly saved). #}
-    <span x-text="saveState==='clean' && savedAt ? ('Saved ' + savedAt) : ({clean:'Saved', dirty:'Unsaved changes', saving:'Saving…', error:'Save failed — retry'})[saveState]"></span>
+    {# errMsg (set on a 409 conflict) overrides the generic error copy #}
+    <span x-text="saveState==='error' && errMsg ? errMsg : (saveState==='clean' && savedAt ? ('Saved ' + savedAt) : ({clean:'Saved', dirty:'Unsaved changes', saving:'Saving…', error:'Save failed — retry'})[saveState])"></span>
   </span>
   <button type="button" @click="$dispatch('quote-save-flush')" class="btn-primary btn-sm">
     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/></svg>
@@ -426,7 +432,11 @@
 // pill; the manual Save button dispatches 'quote-save-flush' to force an immediate save.
 (function () {
   var timer = null;
-  function emit(state) { window.dispatchEvent(new CustomEvent('quote-save-state', { detail: state })); }
+  var currentState = 'clean';   // mirrored for the beforeunload guard
+  function emit(state) {
+    currentState = state;
+    window.dispatchEvent(new CustomEvent('quote-save-state', { detail: state }));
+  }
 
   function doSave(manual) {
     emit('saving');
@@ -435,12 +445,33 @@
     fetch('/quotes/{{ quote.id }}/autosave', { method: 'POST', body: new FormData(form) })
       .then(function (r) {
         if (r.ok) {
+          // Optimistic lock (R9): adopt the server's fresh version so the
+          // NEXT autosave doesn't conflict with this one.
+          var ts = r.headers.get('X-Updated-At');
+          var hid = form.querySelector('input[name="updated_at"]');
+          if (ts && hid) hid.value = ts;
           emit('clean');
           if (manual) window.dispatchEvent(new CustomEvent('quote-saved-toast'));
-        } else { emit('error'); }
+        } else {
+          if (r.status === 409) {
+            window.dispatchEvent(new CustomEvent('quote-save-conflict', {
+              detail: 'Changed by another user — reload this page, then re-apply your edit.'
+            }));
+          }
+          emit('error');
+        }
       })
       .catch(function () { emit('error'); });
   }
+
+  // Warn before leaving while an autosave is pending, in flight, or failed —
+  // otherwise the 2s debounce silently eats the last edit on a fast tab close.
+  window.addEventListener('beforeunload', function (e) {
+    if (currentState === 'dirty' || currentState === 'saving' || currentState === 'error') {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  });
 
   function schedule() {
     emit('dirty');

@@ -1,6 +1,8 @@
 ﻿from __future__ import annotations
 
+import csv
 import html
+import io
 import json
 from urllib.parse import quote as url_quote
 
@@ -83,26 +85,14 @@ def _resolve_vendor_digit(db: Session, submitted: str, *, current: str = "",
     return digit, ""
 
 
-@router.get("/", response_class=HTMLResponse)
-def vendor_list(
-    request: Request,
-    tab: str = "",
-    q: str = "",
-    db: Session = Depends(get_db),
-):
-    # ── Unfiltered tab counts ─────────────────────────────────────────────
-    _v_active   = db.query(func.count(Vendor.id)).filter(Vendor.is_active == True).scalar()  or 0
-    _v_inactive = db.query(func.count(Vendor.id)).filter(Vendor.is_active == False).scalar() or 0
-    counts: dict = {
-        "":         _v_active,
-        "active":   _v_active,
-        "inactive": _v_inactive,
-        "all":      _v_active + _v_inactive,
-    }
+_OPEN_PO_STATUSES = [
+    POStatus.VERBAL_ORDER, POStatus.DRAFT, POStatus.SENT, POStatus.PARTIAL,
+]
 
-    # `tab` drives the active filter; default shows active vendors.
-    active_tab = tab if tab in ("active", "inactive", "all") else "active"
 
+def _filtered_vendors(db: Session, active_tab: str, q: str) -> list[Vendor]:
+    """The list view's tab/q filter — shared with /export.csv so "export what
+    I see" matches the table exactly."""
     vendor_query = db.query(Vendor).order_by(Vendor.name)
     if active_tab == "inactive":
         vendor_query = vendor_query.filter(Vendor.is_active == False)
@@ -114,17 +104,17 @@ def vendor_list(
         vendor_query = vendor_query.filter(
             Vendor.name.ilike(f"%{q}%") | Vendor.vendor_code.ilike(f"%{q}%")
         )
-    vendors = vendor_query.all()
+    return vendor_query.all()
 
-    # ── Bulk §2B aggregates (no N+1) ─────────────────────────────────────
-    _vids = [v.id for v in vendors]
 
-    OPEN_PO_STATUSES = [
-        POStatus.VERBAL_ORDER, POStatus.DRAFT, POStatus.SENT, POStatus.PARTIAL,
-    ]
+def _vendor_aggregate_maps(db: Session, _vids: list[int]) -> dict:
+    """§2B bulk aggregates (no N+1) — one grouped query per metric, keyed by
+    vendor_id. The list template must read these maps, never per-row
+    vendor.<relationship> traversals (each of those lazy-loads the vendor's
+    full PO/credit history)."""
     open_po_map: dict = dict(
         db.query(PurchaseOrder.vendor_id, func.count(PurchaseOrder.id))
-        .filter(PurchaseOrder.vendor_id.in_(_vids), PurchaseOrder.status.in_(OPEN_PO_STATUSES))
+        .filter(PurchaseOrder.vendor_id.in_(_vids), PurchaseOrder.status.in_(_OPEN_PO_STATUSES))
         .group_by(PurchaseOrder.vendor_id)
         .all()
     ) if _vids else {}
@@ -184,6 +174,38 @@ def vendor_list(
         if avg_days is not None
     } if _vids else {}
 
+    return {
+        "open_po_map":   open_po_map,
+        "open_bill_map": open_bill_map,
+        "credit_map":    credit_map,
+        "last_po_map":   last_po_map,
+        "lead_time_map": lead_time_map,
+    }
+
+
+@router.get("/", response_class=HTMLResponse)
+def vendor_list(
+    request: Request,
+    tab: str = "",
+    q: str = "",
+    db: Session = Depends(get_db),
+):
+    # ── Unfiltered tab counts ─────────────────────────────────────────────
+    _v_active   = db.query(func.count(Vendor.id)).filter(Vendor.is_active == True).scalar()  or 0
+    _v_inactive = db.query(func.count(Vendor.id)).filter(Vendor.is_active == False).scalar() or 0
+    counts: dict = {
+        "":         _v_active,
+        "active":   _v_active,
+        "inactive": _v_inactive,
+        "all":      _v_active + _v_inactive,
+    }
+
+    # `tab` drives the active filter; default shows active vendors.
+    active_tab = tab if tab in ("active", "inactive", "all") else "active"
+
+    vendors = _filtered_vendors(db, active_tab, q)
+    maps = _vendor_aggregate_maps(db, [v.id for v in vendors])
+
     return templates.TemplateResponse(
         request,
         "vendors/list.html",
@@ -194,12 +216,67 @@ def vendor_list(
             "counts":       counts,
             "q":            q,
             # §2B aggregate maps (keyed by vendor_id)
-            "open_po_map":   open_po_map,
-            "open_bill_map": open_bill_map,
-            "credit_map":    credit_map,
-            "last_po_map":   last_po_map,
-            "lead_time_map": lead_time_map,
+            **maps,
         },
+    )
+
+
+# ── Export CSV — multi-segment-safe: registered before /{vendor_id} ──────────
+
+@router.get("/export.csv")
+def vendor_export_csv(
+    tab: str = "",
+    q: str = "",
+    db: Session = Depends(get_db),
+):
+    """
+    Stream the current filtered vendor list as a CSV download.
+    Mirrors the list view's tab/q filters so "export what I see" matches
+    exactly (same pattern as /customers/export.csv), including the list's
+    §2B aggregate columns.
+    """
+    from fastapi.responses import StreamingResponse
+
+    active_tab = tab if tab in ("active", "inactive", "all") else "active"
+    vendors = _filtered_vendors(db, active_tab, q)
+    maps = _vendor_aggregate_maps(db, [v.id for v in vendors])
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "name", "vendor_code", "sku_digit", "account_number", "contact_name",
+        "phone", "email", "website", "payment_terms",
+        "open_pos", "open_bills", "open_credits", "open_credit_amount",
+        "last_po_date", "avg_lead_days", "is_active",
+    ])
+    for v in vendors:
+        credit = maps["credit_map"].get(v.id)
+        last_po = maps["last_po_map"].get(v.id)
+        lead = maps["lead_time_map"].get(v.id)
+        writer.writerow([
+            v.name,
+            v.vendor_code,
+            v.vendor_number,
+            v.account_number,
+            v.contact_name,
+            v.phone,
+            v.email,
+            v.website,
+            v.payment_terms,
+            maps["open_po_map"].get(v.id, 0),
+            maps["open_bill_map"].get(v.id, 0),
+            credit["count"] if credit else 0,
+            f"{credit['amount']:.2f}" if credit else "",
+            last_po.strftime("%Y-%m-%d") if last_po else "",
+            lead if lead is not None else "",
+            "yes" if v.is_active else "no",
+        ])
+
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=vendors.csv"},
     )
 
 

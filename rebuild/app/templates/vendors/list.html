@@ -95,9 +95,10 @@
    BULK ACTION BAR — §7 Primitive 4
 ══════════════════════════════════════════════════════════════════════════════ #}
 {% call bulk_toolbar() %}
-  <button disabled title="CSV export — coming soon" class="text-xs font-medium text-gray-400 cursor-not-allowed">
+  <a href="/vendors/export.csv?tab={{ active_tab }}&q={{ q | urlencode }}"
+     class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">
     Export CSV
-  </button>
+  </a>
 {% endcall %}
 
 {# ══════════════════════════════════════════════════════════════════════════════
@@ -133,23 +134,24 @@
       <tbody class="divide-y divide-gray-100">
         {% for v in vendors %}
 
-        {# ── §2B Per-row computed values ── #}
-        {% set open_pos     = v.purchase_orders | selectattr('status', 'in', ['draft','verbal_order','sent','partial']) | list %}
-        {% set billed_pos   = v.purchase_orders | selectattr('status', 'equalto', 'billed') | list %}
-        {% set open_credits = v.credits | selectattr('status', 'equalto', 'open') | list %}
-        {% set credit_total = open_credits | sum(attribute='amount') %}
-
-        {# §2B Last PO date — most recent by created_at #}
-        {% set sorted_pos = v.purchase_orders | sort(attribute='created_at', reverse=true) %}
-        {% set last_po = sorted_pos[0] if sorted_pos else none %}
+        {# ── §2B Per-row values — read the router's aggregate maps, NEVER
+              v.purchase_orders / v.credits (each traversal lazy-loads the
+              vendor's full PO/credit history → N+1) ── #}
+        {% set open_po_count   = open_po_map.get(v.id, 0) %}
+        {% set open_bill_count = open_bill_map.get(v.id, 0) %}
+        {% set _credit         = credit_map.get(v.id) %}
+        {% set credit_count    = _credit['count'] if _credit else 0 %}
+        {% set credit_total    = _credit['amount'] if _credit else 0.0 %}
+        {% set last_po_date    = last_po_map.get(v.id) %}
+        {% set lead_days       = lead_time_map.get(v.id) %}
 
         {# Left-edge health stripe (§4 semantics):
            amber = open credits (money vendor owes us — attention needed)
            blue  = active open POs (normal business activity)
            transparent = no active relationship #}
-        {% if open_credits %}
+        {% if credit_count %}
           {% set stripe = 'border-l-amber-400' %}
-        {% elif open_pos %}
+        {% elif open_po_count %}
           {% set stripe = 'border-l-blue-300' %}
         {% else %}
           {% set stripe = 'border-l-transparent' %}
@@ -160,7 +162,7 @@
           @click="togglePreview({{ v.id }})"
           :class="{
             'ring-inset ring-1 ring-brand-300 bg-brand-50/40': previewId === {{ v.id }},
-            'bg-amber-50/20': {{ 'true' if open_credits else 'false' }} && previewId !== {{ v.id }},
+            'bg-amber-50/20': {{ 'true' if credit_count else 'false' }} && previewId !== {{ v.id }},
           }"
           class="cursor-pointer hover:bg-gray-50/80 transition-colors group">
 
@@ -218,32 +220,32 @@
           <td class="px-4 py-4 align-middle">
             <div class="flex items-center gap-2 flex-wrap">
               {# Open POs #}
-              {% if open_pos %}
-              <span class="chip-axle chip-ok"><span class="dot"></span>{{ open_pos | length }} PO{{ 's' if open_pos | length != 1 }}</span>
+              {% if open_po_count %}
+              <span class="chip-axle chip-ok"><span class="dot"></span>{{ open_po_count }} PO{{ 's' if open_po_count != 1 }}</span>
               {% else %}
               <span class="text-xs text-gray-300">0 POs</span>
               {% endif %}
-              {# Open Bills (POs in billed status — awaiting match/approval) #}
-              {% if billed_pos %}
-              <span class="chip-axle chip-low"><span class="dot"></span>{{ billed_pos | length }} Bill{{ 's' if billed_pos | length != 1 }}</span>
+              {# Open Bills (PENDING/DISCREPANCY vendor bills — awaiting match/approval) #}
+              {% if open_bill_count %}
+              <span class="chip-axle chip-low"><span class="dot"></span>{{ open_bill_count }} Bill{{ 's' if open_bill_count != 1 }}</span>
               {% endif %}
             </div>
           </td>
 
           {# ── §2B Credits pending ───────────────────────────────────────── #}
           <td class="px-4 py-4 align-middle hidden lg:table-cell">
-            {% if open_credits %}
-            <span class="chip-axle chip-low"><span class="dot"></span>{{ open_credits | length }} credit{{ 's' if open_credits | length != 1 }}</span>
+            {% if credit_count %}
+            <span class="chip-axle chip-low"><span class="dot"></span>{{ credit_count }} credit{{ 's' if credit_count != 1 }}</span>
             <div class="money mt-0.5" style="color:#b06511;">${{ '%.2f' % credit_total }}</div>
             {% else %}
             <span class="text-gray-300 text-xs">—</span>
             {% endif %}
           </td>
 
-          {# ── §2B Last PO date ──────────────────────────────────────────── #}
+          {# ── §2B Last PO date (max created_at from last_po_map) ───────── #}
           <td class="px-4 py-4 align-middle hidden lg:table-cell">
-            {% if last_po %}
-              {% set days_ago = (today - last_po.created_at.date()).days if today is defined else none %}
+            {% if last_po_date %}
+              {% set days_ago = (today - last_po_date.date()).days if today is defined else none %}
               {% if days_ago is not none %}
                 {% if days_ago == 0 %}
                 <span class="text-xs text-gray-600">Today</span>
@@ -252,16 +254,17 @@
                 {% elif days_ago < 30 %}
                 <span class="text-xs text-gray-600">{{ days_ago }}d ago</span>
                 {% else %}
-                <span class="text-xs text-gray-600">{{ last_po.created_at.strftime('%m/%d/%y') }}</span>
+                <span class="text-xs text-gray-600">{{ last_po_date.strftime('%m/%d/%y') }}</span>
                 {% endif %}
               {% else %}
-              <span class="text-xs text-gray-600">{{ last_po.created_at.strftime('%m/%d/%y') }}</span>
+              <span class="text-xs text-gray-600">{{ last_po_date.strftime('%m/%d/%y') }}</span>
               {% endif %}
-              <div class="text-[10px] mt-0.5 font-mono pn" style="color:#a9afb6;">{{ last_po.po_number }}</div>
             {% else %}
             <span class="text-gray-300 text-xs">—</span>
             {% endif %}
-            {# TODO: lead_time — no lead_time field on Vendor model; deferred per §2B #}
+            {% if lead_days is not none %}
+            <div class="text-[10px] mt-0.5" style="color:#a9afb6;" title="Avg vendor lead time">~{{ lead_days }}d lead</div>
+            {% endif %}
           </td>
 
           {# ── Always-visible actions — Edit + New PO ────────────────────── #}

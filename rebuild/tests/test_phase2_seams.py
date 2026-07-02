@@ -120,15 +120,8 @@ def test_quote_ctx_lifetime_matches_metrics_service(db):
         CustomerMetricsService(db).metrics_for(cust.id)["lifetime_sales"] == 500.0
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason="Seam-3 KEY BUG: _quote_customer_ctx reads m.get('outstanding_cores') / "
-           "m.get('last_purchase') off CustomerMetricsService.metrics_for, but those "
-           "keys are 'outstanding_core_credits' / 'last_invoice_date' — so "
-           "cust_outstanding_cores=0 and cust_last_purchase=None ALWAYS. Fix: call "
-           "InvoiceMetricsService._outstanding_cores(cid)/_last_purchase(cid) (the "
-           "helper imports InvoiceMetricsService but never uses it).",
-)
+# Seam-3 fixed: _quote_customer_ctx now sources cores (COUNT) and last purchase
+# (DATE) from InvoiceMetricsService — hard guard.
 def test_quote_ctx_cores_and_last_purchase_match_metrics_service(db):
     cust = _customer(db)
     _open_invoice(db, cust.id, 200.0)   # a real last purchase
@@ -178,24 +171,14 @@ def test_get_prepared_by_resolves_name_and_none(db):
     assert get_prepared_by(db, None) == "JAKS"        # no user → fallback
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason="get_prepared_by(db, <unknown id>) raises AttributeError on user.name — "
-           "it only guards `user_id is None`, not a non-existent user ROW, even "
-           "though the docstring promises a 'JAKS' fallback for unknown users. "
-           "Fix: `return (user.name if user else '').strip() or 'JAKS'`.",
-)
+# Fixed: get_prepared_by guards a non-existent user ROW (not just None id) —
+# hard guard on the 'JAKS' fallback.
 def test_get_prepared_by_unknown_user_falls_back(db):
     assert get_prepared_by(db, 999_999) == "JAKS"     # unknown id must not crash
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason="Seam-5: get_prepared_by() landed (document_render) but NO print template "
-           "renders it yet — Architect ruled placement @7759579, UI wiring pending. "
-           "When wired, this asserts 'Prepared by' on invoice/quote/SO/PO/statement "
-           "print.",
-)
+# Seam-5 wired: invoice print renders the get_prepared_by() attribution — hard
+# guard so it can't silently drop off the template again.
 def test_prepared_by_renders_on_invoice_print(client, db):
     cust = _customer(db)
     inv = _open_invoice(db, cust.id, 100.0)
