@@ -354,6 +354,10 @@ class CoreService(BaseService):
         Mark vendor submission. Sets status=SHIPPED_TO_VENDOR.
         R10 — moves physical location to "In Transit to Vendor" so every open
         core has a location (no NULL while mid-shipment).
+
+        §23.3 Phase 3 — this is the LOW-LEVEL transition (ship_vcr mirrors it
+        per core). UI single-core submits go through
+        submit_single_core_to_vendor() so the shipment lands on the VCR ledger.
         """
         core = self._get_or_404(core_charge_id)
         core.core_tracking_number = tracking_number
@@ -367,6 +371,33 @@ class CoreService(BaseService):
             note=f"tracking: {tracking_number or 'unknown'}",
         )
         self.db.commit()
+
+    def submit_single_core_to_vendor(
+        self,
+        core_charge_id: int,
+        tracking_number: str | None = None,
+    ) -> VendorCoreReturn:
+        """
+        §23.3 Phase 3 — the single-core "Mark Shipped" path now rides the VCR
+        ledger: every vendor shipment gets a VendorCoreReturn document
+        (expected credit, reconciliation, dispute trail) instead of silently
+        bypassing it. Wraps create_vcr() + ship_vcr() for a one-core batch, so
+        all their guards apply: ready-to-ship stage, open-VCR dedup, and the
+        ISSUE_CREDIT_MEMO permission.
+
+        The bare submit_to_vendor() transition stays as the low-level
+        primitive (ship_vcr mirrors it per core) — this is the path UI single-
+        core submits must take.
+        """
+        core = self._get_or_404(core_charge_id)
+        if core.vendor_id is None:
+            raise ValueError(
+                f"Core #{core.id} has no vendor on file — use the Batch-to-VCR "
+                "checkboxes with a vendor selected, or set the product's "
+                "preferred vendor first."
+            )
+        vcr = self.create_vcr(vendor_id=core.vendor_id, core_charge_ids=[core.id])
+        return self.ship_vcr(vcr.id, tracking_number=tracking_number or "")
 
     def record_vendor_acceptance(self, core_charge_id: int, credit_amount: float) -> None:
         """

@@ -52,6 +52,7 @@ from app.routers import shopify as shopify_router
 from app.routers import leadfinder_api as leadfinder_api_router
 from app.routers import public_docs as public_docs_router
 from app.routers import pricing_rules as pricing_rules_router
+from app.routers import serials as serials_router
 
 log = logging.getLogger(__name__)
 
@@ -580,6 +581,7 @@ app.include_router(sales_orders.router)
 app.include_router(invoices.router)
 app.include_router(payments.router)
 app.include_router(cores.router)
+app.include_router(serials_router.router)
 app.include_router(settings_router.router)
 app.include_router(warranty_router.router)
 app.include_router(returns_router.router)

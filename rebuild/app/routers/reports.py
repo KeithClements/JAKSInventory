@@ -568,6 +568,36 @@ def reports_outstanding_cores(request: Request, db: Session = Depends(get_db)):
     )
 
 
+# ── Overdue Cores (§23.3 Phase 3) ─────────────────────────────────────────────
+
+@router.get("/overdue-cores", response_class=HTMLResponse)
+def reports_overdue_cores(request: Request, db: Session = Depends(get_db)):
+    error_message = None
+    today = date.today()
+    rows: list = []
+    totals = {"core_count": 0, "qty_outstanding": 0, "amount": 0.0,
+              "oldest_days_overdue": 0}
+    try:
+        data = ReportService(db).get_overdue_cores()
+        today = data["as_of"]
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_overdue_cores failed")
+        error_message = "Could not load overdue core data. Check server logs for details."
+
+    return templates.TemplateResponse(
+        request,
+        "reports/overdue_cores.html",
+        {
+            "today": today,
+            "rows": rows,
+            "totals": totals,
+            "error_message": error_message,
+        },
+    )
+
+
 # ── Overdue Invoices + Accrued Interest ──────────────────────────────────────
 
 @router.get("/overdue-invoices", response_class=HTMLResponse)
@@ -984,6 +1014,29 @@ def reports_outstanding_cores_export(db: Session = Depends(get_db)):
             for r in data["rows"]
         ],
         f"outstanding_cores_{data['as_of'].isoformat()}.csv",
+    )
+
+
+@router.get("/overdue-cores/export.csv")
+def reports_overdue_cores_export(db: Session = Depends(get_db)):
+    data = ReportService(db).get_overdue_cores()
+    return _csv_response(
+        ["sku", "description", "customer", "phone", "invoice_number",
+         "core_slip_number", "qty_outstanding", "amount", "return_deadline",
+         "days_overdue"],
+        [
+            [
+                r["sku"], r["description"],
+                r["customer"].company_name if r["customer"] else "",
+                r["customer_phone"] or "",
+                r["invoice_number"] or "", r["core_slip_number"] or "",
+                r["qty_outstanding"], f"{r['amount']:.2f}",
+                r["return_deadline"].date().isoformat() if r["return_deadline"] else "",
+                r["days_overdue"],
+            ]
+            for r in data["rows"]
+        ],
+        f"overdue_cores_{data['as_of'].isoformat()}.csv",
     )
 
 

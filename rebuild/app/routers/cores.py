@@ -387,17 +387,22 @@ async def submit_to_vendor(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    """Mark that JAKS has physically shipped the core back to the vendor."""
+    """Mark that JAKS has physically shipped the core back to the vendor.
+
+    §23.3 Phase 3 — creates + ships a one-core VCR so single-core shipments
+    land on the same vendor-return ledger as batches (expected credit,
+    reconciliation, dispute trail), then opens the VCR box document.
+    """
     from app.services.core_service import CoreService
 
     form = await request.form()
     tracking = str(form.get("tracking_number", "")).strip() or None
     try:
-        CoreService(db, user_id).submit_to_vendor(
+        vcr = CoreService(db, user_id).submit_single_core_to_vendor(
             core_charge_id=core_id,
             tracking_number=tracking,
         )
-    except ValueError as exc:
+    except (ValueError, PermissionError) as exc:
         db.rollback()
         return RedirectResponse(f"/cores/?error={url_quote(str(exc))}", status_code=303)
     except Exception:
@@ -407,7 +412,7 @@ async def submit_to_vendor(
             f"/cores/?error={url_quote('Unexpected error — core was not submitted to vendor.')}",
             status_code=303,
         )
-    return RedirectResponse(f"/cores/{core_id}/vendor-slip-print", status_code=303)
+    return RedirectResponse(f"/cores/vcr/{vcr.id}/print", status_code=303)
 
 
 # ── Vendor Accepted ───────────────────────────────────────────────────────────

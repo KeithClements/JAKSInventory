@@ -82,6 +82,8 @@ def _make_claim(db, *, customer, vendor, product):
         customer_id=customer.id, invoice_id=None, vendor_id=vendor.id,
         failure_description="unit failed",
         lines=[{"product_id": product.id, "qty_claimed": 1, "credit_amount": 0.0}],
+        # §23.3 Phase 3 — warranty_require_esn defaults ON; vendor claims need one
+        esn="ESN-WC-TEST",
     )
 
 

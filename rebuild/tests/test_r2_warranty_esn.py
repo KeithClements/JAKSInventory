@@ -109,6 +109,9 @@ def _claim_id_from(resp):
 
 def _service_claim(db, *, customer, product, vendor=None, **kwargs):
     from app.services.warranty_service import WarrantyService
+    # §23.3 Phase 3 — warranty_require_esn defaults ON; give vendor claims an
+    # ESN unless a test explicitly overrides it.
+    kwargs.setdefault("esn", "79R2-ESN-TEST")
     return WarrantyService(db, None).create_claim(
         customer_id=customer.id, invoice_id=None,
         vendor_id=vendor.id if vendor else None,

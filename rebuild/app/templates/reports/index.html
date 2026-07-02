@@ -137,6 +137,16 @@
       </div>
     </a>
 
+    <a href="/reports/overdue-cores" class="card hover:shadow-md transition-shadow">
+      <div class="card-body">
+        <p class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Cores</p>
+        <p class="mt-1 text-base font-semibold text-gray-900">Overdue Cores</p>
+        <p class="mt-1 text-sm text-gray-500">
+          {{ core_overdue }} core{{ 's' if core_overdue != 1 }} past the return deadline — the chase list, with customer phone numbers.
+        </p>
+      </div>
+    </a>
+
     <a href="/reports/overdue-invoices" class="card hover:shadow-md transition-shadow">
       <div class="card-body">
         <p class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Receivables</p>

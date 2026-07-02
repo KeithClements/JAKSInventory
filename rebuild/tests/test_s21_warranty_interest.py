@@ -55,22 +55,43 @@ def _vendor_claim_no_esn(db):
     return svc, claim
 
 
-def test_warranty_esn_not_required_by_default(db):
-    svc, claim = _vendor_claim_no_esn(db)
-    svc.submit_to_vendor(claim.id)   # default setting off → allowed
-    db.expire_all()
-    from app.models.warranty import WarrantyClaim
-    assert db.query(WarrantyClaim).get(claim.id).status == WarrantyStatus.SUBMITTED_TO_VENDOR
-
-
-def test_warranty_esn_required_when_setting_on(db):
-    set_setting_value_db(db, "warranty_require_esn", "true")
-    db.commit()
+def test_warranty_esn_required_by_default(db):
+    """§23.3 Phase 3 — the gate now defaults ON (no setting row needed):
+    PAI/IMB reject blank-ESN vendor claims, so blank blocks submission."""
     svc, claim = _vendor_claim_no_esn(db)
     with pytest.raises(ValueError, match="ESN"):
         svc.submit_to_vendor(claim.id)
-    set_setting_value_db(db, "warranty_require_esn", "false")  # reset for isolation
+    db.expire_all()
+    from app.models.warranty import WarrantyClaim
+    assert db.query(WarrantyClaim).get(claim.id).status == WarrantyStatus.DRAFT
+
+
+def test_warranty_esn_optional_when_setting_off(db):
+    set_setting_value_db(db, "warranty_require_esn", "false")
     db.commit()
+    try:
+        svc, claim = _vendor_claim_no_esn(db)
+        svc.submit_to_vendor(claim.id)   # gate off → blank ESN allowed
+        db.expire_all()
+        from app.models.warranty import WarrantyClaim
+        assert db.query(WarrantyClaim).get(claim.id).status == WarrantyStatus.SUBMITTED_TO_VENDOR
+    finally:
+        set_setting_value_db(db, "warranty_require_esn", "true")  # restore default for isolation
+        db.commit()
+
+
+def test_warranty_set_esn_unblocks_draft(db):
+    """§23.3 Phase 3 — a blank-ESN draft is repairable in place via set_esn()."""
+    svc, claim = _vendor_claim_no_esn(db)
+    with pytest.raises(ValueError, match="ESN"):
+        svc.submit_to_vendor(claim.id)
+    svc.set_esn(claim.id, "  79r2-431882  ")
+    db.expire_all()
+    from app.models.warranty import WarrantyClaim
+    assert db.query(WarrantyClaim).get(claim.id).esn == "79r2-431882"
+    svc.submit_to_vendor(claim.id)
+    db.expire_all()
+    assert db.query(WarrantyClaim).get(claim.id).status == WarrantyStatus.SUBMITTED_TO_VENDOR
 
 
 # ── Post accrued interest as a draft invoice ──────────────────────────────────

@@ -1111,6 +1111,51 @@ class ReportService(BaseService):
 
         return {"as_of": as_of, "rows": rows, "totals": totals}
 
+    # ── 6b. Overdue Cores (§23.3 Phase 3) ─────────────────────────────────────
+
+    def get_overdue_cores(self) -> dict[str, Any]:
+        """
+        Standalone overdue-cores chase list: open customer cores PAST their
+        return deadline. This is the "who do we call today" subset of the
+        Outstanding Cores report, so it derives from the same query (single
+        source of truth) and adds days_overdue + the customer's phone number.
+
+        Returns:
+          {
+            "as_of": date,
+            "rows": [ ...outstanding-cores row + {
+                "days_overdue": int,
+                "customer_phone": str | None,
+            } ],   # most-overdue first
+            "totals": {
+              "core_count": int, "qty_outstanding": int,
+              "amount": float, "oldest_days_overdue": int,
+            },
+          }
+        """
+        base = self.get_core_charges_outstanding()
+        as_of = base["as_of"]
+
+        rows: list[dict[str, Any]] = []
+        for r in base["rows"]:
+            if not r["overdue"] or r["return_deadline"] is None:
+                continue
+            deadline_d = as_date(r["return_deadline"]) or as_of
+            r = dict(r)
+            r["days_overdue"] = max((as_of - deadline_d).days, 0)
+            r["customer_phone"] = r["customer"].phone if r["customer"] else None
+            rows.append(r)
+
+        rows.sort(key=lambda r: r["days_overdue"], reverse=True)
+
+        totals = {
+            "core_count":          len(rows),
+            "qty_outstanding":     sum(r["qty_outstanding"] for r in rows),
+            "amount":              round(sum(r["amount"] for r in rows), 2),
+            "oldest_days_overdue": max((r["days_overdue"] for r in rows), default=0),
+        }
+        return {"as_of": as_of, "rows": rows, "totals": totals}
+
     # ── 7. Overdue Invoices + Accrued Interest ────────────────────────────────
 
     def get_overdue_invoices(self, as_of_date: date | None = None) -> dict[str, Any]:

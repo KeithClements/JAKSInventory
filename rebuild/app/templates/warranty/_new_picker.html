@@ -55,6 +55,8 @@ x-init="lines = JSON.parse(document.getElementById('wty-seed-lines').textContent
         <input type="text" name="esn" maxlength="100"
                placeholder="Required by PAI / vendor"
                class="form-input" />
+        {# §23.3 Phase 3 — the submit gate defaults ON for vendor claims #}
+        <p class="mt-1 text-[11px] text-amber-600">Vendor claims can't be submitted without an ESN (can be added later on the claim).</p>
       </div>
     </div>
 

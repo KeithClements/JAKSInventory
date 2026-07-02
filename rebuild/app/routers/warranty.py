@@ -70,6 +70,7 @@ def warranty_list(
         WarrantyStatus.VENDOR_DENIED:       "denied",
         WarrantyStatus.CUSTOMER_CREDITED:   "credited",
         WarrantyStatus.CUSTOMER_NOTIFIED:   "notified",
+        WarrantyStatus.CLOSED:              "closed",   # search results only
     }
     NO_VENDOR = "— No Vendor Assigned —"
     STALE_DAYS = 14  # awaiting a vendor decision longer than this flags red
@@ -86,11 +87,29 @@ def warranty_list(
     claims = active
     if q:
         ql = q.lower()
-        claims = [
-            c for c in active
-            if ql in (c.claim_number or "").lower()
-            or ql in (c.customer.company_name or "").lower()
-        ]
+        # §23.3 Phase 3 — a search is a HISTORY lookup, not just a queue filter:
+        # match the claim ESN and per-line failed-part serials too ("has this
+        # engine been claimed before?"), and include CLOSED claims — an
+        # engine's warranty history outlives the work queue.
+        searchable = (
+            db.query(WarrantyClaim)
+            .join(Customer)
+            .order_by(WarrantyClaim.claim_date.desc())
+            .all()
+        )
+
+        def _matches(c: WarrantyClaim) -> bool:
+            if ql in (c.claim_number or "").lower():
+                return True
+            if ql in (c.customer.company_name or "").lower():
+                return True
+            if ql in (c.esn or "").lower():
+                return True
+            return any(
+                ql in (ln.serial_number or "").lower() for ln in c.claim_lines
+            )
+
+        claims = [c for c in searchable if _matches(c)]
 
     now = datetime.now()
     rows = []
@@ -306,6 +325,12 @@ def warranty_detail(claim_id: int, request: Request, db: Session = Depends(get_d
     claim = db.query(WarrantyClaim).filter(WarrantyClaim.id == claim_id).first()
     if not claim:
         return RedirectResponse("/warranty/", status_code=303)
+    # §23.3 Phase 3 — the blank-ESN banner tells the clerk whether submission
+    # is actually blocked (gate on, the default) or just inadvisable (gate off).
+    from app.settings_utils import get_setting_value_db
+    esn_required = (
+        get_setting_value_db(db, "warranty_require_esn", "true").strip().lower() == "true"
+    )
     return templates.TemplateResponse(
         request,
         "warranty/workspace.html",
@@ -314,6 +339,8 @@ def warranty_detail(claim_id: int, request: Request, db: Session = Depends(get_d
             "WarrantyStatus": WarrantyStatus,
             "WarrantyDecision": WarrantyDecision,
             "WarrantyResolution": WarrantyResolution,
+            "WarrantyType": WarrantyType,
+            "esn_required": esn_required,
         },
     )
 
@@ -327,8 +354,9 @@ async def warranty_service_info(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    """Record per-line serial/ESN + labor (hours × rate) during the claim process.
-    Parallel arrays keyed by line_id[]; labor is distinct from the parts credit."""
+    """Record per-line serial/ESN + labor (hours × rate) + replacement-invoice
+    link during the claim process. Parallel arrays keyed by line_id[]; labor is
+    distinct from the parts credit."""
     from app.services.warranty_service import WarrantyService
 
     form = await request.form()
@@ -336,6 +364,7 @@ async def warranty_service_info(
     serials = form.getlist("serial_number[]")
     hours = form.getlist("labor_hours[]")
     rates = form.getlist("labor_rate[]")
+    repl_invoices = form.getlist("replacement_invoice[]")
 
     def _at(arr, i):
         return arr[i] if i < len(arr) else ""
@@ -349,6 +378,12 @@ async def warranty_service_info(
             "labor_hours": float(_at(hours, i) or 0.0),
             "labor_rate": float(_at(rates, i) or 0.0),
         }
+        # §23.3 Phase 3 — only touch the replacement link when the form carried
+        # the field (older cached forms without it must not clear saved links).
+        if repl_invoices:
+            updates[int(lid)]["replacement_invoice_number"] = str(
+                _at(repl_invoices, i)
+            ).strip()
 
     try:
         WarrantyService(db, user_id).update_service_info(claim_id, updates)
@@ -358,6 +393,41 @@ async def warranty_service_info(
             f"/warranty/{claim_id}?error={url_quote(str(exc))}", status_code=303
         )
     return RedirectResponse(f"/warranty/{claim_id}?ok=service", status_code=303)
+
+
+# ── ESN (engine serial) ───────────────────────────────────────────────────────
+
+@router.post("/{claim_id}/esn", response_class=RedirectResponse)
+async def warranty_set_esn(
+    claim_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """§23.3 Phase 3 — set/correct the claim ESN after creation (the submit
+    gate requires one on vendor claims by default, so a blank-ESN draft must
+    be repairable from the workspace)."""
+    from app.services.warranty_service import WarrantyService
+
+    form = await request.form()
+    esn = str(form.get("esn", "")).strip()
+    try:
+        WarrantyService(db, user_id).set_esn(claim_id, esn)
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error={url_quote(str(exc))}", status_code=303
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error setting ESN for claim %s", claim_id)
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error={url_quote('Unexpected error — the ESN was not saved.')}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        f"/warranty/{claim_id}?ok={url_quote('ESN saved.')}", status_code=303
+    )
 
 
 # ── Submit to Vendor ──────────────────────────────────────────────────────────

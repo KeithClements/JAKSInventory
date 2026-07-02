@@ -25,7 +25,9 @@
   'denied':    ('border-l-red-400',    'bg-red-50/20',    'chip-out',   'Denied',          'Notify Customer'),
   'credited':  ('border-l-green-400',  '',                'chip-ok',    'Credited',        'Close'),
   'notified':  ('border-l-amber-400',  '',                'chip-low',   'Notified',        'Close'),
+  'closed':    ('border-l-gray-300',   'bg-gray-50/40',   'chip-draft', 'Closed',          'View'),
 } %}
+{# 'closed' rows surface only in ESN/serial search results (§23.3 Phase 3) #}
 
 <div class="space-y-4">
 
@@ -103,7 +105,7 @@
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
       </svg>
-      <input name="q" value="{{ q }}" placeholder="Claim #, customer…"
+      <input name="q" value="{{ q }}" placeholder="Claim #, customer, ESN, serial…"
              class="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white w-64
                     focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400
                     placeholder:text-gray-400" />

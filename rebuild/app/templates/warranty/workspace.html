@@ -56,6 +56,32 @@
   </div>
   {% endif %}
 
+  {# ── Blank-ESN warning (§23.3 Phase 3) — vendor claims need an engine serial;
+       PAI / Interstate-McBee reject claims without one. Inline form so the
+       clerk can fix it right here instead of hunting for an edit screen. ── #}
+  {% if claim.warranty_type == WarrantyType.VENDOR and not claim.esn and claim.status != WarrantyStatus.CLOSED %}
+  <div class="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3">
+    <div class="flex items-start gap-3">
+      <svg class="w-5 h-5 text-amber-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+      </svg>
+      <div class="flex-1 min-w-0">
+        <p class="text-sm font-semibold text-amber-800">No ESN (engine serial) on this claim</p>
+        <p class="text-xs text-amber-700 mt-0.5">
+          PAI and Interstate-McBee reject vendor warranty claims without an engine serial number.
+          {% if esn_required and claim.status == WarrantyStatus.DRAFT %}Submission is blocked until one is entered.{% endif %}
+        </p>
+        <form method="post" action="/warranty/{{ claim.id }}/esn" class="mt-2 flex items-center gap-2">
+          <input type="text" name="esn" maxlength="100" required placeholder="Engine serial number…"
+                 class="w-64 rounded border border-amber-300 bg-white px-2 py-1.5 text-xs font-mono
+                        focus:outline-none focus:ring-1 focus:ring-amber-400" />
+          <button type="submit" class="btn-secondary btn-sm">Save ESN</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
   {# ── Header Panel ── #}
   <div class="card">
     <div class="card-body">
@@ -304,7 +330,8 @@
     </div>
     <p class="px-4 pt-2 text-xs text-gray-400">
       Serial/ESN of the failed part and repair labor (hours × rate). Labor is
-      reimbursement tracking, separate from the parts credit above.
+      reimbursement tracking, separate from the parts credit above. If the
+      replacement went out on a new invoice, enter that invoice # to link it.
     </p>
     {% if claim.status != WarrantyStatus.CLOSED %}
     <form method="post" action="/warranty/{{ claim.id }}/service-info" class="p-4">
@@ -314,6 +341,7 @@
             <tr>
               <th class="tbl-th">Product</th>
               <th class="tbl-th">Serial / ESN</th>
+              <th class="tbl-th">Replacement Inv #</th>
               <th class="tbl-th-r">Labor Hrs</th>
               <th class="tbl-th-r">Rate ($/hr)</th>
               <th class="tbl-th-r">Labor $</th>
@@ -331,6 +359,14 @@
                 <input name="serial_number[]" type="text" value="{{ line.serial_number or '' }}"
                        placeholder="optional"
                        class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs font-mono
+                              focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              </td>
+              <td class="tbl-td">
+                {# §23.3 Phase 3 — resolved server-side to that invoice's line for this product #}
+                <input name="replacement_invoice[]" type="text"
+                       value="{{ line.replacement_invoice_line.invoice.invoice_number if line.replacement_invoice_line else '' }}"
+                       placeholder="INV-…"
+                       class="w-32 rounded border border-gray-200 px-2 py-1.5 text-xs font-mono
                               focus:outline-none focus:ring-1 focus:ring-brand-400" />
               </td>
               <td class="tbl-td-r">
@@ -366,6 +402,7 @@
         <thead class="tbl-head">
           <tr>
             <th class="tbl-th">Product</th><th class="tbl-th">Serial / ESN</th>
+            <th class="tbl-th">Replacement Inv</th>
             <th class="tbl-th-r">Labor Hrs</th><th class="tbl-th-r">Rate</th><th class="tbl-th-r">Labor $</th>
           </tr>
         </thead>
@@ -374,6 +411,11 @@
           <tr class="tbl-row">
             <td class="tbl-td">{% if line.product %}<span class="font-mono text-xs">{{ line.product.sku }}</span>{% else %}—{% endif %}</td>
             <td class="tbl-td font-mono text-xs">{{ line.serial_number or '—' }}</td>
+            <td class="tbl-td font-mono text-xs">
+              {% if line.replacement_invoice_line %}
+              <a href="/invoices/{{ line.replacement_invoice_line.invoice_id }}" class="text-brand-700 hover:underline">{{ line.replacement_invoice_line.invoice.invoice_number }}</a>
+              {% else %}—{% endif %}
+            </td>
             <td class="tbl-td-r">{{ ('%.2f' % line.labor_hours) if line.labor_hours else '—' }}</td>
             <td class="tbl-td-r">{% if line.labor_rate %}${{ '%.2f' % line.labor_rate }}{% else %}—{% endif %}</td>
             <td class="tbl-td-r font-semibold">{% if line.labor_amount > 0 %}${{ '%.2f' % line.labor_amount }}{% else %}—{% endif %}</td>

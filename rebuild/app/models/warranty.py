@@ -126,6 +126,12 @@ class WarrantyClaimLine(Base):
         "WarrantyClaim", back_populates="claim_lines"
     )
     product: Mapped[Product | None] = relationship("Product")
+    # §23.3 Phase 3 — the replacement part's line on the NEW invoice. Explicit
+    # foreign_keys: this class has two FKs into invoice_lines (the original
+    # sale line above + this one).
+    replacement_invoice_line: Mapped[InvoiceLine | None] = relationship(
+        "InvoiceLine", foreign_keys=[replacement_invoice_line_id]
+    )
 
     @property
     def labor_amount(self) -> float:
@@ -164,3 +170,4 @@ from app.models.customer import Customer            # noqa: E402
 from app.models.vendor import Vendor                # noqa: E402
 from app.models.product import Product              # noqa: E402
 from app.models.returns import ReturnAuthorization  # noqa: E402
+from app.models.invoice import InvoiceLine          # noqa: E402

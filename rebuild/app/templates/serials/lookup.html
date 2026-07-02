@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}Serial Lookup — Axle{% endblock %}
+{% block heading %}Serial Number Lookup{% endblock %}
+
+{% block content %}
+<div class="max-w-6xl space-y-4">
+
+  <p class="text-xs text-gray-400">
+    Chain of custody for serialized units (cylinder heads etc.) — where each serial
+    came from (PO receipt), where it went (invoice), and any warranty claims against it.
+  </p>
+
+  {# ── Search ─────────────────────────────────────────────────────────────── #}
+  <form method="get" class="flex items-center gap-2">
+    <div class="relative">
+      <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+           fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
+      </svg>
+      <input name="q" value="{{ q }}" placeholder="Serial number or SKU…"
+             class="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white w-72
+                    focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400
+                    placeholder:text-gray-400 font-mono" />
+    </div>
+    <button type="submit"
+            class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200
+                   rounded-lg hover:bg-gray-50 transition-colors">Search</button>
+    {% if q %}
+    <a href="/serials/" class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</a>
+    {% endif %}
+  </form>
+
+  {# ── Results ────────────────────────────────────────────────────────────── #}
+  {% if rows %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">{% if q %}Matches{% else %}Recently Recorded Serials{% endif %}</h2>
+      <span class="text-xs text-gray-400">
+        {{ shown }} of {{ total_serials }} serial{{ 's' if total_serials != 1 }}{% if shown == max_rows %} — refine the search to see more{% endif %}
+      </span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">Serial #</th>
+            <th class="tbl-th">Product</th>
+            <th class="tbl-th">Status</th>
+            <th class="tbl-th">Received</th>
+            <th class="tbl-th">Sold</th>
+            <th class="tbl-th">Warranty</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          {% set s = row.serial %}
+          <tr class="tbl-row">
+            <td class="tbl-td font-mono text-xs font-semibold text-gray-800">{{ s.serial_number }}</td>
+            <td class="tbl-td">
+              {% if row.product %}
+              <a href="/products/{{ row.product.id }}" class="font-mono text-xs text-brand-700 hover:underline">{{ row.product.sku }}</a>
+              <span class="block text-[11px] text-gray-400 truncate max-w-56">{{ row.product.title }}</span>
+              {% else %}
+              <span class="text-gray-300">—</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td">
+              {% if s.status == 'in_stock' %}
+              <span class="badge-green">In Stock</span>
+              {% elif s.status == 'sold' %}
+              <span class="badge-blue">Sold</span>
+              {% else %}
+              <span class="badge-amber">{{ s.status | replace('_', ' ') | title }}</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td text-xs">
+              {% if row.received %}
+              <a href="/purchase-orders/{{ row.received.po_id }}" class="font-mono text-brand-700 hover:underline">{{ row.received.po_number }}</a>
+              <span class="block text-[11px] text-gray-400">
+                {{ row.received.vendor_name or '—' }}{% if row.received.received_at %} · {{ row.received.received_at.strftime('%m/%d/%Y') }}{% endif %}
+              </span>
+              {% else %}
+              <span class="text-gray-300">— no receipt link</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td text-xs">
+              {% if row.sold %}
+              <a href="/invoices/{{ row.sold.invoice_id }}" class="font-mono text-brand-700 hover:underline">{{ row.sold.invoice_number }}</a>
+              <span class="block text-[11px] text-gray-400">
+                {{ row.sold.customer_name or '—' }}{% if row.sold.invoice_date %} · {{ row.sold.invoice_date.strftime('%m/%d/%Y') }}{% endif %}
+              </span>
+              {% else %}
+              <span class="text-gray-300">—</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td text-xs">
+              {% if row.claims %}
+              {% for c in row.claims %}
+              <a href="/warranty/{{ c.id }}" class="font-mono text-amber-700 hover:underline block">{{ c.claim_number }}</a>
+              {% endfor %}
+              {% else %}
+              <span class="text-gray-300">—</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% elif q %}
+  <div class="card flex flex-col items-center justify-center py-16">
+    <svg class="w-12 h-12 text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+            d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
+    </svg>
+    <p class="text-gray-500 font-medium">No serials match “{{ q }}”</p>
+    <p class="text-gray-400 text-sm mt-1">Try a partial serial number or the product SKU.</p>
+  </div>
+  {% else %}
+  <div class="card flex flex-col items-center justify-center py-16">
+    <svg class="w-12 h-12 text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+            d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14"/>
+    </svg>
+    <p class="text-gray-500 font-medium">No serial numbers recorded yet</p>
+    <p class="text-gray-400 text-sm mt-1">Serials are captured when receiving serialized products on a PO.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

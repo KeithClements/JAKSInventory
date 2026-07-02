@@ -134,6 +134,12 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     "jaks_warranty_reserve_account": ("Warranty Reserve",
         "Accounting category for JAKS-absorbed warranty credits"),
 
+    # §23.3 Phase 3 — PAI / Interstate-McBee reject vendor warranty claims with
+    # no engine serial, so the submission gate defaults ON. Flip to "false" only
+    # for vendors that don't require one.
+    "warranty_require_esn":        ("true",
+        "Require ESN (engine serial) to submit vendor warranty claims"),
+
     # R8 — Notification thresholds
     "notify_invoice_over_amount":  ("5000.0",  "Notify on invoices over this amount"),
     "notify_payment_over_amount":  ("5000.0",  "Notify on payments over this amount"),
@@ -219,6 +225,7 @@ VISIBLE_KEYS = [
     "cc_surcharge_pct", "default_markup_pct", "default_fuel_service_charge",
     # Policy
     "default_core_return_days", "default_restock_fee_percent",
+    "warranty_require_esn",
     "business_close_time",
     # Integrations
     "qbo_client_id", "qbo_client_secret", "qbo_environment", "qbo_redirect_uri",

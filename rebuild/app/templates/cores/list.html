@@ -368,12 +368,15 @@
           {% elif stage == 'ready_to_ship' %}
           <tr x-show="openId === {{ core.id }}" x-cloak>
             <td colspan="7" class="px-5 pb-4 pt-1 bg-gray-50 border-b border-gray-100">
+              {# §23.3 Phase 3 — single-core ship creates + ships a one-core VCR so it
+                 lands on the same vendor-return ledger as batches. #}
               <form method="post" action="/cores/{{ core.id }}/submit-to-vendor" class="flex items-end gap-3 flex-wrap">
                 <div class="flex-1 min-w-52">
                   <label class="form-label">Tracking Number</label>
                   <input type="text" name="tracking_number" placeholder="UPS / FedEx tracking number…" class="form-input" />
                 </div>
-                <button type="submit" class="btn-primary">Mark as Shipped to Vendor</button>
+                <button type="submit" class="btn-primary">Ship to Vendor (creates return doc)</button>
+                <p class="basis-full text-[11px] text-gray-400 -mt-1">Creates a one-core vendor return (VCR) and opens its box document — same ledger as a batch.</p>
               </form>
             </td>
           </tr>

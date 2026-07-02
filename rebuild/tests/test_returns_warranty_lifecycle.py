@@ -150,6 +150,8 @@ def _new_claim(db):
         customer_id=cust.id, invoice_id=None, vendor_id=ven.id,
         failure_description="unit failed",
         lines=[{"product_id": prod.id, "qty_claimed": 1, "credit_amount": 0.0}],
+        # §23.3 Phase 3 — warranty_require_esn defaults ON; vendor claims need one
+        esn="ESN-RWL-TEST",
     )
     db.refresh(claim)
     return claim
