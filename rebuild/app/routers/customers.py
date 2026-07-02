@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.constants import (
     AddressType, CallOutcome, CallType,
     CommunicationChannel, CommunicationDirection,
-    CoreStatus, PaymentTerms, PricingTier, QuoteStatus, SOStatus,
+    CoreStatus, PaymentTerms, Permission, PricingTier, QuoteStatus, SOStatus,
     CustomerType, CustomerStatus, CustomerFlag, CUSTOMER_TYPE_LABELS, CUSTOMER_FLAG_LABELS,
     CUSTOMER_STORED_FLAGS,
 )
@@ -29,6 +29,7 @@ from app.models.customer import Customer, CustomerAddress, CustomerCallLog
 from app.models.core import CoreCharge
 from app.models.invoice import Invoice, PaymentAllocation
 from app.models.quote import Quote, SalesOrder
+from app.services.base import PermissionDeniedError
 from app.services.crm_service import CRMService
 from app.services.customer_service import (
     CustomerService, is_valid_email, normalize_phone,
@@ -767,6 +768,25 @@ async def customer_create(
             status_code=422,
         )
 
+    # A standing discount outside 0–100 poisons every downstream document header:
+    # quote/invoice services now REJECT bad values, so a bad stored customer
+    # default would brick "+ Quote" / "New Invoice" for that customer entirely.
+    try:
+        _discount = float(form.get("discount_pct") or 0)
+    except (TypeError, ValueError):
+        _discount = -1.0
+    if not (0.0 <= _discount <= 100.0):
+        return templates.TemplateResponse(
+            request,
+            "customers/new.html",
+            {
+                **_new_customer_ctx(db),
+                "email_error": "Standing discount must be between 0 and 100.",
+                "prefill": {k: str(v) for k, v in form.items()},
+            },
+            status_code=422,
+        )
+
     # C10 — HARD email dedup. A duplicate email means split AR / inconsistent
     # credit hold / duplicate QBO push, so this is a block (not a "create
     # anyway" warning like the company-name case). Pre-check for a friendly
@@ -1387,14 +1407,36 @@ async def customer_import_preview(
 async def customer_import_confirm(
     request: Request,
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     """Write validated rows to DB.
 
-    Duplicate check uses ALL customers (including inactive) so that soft-deleted
-    records are not silently re-created.  The preview stage only flags active
-    duplicates — if the user sees no warning but the confirm skips a row, the
-    redirect message will show the skip count as a clue.
+    Gated by IMPORT_CUSTOMERS — a bulk write of the customer master must not be
+    reachable by a counter clerk when the single-create path is role-gated.
+
+    Per-row guard rails mirror the single-create handler (POST /customers/new):
+      • email format (is_valid_email) — a malformed email is skipped, never saved.
+      • HARD email dedup (uq_customers_email) — applies regardless of
+        skip_duplicates, exactly like the single-create block (no override).
+      • name dedup honours the skip_duplicates checkbox: lowercase-exact against
+        ALL customers (including inactive, so soft-deleted records are not
+        silently re-created) PLUS the same fuzzy match the single-create warn
+        uses (_find_duplicate_customers rule, active customers only). Unchecking
+        skip_duplicates is the import's "Create Anyway".
+
+    Rows are committed INDIVIDUALLY so one poisoned row (e.g. a constraint hit
+    the pre-checks could not predict) skips that row only — it can no longer
+    roll back the whole batch. Every skip carries a reason surfaced in the
+    redirect summary.
     """
+    try:
+        CustomerService(db, user_id).assert_can(Permission.IMPORT_CUSTOMERS)
+    except PermissionDeniedError:
+        return RedirectResponse(
+            "/customers/import?error=You+do+not+have+permission+to+import+customers.",
+            status_code=303,
+        )
+
     form = await request.form()
     import_json = str(form.get("import_json", "")).strip()
     skip_dupes = str(form.get("skip_duplicates", "1")) == "1"
@@ -1406,57 +1448,108 @@ async def customer_import_confirm(
     except (json.JSONDecodeError, ValueError):
         return RedirectResponse("/customers/import?error=Invalid+import+data", status_code=303)
 
+    # Dedup keys are prefetched once and extended as rows commit, so a duplicate
+    # WITHIN the batch is caught the same way as one already in the DB.
     existing_names: set[str] = set()
+    existing_norm_names: set[str] = set()
     if skip_dupes:
-        # ALL customers including inactive — prevents name collision with soft-deleted records.
         existing_names = {
             r[0].lower()
             for r in db.query(Customer.company_name).all()
         }
+        existing_norm_names = {
+            n for n in (
+                _normalize_name(r[0])
+                for r in db.query(Customer.company_name)
+                .filter(Customer.is_active == True).all()  # noqa: E712
+            ) if n
+        }
+    # Email is checked against ALL customers (the unique index has no is_active
+    # carve-out) and independently of skip_duplicates — it is a hard key.
+    existing_emails = {
+        r[0].lower()
+        for r in db.query(Customer.email).filter(Customer.email != "").all()
+    }
+
+    # Import dedup is EXACT-normalized-name only. The interactive single-create
+    # flow also warns on substring matches, but there the operator can override;
+    # an import has no per-row override, and the substring rule silently drops
+    # distinct companies ('Cummins Northwest' skipped because 'Cummins' exists).
+    def _is_name_dup(norm: str) -> bool:
+        return bool(norm) and norm in existing_norm_names
 
     created = 0
-    skipped = 0
-    try:
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            company = row.get("company_name", "")
-            if not company:
-                continue
-            if skip_dupes and company.lower() in existing_names:
-                skipped += 1
-                continue
-            db.add(Customer(
-                company_name=company,
-                contact_name=row.get("contact_name", ""),
-                phone=row.get("phone", ""),
-                email=row.get("email", ""),
-                address_line1=row.get("address_line1", ""),
-                address_line2=row.get("address_line2", ""),
-                city=row.get("city", ""),
-                state=row.get("state", ""),
-                zip_code=row.get("zip_code", ""),
-                payment_terms=row.get("payment_terms", PaymentTerms.COD),
-                discount_pct=_safe_float(row.get("discount_pct", 0)),
-                interest_rate=_safe_float(row.get("interest_rate", 0)),
-                is_tax_exempt=bool(row.get("is_tax_exempt", False)),
-                notes=row.get("notes", ""),
-                internal_notes=row.get("internal_notes", ""),
-            ))
-            created += 1
-        db.commit()
-    except Exception:
-        db.rollback()
-        log.exception("Import failed during DB write")
-        return RedirectResponse(
-            "/customers/import?error=Database+error+during+import",
-            status_code=303,
-        )
+    skip_reasons: dict[str, int] = {}
 
-    msg = f"Imported+{created}+customer{'s' if created != 1 else ''}"
+    def _skip(reason: str) -> None:
+        skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        company = str(row.get("company_name", "") or "").strip()
+        if not company:
+            continue
+        email = str(row.get("email", "") or "").strip()
+
+        if email and not is_valid_email(email):
+            _skip("invalid email")
+            continue
+        if email and email.lower() in existing_emails:
+            _skip("duplicate email")
+            continue
+        if skip_dupes and (
+            company.lower() in existing_names
+            or _is_name_dup(_normalize_name(company))
+        ):
+            _skip("duplicate")
+            continue
+        # Out-of-range standing discount would brick quote/invoice creation for
+        # this customer (document services reject it) — skip with a named reason.
+        _discount = _safe_float(row.get("discount_pct", 0))
+        if not (0.0 <= _discount <= 100.0):
+            _skip("invalid discount")
+            continue
+
+        db.add(Customer(
+            company_name=company,
+            contact_name=row.get("contact_name", ""),
+            phone=row.get("phone", ""),
+            email=email,
+            address_line1=row.get("address_line1", ""),
+            address_line2=row.get("address_line2", ""),
+            city=row.get("city", ""),
+            state=row.get("state", ""),
+            zip_code=row.get("zip_code", ""),
+            payment_terms=row.get("payment_terms", PaymentTerms.COD),
+            discount_pct=_discount,
+            interest_rate=_safe_float(row.get("interest_rate", 0)),
+            is_tax_exempt=bool(row.get("is_tax_exempt", False)),
+            notes=row.get("notes", ""),
+            internal_notes=row.get("internal_notes", ""),
+        ))
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            log.exception("Import failed writing customer %r", company)
+            _skip("database error")
+            continue
+
+        created += 1
+        existing_names.add(company.lower())
+        norm = _normalize_name(company)
+        if norm:
+            existing_norm_names.add(norm)
+        if email:
+            existing_emails.add(email.lower())
+
+    skipped = sum(skip_reasons.values())
+    msg = f"Imported {created} customer{'s' if created != 1 else ''}"
     if skipped:
-        msg += f"+(skipped+{skipped}+duplicate{'s' if skipped != 1 else ''})"
-    return RedirectResponse(f"/customers/?ok={msg}", status_code=303)
+        detail = ", ".join(f"{n} {reason}" for reason, n in skip_reasons.items())
+        msg += f" (skipped {skipped}: {detail})"
+    return RedirectResponse(f"/customers/?ok={url_quote(msg)}", status_code=303)
 
 
 # ── Balance mini-panel (HTMX partial for Quote / Invoice workspace headers) ───
@@ -1653,7 +1746,19 @@ async def customer_update(
     c.payment_terms = str(form.get("payment_terms", PaymentTerms.COD))
     c.pricing_tier  = str(form.get("pricing_tier", "standard"))
     c.credit_limit  = float(form.get("credit_limit") or 0)
-    c.discount_pct  = float(form.get("discount_pct") or 0)
+    # Out-of-range standing discount bricks quote/invoice creation for this
+    # customer (document services now reject it) — block it at the source.
+    try:
+        _discount = float(form.get("discount_pct") or 0)
+    except (TypeError, ValueError):
+        _discount = -1.0
+    if not (0.0 <= _discount <= 100.0):
+        return RedirectResponse(
+            f"/customers/{customer_id}?error="
+            + url_quote("Standing discount must be between 0 and 100."),
+            status_code=303,
+        )
+    c.discount_pct  = _discount
     c.interest_rate = float(form.get("interest_rate") or 0)
     _cs = str(form.get("card_surcharge_pct", "")).strip()
     c.card_surcharge_pct = float(_cs) if _cs else None  # blank → NULL = use system default; 0 = no surcharge

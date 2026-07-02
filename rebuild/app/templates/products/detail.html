@@ -64,6 +64,14 @@
       <input type="hidden" name="reason" value="archived via UI" />
     </form>
 
+    {# Unlock-price form also lives outside the main edit form (same no-nesting
+       pattern as deactivate). Clears ONLY the manual price lock — the price is
+       kept; the nightly scraper feed may manage it again. #}
+    {% if product.price_override_locked %}
+    <form id="unlock-price-form" method="post" action="/products/{{ product.id }}/unlock-price"
+          onsubmit="return confirm('Unlock this price? The current price is kept, but the nightly vendor feed may change it again.')"></form>
+    {% endif %}
+
     {# Save Standard v2: this form TRULY auto-saves. The JS at the bottom of the page
        debounces edits and POSTs the whole form to /products/{id}/autosave, then drives
        the honest save-state pill below off the real HTTP result. The manual "Save
@@ -234,6 +242,18 @@
             <span class="text-green-700 font-bold text-base"
                   x-text="'→ $' + sellPrice.toFixed(2)">→ ${{ "%.2f"|format(product.selling_price) }}</span>
             <span x-show="isPinned" x-cloak class="badge-amber font-normal">pinned (no cost yet)</span>
+            {% if product.price_override_locked %}
+            {# Operator price lock (scraper-audit bug #11): set automatically when
+               the price is changed by hand; the nightly scraper feed skips this
+               product's sell price while locked. "unlock" clears just the lock
+               (price kept) via the external unlock-price-form above. #}
+            <span class="badge-amber font-normal inline-flex items-center gap-1.5"
+                  title="Set by hand in the ERP — the nightly vendor feed will not change this price while locked.">
+              &#128274; price locked (manual)
+              <button type="submit" form="unlock-price-form"
+                      class="link text-xs font-medium">unlock</button>
+            </span>
+            {% endif %}
           </h2>
         </div>
         <div class="card-body space-y-4">

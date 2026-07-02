@@ -65,7 +65,7 @@ class QuoteService(BaseService):
             customer_id=customer_id,
             status=QuoteStatus.DRAFT,
             outcome=QuoteOutcome.PENDING,
-            discount_pct=float(data.get("discount_pct", 0.0)),
+            discount_pct=self._validate_discount_pct(data.get("discount_pct")),
             validity_days=validity_days,
             valid_until=datetime.utcnow() + timedelta(days=validity_days),
             follow_up_date=data.get("follow_up_date"),
@@ -152,8 +152,12 @@ class QuoteService(BaseService):
             # Force zero regardless of what the caller passed
             merged["discount_pct"] = 0.0
         elif "discount_pct" not in data:
-            # Auto-apply customer default when caller didn't specify
-            merged["discount_pct"] = float(customer.discount_pct) if customer else 0.0
+            # Auto-apply customer default when caller didn't specify. A legacy
+            # out-of-range stored default is treated as UNSET (0) — raising here
+            # would brick add-line for that customer, and clamping 150→100 would
+            # give the parts away.
+            from app.services.invoice_service import _safe_customer_discount
+            merged["discount_pct"] = _safe_customer_discount(customer.discount_pct) if customer else 0.0
 
         line = self._add_line_internal(quote_id, merged, sort_order)
         # Attach the transient pricing render-context for templates (chip/badge/
@@ -201,7 +205,10 @@ class QuoteService(BaseService):
         qty_changed = "qty" in data and int(data["qty"]) != line.qty
         for field in updatable:
             if field in data:
-                setattr(line, field, data[field])
+                value = data[field]
+                if field == "discount_pct":
+                    value = self._validate_discount_pct(value)
+                setattr(line, field, value)
 
         cascaded = False
         if qty_changed and line.parent_line_id is None:
@@ -782,6 +789,8 @@ class QuoteService(BaseService):
                 f"Line type '{line.line_type}' is non-discountable — discount cannot be set"
             )
 
+        new_pct = self._validate_discount_pct(new_pct)
+
         # Load customer discount for override detection
         quote = self._get_or_404(line.quote_id)
         from app.models.customer import Customer
@@ -811,6 +820,26 @@ class QuoteService(BaseService):
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
+    @staticmethod
+    def _validate_discount_pct(value) -> float:
+        """Normalize a discount percent to a float in [0, 100].
+
+        None/blank means "no discount" (0.0). Values outside [0, 100] are
+        rejected: calc_line_total is pure math, so a negative discount
+        INFLATES the line total while >100 flips it negative — and a bad
+        value here carries through conversion to the SO/invoice money path.
+        Mirrors InvoiceService._validate_discount_pct.
+        """
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return 0.0
+        try:
+            pct = float(value)
+        except (TypeError, ValueError):
+            raise ValueError("Discount must be between 0 and 100")
+        if not (0 <= pct <= 100):
+            raise ValueError("Discount must be between 0 and 100")
+        return pct
+
     def update_header(self, quote_id: int, data: dict, submitted_updated_at: str | None = None) -> Quote:
         """Update quote-level notes and settings. Active (non-converted) quotes only."""
         quote = self._get_or_404(quote_id)
@@ -826,7 +855,10 @@ class QuoteService(BaseService):
             "engine_manufacturer", "engine_model",
         ):
             if field in data:
-                setattr(quote, field, data[field])
+                value = data[field]
+                if field == "discount_pct":
+                    value = self._validate_discount_pct(value)
+                setattr(quote, field, value)
         self.db.commit()
         return quote
 
@@ -868,7 +900,7 @@ class QuoteService(BaseService):
             qty=int(data.get("qty", 1)),
             unit_price=float(data.get("unit_price", 0.0)),
             unit_cost=float(data.get("unit_cost", 0.0)),
-            discount_pct=float(data.get("discount_pct", 0.0)),
+            discount_pct=self._validate_discount_pct(data.get("discount_pct")),
             is_core_line=bool(data.get("is_core_line", False)),
             parent_line_id=data.get("parent_line_id"),
             is_auto_generated=bool(data.get("is_auto_generated", False)),

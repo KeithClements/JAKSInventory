@@ -1060,6 +1060,8 @@ class Permission(StrEnum):
     APPROVE_VENDOR_BILL         = "approve_vendor_bill"
     APPLY_IMPORT                = "apply_import"
     PUBLISH_SHOPIFY             = "publish_shopify"
+    MERGE_CATALOG               = "merge_catalog"       # category/brand/manufacturer merges — irreversible bulk reassignment
+    IMPORT_CUSTOMERS            = "import_customers"    # bulk customer CSV import confirm
 
 
 # ─── Engine Make / Model catalog ─────────────────────────────────────────────

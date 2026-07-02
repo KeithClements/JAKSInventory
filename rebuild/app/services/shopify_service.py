@@ -114,8 +114,23 @@ class ShopifyService(BaseService):
         as the vendor or in the customer-facing title/SKU (the SKU is already the
         assembled JAKS scheme value)."""
         src = product.preferred_vendor_source
-        price = round(float(product.selling_price or 0), 2)
-        cost = round(float(src.vendor_cost), 2) if src and src.vendor_cost else 0.0
+        # Vendor sell packs (PAI "SELL PACK: 5 PIECE"): the ERP stores UNIT price/
+        # cost/weight, but the vendor only sells in pack multiples — a storefront
+        # order below the pack forces us to buy more than we sell (a guaranteed
+        # loss, e.g. 2 × $3.26 sold vs a $12.10 5-pack bought). So the LISTING is
+        # the pack: price/cost/weight × pack_qty, with the pack called out in the
+        # title + description. One storefront unit == one vendor sell pack.
+        pack = max(1, int(product.pack_qty or 1))
+        price = round(round(float(product.selling_price or 0), 2) * pack, 2)
+        cost = round((round(float(src.vendor_cost), 2) if src and src.vendor_cost
+                      else 0.0) * pack, 2)
+        # PAI *bulk part numbers* (SKU suffix == pack size: 900069HP-040 is the
+        # 40-pack of 900069HP) price per PIECE but weigh the WHOLE PACK (base
+        # gear 8.6 lb vs -040's 355 lb ≈ 40 × 8.875). Multiplying their weight
+        # again would list a 14,200 lb parcel — keep it; every other pack part's
+        # vendor weight is per-piece (verified: 331351 @ 0.07 lb/gasket).
+        pack_for_weight = 1 if (pack > 1 and (product.sku or "")
+                                .endswith(f"-{pack:03d}")) else pack
 
         # Tags power storefront search/filtering: engine make + every fitted model
         # + the part category. (PAI is deliberately NOT a tag — no vendor leak.)
@@ -162,8 +177,9 @@ class ShopifyService(BaseService):
         listing_images = [i.url for i in _imgs]
         return {
             "sku": product.sku,
-            "title": self._store_title(product, product.title),
-            "description_html": self._description_html(product, apps, oem_refs),
+            "title": self._pack_title(self._store_title(product, product.title), pack),
+            "description_html": self._description_html(product, apps, oem_refs,
+                                                       pack=pack),
             # SEO card fields → Shopify listing SEO (blank = Shopify derives its
             # own). Clamped to Shopify's hard limits so a long imported meta
             # description never trips a publish userError.
@@ -182,13 +198,16 @@ class ShopifyService(BaseService):
             "price": price,
             "cost": cost,
             "barcode": product.barcode or "",
-            "weight_lbs": float(product.weight_lbs or 0),
+            # Pack weight too — the listing IS the pack, and understating weight
+            # ×pack would undercharge Shopify's weight-based shipping brackets.
+            "weight_lbs": float(product.weight_lbs or 0) * pack_for_weight,
             "images": listing_images,
             "metafields": {
                 "pai_part_no": (src.vendor_part_number if src else ""),
                 "oem_references": oem_refs,
                 "engine_applications": apps,
                 "warranty_months": int(product.supplier_warranty_months or 0),
+                "pack_qty": pack if pack > 1 else 0,
             },
             "shopify_product_id": product.shopify_product_id or None,
         }
@@ -239,8 +258,71 @@ class ShopifyService(BaseService):
         return title or base or (product.sku or "").strip()
 
     @staticmethod
-    def _description_html(product: Product, apps: list[str], oem_refs: list[str]) -> str:
+    def _pack_title(title: str, pack: int) -> str:
+        """Suffix a sell-pack listing's title with '(Pack of N)'. The suffix must
+        SURVIVE the length cap (a pack price without the pack callout reads as a
+        5x overcharge), so the base is re-trimmed on a word boundary to make room.
+        A previous '(Pack of X)' marker is stripped first (self-heals a changed
+        pack size); a title that already states the pack in some other wording
+        ("5 PACK", "5-pack") is left alone — never doubled up."""
+        if pack <= 1:
+            return title
+        title = re.sub(r"\s*\(Pack of \d+\)", "", title, flags=re.I).rstrip()
+        low = title.lower()
+        if f"pack of {pack}" in low or f"{pack} pack" in low or f"{pack}-pack" in low:
+            return title
+        suffix = f" (Pack of {pack})"
+        if len(title) + len(suffix) > _PRODUCT_TITLE_MAX:
+            title = (title[:_PRODUCT_TITLE_MAX - len(suffix)]
+                     .rsplit(" ", 1)[0].rstrip())
+        return f"{title}{suffix}"
+
+    _PRODUCT_CONTENT_QUERY = (
+        "query packContent($id: ID!) { product(id: $id) { title descriptionHtml } }"
+    )
+    _PACK_NOTE_RE = re.compile(
+        r"<p><strong>Sold in a pack of \d+\.</strong>[^<]*</p>", re.I)
+
+    def _pack_content_updates(self, pid: str, pack: int,
+                              live: dict | None = None) -> dict:
+        """Title/descriptionHtml changes needed so the LIVE listing calls out its
+        sell pack. Live titles/descriptions are SEO-curated ON Shopify (the ERP's
+        thin catalog titles must never clobber them), so this reads the current
+        content and only APPENDS/refreshes the pack marker: '(Pack of N)' on the
+        title, a 'Sold in a pack of N' lead paragraph on the description.
+        Idempotent — returns {} when the listing is already marked. Fail-soft —
+        returns {} when the live read fails (the next sync heals it). ``live``
+        lets a bulk caller pass prefetched {title, descriptionHtml}."""
+        if pack <= 1:
+            return {}
+        if live is None:
+            d = self._graphql(self._PRODUCT_CONTENT_QUERY, {"id": pid})
+            live = (d.get("data") or {}).get("product")
+        if not live:
+            # Read failed / listing gone: touch NOTHING (prepending the pack note
+            # to a desc we couldn't read would WIPE the curated description).
+            return {}
+        out: dict = {}
+        lt = (live.get("title") or "").strip()
+        if lt:
+            nt = self._pack_title(lt, pack)
+            if nt != lt:
+                out["title"] = nt
+        ld = live.get("descriptionHtml") or ""
+        if f"sold in a pack of {pack}" not in ld.lower():
+            base = self._PACK_NOTE_RE.sub("", ld)   # drop a stale pack-size note
+            out["descriptionHtml"] = (
+                f"<p><strong>Sold in a pack of {pack}.</strong> "
+                f"Price shown is for {pack} pieces.</p>" + base)
+        return out
+
+    @staticmethod
+    def _description_html(product: Product, apps: list[str], oem_refs: list[str],
+                          *, pack: int = 1) -> str:
         parts = [f"<p>{product.title}</p>"]
+        if pack > 1:
+            parts.append(f"<p><strong>Sold in a pack of {pack}.</strong> "
+                         f"Price shown is for {pack} pieces.</p>")
         if apps:
             parts.append("<p><strong>Fits:</strong></p><ul>"
                          + "".join(f"<li>{a}</li>" for a in apps[:25]) + "</ul>")
@@ -267,6 +349,9 @@ class ShopifyService(BaseService):
         if meta.get("warranty_months"):
             metafields.append({"namespace": _METAFIELD_NS, "key": "warranty_months",
                                "type": "number_integer", "value": str(meta["warranty_months"])})
+        if meta.get("pack_qty"):
+            metafields.append({"namespace": _METAFIELD_NS, "key": "pack_qty",
+                               "type": "number_integer", "value": str(meta["pack_qty"])})
 
         variant = {
             "optionValues": [{"optionName": "Title", "name": "Default Title"}],
@@ -404,7 +489,16 @@ class ShopifyService(BaseService):
     )
 
     def update_listing_fields(self, product: Product) -> dict:
-        """Push ONLY price + SEO + tags to an existing linked listing. Fail-soft."""
+        """Push ONLY price + SEO + tags to an existing linked listing. Fail-soft.
+
+        ONE exception to the partial-update contract: a sell-pack product
+        (pack_qty > 1) also ensures the LIVE title/description carry the pack
+        marker ("(Pack of N)" + a sold-in-a-pack note). Its price is the PACK
+        price (build_listing × pack_qty), and a pack price must never land on a
+        listing whose copy still reads per-piece — a customer would just see the
+        price jump 5x with no explanation. The marker is APPENDED to the live
+        content via read-modify-write (titles are SEO-curated on Shopify — never
+        clobbered) and is a no-op once present."""
         if self.current_user_id is not None:
             self.assert_can(Permission.PUBLISH_SHOPIFY)
         if not self.is_configured():
@@ -436,6 +530,12 @@ class ShopifyService(BaseService):
             if listing.get("seo_description"):
                 seo["description"] = listing["seo_description"]
             prod_input["seo"] = seo
+        # Sell-pack listings: the pack marker rides WITH the pack price (see
+        # docstring). Read-modify-write against the LIVE title/description —
+        # they're SEO-curated on Shopify, so we append the marker to them, never
+        # overwrite them with the ERP's thin catalog title. No-op once marked.
+        prod_input.update(
+            self._pack_content_updates(pid, max(1, int(product.pack_qty or 1))))
         # Nothing to set beyond the id (no tags, no SEO) → skip the call entirely.
         if len(prod_input) > 1:
             d1 = self._graphql(self._PRODUCT_UPDATE, {"input": prod_input})
@@ -606,8 +706,12 @@ class ShopifyService(BaseService):
     @staticmethod
     def _sellable_qty(product: Product) -> int:
         """Sellable quantity for the storefront — clamp to >=0 (on-hand may go
-        negative on admin corrections; we never publish a negative)."""
-        return max(0, int(product.qty_available or 0))
+        negative on admin corrections; we never publish a negative). A sell-pack
+        listing (pack_qty > 1) is sold BY THE PACK, so its storefront stock is
+        whole packs: floor(available / pack_qty) — 12 pieces of a 5-pack part is
+        2 sellable packs, never 12."""
+        qty = max(0, int(product.qty_available or 0))
+        return qty // max(1, int(product.pack_qty or 1))
 
     def _set_errs(self, data: dict):
         return (((data.get("data") or {}).get("inventorySetOnHandQuantities") or {})

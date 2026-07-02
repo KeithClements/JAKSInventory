@@ -64,7 +64,7 @@ def test_enriches_matched_product(db):
     p = _product(db, f"SKU-{next(_seq)}")
     rows = [{
         "jaks_sku": p.sku, "oem_number": "OEM-1", "competitor_number": "COMP-9",
-        "vendor_part": "V-7", "brand": "Cummins",
+        "vendor_part": "V-700", "brand": "Cummins",
         "engine_make": "Cummins", "engine_model": "ISX15", "cpl": "8523",
         "esn_range": "123-456",
     }]
@@ -76,7 +76,7 @@ def test_enriches_matched_product(db):
     xrefs = {(x.ref_type, x.ref_number) for x in _xrefs(db, p.id)}
     assert (CrossRefType.OEM, "OEM-1") in xrefs
     assert (CrossRefType.COMPETITOR, "COMP-9") in xrefs
-    assert (CrossRefType.VENDOR_ALT, "V-7") in xrefs
+    assert (CrossRefType.VENDOR_ALT, "V-700") in xrefs
     app = _apps(db, p.id)[0]
     assert (app.engine_make, app.engine_model, app.cpl, app.esn_range) == \
         ("Cummins", "ISX15", "8523", "123-456")
@@ -85,14 +85,14 @@ def test_enriches_matched_product(db):
 def test_case_insensitive_sku_match(db):
     p = _product(db, f"MixedCase-{next(_seq)}")
     summary = ProductEnrichmentService(db).enrich_from_rows(
-        [{"jaks_sku": p.sku.lower(), "oem_number": "X1"}])
+        [{"jaks_sku": p.sku.lower(), "oem_number": "X100"}])
     assert summary["matched"] == 1 and summary["cross_refs_added"] == 1
 
 
 def test_skips_unmatched_sku_never_creates_product(db):
     before = db.query(Product).count()
     summary = ProductEnrichmentService(db).enrich_from_rows(
-        [{"jaks_sku": "DOES-NOT-EXIST", "oem_number": "Z9", "engine_make": "CAT"}])
+        [{"jaks_sku": "DOES-NOT-EXIST", "oem_number": "Z900", "engine_make": "CAT"}])
     assert summary["skipped_no_product"] == 1
     assert summary["matched"] == 0
     assert db.query(Product).count() == before          # NEVER creates a product

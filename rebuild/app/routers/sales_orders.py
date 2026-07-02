@@ -38,7 +38,6 @@ from app.constants import (
 from app.deps import get_current_user_id, get_db
 from app.services.category_service import engine_make_names
 from app.models.customer import Customer, CustomerAddress
-from app.models.product import Product
 from app.models.quote import SalesOrder, SOLine
 from app.services.document_messaging import (
     build_send_context,
@@ -346,16 +345,11 @@ async def so_add_line(
     cost_raw = str(form.get("unit_cost", "0")).strip()
     desc = str(form.get("description", "")).strip()
 
-    # Auto-fill description and price from product if not supplied
-    if product_id and not desc:
-        p = db.query(Product).filter(Product.id == product_id).first()
-        if p:
-            desc = p.title or p.description or p.sku or ""
-            if not price_raw or price_raw == "0":
-                price_raw = str(p.selling_price or 0.0)
-            if not cost_raw or cost_raw == "0":
-                cost_raw = str(p.cost or 0.0)
-
+    # Description/cost/price must NOT be pre-filled from the product here:
+    # apply_product_line_defaults treats a non-zero unit_price as an explicit
+    # caller price and skips the customer-rule/tier waterfall, so pre-filling
+    # selling_price billed tier customers full price. Blanks/0 flow through and
+    # the service resolves them; a typed non-zero price still wins.
     data = {
         "description": desc,
         "qty_ordered": max(1, int(qty_raw)) if qty_raw else 1,
@@ -363,9 +357,18 @@ async def so_add_line(
         "unit_cost": float(cost_raw) if cost_raw else 0.0,
         "line_type": str(form.get("line_type", LineType.PRODUCT)).strip() or LineType.PRODUCT,
     }
+    allow_negative = str(form.get("allow_negative_inventory", "")).lower() in {"1", "true", "on", "yes"}
 
     try:
-        SalesOrderService(db, user_id).add_line(so_id, product_id, data)
+        SalesOrderService(db, user_id).add_line(
+            so_id, product_id, data, allow_negative_inventory=allow_negative,
+        )
+    except PermissionError:
+        db.rollback()
+        return HTMLResponse(
+            '<div class="text-xs text-red-600 p-2">You do not have permission to override negative inventory.</div>',
+            status_code=403,
+        )
     except ValueError as exc:
         db.rollback()
         return HTMLResponse(f'<div class="text-xs text-red-600 p-2">{exc}</div>', status_code=400)
@@ -401,9 +404,18 @@ async def so_update_line(
     if "discount_pct" in form:
         raw = str(form.get("discount_pct", "")).strip()
         data["discount_pct"] = float(raw) if raw else 0.0
+    allow_negative = str(form.get("allow_negative_inventory", "")).lower() in {"1", "true", "on", "yes"}
 
     try:
-        SalesOrderService(db, user_id).update_line(line_id, data)
+        SalesOrderService(db, user_id).update_line(
+            line_id, data, allow_negative_inventory=allow_negative,
+        )
+    except PermissionError:
+        db.rollback()
+        return HTMLResponse(
+            '<div class="text-xs text-red-600 p-2">You do not have permission to override negative inventory.</div>',
+            status_code=403,
+        )
     except ValueError as exc:
         db.rollback()
         return HTMLResponse(f'<div class="text-xs text-red-600 p-2">{exc}</div>', status_code=400)

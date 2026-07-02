@@ -183,9 +183,16 @@ class SalesOrderService(BaseService):
                     from app.services.pricing_service import PricingService as _PS
                     _ps = _PS(self.db, self.current_user_id)
                     _tier_price = _ps.sell_price_for_tier(_product, _cust.pricing_tier)
+            # SO lines carry qty under "qty_ordered" (quotes/invoices use "qty"),
+            # so the volume-break qty must be passed explicitly or every
+            # CustomerPriceRule qty_min match would see qty=1.
+            try:
+                _qty = float(merged.get("qty_ordered", 1) or 1)
+            except (TypeError, ValueError):
+                _qty = 1
             apply_product_line_defaults(
                 _product, merged, include_price=True, tier_price=_tier_price,
-                customer=_cust, pricing_service=_ps, render_ctx=_render_ctx,
+                customer=_cust, pricing_service=_ps, qty=_qty, render_ctx=_render_ctx,
             )
         line = self._add_line_internal(
             so.id,
@@ -200,10 +207,20 @@ class SalesOrderService(BaseService):
         self.db.commit()
         return line
 
-    def update_line(self, line_id: int, data: dict) -> SOLine:
+    def update_line(
+        self,
+        line_id: int,
+        data: dict,
+        allow_negative_inventory: bool = False,
+    ) -> SOLine:
         """
         Update line qty or price. Adjusts SO_COMMITTED / SO_RELEASED inventory
         delta when qty_ordered changes.
+
+        R6 — same negative-inventory hard block as _add_line_internal: a qty
+        increase on a STOCK line commits `delta` more units, so it raises when
+        delta exceeds qty_available unless the caller has
+        NEGATIVE_INVENTORY_OVERRIDE permission AND passes allow_negative_inventory=True.
         """
         line = self.db.query(SOLine).filter(SOLine.id == line_id).first()
         if line is None:
@@ -212,6 +229,9 @@ class SalesOrderService(BaseService):
         if so.status in (SOStatus.CANCELLED, SOStatus.INVOICED):
             raise ValueError(f"Cannot edit lines on a {so.status} sales order")
 
+        if "discount_pct" in data:
+            data["discount_pct"] = self._validated_discount_pct(data["discount_pct"])
+
         if "qty_ordered" in data and line.line_type == LineType.PRODUCT and line.product_id:
             new_qty_ordered = int(data["qty_ordered"])
             delta = new_qty_ordered - line.qty_ordered
@@ -219,6 +239,31 @@ class SalesOrderService(BaseService):
                 product = self.db.query(Product).filter(Product.id == line.product_id).first()
                 if product:
                     if delta > 0:
+                        # ── R6 — negative inventory hard block (mirror of
+                        # _add_line_internal): only STOCK lines commit stock here.
+                        if (
+                            line.fulfillment_source == FulfillmentSource.STOCK
+                            and delta > product.qty_available
+                        ):
+                            if not allow_negative_inventory:
+                                raise ValueError(
+                                    f"Cannot commit {delta} more of {product.sku}: only "
+                                    f"{product.qty_available} available. Override requires "
+                                    f"NEGATIVE_INVENTORY_OVERRIDE permission, or add as backorder."
+                                )
+                            self.assert_can(Permission.NEGATIVE_INVENTORY_OVERRIDE)
+                            self.audit(
+                                entity_type=EntityType.SALES_ORDER,
+                                entity_id=so.id,
+                                action=AuditAction.INVENTORY_ADJUSTED,
+                                new_value={
+                                    "override": "allow_negative_inventory",
+                                    "product_id": product.id,
+                                    "qty_requested": delta,
+                                    "qty_available": product.qty_available,
+                                },
+                                notes="Negative inventory override at SO line qty increase",
+                            )
                         # Committing additional qty
                         product.qty_committed += delta
                         line.qty_committed += delta
@@ -1025,6 +1070,18 @@ class SalesOrderService(BaseService):
             raise ValueError(f"SalesOrder {so_id} not found")
         return so
 
+    @staticmethod
+    def _validated_discount_pct(raw) -> float:
+        """discount_pct is a percentage — outside 0–100 it silently inflates or
+        inverts the line total, so reject rather than write it."""
+        try:
+            pct = float(raw or 0.0)
+        except (TypeError, ValueError):
+            raise ValueError(f"discount_pct must be a number, got {raw!r}")
+        if not 0.0 <= pct <= 100.0:
+            raise ValueError(f"discount_pct must be between 0 and 100, got {pct}")
+        return pct
+
     def _add_line_internal(
         self,
         so_id: int,
@@ -1033,6 +1090,7 @@ class SalesOrderService(BaseService):
         allow_negative_inventory: bool = False,
     ) -> SOLine:
         qty_ordered = int(data.get("qty_ordered", 1))
+        discount_pct = self._validated_discount_pct(data.get("discount_pct", 0.0))
 
         # ── R7 — determine fulfillment source ────────────────────────────────
         # Caller may explicitly set; otherwise auto-derive from stock availability.
@@ -1097,7 +1155,7 @@ class SalesOrderService(BaseService):
             qty_invoiced=0,
             unit_price=float(data.get("unit_price", 0.0)),
             unit_cost=float(data.get("unit_cost", 0.0)),
-            discount_pct=float(data.get("discount_pct", 0.0)),
+            discount_pct=discount_pct,
             core_charge=float(data.get("core_charge", 0.0)),
             source=legacy_source,
             fulfillment_source=fulfillment_source,

@@ -42,7 +42,6 @@ from app.services.document_render import (
 from app.models.customer import Customer
 from app.models.quote import Quote
 from app.services.quote_service import QuoteService
-from app.routers.line_items import search_products_json
 
 log = logging.getLogger(__name__)
 
@@ -296,14 +295,20 @@ async def create_quote(
     user_id: int = Depends(get_current_user_id),
 ):
     svc = QuoteService(db, user_id)
-    quote = svc.create_quote(
-        customer_id=customer_id,
-        data={
-            "discount_pct": discount_pct,
-            "validity_days": validity_days,
-            "notes": notes,
-        },
-    )
+    try:
+        quote = svc.create_quote(
+            customer_id=customer_id,
+            data={
+                "discount_pct": discount_pct,
+                "validity_days": validity_days,
+                "notes": notes,
+            },
+        )
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/customers/{customer_id}?error={url_quote(str(exc))}", status_code=303,
+        )
     return RedirectResponse(f"/quotes/{quote.id}", status_code=303)
 
 
@@ -611,20 +616,26 @@ async def update_quote_header(
 ):
     """Update quote-level notes, settings, and engine/job reference fields."""
     svc = QuoteService(db, user_id)
-    svc.update_header(
-        quote_id,
-        {
-            "notes": notes, "internal_notes": internal_notes,
-            "discount_pct": discount_pct, "validity_days": validity_days,
-            # Empty optional refs persist as NULL (mirrors invoice header handler).
-            "customer_po_number": customer_po_number.strip() or None,
-            "customer_job_number": customer_job_number.strip() or None,
-            "esn": esn.strip() or None,
-            "engine_manufacturer": engine_manufacturer.strip(),
-            "engine_model": engine_model.strip(),
-        },
-        updated_at,
-    )
+    try:
+        svc.update_header(
+            quote_id,
+            {
+                "notes": notes, "internal_notes": internal_notes,
+                "discount_pct": discount_pct, "validity_days": validity_days,
+                # Empty optional refs persist as NULL (mirrors invoice header handler).
+                "customer_po_number": customer_po_number.strip() or None,
+                "customer_job_number": customer_job_number.strip() or None,
+                "esn": esn.strip() or None,
+                "engine_manufacturer": engine_manufacturer.strip(),
+                "engine_model": engine_model.strip(),
+            },
+            updated_at,
+        )
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/quotes/{quote_id}?error={url_quote(str(exc))}", status_code=303,
+        )
     return RedirectResponse(f"/quotes/{quote_id}?saved=1", status_code=303)
 
 
@@ -750,7 +761,13 @@ async def update_line(
         if v is not None
     }
     svc = QuoteService(db, user_id)
-    line, cascaded = svc.update_line(line_id, data)
+    try:
+        line, cascaded = svc.update_line(line_id, data)
+    except ValueError as exc:
+        db.rollback()
+        return HTMLResponse(
+            f'<div class="text-xs text-red-600 p-2">{exc}</div>', status_code=400,
+        )
     db.refresh(line)
     if cascaded:
         quote = _get_quote_or_404(db, quote_id)
@@ -1199,7 +1216,13 @@ async def convert_to_so(
         if quote.customer and CustomerService(db).is_on_credit_hold(quote.customer):
             return RedirectResponse(f"/quotes/{quote_id}?credit_hold=1", status_code=303)
 
-    so = QuoteService(db, user_id).convert_to_sales_order(quote_id, payment_mode)
+    try:
+        so = QuoteService(db, user_id).convert_to_sales_order(quote_id, payment_mode)
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/quotes/{quote_id}?error={url_quote(str(exc))}", status_code=303,
+        )
     return RedirectResponse(f"/sales-orders/{so.id}", status_code=303)
 
 
@@ -1220,5 +1243,11 @@ async def convert_to_invoice(
         if quote.customer and CustomerService(db).is_on_credit_hold(quote.customer):
             return RedirectResponse(f"/quotes/{quote_id}?credit_hold=1", status_code=303)
 
-    invoice = QuoteService(db, user_id).convert_to_invoice(quote_id)
+    try:
+        invoice = QuoteService(db, user_id).convert_to_invoice(quote_id)
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/quotes/{quote_id}?error={url_quote(str(exc))}", status_code=303,
+        )
     return RedirectResponse(f"/invoices/{invoice.id}", status_code=303)

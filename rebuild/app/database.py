@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
 log = logging.getLogger(__name__)
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "jaks.db"
+# JAKS_DB_PATH lets an isolated instance (e.g. a review/staging copy) point at an
+# alternate SQLite file without touching the live default. Unset in normal runs →
+# the standard data/jaks.db is used, so existing behavior is unchanged.
+_DB_OVERRIDE = os.getenv("JAKS_DB_PATH")
+DB_PATH = Path(_DB_OVERRIDE) if _DB_OVERRIDE else Path(__file__).resolve().parent.parent / "data" / "jaks.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 DB_URL = f"sqlite:///{DB_PATH}"
 
@@ -352,6 +357,11 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     #    indexed search (also added + backfilled by
     #    search_index.ensure_search_norm_columns on startup). Mirrors sku_norm. ──
     ("competitor_prices",      "competitor_part_number_norm", "TEXT NULL"),
+
+    # ── Operator price lock (Alembic 0009, scraper-audit bug #11): mirror here
+    #    too. NOT NULL → a missing column would 500 every Product query. Set on
+    #    operator price edits; pricing_update_sell skips locked sell prices. ────
+    ("products",               "price_override_locked",   "BOOLEAN NOT NULL DEFAULT 0"),
 ]
 
 

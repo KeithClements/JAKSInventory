@@ -484,14 +484,18 @@ def candidate_decide(candidate_id: int, request: Request, action: str = Form(...
 @router.post("/{batch_id}/approve-all")
 def approve_all(batch_id: int, request: Request,
                 scope: str = Form("confident"), action: str = Form("approve"),
+                include_flagged: str = Form(""),
                 db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     """One-click bulk review for an ENTIRE batch — no checkbox selection.
       approve + confident -> accept every PENDING, not-flagged candidate
-      approve + all       -> accept every PENDING candidate (incl. flagged)
+      approve + all       -> accept every PENDING candidate — flagged rows only
+                             when include_flagged is posted (server-enforced in
+                             bulk_set_status; flagged rows otherwise stay PENDING)
       reject  + flagged   -> reject every PENDING flagged candidate
     Only PENDING rows are touched, so manual decisions are never overridden."""
     target = _RS.REJECTED if action == "reject" else _RS.ACCEPTED
-    ImportReviewService(db, user_id).bulk_set_status(batch_id, target, scope=scope)
+    ImportReviewService(db, user_id).bulk_set_status(
+        batch_id, target, scope=scope, include_flagged=bool(include_flagged))
     back = "rejected" if action == "reject" else "accepted"
     return RedirectResponse(f"/import-review/{batch_id}?tab={back}", status_code=303)
 
@@ -500,13 +504,16 @@ def approve_all(batch_id: int, request: Request,
 @router.post("/{batch_id}/approve-and-apply")
 def approve_and_apply(batch_id: int, request: Request,
                       scope: str = Form("all"),
+                      include_flagged: str = Form(""),
                       db: Session = Depends(get_db),
                       user_id: int = Depends(get_current_user_id)):
-    """One-click: approve ALL (or confident) pending candidates, then apply them.
-    This is the fast path for owners who trust the import and don't need per-row
-    review — just get it into the catalog quickly."""
+    """One-click: approve pending candidates, then apply them — the fast path for
+    owners who trust the import. Flagged (needs-review / uncertain) rows are NOT
+    part of scope='all' unless include_flagged is posted; the exclusion lives in
+    bulk_set_status so no template or hand-crafted POST can widen it silently."""
     try:
-        ImportReviewService(db, user_id).bulk_set_status(batch_id, _RS.ACCEPTED, scope=scope)
+        ImportReviewService(db, user_id).bulk_set_status(
+            batch_id, _RS.ACCEPTED, scope=scope, include_flagged=bool(include_flagged))
         summary = ImportReviewService(db, user_id).apply_approved(batch_id)
         return RedirectResponse(
             f"/import-review/{batch_id}?tab=accepted&{_apply_qs(summary)}",

@@ -106,25 +106,37 @@
       </div>
 
       {# Actions #}
-      <div class="flex items-center gap-3 pt-1">
+      <div class="flex flex-wrap items-center gap-3 pt-1">
         <button type="button" @click="run(true)" :disabled="busy" class="btn-secondary">
           <span x-show="!busy">Dry-run preview</span>
           <span x-show="busy" x-cloak>Working…</span>
         </button>
-        <button type="button" @click="confirming=true" :disabled="busy || !result || lastDryRun===false"
+        <button type="button" @click="confirming=true; confirmText=''" :disabled="busy || !result || lastDryRun===false"
                 class="btn-primary" x-show="!confirming"
                 title="Run a dry-run preview first, then commit">
           Commit import
         </button>
-        <template x-if="confirming">
-          <span class="flex items-center gap-2">
-            <span class="text-sm text-red-700 font-medium">Write to the database?</span>
-            <button type="button" @click="confirming=false; run(false)" class="btn-danger btn-sm">Yes, commit</button>
-            <button type="button" @click="confirming=false" class="btn-secondary btn-sm">Cancel</button>
-          </span>
-        </template>
-        <span class="text-xs text-gray-400">Preview first — Commit is enabled after a dry-run.</span>
+        <span class="text-xs text-gray-400" x-show="!confirming">Preview first — Commit is enabled after a dry-run.</span>
       </div>
+      {# Typed confirmation — a live commit bypasses the Review Queue entirely, so
+         a yes/no click isn't enough; the server rejects any non-dry-run without
+         the exact phrase (nothing written). #}
+      <template x-if="confirming">
+        <div class="space-y-2">
+          <p class="text-sm text-red-700 font-medium">
+            This bypasses the Review Queue and writes straight to the live catalog.
+            Type <span class="font-mono font-bold">APPLY TO LIVE CATALOG</span> to confirm.
+          </p>
+          <div class="flex flex-wrap items-center gap-2">
+            <input type="text" x-model="confirmText" placeholder="APPLY TO LIVE CATALOG"
+                   class="form-input w-64 text-sm font-mono" />
+            <button type="button" @click="confirming=false; run(false)"
+                    :disabled="confirmText.trim() !== 'APPLY TO LIVE CATALOG'"
+                    class="btn-danger btn-sm">Yes, commit</button>
+            <button type="button" @click="confirming=false; confirmText=''" class="btn-secondary btn-sm">Cancel</button>
+          </div>
+        </div>
+      </template>
     </div>
   </div>
 
@@ -177,6 +189,41 @@
                 x-text="result ? (result.dry_run ? 'Preview: ' : 'Applied: ') + result.reclassified + ' reclassified · '
                         + result.category_filled + ' category · ' + result.engine_manufacturer_filled + ' engine make · '
                         + result.engine_model_filled + ' engine model' : ''"></span>
+        </div>
+        <div x-show="err" x-cloak class="text-xs text-red-600" x-text="err"></div>
+      </div>
+
+      {# Reorder-point backfill by category — makes the Low-Stock/Reorder tab
+         real. Fills only reorder_point=0 products under the picked category
+         (subcategories included); a deliberately-set value is never touched. #}
+      <div x-data="reorderBackfill()" class="space-y-3 border-t border-gray-100 pt-4">
+        <div>
+          <p class="text-sm font-semibold text-gray-800">Set reorder points by category</p>
+          <p class="text-xs text-gray-500 mt-0.5">
+            Applies the value to every active product under the chosen category (subcategories
+            included) that still has a reorder point of 0 — never overwrites a reorder point
+            someone already set. Products at or below their reorder point surface on the
+            Low-Stock tab and the reorder report.
+          </p>
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+          <select x-model="categoryId"
+                  class="py-2 pl-3 pr-8 text-sm border border-gray-200 rounded-lg bg-white">
+            <option value="">— choose category —</option>
+            {% for c in categories %}
+            <option value="{{ c.id }}">{{ c.full_path }}</option>
+            {% endfor %}
+          </select>
+          <input type="number" min="1" step="1" x-model.number="value" placeholder="e.g. 2"
+                 class="form-input w-20 text-sm" />
+          <button type="button" @click="run(true)" :disabled="busy || !categoryId || !(value > 0)" class="btn-secondary btn-sm">
+            <span x-show="!busy">Preview</span><span x-show="busy" x-cloak>Working…</span>
+          </button>
+          <button type="button" @click="run(false)" :disabled="busy || !result" class="btn-primary btn-sm"
+                  title="Preview first, then apply">Apply</button>
+          <span x-show="result" x-cloak class="text-xs text-gray-600"
+                x-text="result ? (result.dry_run ? 'Preview: ' : 'Applied: ') + result.updated
+                        + ' product(s) → reorder point ' + result.reorder_point + ' (' + result.category + ')' : ''"></span>
         </div>
         <div x-show="err" x-cloak class="text-xs text-red-600" x-text="err"></div>
       </div>
@@ -266,11 +313,37 @@ function reclassifyAll() {
   };
 }
 
+function reorderBackfill() {
+  return {
+    busy: false, result: null, err: null, categoryId: '', value: null,
+    async run(dryRun) {
+      this.busy = true; this.err = null;
+      const fd = new FormData();
+      fd.append('category_id', this.categoryId);
+      fd.append('reorder_point', String(this.value || 0));
+      fd.append('dry_run', dryRun ? 'true' : 'false');
+      try {
+        const resp = await fetch('/products/reorder-backfill', {
+          method: 'POST', body: fd, headers: { 'X-CSRF-Token': _csrfToken() },
+        });
+        if (!resp.ok) { this.err = 'Failed (HTTP ' + resp.status + ').'; }
+        else {
+          const d = await resp.json();
+          if (d.error) { this.err = d.error; this.result = null; }
+          else { this.result = d; }
+        }
+      } catch (e) { this.err = 'Error: ' + e; }
+      finally { this.busy = false; }
+    }
+  };
+}
+
 function productImport() {
   return {
     mode: 'full', sourceType: 'sell', importImages: true,
     useThreshold: true, maxChangePct: 50,
     busy: false, result: null, error: null, lastDryRun: true, confirming: false,
+    confirmText: '',
     async run(dryRun) {
       const fileEl = this.$refs.file;
       if (!fileEl || !fileEl.files.length) { this.error = 'Choose a CSV file first.'; return; }
@@ -281,6 +354,8 @@ function productImport() {
       fd.append('source_type', this.sourceType);
       fd.append('dry_run', dryRun ? 'true' : 'false');
       fd.append('import_images', this.importImages ? 'true' : 'false');
+      // Live commits require the typed phrase — the server rejects without it.
+      if (!dryRun) { fd.append('confirm_text', this.confirmText); }
       if (this.mode === 'pricing' && this.sourceType === 'sell'
           && this.useThreshold && this.maxChangePct > 0) {
         fd.append('max_change_pct', String(this.maxChangePct));
@@ -296,7 +371,13 @@ function productImport() {
         const resp = await fetch('/products/import-run', {
           method: 'POST', body: fd, headers: { 'X-CSRF-Token': _csrfToken() },
         });
-        if (!resp.ok) { this.error = 'Import failed (HTTP ' + resp.status + ').'; }
+        if (!resp.ok) {
+          // The route returns {"error": ...} on 400 (missing/wrong confirm
+          // phrase) and 403 (permission) — show the server's own words.
+          let msg = 'Import failed (HTTP ' + resp.status + ').';
+          try { const d = await resp.json(); if (d && d.error) { msg = d.error; } } catch (e) {}
+          this.error = msg;
+        }
         else { this.result = await resp.json(); }
       } catch (e) { this.error = 'Upload error: ' + e; }
       finally { this.busy = false; }

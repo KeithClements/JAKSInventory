@@ -235,11 +235,23 @@ class PaymentService(BaseService):
         payment.reversed_at = datetime.utcnow()
         payment.reversal_reason = reason
 
+        # A surcharged payment that already synced also booked a surcharge
+        # SalesReceipt (DocNumber JAKS-SC-{id}) in QBO; there is no automated
+        # reversal, so the audit row must point the bookkeeper at the orphan.
+        _notes = None
+        if (payment.surcharge_amount or 0) > 0 and payment.qbo_payment_id:
+            _notes = (
+                f"QBO surcharge SalesReceipt JAKS-SC-{payment_id} "
+                f"(${payment.surcharge_amount:.2f}) must be voided/credited in "
+                "QuickBooks manually — reversals are not auto-pushed."
+            )
+
         self.audit(
             entity_type=EntityType.PAYMENT,
             entity_id=payment_id,
             action=AuditAction.PAYMENT_REVERSED,
             new_value={"reason": reason, "method": payment.payment_method},
+            notes=_notes,
         )
         self.db.commit()
 

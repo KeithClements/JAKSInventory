@@ -134,11 +134,22 @@ class Product(Base):
     cost_source: Mapped[str] = mapped_column(String(50), nullable=False, default="manual")
     markup_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     price_override: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Operator price lock (scraper-audit bug #11, Alembic 0009): set automatically
+    # when an operator CHANGES price_override via the UI; cleared when they clear
+    # the override (or via the product screen's "unlock" control, which keeps the
+    # price). The nightly scraper feed (pricing_update_sell) skips the sell-price
+    # write on locked products — cost/availability still update.
+    price_override_locked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     unit_of_measure: Mapped[str] = mapped_column(
         String(10), nullable=False, default=UnitOfMeasure.EA
     )
-    # Pieces per sold unit (e.g. 6 for a 6-pack of seals). Works with
-    # unit_of_measure: UOM=EA + pack_qty=6 means "sold 6 at a time, priced per 6".
+    # Vendor sell pack (PAI "SELL PACK: 5 PIECE" → 5). The ERP stores UNIT
+    # cost/price/weight; pack_qty is applied at the STOREFRONT boundary
+    # (ShopifyService.build_listing lists the pack: price/cost/weight × pack_qty,
+    # stock in whole packs) so a web order can never be smaller than the vendor's
+    # minimum buy. In-house sales (counter/quote/SO) remain per-piece.
     pack_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
     # ── Core Charges (separate vendor cost vs customer charge — cores are marked up) ──

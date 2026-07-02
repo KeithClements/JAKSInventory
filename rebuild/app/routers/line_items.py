@@ -78,24 +78,38 @@ def serialize_product_result(r: ProductSearchResult, product: Product | None = N
     }
 
 
-def search_products_json(q: str, db: Session, limit: int = DEFAULT_LIMIT) -> list[dict]:
+def search_products_json(
+    q: str, db: Session, limit: int = DEFAULT_LIMIT
+) -> tuple[list[dict], int]:
     """
-    Shared search → serialize. Used by both /line-items/product-search and the
-    legacy /quotes/product-search alias so the JSON contract has one source.
+    Shared search → serialize. One source for the /line-items/product-search
+    JSON contract.
 
-    Returns [] for queries shorter than MIN_QUERY_LEN.
+    Returns (results, total_matches). ``total_matches`` is the DISTINCT product
+    count across every search strategy — the M in the line-adder's
+    "showing N of M" hint. The full count union is only computed when the
+    slice actually filled up (M can exceed N only then); a short result list
+    IS the total. Returns ([], 0) for queries shorter than MIN_QUERY_LEN.
     """
     q = (q or "").strip()
     if len(q) < MIN_QUERY_LEN:
-        return []
-    results = SearchService(db).search_products(q, limit=limit)
+        return [], 0
+    svc = SearchService(db)
+    results = svc.search_products(q, limit=limit)
+    total = svc.count_product_matches(q) if len(results) >= limit else len(results)
+    # The count is a distinct-product UNION mirroring the search filters; never
+    # report fewer total matches than rows actually shown.
+    total = max(total, len(results))
     pids = [r.product_id for r in results]
     products = (
         {p.id: p for p in db.query(Product).filter(Product.id.in_(pids)).all()}
         if pids
         else {}
     )
-    return [serialize_product_result(r, products.get(r.product_id)) for r in results]
+    return (
+        [serialize_product_result(r, products.get(r.product_id)) for r in results],
+        total,
+    )
 
 
 @router.get("/product-search")
@@ -107,5 +121,11 @@ def line_item_product_search(q: str = "", db: Session = Depends(get_db)):
     Matches SKU / OEM / cross-ref / vendor SKU (separator + case insensitive),
     then description.  Same shape for every document type — the front-end picks
     which fields to show (sell price for Quote/SO/Invoice, cost for PO).
+
+    The body stays a bare JSON ARRAY — existing consumers (the shared
+    line-adder AND the product-detail special-order box) parse it as a list —
+    so the total match count rides in the X-Total-Matches response header
+    instead of a wrapper object.
     """
-    return JSONResponse(search_products_json(q, db))
+    results, total = search_products_json(q, db)
+    return JSONResponse(results, headers={"X-Total-Matches": str(total)})

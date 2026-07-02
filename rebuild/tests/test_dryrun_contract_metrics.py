@@ -12,7 +12,9 @@ Contract (must stay byte-for-byte in sync with the scraper lane):
       "discontinued_deactivated":N,"reactivation_suggested":N,
       "skipped_no_product":N,"total_rows":N,"price_drop_max_pct":F,
       "price_rise_max_pct":F,"reprice_rows":N,"cost_rise_max_pct":F,
-      "cost_anomaly_rows":N}
+      "cost_anomaly_rows":N,"skipped_price_locked":N}
+    (skipped_price_locked appended 2026-07-01 — additive at the END, existing
+    keys never reordered; the scraper tolerates extra keys.)
 
 Metric definitions exercised here:
   • reprice_rows        — rows whose sell price moves by >5%
@@ -63,6 +65,7 @@ _CONTRACT_KEYS = [
     "out_of_stock_flagged", "discontinued_deactivated", "reactivation_suggested",
     "skipped_no_product", "total_rows", "price_drop_max_pct", "price_rise_max_pct",
     "reprice_rows", "cost_rise_max_pct", "cost_anomaly_rows",
+    "skipped_price_locked",
 ]
 
 

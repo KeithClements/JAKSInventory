@@ -10,10 +10,14 @@ generic QBO *income items*, NOT per-SKU items — so QBO never runs a parallel
 stockroom. The SKU + description still ride along in each line's Description so
 detail prints on the QBO invoice.
 
-CONTRACT: push_* methods are best-effort and **never raise**. Success →
-InvoiceService.mark_synced (which also locks the invoice). Failure →
+CONTRACT: push_* methods are best-effort and **never raise** once work starts.
+Success → InvoiceService.mark_synced (which also locks the invoice). Failure →
 InvoiceService.mark_sync_failed (records the error, bumps retry count). A QBO
 outage therefore can never block finalize, payment, or any money route.
+The ONE exception: each push asserts Permission.REPUSH_QBO up-front (before any
+lookup or network call) and raises PermissionDeniedError for a role that lacks
+it — routes catch that and flash; the background retry worker runs as the
+system actor (current_user_id=None) which assert_can always allows.
 """
 from __future__ import annotations
 
@@ -26,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.constants import (
     AuditAction, CreditMemoStatus, EntityType, InvoiceStatus, LineType,
-    PaymentStatus, QBOSyncStatus, VendorBillStatus,
+    PaymentStatus, Permission, QBOSyncStatus, VendorBillStatus,
 )
 from app.models.credit_memo import CreditMemo
 from app.models.customer import Customer
@@ -41,12 +45,20 @@ from app.settings_utils import get_setting_value_db
 
 log = logging.getLogger(__name__)
 
+# Cores are pass-through liability, not revenue — this item is rebound to the
+# owner-mapped liability account by ensure_default_items when
+# qbo_core_charge_liability_account is set.
+CORE_CHARGE_ITEM = "JAKS Core Charge"
+# Pushed as its own one-line SalesReceipt alongside a surcharged card payment —
+# never as an invoice line (R1 keeps the surcharge out of the invoice total).
+SURCHARGE_ITEM = "JAKS Card Surcharge"
+
 # Strategy-B line-type → generic QBO income item name.
 DEFAULT_ITEM_MAP: dict[str, str] = {
     LineType.PRODUCT: "JAKS Parts Sales",
     LineType.MISC: "JAKS Parts Sales",
     LineType.WARRANTY: "JAKS Parts Sales",
-    LineType.CORE_CHARGE: "JAKS Core Charge",
+    LineType.CORE_CHARGE: CORE_CHARGE_ITEM,
     LineType.FREIGHT: "JAKS Freight & Delivery",
     LineType.SHIPPING: "JAKS Freight & Delivery",
     LineType.LOCAL_DELIVERY: "JAKS Freight & Delivery",
@@ -108,6 +120,15 @@ QBO_ACCOUNT_FIELDS: list[dict] = [
     {"key": "qbo_freight_out_account",     "label": "Freight Out / Delivery",
      "types": ["Expense", "Income"],
      "used": "Reserved — used for outbound freight to customers."},
+    {"key": "qbo_core_charge_liability_account", "label": "Core Charges (pass-through liability)",
+     "types": ["Other Current Liability"],
+     "used": "Active — 'Set up QBO items' binds the JAKS Core Charge item here so core "
+             "deposits post as a liability, not income. Unset = cores post as income "
+             "(a warning is logged on every push that carries a core charge)."},
+    {"key": "qbo_surcharge_income_account", "label": "Card Surcharge Income",
+     "types": ["Income"],
+     "used": "Active — the JAKS Card Surcharge sales receipt pushed with a surcharged "
+             "card payment posts here (falls back to the Sales Income account when unset)."},
 ]
 
 # Audit actions for push outcomes. Success reuses the canonical
@@ -170,8 +191,9 @@ class QBOSyncService(BaseService):
 
     # ── invoice push ──────────────────────────────────────────────────────────
     def push_invoice(self, invoice_id: int) -> dict:
-        """Push one invoice to QBO. Best-effort; never raises.
+        """Push one invoice to QBO. Best-effort; never raises past the RBAC gate.
         Returns {"ok": bool, "qbo_id"|"error"|"skipped": ...}."""
+        self.assert_can(Permission.REPUSH_QBO)
         inv = self.db.query(Invoice).filter(Invoice.id == invoice_id).first()
         if inv is None:
             return {"ok": False, "error": f"Invoice {invoice_id} not found"}
@@ -179,6 +201,7 @@ class QBOSyncService(BaseService):
             return {"ok": True, "skipped": "already synced", "qbo_id": inv.qbo_invoice_id}
         if inv.status not in _PUSHABLE_STATUSES:
             return {"ok": False, "error": f"Invoice is {inv.status}; finalize it before pushing to QBO"}
+        self._warn_core_charges_post_as_income(inv)
 
         try:
             client = QBOClient(self.db)
@@ -281,17 +304,33 @@ class QBOSyncService(BaseService):
         qbo_invoice_id. Mirrors push_invoice's request/marking structure and the
         money-path invariant: success → mark_synced, failure → mark_sync_failed,
         and nothing here ever mutates the payment's amount, status, or allocations.
+
+        A payment with surcharge_amount > 0 ALSO gets a one-line surcharge
+        SalesReceipt (see _push_surcharge_receipt) — the processor deposits
+        principal + surcharge as one lump, so without it every surcharged card
+        sale leaves the QBO deposit short of the bank.
         """
+        self.assert_can(Permission.REPUSH_QBO)
         pmt = self.db.query(Payment).filter(Payment.id == payment_id).first()
         if pmt is None:
             return {"ok": False, "error": f"Payment {payment_id} not found"}
-        if pmt.qbo_payment_id:
-            return {"ok": True, "skipped": "already synced", "qbo_id": pmt.qbo_payment_id}
+        # Status gate runs BEFORE the already-synced healing branch: a reversed/
+        # NSF payment must never mint a fresh surcharge receipt for money that
+        # was never collected (the healing path below creates QBO documents).
         if pmt.status != PaymentStatus.APPLIED:
             return self._refuse_payment(
                 payment_id,
                 f"Payment is {pmt.status}; only an APPLIED payment can be pushed to QuickBooks.",
             )
+        if pmt.qbo_payment_id:
+            out = {"ok": True, "skipped": "already synced", "qbo_id": pmt.qbo_payment_id}
+            # A prior push may have synced the payment but lost the surcharge
+            # receipt; the receipt push is idempotent (DocNumber guard), so a
+            # repush heals it instead of skipping past the gap.
+            sc_id = self._push_surcharge_receipt(pmt)
+            if sc_id:
+                out["surcharge_qbo_id"] = sc_id
+            return out
 
         active = [a for a in pmt.allocations if not a.is_reversed]
         if not active:
@@ -325,7 +364,13 @@ class QBOSyncService(BaseService):
             self._audit_push(EntityType.PAYMENT, payment_id, ok=True,
                              detail=f"Pushed to QBO as Payment {qbo_id}")
             log.info("payment %s pushed to QBO as %s", payment_id, qbo_id)
-            return {"ok": True, "qbo_id": qbo_id}
+            out = {"ok": True, "qbo_id": qbo_id}
+            # Runs AFTER mark_synced: a surcharge-receipt failure must never
+            # unwind or fail the (already booked) payment sync.
+            sc_id = self._push_surcharge_receipt(pmt)
+            if sc_id:
+                out["surcharge_qbo_id"] = sc_id
+            return out
         except QBONotConnected as exc:
             self._audit_push(EntityType.PAYMENT, payment_id, ok=False, detail=str(exc))
             return {"ok": False, "error": str(exc)}
@@ -382,6 +427,130 @@ class QBOSyncService(BaseService):
             payload["PaymentRefNum"] = str(pmt.check_number)[:21]
         return payload
 
+    # ── card-surcharge receipt (deposit-matching) ─────────────────────────────
+    def _surcharge_doc_number(self, pmt: Payment) -> str:
+        # QBO DocNumber is capped at 21 chars; deterministic per payment — this
+        # is the idempotency key for the surcharge receipt (see below).
+        return f"JAKS-SC-{pmt.id}"[:21]
+
+    def _push_surcharge_receipt(self, pmt: Payment) -> str | None:
+        """The processor deposits principal + surcharge as ONE lump, but the QBO
+        Payment carries only the invoice principal (R1) — this one-line
+        SalesReceipt books the surcharge income AND its deposit-side cash so the
+        QBO deposit reconciles against the bank.
+
+        CONSTRAINT (deposit-matching): _build_payment_payload sets no
+        DepositToAccountRef, so pushed payments land in QBO's default
+        Undeposited Funds; this receipt must land in the SAME account for the
+        combined deposit to match — so it also omits DepositToAccountRef.
+
+        Idempotent by DocNumber: Payment has no column to store the receipt id,
+        so a repush queries for the deterministic DocNumber and reuses the
+        existing receipt instead of double-counting the surcharge.
+
+        Best-effort; never raises and never fails the (already committed)
+        payment sync — a failure is logged + audited and returns None."""
+        surcharge = round(float(getattr(pmt, "surcharge_amount", 0.0) or 0.0), 2)
+        if surcharge <= 0:
+            return None
+        doc_number = self._surcharge_doc_number(pmt)
+        try:
+            client = QBOClient(self.db)
+            rows = client.query(
+                f"select Id, DocNumber from SalesReceipt where DocNumber = '{_q(doc_number)}'"
+            )
+            if rows and rows[0].get("Id"):
+                return str(rows[0]["Id"])
+            customer_ref = self._resolve_customer(client, pmt.customer)
+            item_id = self._resolve_surcharge_item(client)
+            payload: dict = {
+                "CustomerRef": customer_ref,
+                "DocNumber": doc_number,
+                "PrivateNote": f"Card surcharge on JAKS payment #{pmt.id}",
+                "Line": [{
+                    "DetailType": "SalesItemLineDetail",
+                    "Amount": surcharge,
+                    "Description": f"Card surcharge on payment #{pmt.id}",
+                    "SalesItemLineDetail": {
+                        "ItemRef": {"value": item_id},
+                        "Qty": 1,
+                        "UnitPrice": surcharge,
+                        "TaxCodeRef": {"value": "NON"},
+                    },
+                }],
+            }
+            if getattr(pmt, "payment_date", None):
+                payload["TxnDate"] = pmt.payment_date.strftime("%Y-%m-%d")
+            created = client.create("SalesReceipt", payload)
+            qbo_id = str(created.get("Id", "")).strip()
+            if not qbo_id:
+                raise QBOError(f"QBO did not return a sales receipt Id: {created}")
+            self._audit_push(
+                EntityType.PAYMENT, pmt.id, ok=True,
+                detail=f"Card surcharge ${surcharge:.2f} pushed to QBO as SalesReceipt {qbo_id}",
+            )
+            log.info("payment %s surcharge pushed to QBO as SalesReceipt %s", pmt.id, qbo_id)
+            return qbo_id
+        except Exception as exc:  # incl. QBONotConnected — best-effort side document
+            msg = str(exc)[:400]
+            log.exception("QBO surcharge receipt push failed for payment %s", pmt.id)
+            self._audit_push(
+                EntityType.PAYMENT, pmt.id, ok=False,
+                detail=f"Surcharge SalesReceipt push failed (payment itself synced): {msg}",
+            )
+            return None
+
+    def _resolve_surcharge_item(self, client: QBOClient) -> str:
+        """'JAKS Card Surcharge' item id, created on first use — installs whose
+        one-time 'Set up QBO items' run predates surcharge sync must still push
+        without a manual re-setup step."""
+        rows = client.query(f"select Id, Name from Item where Name = '{_q(SURCHARGE_ITEM)}'")
+        if rows and rows[0].get("Id"):
+            return str(rows[0]["Id"])
+        acct = self._resolve_surcharge_income_account(client)
+        created = client.create("Item", {
+            "Name": SURCHARGE_ITEM,
+            "Type": "Service",
+            "IncomeAccountRef": {"value": acct["id"]},
+        })
+        item_id = str(created.get("Id", "")).strip()
+        if not item_id:
+            raise QBOError(f"Failed to create QBO item '{SURCHARGE_ITEM}'")
+        return item_id
+
+    def _resolve_surcharge_income_account(self, client: QBOClient) -> dict:
+        """Owner mapping (qbo_surcharge_income_account) first; set-but-missing
+        falls back to the default income account (same fail-soft convention as
+        _resolve_freight_in_account) so the surcharge still reaches the books."""
+        name = get_setting_value_db(self.db, "qbo_surcharge_income_account", "").strip()
+        if name:
+            rows = client.query(f"select Id, Name from Account where Name = '{_q(name)}'")
+            if rows and rows[0].get("Id"):
+                return {"id": str(rows[0]["Id"]), "name": rows[0]["Name"]}
+            log.warning(
+                "qbo_surcharge_income_account is set to '%s' but no such QBO account "
+                "exists — falling back to the default income account.", name,
+            )
+        acct = self._resolve_income_account(client)
+        if not acct:
+            raise QBOError("No Income account found in QBO for the card-surcharge item.")
+        return acct
+
+    def _warn_core_charges_post_as_income(self, inv: Invoice) -> None:
+        """Cores are a pass-through liability (the deposit is refunded on core
+        return), but until qbo_core_charge_liability_account is mapped the
+        'JAKS Core Charge' item stays bound to income — every pushed core
+        deposit overstates revenue. Warn loudly; never block the push."""
+        if get_setting_value_db(self.db, "qbo_core_charge_liability_account", "").strip():
+            return
+        if any(ln.line_type == LineType.CORE_CHARGE for ln in inv.lines):
+            log.warning(
+                "Invoice %s carries core charges that will post to QBO as INCOME — "
+                "map qbo_core_charge_liability_account (Settings → QBO Accounts) and "
+                "re-run 'Set up QBO items' to post them as a pass-through liability.",
+                inv.invoice_number,
+            )
+
     # ── vendor-bill push (R3) ─────────────────────────────────────────────────
     def push_vendor_bill(self, bill_id: int) -> dict:
         """Push one APPROVED/PAID vendor bill to QBO as a Bill (AP + expense/COGS
@@ -394,6 +563,7 @@ class QBOSyncService(BaseService):
         created) by DisplayName exactly like customers are, including the R2
         multi-match refusal — auto-binding the first of several same-name QBO
         vendors would post AP to the wrong account."""
+        self.assert_can(Permission.REPUSH_QBO)
         bill = self.db.query(VendorBill).filter(VendorBill.id == bill_id).first()
         if bill is None:
             return {"ok": False, "error": f"Vendor bill {bill_id} not found"}
@@ -511,6 +681,7 @@ class QBOSyncService(BaseService):
         invoice push (incl. CORE_CHARGE via the credited line's original invoice
         line). Best-effort; never raises. Refuses a REVERSED (void-like) CM and
         fails soft when the customer can't be resolved unambiguously."""
+        self.assert_can(Permission.REPUSH_QBO)
         cm = self.db.query(CreditMemo).filter(CreditMemo.id == cm_id).first()
         if cm is None:
             return {"ok": False, "error": f"Credit memo {cm_id} not found"}
@@ -832,8 +1003,13 @@ class QBOSyncService(BaseService):
     # ── one-time setup: generic income items ──────────────────────────────────
     def ensure_default_items(self) -> dict:
         """Create any missing generic income items in QBO, all posting to one
-        income account. Explicit/admin-run (never auto during a push), because
-        creating accounting items is not something to do silently."""
+        income account — EXCEPT 'JAKS Core Charge', which binds to the owner-
+        mapped qbo_core_charge_liability_account when set (cores are a
+        pass-through deposit, not revenue; QBO allows a Service item's
+        IncomeAccountRef to be a liability account — standard pass-through
+        modeling). An existing core item bound elsewhere is rebound in place.
+        Explicit/admin-run (never auto during a push), because creating
+        accounting items is not something to do silently."""
         try:
             client = QBOClient(self.db)
         except QBONotConnected as exc:
@@ -842,27 +1018,85 @@ class QBOSyncService(BaseService):
         income_acct = self._resolve_income_account(client)
         if not income_acct:
             return {"ok": False, "error": "No Income account found in QBO to attach items to."}
+        core_acct = self._resolve_core_liability_account(client)
 
         existing = {
-            r.get("Name") for r in client.query("select Id, Name from Item") if r.get("Name")
+            r.get("Name"): r
+            for r in client.query("select Id, Name, IncomeAccountRef from Item")
+            if r.get("Name")
         }
-        created, already = [], []
+        created, already, rebound = [], [], []
         for name in DEFAULT_ITEM_NAMES:
-            if name in existing:
+            acct_id = (
+                core_acct["id"] if (core_acct and name == CORE_CHARGE_ITEM)
+                else income_acct["id"]
+            )
+            row = existing.get(name)
+            if row is not None:
                 already.append(name)
+                if core_acct and name == CORE_CHARGE_ITEM:
+                    bound = str(((row.get("IncomeAccountRef") or {}).get("value", "")) or "")
+                    if bound != acct_id:
+                        try:
+                            self._rebind_item_income_account(
+                                client, str(row.get("Id", "")), acct_id)
+                            rebound.append(name)
+                        except QBOError as exc:
+                            return {"ok": False,
+                                    "error": f"Failed rebinding item '{name}' to "
+                                             f"'{core_acct['name']}': {exc}",
+                                    "created": created, "existing": already}
                 continue
             try:
                 client.create("Item", {
                     "Name": name,
                     "Type": "Service",
-                    "IncomeAccountRef": {"value": income_acct["id"]},
+                    "IncomeAccountRef": {"value": acct_id},
                 })
                 created.append(name)
             except QBOError as exc:
                 return {"ok": False, "error": f"Failed creating item '{name}': {exc}",
                         "created": created, "existing": already}
-        return {"ok": True, "created": created, "existing": already,
-                "income_account": income_acct["name"]}
+        out = {"ok": True, "created": created, "existing": already,
+               "income_account": income_acct["name"]}
+        if core_acct:
+            out["rebound"] = rebound
+            out["core_charge_account"] = core_acct["name"]
+        return out
+
+    def _resolve_core_liability_account(self, client: QBOClient) -> dict | None:
+        """The liability account 'JAKS Core Charge' should post to. Unset →
+        None (item keeps/gets the income binding — push_invoice warns).
+        Set-but-missing → None with a loud warning, so the rest of the one-time
+        setup still completes instead of dying on one bad mapping."""
+        name = get_setting_value_db(
+            self.db, "qbo_core_charge_liability_account", "").strip()
+        if not name:
+            return None
+        rows = client.query(f"select Id, Name from Account where Name = '{_q(name)}'")
+        if rows and rows[0].get("Id"):
+            return {"id": str(rows[0]["Id"]), "name": rows[0]["Name"]}
+        log.warning(
+            "qbo_core_charge_liability_account is set to '%s' but no such QBO account "
+            "exists — the JAKS Core Charge item stays bound to income.", name,
+        )
+        return None
+
+    def _rebind_item_income_account(self, client: QBOClient, item_id: str,
+                                    account_id: str) -> None:
+        """Sparse update — NOT QBOClient.update, which replaces the whole object
+        (sparse=false) and would need every Item field re-supplied. Only the
+        account binding changes; QBO still requires Id + current SyncToken."""
+        current = client.read("Item", item_id)
+        body: dict = {
+            "Id": str(item_id),
+            "SyncToken": str(current.get("SyncToken", "0")),
+            "sparse": True,
+            "IncomeAccountRef": {"value": str(account_id)},
+        }
+        if current.get("Name"):
+            body["Name"] = current["Name"]
+        client.request("POST", "item", json=body)
 
     def _resolve_income_account(self, client: QBOClient) -> dict | None:
         rows = client.query("select Id, Name from Account where AccountType = 'Income'")

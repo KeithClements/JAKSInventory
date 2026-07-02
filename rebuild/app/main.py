@@ -53,6 +53,7 @@ from app.routers import leadfinder_api as leadfinder_api_router
 from app.routers import public_docs as public_docs_router
 from app.routers import pricing_rules as pricing_rules_router
 from app.routers import serials as serials_router
+from app.routers import catalog_hygiene as catalog_hygiene_router
 
 log = logging.getLogger(__name__)
 
@@ -601,6 +602,7 @@ app.include_router(shopify_router.router)
 app.include_router(leadfinder_api_router.router)
 app.include_router(public_docs_router.router)
 app.include_router(pricing_rules_router.router)
+app.include_router(catalog_hygiene_router.router)
 
 
 # ── Friendly 404 for browsers (QA — raw {"detail":"Not Found"} JSON) ───────────

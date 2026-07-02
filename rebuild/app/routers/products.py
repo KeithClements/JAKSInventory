@@ -10,12 +10,12 @@ import csv
 import io
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
-from app.constants import CrossRefType, SuggestedSellType
+from app.constants import CrossRefType, Permission, SuggestedSellType
 from app.deps import get_db, get_current_user_id, require_admin
 from app.models.competitor import CompetitorPrice
 from app.models.product import (
@@ -23,6 +23,7 @@ from app.models.product import (
     ProductVendorSource, SuggestedSell,
 )
 from app.models.vendor import Vendor
+from app.services.base import PermissionDeniedError
 from app.services.product_service import ProductService
 from app.services.search_service import _norm_col
 from app.services.suggested_sell_service import SuggestedSellService
@@ -881,6 +882,42 @@ async def product_bulk_assign(
     return RedirectResponse(return_to, status_code=303)
 
 
+# ── Bulk Set Reorder Point — MUST be before /{product_id} ─────────────────────
+# The Low-Stock / Reorder tab is inert without reorder points on products.
+# Mirrors /bulk-assign: apply one validated value to the selected rows.
+# A negative or non-integer value writes nothing.
+
+@router.post("/bulk-reorder-point", response_class=RedirectResponse)
+async def product_bulk_reorder_point(
+    request: Request,
+    db: Session = Depends(get_db),
+    _admin=Depends(require_admin),
+):
+    form = await request.form()
+    product_ids: list[int] = []
+    for raw in form.getlist("product_ids"):
+        try:
+            product_ids.append(int(raw))
+        except (ValueError, TypeError):
+            pass
+
+    try:
+        value = int(str(form.get("reorder_point", "")).strip())
+    except (ValueError, TypeError):
+        value = None
+
+    if product_ids and value is not None and value >= 0:
+        db.query(Product).filter(Product.id.in_(product_ids)).update(
+            {"reorder_point": value}, synchronize_session=False
+        )
+        db.commit()
+
+    return_to = str(form.get("return_to", "/products/")).strip()
+    if not return_to.startswith("/products"):
+        return_to = "/products/"          # guard against open redirect
+    return RedirectResponse(return_to, status_code=303)
+
+
 # ── Import Review queue (§18.7) — MUST be before /{product_id} ────────────────
 # Products the importer flagged needs_review (couldn't confidently place into a
 # Subcategory / Product Family). Per-row inline assign posts to /bulk-assign and
@@ -1022,8 +1059,16 @@ async def product_enrich_sync(
 # Registered BEFORE /{product_id}.
 
 @router.get("/import", response_class=HTMLResponse)
-def product_import_page(request: Request, _admin=Depends(require_admin)):
-    return templates.TemplateResponse(request, "products/import.html", {})
+def product_import_page(request: Request, db: Session = Depends(get_db),
+                        _admin=Depends(require_admin)):
+    return templates.TemplateResponse(request, "products/import.html",
+                                      {"categories": _categories(db)})
+
+
+# The direct importer bypasses the Review Queue entirely — a non-dry-run writes
+# the LIVE catalog in one request. The typed phrase (not a yes/no confirm) is the
+# proof the operator understood that.
+_LIVE_IMPORT_CONFIRM = "APPLY TO LIVE CATALOG"
 
 
 @router.post("/import-run")
@@ -1034,14 +1079,30 @@ async def product_import_run(
     dry_run: bool = Form(True),
     max_change_pct: float | None = Form(None),  # sell mode safety rail (e.g. 50.0)
     import_images: bool = Form(True),
+    confirm_text: str = Form(""),            # required (exact) for non-dry-run
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
     _admin=Depends(require_admin),
 ):
     from app.services.product_import_service import ProductImportService
+    svc = ProductImportService(db, user_id)
+    # Same permission as the Review-Queue apply (apply_approved): this route
+    # writes the live catalog with zero staging, so it must hold at the service
+    # layer too, not only via the route's require_admin dependency.
+    try:
+        svc.assert_can(Permission.APPLY_IMPORT)
+    except PermissionDeniedError:
+        return JSONResponse(
+            {"error": "Applying an import to the live catalog requires admin access."},
+            status_code=403)
+    if not dry_run and confirm_text.strip() != _LIVE_IMPORT_CONFIRM:
+        return JSONResponse(
+            {"error": f'Nothing was written. This import bypasses the Review Queue '
+                      f'and writes straight to the live catalog — type '
+                      f'"{_LIVE_IMPORT_CONFIRM}" in the confirmation box to run it.'},
+            status_code=400)
     raw = await file.read()
     text = raw.decode("utf-8-sig", errors="replace")
-    svc = ProductImportService(db, user_id)
     if mode == "full":
         return svc.full_import(text, dry_run=dry_run, import_images=import_images)
     if mode == "applications":
@@ -1067,6 +1128,35 @@ def product_backfill_manufacturers(
     product's stored OEM-ref brands / applications / title / keywords."""
     from app.services.product_import_service import ProductImportService
     return ProductImportService(db, user_id).backfill_manufacturers(dry_run=dry_run)
+
+
+@router.post("/reorder-backfill")
+def product_reorder_backfill(
+    category_id: int = Form(...),
+    reorder_point: int = Form(...),
+    dry_run: bool = Form(True),
+    db: Session = Depends(get_db),
+    _admin=Depends(require_admin),
+):
+    """Seed reorder points by category: sets `reorder_point` on every ACTIVE
+    product under the category (subcategories included) whose reorder point is
+    still 0 — a value someone already set deliberately is never overwritten."""
+    if reorder_point < 1:
+        return {"error": "Reorder point must be a positive whole number."}
+    cat = db.get(ProductCategory, category_id)
+    if cat is None:
+        return {"error": "Category not found."}
+    q = db.query(Product).filter(
+        Product.category_id.in_(_descendant_category_ids(db, category_id)),
+        Product.reorder_point == 0,
+        Product.is_active == True,  # noqa: E712
+    )
+    matched = q.count()
+    if not dry_run and matched:
+        q.update({"reorder_point": reorder_point}, synchronize_session=False)
+        db.commit()
+    return {"dry_run": dry_run, "category": cat.full_path,
+            "reorder_point": reorder_point, "updated": matched}
 
 
 @router.post("/reclassify-all")
@@ -1184,6 +1274,24 @@ async def product_autosave(
             '<span class="text-xs text-red-600">Save failed.</span>',
             status_code=500,
         )
+
+
+# ── Unlock price (scraper-audit bug #11) ─────────────────────────────────────
+# Clears ONLY the operator price lock (price_override itself is kept) so the
+# nightly scraper feed may manage the sell price again. The lock is set
+# automatically by ProductService.update_product when an operator changes the
+# exact price via the UI.
+
+@router.post("/{product_id}/unlock-price", response_class=HTMLResponse)
+async def product_unlock_price(product_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    p = db.query(Product).filter(Product.id == product_id).first()
+    if not p:
+        return RedirectResponse("/products/", status_code=303)
+    _svc(db, user_id).unlock_price_override(product_id)
+    return RedirectResponse(
+        f"/products/{product_id}?ok=Price+unlocked.+The+nightly+vendor+feed+may+manage+it+again.",
+        status_code=303,
+    )
 
 
 # ── Deactivate ───────────────────────────────────────────────────────────────

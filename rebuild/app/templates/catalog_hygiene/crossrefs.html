@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Cross-Reference Hygiene — Axle{% endblock %}
+{% block heading %}Cross-Reference Hygiene{% endblock %}
+
+{% block content %}
+<div class="space-y-5 pb-12 max-w-4xl">
+
+  {% if ok %}
+  <div class="flex items-center gap-2 rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800"
+       x-data x-init="setTimeout(() => $el.remove(), 6000)">
+    <svg class="w-4 h-4 text-green-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+      <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+    </svg>
+    {{ ok }}
+  </div>
+  {% endif %}
+
+  <section class="card">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Garbage cross-references</h2>
+      </div>
+      <span class="text-xs text-gray-400">{{ '{:,}'.format(report.total_rows) }} total rows</span>
+    </div>
+    <div class="card-body space-y-4">
+      <p class="text-sm text-gray-500">
+        Placeholder reference &ldquo;numbers&rdquo; (N/A, NUMBER OEM NUMBER, single letters) map one
+        entry to thousands of parts and crowd the real match out of the counter search &mdash;
+        a wrong-part-sold risk. This purge deletes <span class="font-semibold">only</span> rows
+        failing the shared garbage rule; the importer now refuses the same refs at the door.
+      </p>
+
+      <div class="text-sm text-gray-700">
+        <span class="font-semibold {{ 'text-red-600' if report.garbage_rows else 'text-gray-500' }}">{{ '{:,}'.format(report.garbage_rows) }}</span>
+        of {{ '{:,}'.format(report.total_rows) }} cross-reference rows are garbage.
+      </div>
+
+      {% if report.by_ref_number %}
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">Ref number</th>
+            <th class="tbl-th-r">Rows</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ref, n in report.by_ref_number %}
+          <tr>
+            <td class="tbl-td font-mono text-gray-700">{{ ref }}</td>
+            <td class="tbl-td-r tabular-nums text-gray-700">{{ '{:,}'.format(n) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+
+      {% if report.garbage_rows %}
+      <form method="post" action="/catalog-hygiene/crossrefs/apply"
+            onsubmit="return confirm('Delete {{ report.garbage_rows }} garbage cross-reference rows? This cannot be undone.');">
+        <button type="submit" class="btn-primary">
+          Delete {{ '{:,}'.format(report.garbage_rows) }} garbage rows
+        </button>
+      </form>
+      {% else %}
+      <p class="text-sm text-gray-400">Nothing to purge — every cross-reference passes the garbage rule.</p>
+      {% endif %}
+    </div>
+  </section>
+</div>
+{% endblock %}

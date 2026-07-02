@@ -58,6 +58,7 @@ from app.models.product import (
 from app.models.competitor import CompetitorPrice, CompetitorPriceHistory
 from app.models.vendor import Vendor
 from app.services.base import BaseService
+from app.services.crossref_hygiene import is_garbage_ref
 from app.utils import normalize_part
 
 _PAI_VENDOR_NAME = "PAI Industries"
@@ -886,6 +887,10 @@ class ProductImportService(BaseService):
             "pricing_refreshed": 0, "costs_updated": 0, "skipped_existing": 0,
             "skipped_no_sku": 0, "skipped_sku_collision": 0, "sku_collisions": [],
             "cross_refs": 0, "applications": 0, "images": 0,
+            # Placeholder OEM "numbers" ('N/A', 'NUMBER OEM NUMBER', …) refused
+            # at the door — one garbage ref shared by thousands of products
+            # poisons the counter search (see crossref_hygiene.is_garbage_ref).
+            "cross_refs_skipped_garbage": 0,
             "categories_created": 0, "vendor_sources": 0, "needs_review": 0,
             # §23.3 Phase 1 #6 — cross-vendor OEM dedup: rows that matched an
             # EXISTING product (from another vendor's feed) via OEM cross-
@@ -1173,6 +1178,9 @@ class ProductImportService(BaseService):
                 }
                 for it in p["oem"]:
                     brand, num = _split_two(it)
+                    if num and is_garbage_ref(num):
+                        summary["cross_refs_skipped_garbage"] += 1
+                        continue
                     nk = (num or "").strip().lower()
                     if num and nk not in current_oems:
                         current_oems.add(nk)
@@ -1234,7 +1242,12 @@ class ProductImportService(BaseService):
                 summary["reman_core_unknown"] = summary.get("reman_core_unknown", 0) + 1
             if cls["category_id"] or cls["engine_manufacturer"]:
                 summary["classified"] += 1
-            n_oem = sum(1 for it in p["oem"] if _split_two(it)[1])
+            # Garbage refs are dropped from the count (and never inserted below)
+            # so the dry-run report shows what will actually be written.
+            _oem_nums = [_split_two(it)[1] for it in p["oem"]]
+            summary["cross_refs_skipped_garbage"] += sum(
+                1 for n in _oem_nums if n and is_garbage_ref(n))
+            n_oem = sum(1 for n in _oem_nums if n and not is_garbage_ref(n))
             n_app = len(p["apps"])
             n_img = len(p["images"]) if import_images else 0
             summary["created"] += 1
@@ -1362,7 +1375,8 @@ class ProductImportService(BaseService):
             for it in p["oem"]:
                 brand, num = _split_two(it)
                 nk = (num or "").strip().lower()
-                if num and nk not in seen_oem:
+                # Garbage refs already tallied at the n_oem count above.
+                if num and not is_garbage_ref(num) and nk not in seen_oem:
                     seen_oem.add(nk)
                     self.db.add(CrossReference(
                         product_id=product.id, ref_type=CrossRefType.OEM,
@@ -1603,6 +1617,10 @@ class ProductImportService(BaseService):
             "skipped_no_sku": 0, "skipped_no_product": 0, "skipped_no_price": 0,
             "matched": 0, "prices_updated": 0, "compare_updated": 0,
             "unchanged": 0, "over_threshold_skipped": 0,
+            # Scraper-audit bug #11 — products whose sell price the feed did NOT
+            # touch because an operator set it by hand (price_override_locked).
+            # Cost / availability / manufacturer on those rows still apply.
+            "skipped_price_locked": 0,
             "costs_updated": 0, "skipped_no_vendor_source": 0,
             "manufacturer_updated": 0, "manufacturer_unmapped_sample": [],
             "availability_updated": 0, "out_of_stock_flagged": 0,
@@ -1772,6 +1790,19 @@ class ProductImportService(BaseService):
                     elif _signed > 0 and _mag > summary["price_rise_max_pct"]:
                         summary["price_rise_max_pct"] = _mag
 
+            # ── Operator price lock (scraper-audit bug #11) — a sell price the
+            # owner set by hand in the ERP is NEVER clobbered by the feed. Only
+            # the price_override write is suppressed (and counted); compare-at,
+            # cost, availability, and manufacturer on the same row still apply —
+            # they aren't operator-owned fields. Counted in dry-run too, so the
+            # report matches what --apply would do. The blast-radius metrics
+            # above still reflect the TRUE scraped move (same as the threshold
+            # rail below). Unlock via the product screen's "unlock" control.
+            price_locked_skip = bool(price_change and product.price_override_locked)
+            if price_locked_skip:
+                summary["skipped_price_locked"] += 1
+                price_change = False
+
             # Threshold rail — applies only to price_override moves where
             # there IS a prior price to compare against. Cost & manufacturer
             # are independent: a bad scrape of one shouldn't suppress the
@@ -1830,8 +1861,9 @@ class ProductImportService(BaseService):
 
             if (not price_change and not compare_change
                     and not mfg_change and not cost_change and not avail_did):
-                # If only an over-threshold row landed here, we already counted it.
-                if not over_threshold:
+                # If only an over-threshold or price-locked row landed here, we
+                # already counted it under its own key.
+                if not over_threshold and not price_locked_skip:
                     summary["unchanged"] += 1
                 continue
 
@@ -1895,6 +1927,8 @@ class ProductImportService(BaseService):
             "skipped_no_product": 0, "created": 0, "updated": 0, "unchanged": 0,
             "history_appended": 0, "cross_refs_created": 0,
             "cross_ref_collisions": 0, "cross_ref_collision_sample": [],
+            # Placeholder part "numbers" refused at the door (crossref_hygiene).
+            "cross_refs_skipped_garbage": 0,
             "sample": [],
         }
         sku_to_id = self._sku_to_id_map()
@@ -1933,7 +1967,12 @@ class ProductImportService(BaseService):
             # a DIFFERENT product, skip + count (no silent cross-product dupes).
             # Already-on-this-product → no-op, so re-runs are idempotent.
             npart = normalize_part(part)
-            if npart:
+            if npart and is_garbage_ref(part):
+                # A placeholder like 'N/A' would become ONE searchable "number"
+                # shared by every imported row — refuse it (the CompetitorPrice
+                # record itself is still written; only the xref is skipped).
+                summary["cross_refs_skipped_garbage"] += 1
+            elif npart:
                 owners = xref_owners.get(npart)
                 if owners and pid not in owners:
                     summary["cross_ref_collisions"] += 1

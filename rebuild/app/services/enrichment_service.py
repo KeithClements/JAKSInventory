@@ -125,6 +125,10 @@ class ProductEnrichmentService(BaseService):
                 if key in seen_xref:
                     summary["cross_refs_existing"] += 1
                     continue
+                from app.services.crossref_hygiene import is_garbage_ref
+                if is_garbage_ref(ref_number):
+                    summary["cross_refs_skipped_garbage"] = summary.get("cross_refs_skipped_garbage", 0) + 1
+                    continue
                 seen_xref.add(key)
                 self.db.add(CrossReference(
                     product_id=pid, ref_type=ref_type, ref_number=ref_number,

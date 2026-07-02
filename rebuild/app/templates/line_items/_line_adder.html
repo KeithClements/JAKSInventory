@@ -161,6 +161,14 @@
             </div>
           </button>
         </template>
+
+        {# 'Showing N of M' — the server caps the list (LIMIT); when more
+           products match (X-Total-Matches header), say so instead of letting
+           the counter assume the dropdown is the complete match set. #}
+        <div x-show="total > results.length" x-cloak
+             class="px-3 py-1.5 text-[11px] text-gray-400 bg-gray-50">
+          Showing <span x-text="results.length"></span> of <span x-text="total"></span> matches — keep typing to narrow
+        </div>
       </div>
     </div>
 
@@ -230,6 +238,7 @@ window.lineAdder = window.lineAdder || function (config) {
     cfg: config,
     q: '',
     results: [],
+    total: 0,          // X-Total-Matches — DISTINCT products matching, may exceed results.length
     loading: false,
     qty: 1,
 
@@ -242,13 +251,19 @@ window.lineAdder = window.lineAdder || function (config) {
     // Debounced canonical search → JSON results.
     async doSearch() {
       const term = this.q.trim();
-      if (term.length < 2) { this.results = []; return; }
+      if (term.length < 2) { this.results = []; this.total = 0; return; }
       this.loading = true;
       try {
         const resp = await fetch(this.cfg.searchUrl + '?q=' + encodeURIComponent(term));
         this.results = resp.ok ? await resp.json() : [];
+        // Total DISTINCT matches (may exceed the LIMIT-capped list) → the
+        // "showing N of M" hint. Falls back to the list length when absent.
+        this.total = resp.ok
+          ? (parseInt(resp.headers.get('X-Total-Matches') || '', 10) || this.results.length)
+          : 0;
       } catch (e) {
         this.results = [];
+        this.total = 0;
       } finally {
         this.loading = false;
       }
@@ -339,6 +354,7 @@ window.lineAdder = window.lineAdder || function (config) {
     reset() {
       this.q = '';
       this.results = [];
+      this.total = 0;
       this.qty = 1;
       this.clearChildMode();
       this.$nextTick(() => { if (this.$refs.searchInput) this.$refs.searchInput.focus(); });

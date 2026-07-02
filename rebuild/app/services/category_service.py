@@ -19,6 +19,7 @@ from __future__ import annotations
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.constants import AuditAction, Permission
 from app.models.product import Brand, Manufacturer, Product, ProductCategory
 from app.services.base import BaseService
 
@@ -259,6 +260,10 @@ class CategoryService(BaseService):
         exceed MAX_LEVEL — reparent the children first), union the two
         import_keywords lists onto dest, then soft-delete (deactivate) src.
         Returns {'products_moved', 'children_adopted', 'dest_name'}."""
+        # Irreversible bulk reassignment across the live catalog — products carry
+        # no back-pointer to their pre-merge category, so the audit row below is
+        # the only record of what moved.
+        self.assert_can(Permission.MERGE_CATALOG)
         if src_id == dest_id:
             raise ValueError("Cannot merge a category into itself.")
         src = self.db.get(ProductCategory, src_id)
@@ -310,6 +315,19 @@ class CategoryService(BaseService):
             d.level += shift
 
         src.is_active = False
+        self.audit(
+            entity_type="category",
+            entity_id=src_id,
+            action=AuditAction.EDITED,
+            old_value={"src_id": src_id, "src_name": src.name},
+            new_value={
+                "dest_id": dest_id,
+                "dest_name": dest.name,
+                "products_moved": int(products_moved or 0),
+                "children_adopted": len(children),
+            },
+            notes=f"Merged category '{src.name}' into '{dest.name}'",
+        )
         self.db.commit()
         return {
             "products_moved": int(products_moved or 0),
@@ -351,16 +369,26 @@ class CategoryService(BaseService):
             if clash:
                 raise ValueError(f"Brand '{nm}' already exists.")
             old_name = b.name
-            b.name = nm[:200]
             # R1-6: Product.brand is free-text (no FK) — cascade the rename so
             # tagged parts stay attached to the brand (mirror of manufacturer).
             # §21 — fire on ANY rename (incl. a case-only fix), and match
             # case-INSENSITIVELY so bulk-imported casing variants ('PAI'/'pai'/
             # 'Pai') are all re-tagged instead of orphaned from the brand filter.
-            if old_name and old_name != b.name:
-                self.db.query(Product).filter(
+            # The cascade bulk-rewrites free-text Product.brand with no back-
+            # pointer — same blast radius as merge_brand, so same gate + audit.
+            if old_name and old_name != nm[:200]:
+                self.assert_can(Permission.MERGE_CATALOG)
+                b.name = nm[:200]
+                retagged = self.db.query(Product).filter(
                     func.lower(Product.brand) == old_name.lower()
                 ).update({"brand": b.name}, synchronize_session=False)
+                self.audit(
+                    entity_type="brand", entity_id=b.id, action=AuditAction.EDITED,
+                    old_value=old_name, new_value=b.name,
+                    notes=f"Rename cascade re-tagged {retagged} product(s)",
+                )
+            else:
+                b.name = nm[:200]
         if fields.get("sort_order") is not None:
             b.sort_order = int(fields["sort_order"])
         if fields.get("is_house_brand") is not None:
@@ -394,6 +422,9 @@ class CategoryService(BaseService):
         soft-deactivate src. ALWAYS soft-deactivates (never hard-deletes,
         unlike delete_brand) — a merged-away brand should stay resolvable in
         history/audit, not disappear. Returns {'products_moved', 'dest_name'}."""
+        # Irreversible: Product.brand is free-text, so once overwritten there is
+        # no back-pointer — the audit row below is the only record of what moved.
+        self.assert_can(Permission.MERGE_CATALOG)
         if src_id == dest_id:
             raise ValueError("Cannot merge a brand into itself.")
         src = self.db.get(Brand, src_id)
@@ -411,6 +442,18 @@ class CategoryService(BaseService):
             .update({"brand": dest.name}, synchronize_session=False)
         )
         src.is_active = False
+        self.audit(
+            entity_type="brand",
+            entity_id=src_id,
+            action=AuditAction.EDITED,
+            old_value={"src_id": src_id, "src_name": src.name},
+            new_value={
+                "dest_id": dest_id,
+                "dest_name": dest.name,
+                "products_moved": int(products_moved or 0),
+            },
+            notes=f"Merged brand '{src.name}' into '{dest.name}'",
+        )
         self.db.commit()
         return {"products_moved": int(products_moved or 0), "dest_name": dest.name}
 
@@ -447,15 +490,24 @@ class CategoryService(BaseService):
             if clash:
                 raise ValueError(f"Manufacturer '{nm}' already exists.")
             old_name = m.name
-            m.name = nm[:200]
             # R1-6: Product.engine_manufacturer is free-text (no FK), so a rename
             # here must cascade or every tagged part drops out of the engine-make
             # filter. §21 — fire on ANY rename (incl. a case-only fix) and match
             # case-INSENSITIVELY so casing-variant imported rows aren't orphaned.
-            if old_name and old_name != m.name:
-                self.db.query(Product).filter(
+            # Same blast radius as merge_manufacturer → same gate + audit.
+            if old_name and old_name != nm[:200]:
+                self.assert_can(Permission.MERGE_CATALOG)
+                m.name = nm[:200]
+                retagged = self.db.query(Product).filter(
                     func.lower(Product.engine_manufacturer) == old_name.lower()
                 ).update({"engine_manufacturer": m.name}, synchronize_session=False)
+                self.audit(
+                    entity_type="manufacturer", entity_id=m.id, action=AuditAction.EDITED,
+                    old_value=old_name, new_value=m.name,
+                    notes=f"Rename cascade re-tagged {retagged} product(s)",
+                )
+            else:
+                m.name = nm[:200]
         if fields.get("sort_order") is not None:
             m.sort_order = int(fields["sort_order"])
         if fields.get("is_active") is not None:
@@ -490,6 +542,10 @@ class CategoryService(BaseService):
         ALWAYS soft-deactivates src (never hard-deletes) so it stays
         resolvable in history/audit. Returns {'products_moved', 'dest_name'}
         where products_moved counts distinct products touched on EITHER field."""
+        # Irreversible: both manufacturer fields are free-text, so once
+        # overwritten there is no back-pointer — the audit row below is the
+        # only record of what moved.
+        self.assert_can(Permission.MERGE_CATALOG)
         if src_id == dest_id:
             raise ValueError("Cannot merge a manufacturer into itself.")
         src = self.db.get(Manufacturer, src_id)
@@ -520,6 +576,18 @@ class CategoryService(BaseService):
         ).update({"engine_manufacturer": dest.name}, synchronize_session=False)
 
         src.is_active = False
+        self.audit(
+            entity_type="manufacturer",
+            entity_id=src_id,
+            action=AuditAction.EDITED,
+            old_value={"src_id": src_id, "src_name": src.name},
+            new_value={
+                "dest_id": dest_id,
+                "dest_name": dest.name,
+                "products_moved": len(touched_ids),
+            },
+            notes=f"Merged manufacturer '{src.name}' into '{dest.name}'",
+        )
         self.db.commit()
         return {"products_moved": len(touched_ids), "dest_name": dest.name}
 

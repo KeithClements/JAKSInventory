@@ -455,14 +455,19 @@ class ImportReviewService(BaseService):
         self.db.commit()
         return cand
 
-    def bulk_set_status(self, batch_id: int, target: str, *, scope: str = "all") -> int:
+    def bulk_set_status(self, batch_id: int, target: str, *, scope: str = "all",
+                        include_flagged: bool = False) -> int:
         """Set review_status on MANY candidates at once — no per-row checkbox
         selection. Only touches PENDING rows (never overrides a manual accept/reject).
 
         scope:
           'confident' — PENDING rows that are NOT flagged needs_review
           'flagged'   — PENDING rows that ARE flagged needs_review
-          'all'       — every PENDING row
+          'all'       — every PENDING row, but flagged (needs_review / uncertain
+                        cross-ref) rows are EXCLUDED unless include_flagged=True.
+                        A one-click "approve everything" must not sweep rows the
+                        analyzer itself said it wasn't sure about into the catalog;
+                        including them is an explicit, separate decision.
 
         One bulk UPDATE (fast at 13k rows). Returns the count changed and refreshes
         the batch's approved tally."""
@@ -470,7 +475,7 @@ class ImportReviewService(BaseService):
             ImportCandidate.batch_id == batch_id,
             ImportCandidate.review_status == ScrapedItemReviewStatus.PENDING,
         )
-        if scope == "confident":
+        if scope == "confident" or (scope == "all" and not include_flagged):
             q = q.filter(ImportCandidate.needs_review == False)   # noqa: E712
         elif scope == "flagged":
             q = q.filter(ImportCandidate.needs_review == True)    # noqa: E712
@@ -818,9 +823,13 @@ class ImportReviewService(BaseService):
                 pass
         existing_refs = {_norm(r.ref_number) for r in self.db.query(CrossReference)
                          .filter(CrossReference.product_id == product_id).all()}
+        # Feed rows routinely carry placeholder refs ('N/A', 'NUMBER OEM NUMBER');
+        # add_cross_reference RAISES on those (manual-entry guard) which would wedge
+        # the whole apply — silent-skip here, mirroring full_import/enrichment.
+        from app.services.crossref_hygiene import is_garbage_ref
         for it in (p.get("oem") or []):
             brand, num = _split_two(it)
-            if num and _norm(num) not in existing_refs:
+            if num and not is_garbage_ref(num) and _norm(num) not in existing_refs:
                 psvc.add_cross_reference(product_id, CrossRefType.OEM, num, brand=brand)
                 existing_refs.add(_norm(num))
                 got["cross_refs"] += 1

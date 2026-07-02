@@ -174,6 +174,50 @@ class SearchService(BaseService):
                     seen.add(bc_hit.id)
                     results.append(_to_result(bc_hit, "barcode"))
 
+            # 1c. EXACT cross-reference match (ref_number_norm == nq) — ranked
+            #     ABOVE every contains-tier. With 200k+ xref rows, the LIMIT-
+            #     slice of SKU-contains hits (step 2) could fill the list before
+            #     the product whose OEM number IS the typed query was ever
+            #     considered — the exact match must always surface.
+            if len(results) < limit:
+                xref_exact = (
+                    self.db.query(CrossReference, Product)
+                    .join(Product, CrossReference.product_id == Product.id)
+                    .filter(CrossReference.ref_number_norm == nq)
+                    .filter(Product.is_active == True if not include_inactive else True)  # noqa: E712
+                    .limit(limit)
+                    .all()
+                )
+                for xref, p in xref_exact:
+                    if p.id not in seen:
+                        seen.add(p.id)
+                        results.append(_to_result(p, "cross_ref", cross_ref_number=xref.ref_number))
+                    if len(results) >= limit:
+                        break
+
+            # 1d. EXACT vendor part-number / vendor-SKU match — same exact-
+            #     above-contains guarantee as 1c.
+            if len(results) < limit:
+                pvs_exact = (
+                    self.db.query(ProductVendorSource, Product)
+                    .join(Product, ProductVendorSource.product_id == Product.id)
+                    .filter(
+                        or_(
+                            ProductVendorSource.vendor_part_number_norm == nq,
+                            ProductVendorSource.vendor_sku_norm == nq,
+                        )
+                    )
+                    .filter(ProductVendorSource.is_active == True)  # noqa: E712
+                    .limit(limit)
+                    .all()
+                )
+                for _src, p in pvs_exact:
+                    if p.id not in seen:
+                        seen.add(p.id)
+                        results.append(_to_result(p, "vendor_sku"))
+                    if len(results) >= limit:
+                        break
+
             # 2. SKU contains (normalized), prefix matches ranked first —
             #    "141" finds "14-1234"; "ok1" finds "OK-1".
             if len(results) < limit:
@@ -335,6 +379,97 @@ class SearchService(BaseService):
                     break
 
         return results[:limit]
+
+    def count_product_matches(self, query: str, include_inactive: bool = False) -> int:
+        """Total DISTINCT products matching ``query`` across every strategy
+        ``search_products`` uses. The line-adder shows a LIMIT-capped slice;
+        this is the M in its "showing N of M" hint so the counter knows more
+        matches exist beyond the dropdown. Implemented as a UNION of id-selects
+        (UNION dedupes) mirroring each strategy's filters."""
+        q = query.strip()
+        if not q:
+            return 0
+        nq = normalize_part(q)
+
+        selects = []
+        base = self.db.query(Product.id)
+        if not include_inactive:
+            base = base.filter(Product.is_active == True)  # noqa: E712
+
+        if nq:
+            # SKU contains (subsumes the exact-SKU tier).
+            selects.append(base.filter(Product.sku_norm.like(f"%{nq}%")))
+            # Barcode exact.
+            selects.append(base.filter(
+                Product.barcode.isnot(None), Product.barcode != "",
+                _norm_col(Product.barcode) == nq,
+            ))
+            # Cross-reference contains (subsumes the exact tier).
+            selects.append(
+                self.db.query(Product.id)
+                .join(CrossReference, CrossReference.product_id == Product.id)
+                .filter(CrossReference.ref_number_norm.like(f"%{nq}%"))
+                .filter(Product.is_active == True if not include_inactive else True)  # noqa: E712
+            )
+            # Vendor part number / vendor SKU contains.
+            selects.append(
+                self.db.query(Product.id)
+                .join(ProductVendorSource, ProductVendorSource.product_id == Product.id)
+                .filter(
+                    or_(
+                        ProductVendorSource.vendor_part_number_norm.like(f"%{nq}%"),
+                        ProductVendorSource.vendor_sku_norm.like(f"%{nq}%"),
+                    )
+                )
+                .filter(ProductVendorSource.is_active == True)  # noqa: E712
+            )
+            # Competitor part number contains.
+            selects.append(
+                self.db.query(Product.id)
+                .join(CompetitorPrice, CompetitorPrice.product_id == Product.id)
+                .filter(CompetitorPrice.competitor_part_number_norm.like(f"%{nq}%"))
+                .filter(CompetitorPrice.is_active == True)  # noqa: E712
+                .filter(Product.is_active == True if not include_inactive else True)  # noqa: E712
+            )
+
+        # Engine application (raw query, spaces kept — mirrors step 5c).
+        ql = q.lower()
+        make_model = sa_func.lower(
+            ProductApplication.engine_make + " " + ProductApplication.engine_model
+        )
+        selects.append(
+            self.db.query(Product.id)
+            .join(ProductApplication, ProductApplication.product_id == Product.id)
+            .filter(
+                or_(
+                    sa_func.lower(ProductApplication.engine_make).like(f"%{ql}%"),
+                    sa_func.lower(ProductApplication.engine_model).like(f"%{ql}%"),
+                    make_model.like(f"%{ql}%"),
+                )
+            )
+            .filter(Product.is_active == True if not include_inactive else True)  # noqa: E712
+        )
+
+        # Keyword tier (every token must match somewhere — mirrors step 6).
+        tokens = [t for t in q.split() if t]
+        if tokens:
+            kw = base.outerjoin(ProductCategory, Product.category_id == ProductCategory.id)
+            for tok in tokens:
+                like = f"%{tok}%"
+                kw = kw.filter(
+                    or_(
+                        Product.title.ilike(like),
+                        Product.description.ilike(like),
+                        Product.manufacturer.ilike(like),
+                        Product.engine_manufacturer.ilike(like),
+                        Product.brand.ilike(like),
+                        ProductCategory.name.ilike(like),
+                    )
+                )
+            selects.append(kw)
+
+        union_q = selects[0].union(*selects[1:]) if len(selects) > 1 else selects[0].distinct()
+        return union_q.count()
 
     def lookup_cross_reference(self, ref_number: str) -> list[ProductSearchResult]:
         """

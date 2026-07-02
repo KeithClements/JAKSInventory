@@ -208,7 +208,8 @@ def test_route_mode_applications(db, client):
     csv_text = _csv(_HEADER, [["JAKS-PAI-200", "Cummins", "ISX", "", ""]])
 
     r = client.post("/products/import-run",
-                    data={"mode": "applications", "dry_run": "false"},
+                    data={"mode": "applications", "dry_run": "false",
+                          "confirm_text": "APPLY TO LIVE CATALOG"},
                     files={"file": ("apps.csv", csv_text, "text/csv")})
     assert r.status_code == 200
     body = r.json()
@@ -228,5 +229,5 @@ def test_import_template_stamps_csrf_on_import_run_fetch():
     repo_root = pathlib.Path(__file__).resolve().parents[1]
     src = (repo_root / "app/templates/products/import.html").read_text(encoding="utf-8")
     assert "function _csrfToken()" in src
-    assert src.count("'X-CSRF-Token': _csrfToken()") == 3   # mfgBackfill + reclassifyAll + productImport
+    assert src.count("'X-CSRF-Token': _csrfToken()") == 4   # mfgBackfill + reclassifyAll + productImport + reorderBackfill
     assert "mode==='applications'" in src or 'mode===\'applications\'' in src

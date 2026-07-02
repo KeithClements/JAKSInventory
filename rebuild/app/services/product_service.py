@@ -457,6 +457,21 @@ class ProductService(BaseService):
             if field in data:
                 setattr(product, field, data[field])
 
+        # ── Operator price lock (scraper-audit bug #11) ────────────────────────
+        # An operator CHANGING the exact sell price via the UI locks it against
+        # the nightly scraper feed (pricing_update_sell skips locked products'
+        # sell-price writes). Clearing the override clears the lock so the feed
+        # may manage the price again. Re-posting the SAME stored value (autosave
+        # re-submits the whole form on every debounce) never toggles the lock.
+        if "price_override" in data:
+            _new_po = data["price_override"]
+            _old_po = old_snapshot["price_override"]
+            if _new_po is None:
+                if _old_po is not None:
+                    product.price_override_locked = False
+            elif _old_po is None or abs(float(_old_po) - float(_new_po)) >= 0.005:
+                product.price_override_locked = True
+
         self.audit(
             entity_type=EntityType.PRODUCT,
             entity_id=product_id,
@@ -464,6 +479,26 @@ class ProductService(BaseService):
             old_value=old_snapshot,
             new_value={k: data[k] for k in data if k in old_snapshot},
         )
+        self.db.commit()
+        return product
+
+    def unlock_price_override(self, product_id: int) -> Product:
+        """Clear ONLY the operator price lock — price_override itself is kept.
+
+        The product screen's "unlock" control calls this so the nightly scraper
+        feed (pricing_update_sell) may manage the sell price again. Idempotent:
+        unlocking an unlocked product is a no-op (no audit row)."""
+        product = self._get_or_404(product_id)
+        if product.price_override_locked:
+            product.price_override_locked = False
+            self.audit(
+                entity_type=EntityType.PRODUCT,
+                entity_id=product_id,
+                action=AuditAction.EDITED,
+                old_value={"price_override_locked": True},
+                new_value={"price_override_locked": False},
+                notes="price lock cleared (scraper feed may manage the sell price)",
+            )
         self.db.commit()
         return product
 
@@ -791,6 +826,12 @@ class ProductService(BaseService):
     ) -> None:
         """Add an OEM or competitor cross reference."""
         self._get_or_404(product_id)
+        from app.services.crossref_hygiene import is_garbage_ref
+        if is_garbage_ref(ref_number):
+            raise ValueError(
+                f"'{ref_number.strip()}' is not a usable part number — "
+                "placeholder values and refs under 3 characters pollute cross-reference search."
+            )
         xref = CrossReference(
             product_id=product_id,
             ref_type=ref_type,

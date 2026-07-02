@@ -20,6 +20,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.deps import get_db, get_current_user_id
+from app.services.base import PermissionDeniedError
 from app.services.category_service import CategoryService, LEVEL_LABELS
 
 router = APIRouter(prefix="/categories", tags=["categories"])
@@ -136,6 +137,8 @@ async def category_reparent(cat_id: int, request: Request, db: Session = Depends
 async def category_merge(src_id: int, dest_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     try:
         result = _svc(db, user_id).merge_category(src_id, dest_id)
+    except PermissionDeniedError:
+        return _back(error="Merging categories requires admin access.")
     except ValueError as exc:
         return _back(error=str(exc))
     return _back(ok=(
@@ -171,6 +174,8 @@ async def brand_update(brand_id: int, request: Request, db: Session = Depends(ge
             is_house_brand=str(form.get("is_house_brand", "")).strip() in ("1", "on", "true"),
             is_active=str(form.get("is_active", "")).strip() in ("1", "on", "true"),
         )
+    except PermissionDeniedError:
+        return _back(error="Renaming a brand re-tags every product carrying it — requires admin access.")
     except ValueError as exc:
         return _back(error=str(exc))
     return _back(ok="Brand updated.")
@@ -186,6 +191,8 @@ async def brand_delete(brand_id: int, db: Session = Depends(get_db), user_id: in
 async def brand_merge(src_id: int, dest_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     try:
         result = _svc(db, user_id).merge_brand(src_id, dest_id)
+    except PermissionDeniedError:
+        return _back(error="Merging brands requires admin access.")
     except ValueError as exc:
         return _back(error=str(exc))
     return _back(ok=(
@@ -218,6 +225,8 @@ async def manufacturer_update(man_id: int, request: Request, db: Session = Depen
             sort_order=_int(form.get("sort_order")),
             is_active=str(form.get("is_active", "")).strip() in ("1", "on", "true"),
         )
+    except PermissionDeniedError:
+        return _back(error="Renaming a manufacturer re-tags every product carrying it — requires admin access.")
     except ValueError as exc:
         return _back(error=str(exc))
     return _back(ok="Manufacturer updated.")
@@ -233,6 +242,8 @@ async def manufacturer_delete(man_id: int, db: Session = Depends(get_db), user_i
 async def manufacturer_merge(src_id: int, dest_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     try:
         result = _svc(db, user_id).merge_manufacturer(src_id, dest_id)
+    except PermissionDeniedError:
+        return _back(error="Merging manufacturers requires admin access.")
     except ValueError as exc:
         return _back(error=str(exc))
     return _back(ok=(

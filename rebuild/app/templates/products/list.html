@@ -244,6 +244,32 @@
     </div>
   </div>
   <div class="h-4 w-px bg-brand-200"></div>
+  {# Low-Stock/Reorder is inert without reorder points — bulk-set for selected rows #}
+  <div x-data="{ open: false }" class="relative">
+    <button type="button" @click="open = !open"
+            class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">
+      Set Reorder Point
+    </button>
+    <div x-show="open" x-cloak @click.outside="open = false"
+         class="absolute left-0 top-full mt-2 z-20 w-64 bg-white border border-gray-200 rounded-xl shadow-lg p-4 space-y-3">
+      <form method="post" action="/products/bulk-reorder-point" class="space-y-3">
+        <template x-for="id in Object.keys(selected).filter(k => selected[k])" :key="id">
+          <input type="hidden" name="product_ids" :value="id" />
+        </template>
+        <input type="hidden" name="return_to" value="{{ request.url.path }}?{{ request.url.query }}" />
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">Reorder point</label>
+          <input type="number" name="reorder_point" min="0" step="1" required
+                 class="w-full py-2 px-3 text-sm border border-gray-200 rounded-lg bg-white" />
+        </div>
+        <button type="submit" class="btn-primary btn-sm w-full">
+          Apply to <span x-text="selectedCount"></span> selected
+        </button>
+        <p class="text-[11px] text-gray-400">0 disables the low-stock flag for these items.</p>
+      </form>
+    </div>
+  </div>
+  <div class="h-4 w-px bg-brand-200"></div>
   <a href="/products/export.csv?tab={{ request.query_params.get('tab','') }}&q={{ request.query_params.get('q','')|urlencode }}"
      class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">
     Export CSV

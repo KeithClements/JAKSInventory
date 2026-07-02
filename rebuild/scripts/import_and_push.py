@@ -110,7 +110,8 @@ def _result_json(res: dict) -> str:
     int_keys = ("matched", "prices_updated", "costs_updated",
                 "availability_updated", "out_of_stock_flagged",
                 "discontinued_deactivated", "reactivation_suggested",
-                "skipped_no_product", "reprice_rows", "cost_anomaly_rows")
+                "skipped_no_product", "reprice_rows", "cost_anomaly_rows",
+                "skipped_price_locked")
     float_keys = ("price_drop_max_pct", "price_rise_max_pct", "cost_rise_max_pct")
     payload: dict = {k: int(res.get(k, 0) or 0) for k in int_keys}
     payload["total_rows"] = int(res.get("total_rows", res.get("rows", 0)) or 0)
@@ -132,6 +133,10 @@ def _result_json(res: dict) -> str:
         "reprice_rows": payload["reprice_rows"],
         "cost_rise_max_pct": payload["cost_rise_max_pct"],
         "cost_anomaly_rows": payload["cost_anomaly_rows"],
+        # Additive (scraper tolerates extra keys; existing keys NOT reordered):
+        # rows whose sell price was skipped because an ERP operator hand-set it
+        # (products.price_override_locked).
+        "skipped_price_locked": payload["skipped_price_locked"],
     }
     return "RESULT_JSON: " + json.dumps(ordered, separators=(",", ":"))
 
@@ -203,7 +208,8 @@ def main(argv: list[str]) -> int:
         _print("IMPORT (pricing_update_sell)" + ("" if apply else " - DRY RUN"), res_imp,
                ["matched", "prices_updated", "costs_updated", "availability_updated",
                 "out_of_stock_flagged", "discontinued_deactivated",
-                "reactivation_suggested", "skipped_no_product"])
+                "reactivation_suggested", "skipped_no_product",
+                "skipped_price_locked"])
 
         ids = _csv_product_ids(text, imp)
         print(f"\nCSV touches {len(ids)} existing ERP products.")

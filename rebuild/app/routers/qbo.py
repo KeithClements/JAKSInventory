@@ -20,11 +20,16 @@ from sqlalchemy.orm import Session
 
 from app.deps import get_current_user_id, get_db, require_admin
 from app.services import qbo_client
+from app.services.base import PermissionDeniedError
 from app.services.qbo_client import QBOError
 from app.services.qbo_service import QBOSyncService
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/qbo", tags=["qbo"])
+
+# The push services raise PermissionDeniedError BEFORE any QBO work when the
+# signed-in role lacks Permission.REPUSH_QBO — flashed, never a 500.
+_DENIED_MSG = "Pushing to QuickBooks requires bookkeeping or admin access."
 
 
 @router.get("/connect")
@@ -86,7 +91,12 @@ def qbo_push_invoice(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    result = QBOSyncService(db, current_user_id=user_id).push_invoice(invoice_id)
+    try:
+        result = QBOSyncService(db, current_user_id=user_id).push_invoice(invoice_id)
+    except PermissionDeniedError:
+        return RedirectResponse(
+            f"/invoices/{invoice_id}?error={url_quote(_DENIED_MSG)}", status_code=303
+        )
     if result.get("ok"):
         if result.get("skipped"):
             msg = "Invoice is already synced to QuickBooks."
@@ -108,7 +118,12 @@ def qbo_push_payment(
     """One-click push of a customer payment to QuickBooks (links to its already-
     synced invoice(s)). Fail-soft like the invoice push — flashes the error, never
     500s, and never touches the money path."""
-    result = QBOSyncService(db, current_user_id=user_id).push_payment(payment_id)
+    try:
+        result = QBOSyncService(db, current_user_id=user_id).push_payment(payment_id)
+    except PermissionDeniedError:
+        return RedirectResponse(
+            f"/payments/{payment_id}?error={url_quote(_DENIED_MSG)}", status_code=303
+        )
     if result.get("ok"):
         if result.get("skipped"):
             msg = "Payment is already synced to QuickBooks."
@@ -136,7 +151,10 @@ def qbo_push_bill(
     bill = db.query(VendorBill).filter(VendorBill.id == bill_id).first()
     back = f"/purchase-orders/{bill.po_id}" if (bill and bill.po_id) else "/purchase-orders/"
 
-    result = QBOSyncService(db, current_user_id=user_id).push_vendor_bill(bill_id)
+    try:
+        result = QBOSyncService(db, current_user_id=user_id).push_vendor_bill(bill_id)
+    except PermissionDeniedError:
+        return RedirectResponse(f"{back}?error={url_quote(_DENIED_MSG)}", status_code=303)
     if result.get("ok"):
         if result.get("skipped"):
             msg = "Vendor bill is already synced to QuickBooks."
@@ -158,7 +176,12 @@ def qbo_push_credit_memo(
     """R3 — one-click push of a credit memo to QuickBooks as a CreditMemo against
     the synced customer. Fail-soft, same contract as the invoice/payment/bill
     pushes; flashes the outcome on the credit-memo detail page."""
-    result = QBOSyncService(db, current_user_id=user_id).push_credit_memo(cm_id)
+    try:
+        result = QBOSyncService(db, current_user_id=user_id).push_credit_memo(cm_id)
+    except PermissionDeniedError:
+        return RedirectResponse(
+            f"/credit-memos/{cm_id}?error={url_quote(_DENIED_MSG)}", status_code=303
+        )
     if result.get("ok"):
         if result.get("skipped"):
             msg = "Credit memo is already synced to QuickBooks."
@@ -245,7 +268,10 @@ async def qbo_push_batch(
     (§23.3 Phase 1). Returns per-invoice results: {id, ok, qbo_id|error}."""
     svc = QBOSyncService(db, current_user_id=user_id)
     ids, mode = await _parse_batch_request(request)
-    results = await run_in_threadpool(_run_push_batch, svc, ids, mode)
+    try:
+        results = await run_in_threadpool(_run_push_batch, svc, ids, mode)
+    except PermissionDeniedError:
+        return JSONResponse({"ok": False, "error": _DENIED_MSG}, status_code=403)
 
     return JSONResponse({
         "count": len(results),

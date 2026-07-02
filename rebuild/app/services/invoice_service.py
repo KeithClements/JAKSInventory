@@ -41,6 +41,18 @@ log = logging.getLogger(__name__)
 _FREIGHT_LINE_TYPES = FREIGHT_LINE_TYPES
 
 
+def _safe_customer_discount(raw) -> float:
+    """Copy-from-customer sanitizer for LEGACY data: an out-of-range stored
+    standing discount is treated as UNSET (0 = full price, clerk re-applies)
+    rather than raised — raising would brick document creation for that
+    customer, and clamping 150→100 would silently give the parts away."""
+    try:
+        pct = float(raw or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return pct if 0 <= pct <= 100 else 0.0
+
+
 class InvoiceService(BaseService):
 
     # ── Draft creation (workspace entry point) ────────────────────────────────
@@ -101,7 +113,10 @@ class InvoiceService(BaseService):
             invoice_number=inv_number,
             customer_id=customer_id,
             status=InvoiceStatus.DRAFT,
-            discount_pct=customer.discount_pct or 0.0,
+            # A legacy out-of-range stored default is treated as UNSET (0 = full
+            # price, clerk re-applies) — clamping 150→100 would mean free parts,
+            # and raising here would brick drafting for that customer entirely.
+            discount_pct=_safe_customer_discount(customer.discount_pct),
             apply_cc_surcharge=False,
             cc_surcharge_pct=cc_surcharge_pct,
             is_taxable=is_taxable,
@@ -178,7 +193,7 @@ class InvoiceService(BaseService):
             esn=data.get("esn"),
             engine_manufacturer=data.get("engine_manufacturer", ""),
             engine_model=data.get("engine_model", ""),
-            discount_pct=float(data.get("discount_pct", 0.0)),
+            discount_pct=self._validate_discount_pct(data.get("discount_pct")),
             apply_cc_surcharge=bool(data.get("apply_cc_surcharge", False)),
             # O6: use caller-supplied override if present, else the resolved
             # customer/system default (cc_surcharge_pct computed above).
@@ -260,7 +275,10 @@ class InvoiceService(BaseService):
             "notes", "internal_notes",
         ):
             if field in data:
-                setattr(invoice, field, data[field])
+                value = data[field]
+                if field == "discount_pct":
+                    value = self._validate_discount_pct(value)
+                setattr(invoice, field, value)
         self.db.commit()
         return invoice
 
@@ -299,7 +317,7 @@ class InvoiceService(BaseService):
             # Invoice.discount_amount / calculate_totals) — it must NOT be pushed onto
             # the lines, which would double-count it. Per-line discounts are an
             # independent layer and are left untouched here.
-            invoice.discount_pct = new_customer.discount_pct or 0.0
+            invoice.discount_pct = _safe_customer_discount(new_customer.discount_pct)
             for ln in invoice.lines:
                 if ln.product_id and ln.line_type == LineType.PRODUCT:
                     product = self.db.query(Product).filter(Product.id == ln.product_id).first()
@@ -403,9 +421,12 @@ class InvoiceService(BaseService):
         qty_changed = False
         for field in updatable:
             if field in data:
-                if field == "qty" and int(data[field]) != line.qty:
+                value = data[field]
+                if field == "discount_pct":
+                    value = self._validate_discount_pct(value)
+                if field == "qty" and int(value) != line.qty:
                     qty_changed = True
-                setattr(line, field, data[field])
+                setattr(line, field, value)
 
         # Cascade qty change to locked children (auto-cores typically)
         if qty_changed and line.parent_line_id is None:
@@ -473,6 +494,16 @@ class InvoiceService(BaseService):
         for i, ln in enumerate(invoice.lines, start=1):
             label = f"Line {i} ({ln.description[:40] or ln.line_type})"
 
+            # HARD BLOCK on any stored discount outside [0, 100] — a negative
+            # discount inflates the line total and over-taxes; >100 flips it
+            # negative. The write paths validate, but a bad value written
+            # around the service must never lock into an OPEN invoice.
+            if ln.discount_pct is not None and not (0 <= ln.discount_pct <= 100):
+                errors.append(
+                    f"{label}: discount must be between 0 and 100 "
+                    f"(got {ln.discount_pct:g})."
+                )
+
             # Product lines need qty > 0
             if ln.line_type == LineType.PRODUCT:
                 if ln.qty <= 0:
@@ -506,6 +537,10 @@ class InvoiceService(BaseService):
         # "Taxable"; neither should be forced just to post the sale.)
         if invoice.is_taxable and invoice.tax_rate is not None and invoice.tax_rate < 0:
             errors.append("Invoice tax rate cannot be negative.")
+
+        # Invoice-level discount gets the same [0, 100] hard block as lines.
+        if invoice.discount_pct is not None and not (0 <= invoice.discount_pct <= 100):
+            errors.append("Invoice discount must be between 0 and 100.")
 
         # Total sanity
         if invoice.total < 0:
@@ -1289,6 +1324,25 @@ class InvoiceService(BaseService):
             f"Create a credit memo or void/reissue to correct it."
         )
 
+    @staticmethod
+    def _validate_discount_pct(value) -> float:
+        """Normalize a discount percent to a float in [0, 100].
+
+        None/blank means "no discount" (0.0). Values outside [0, 100] are
+        rejected: calc_line_total is pure math, so a negative discount
+        INFLATES the line total (and over-collects tax) while >100 flips it
+        negative — and once finalized the invoice locks with the bad total.
+        """
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return 0.0
+        try:
+            pct = float(value)
+        except (TypeError, ValueError):
+            raise ValueError("Discount must be between 0 and 100")
+        if not (0 <= pct <= 100):
+            raise ValueError("Discount must be between 0 and 100")
+        return pct
+
     def _add_line_internal(self, invoice_id: int, data: dict, sort_order: int) -> InvoiceLine:
         line_type = data.get("line_type", LineType.PRODUCT)
         # R1 — per-line tax default: non-taxable for fee/credit line types, else
@@ -1317,7 +1371,7 @@ class InvoiceService(BaseService):
             qty=int(data.get("qty", 1)),
             unit_price=float(data.get("unit_price", 0.0)),
             unit_cost=float(data.get("unit_cost", 0.0)),
-            discount_pct=float(data.get("discount_pct", 0.0)),
+            discount_pct=self._validate_discount_pct(data.get("discount_pct")),
             is_taxable=is_taxable,
             tax_amount=0.0,  # frozen at finalize time
             is_core_line=bool(data.get("is_core_line", False)),
