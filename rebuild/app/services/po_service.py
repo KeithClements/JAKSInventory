@@ -253,6 +253,64 @@ class POService(BaseService):
         self.db.commit()
         return line
 
+    def create_pos_from_reorder(self, items: dict[int, int]) -> dict:
+        """
+        §23.3 Phase 2 — bulk "Create POs" from the Low Stock report's selection.
+
+        Takes ``{product_id: qty_ordered}`` (the caller — the report route —
+        supplies the qty; this method never re-derives the suggested-qty
+        formula, which is ReportService.get_low_stock's job and is tested
+        there). Groups by each product's PREFERRED ACTIVE vendor source
+        (same resolution SalesOrderService.create_po_for_line uses) into ONE
+        draft PO per vendor, so a reorder spanning several SKUs from the same
+        vendor doesn't mint a PO per line. A product with no preferred vendor
+        source is skipped (tracked, never silently dropped) — nothing to
+        order it FROM.
+
+        Returns:
+          {
+            "created": [{"po_id": int, "po_number": str, "vendor_name": str,
+                         "line_count": int}, ...],
+            "skipped_no_vendor": [{"product_id": int, "sku": str}, ...],
+          }
+        """
+        by_vendor: dict[int, list[tuple[Product, int]]] = {}
+        skipped_no_vendor: list[dict] = []
+
+        products = (
+            self.db.query(Product).filter(Product.id.in_(items.keys())).all()
+            if items else []
+        )
+        for product in products:
+            qty = int(items.get(product.id, 0))
+            if qty <= 0:
+                continue
+            source = product.preferred_vendor_source
+            if source is None:
+                skipped_no_vendor.append({"product_id": product.id, "sku": product.sku})
+                continue
+            by_vendor.setdefault(source.vendor_id, []).append((product, qty))
+
+        created: list[dict] = []
+        for vendor_id, lines in by_vendor.items():
+            po = self.create_po(
+                vendor_id=vendor_id,
+                data={"notes": "Auto-created from Low Stock reorder."},
+            )
+            for product, qty in lines:
+                self.add_line(po.id, product.id, {
+                    "qty_ordered": qty,
+                    "description": product.title,
+                })
+            created.append({
+                "po_id": po.id,
+                "po_number": po.po_number,
+                "vendor_name": po.vendor.name if po.vendor else "",
+                "line_count": len(lines),
+            })
+
+        return {"created": created, "skipped_no_vendor": skipped_no_vendor}
+
     def send_to_vendor(self, po_id: int) -> None:
         """
         Mark PO as sent and increment Product.qty_on_order for all product lines.

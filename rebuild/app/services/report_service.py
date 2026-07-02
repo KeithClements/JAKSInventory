@@ -37,7 +37,7 @@ from app.constants import (
 from app.models.core import CoreCharge, CoreSlip
 from app.models.customer import Customer
 from app.models.invoice import Invoice, InvoiceLine
-from app.models.product import Product, ProductCategory
+from app.models.product import Product, ProductCategory, ProductVendorSource
 from app.models.purchase_order import PurchaseOrder, POLine
 from app.models.quote import LostSaleLog, Quote, SalesOrder, SOLine
 from app.services.base import BaseService
@@ -633,7 +633,8 @@ class ReportService(BaseService):
 
         Returns:
           {
-            "totals": {sku_count, in_stock_skus, total_units, total_value, zero_cost_count},
+            "totals": {sku_count, in_stock_skus, total_units, total_value, zero_cost_count,
+                       zero_cost_recoverable_count, cost_source_breakdown},
             "by_category": [
               {
                 "category_id": int | None, "category": str,
@@ -642,8 +643,19 @@ class ReportService(BaseService):
               }, ...  # sorted by total_value desc
             ],
           }
+
+        §23.3 Phase 2 — "cost-source callout": the valuation math itself is
+        UNCHANGED (still raw Product.cost, never effective_cost — see the rule
+        comment above this method); this only adds VISIBILITY into WHY a SKU
+        has the cost it shows. cost_source_breakdown counts active products by
+        Product.cost_source ("receipt" = real moving-avg from a PO receipt,
+        "manual" = user-set OR simply never touched — it's the column default,
+        "vendor" = legacy, no longer written). zero_cost_recoverable_count is
+        the subset of zero_cost_count that DOES have an active vendor source
+        with a real cost on file — i.e. Product.effective_cost would price
+        these non-zero even though this report's own $0 total does not.
         """
-        from sqlalchemy import case
+        from sqlalchemy import case, exists
 
         # round(qty*cost, 2) per row, summed — matches the per-row rounding the old
         # Python path used (SQLite ROUND then SUM keeps cents identical at this scale).
@@ -652,11 +664,17 @@ class ReportService(BaseService):
         )
         in_stock_expr = func.sum(case((Product.qty_on_hand > 0, 1), else_=0))
         units_expr = func.sum(case((Product.qty_on_hand > 0, Product.qty_on_hand), else_=0))
-        zero_cost_expr = func.sum(
-            case(
-                ((Product.qty_on_hand > 0) & (func.coalesce(Product.cost, 0.0) <= 0), 1),
-                else_=0,
-            )
+        zero_cost_cond = (Product.qty_on_hand > 0) & (func.coalesce(Product.cost, 0.0) <= 0)
+        zero_cost_expr = func.sum(case((zero_cost_cond, 1), else_=0))
+        # Correlated EXISTS (not a join) so a product with multiple vendor
+        # sources never fans out the surrounding GROUP BY aggregates.
+        has_vendor_cost = exists().where(
+            ProductVendorSource.product_id == Product.id,
+            ProductVendorSource.is_active == True,  # noqa: E712
+            ProductVendorSource.vendor_cost > 0,
+        )
+        zero_cost_recoverable_expr = func.sum(
+            case((zero_cost_cond & has_vendor_cost, 1), else_=0)
         )
 
         rows = (
@@ -697,12 +715,33 @@ class ReportService(BaseService):
 
         by_category.sort(key=lambda c: c["total_value"], reverse=True)
 
+        # Separate query (whole-population, single row) — cost_source_breakdown
+        # and zero_cost_recoverable_count are catalog-wide, not per-category.
+        cs_rows = (
+            self.db.query(
+                Product.cost_source.label("cost_source"),
+                func.count(Product.id).label("n"),
+            )
+            .filter(Product.is_active == True)  # noqa: E712
+            .group_by(Product.cost_source)
+            .all()
+        )
+        cost_source_breakdown = {(r.cost_source or "manual"): int(r.n or 0) for r in cs_rows}
+
+        zero_cost_recoverable = (
+            self.db.query(zero_cost_recoverable_expr)
+            .filter(Product.is_active == True)  # noqa: E712
+            .scalar()
+        ) or 0
+
         totals = {
             "sku_count":       tot_sku,
             "in_stock_skus":   tot_instock,
             "total_units":     tot_units,
             "total_value":     round(tot_value, 2),
             "zero_cost_count": tot_zero,
+            "zero_cost_recoverable_count": int(zero_cost_recoverable),
+            "cost_source_breakdown": cost_source_breakdown,
         }
         return {"totals": totals, "by_category": by_category}
 
@@ -784,6 +823,18 @@ class ReportService(BaseService):
             elif qty_on_hand < 0:
                 warning = "negative_qty"
 
+            # §23.3 Phase 2 — cost-source callout. Doesn't change avg_cost/value
+            # (still raw Product.cost, per the locked valuation rule above); only
+            # surfaces WHY: cost_source explains what set the shown cost, and for
+            # a zero_cost row, recoverable_cost is the vendor cost Product.
+            # effective_cost would use instead — None when no vendor cost exists
+            # either (a genuinely blank cost basis, not just an unreceived part).
+            recoverable_cost: float | None = None
+            if warning == "zero_cost":
+                eff = p.effective_cost
+                if eff and eff > 0:
+                    recoverable_cost = eff
+
             rows.append({
                 "product": p,
                 "sku": p.sku,
@@ -795,6 +846,8 @@ class ReportService(BaseService):
                 "last_cost": last_cost,
                 "total_value": value,
                 "warning": warning,
+                "cost_source": p.cost_source or "manual",
+                "recoverable_cost": recoverable_cost,
             })
 
         return {
@@ -1526,6 +1579,106 @@ class ReportService(BaseService):
         }
 
         return {"as_of": as_of, "rows": rows, "totals": totals}
+
+    # ── Dead Stock (§23.3 Phase 2) ────────────────────────────────────────────
+
+    def get_dead_stock(self, days: int = 90) -> dict[str, Any]:
+        """
+        Active products with stock on hand that have NOT sold in `days` days —
+        cash tied up in inventory nobody's buying. Companion to get_low_stock
+        (which flags too little stock); this flags too much of the wrong stock.
+
+        "Last sold" = the most recent FINALIZED invoice's created_at across
+        every non-core PRODUCT line referencing the SKU (same finalized-status
+        set + core-line exclusion as get_sales_by_product, so this ties out
+        with the sales reports). Computed as a single GROUP BY subquery joined
+        once — never loads invoice_lines/invoices into Python — so it scales to
+        the same ~31k-SKU catalog get_inventory_valuation_summary does.
+
+        A product that has NEVER sold (no subquery row at all) is treated as
+        maximally dead — sorted first, days_since_sale is None (not a number,
+        so the template can print "Never sold" instead of a huge day count).
+
+        Filter:
+          - is_active
+          - qty_on_hand > 0        (nothing to report on stock that's already gone)
+          - last sale is NULL or older than `days` days ago
+
+        Returns:
+          {
+            "as_of": date, "cutoff_date": date, "days": int,
+            "rows": [
+              {
+                "product": Product, "sku": str, "title": str, "category": str,
+                "qty_on_hand": int, "cost": float, "tied_up_value": float,
+                "last_sold_at": datetime | None, "days_since_sale": int | None,
+              }, ...
+            ],  # never-sold first, then oldest last-sale first
+            "totals": {item_count, total_units, total_tied_up_value, never_sold_count},
+          }
+        """
+        as_of = date.today()
+        cutoff_dt = datetime.combine(as_of, datetime.min.time()) - timedelta(days=days)
+
+        last_sold_subq = (
+            self.db.query(
+                InvoiceLine.product_id.label("product_id"),
+                func.max(Invoice.created_at).label("last_sold_at"),
+            )
+            .join(Invoice, InvoiceLine.invoice_id == Invoice.id)
+            .filter(
+                Invoice.status.in_(_FINALIZED_INVOICE_STATUSES),
+                InvoiceLine.product_id.isnot(None),
+                InvoiceLine.is_core_line == False,  # noqa: E712 — a core line isn't a part sale
+            )
+            .group_by(InvoiceLine.product_id)
+            .subquery()
+        )
+
+        results = (
+            self.db.query(Product, last_sold_subq.c.last_sold_at)
+            .outerjoin(last_sold_subq, last_sold_subq.c.product_id == Product.id)
+            .options(joinedload(Product.category))
+            .filter(
+                Product.is_active == True,  # noqa: E712
+                Product.qty_on_hand > 0,
+            )
+            .filter(
+                (last_sold_subq.c.last_sold_at.is_(None))
+                | (last_sold_subq.c.last_sold_at < cutoff_dt)
+            )
+            .order_by(last_sold_subq.c.last_sold_at.asc().nullsfirst(), Product.sku)
+            .all()
+        )
+
+        rows: list[dict[str, Any]] = []
+        for p, last_sold_at in results:
+            cost = p.cost or 0.0
+            days_since_sale = (
+                (datetime.combine(as_of, datetime.min.time()) - last_sold_at).days
+                if last_sold_at else None
+            )
+            rows.append({
+                "product": p,
+                "sku": p.sku,
+                "title": p.title,
+                "category": p.category.name if p.category else "",
+                "qty_on_hand": p.qty_on_hand,
+                "cost": cost,
+                "tied_up_value": round(p.qty_on_hand * cost, 2),
+                "last_sold_at": last_sold_at,
+                "days_since_sale": days_since_sale,
+            })
+
+        totals = {
+            "item_count":          len(rows),
+            "total_units":         sum(r["qty_on_hand"] for r in rows),
+            "total_tied_up_value": round(sum(r["tied_up_value"] for r in rows), 2),
+            "never_sold_count":    sum(1 for r in rows if r["last_sold_at"] is None),
+        }
+
+        return {"as_of": as_of, "cutoff_date": cutoff_dt.date(), "days": days,
+                "rows": rows, "totals": totals}
 
     # ── Inventory Movement History (audit follow-up) ──────────────────────────
 

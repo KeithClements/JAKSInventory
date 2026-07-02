@@ -260,20 +260,37 @@
     <div class="grid grid-cols-2 gap-4">
       <div>
         <label class="block text-xs font-medium text-gray-500 mb-1">Manufacturer</label>
-        <input name="manufacturer" list="manufacturer-list"
-               value="{{ form_data.manufacturer if form_data else '' }}"
-               placeholder="Cummins, Caterpillar, …"
-               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
-        <datalist id="manufacturer-list">
-          {% for m in manufacturers %}<option value="{{ m }}">{% endfor %}
-        </datalist>
+        {# §23.3 Phase 2 — constrained to the managed Manufacturer list
+           (Category Maintenance) instead of a free-text+datalist suggestion.
+           Legacy-preserving: a form_data value outside the list (e.g. a
+           422 re-render after a stray manual entry) still shows selected. #}
+        <select name="manufacturer"
+                class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">
+          <option value="">— Select —</option>
+          {% set _cur_mfg = form_data.manufacturer if form_data else '' %}
+          {% for m in manufacturers %}
+          <option value="{{ m }}" {% if _cur_mfg == m %}selected{% endif %}>{{ m }}</option>
+          {% endfor %}
+          {% if _cur_mfg and _cur_mfg not in manufacturers %}
+          <option value="{{ _cur_mfg }}" selected>{{ _cur_mfg }}</option>
+          {% endif %}
+        </select>
       </div>
       <div>
         <label class="block text-xs font-medium text-gray-500 mb-1">Brand</label>
-        <input name="brand"
-               value="{{ form_data.brand if form_data else '' }}"
-               placeholder="e.g. PAI"
-               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        {# Constrained to the managed Brand list (Category Maintenance),
+           same legacy-preserving pattern as Manufacturer above. #}
+        <select name="brand"
+                class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">
+          <option value="">— Select —</option>
+          {% set _cur_brand = form_data.brand if form_data else '' %}
+          {% for b in brands %}
+          <option value="{{ b }}" {% if _cur_brand == b %}selected{% endif %}>{{ b }}</option>
+          {% endfor %}
+          {% if _cur_brand and _cur_brand not in brands %}
+          <option value="{{ _cur_brand }}" selected>{{ _cur_brand }}</option>
+          {% endif %}
+        </select>
       </div>
     </div>
 

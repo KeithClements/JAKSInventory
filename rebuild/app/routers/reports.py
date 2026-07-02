@@ -16,6 +16,8 @@ Canonical routes (Series 1):
   GET /reports/outstanding-cores     — customer-owed cores still out
   GET /reports/lost-sales            — lost-sale log entries with competitor data
   GET /reports/low-stock             — reorder worklist (at/below reorder point)
+  POST /reports/low-stock/create-pos — bulk-create draft POs from checked rows (§23.3 Phase 2)
+  GET /reports/dead-stock            — stock on hand with no recent sale (§23.3 Phase 2)
 
 Back-compat redirects from the previous URL shape are at the bottom of the file
 so existing sidebar/bookmark links keep working.
@@ -27,13 +29,14 @@ import io
 import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote as url_quote
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
-from app.deps import get_db, require_reports_access
+from app.deps import get_current_user_id, get_db, require_reports_access
 from app.services.report_service import ReportService
 from app.services import pricing_reports_service
 
@@ -123,6 +126,8 @@ def reports_index(request: Request, db: Session = Depends(get_db)):
     lost_count = 0
     low_stock_count = 0
     low_stock_order_cost = 0.0
+    dead_stock_count = 0
+    dead_stock_value = 0.0
 
     try:
         ar = svc.get_ar_aging()
@@ -151,6 +156,9 @@ def reports_index(request: Request, db: Session = Depends(get_db)):
         low_stock = svc.get_low_stock()
         low_stock_count = low_stock["totals"]["item_count"]
         low_stock_order_cost = low_stock["totals"]["total_order_cost"]
+        dead_stock = svc.get_dead_stock()
+        dead_stock_count = dead_stock["totals"]["item_count"]
+        dead_stock_value = dead_stock["totals"]["total_tied_up_value"]
     except Exception:
         log.exception("reports_index: ReportService failed")
         error_message = "Could not load report snapshot. Check server logs for details."
@@ -179,6 +187,8 @@ def reports_index(request: Request, db: Session = Depends(get_db)):
             "lost_count":         lost_count,
             "low_stock_count":      low_stock_count,
             "low_stock_order_cost": low_stock_order_cost,
+            "dead_stock_count":     dead_stock_count,
+            "dead_stock_value":     dead_stock_value,
         },
     )
 
@@ -771,6 +781,103 @@ def reports_low_stock_export(db: Session = Depends(get_db)):
     )
 
 
+@router.post("/low-stock/create-pos", response_class=RedirectResponse)
+async def reports_low_stock_create_pos(
+    request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """§23.3 Phase 2 — bulk-create draft POs from the Low Stock report's
+    checked rows. Groups by preferred vendor into one PO per vendor;
+    POService owns that logic — this route only resolves the checked
+    product_ids -> suggested_qty from the SAME get_low_stock() data the page
+    rendered, so a stale/tampered qty in the submitted form can never
+    override the report's own numbers. Requires an explicit selection — the
+    "Create POs" button is disabled client-side until at least one row is
+    checked, so an empty submission here is always treated as "nothing
+    selected", never silently expanded to "every row" (that would let a
+    stray/duplicate POST reorder the whole catalog with no user intent
+    behind it)."""
+    from app.services.po_service import POService
+
+    form = await request.form()
+    checked_ids = {int(v) for v in form.getlist("product_ids") if str(v).strip().isdigit()}
+
+    data = ReportService(db).get_low_stock()
+    items = {
+        r["product"].id: r["suggested_qty"]
+        for r in data["rows"]
+        if r["suggested_qty"] > 0 and r["product"].id in checked_ids
+    }
+
+    if not items:
+        return RedirectResponse(
+            f"/reports/low-stock?error={url_quote('Nothing selected to reorder.')}",
+            status_code=303,
+        )
+
+    result = POService(db, current_user_id=user_id).create_pos_from_reorder(items)
+    po_count = len(result["created"])
+    line_count = sum(c["line_count"] for c in result["created"])
+    msg = f"Created {po_count} PO(s) covering {line_count} line(s)."
+    if result["skipped_no_vendor"]:
+        skus = ", ".join(s["sku"] for s in result["skipped_no_vendor"][:5])
+        msg += f" Skipped {len(result['skipped_no_vendor'])} with no preferred vendor: {skus}."
+
+    return RedirectResponse(f"/reports/low-stock?ok={url_quote(msg)}", status_code=303)
+
+
+@router.get("/dead-stock", response_class=HTMLResponse)
+def reports_dead_stock(request: Request, days: int = 90, db: Session = Depends(get_db)):
+    error_message = None
+    today = date.today()
+    rows: list = []
+    totals = {"item_count": 0, "total_units": 0, "total_tied_up_value": 0.0,
+              "never_sold_count": 0}
+    try:
+        # A non-positive window would degenerate to "everything is dead" —
+        # guard rather than surface a nonsensical report.
+        days = max(1, days)
+        data = ReportService(db).get_dead_stock(days=days)
+        today = data["as_of"]
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_dead_stock failed")
+        error_message = "Could not load dead stock data. Check server logs for details."
+
+    return templates.TemplateResponse(
+        request,
+        "reports/dead_stock.html",
+        {
+            "today": today,
+            "days": days,
+            "rows": rows,
+            "totals": totals,
+            "error_message": error_message,
+        },
+    )
+
+
+@router.get("/dead-stock/export.csv")
+def reports_dead_stock_export(days: int = 90, db: Session = Depends(get_db)):
+    days = max(1, days)
+    data = ReportService(db).get_dead_stock(days=days)
+    return _csv_response(
+        ["sku", "title", "category", "qty_on_hand", "cost", "tied_up_value",
+         "last_sold_at", "days_since_sale"],
+        [
+            [
+                r["sku"], r["title"], r["category"], r["qty_on_hand"],
+                f"{r['cost']:.2f}", f"{r['tied_up_value']:.2f}",
+                r["last_sold_at"].date().isoformat() if r["last_sold_at"] else "never",
+                r["days_since_sale"] if r["days_since_sale"] is not None else "",
+            ]
+            for r in data["rows"]
+        ],
+        f"dead_stock_{data['as_of'].isoformat()}.csv",
+    )
+
+
 # ── §21 — the 6 previously-missing CSV exports (mirror the ar-aging pattern) ──
 
 @router.get("/sales-by-customer/export.csv")
@@ -821,12 +928,15 @@ def reports_inventory_valuation_export(db: Session = Depends(get_db)):
     data = ReportService(db).get_inventory_valuation()
     return _csv_response(
         ["sku", "title", "qty_on_hand", "qty_committed", "qty_available",
-         "avg_cost", "last_cost", "total_value", "warning"],
+         "avg_cost", "last_cost", "total_value", "warning", "cost_source",
+         "recoverable_cost"],
         [
             [
                 r["sku"], r["title"], r["qty_on_hand"], r["qty_committed"],
                 r["qty_available"], f"{r['avg_cost']:.2f}", f"{r['last_cost']:.2f}",
                 f"{r['total_value']:.2f}", r.get("warning") or "",
+                r.get("cost_source") or "",
+                f"{r['recoverable_cost']:.2f}" if r.get("recoverable_cost") else "",
             ]
             for r in data["rows"]
         ],

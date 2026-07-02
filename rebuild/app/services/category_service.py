@@ -386,6 +386,34 @@ class CategoryService(BaseService):
             self.db.delete(b)
         self.db.commit()
 
+    def merge_brand(self, src_id: int, dest_id: int) -> dict:
+        """§23.3 Phase 2 — merge a duplicate brand into another (case-only
+        typos, "PAI"/"Pai Industries", etc.). Mirrors merge_category: reassign
+        every Product carrying src's name (case-insensitive — the same match
+        rule update_brand's own rename cascade uses) to dest's name, then
+        soft-deactivate src. ALWAYS soft-deactivates (never hard-deletes,
+        unlike delete_brand) — a merged-away brand should stay resolvable in
+        history/audit, not disappear. Returns {'products_moved', 'dest_name'}."""
+        if src_id == dest_id:
+            raise ValueError("Cannot merge a brand into itself.")
+        src = self.db.get(Brand, src_id)
+        if src is None:
+            raise ValueError("Source brand not found.")
+        dest = self.db.get(Brand, dest_id)
+        if dest is None:
+            raise ValueError("Destination brand not found.")
+        if not dest.is_active:
+            raise ValueError("Destination brand is inactive.")
+
+        products_moved = (
+            self.db.query(Product)
+            .filter(func.lower(Product.brand) == (src.name or "").lower())
+            .update({"brand": dest.name}, synchronize_session=False)
+        )
+        src.is_active = False
+        self.db.commit()
+        return {"products_moved": int(products_moved or 0), "dest_name": dest.name}
+
     # ══ Manufacturers (= Engine Make, §18 A1) ══════════════════════════════════
     def manufacturers(self, include_inactive: bool = True) -> list[Manufacturer]:
         q = self.db.query(Manufacturer)
@@ -450,6 +478,51 @@ class CategoryService(BaseService):
             self.db.delete(m)
         self.db.commit()
 
+    def merge_manufacturer(self, src_id: int, dest_id: int) -> dict:
+        """§23.3 Phase 2 — merge a duplicate manufacturer/engine-make into
+        another. Reassigns BOTH Product.manufacturer AND
+        Product.engine_manufacturer — the model docstring calls these "the
+        SAME concept" and both now read this one managed list (see
+        engine_make_names + routers/products.py's product-form dropdown) — a
+        merge that only fixed one would leave the other silently pointing at
+        a deactivated name. update_manufacturer's own rename cascade only
+        touches engine_manufacturer; merge is the broader operation.
+        ALWAYS soft-deactivates src (never hard-deletes) so it stays
+        resolvable in history/audit. Returns {'products_moved', 'dest_name'}
+        where products_moved counts distinct products touched on EITHER field."""
+        if src_id == dest_id:
+            raise ValueError("Cannot merge a manufacturer into itself.")
+        src = self.db.get(Manufacturer, src_id)
+        if src is None:
+            raise ValueError("Source manufacturer not found.")
+        dest = self.db.get(Manufacturer, dest_id)
+        if dest is None:
+            raise ValueError("Destination manufacturer not found.")
+        if not dest.is_active:
+            raise ValueError("Destination manufacturer is inactive.")
+
+        src_name_lower = (src.name or "").lower()
+        touched_ids = {
+            pid for (pid,) in self.db.query(Product.id).filter(
+                func.lower(Product.manufacturer) == src_name_lower
+            ).all()
+        }
+        touched_ids |= {
+            pid for (pid,) in self.db.query(Product.id).filter(
+                func.lower(Product.engine_manufacturer) == src_name_lower
+            ).all()
+        }
+        self.db.query(Product).filter(
+            func.lower(Product.manufacturer) == src_name_lower
+        ).update({"manufacturer": dest.name}, synchronize_session=False)
+        self.db.query(Product).filter(
+            func.lower(Product.engine_manufacturer) == src_name_lower
+        ).update({"engine_manufacturer": dest.name}, synchronize_session=False)
+
+        src.is_active = False
+        self.db.commit()
+        return {"products_moved": len(touched_ids), "dest_name": dest.name}
+
 
 def engine_make_names(db: Session, *, include_other: bool = True) -> list[str]:
     """§23.3 Phase 1 #5 — the engine_picker macro's Make dropdown, sourced from
@@ -467,3 +540,27 @@ def engine_make_names(db: Session, *, include_other: bool = True) -> list[str]:
     if include_other and "Other" not in names:
         names.append("Other")
     return names
+
+
+def manufacturer_names(db: Session) -> list[str]:
+    """§23.3 Phase 2 — the product-form Manufacturer dropdown's option list.
+    Product.manufacturer is "the SAME concept" as Product.engine_manufacturer
+    per the Manufacturer model docstring, so BOTH fields now read this one
+    owner-maintained table — previously this dropdown read a hardcoded
+    8-entry constant (products.py MANUFACTURERS) that silently drifted from
+    whatever the owner edited in Category Maintenance. Unlike
+    engine_make_names, no "Other" append — the product form's legacy-
+    preserving fallback (an unlisted stored value still renders selected)
+    is the existing escape hatch, matching how it already worked before this
+    fix. NOTE: routers/products.py's own MANUFACTURERS constant is untouched
+    — it's a separate, load-bearing import-canonicalization vocabulary used
+    by product_import_service.py / import_review_service.py /
+    shopify_service.py, not a UI list."""
+    return [m.name for m in CategoryService(db).manufacturers(include_inactive=False)]
+
+
+def brand_names(db: Session) -> list[str]:
+    """§23.3 Phase 2 — the product-form Brand dropdown's option list, sourced
+    from the owner-maintained Brand table (Category Maintenance) instead of a
+    free-text input with no managed-list backing at all."""
+    return [b.name for b in CategoryService(db).brands(include_inactive=False)]

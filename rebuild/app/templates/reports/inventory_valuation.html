@@ -9,7 +9,13 @@
   {% include "reports/_nav.html" %}
 
   <div class="flex items-center justify-between">
-    <p class="text-xs text-gray-400">As of {{ today.strftime('%B %d, %Y') }} · Active SKUs only</p>
+    <p class="text-xs text-gray-400">
+      As of {{ today.strftime('%B %d, %Y') }} · Active SKUs only
+      {% set cs = totals.cost_source_breakdown %}
+      {% if cs %}
+      · Cost basis: {{ cs.get('receipt', 0) }} from receipts · {{ cs.get('manual', 0) }} manual/unset{% if cs.get('vendor', 0) %} · {{ cs.get('vendor', 0) }} legacy vendor-set{% endif %}
+      {% endif %}
+    </p>
     <a href="/reports/inventory-valuation/export.csv" class="btn-secondary btn-sm">Export CSV</a>
   </div>
 
@@ -40,7 +46,10 @@
       <p class="stat-value {% if totals.zero_cost_count > 0 %}text-amber-700{% else %}text-gray-400{% endif %}">
         {{ totals.zero_cost_count }}
       </p>
-      <p class="stat-sub">in-stock SKUs with no cost</p>
+      <p class="stat-sub">
+        in-stock SKUs with no cost
+        {% if totals.zero_cost_recoverable_count %}· {{ totals.zero_cost_recoverable_count }} have a vendor cost on file{% endif %}
+      </p>
     </div>
   </div>
 
@@ -163,7 +172,10 @@
             </td>
             <td class="tbl-td">
               {% if row.warning == 'zero_cost' %}
-              <span class="badge-amber" title="Stock on hand but cost is zero">Zero Cost</span>
+              <span class="badge-amber" title="Stock on hand but cost is zero ({{ row.cost_source }})">Zero Cost</span>
+              {% if row.recoverable_cost %}
+              <div class="text-[10px] text-gray-400 mt-0.5">${{ '%.2f' % row.recoverable_cost }} via vendor cost</div>
+              {% endif %}
               {% elif row.warning == 'negative_qty' %}
               <span class="badge-red" title="Negative quantity on hand">Negative</span>
               {% endif %}

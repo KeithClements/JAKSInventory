@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Dead Stock — Axle{% endblock %}
+{% block heading %}Dead Stock{% endblock %}
+
+{% block content %}
+{% set active_report = 'dead-stock' %}
+<div class="max-w-6xl space-y-4">
+  {% include "reports/_nav.html" %}
+
+  {# ── Actions row ──────────────────────────────────────────────────────── #}
+  <div class="flex flex-wrap items-center gap-3 bg-white border border-gray-200 rounded-xl p-3">
+    <p class="text-sm text-gray-500">
+      Active products with stock on hand and no sale in {{ days }} days — cash tied up in inventory
+      nobody's buying. The opposite problem from Low Stock.
+    </p>
+    <div class="flex-1"></div>
+    <form method="get" class="flex items-center gap-2">
+      <label class="text-xs text-gray-500">Window</label>
+      <select name="days" class="form-select text-sm py-1" onchange="this.form.submit()">
+        {% for opt in [30, 60, 90, 180, 365] %}
+        <option value="{{ opt }}" {% if opt == days %}selected{% endif %}>{{ opt }} days</option>
+        {% endfor %}
+      </select>
+    </form>
+    <a href="/reports/dead-stock/export.csv?days={{ days }}" class="btn-secondary btn-sm">Export CSV</a>
+  </div>
+
+  <p class="text-xs text-gray-400">As of {{ today.strftime('%B %d, %Y') }} · window: last {{ days }} days</p>
+
+  {# ── Summary tiles ────────────────────────────────────────────────────── #}
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div class="stat-card-brand">
+      <p class="stat-label">Dead SKUs</p>
+      <p class="stat-value text-brand-700">{{ totals.item_count }}</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Units Tied Up</p>
+      <p class="stat-value text-gray-700">{{ totals.total_units }}</p>
+    </div>
+    <div class="stat-card {% if totals.total_tied_up_value > 0 %}stat-card-amber{% endif %}">
+      <p class="stat-label {% if totals.total_tied_up_value > 0 %}text-amber-700{% endif %}">Value Tied Up</p>
+      <p class="stat-value {% if totals.total_tied_up_value > 0 %}text-amber-700{% else %}text-gray-400{% endif %}">
+        ${{ '%.2f' % totals.total_tied_up_value }}
+      </p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Never Sold</p>
+      <p class="stat-value text-gray-700">{{ totals.never_sold_count }}</p>
+      <p class="stat-sub">of the dead SKUs above</p>
+    </div>
+  </div>
+
+  {# ── Dead stock table ─────────────────────────────────────────────────── #}
+  {% if rows %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Dead Stock</h2>
+      <span class="text-xs text-gray-400">{{ rows | length }} item{{ 's' if rows | length != 1 }} · never-sold first, then oldest sale</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">SKU</th>
+            <th class="tbl-th">Title</th>
+            <th class="tbl-th">Category</th>
+            <th class="tbl-th-r">On Hand</th>
+            <th class="tbl-th-r">Cost</th>
+            <th class="tbl-th-r">Tied Up</th>
+            <th class="tbl-th">Last Sold</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr class="tbl-row">
+            <td class="tbl-td font-medium text-gray-900">
+              <a href="/products/{{ row.product.id }}" class="tbl-link text-sm">{{ row.sku }}</a>
+            </td>
+            <td class="tbl-td text-gray-700">{{ row.title }}</td>
+            <td class="tbl-td text-gray-500">{{ row.category or '—' }}</td>
+            <td class="tbl-td-r text-gray-700">{{ row.qty_on_hand }}</td>
+            <td class="tbl-td-r text-gray-500">${{ '%.2f' % row.cost }}</td>
+            <td class="tbl-td-r font-semibold {% if row.tied_up_value > 0 %}text-amber-700{% else %}text-gray-300{% endif %}">
+              {% if row.tied_up_value > 0 %}${{ '%.2f' % row.tied_up_value }}{% else %}—{% endif %}
+            </td>
+            <td class="tbl-td">
+              {% if row.last_sold_at %}
+              <span class="text-sm text-gray-600">{{ row.last_sold_at.strftime('%b %d, %Y') }}</span>
+              <span class="text-xs text-gray-400">({{ row.days_since_sale }}d ago)</span>
+              {% else %}
+              <span class="badge-red" title="No finalized sale on record for this SKU">Never Sold</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="border-t-2 border-gray-200 bg-gray-50">
+          <tr>
+            <td class="px-4 py-3 text-sm font-bold text-gray-700" colspan="5">Totals</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-amber-700 tabular-nums">${{ '%.2f' % totals.total_tied_up_value }}</td>
+            <td class="px-4 py-3"></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="card flex flex-col items-center justify-center py-16">
+    <svg class="w-12 h-12 text-green-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    </svg>
+    <p class="text-gray-500 font-medium">No dead stock</p>
+    <p class="text-gray-400 text-sm mt-1">Every product with stock on hand has sold within the last {{ days }} days.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

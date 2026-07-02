@@ -4,8 +4,17 @@
 
 {% block content %}
 {% set active_report = 'low-stock' %}
-<div class="max-w-6xl space-y-4">
+{% set _ok = request.query_params.get('ok') %}
+{% set _error = request.query_params.get('error') %}
+<div class="max-w-6xl space-y-4" x-data="{ selected: {}, get selectedCount() { return Object.values(this.selected).filter(Boolean).length } }">
   {% include "reports/_nav.html" %}
+
+  {% if _ok %}
+  <div class="rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800">{{ _ok }}</div>
+  {% endif %}
+  {% if _error %}
+  <div class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-800">{{ _error }}</div>
+  {% endif %}
 
   {# ── Actions row ──────────────────────────────────────────────────────── #}
   <div class="flex flex-wrap items-center gap-3 bg-white border border-gray-200 rounded-xl p-3">
@@ -14,6 +23,13 @@
       Suggested qty restocks to max stock level (or back to the reorder point when no max is set), net of on-order.
     </p>
     <div class="flex-1"></div>
+    {% if rows %}
+    <button type="submit" form="reorder-form" class="btn-primary btn-sm"
+            x-bind:disabled="selectedCount === 0"
+            x-bind:class="selectedCount === 0 ? 'opacity-50 cursor-not-allowed' : ''">
+      Create PO<span x-show="selectedCount > 1">s</span> <span x-show="selectedCount > 0">(<span x-text="selectedCount"></span>)</span>
+    </button>
+    {% endif %}
     <a href="/reports/low-stock/export.csv" class="btn-secondary btn-sm">Export CSV</a>
   </div>
 
@@ -45,15 +61,23 @@
 
   {# ── Reorder table ────────────────────────────────────────────────────── #}
   {% if rows %}
+  <form id="reorder-form" method="post" action="/reports/low-stock/create-pos"></form>
   <div class="card">
     <div class="card-header">
       <h2 class="card-title">Reorder List</h2>
-      <span class="text-xs text-gray-400">{{ rows | length }} item{{ 's' if rows | length != 1 }}</span>
+      <span class="text-xs text-gray-400">{{ rows | length }} item{{ 's' if rows | length != 1 }} · check rows, then Create POs (groups by vendor)</span>
     </div>
     <div class="overflow-x-auto">
       <table class="tbl">
         <thead class="tbl-head">
           <tr>
+            <th class="tbl-th w-8">
+              <input type="checkbox" class="form-checkbox"
+                     x-bind:checked="{{ rows | length }} > 0 && selectedCount === {{ rows | length }}"
+                     @change="$event.target.checked
+                       ? selected = Object.fromEntries([{% for row in rows %}{{ row.product.id }}{{ ',' if not loop.last }}{% endfor %}].map(id => [id, true]))
+                       : selected = {}" />
+            </th>
             <th class="tbl-th">SKU</th>
             <th class="tbl-th">Title</th>
             <th class="tbl-th">Category</th>
@@ -73,6 +97,14 @@
         <tbody>
           {% for row in rows %}
           <tr class="tbl-row">
+            <td class="tbl-td">
+              {% if row.vendor_name %}
+              <input type="checkbox" form="reorder-form" name="product_ids" value="{{ row.product.id }}"
+                     class="form-checkbox" x-model="selected[{{ row.product.id }}]" />
+              {% else %}
+              <input type="checkbox" disabled class="form-checkbox opacity-30" title="No preferred vendor — set one on the product first" />
+              {% endif %}
+            </td>
             <td class="tbl-td font-medium text-gray-900">
               <a href="/products/{{ row.product.id }}" class="tbl-link text-sm">{{ row.sku }}</a>
             </td>
@@ -98,7 +130,7 @@
         </tbody>
         <tfoot class="border-t-2 border-gray-200 bg-gray-50">
           <tr>
-            <td class="px-4 py-3 text-sm font-bold text-gray-700" colspan="9">Totals</td>
+            <td class="px-4 py-3 text-sm font-bold text-gray-700" colspan="10">Totals</td>
             <td class="px-4 py-3 text-right text-sm font-bold text-brand-700 tabular-nums">{{ totals.total_suggested_qty }}</td>
             <td class="px-4 py-3" colspan="3"></td>
             <td class="px-4 py-3 text-right text-sm font-bold text-brand-700 tabular-nums">${{ '%.2f' % totals.total_order_cost }}</td>

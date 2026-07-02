@@ -141,7 +141,20 @@
                 </div>
                 <div>
                   <label class="form-label">Brand</label>
-                  <input name="brand" value="{{ product.brand }}" class="form-input" />
+                  {# §23.3 Phase 2 — constrained to the managed Brand list
+                     (Category Maintenance), same legacy-preserving pattern
+                     as Manufacturer above (a stored value outside the
+                     canonical list still shows selected, never silently
+                     blanked). #}
+                  <select name="brand" class="form-select">
+                    <option value="">— Select —</option>
+                    {% for b in brands %}
+                      <option value="{{ b }}" {% if product.brand == b %}selected{% endif %}>{{ b }}</option>
+                    {% endfor %}
+                    {% if product.brand and product.brand not in brands %}
+                      <option value="{{ product.brand }}" selected>{{ product.brand }}</option>
+                    {% endif %}
+                  </select>
                 </div>
               </div>
               <div>

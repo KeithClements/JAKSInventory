@@ -182,6 +182,18 @@ async def brand_delete(brand_id: int, db: Session = Depends(get_db), user_id: in
     return _back(ok="Brand removed.")
 
 
+@router.post("/brand/{src_id}/merge-into/{dest_id}")
+async def brand_merge(src_id: int, dest_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    try:
+        result = _svc(db, user_id).merge_brand(src_id, dest_id)
+    except ValueError as exc:
+        return _back(error=str(exc))
+    return _back(ok=(
+        f"Merged into '{result['dest_name']}' — {result['products_moved']} product(s) moved. "
+        "Source deactivated."
+    ))
+
+
 # ══ Manufacturer CRUD (= Engine Make) ══════════════════════════════════════════
 @router.post("/manufacturer/create")
 async def manufacturer_create(request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
@@ -215,3 +227,15 @@ async def manufacturer_update(man_id: int, request: Request, db: Session = Depen
 async def manufacturer_delete(man_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     _svc(db, user_id).delete_manufacturer(man_id)
     return _back(ok="Manufacturer removed.")
+
+
+@router.post("/manufacturer/{src_id}/merge-into/{dest_id}")
+async def manufacturer_merge(src_id: int, dest_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    try:
+        result = _svc(db, user_id).merge_manufacturer(src_id, dest_id)
+    except ValueError as exc:
+        return _back(error=str(exc))
+    return _back(ok=(
+        f"Merged into '{result['dest_name']}' — {result['products_moved']} product(s) moved. "
+        "Source deactivated."
+    ))

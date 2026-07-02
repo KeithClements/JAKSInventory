@@ -496,13 +496,14 @@ def product_preview_panel(
 def _new_product_ctx(db: Session) -> dict:
     """Render-context shared by GET /products/new and its 422 re-render."""
     from app.constants import ENGINE_MODELS_BY_MAKE
-    from app.services.category_service import engine_make_names
+    from app.services.category_service import brand_names, engine_make_names, manufacturer_names
     default_markup = get_setting_value_db(db, "default_markup_pct", "30.0")
     return {
         "vendors": _vendors(db),
         "categories": _categories(db),
         "category_tree": ProductService(db).category_tree(),  # #7 nested picker
-        "manufacturers": MANUFACTURERS,
+        "manufacturers": manufacturer_names(db),
+        "brands": brand_names(db),
         "engine_makes": engine_make_names(db),
         "engine_models_by_make": ENGINE_MODELS_BY_MAKE,
         "default_markup": default_markup,
@@ -1093,13 +1094,14 @@ def product_detail(
     if not p:
         return RedirectResponse("/products/", status_code=303)
     from app.constants import ENGINE_MODELS_BY_MAKE
-    from app.services.category_service import engine_make_names
+    from app.services.category_service import brand_names, engine_make_names, manufacturer_names
     return templates.TemplateResponse(request, "products/detail.html", {
         "product": p,
         "vendors": _vendors(db),
         "categories": _categories(db),
         "category_tree": ProductService(db).category_tree(),  # #7 nested picker
-        "manufacturers": MANUFACTURERS,
+        "manufacturers": manufacturer_names(db),
+        "brands": brand_names(db),
         "cross_ref_types": list(CrossRefType),
         "suggested_sell_types": list(SuggestedSellType),
         "default_markup": float(get_setting_value_db(db, "default_markup_pct", "30.0")),
@@ -1123,11 +1125,17 @@ async def product_update(product_id: int, request: Request, db: Session = Depend
     except ValueError as exc:
         # Re-fetch product fresh (may be partially updated in service before error)
         p = db.query(Product).filter(Product.id == product_id).first()
+        from app.constants import ENGINE_MODELS_BY_MAKE
+        from app.services.category_service import brand_names, engine_make_names, manufacturer_names
         return templates.TemplateResponse(request, "products/detail.html", {
             "product": p,
             "vendors": _vendors(db),
             "categories": _categories(db),
-            "manufacturers": MANUFACTURERS,
+            "category_tree": ProductService(db).category_tree(),  # #7 nested picker
+            "manufacturers": manufacturer_names(db),
+            "brands": brand_names(db),
+            "engine_makes": engine_make_names(db),
+            "engine_models_by_make": ENGINE_MODELS_BY_MAKE,
             "cross_ref_types": list(CrossRefType),
             "suggested_sell_types": list(SuggestedSellType),
             "default_markup": float(get_setting_value_db(db, "default_markup_pct", "30.0")),

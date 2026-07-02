@@ -297,7 +297,7 @@
       {% if brands %}
       <div class="rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
         {% for b in brands %}
-        <div x-data="{ edit: false }" class="bg-white">
+        <div x-data="{ edit: false, merge: false }" class="bg-white">
 
           <div class="flex items-center gap-3 px-4 py-3 hover:bg-gray-50/70 transition-colors">
             <div class="flex-1 min-w-0 flex items-center gap-2 flex-wrap">
@@ -316,6 +316,9 @@
             </div>
             <div class="flex items-center gap-1 shrink-0">
               <button type="button" @click="edit = !edit" class="btn-ghost" :class="edit ? 'text-brand-700 bg-brand-50' : ''">Edit</button>
+              {% if brands|length > 1 %}
+              <button type="button" @click="merge = !merge" class="btn-ghost" :class="merge ? 'text-brand-700 bg-brand-50' : ''">Merge</button>
+              {% endif %}
               <form method="post" action="/categories/brand/{{ b.id }}/delete" class="inline">
                 <button type="submit" class="btn-ghost text-red-500 hover:text-red-700 hover:bg-red-50">Delete</button>
               </form>
@@ -347,6 +350,35 @@
               </div>
             </form>
           </div>
+
+          {# §23.3 Phase 2 — merge a duplicate brand (typo/re-import dupe) into
+             another. Mirrors the category Merge-into tool: products carrying
+             this brand move to the destination, then this brand deactivates. #}
+          {% if brands|length > 1 %}
+          <div x-show="merge" x-cloak class="px-4 pb-4 pt-3 bg-gray-50/60 border-t border-gray-100 space-y-3">
+            <form method="post" id="brand-merge-form-{{ b.id }}" x-data="{ dest: '' }"
+                  :action="'/categories/brand/{{ b.id }}/merge-into/' + dest"
+                  class="flex flex-wrap items-end gap-3">
+              <div class="flex-1 min-w-[14rem]">
+                <label class="form-label">Merge into&hellip;</label>
+                <select x-model="dest" class="form-select">
+                  <option value="">&mdash; Choose destination &mdash;</option>
+                  {% for other in brands if other.id != b.id and other.is_active %}
+                  <option value="{{ other.id }}">{{ other.name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <button type="button" :disabled="!dest"
+                      @click="window.jakConfirm({
+                        formId: 'brand-merge-form-{{ b.id }}',
+                        title: 'Merge this brand?',
+                        body: 'Every product tagged \'{{ b.name }}\' moves to the destination brand, and this brand is deactivated.',
+                        cta: 'Merge', danger: true,
+                      })"
+                      class="btn-secondary btn-sm text-red-600 hover:text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:pointer-events-none">Merge</button>
+            </form>
+          </div>
+          {% endif %}
         </div>
         {% endfor %}
       </div>
@@ -403,7 +435,7 @@
       {% if manufacturers %}
       <div class="rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
         {% for m in manufacturers %}
-        <div x-data="{ edit: false }" class="bg-white">
+        <div x-data="{ edit: false, merge: false }" class="bg-white">
 
           <div class="flex items-center gap-3 px-4 py-3 hover:bg-gray-50/70 transition-colors">
             <div class="flex-1 min-w-0 flex items-center gap-2 flex-wrap">
@@ -419,6 +451,9 @@
             </div>
             <div class="flex items-center gap-1 shrink-0">
               <button type="button" @click="edit = !edit" class="btn-ghost" :class="edit ? 'text-brand-700 bg-brand-50' : ''">Edit</button>
+              {% if manufacturers|length > 1 %}
+              <button type="button" @click="merge = !merge" class="btn-ghost" :class="merge ? 'text-brand-700 bg-brand-50' : ''">Merge</button>
+              {% endif %}
               <form method="post" action="/categories/manufacturer/{{ m.id }}/delete" class="inline">
                 <button type="submit" class="btn-ghost text-red-500 hover:text-red-700 hover:bg-red-50">Delete</button>
               </form>
@@ -446,6 +481,37 @@
               </div>
             </form>
           </div>
+
+          {# §23.3 Phase 2 — merge a duplicate manufacturer/engine-make into
+             another. Reassigns BOTH Product.manufacturer AND
+             Product.engine_manufacturer (the "same concept" per the model
+             docstring), unlike update_manufacturer's own rename cascade
+             which only touches engine_manufacturer. #}
+          {% if manufacturers|length > 1 %}
+          <div x-show="merge" x-cloak class="px-4 pb-4 pt-3 bg-gray-50/60 border-t border-gray-100 space-y-3">
+            <form method="post" id="mfg-merge-form-{{ m.id }}" x-data="{ dest: '' }"
+                  :action="'/categories/manufacturer/{{ m.id }}/merge-into/' + dest"
+                  class="flex flex-wrap items-end gap-3">
+              <div class="flex-1 min-w-[14rem]">
+                <label class="form-label">Merge into&hellip;</label>
+                <select x-model="dest" class="form-select">
+                  <option value="">&mdash; Choose destination &mdash;</option>
+                  {% for other in manufacturers if other.id != m.id and other.is_active %}
+                  <option value="{{ other.id }}">{{ other.name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <button type="button" :disabled="!dest"
+                      @click="window.jakConfirm({
+                        formId: 'mfg-merge-form-{{ m.id }}',
+                        title: 'Merge this manufacturer?',
+                        body: 'Every product with \'{{ m.name }}\' as its manufacturer or engine make moves to the destination, and this manufacturer is deactivated.',
+                        cta: 'Merge', danger: true,
+                      })"
+                      class="btn-secondary btn-sm text-red-600 hover:text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:pointer-events-none">Merge</button>
+            </form>
+          </div>
+          {% endif %}
         </div>
         {% endfor %}
       </div>

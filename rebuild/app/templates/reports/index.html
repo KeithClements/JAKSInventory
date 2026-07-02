@@ -107,6 +107,16 @@
       </div>
     </a>
 
+    <a href="/reports/dead-stock" class="card hover:shadow-md transition-shadow">
+      <div class="card-body">
+        <p class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Inventory</p>
+        <p class="mt-1 text-base font-semibold text-gray-900">Dead Stock</p>
+        <p class="mt-1 text-sm text-gray-500">
+          {{ dead_stock_count }} item{{ 's' if dead_stock_count != 1 }} on hand with no sale in 90 days — ${{ '%.2f' % dead_stock_value }} tied up. The opposite problem from Low Stock.
+        </p>
+      </div>
+    </a>
+
     <a href="/reports/open-pos" class="card hover:shadow-md transition-shadow">
       <div class="card-body">
         <p class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Purchasing</p>
