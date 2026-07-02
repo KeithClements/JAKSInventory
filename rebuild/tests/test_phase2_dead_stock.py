@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pathlib
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -68,7 +68,9 @@ def _sale(db, customer_id, product_id, *, days_ago, status=InvoiceStatus.PAID,
     # Anchored at midnight (not "now") so days_since_sale math is exact —
     # the service compares against midnight-today, and this fixture runs at
     # an arbitrary time of day; anchoring both sides avoids an off-by-one.
-    today_midnight = datetime.combine(datetime.utcnow().date(), datetime.min.time())
+    # Must be the LOCAL date (date.today()), matching get_dead_stock's as_of —
+    # utcnow().date() is a day ahead after ~6pm Mountain time (off-by-one flake).
+    today_midnight = datetime.combine(date.today(), datetime.min.time())
     created = today_midnight - timedelta(days=days_ago)
     inv = Invoice(invoice_number=f"INV-DS-{product_id}-{days_ago}",
                   customer_id=customer_id, status=status, is_taxable=False,

@@ -235,6 +235,8 @@ def test_import_template_stamps_csrf_header_on_both_utility_fetches():
     repo_root = pathlib.Path(__file__).resolve().parents[1]
     src = (repo_root / "app/templates/products/import.html").read_text(encoding="utf-8")
     assert "function _csrfToken()" in src
-    assert src.count("'X-CSRF-Token': _csrfToken()") == 2   # mfgBackfill + reclassifyAll
+    # mfgBackfill + reclassifyAll + productImport (§23.3 Phase 2 stamped the
+    # main importer's fetch() too — same silent-403 bug, same fix)
+    assert src.count("'X-CSRF-Token': _csrfToken()") == 3
     assert "/products/backfill-manufacturers" in src
     assert "/products/reclassify-all" in src
