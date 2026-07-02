@@ -119,9 +119,138 @@
     {# ═══ PRICING TAB ═══ #}
     <div x-show="tab === 'pricing'" x-cloak class="space-y-6">
 
+      {% if flash and flash.error %}
+      <div class="rounded-lg bg-red-50 border border-red-200 text-red-700 px-4 py-2 text-sm">{{ flash.error }}</div>
+      {% endif %}
+
+      {# §23.3 Phase 2 #5 — Cost-bracket Markup Tiers: full admin CRUD + the
+         "Activate grid" toggle. Mirrors the Category-Maintenance Brand/
+         Manufacturer admin-list pattern (collapsible Add form, per-row
+         inline Edit, Delete). #}
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <div class="flex items-center justify-between border-b border-gray-100 pb-3">
+          <h2 class="text-sm font-semibold text-gray-700">Cost-bracket Markup Tiers</h2>
+          <span class="text-xs text-gray-400">{{ markup_tiers|length }} tier{{ 's' if markup_tiers|length != 1 }}</span>
+        </div>
+
+        {# Activate grid toggle — the switch that makes the grid the LIVE
+           pricing source instead of the flat default. #}
+        <form method="post" action="/settings/pricing/toggle-active"
+              class="flex items-center justify-between rounded-lg bg-gray-50/70 border border-gray-100 px-4 py-3">
+          <div>
+            <p class="text-sm font-medium text-gray-800">Activate grid</p>
+            <p class="text-xs text-gray-500">When on, products WITHOUT an explicit markup % price off these tiers instead of the flat default below.</p>
+          </div>
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" name="active" value="1" class="form-checkbox"
+                   {% if markup_tiers_active %}checked{% endif %}
+                   onchange="this.form.requestSubmit()" />
+            <span class="text-sm font-medium {% if markup_tiers_active %}text-green-700{% else %}text-gray-500{% endif %}">
+              {{ 'Active' if markup_tiers_active else 'Inactive' }}
+            </span>
+          </label>
+        </form>
+
+        {# Add a tier #}
+        <div x-data="{ open: false }" class="rounded-xl border border-gray-200 bg-gray-50/50">
+          <button type="button" @click="open = !open"
+                  class="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 rounded-xl transition-colors">
+            <span class="flex items-center gap-2">
+              <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+              Add tier
+            </span>
+            <svg class="w-4 h-4 text-gray-400 transition-transform" :class="open ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+          </button>
+          <div x-show="open" x-cloak class="px-4 pb-4 pt-1 border-t border-gray-100">
+            <form method="post" action="/settings/pricing/tiers" class="flex flex-wrap items-end gap-3">
+              <div class="w-28">
+                <label class="form-label">Min cost</label>
+                <input type="number" name="min_cost" step="0.01" min="0" value="0" class="form-input" />
+              </div>
+              <div class="w-28">
+                <label class="form-label">Max cost</label>
+                <input type="number" name="max_cost" step="0.01" min="0" placeholder="No limit" class="form-input" />
+              </div>
+              <div class="w-24">
+                <label class="form-label">Markup % <span class="text-red-500 normal-case">*</span></label>
+                <input type="number" name="markup_pct" step="0.1" min="0" required class="form-input" />
+              </div>
+              <div class="w-20">
+                <label class="form-label">Sort</label>
+                <input type="number" name="sort_order" value="0" class="form-input" />
+              </div>
+              <button type="submit" class="btn-primary btn-sm">Add</button>
+            </form>
+          </div>
+        </div>
+
+        {# Tier list #}
+        {% if markup_tiers %}
+        <div class="rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
+          {% for t in markup_tiers %}
+          <div x-data="{ edit: false }" class="bg-white">
+            <div class="flex items-center gap-3 px-4 py-3 hover:bg-gray-50/70 transition-colors">
+              <div class="flex-1 min-w-0 flex items-center gap-3 flex-wrap text-sm">
+                <span class="font-mono text-gray-700">${{ '%.2f' % t.min_cost }} &ndash; {{ 'and up' if t.max_cost is none else '$' + '%.2f' % t.max_cost }}</span>
+                <span class="font-semibold text-brand-700">{{ '%.1f' % t.markup_pct }}%</span>
+                {% if t.is_active %}
+                <span class="badge-green text-[10px]">Active</span>
+                {% else %}
+                <span class="badge-gray text-[10px]">Inactive</span>
+                {% endif %}
+              </div>
+              <div class="hidden sm:flex items-center text-xs text-gray-500 tabular-nums shrink-0">
+                <span title="Sort order">sort {{ t.sort_order }}</span>
+              </div>
+              <div class="flex items-center gap-1 shrink-0">
+                <button type="button" @click="edit = !edit" class="btn-ghost" :class="edit ? 'text-brand-700 bg-brand-50' : ''">Edit</button>
+                <form method="post" action="/settings/pricing/tiers/{{ t.id }}/delete" class="inline">
+                  <button type="submit" class="btn-ghost text-red-500 hover:text-red-700 hover:bg-red-50">Delete</button>
+                </form>
+              </div>
+            </div>
+            <div x-show="edit" x-cloak class="px-4 pb-4 pt-1 bg-gray-50/60 border-t border-gray-100">
+              <form method="post" action="/settings/pricing/tiers/{{ t.id }}/update" class="flex flex-wrap items-end gap-3">
+                <div class="w-28">
+                  <label class="form-label">Min cost</label>
+                  <input type="number" name="min_cost" step="0.01" min="0" value="{{ t.min_cost }}" class="form-input" />
+                </div>
+                <div class="w-28">
+                  <label class="form-label">Max cost</label>
+                  <input type="number" name="max_cost" step="0.01" min="0"
+                         value="{{ t.max_cost if t.max_cost is not none else '' }}"
+                         placeholder="No limit" class="form-input" />
+                </div>
+                <div class="w-24">
+                  <label class="form-label">Markup %</label>
+                  <input type="number" name="markup_pct" step="0.1" min="0" value="{{ t.markup_pct }}" class="form-input" />
+                </div>
+                <div class="w-20">
+                  <label class="form-label">Sort</label>
+                  <input type="number" name="sort_order" value="{{ t.sort_order }}" class="form-input" />
+                </div>
+                <label class="flex items-center gap-2 h-10 cursor-pointer">
+                  <input type="checkbox" name="is_active" value="1" class="form-checkbox" {% if t.is_active %}checked{% endif %} />
+                  <span class="text-sm text-gray-700">Active</span>
+                </label>
+                <div class="flex items-center gap-2">
+                  <button type="button" @click="edit = false" class="btn-secondary btn-sm">Cancel</button>
+                  <button type="submit" class="btn-primary btn-sm">Save</button>
+                </div>
+              </form>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="rounded-xl border border-dashed border-gray-200 px-4 py-10 text-center text-sm text-gray-400">
+          No tiers yet. Add your first tier above.
+        </div>
+        {% endif %}
+      </div>
+
       {# Cost-bracket markup grid — read-only preview via GET /settings/pricing/preview
-         (Backend @02154c1, returns tiers + impact as JSON → rendered client-side).
-         Editing the tiers + the Activate toggle are still pending Backend save seams. #}
+         (Backend @02154c1, returns tiers + impact as JSON → rendered client-side). #}
       <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4"
            x-data="{
              loading: false, loaded: false, error: null,
@@ -144,7 +273,7 @@
             <span x-show="loading" x-cloak>Loading…</span>
           </button>
         </div>
-        <p class="text-xs text-gray-400">Cost-bracket tiers re-price products that use the flat default. This is a read-only dry run — nothing changes. Editing the tiers and the “Activate grid” toggle are pending Backend save routes (see note).</p>
+        <p class="text-xs text-gray-400">Preview what the tiers ABOVE would do to sell prices before turning "Activate grid" on. This is a read-only dry run — nothing changes.</p>
 
         <div x-show="error" x-cloak class="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700" x-text="error"></div>
 

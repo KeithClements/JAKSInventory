@@ -31,7 +31,25 @@
               <span class="block text-xs text-gray-500">Update existing products only — PAI cost or competitor prices. Never creates products.</span>
             </span>
           </label>
+          <label class="flex-1 flex items-start gap-2.5 rounded-lg border px-3 py-2.5 cursor-pointer"
+                 :class="mode==='applications' ? 'border-brand-400 bg-brand-50' : 'border-gray-200'">
+            <input type="radio" name="mode" value="applications" x-model="mode" class="form-checkbox mt-0.5"/>
+            <span>
+              <span class="block text-sm font-semibold text-gray-800">Applications (Engine Fitment)</span>
+              <span class="block text-xs text-gray-500">Batch-add engine make/model/CPL/ESN fitment onto existing products. Never creates products.</span>
+            </span>
+          </label>
         </div>
+      </div>
+
+      {# Applications columns (only for applications mode) #}
+      <div x-show="mode==='applications'" x-cloak class="text-xs text-gray-500 space-y-2">
+        <p>
+          Columns: <code>sku</code> (required — product SKU or the parked vendor SKU), <code>make</code>
+          (required — engine make), <code>model</code>, <code>cpl</code>, <code>esn_range</code>
+          (all optional). Idempotent on (product, make, model, CPL) — a repeat row refreshes the ESN range
+          instead of duplicating.
+        </p>
       </div>
 
       {# Pricing source (only for pricing mode) #}
@@ -268,7 +286,16 @@ function productImport() {
         fd.append('max_change_pct', String(this.maxChangePct));
       }
       try {
-        const resp = await fetch('/products/import-run', { method: 'POST', body: fd });
+        // §23.3 Phase 2 — this fetch() never stamped the CSRF header either
+        // (found while adding the Applications mode, same bug class as the
+        // two Catalog Utilities buttons below: base.html's csrfToken() is
+        // IIFE-scoped and htmx:configRequest only covers hx-*/htmx requests).
+        // This means the ENTIRE product importer — Full Import + Pricing
+        // Update, the primary catalog-ingestion path — has 403'd since CSRF
+        // was added (§21.3), silently. Fixed with the same local helper.
+        const resp = await fetch('/products/import-run', {
+          method: 'POST', body: fd, headers: { 'X-CSRF-Token': _csrfToken() },
+        });
         if (!resp.ok) { this.error = 'Import failed (HTTP ' + resp.status + ').'; }
         else { this.result = await resp.json(); }
       } catch (e) { this.error = 'Upload error: ' + e; }

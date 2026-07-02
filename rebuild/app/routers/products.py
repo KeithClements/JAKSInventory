@@ -1014,10 +1014,12 @@ async def product_enrich_sync(
     return ProductEnrichmentService(db).enrich_from_csv_text(text)
 
 
-# ── Product Importer (Full Import + Pricing Update) — admin-gated ──────────────
-# Two modes, both dry-run-first. Full creates products from the PAI scraper's
+# ── Product Importer (Full Import + Pricing Update + Applications) — admin-gated
+# Three modes, all dry-run-first. Full creates products from the PAI scraper's
 # Shopify export; Pricing Update only updates PAI vendor_cost (+ cost history) or
-# competitor_prices (+ history). Registered BEFORE /{product_id}.
+# competitor_prices (+ history); Applications (§23.3 Phase 2 #1) batch-imports
+# engine-fitment rows (sku/make/model/cpl/esn_range) onto EXISTING products only.
+# Registered BEFORE /{product_id}.
 
 @router.get("/import", response_class=HTMLResponse)
 def product_import_page(request: Request, _admin=Depends(require_admin)):
@@ -1027,7 +1029,7 @@ def product_import_page(request: Request, _admin=Depends(require_admin)):
 @router.post("/import-run")
 async def product_import_run(
     file: UploadFile = File(...),
-    mode: str = Form("full"),                # full | pricing
+    mode: str = Form("full"),                # full | pricing | applications
     source_type: str = Form("pai_cost"),     # pricing: sell | pai_cost | competitor
     dry_run: bool = Form(True),
     max_change_pct: float | None = Form(None),  # sell mode safety rail (e.g. 50.0)
@@ -1042,6 +1044,8 @@ async def product_import_run(
     svc = ProductImportService(db, user_id)
     if mode == "full":
         return svc.full_import(text, dry_run=dry_run, import_images=import_images)
+    if mode == "applications":
+        return svc.import_applications(text, dry_run=dry_run)
     if mode == "pricing" and source_type == "competitor":
         return svc.pricing_update_competitor(text, dry_run=dry_run)
     if mode == "pricing" and source_type == "sell":

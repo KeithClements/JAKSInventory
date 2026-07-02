@@ -323,6 +323,17 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
     msg["smtp_password_is_set"] = bool((rows.get("smtp_password_encrypted") or "").strip())
     msg["twilio_auth_token_is_set"] = bool((rows.get("twilio_auth_token_encrypted") or "").strip())
 
+    # §23.3 Phase 2 #5 — markup-tier admin table (ALL tiers, active + inactive,
+    # unlike the read-only /pricing/preview route which only shows active ones)
+    # + the current "Activate grid" state.
+    from app.models.pricing import MarkupTier
+    markup_tiers = (
+        db.query(MarkupTier)
+        .order_by(MarkupTier.sort_order, MarkupTier.min_cost)
+        .all()
+    )
+    markup_tiers_active = (rows.get("markup_tiers_active", "false") or "false").strip().lower() == "true"
+
     qp = request.query_params
     flash = {
         "error": qp.get("error", ""),
@@ -341,7 +352,8 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
     }
     return templates.TemplateResponse(
         request, "settings/index.html",
-        {"settings": settings, "qbo": qbo, "flash": flash, "ai": ai_ctx, "msg": msg},
+        {"settings": settings, "qbo": qbo, "flash": flash, "ai": ai_ctx, "msg": msg,
+         "markup_tiers": markup_tiers, "markup_tiers_active": markup_tiers_active},
     )
 
 
@@ -497,6 +509,108 @@ def pricing_grid_preview(db: Session = Depends(get_db), _admin=Depends(require_a
         "moved_count": moved_count,
         "sample": sample,
     })
+
+
+# ── §23.3 Phase 2 #5 — Markup-tier admin CRUD + "Activate grid" toggle ────────
+# Closes the gap the preview route's own docstring flagged: "Editing the
+# tiers and the Activate toggle are pending Backend save routes." Follows
+# the SAME inline-CRUD style as /settings/locations (no dedicated service —
+# MarkupTier is a tiny 4-field lookup row, same shape as CompanyLocation).
+
+def _opt_float(v) -> float | None:
+    s = str(v or "").strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+@router.post("/pricing/tiers", response_class=RedirectResponse)
+async def pricing_tier_create(
+    request: Request, db: Session = Depends(get_db), _admin=Depends(require_admin)
+):
+    from app.models.pricing import MarkupTier
+    form = await request.form()
+    min_cost = _opt_float(form.get("min_cost")) or 0.0
+    max_cost = _opt_float(form.get("max_cost"))   # blank = no upper bound
+    markup_pct = _opt_float(form.get("markup_pct"))
+    if markup_pct is None:
+        return RedirectResponse(
+            "/settings/?tab=pricing&error=Markup+%25+is+required", status_code=303)
+    if max_cost is not None and max_cost <= min_cost:
+        return RedirectResponse(
+            "/settings/?tab=pricing&error=Max+cost+must+be+greater+than+min+cost",
+            status_code=303)
+    sort_order = int(_opt_float(form.get("sort_order")) or 0)
+    db.add(MarkupTier(min_cost=min_cost, max_cost=max_cost, markup_pct=markup_pct,
+                      sort_order=sort_order, is_active=True))
+    db.commit()
+    return RedirectResponse("/settings/?tab=pricing&saved=1", status_code=303)
+
+
+@router.post("/pricing/tiers/{tier_id}/update", response_class=RedirectResponse)
+async def pricing_tier_update(
+    tier_id: int, request: Request, db: Session = Depends(get_db),
+    _admin=Depends(require_admin),
+):
+    from app.models.pricing import MarkupTier
+    tier = db.get(MarkupTier, tier_id)
+    if tier is None:
+        return RedirectResponse(
+            "/settings/?tab=pricing&error=Tier+not+found", status_code=303)
+    form = await request.form()
+    min_cost = _opt_float(form.get("min_cost")) or 0.0
+    max_cost = _opt_float(form.get("max_cost"))
+    markup_pct = _opt_float(form.get("markup_pct"))
+    if markup_pct is None:
+        return RedirectResponse(
+            "/settings/?tab=pricing&error=Markup+%25+is+required", status_code=303)
+    if max_cost is not None and max_cost <= min_cost:
+        return RedirectResponse(
+            "/settings/?tab=pricing&error=Max+cost+must+be+greater+than+min+cost",
+            status_code=303)
+    tier.min_cost = min_cost
+    tier.max_cost = max_cost
+    tier.markup_pct = markup_pct
+    tier.sort_order = int(_opt_float(form.get("sort_order")) or 0)
+    tier.is_active = str(form.get("is_active", "")).strip().lower() in {"1", "true", "on", "yes"}
+    db.commit()
+    return RedirectResponse("/settings/?tab=pricing&saved=1", status_code=303)
+
+
+@router.post("/pricing/tiers/{tier_id}/delete", response_class=RedirectResponse)
+def pricing_tier_delete(
+    tier_id: int, db: Session = Depends(get_db), _admin=Depends(require_admin)
+):
+    from app.models.pricing import MarkupTier
+    tier = db.get(MarkupTier, tier_id)
+    if tier is not None:
+        # Hard delete — a tier is pure pricing CONFIG (no FK from Product; it's
+        # matched by cost-bracket at read time via resolve_markup_pct_for_cost),
+        # not transactional history, so there's nothing to preserve by soft-
+        # deactivating instead. Unlike Brand/Manufacturer, no product ever
+        # references a specific tier row.
+        db.delete(tier)
+        db.commit()
+    return RedirectResponse("/settings/?tab=pricing&saved=1", status_code=303)
+
+
+@router.post("/pricing/toggle-active", response_class=RedirectResponse)
+async def pricing_toggle_active(
+    request: Request, db: Session = Depends(get_db), _admin=Depends(require_admin)
+):
+    """Flip the markup_tiers_active setting — the switch that makes the
+    cost-bracket grid the LIVE pricing source instead of the flat default
+    (PricingService.resolve_markup_pct). Defaults false; owner opts in after
+    reviewing the Preview-impact numbers."""
+    from app.settings_utils import set_setting_value_db
+    form = await request.form()
+    active = str(form.get("active", "")).strip().lower() in {"1", "true", "on", "yes"}
+    set_setting_value_db(db, "markup_tiers_active", "true" if active else "false")
+    db.commit()
+    return RedirectResponse("/settings/?tab=pricing&saved=1", status_code=303)
 
 
 @router.post("/logo")

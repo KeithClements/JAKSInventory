@@ -1454,6 +1454,106 @@ class ProductImportService(BaseService):
         self.db.commit() if not dry_run else self.db.rollback()
         return summary
 
+    # ══ Mode 2d: APPLICATIONS — standalone engine-fitment batch import ═════════
+    def import_applications(self, text: str, *, dry_run: bool = True) -> dict:
+        """
+        §23.3 Phase 2 #1 — standalone batch importer for ProductApplication
+        rows (engine fitment): sku, make, model, cpl, esn_range. Same
+        never-create contract as every other pricing_update_* mode — a sku
+        with no product match is skipped + counted, never silently dropped
+        or minted as a new product.
+
+        Columns consumed (case/space-insensitive header match):
+          sku        (required) — matched via the SAME sku_to_id map every
+                                   other import mode uses (product SKU or the
+                                   parked vendor SKU).
+          make       (required) — engine_make; a blank make skips the row
+                                   (the dedup grain needs it, matching
+                                   ProductService.add_application's own rule).
+          model      (optional) — engine_model.
+          cpl        (optional) — CPL.
+          esn_range  (optional) — ESN window; blank stays NULL, not "".
+
+        Idempotent on the SAME dedup grain the model docstring locks —
+        (product_id, engine_make, engine_model, cpl), case-insensitive: a
+        repeat row refreshes esn_range/notes on the existing row instead of
+        duplicating. Bulk-committed like the other pricing_update_* modes
+        (one commit-or-rollback at the end, not per-row) — a real
+        applications feed enriching the whole catalog can be thousands of
+        rows, and add_application's own per-call commit would be far too
+        slow at that scale.
+        """
+        reader = list(csv.DictReader(io.StringIO(text)))
+        summary = {
+            "mode": "import_applications", "dry_run": dry_run,
+            "rows": len(reader), "matched": 0, "skipped_no_sku": 0,
+            "skipped_no_product": 0, "skipped_no_make": 0,
+            "created": 0, "updated": 0, "sample": [],
+        }
+        if not reader:
+            return summary
+
+        sku_to_id = self._sku_to_id_map()
+
+        # Snapshot every existing ProductApplication once per run, keyed on
+        # the locked dedup grain — mirrors the `existing` dict pattern
+        # full_import uses for ITS dedup, avoiding a per-row query on a
+        # feed that can touch thousands of rows.
+        existing_by_key: dict[tuple[int, str, str, str], ProductApplication] = {}
+        for app in self.db.query(ProductApplication).all():
+            key = (
+                app.product_id,
+                (app.engine_make or "").strip().lower(),
+                (app.engine_model or "").strip().lower(),
+                (app.cpl or "").strip().lower(),
+            )
+            existing_by_key[key] = app
+
+        for raw in reader:
+            row = {_norm(k): v for k, v in raw.items()}
+            sku = _get(row, *_SKU_KEYS)
+            if not sku:
+                summary["skipped_no_sku"] += 1
+                continue
+            pid = sku_to_id.get(_norm(sku))
+            if pid is None:
+                summary["skipped_no_product"] += 1   # NEVER create products
+                continue
+            make = _get(row, "make", "engine_make").strip()
+            if not make:
+                summary["skipped_no_make"] += 1
+                continue
+            model = _get(row, "model", "engine_model").strip()
+            cpl = _get(row, "cpl").strip()
+            esn_range = _get(row, "esn_range", "esn").strip() or None
+
+            summary["matched"] += 1
+            key = (pid, make.lower(), model.lower(), cpl.lower())
+            existing = existing_by_key.get(key)
+            if len(summary["sample"]) < 5:
+                summary["sample"].append({
+                    "sku": sku, "make": make, "model": model, "cpl": cpl,
+                    "action": "update" if existing else "create",
+                })
+            if existing is not None:
+                summary["updated"] += 1
+                if not dry_run:
+                    existing.esn_range = esn_range
+                    existing.notes = "Applications import refresh"
+            else:
+                summary["created"] += 1
+                if not dry_run:
+                    new_app = ProductApplication(
+                        product_id=pid, engine_make=make, engine_model=model,
+                        cpl=cpl, esn_range=esn_range,
+                        source="applications_import",
+                    )
+                    self.db.add(new_app)
+                    existing_by_key[key] = new_app   # a repeat row later in the SAME file updates, not duplicates
+
+        self.db.commit() if not dry_run else self.db.rollback()
+        return summary
+
     # ══ Mode 2c: PRICING UPDATE — sell + cost + manufacturer (scraper refresh) ═
     def pricing_update_sell(
         self,
