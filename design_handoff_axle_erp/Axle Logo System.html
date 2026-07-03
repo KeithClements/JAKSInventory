@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Axle — Logo System</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Barlow:ital,wght@0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --mil-deep:#3c4520; --mil:#5a6630; --mil-2:#6d7b39; --mil-bright:#9cb23c; --mil-glow:#b6cf45;
+    --amber:#e7891d; --amber-2:#ffb24d; --stock:#5a9a3c; --danger:#c0392b;
+    --ink:#0b0c0d; --carbon:#141619; --steel-900:#191c1f; --steel-700:#2f343a;
+    --steel-500:#565d65; --steel-600:#454b52; --steel-400:#7c838b; --steel-300:#a9afb6; --steel-200:#cdd1d5;
+    --steel-100:#e7e9eb; --paper:#f2f3f0; --white:#ffffff;
+    --font-disp:"Oswald",sans-serif; --font-body:"Barlow",sans-serif; --font-mono:"IBM Plex Mono",monospace;
+    --maxw:1080px; --gutter:40px;
+  }
+  *{box-sizing:border-box;}
+  html{-webkit-font-smoothing:antialiased;}
+  body{margin:0;font-family:var(--font-body);background:var(--paper);color:var(--ink);}
+  svg{display:block;}
+
+  /* ---- top band ---- */
+  .top{background:linear-gradient(180deg,var(--steel-900),var(--carbon));border-bottom:3px solid var(--mil);}
+  .top .wrap{max-width:var(--maxw);margin:0 auto;padding:24px var(--gutter);display:flex;align-items:center;gap:18px;}
+  .top .meta{margin-left:auto;text-align:right;font-family:var(--font-mono);font-size:11.5px;color:var(--steel-400);line-height:1.8;}
+  .top .meta b{color:var(--mil-glow);font-weight:500;}
+
+  /* ---- title ---- */
+  .title{max-width:var(--maxw);margin:0 auto;padding:44px var(--gutter) 8px;}
+  .kicker{font-family:var(--font-mono);font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:var(--mil);}
+  .title h1{font-family:var(--font-disp);font-weight:700;text-transform:uppercase;letter-spacing:-.01em;
+    font-size:clamp(34px,5vw,56px);line-height:.98;margin:10px 0 0;}
+  .title p{color:var(--steel-500);font-size:16px;max-width:62ch;line-height:1.55;margin:14px 0 0;}
+
+  /* ---- layout ---- */
+  main{max-width:var(--maxw);margin:0 auto;padding:30px var(--gutter) 90px;display:flex;flex-direction:column;gap:30px;}
+  section{scroll-margin-top:16px;}
+  .sh{display:flex;align-items:baseline;gap:14px;border-bottom:2px solid var(--ink);padding-bottom:10px;margin-bottom:22px;}
+  .sh .n{font-family:var(--font-mono);font-size:13px;color:var(--mil);}
+  .sh h2{font-family:var(--font-disp);font-weight:700;text-transform:uppercase;letter-spacing:.02em;font-size:23px;margin:0;white-space:nowrap;flex:0 0 auto;}
+  .sh .d{margin-left:auto;font-size:13px;color:var(--steel-500);}
+
+  .card{background:#fff;border:1px solid var(--steel-200);border-radius:12px;}
+  .pad{padding:30px;}
+  .lab{font-family:var(--font-disp);font-weight:600;text-transform:uppercase;letter-spacing:.08em;font-size:12px;color:var(--steel-500);margin:0 0 16px;}
+  .cap{font-family:var(--font-mono);font-size:11.5px;color:var(--steel-400);}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
+  .grid2>*{min-width:0;}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;}
+
+  /* lockups */
+  .lk{display:flex;align-items:center;gap:18px;}
+  .lk.stk{flex-direction:column;gap:14px;text-align:center;}
+  .lk-word{font-family:var(--font-disp);font-weight:700;text-transform:uppercase;letter-spacing:.01em;font-size:46px;line-height:.8;}
+  .lk-sub{font-family:var(--font-mono);font-size:10px;letter-spacing:.34em;text-transform:uppercase;margin-top:9px;}
+  .lk.stk .lk-sub{margin-top:2px;}
+
+  .stage{display:flex;align-items:center;justify-content:center;min-height:200px;border-radius:10px;}
+  .stage.light{background:var(--paper);border:1px solid var(--steel-200);}
+  .stage.dark{background:var(--steel-900);}
+  .stage.green{background:var(--mil);}
+
+  /* anatomy */
+  .anat{display:grid;grid-template-columns:240px 1fr;gap:36px;align-items:center;}
+  .anat .big{width:200px;height:200px;margin:0 auto;}
+  .anat ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:14px;}
+  .anat li{display:flex;gap:14px;align-items:flex-start;font-size:14.5px;color:var(--steel-700);line-height:1.45;}
+  .anat li .t{font-family:var(--font-disp);font-weight:600;text-transform:uppercase;letter-spacing:.03em;color:var(--ink);font-size:13.5px;}
+  .anat li .sw{flex:0 0 auto;width:14px;height:14px;border-radius:4px;margin-top:2px;}
+
+  /* size scale */
+  .scale{display:flex;align-items:flex-end;gap:30px;flex-wrap:wrap;}
+  .scale .col{display:flex;flex-direction:column;align-items:center;gap:10px;}
+  .scale .col .cap{margin-top:2px;}
+
+  /* favicon tiles */
+  .tiles{display:flex;gap:14px;flex-wrap:wrap;}
+  .tile{border-radius:14px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.14);}
+
+  /* color chips */
+  .ramp{display:flex;gap:0;border-radius:8px;overflow:hidden;border:1px solid var(--steel-200);}
+  .ramp .c{flex:1;height:54px;}
+
+  /* clearspace */
+  .clear-wrap{position:relative;display:inline-block;padding:46px;background:
+    repeating-linear-gradient(45deg,var(--steel-100) 0 6px,transparent 6px 12px);border-radius:8px;}
+  .clear-inner{background:#fff;border:1px dashed var(--steel-300);position:relative;}
+
+  /* dont grid */
+  .dont .x{display:flex;align-items:center;justify-content:center;min-height:130px;background:var(--paper);border:1px solid var(--steel-200);border-radius:10px;position:relative;overflow:hidden;}
+  .dont .tag{position:absolute;top:8px;left:8px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--danger);border:1px solid var(--danger);border-radius:3px;padding:2px 6px;background:#fff;}
+
+  /* ---- in context: sidebar ---- */
+  .ctx-row{display:grid;grid-template-columns:248px 1fr;gap:0;border:1px solid var(--steel-200);border-radius:12px;overflow:hidden;min-height:330px;}
+  .side{background:var(--steel-900);padding:0;display:flex;flex-direction:column;}
+  .side .brand{display:flex;align-items:center;gap:11px;padding:18px 18px;border-bottom:1px solid var(--steel-700);}
+  .side .brand .w{font-family:var(--font-disp);font-weight:700;text-transform:uppercase;color:#fff;font-size:24px;line-height:.8;letter-spacing:.01em;}
+  .side .brand .w .s{display:block;font-family:var(--font-mono);font-size:8px;letter-spacing:.28em;color:var(--steel-400);margin-top:5px;}
+  .side nav{padding:12px 10px;display:flex;flex-direction:column;gap:2px;}
+  .side nav a{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:7px;color:var(--steel-300);
+    font-family:var(--font-disp);font-weight:500;text-transform:uppercase;letter-spacing:.04em;font-size:13px;}
+  .side nav a .ic{width:16px;height:16px;flex:0 0 auto;color:var(--steel-400);}
+  .side nav a.on{background:var(--mil);color:#fff;}
+  .side nav a.on .ic{color:var(--mil-glow);}
+  .side .who{margin-top:auto;padding:14px 16px;border-top:1px solid var(--steel-700);font-family:var(--font-mono);font-size:11px;color:var(--steel-400);}
+  .side .who b{color:var(--mil-glow);font-weight:500;}
+  .ctx-body{background:var(--paper);padding:26px 28px;}
+  .ctx-body .hd{font-family:var(--font-disp);font-weight:700;text-transform:uppercase;font-size:20px;color:var(--ink);}
+  .ctx-body .sub{color:var(--steel-500);font-size:13.5px;margin-top:4px;}
+  .ctx-note{font-family:var(--font-mono);font-size:11px;color:var(--steel-400);margin-top:16px;line-height:1.7;}
+
+  /* login */
+  .login{background:linear-gradient(180deg,var(--steel-900),var(--carbon));border-radius:12px;padding:46px;display:flex;align-items:center;justify-content:center;}
+  .login .box{background:#fff;border-radius:12px;padding:34px 30px;width:330px;box-shadow:0 24px 60px rgba(0,0,0,.4);}
+  .login .box .ttl{font-family:var(--font-disp);font-weight:600;text-transform:uppercase;letter-spacing:.04em;font-size:14px;color:var(--steel-500);text-align:center;margin:18px 0 20px;}
+  .login .box label{display:block;font-family:var(--font-disp);font-weight:600;text-transform:uppercase;letter-spacing:.06em;font-size:11px;color:var(--steel-500);margin:0 0 6px;}
+  .login .box .fld{border:2px solid var(--steel-200);border-radius:5px;padding:11px 12px;font-family:var(--font-mono);font-size:14px;color:var(--steel-400);margin-bottom:14px;}
+  .login .box .go{background:var(--mil);color:#fff;border-radius:4px;padding:12px;text-align:center;font-family:var(--font-disp);font-weight:600;text-transform:uppercase;letter-spacing:.06em;font-size:14px;}
+
+  /* printed doc */
+  .doc{background:#fff;border:1px solid var(--steel-200);border-radius:8px;padding:34px 36px;}
+  .doc .top-row{display:flex;align-items:flex-start;justify-content:space-between;border-bottom:2px solid var(--ink);padding-bottom:18px;}
+  .doc .doc-title{text-align:right;}
+  .doc .doc-title .t{font-family:var(--font-disp);font-weight:700;text-transform:uppercase;font-size:30px;letter-spacing:.02em;line-height:.9;}
+  .doc .doc-title .m{font-family:var(--font-mono);font-size:11.5px;color:var(--steel-500);margin-top:8px;line-height:1.7;}
+  .doc .addr{display:flex;justify-content:space-between;margin-top:18px;font-size:13px;color:var(--steel-600);line-height:1.55;}
+  .doc .addr .lab2{font-family:var(--font-disp);font-weight:600;text-transform:uppercase;letter-spacing:.06em;font-size:10.5px;color:var(--steel-400);margin-bottom:4px;}
+  .doc .ln{margin-top:18px;border-top:1px solid var(--steel-100);padding-top:10px;display:flex;justify-content:space-between;gap:14px;font-family:var(--font-mono);font-size:12.5px;color:var(--steel-600);}
+  .doc .ln span:first-child{min-width:0;}
+
+  @media(max-width:760px){
+    .grid2,.grid3{grid-template-columns:1fr;}
+    .anat{grid-template-columns:1fr;}
+    .ctx-row{grid-template-columns:1fr;}
+  }
+</style>
+</head>
+<body data-screen-label="Logo System">
+
+<div class="top">
+  <div class="wrap">
+    <span class="lk" style="gap:12px">
+      <span style="width:38px;height:38px" data-hub data-ring="#fff" data-bore="var(--amber-2)"></span>
+      <span class="lk-word" style="color:#fff;font-size:30px">Axle</span>
+    </span>
+    <div class="meta">Logo System · Hub mark<br>Source palette: <b>JAK'S brand kit</b> · v1.0</div>
+  </div>
+</div>
+
+<div class="title">
+  <div class="kicker">Brand · Identity</div>
+  <h1>The Axle Mark</h1>
+  <p>Direction 01 — the <b>keyed hub</b> — finalized into a working logo system. Concentric races read precision; the amber bore is the center every part turns on. Everything here is built to survive a 256px sidebar, a 16px favicon, and a black-and-white printed invoice.</p>
+</div>
+
+<main>
+
+  <!-- 01 THE MARK -->
+  <section id="mark">
+    <div class="sh"><span class="n">01</span><h2>The Mark</h2><span class="d">anatomy · construction</span></div>
+    <div class="card pad">
+      <div class="anat">
+        <div class="big" data-hub data-ring="var(--mil)" data-bore="var(--amber)"></div>
+        <ul>
+          <li><span class="sw" style="background:var(--mil)"></span><span><span class="t">Outer race</span> — heaviest stroke. The structural ring; the only element that must read at favicon size.</span></li>
+          <li><span class="sw" style="background:var(--mil)"></span><span><span class="t">Inner race</span> — lighter stroke. Adds the bearing/tolerance read; drops out below 24px.</span></li>
+          <li><span class="sw" style="background:var(--amber)"></span><span><span class="t">Bore</span> — amber. The single accent — the center everything aligns to. Never more than one accent in the mark.</span></li>
+          <li><span class="sw" style="background:var(--ink)"></span><span><span class="t">Keyway</span> — the notch at top. The detail that makes it a <i>keyed</i> shaft, not just rings. Optional below 32px.</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 LOCKUPS -->
+  <section id="lockups">
+    <div class="sh"><span class="n">02</span><h2>Lockups</h2><span class="d">primary horizontal · stacked</span></div>
+    <div class="grid2">
+      <div class="card pad">
+        <p class="lab">Primary — horizontal</p>
+        <div class="stage light">
+          <div class="lk">
+            <span style="width:64px;height:64px" data-hub data-ring="var(--mil)" data-bore="var(--amber)"></span>
+            <span><span class="lk-word" style="color:var(--ink)">Axle</span><span class="lk-sub" style="color:var(--steel-500)">Parts Counter System</span></span>
+          </div>
+        </div>
+      </div>
+      <div class="card pad">
+        <p class="lab">Primary — reversed</p>
+        <div class="stage dark">
+          <div class="lk">
+            <span style="width:64px;height:64px" data-hub data-ring="var(--mil-bright)" data-bore="var(--amber-2)"></span>
+            <span><span class="lk-word" style="color:#fff">Axle</span><span class="lk-sub" style="color:var(--steel-400)">Parts Counter System</span></span>
+          </div>
+        </div>
+      </div>
+      <div class="card pad">
+        <p class="lab">Stacked — for square spaces</p>
+        <div class="stage light">
+          <div class="lk stk">
+            <span style="width:62px;height:62px" data-hub data-ring="var(--mil)" data-bore="var(--amber)"></span>
+            <span><span class="lk-word" style="color:var(--ink);font-size:40px">Axle</span><span class="lk-sub" style="color:var(--steel-500)">Parts Counter System</span></span>
+          </div>
+        </div>
+      </div>
+      <div class="card pad">
+        <p class="lab">Stacked — reversed</p>
+        <div class="stage dark">
+          <div class="lk stk">
+            <span style="width:62px;height:62px" data-hub data-ring="var(--mil-bright)" data-bore="var(--amber-2)"></span>
+            <span><span class="lk-word" style="color:#fff;font-size:40px">Axle</span><span class="lk-sub" style="color:var(--steel-400)">Parts Counter System</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 03 ICON & FAVICON -->
+  <section id="icon">
+    <div class="sh"><span class="n">03</span><h2>Icon &amp; App Tile</h2><span class="d">size scale · favicon · launcher</span></div>
+    <div class="card pad" style="margin-bottom:20px">
+      <p class="lab">Size scale — note how detail sheds gracefully</p>
+      <div class="scale">
+        <div class="col"><span style="width:80px;height:80px" data-hub data-ring="var(--mil)" data-bore="var(--amber)"></span><span class="cap">80px · full</span></div>
+        <div class="col"><span style="width:48px;height:48px" data-hub data-ring="var(--mil)" data-bore="var(--amber)"></span><span class="cap">48px · full</span></div>
+        <div class="col"><span style="width:32px;height:32px" data-hub data-ring="var(--mil)" data-bore="var(--amber)" data-nokey></span><span class="cap">32px · no keyway</span></div>
+        <div class="col"><span style="width:24px;height:24px" data-hub data-ring="var(--mil)" data-bore="var(--amber)" data-simple></span><span class="cap">24px · simplified</span></div>
+        <div class="col"><span style="width:16px;height:16px" data-hub data-ring="var(--mil)" data-bore="var(--amber)" data-simple></span><span class="cap">16px · favicon</span></div>
+      </div>
+    </div>
+    <div class="card pad">
+      <p class="lab">App tile / launcher icon</p>
+      <div class="tiles">
+        <div class="tile" style="width:72px;height:72px;background:var(--mil)"><span style="width:60%;height:60%" data-hub data-ring="#fff" data-bore="var(--mil-glow)"></span></div>
+        <div class="tile" style="width:72px;height:72px;background:var(--steel-900)"><span style="width:60%;height:60%" data-hub data-ring="var(--mil-bright)" data-bore="var(--amber-2)"></span></div>
+        <div class="tile" style="width:72px;height:72px;background:#fff;box-shadow:inset 0 0 0 1px var(--steel-200),0 2px 6px rgba(0,0,0,.1)"><span style="width:60%;height:60%" data-hub data-ring="var(--mil)" data-bore="var(--amber)"></span></div>
+        <div class="tile" style="width:72px;height:72px;background:var(--paper);box-shadow:inset 0 0 0 1px var(--steel-200)"><span style="width:60%;height:60%" data-hub data-ring="var(--ink)" data-bore="var(--amber)"></span></div>
+      </div>
+      <p class="cap" style="margin-top:14px">Green tile is the default home-screen / browser-tab icon. Mark is centered on a 60% safe area.</p>
+    </div>
+  </section>
+
+  <!-- 04 COLOR -->
+  <section id="color">
+    <div class="sh"><span class="n">04</span><h2>Color &amp; One-Color</h2><span class="d">print + reversed rules</span></div>
+    <div class="grid3" style="margin-bottom:20px">
+      <div class="card pad"><p class="lab">Full color · default</p><div class="stage light" style="min-height:150px"><span style="width:74px;height:74px" data-hub data-ring="var(--mil)" data-bore="var(--amber)"></span></div></div>
+      <div class="card pad"><p class="lab">One-color · green</p><div class="stage light" style="min-height:150px"><span style="width:74px;height:74px" data-hub data-ring="var(--mil)" data-bore="var(--mil)"></span></div></div>
+      <div class="card pad"><p class="lab">One-color · ink (B&amp;W print)</p><div class="stage light" style="min-height:150px"><span style="width:74px;height:74px" data-hub data-ring="var(--ink)" data-bore="var(--ink)"></span></div></div>
+    </div>
+    <div class="grid3">
+      <div class="card pad"><p class="lab">Reversed · white</p><div class="stage dark" style="min-height:150px"><span style="width:74px;height:74px" data-hub data-ring="#fff" data-bore="#fff"></span></div></div>
+      <div class="card pad"><p class="lab">On green · knockout</p><div class="stage green" style="min-height:150px"><span style="width:74px;height:74px" data-hub data-ring="#fff" data-bore="var(--mil-glow)"></span></div></div>
+      <div class="card pad">
+        <p class="lab">Core hexes</p>
+        <div class="ramp" style="margin-bottom:12px"><div class="c" style="background:var(--mil)"></div><div class="c" style="background:var(--amber)"></div><div class="c" style="background:var(--steel-900)"></div><div class="c" style="background:var(--ink)"></div></div>
+        <p class="cap" style="line-height:1.9">mil <b style="color:var(--mil)">#5a6630</b> · amber <b style="color:var(--amber)">#e7891d</b><br>steel-900 #191c1f · ink #0b0c0d</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 05 CLEAR SPACE -->
+  <section id="clear">
+    <div class="sh"><span class="n">05</span><h2>Clear Space &amp; Minimum Size</h2><span class="d">protect the mark</span></div>
+    <div class="grid2">
+      <div class="card pad">
+        <p class="lab">Clear space = the bore diameter, on all sides</p>
+        <div style="display:flex;justify-content:center">
+          <div class="clear-wrap">
+            <div class="clear-inner" style="padding:18px 22px">
+              <div class="lk" style="gap:14px">
+                <span style="width:50px;height:50px" data-hub data-ring="var(--mil)" data-bore="var(--amber)"></span>
+                <span class="lk-word" style="color:var(--ink);font-size:34px">Axle</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="cap" style="margin-top:14px;text-align:center">Keep the hatched margin free of type, rules, and other logos.</p>
+      </div>
+      <div class="card pad">
+        <p class="lab">Minimum sizes</p>
+        <div style="display:flex;flex-direction:column;gap:18px;margin-top:6px">
+          <div style="display:flex;align-items:center;gap:16px">
+            <span style="width:24px;height:24px" data-hub data-ring="var(--mil)" data-bore="var(--amber)" data-simple></span>
+            <span style="font-size:14px;color:var(--steel-700)"><b style="color:var(--ink)">Icon alone:</b> 16px (favicon). Below this, don't use.</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:16px">
+            <div class="lk" style="gap:8px"><span style="width:22px;height:22px" data-hub data-ring="var(--mil)" data-bore="var(--amber)" data-simple></span><span class="lk-word" style="font-size:18px;color:var(--ink)">Axle</span></div>
+            <span style="font-size:14px;color:var(--steel-700)"><b style="color:var(--ink)">Lockup:</b> 18px cap height min (sidebar, print header).</span>
+          </div>
+          <div style="border-top:1px solid var(--steel-100);padding-top:16px;font-size:13.5px;color:var(--steel-600);line-height:1.6">
+            On screen the icon is an SVG, so it stays crisp at any size — these floors are about <i>legibility</i>, not resolution.
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 06 IN CONTEXT -->
+  <section id="context">
+    <div class="sh"><span class="n">06</span><h2>In Context</h2><span class="d">sidebar · login · printed invoice</span></div>
+
+    <div class="card pad" style="margin-bottom:20px">
+      <p class="lab">App sidebar header — dark chrome, light workspace</p>
+      <div class="ctx-row">
+        <aside class="side">
+          <div class="brand">
+            <span style="width:30px;height:30px;flex:0 0 auto" data-hub data-ring="#fff" data-bore="var(--amber-2)"></span>
+            <span class="w">Axle<span class="s">Parts Counter</span></span>
+          </div>
+          <nav>
+            <a class="on"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>Dashboard</a>
+            <a><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg>Quotes</a>
+            <a><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-4 9 4-9 4z"/><path d="M3 7v10l9 4 9-4V7"/></svg>Inventory</a>
+            <a><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 0115.5-6.2M21 12a9 9 0 01-15.5 6.2"/><path d="M18 3v3h-3M6 21v-3h3"/></svg>Cores</a>
+            <a><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="4"/><path d="M3 21c0-4 3-6 6-6s6 2 6 6M16 3.5a4 4 0 010 7M21 21c0-3-1.5-5-4-5.5"/></svg>Customers</a>
+          </nav>
+          <div class="who">Signed in · <b>Admin</b></div>
+        </aside>
+        <div class="ctx-body">
+          <div class="hd">Dashboard</div>
+          <div class="sub">Tuesday, June 11 — 14 open quotes, 3 cores due back</div>
+          <div class="ctx-note">// Logo lives top-left of the 248px sidebar.<br>// Reversed mark, white wordmark, amber bore for warmth.<br>// Active nav uses --mil; this previews the dark-chrome / light-workspace direction.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div class="card pad">
+        <p class="lab">Login</p>
+        <div class="login">
+          <div class="box">
+            <div class="lk stk" style="gap:10px">
+              <span style="width:52px;height:52px" data-hub data-ring="var(--mil)" data-bore="var(--amber)"></span>
+              <span class="lk-word" style="color:var(--ink);font-size:34px">Axle</span>
+            </div>
+            <div class="ttl">Sign in to your shop</div>
+            <label>Email</label>
+            <div class="fld">you@shop.com</div>
+            <label>Password</label>
+            <div class="fld">••••••••••</div>
+            <div class="go">Sign In</div>
+          </div>
+        </div>
+      </div>
+      <div class="card pad">
+        <p class="lab">Printed invoice header (B&amp;W safe)</p>
+        <div class="doc">
+          <div class="top-row">
+            <div class="lk" style="gap:12px">
+              <span style="width:46px;height:46px" data-hub data-ring="var(--ink)" data-bore="var(--ink)"></span>
+              <span><span class="lk-word" style="color:var(--ink);font-size:32px">Axle</span><span class="lk-sub" style="color:var(--steel-500)">Parts Counter System</span></span>
+            </div>
+            <div class="doc-title">
+              <div class="t">Invoice</div>
+              <div class="m">No. INV-20485<br>June 11, 2026</div>
+            </div>
+          </div>
+          <div class="addr">
+            <div><div class="lab2">From</div>Diesel Parts Co.<br>Denver, CO 80216<br>(303) 555-0142</div>
+            <div style="text-align:right"><div class="lab2">Bill To</div>Rocky Mtn Freight<br>Acct #RMF-1180</div>
+          </div>
+          <div class="ln"><span>10R1000 · CAT C15 Injector ×4</span><span>$2,460.00</span></div>
+          <div class="ln"><span>Core deposit · refundable</span><span>$400.00</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 07 DON'TS -->
+  <section id="donts">
+    <div class="sh"><span class="n">07</span><h2>Don'ts</h2><span class="d">keep it disciplined</span></div>
+    <div class="card pad">
+      <div class="grid3 dont">
+        <div class="x"><span class="tag">No stretch</span><span style="width:120px;height:60px" data-hub data-ring="var(--mil)" data-bore="var(--amber)"></span></div>
+        <div class="x"><span class="tag">No 2nd accent</span><span style="width:72px;height:72px" data-hub data-ring="var(--danger)" data-bore="var(--amber)"></span></div>
+        <div class="x" style="background:repeating-linear-gradient(45deg,#cdd1d5 0 10px,#e7e9eb 10px 20px)"><span class="tag">No busy bg</span><span style="width:72px;height:72px" data-hub data-ring="var(--mil)" data-bore="var(--amber)"></span></div>
+      </div>
+      <p class="cap" style="margin-top:16px">Also: don't recolor the bore to anything but amber (or the knockout tints), don't add shadows/bevels, don't rotate, and don't set the wordmark in any face but Oswald.</p>
+    </div>
+  </section>
+
+</main>
+
+<script>
+/* Stamp the hub mark into every [data-hub] slot.
+   data-ring / data-bore = colors. data-nokey drops the keyway. data-simple = favicon build (outer ring + bore only). */
+(function(){
+  function hub(ring, bore, opts){
+    opts = opts || {};
+    var simple = opts.simple, nokey = opts.nokey || simple;
+    var parts = [];
+    parts.push('<circle cx="32" cy="32" r="28" />');
+    if(!simple) parts.push('<circle cx="32" cy="32" r="17" stroke-width="3" />');
+    parts.push('<circle cx="32" cy="32" r="'+(simple?9:6.5)+'" fill="'+bore+'" stroke="none" />');
+    if(!nokey) parts.push('<rect x="30" y="20" width="4" height="6" rx="1" fill="'+ring+'" stroke="none" />');
+    return '<svg viewBox="0 0 64 64" fill="none" stroke="'+ring+'" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%;display:block">'+parts.join('')+'</svg>';
+  }
+  document.querySelectorAll('[data-hub]').forEach(function(el){
+    var ring = el.getAttribute('data-ring') || 'var(--mil)';
+    var bore = el.getAttribute('data-bore') || 'var(--amber)';
+    el.innerHTML = hub(ring, bore, {
+      simple: el.hasAttribute('data-simple'),
+      nokey: el.hasAttribute('data-nokey')
+    });
+  });
+})();
+</script>
+</body>
+</html>

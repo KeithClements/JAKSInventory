@@ -14,3 +14,22 @@ app/static/uploads/
 
 # Scratch / logs
 *.log
+
+# Session scratch — one-off working files never belong in the repo.
+# Real scripts go in scripts/; real docs get committed; everything else
+# should be created in the Claude scratchpad or the owning project's folder
+# (BTME → C:\Users\keith\BTME, storefront → D:\Work Folder\Website).
+tmp_*
+chunk_*.json
+so_chunk_*.json
+cookies.txt
+.shopify-work/
+.btme_crops/
+
+# Windows artifacts — shortcuts and Office lock files.
+*.lnk
+~$*
+
+# Regenerable report outputs from the SEO scripts (the scripts themselves ARE tracked).
+scripts/shopify_seo_fill_results.json
+scripts/shopify_seo_gap.json
