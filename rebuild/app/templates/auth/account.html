@@ -12,9 +12,24 @@
   <form method="post" action="/account/password"
         class="bg-white shadow-md rounded-xl px-8 py-8 w-full max-w-sm">
 
+    {# C4 — this standalone page does NOT extend base.html, so the global CSRF
+       stamper never runs here. Without the token the double-submit CSRFMiddleware
+       rejects the POST with a 403 and the user is trapped on the rotation gate with
+       no way off. The hidden field below is populated by the inline script at the
+       foot of the page (and refreshed on submit) from the jaks_csrf cookie. #}
+    <input type="hidden" name="_csrf" value="">
+
     <h1 class="text-xl font-bold text-gray-800 mb-1">Change password</h1>
     <p class="text-sm text-gray-500 mb-6">Signed in as
       <span class="font-medium text-gray-700">{{ user.username }}</span></p>
+
+    {% if must_rotate %}
+    <div class="bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-lg px-3 py-2 mb-4">
+      <span class="font-medium">Set a new password to continue.</span>
+      This account is still using its default password — you must change it before
+      you can use the rest of Axle.
+    </div>
+    {% endif %}
 
     {% if ok %}
     <div class="bg-green-50 border border-green-200 text-green-700 text-sm rounded-lg px-3 py-2 mb-4">
@@ -49,9 +64,34 @@
       Update password
     </button>
 
+    {# While the rotation gate is active every other page redirects back here, so a
+       "Back to dashboard" link is a dead loop — only offer it for normal
+       self-service password changes. #}
+    {% if not must_rotate %}
     <a href="/" class="block text-center text-xs text-gray-500 mt-4 hover:text-gray-700">← Back to dashboard</a>
+    {% endif %}
 
   </form>
+
+  {# Minimal standalone CSRF stamper (mirrors base.html's global stamper, which
+     this page can't use because it doesn't extend base.html). Reads the non-HttpOnly
+     jaks_csrf cookie the CSRFMiddleware sets — which is present by page-render time
+     even on the very first visit, since the cookie ships on this same response — and
+     writes it into the hidden _csrf field, refreshing on submit. #}
+  <script>
+  (function () {
+    function csrfToken() {
+      var m = document.cookie.match(/(?:^|;\s*)jaks_csrf=([^;]+)/);
+      return m ? decodeURIComponent(m[1]) : "";
+    }
+    var form = document.querySelector('form[action="/account/password"]');
+    if (!form) return;
+    var field = form.querySelector('input[name="_csrf"]');
+    function stamp() { if (field) field.value = csrfToken(); }
+    stamp();
+    form.addEventListener("submit", stamp, true);
+  })();
+  </script>
 
 </body>
 </html>

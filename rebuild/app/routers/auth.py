@@ -90,10 +90,19 @@ def logout():
 
 @router.get("/account")
 def account_page(request: Request, user=Depends(get_current_user), ok: str = "", error: str = ""):
+    # must_rotate → the default-password gate (main.enforce_password_rotation) is
+    # what forced this user here; the template shows a "why am I here" banner and
+    # hides the dead-loop "Back to dashboard" link while the gate is active. Lazy
+    # import avoids a circular import at module load (main imports this router).
+    try:
+        from app.main import account_uses_default_password
+        must_rotate = account_uses_default_password(user)
+    except Exception:  # noqa: BLE001 — banner is cosmetic; never break the page
+        must_rotate = False
     return templates.TemplateResponse(
         request,
         "auth/account.html",
-        {"user": user, "ok": bool(ok), "error": error},
+        {"user": user, "ok": bool(ok), "error": error, "must_rotate": must_rotate},
     )
 
 

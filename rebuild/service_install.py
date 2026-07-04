@@ -1,106 +1,99 @@
 """
-Windows Service installer for JAKS Inventory.
+Axle ERP auto-start installer (Windows Task Scheduler).
 
-Usage (run as Administrator):
-  python service_install.py install   -- install the service
-  python service_install.py start     -- start the service
-  python service_install.py stop      -- stop the service
-  python service_install.py remove    -- remove the service
-  python service_install.py restart   -- restart the service
+Run in an **Administrator** terminal from the rebuild folder:
 
-The service starts automatically on Windows boot and serves the app at:
-  http://localhost:8000
+  python service_install.py install   -- register "Axle ERP" to start at logon
+  python service_install.py start     -- start it now
+  python service_install.py stop      -- stop it (ends the running task)
+  python service_install.py status    -- show whether it's installed / running
+  python service_install.py remove    -- unregister it
+
+Why Task Scheduler and not a Windows service?
+---------------------------------------------
+The previous pywin32 service implementation could not work: it referenced a
+class-registration attribute pywin32 does not define (so ``install`` crashed) and
+it exited immediately when the service manager launched it. Rather than fight
+that library, this registers a Scheduled Task that runs the SUPERVISED headless runner
+``scripts/axle_service_run.bat`` — which loops uvicorn so a crash auto-restarts.
+The task itself starts the app at logon; the runner keeps it up. This is the
+robust, low-ceremony way to "keep the app running + restart it after a crash or
+reboot" on a single Windows box.
+
+The task runs the app at http://localhost:8000 (reachable on the LAN at this PC's
+IP). Stop it any time with ``python service_install.py stop`` (or Task Scheduler).
 """
+from __future__ import annotations
+
+import subprocess
 import sys
-import os
-import threading
 from pathlib import Path
 
-# Ensure we run from the rebuild directory so relative paths work
-os.chdir(Path(__file__).resolve().parent)
-
-try:
-    import win32serviceutil
-    import win32service
-    import win32event
-    import servicemanager
-    HAS_WIN32 = True
-except ImportError:
-    HAS_WIN32 = False
-    print("pywin32 not installed — run: pip install pywin32")
-
-import uvicorn
+TASK_NAME = "Axle ERP"
+REPO_DIR = Path(__file__).resolve().parent
+RUNNER = REPO_DIR / "scripts" / "axle_service_run.bat"
 
 
-class JAKSInventoryService(win32serviceutil.ServiceFramework):
-    _svc_name_ = "JAKSInventory"
-    _svc_display_name_ = "JAKS Inventory Server"
-    _svc_description_ = "JAKS Inventory local web server (http://localhost:8000)"
+def _schtasks(*args: str) -> int:
+    """Run schtasks with the given args; echo the command and return its code."""
+    cmd = ["schtasks", *args]
+    print("  $", " ".join(cmd))
+    return subprocess.call(cmd)
 
-    def __init__(self, args):
-        win32serviceutil.ServiceFramework.__init__(self, args)
-        self._stop_event = win32event.CreateEvent(None, 0, 0, None)
-        self._server = None
 
-    def SvcStop(self):
-        self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
-        if self._server:
-            self._server.should_exit = True
-        win32event.SetEvent(self._stop_event)
+def install() -> int:
+    if not RUNNER.exists():
+        print(f"[ERROR] runner not found: {RUNNER}")
+        return 1
+    # Idempotent: remove any prior registration first, then (re)create.
+    _schtasks("/Delete", "/TN", TASK_NAME, "/F")
+    code = _schtasks(
+        "/Create", "/TN", TASK_NAME,
+        "/TR", f'"{RUNNER}"',
+        "/SC", "ONLOGON",
+        "/RL", "HIGHEST",
+        "/F",
+    )
+    if code == 0:
+        print(f'\nInstalled scheduled task "{TASK_NAME}".')
+        print("  - It starts Axle at logon; the runner auto-restarts uvicorn on crash.")
+        print("  - Start it now:  python service_install.py start")
+    else:
+        print("\n[ERROR] Could not create the task. Run this in an Administrator terminal.")
+    return code
 
-    def SvcDoRun(self):
-        servicemanager.LogMsg(
-            servicemanager.EVENTLOG_INFORMATION_TYPE,
-            servicemanager.PYS_SERVICE_STARTED,
-            (self._svc_name_, ""),
-        )
-        os.chdir(Path(__file__).resolve().parent)
-        config = uvicorn.Config(
-            "app.main:app",
-            host="0.0.0.0",
-            port=8000,
-            log_level="info",
-        )
-        self._server = uvicorn.Server(config)
-        thread = threading.Thread(target=self._server.run, daemon=True)
-        thread.start()
-        win32event.WaitForSingleObject(self._stop_event, win32event.INFINITE)
-        thread.join(timeout=15)
+
+def start() -> int:
+    return _schtasks("/Run", "/TN", TASK_NAME)
+
+
+def stop() -> int:
+    return _schtasks("/End", "/TN", TASK_NAME)
+
+
+def status() -> int:
+    return _schtasks("/Query", "/TN", TASK_NAME, "/V", "/FO", "LIST")
+
+
+def remove() -> int:
+    return _schtasks("/Delete", "/TN", TASK_NAME, "/F")
+
+
+_COMMANDS = {
+    "install": install,
+    "start": start,
+    "stop": stop,
+    "status": status,
+    "remove": remove,
+}
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 1 or argv[0].lower() not in _COMMANDS:
+        print(__doc__)
+        return 0 if not argv else 2
+    return _COMMANDS[argv[0].lower()]()
 
 
 if __name__ == "__main__":
-    if not HAS_WIN32:
-        sys.exit(1)
-
-    if len(sys.argv) == 1:
-        print(__doc__)
-        sys.exit(0)
-
-    cmd = sys.argv[1].lower()
-    if cmd in ("install", "update"):
-        win32serviceutil.InstallService(
-            JAKSInventoryService._svc_reg_class_,
-            JAKSInventoryService._svc_name_,
-            JAKSInventoryService._svc_display_name_,
-            startType=win32service.SERVICE_AUTO_START,
-            description=JAKSInventoryService._svc_description_,
-            exeName=sys.executable,
-            exeArgs=f'"{Path(__file__).resolve()}"',
-        )
-        print(f"Service '{JAKSInventoryService._svc_display_name_}' installed.")
-        print("Run: python service_install.py start")
-    elif cmd == "start":
-        win32serviceutil.StartService(JAKSInventoryService._svc_name_)
-        print("Service started. Open http://localhost:8000")
-    elif cmd == "stop":
-        win32serviceutil.StopService(JAKSInventoryService._svc_name_)
-        print("Service stopped.")
-    elif cmd == "restart":
-        win32serviceutil.RestartService(JAKSInventoryService._svc_name_)
-        print("Service restarted.")
-    elif cmd == "remove":
-        win32serviceutil.RemoveService(JAKSInventoryService._svc_name_)
-        print("Service removed.")
-    else:
-        print(f"Unknown command: {cmd}")
-        print(__doc__)
+    sys.exit(main(sys.argv[1:]))

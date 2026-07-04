@@ -66,13 +66,98 @@ import mimetypes
 mimetypes.add_type("font/woff2", ".woff2")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
+# ── C5 — persistent file logging (FULL_ERP_REVIEW_2026-07-04) ──────────────────
+# The real launcher runs `uvicorn app.main:app` (not run.py), so INFO logs from
+# app.* used to hit Python's last-resort handler and vanish (WARNING+ died with the
+# console window). A 2am failure was undiagnosable the next day. Configure a
+# rotating file handler here so it applies regardless of launch method. Skipped on
+# the in-memory test engine so the suite never writes log files.
+LOG_DIR = BASE_DIR.parent / "logs"
+
+
+def _configure_file_logging() -> None:
+    """Attach a rotating file handler (INFO+) to the root logger, once. No-op on
+    the in-memory test engine, and idempotent across repeated startup events."""
+    if ":memory:" in str(_appdb.engine.url):
+        return
+    root = logging.getLogger()
+    log_path = LOG_DIR / "axle.log"
+    if any(
+        isinstance(h, logging.FileHandler)
+        and getattr(h, "baseFilename", "") == str(log_path)
+        for h in root.handlers
+    ):
+        return  # already configured (repeated startup)
+    try:
+        from logging.handlers import RotatingFileHandler
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            log_path, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+        )
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
+        ))
+        if root.level > logging.INFO or root.level == logging.NOTSET:
+            root.setLevel(logging.INFO)
+        root.addHandler(handler)
+        log.info("file logging → %s", log_path)
+    except Exception:  # noqa: BLE001 — logging setup must never block boot
+        log.exception("could not configure file logging (continuing, console only)")
+
+
+# ── C5 — health check for an external watchdog/monitor ─────────────────────────
+# GET /health (auth-exempt, see _AUTH_EXEMPT) gives a monitor something to poll.
+# Returns 200 when the DB answers, 503 when it doesn't (so a watchdog goes red),
+# plus best-effort freshness signals the owner can alert on. Nothing here may raise.
+@app.get("/health")
+def health():
+    from fastapi.responses import JSONResponse
+    from sqlalchemy import text as _sql_text
+
+    result: dict = {"status": "ok", "time": datetime.now().isoformat()}
+
+    try:
+        db = _appdb.SessionLocal()
+        try:
+            db.execute(_sql_text("SELECT 1"))
+            result["db"] = "ok"
+        finally:
+            db.close()
+    except Exception:  # noqa: BLE001
+        result["db"] = "error"
+        result["status"] = "degraded"
+
+    # Best-effort freshness: backup + shopify sync age. Never fail health on these;
+    # surface them so an external check can alert on staleness.
+    try:
+        from app.settings_utils import get_setting_value
+        for key in ("backup_last_run", "shopify_last_sync"):
+            raw = (get_setting_value(key, "") or "").strip()
+            if not raw:
+                result[key] = None
+                continue
+            result[key] = raw
+            try:
+                ts = datetime.fromisoformat(raw)
+                result[key.replace("last_run", "age_hours").replace("last_sync", "sync_age_hours")] = (
+                    round((datetime.now() - ts).total_seconds() / 3600, 1)
+                )
+            except ValueError:
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+
+    return JSONResponse(result, status_code=200 if result["status"] == "ok" else 503)
+
+
 # ── Auth enforcement (O2 — "A: enforce") ──────────────────────────────────────
 # Redirects every unauthenticated request to /login.
 # Set JAKS_SKIP_AUTH=1 to bypass (used by the test suite — tests are not
 # testing auth enforcement, they test business logic). R1-15: the bypass is
 # honored ONLY when the active engine is in-memory (deps._is_test_env) so a
 # stray JAKS_SKIP_AUTH in a production env can never disable auth on the file DB.
-_AUTH_EXEMPT = frozenset({"/login", "/logout"})
+_AUTH_EXEMPT = frozenset({"/login", "/logout", "/health"})
 
 @app.middleware("http")
 async def enforce_login(request: Request, call_next):
@@ -110,7 +195,7 @@ _DEFAULT_CREDENTIALS = {"admin": "admin", "bookkeeper": "bookkeeper"}
 # Paths the gated user MUST still reach so they can actually rotate the password
 # (the change-password form, its POST handler, and logout). Static assets too so
 # the /account page renders. Everything else redirects to /account.
-_PW_GATE_EXEMPT = frozenset({"/account", "/account/password", "/logout", "/login"})
+_PW_GATE_EXEMPT = frozenset({"/account", "/account/password", "/logout", "/login", "/health"})
 
 
 def account_uses_default_password(user) -> bool:
@@ -180,6 +265,7 @@ app.middleware("http")(resolve_current_user)
 
 @app.on_event("startup")
 def on_startup() -> None:
+    _configure_file_logging()
     init_db()
     # Late-bound so tests that re-point app.database.SessionLocal at an isolated
     # engine (see tests/conftest.py) have startup seed THAT engine, not the file DB.
@@ -794,18 +880,27 @@ from fastapi.exception_handlers import (  # noqa: E402
 _error_templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 
+_HTML_ERROR_TEMPLATES = {404: "errors/404.html", 403: "errors/403.html"}
+
+
 @app.exception_handler(_StarletteHTTPException)
 async def custom_http_exception_handler(request: Request, exc: _StarletteHTTPException):
     wants_html = "text/html" in request.headers.get("accept", "")
     is_htmx = request.headers.get("HX-Request") is not None
-    if exc.status_code == 404 and wants_html and not is_htmx:
+    template = _HTML_ERROR_TEMPLATES.get(exc.status_code)
+    # 404 → "page doesn't exist"; 403 → a branded "access restricted" page that
+    # extends base.html so a role-denied user (e.g. SALES landing on the
+    # admin-only dashboard right after login) gets the nav instead of a raw JSON
+    # blob with no way forward. Everything else keeps the JSON body.
+    if template and wants_html and not is_htmx:
         # current_user may not be resolved (the user-resolution middleware runs
         # outside the exception-handler boundary on some error paths), so make it
         # safe for base.html's avatar block.
         if getattr(request.state, "current_user", None) is None:
             request.state.current_user = None
         return _error_templates.TemplateResponse(
-            request, "errors/404.html", status_code=404, context={}
+            request, template, status_code=exc.status_code,
+            context={"detail": getattr(exc, "detail", "")},
         )
     # Everything else → FastAPI's default JSON handler (unchanged behavior).
     return await _default_http_exception_handler(request, exc)
