@@ -734,6 +734,7 @@ class InventoryTxnType(StrEnum):
     WRITE_OFF          = "write_off"
     INITIAL_COUNT      = "initial_count"
     DROP_SHIP_SALE     = "drop_ship_sale"
+    SHOPIFY_SALE       = "shopify_sale"   # web order decrement (order-sync feed)
     CORRECTION         = "correction"
 
 

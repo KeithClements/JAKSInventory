@@ -238,6 +238,83 @@ class InventoryService(BaseService):
         self.db.commit()
         return txn
 
+    def _apply_shopify_stock_delta(
+        self, product_id: int, delta_pieces: int, *,
+        order_ref_id: int | None = None, order_name: str = "", note: str = "",
+    ) -> InventoryTransaction | None:
+        """Signed on-hand movement for a Shopify web order (negative = sale,
+        positive = cancellation/refund restock). Writes a ``shopify_sale`` ledger row
+        + audit and updates the cached qty_on_hand — the SAME discipline as every
+        other stock movement, so a counter sale and a web sale can never double-sell
+        the last unit.
+
+        SYSTEM path: the order sync runs as user_id=None (permission bypass), so this
+        deliberately does not gate on INVENTORY_ADJUST. It FLUSHES but does NOT
+        commit — the caller commits all of an order's line movements together with
+        the ShopifyProcessedOrder marker in one transaction, so idempotency is atomic
+        (either the whole order is applied-and-marked, or none of it is). No-op
+        (returns None) for a zero delta or a missing product."""
+        if delta_pieces == 0:
+            return None
+        product = self.db.query(Product).filter(Product.id == product_id).first()
+        if product is None:
+            return None
+        qty_before = product.qty_on_hand
+        product.qty_on_hand = qty_before + int(delta_pieces)
+        # reference_id holds the numeric Shopify order id (~13 digits). Safe on SQLite
+        # (INTEGER is 64-bit); if this app is ever moved to a 32-bit-INT backend,
+        # widen the column to BigInteger or store the id as text.
+        ref_id = int(order_ref_id) if order_ref_id else None
+        txn = InventoryTransaction(
+            product_id=product_id,
+            transaction_type=InventoryTxnType.SHOPIFY_SALE,
+            qty_change=int(delta_pieces),
+            qty_after=product.qty_on_hand,
+            # Polymorphic ref is all-or-nothing (ck_inventory_txn_ref_complete).
+            reference_type=("shopify_order" if ref_id is not None else None),
+            reference_id=ref_id,
+            performed_by_id=self.current_user_id,
+            notes=(note or f"Shopify web order {order_name}").strip(),
+        )
+        self.db.add(txn)
+        self.db.flush()
+        self.audit(
+            entity_type=EntityType.PRODUCT,
+            entity_id=product_id,
+            action=AuditAction.INVENTORY_ADJUSTED,
+            old_value={"qty_on_hand": qty_before},
+            new_value={"qty_on_hand": product.qty_on_hand,
+                       "delta": int(delta_pieces), "source": "shopify_order",
+                       "order": order_name},
+        )
+        return txn
+
+    def record_shopify_sale(
+        self, product_id: int, qty_pieces: int, *,
+        order_ref_id: int | None = None, order_name: str = "",
+    ) -> InventoryTransaction | None:
+        """Decrement on-hand for a Shopify WEB sale. ``qty_pieces`` is already
+        expanded from storefront packs to physical pieces by the caller. No-op for a
+        non-positive qty."""
+        if qty_pieces <= 0:
+            return None
+        return self._apply_shopify_stock_delta(
+            product_id, -int(qty_pieces), order_ref_id=order_ref_id,
+            order_name=order_name, note=f"Shopify web order {order_name}".strip())
+
+    def record_shopify_order_reversal(
+        self, product_id: int, qty_pieces: int, *,
+        order_ref_id: int | None = None, order_name: str = "",
+    ) -> InventoryTransaction | None:
+        """Restock on-hand when a previously-decremented web order is later cancelled
+        or refunded on Shopify (compensating +pieces). No-op for a non-positive qty."""
+        if qty_pieces <= 0:
+            return None
+        return self._apply_shopify_stock_delta(
+            product_id, int(qty_pieces), order_ref_id=order_ref_id,
+            order_name=order_name,
+            note=f"Shopify web order {order_name} cancelled — stock restored".strip())
+
     def transfer_inventory(
         self,
         product_id: int,

@@ -204,6 +204,8 @@ def on_startup() -> None:
     finally:
         db.close()
     _start_shopify_scheduler()
+    _start_shopify_order_poll()
+    _start_shopify_weekly_audit()
     _start_overdue_core_scheduler()
     _start_qbo_retry_scheduler()
     _start_inventory_resync_scheduler()
@@ -308,6 +310,93 @@ def _start_shopify_scheduler() -> None:
 
     threading.Thread(target=_loop, daemon=True, name="shopify-nightly-sync").start()
     log.info("shopify nightly scheduler started (idle until enabled in Settings)")
+
+
+def _start_shopify_order_poll() -> None:
+    """Poll Shopify orders → decrement ERP stock (the inbound half of the sync).
+
+    OFF by default (set shopify_order_poll_enabled='1' in Settings → Shopify).
+    Cadence = shopify_order_poll_interval_min (default 5). A daemon thread re-reads
+    both settings each cycle so toggling takes effect without a restart. Skipped
+    under the in-memory test engine (mirrors _start_shopify_scheduler); never raises
+    into startup."""
+    import threading
+    import time as _time
+
+    if ":memory:" in str(_appdb.engine.url):
+        return
+
+    def _loop() -> None:
+        from app.settings_utils import get_setting_value_db
+        from app.services.shopify_order_sync import run_order_poll
+        last = 0.0
+        while True:
+            try:
+                db = _appdb.SessionLocal()
+                try:
+                    enabled = get_setting_value_db(
+                        db, "shopify_order_poll_enabled", "0").strip() == "1"
+                    try:
+                        interval = max(1, int(get_setting_value_db(
+                            db, "shopify_order_poll_interval_min", "5")))
+                    except (TypeError, ValueError):
+                        interval = 5
+                finally:
+                    db.close()
+                now = _time.monotonic()
+                if enabled and (now - last) >= interval * 60:
+                    last = now
+                    log.info("shopify order poll starting")
+                    run_order_poll(None)   # system run; opens own session
+                    log.info("shopify order poll finished")
+            except Exception:
+                log.exception("shopify order poll tick failed (continuing)")
+            _time.sleep(60)   # re-check every minute
+
+    threading.Thread(target=_loop, daemon=True, name="shopify-order-poll").start()
+    log.info("shopify order poll scheduler started (idle until enabled in Settings)")
+
+
+def _start_shopify_weekly_audit() -> None:
+    """Weekly live-status refresh + full-catalog reconcile so the stale-cache
+    backlog (vendor-OOS parts silently left live) can't reaccumulate, plus the
+    locked-price margin alert. OFF by default (shopify_weekly_audit_enabled='1').
+    Runs at most once per 7 days; skipped under the in-memory test engine."""
+    import threading
+    import time as _time
+
+    if ":memory:" in str(_appdb.engine.url):
+        return
+
+    def _loop() -> None:
+        from app.settings_utils import get_setting_value_db
+        while True:
+            try:
+                db = _appdb.SessionLocal()
+                try:
+                    enabled = get_setting_value_db(
+                        db, "shopify_weekly_audit_enabled", "0").strip() == "1"
+                    last = get_setting_value_db(db, "shopify_weekly_audit_last", "")
+                finally:
+                    db.close()
+                due = True
+                if last:
+                    try:
+                        due = (datetime.now() - datetime.fromisoformat(last)
+                               ).total_seconds() >= 7 * 86400
+                    except ValueError:
+                        due = True
+                if enabled and due:
+                    from app.services.shopify_service import run_weekly_audit
+                    log.info("shopify weekly audit starting")
+                    run_weekly_audit(None)   # system run; opens own session
+                    log.info("shopify weekly audit finished")
+            except Exception:
+                log.exception("shopify weekly audit tick failed (continuing)")
+            _time.sleep(3600)   # check hourly
+
+    threading.Thread(target=_loop, daemon=True, name="shopify-weekly-audit").start()
+    log.info("shopify weekly audit scheduler started (idle until enabled in Settings)")
 
 
 def _seed_core_locations(db: Session) -> None:

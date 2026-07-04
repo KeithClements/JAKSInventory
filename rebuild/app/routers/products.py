@@ -9,7 +9,7 @@ from pathlib import Path
 import csv
 import io
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import and_, case, func, or_, select
@@ -1206,8 +1206,23 @@ def product_detail(
     })
 
 
+def _maybe_push_shopify_on_edit(db: Session, background: BackgroundTasks,
+                                product_id: int, user_id: int | None) -> None:
+    """Schedule an instant Shopify push of this product after a full save, when
+    auto-push is enabled (shopify_push_on_edit, default on) AND the product is
+    already linked to a live listing. Runs as a fail-soft BackgroundTask so a slow
+    or unconfigured Shopify never delays the save's redirect. Unlinked products are
+    skipped here (nothing to update) — they reach the store via the normal publish."""
+    if get_setting_value_db(db, "shopify_push_on_edit", "1").strip() != "1":
+        return
+    p = db.query(Product).filter(Product.id == product_id).first()
+    if p and (p.shopify_product_id or "").startswith("gid://"):
+        from app.services.shopify_service import run_single_product_push
+        background.add_task(run_single_product_push, product_id, user_id)
+
+
 @router.post("/{product_id}", response_class=HTMLResponse)
-async def product_update(product_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+async def product_update(product_id: int, request: Request, background: BackgroundTasks, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     p = db.query(Product).filter(Product.id == product_id).first()
     if not p:
         return RedirectResponse("/products/", status_code=303)
@@ -1215,6 +1230,7 @@ async def product_update(product_id: int, request: Request, db: Session = Depend
     try:
         data = _parse_product_form(form)
         _svc(db, user_id).update_product(product_id, data)
+        _maybe_push_shopify_on_edit(db, background, product_id, user_id)
         return RedirectResponse(f"/products/{product_id}?saved=1", status_code=303)
     except ValueError as exc:
         # Re-fetch product fresh (may be partially updated in service before error)
@@ -1292,6 +1308,33 @@ async def product_unlock_price(product_id: int, request: Request, db: Session = 
         f"/products/{product_id}?ok=Price+unlocked.+The+nightly+vendor+feed+may+manage+it+again.",
         status_code=303,
     )
+
+
+# ── Push to Shopify now (instant single-product reflection of an ERP edit) ────
+@router.post("/{product_id}/push-shopify", response_class=HTMLResponse)
+async def product_push_shopify(product_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    """Manual one-click: reflect this product's current ERP price/SEO/tags (and
+    availability state, when the sold-out model is on) on its linked Shopify
+    listing right now. Runs synchronously so the owner sees the outcome. Fail-soft:
+    a not-linked / unconfigured product returns a clear message, never a 500."""
+    from urllib.parse import quote
+    from app.services.shopify_service import ShopifyService
+    p = db.query(Product).filter(Product.id == product_id).first()
+    if not p:
+        return RedirectResponse("/products/", status_code=303)
+    try:
+        res = ShopifyService(db, user_id).push_product_now(product_id)
+    except PermissionError:
+        return RedirectResponse(
+            f"/products/{product_id}?error={quote('You do not have permission to publish to Shopify.')}",
+            status_code=303)
+    if res.get("ok"):
+        msg = "Pushed to Shopify." + ("" if res.get("price_synced", True)
+                                      else " (price skipped — variant not linked)")
+        return RedirectResponse(f"/products/{product_id}?ok={quote(msg)}", status_code=303)
+    return RedirectResponse(
+        f"/products/{product_id}?error={quote('Shopify push: ' + str(res.get('error', 'failed'))[:180])}",
+        status_code=303)
 
 
 # ── Deactivate ───────────────────────────────────────────────────────────────

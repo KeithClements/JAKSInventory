@@ -102,6 +102,7 @@ from app.models.inventory_transfer import InventoryTransfer
 # ── Supporting ────────────────────────────────────────────────────────────────
 from app.models.shipping import Shipment
 from app.models.attachments import DocumentAttachment
+from app.models.shopify_order import ShopifyProcessedOrder
 
 # ── Exposed to init_db() ──────────────────────────────────────────────────────
 __all_models__ = [
@@ -196,4 +197,5 @@ __all_models__ = [
     # Supporting
     Shipment,
     DocumentAttachment,
+    ShopifyProcessedOrder,
 ]
