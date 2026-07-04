@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.constants import (
     AuditAction, CreditMemoStatus, EntityType, InvoiceStatus, LineType,
-    PaymentStatus, Permission, QBOSyncStatus, VendorBillStatus,
+    PaymentMethod, PaymentStatus, Permission, QBOSyncStatus, VendorBillStatus,
 )
 from app.models.credit_memo import CreditMemo
 from app.models.customer import Customer
@@ -281,12 +281,16 @@ class QBOSyncService(BaseService):
 
     def failed_payment_ids(self, max_retries: int = 5) -> list[int]:
         """ERROR-status APPLIED payments under the retry ceiling (reversed/NSF
-        payments are excluded — push_payment refuses those by design)."""
+        payments are excluded — push_payment refuses those by design).
+        ACCOUNT_CREDIT payments are excluded too: they are synthetic non-cash
+        rows (credit memo / credit balance applications) that must never reach
+        QBO as cash — the filter keeps pre-fix ERROR rows out of the retry lane."""
         return [
             pid for (pid,) in (
                 self.db.query(Payment.id)
                 .filter(
                     Payment.status == PaymentStatus.APPLIED,
+                    Payment.payment_method != PaymentMethod.ACCOUNT_CREDIT,
                     Payment.qbo_sync_status == QBOSyncStatus.ERROR,
                     Payment.qbo_sync_retry_count < max_retries,
                 )
@@ -394,6 +398,20 @@ class QBOSyncService(BaseService):
             if sc_id:
                 out["surcharge_qbo_id"] = sc_id
             return out
+        # ACCOUNT_CREDIT is a synthetic non-cash row (a credit memo or credit
+        # balance applied to an invoice) — pushing it as a QBO Payment would book
+        # cash that never existed into Undeposited Funds, duplicating the QBO
+        # CreditMemo that already represents the credit. Hard refusal, stamped
+        # SKIPPED (terminal, not ERROR) so it never enters the retry lane. Runs
+        # after the already-synced branch: a payment that historically DID push
+        # keeps reporting "already synced" so the bookkeeper can find and void it.
+        if pmt.payment_method == PaymentMethod.ACCOUNT_CREDIT:
+            return self._skip_payment(
+                pmt,
+                "Account-credit payments are non-cash and are never pushed to "
+                "QuickBooks — the credit memo (or the credit's source document) "
+                "is the QuickBooks-side record.",
+            )
 
         active = [a for a in pmt.allocations if not a.is_reversed]
         if not active:
@@ -456,6 +474,20 @@ class QBOSyncService(BaseService):
             self.db.rollback()
         self._audit_push(EntityType.PAYMENT, payment_id, ok=False, detail=msg)
         return {"ok": False, "error": msg}
+
+    def _skip_payment(self, pmt: Payment, msg: str) -> dict:
+        """Permanent not-applicable-for-QBO stamp (vs _refuse_payment's ERROR,
+        which feeds the retry lane). Used for synthetic ACCOUNT_CREDIT payments.
+        Never raises; a failed stamp is rolled back and the refusal still holds
+        because push_payment returned before any QBO call."""
+        try:
+            pmt.qbo_sync_status = QBOSyncStatus.SKIPPED
+            pmt.qbo_sync_error = None
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+        self._audit_push(EntityType.PAYMENT, pmt.id, ok=False, detail=msg)
+        return {"ok": True, "skipped": msg}
 
     def _build_payment_payload(self, pmt: Payment, customer_ref: dict,
                                linked: list[tuple[str, float]]) -> dict:

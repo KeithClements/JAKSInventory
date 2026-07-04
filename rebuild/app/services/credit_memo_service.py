@@ -262,7 +262,11 @@ class CreditMemoService(BaseService):
             amount_received=amount,
             status=PaymentStatus.APPLIED,
             notes=f"Credit memo {cm.cm_number} applied to invoice {invoice.invoice_number}",
-            qbo_sync_status=QBOSyncStatus.PENDING,
+            # SKIPPED, never PENDING: this payment is synthetic bookkeeping for
+            # invoice.amount_paid — no cash moved. Pushing it to QBO would book
+            # phantom cash into Undeposited Funds on top of the QBO CreditMemo
+            # (double credit). The CM document itself is the QBO-side record.
+            qbo_sync_status=QBOSyncStatus.SKIPPED,
         )
         self.db.add(payment)
         self.db.flush()
