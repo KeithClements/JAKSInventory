@@ -29,10 +29,29 @@ Settings consumed (seeded in routers/settings.py):
     backup_on_startup          "true"/"false"
     backup_min_interval_hours  schedule-lite throttle for startup backups
     backup_last_run            ISO timestamp, written after each success
+    backup_offsite_dir         cloud-synced folder for offsite copies (blank → off)
+
+Two retention pools (C1 fix, FULL_ERP_REVIEW_2026-07-04)
+--------------------------------------------------------
+``backups/`` holds two kinds of files that must NEVER compete for retention:
+
+* **Routine dated backups** ``jaks-YYYYMMDD_HHMMSS.db`` — created here, pruned
+  here to ``backup_retention_count``.
+* **Ad-hoc snapshots** ``jaks-pre*.db`` (premigration from database.py, plus
+  historical prescript copies) — written by other code into the same dir.
+
+The old glob ``jaks-*.db`` matched both, and because ``'p' > '9'`` in ASCII the
+filename-descending sort ranked every ``jaks-pre*`` file above every dated
+backup: ten snapshots permanently filled the retention quota and prune deleted
+each fresh dated backup seconds after it was written. ``list_backups`` now
+matches the dated pattern EXACTLY; snapshots are listed separately via
+``list_snapshots`` and are never pruned by this service.
 """
 from __future__ import annotations
 
 import logging
+import os
+import re
 import shutil
 import sqlite3
 from datetime import datetime
@@ -47,8 +66,16 @@ log = logging.getLogger(__name__)
 TIMESTAMP_FMT = "%Y%m%d_%H%M%S"
 BACKUP_PREFIX = "jaks-"
 BACKUP_GLOB = f"{BACKUP_PREFIX}*.db"
+# Routine pool ONLY: the exact dated shape create_backup() writes. jaks-pre*.db
+# snapshots (premigration etc.) must never match — see module docstring.
+DATED_BACKUP_RE = re.compile(r"^jaks-\d{8}_\d{6}\.db$")
 DEFAULT_BACKUP_DIRNAME = "backups"
 DEFAULT_RETENTION = 10
+
+# Fernet key material for secrets-at-rest (QBO tokens, Anthropic key). Without
+# this file a restored DB has undecryptable secrets — offsite_copy ships it
+# alongside the newest backup.
+FERNET_KEYFILE = Path.home() / ".jaks_fernet.key"
 
 
 # ── Path resolution ───────────────────────────────────────────────────────────
@@ -119,10 +146,27 @@ def create_backup(
 # ── List / prune ──────────────────────────────────────────────────────────────
 
 def list_backups(backup_dir: str | Path | None = None) -> list[Path]:
-    """Return backup files, newest first (filename timestamp sorts chronologically)."""
+    """Return ROUTINE dated backups, newest first (filename sorts chronologically).
+
+    Strictly ``jaks-YYYYMMDD_HHMMSS.db`` — ad-hoc ``jaks-pre*`` snapshots live in
+    the same dir but belong to a separate pool (``list_snapshots``) so they can
+    neither consume the retention quota nor be deleted by ``prune_backups``.
+    """
     return sorted(
-        resolve_backup_dir(backup_dir).glob(BACKUP_GLOB),
+        (p for p in resolve_backup_dir(backup_dir).glob(BACKUP_GLOB)
+         if DATED_BACKUP_RE.match(p.name)),
         key=lambda p: p.name,
+        reverse=True,
+    )
+
+
+def list_snapshots(backup_dir: str | Path | None = None) -> list[Path]:
+    """Return the NON-routine ``jaks-*.db`` files (premigration & friends),
+    newest first by mtime (their stamp formats vary, so filenames don't sort)."""
+    return sorted(
+        (p for p in resolve_backup_dir(backup_dir).glob(BACKUP_GLOB)
+         if not DATED_BACKUP_RE.match(p.name)),
+        key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
 
@@ -150,6 +194,87 @@ def prune_backups(
     if removed:
         log.info("pruned %d old backup(s)", len(removed))
     return removed
+
+
+# ── Offsite copy ──────────────────────────────────────────────────────────────
+
+def resolve_offsite_dir(offsite_dir: str | Path | None = None) -> Path | None:
+    """Resolve the offsite (cloud-synced) folder, or None when offsite is off.
+
+    Priority: explicit arg → ``backup_offsite_dir`` setting → disabled. The
+    setting may use env vars (e.g. ``%OneDrive%\\JAKS Backups``); a value whose
+    variables don't expand on this machine is treated as disabled rather than
+    creating a literal ``%OneDrive%`` folder.
+    """
+    if offsite_dir is None:
+        offsite_dir = (get_setting_value("backup_offsite_dir", "") or "").strip()
+    raw = str(offsite_dir).strip()
+    if not raw:
+        return None
+    expanded = os.path.expandvars(raw)
+    if "%" in expanded:
+        log.warning("backup_offsite_dir %r has unexpanded env vars — offsite copy skipped", raw)
+        return None
+    target = Path(expanded)
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def offsite_copy(
+    backup_dir: str | Path | None = None,
+    offsite_dir: str | Path | None = None,
+    *,
+    keyfile: Path | None = None,
+    retention: int | None = None,
+) -> list[Path]:
+    """Copy the newest dated backup + the Fernet keyfile to the offsite folder.
+
+    Best-effort and never raises — offsite is protection, not a gate; a cloud
+    folder being briefly unavailable must not fail a backup run. The offsite
+    pool is pruned to the same retention as the local one. Returns the paths
+    written this call (empty when disabled, up to date, or on error).
+    """
+    written: list[Path] = []
+    try:
+        dest_dir = resolve_offsite_dir(offsite_dir)
+        if dest_dir is None:
+            return written
+        backups = list_backups(backup_dir)
+        if backups:
+            newest = backups[0]
+            dest = dest_dir / newest.name
+            # Same name + size → this backup already made it offsite.
+            if not (dest.is_file() and dest.stat().st_size == newest.stat().st_size):
+                shutil.copy2(newest, dest)
+                written.append(dest)
+                log.info("offsite backup copy: %s", dest)
+        key_src = keyfile if keyfile is not None else FERNET_KEYFILE
+        if key_src.is_file():
+            key_dest = dest_dir / key_src.name
+            shutil.copy2(key_src, key_dest)
+            written.append(key_dest)
+
+        # Prune the offsite dated pool with the same rules as the local one.
+        if retention is None:
+            raw = get_setting_value("backup_retention_count", str(DEFAULT_RETENTION))
+            try:
+                retention = int(raw)
+            except (TypeError, ValueError):
+                retention = DEFAULT_RETENTION
+        retention = max(1, retention)
+        offsite_dated = sorted(
+            (p for p in dest_dir.glob(BACKUP_GLOB) if DATED_BACKUP_RE.match(p.name)),
+            key=lambda p: p.name,
+            reverse=True,
+        )
+        for old in offsite_dated[retention:]:
+            try:
+                old.unlink()
+            except OSError as exc:
+                log.warning("could not prune offsite backup %s: %s", old, exc)
+    except Exception:
+        log.exception("offsite backup copy failed (continuing)")
+    return written
 
 
 # ── Restore ───────────────────────────────────────────────────────────────────

@@ -37,16 +37,24 @@ router = APIRouter(prefix="/admin/backup", tags=["admin", "backup"])
 
 def _status_payload(db: Session) -> dict:
     backups = backup_service.list_backups()
+    snapshots = backup_service.list_snapshots()
     return {
         "backup_dir": str(backup_service.resolve_backup_dir()),
         "retention": get_setting_value_db(db, "backup_retention_count", "10"),
         "on_startup": get_setting_value_db(db, "backup_on_startup", "true"),
         "min_interval_hours": get_setting_value_db(db, "backup_min_interval_hours", "12"),
         "last_run": get_setting_value_db(db, "backup_last_run", ""),
+        "offsite_dir": get_setting_value_db(db, "backup_offsite_dir", ""),
         "count": len(backups),
         "backups": [
             {"name": p.name, "size_bytes": p.stat().st_size}
             for p in backups
+        ],
+        # Ad-hoc jaks-pre* snapshots (premigration etc.) — separate pool, never
+        # pruned by the service, still valid restore points.
+        "snapshots": [
+            {"name": p.name, "size_bytes": p.stat().st_size}
+            for p in snapshots
         ],
     }
 
@@ -67,12 +75,14 @@ def backup_run(db: Session = Depends(get_db), _admin=Depends(require_admin)):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
     removed = backup_service.prune_backups()
+    offsite = backup_service.offsite_copy()  # no-op unless backup_offsite_dir is set
     set_setting_value_db(db, "backup_last_run", datetime.now().isoformat(timespec="seconds"))
     db.commit()
     return JSONResponse({
         "ok": True,
         "created": path.name,
         "pruned": [p.name for p in removed],
+        "offsite": [str(p) for p in offsite],
     })
 
 

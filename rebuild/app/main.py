@@ -261,6 +261,7 @@ def _startup_backup(db: Session) -> None:
 
         backup_service.create_backup()
         backup_service.prune_backups()
+        backup_service.offsite_copy()  # best-effort; no-op unless backup_offsite_dir is set
         set_setting_value_db(db, "backup_last_run", datetime.now().isoformat(timespec="seconds"))
         db.commit()
         log.info("startup backup complete")
