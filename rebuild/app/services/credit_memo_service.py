@@ -195,7 +195,7 @@ class CreditMemoService(BaseService):
           - amount > 0
           - amount <= cm.unapplied_amount
           - amount <= invoice.balance_due
-          - Invoice is not VOID
+          - Invoice is not VOID and not DRAFT (must be finalized)
 
         After allocation:
           - cm.applied_amount increases, cm.unapplied_amount decreases
@@ -229,6 +229,13 @@ class CreditMemoService(BaseService):
         if invoice.status == InvoiceStatus.VOID:
             raise ValueError(
                 f"Invoice {invoice.invoice_number} is void; cannot apply credit memo"
+            )
+        if invoice.status == InvoiceStatus.DRAFT:
+            # C2 gate — a draft has never passed finalise(); applying a CM would
+            # flip it to PAID with no tax freeze / inventory decrement done.
+            raise ValueError(
+                f"Invoice {invoice.invoice_number} is still a draft — "
+                f"finalize it before applying a credit memo."
             )
         if invoice.customer_id != cm.customer_id:
             raise ValueError(

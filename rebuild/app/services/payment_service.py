@@ -117,6 +117,7 @@ class PaymentService(BaseService):
                 invoice = self.db.query(Invoice).filter(Invoice.id == inv_id).first()
                 if invoice is None or invoice.customer_id != customer_id:
                     raise ValueError(f"Invoice {inv_id} not found or belongs to different customer")
+                self._assert_invoice_payable(invoice)
                 apply = min(remaining, invoice.balance_due)
                 if apply <= 0:
                     continue
@@ -155,6 +156,7 @@ class PaymentService(BaseService):
         invoice = self.db.query(Invoice).filter(Invoice.id == invoice_id).first()
         if invoice is None:
             raise ValueError(f"Invoice {invoice_id} not found")
+        self._assert_invoice_payable(invoice)
 
         if amount > invoice.balance_due + 0.001:
             raise ValueError(f"Amount {amount} exceeds invoice balance due {invoice.balance_due}")
@@ -324,6 +326,7 @@ class PaymentService(BaseService):
         invoice = self.db.query(Invoice).filter(Invoice.id == invoice_id).first()
         if invoice is None:
             raise ValueError(f"Invoice {invoice_id} not found")
+        self._assert_invoice_payable(invoice)
         if amount > invoice.balance_due + 0.001:
             raise ValueError(f"Amount {amount} exceeds balance due {invoice.balance_due}")
 
@@ -496,6 +499,27 @@ class PaymentService(BaseService):
         if p is None:
             raise ValueError(f"Payment {payment_id} not found")
         return p
+
+    def _assert_invoice_payable(self, invoice: Invoice) -> None:
+        """
+        Money may only be applied to a finalized invoice (C2 gate).
+
+        A DRAFT has never passed finalise() — no tax freeze, no cost snapshot,
+        no inventory decrement, no INVOICE_SALE ledger row — so paying it would
+        flip it straight to PAID/locked with none of that done, and the QBO
+        worker would push a never-finalized invoice. A VOID invoice must never
+        accept money either. refresh_payment_status() re-checks before flipping
+        status, so both layers sit inside the same uncommitted transaction.
+        """
+        if invoice.status == InvoiceStatus.DRAFT:
+            raise ValueError(
+                f"Invoice {invoice.invoice_number} is still a draft — "
+                f"finalize it before recording a payment."
+            )
+        if invoice.status == InvoiceStatus.VOID:
+            raise ValueError(
+                f"Invoice {invoice.invoice_number} is void and cannot accept payments."
+            )
 
     def _create_allocation(self, payment_id: int, invoice_id: int, amount: float) -> PaymentAllocation:
         allocation = PaymentAllocation(
