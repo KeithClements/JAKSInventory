@@ -1025,9 +1025,22 @@ class InvoiceService(BaseService):
         """
         Recalculate and persist invoice.status from current allocations.
         Sole owner of invoice.status mutations after finalize.
+
+        Only meaningful for finalized invoices (OPEN/PARTIAL/PAID). A DRAFT
+        here means an allocation slipped past the payable gate — fail loudly
+        rather than flip a never-finalized invoice to PAID (C2 backstop).
+        A VOID invoice keeps its status; payment math must never resurrect it.
         """
         invoice = self._get_or_404(invoice_id)
         self.db.expire(invoice)
+
+        if invoice.status == InvoiceStatus.DRAFT:
+            raise ValueError(
+                f"Invoice {invoice.invoice_number} is still a draft — "
+                f"finalize it before applying payments."
+            )
+        if invoice.status == InvoiceStatus.VOID:
+            return
 
         balance = invoice.balance_due
         if balance <= 0.001:
