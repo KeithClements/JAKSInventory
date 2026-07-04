@@ -100,9 +100,13 @@ def isolated_app(tmp_path, monkeypatch):
 
     # Deterministic: no startup-backup noise. Backups resolve to <tmp>/backups
     # (resolve_backup_dir falls back to DB_PATH.parent.parent/backups).
+    # backup_offsite_dir must be blanked too — its seed default points at the
+    # developer's real %OneDrive%, and the /run route ships the newest backup
+    # there; a test must never write outside tmp_path.
     db = SessionLocal()
     try:
         set_setting_value_db(db, "backup_on_startup", "false")
+        set_setting_value_db(db, "backup_offsite_dir", "")
         db.commit()
     finally:
         db.close()

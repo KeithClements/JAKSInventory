@@ -185,6 +185,11 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     "backup_on_startup":           ("true",    "Run a backup automatically on startup"),
     "backup_min_interval_hours":   ("12",      "Min hours between automatic startup backups"),
     "backup_last_run":             ("",        "Last successful backup (ISO timestamp)"),
+    # C1 — offsite copy of the newest backup + Fernet keyfile after every backup
+    # run. Env vars expand at run time (%OneDrive% → the user's synced folder);
+    # unexpandable values disable the copy safely, so this default is inert on
+    # machines without OneDrive. Blank turns it off.
+    "backup_offsite_dir":          (r"%OneDrive%\JAKS Backups", "Offsite backup folder (cloud-synced; blank = off)"),
 
     # §5.12 — PDF / document branding (logo set via POST /settings/logo upload)
     "company_logo_path":           ("",        "Company logo path under static/ (set via upload)"),
@@ -227,6 +232,9 @@ VISIBLE_KEYS = [
     "default_core_return_days", "default_restock_fee_percent",
     "warranty_require_esn",
     "business_close_time",
+    # Backups (C1) — the offsite folder is owner-editable; the rest of the
+    # backup_* keys stay non-visible (managed by the service/startup hook).
+    "backup_offsite_dir",
     # Integrations
     "qbo_client_id", "qbo_client_secret", "qbo_environment", "qbo_redirect_uri",
     "qbo_push_tax",

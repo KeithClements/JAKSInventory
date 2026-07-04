@@ -3216,6 +3216,26 @@ Lint: 157 passed, 1 xfailed (pre-existing tbl-classes xfail). No regressions.
 
 ---
 
+#### §8AA. Settings → System: Backups & Restore panel (C1 data-safety fix, 2026-07-04)
+
+FULL_ERP_REVIEW_2026-07-04 C1 exposed that Settings pointed users at a nonexistent "Admin
+tools" page for backups. Shipped alongside the backend fix (two retention pools in
+`backup_service.py` + offsite copies):
+
+- **New card** in the System tab (OUTSIDE the main settings `<form>`, same placement pattern
+  as the Company-logo / QBO panels): fetch-driven over the existing `/admin/backup` JSON
+  router. "Back Up Now", dated-backup list with per-row **Restore** (confirm dialog, server
+  takes a pre-restore safety copy), and a `<details>` list of `jaks-pre*` snapshots as
+  additional restore points. All tokens copied from the settings idiom in the same file
+  (card `rounded-xl bg-white border border-gray-100 shadow-sm p-6`, green/red flash rows,
+  `bg-brand-700` primary button, `divide-y divide-gray-100` lists). No new primitives.
+- **New editable field** `backup_offsite_dir` in the System tab (added to `VISIBLE_KEYS`) —
+  cloud-synced folder for the automatic offsite copy of the newest backup + Fernet keyfile.
+- Create/restore POSTs stay ADMIN-gated server-side; a bookkeeper's 403 surfaces in the
+  panel's error row. Owner runbook: `docs/BACKUP_RESTORE_RUNBOOK.md`.
+
+---
+
 ### 9. Functional Gate — Definition of Done
 
 **Ratified 2026-05-30.**
