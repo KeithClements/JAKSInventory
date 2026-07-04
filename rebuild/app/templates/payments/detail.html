@@ -24,6 +24,14 @@
       </svg>
       QBO Synced
     </span>
+  {% elif payment.payment_method == 'account_credit' %}
+    {# Synthetic non-cash row (credit memo / credit balance applied to an invoice).
+       Never pushed — a QBO Payment here would book phantom cash into Undeposited
+       Funds; the credit memo document is the QuickBooks-side record. #}
+    <span class="inline-flex items-center gap-1 rounded-md bg-gray-50 border border-gray-200 text-gray-500 px-2.5 py-1 text-xs font-medium"
+          title="Account-credit applications are non-cash and never sync to QuickBooks — the credit memo (or the credit's source document) is the QBO record.">
+      Non-cash — not synced to QBO
+    </span>
   {% elif payment.status == PaymentStatus.APPLIED and ns.has_alloc and ns.all_synced %}
     <form method="post" action="/qbo/push-payment/{{ payment.id }}" class="inline">
       <button type="submit" class="btn-secondary btn-sm"

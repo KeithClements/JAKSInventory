@@ -125,8 +125,11 @@ def qbo_push_payment(
             f"/payments/{payment_id}?error={url_quote(_DENIED_MSG)}", status_code=303
         )
     if result.get("ok"):
-        if result.get("skipped"):
+        if result.get("skipped") == "already synced":
             msg = "Payment is already synced to QuickBooks."
+        elif result.get("skipped"):
+            # e.g. the non-cash account-credit refusal — surface the real reason.
+            msg = result["skipped"]
         else:
             msg = f"Payment pushed to QuickBooks (id {result.get('qbo_id', '')})."
         return RedirectResponse(f"/payments/{payment_id}?ok={url_quote(msg)}", status_code=303)

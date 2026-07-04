@@ -334,7 +334,11 @@ class PaymentService(BaseService):
             amount_received=amount,
             status=PaymentStatus.APPLIED,
             notes="Applied from account credit balance",
-            qbo_sync_status=QBOSyncStatus.PENDING,
+            # SKIPPED, never PENDING: drawing down credit_balance moves no cash,
+            # so this must never push to QBO as a Payment (it would book phantom
+            # cash into Undeposited Funds). The credit's source document (credit
+            # memo, core return, etc.) is the QBO-side record.
+            qbo_sync_status=QBOSyncStatus.SKIPPED,
         )
         self.db.add(payment)
         self.db.flush()
