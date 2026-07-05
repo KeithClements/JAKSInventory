@@ -17,6 +17,8 @@ so every service's audit() row is stamped with the real signed-in user.
 """
 from __future__ import annotations
 
+import threading
+import time
 from datetime import datetime
 from urllib.parse import quote as url_quote
 
@@ -39,9 +41,73 @@ router = APIRouter(tags=["auth"])
 templates = Jinja2Templates(directory="app/templates")
 
 
+# ── Login throttle (brute-force lockout) ──────────────────────────────────────
+# The app binds 0.0.0.0 on the shop LAN with no lockout, so admin/admin-class
+# guesses were free. After LOGIN_FAIL_MAX failures for the same username+IP within
+# the window, further attempts are refused for LOGIN_LOCK_SECONDS — long enough to
+# make online guessing impractical, short enough that a fat-fingered owner just
+# waits a minute. In-process only (single-box deployment); a restart clears it.
+# Skipped under the test bypass so the suite is unaffected — a dedicated test
+# (test_login_throttle) unsets it to exercise the real path. (C-review: no lockout.)
+LOGIN_FAIL_MAX = 5
+LOGIN_LOCK_SECONDS = 60
+_login_fails: dict[str, tuple[int, float]] = {}   # key → (fail_count, last_fail_ts)
+_login_lock = threading.Lock()
+
+
+def _throttle_key(request: Request, username: str) -> str:
+    ip = request.client.host if request.client else "?"
+    return f"{username.strip().lower()}|{ip}"
+
+
+def _login_locked_for(key: str) -> float:
+    """Seconds remaining on the lockout for ``key``, or 0 if not locked."""
+    with _login_lock:
+        rec = _login_fails.get(key)
+        if not rec:
+            return 0.0
+        count, last = rec
+        if count < LOGIN_FAIL_MAX:
+            return 0.0
+        remaining = LOGIN_LOCK_SECONDS - (time.time() - last)
+        if remaining <= 0:
+            _login_fails.pop(key, None)
+            return 0.0
+        return remaining
+
+
+def _record_login_fail(key: str) -> None:
+    with _login_lock:
+        count, last = _login_fails.get(key, (0, 0.0))
+        # A fresh window if the previous lockout fully elapsed.
+        if count >= LOGIN_FAIL_MAX and (time.time() - last) >= LOGIN_LOCK_SECONDS:
+            count = 0
+        _login_fails[key] = (count + 1, time.time())
+
+
+def _clear_login_fails(key: str) -> None:
+    with _login_lock:
+        _login_fails.pop(key, None)
+
+
+def reset_login_throttle() -> None:
+    """Clear all throttle state (test helper / manual unlock)."""
+    with _login_lock:
+        _login_fails.clear()
+
+
+def _throttle_active() -> bool:
+    """Throttle everywhere except under the suite's auth bypass."""
+    from app.security import _test_bypass
+    return not _test_bypass()
+
+
 @router.get("/login")
 def login_form(request: Request, error: str = ""):
-    return templates.TemplateResponse(request, "auth/login.html", {"error": bool(error)})
+    return templates.TemplateResponse(
+        request, "auth/login.html",
+        {"error": bool(error), "locked": error == "locked"},
+    )
 
 
 @router.post("/login")
@@ -51,6 +117,13 @@ def login_submit(
     password: str = Form(...),
     db: Session = Depends(get_db),
 ):
+    throttle = _throttle_active()
+    key = _throttle_key(request, username)
+    if throttle and _login_locked_for(key) > 0:
+        # Too many recent failures for this username/IP — refuse without even
+        # checking the password (which is what makes online guessing impractical).
+        return RedirectResponse("/login?error=locked", status_code=303)
+
     user = (
         db.query(User)
         .filter(User.username == username.strip(), User.is_active == True)  # noqa: E712
@@ -58,8 +131,12 @@ def login_submit(
     )
     if user is None or not verify_password(password, user.password_hash):
         # Same response whether the user exists or not (no account enumeration).
+        if throttle:
+            _record_login_fail(key)
         return RedirectResponse("/login?error=1", status_code=303)
 
+    if throttle:
+        _clear_login_fails(key)
     user.last_login_at = datetime.utcnow()
     db.commit()
 

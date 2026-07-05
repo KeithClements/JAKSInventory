@@ -238,6 +238,84 @@ class InventoryService(BaseService):
         self.db.commit()
         return txn
 
+    def apply_physical_count(
+        self,
+        counts,
+        *,
+        note: str = "",
+        dry_run: bool = True,
+    ) -> dict:
+        """Set on-hand quantities from a physical count (the go-live loading task).
+
+        ``counts``: iterable of ``(sku, counted_qty)``. For each resolved product,
+        computes ``delta = counted - current`` and applies it as a ledger-backed
+        adjustment (reason=CYCLE_COUNT) so the count is auditable and the nightly
+        resync can't undo it. Products whose count already matches are skipped;
+        unknown SKUs are collected and NEVER created. All writes happen in ONE
+        transaction (committed once) so a partial failure leaves the DB untouched.
+
+        ``dry_run=True`` (the default) computes the plan without writing — the
+        summary is identical either way, so an operator can preview then re-run with
+        ``dry_run=False``. Counted stock is valued at each product's existing average
+        cost (a count sets quantity, not cost).
+
+        Returns: ``{applied, unchanged, not_found: [sku], changes: [{sku, before,
+        after, delta}], dry_run}``.
+        """
+        self.assert_can(Permission.INVENTORY_ADJUST)
+
+        note = note or "Physical count load"
+        applied = 0
+        unchanged = 0
+        not_found: list[str] = []
+        changes: list[dict] = []
+
+        for raw_sku, raw_qty in counts:
+            sku = str(raw_sku).strip()
+            if not sku:
+                continue
+            try:
+                counted = int(raw_qty)
+            except (TypeError, ValueError):
+                raise ValueError(f"Count for SKU {sku!r} is not a whole number: {raw_qty!r}")
+            if counted < 0:
+                raise ValueError(f"Count for SKU {sku!r} cannot be negative: {counted}")
+
+            product = self.db.query(Product).filter(Product.sku == sku).first()
+            if product is None:
+                not_found.append(sku)
+                continue
+
+            before = product.qty_on_hand or 0
+            delta = counted - before
+            if delta == 0:
+                unchanged += 1
+                continue
+
+            changes.append({"sku": sku, "before": before, "after": counted, "delta": delta})
+            if not dry_run:
+                self.apply_stock_delta(
+                    product,
+                    delta,
+                    InventoryTxnType.MANUAL_ADJUSTMENT,
+                    EntityType.INVENTORY_ADJUSTMENT,
+                    0,
+                    notes=f"{note} — counted {counted} (was {before})",
+                    reason=AdjustmentReason.CYCLE_COUNT,
+                )
+            applied += 1
+
+        if not dry_run and changes:
+            self.db.commit()
+
+        return {
+            "applied": applied,
+            "unchanged": unchanged,
+            "not_found": not_found,
+            "changes": changes,
+            "dry_run": dry_run,
+        }
+
     def _apply_shopify_stock_delta(
         self, product_id: int, delta_pieces: int, *,
         order_ref_id: int | None = None, order_name: str = "", note: str = "",

@@ -162,6 +162,17 @@ undiscoverable. *Evidence:* `service_install.py:75-89`, `main.py:126-655`, verif
 
 ## HIGH — will bite during the 30-day trial
 
+> **UPDATE 2026-07-05: a second fix wave landed** (committed on `backend/workflow-series-3`,
+> full suite green). Resolved from the list below: **A/R aging now excludes drafts**; **sales-tax /
+> sales reports bucket by `locked_at`** (= QBO TxnDate) instead of `created_at`; **quote lines floor
+> qty at 1**; **login lockout** (5 fails/username+IP → 60s); **physical-count loader** built
+> (`InventoryService.apply_physical_count` + `scripts/load_physical_count.py`); and **CI now runs the
+> full suite** from a root `.github/workflows/ci.yml`. New tests: `test_h_report_date_and_drafts.py`,
+> `test_h_quote_qty_floor.py`, `test_login_throttle.py`, `test_physical_count_loader.py`. Still open
+> below: Shopify order-feed proving, QBO manual-push/dead-token banner, price-lock on full import,
+> credit-memo tax, overpayment/refund push, session key at rest, HTTPS-on-LAN, PO receive concurrency,
+> printed-doc phone/commas.
+
 **Integrations (every lane is one-way and blind):**
 - **Shopify order feed** is now **committed** (`shopify_order_sync.py` @ `73bb0b7`, wired at
   `main.py` startup with a `ShopifyProcessedOrder` idempotency ledger) — the "untracked code crashes
@@ -306,10 +317,16 @@ undiscoverable. *Evidence:* `service_install.py:75-89`, `main.py:126-655`, verif
 - [x] ~~Stop credit-memo application from double-posting cash to QBO.~~ **DONE (C3)** — `ACCOUNT_CREDIT` payments SKIPPED + refused pre-QBO.
 - [x] ~~Fix the forced-password-rotation 403.~~ **DONE (C4)** — CSRF stamper on `account.html` + branded 403 page.
 - [x] ~~Auto-start/auto-restart wrapper, rotating file logs, `/health` check.~~ **DONE (C5)** — Task Scheduler + supervised runner + `logs/axle.log` + `/health`.
-- [ ] **Rotate/remove `admin/admin` + `bookkeeper/bookkeeper`; add a login lockout; put it behind HTTPS on the LAN.** *(next — owner action + code)*
-- [ ] **Tag** the tree; wire the full suite + 12-second smoke into CI (move `.github/` to the git root — it's currently ignored); write a rollback runbook. *(untracked-import blocker is resolved: order feed is committed)*
-- [ ] Build (or hand-key with a documented rule) the **physical-count loader** so the trial tests real inventory.
-- [ ] Keep drafts out of A/R aging; pick one date basis; drop the qty floor to reject negative/zero lines.
+- [~] **Login lockout DONE** (5 fails/username+IP → 60s cooldown). **Still owner action:** rotate the live
+      `bookkeeper/bookkeeper` password (the rotation gate forces it on first login) and put HTTPS on the LAN
+      (a local reverse proxy / self-signed cert — `JAKS_SECURE_COOKIES=1` is already wired for it).
+- [x] ~~Wire the full suite into CI (move `.github/` to the git root — it's currently ignored).~~ **DONE** —
+      root `.github/workflows/ci.yml` runs the full suite on `windows-latest`. *(Still to do: `git tag` the
+      release, a rollback runbook, and relocating the stale ui-lint/visual workflows once baselines are refreshed.)*
+- [x] ~~Build the physical-count loader so the trial tests real inventory.~~ **DONE** —
+      `InventoryService.apply_physical_count` (ledger-backed, dry-run default) + `scripts/load_physical_count.py` CSV loader.
+- [x] ~~Keep drafts out of A/R aging; pick one date basis; drop the qty floor.~~ **DONE** — aging filters to
+      finalized statuses; sales-tax/sales reports bucket by `locked_at` (= QBO TxnDate); quote lines floor qty at 1.
 
 **Should-fix in week 1:**
 - [ ] Fix the printed-doc phone duplication + thousands separators (customers see this first).

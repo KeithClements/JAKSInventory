@@ -313,6 +313,11 @@ def test_sales_tax_export_csv():
     cust = _customer(s, company_name="Tax Export Co")
     inv = _invoice(s, cust, status=InvoiceStatus.OPEN, number="INV-TAX-CSV",
                    created_at=_MAY_DT)
+    # A finalized (OPEN) invoice always carries a locked_at = its finalize date, and
+    # the sales-tax report now buckets by that (= the QBO TxnDate). Set it so this
+    # represents a real MAY sale; without it the startup overdue-locker would stamp
+    # locked_at to "now" and (correctly) push the sale into the current month.
+    inv.locked_at = _MAY_DT
     _line(s, inv, qty=1, unit_price=100.0, discount_pct=10.0,
           is_taxable=True, tax_amount=7.43)
     s.commit(); s.close()

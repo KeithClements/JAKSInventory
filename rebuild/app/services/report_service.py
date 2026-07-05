@@ -27,7 +27,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-from sqlalchemy import func
+from sqlalchemy import DateTime, func, type_coerce
 from sqlalchemy.orm import Session, joinedload
 
 from app.constants import (
@@ -53,6 +53,23 @@ _FINALIZED_INVOICE_STATUSES = (
     InvoiceStatus.PARTIAL,
     InvoiceStatus.PAID,
 )
+
+# Period-bucketing date for finalized-invoice reports (sales tax, sales by
+# customer/product). QBO posts each invoice with TxnDate = locked_at (the finalize
+# date), so bucketing by created_at made "June sales tax" in the ERP disagree with
+# QBO's June for any invoice drafted in one month and finalized in the next.
+# coalesce(locked_at, created_at) ties these reports to the QBO period; a finalized
+# invoice always has locked_at, the fallback only guards legacy rows.
+# (C-review: report date basis mismatch.)
+# A fresh expression per call — NOT a shared module-level instance: reusing one
+# ColumnElement across queries can collide in SQLAlchemy's compiled-statement cache
+# and bind the datetime comparison wrong (observed: the route matched 0 rows while a
+# direct call matched 1). type_coerce keeps the DateTime affinity that a bare
+# func.coalesce loses, so the ">= start_dt" comparison binds correctly when locked_at
+# is NULL (finalized invoices always have locked_at in production; the fallback to
+# created_at only guards legacy/test rows).
+def _invoice_post_date():
+    return type_coerce(func.coalesce(Invoice.locked_at, Invoice.created_at), DateTime)
 
 # Open core charge states for the outstanding-cores report
 _OPEN_CORE_STATUSES = (
@@ -136,9 +153,12 @@ class ReportService(BaseService):
         """
         as_of = as_of_date or date.today()
 
-        # Load all non-void invoices with the relationships needed for balance_due
-        # and customer name. DRAFT invoices have no balance due (not posted) but
-        # leaving them in costs nothing — they'll be filtered out by balance<=0.
+        # Only POSTED invoices carry A/R. DRAFT invoices are NOT filtered out by
+        # balance<=0 (a draft carries its full total as balance_due — nothing zeroes
+        # it except VOID), so including them silently inflated A/R and the dashboard
+        # by the sum of every open draft, and disagreed with StatementService (which
+        # filters OPEN/PARTIAL). Restrict to finalized statuses. (C-review: A/R aging
+        # included drafts.)
         invoices = (
             self.db.query(Invoice)
             .options(
@@ -146,7 +166,7 @@ class ReportService(BaseService):
                 joinedload(Invoice.allocations),
                 joinedload(Invoice.customer),
             )
-            .filter(Invoice.status != InvoiceStatus.VOID)
+            .filter(Invoice.status.in_(_FINALIZED_INVOICE_STATUSES))
             .all()
         )
 
@@ -404,8 +424,8 @@ class ReportService(BaseService):
             )
             .filter(
                 Invoice.status.in_(_FINALIZED_INVOICE_STATUSES),
-                Invoice.created_at >= start_dt,
-                Invoice.created_at < end_exclusive,
+                _invoice_post_date() >= start_dt,
+                _invoice_post_date() < end_exclusive,
             )
             .all()
         )
@@ -526,8 +546,8 @@ class ReportService(BaseService):
             .join(Invoice, InvoiceLine.invoice_id == Invoice.id)
             .filter(
                 Invoice.status.in_(_FINALIZED_INVOICE_STATUSES),
-                Invoice.created_at >= start_dt,
-                Invoice.created_at < end_exclusive,
+                _invoice_post_date() >= start_dt,
+                _invoice_post_date() < end_exclusive,
             )
             .all()
         )
@@ -1311,8 +1331,8 @@ class ReportService(BaseService):
             )
             .filter(
                 Invoice.status.in_(_FINALIZED_INVOICE_STATUSES),
-                Invoice.created_at >= start_dt,
-                Invoice.created_at < end_exclusive,
+                _invoice_post_date() >= start_dt,
+                _invoice_post_date() < end_exclusive,
             )
             .all()
         )
@@ -1338,7 +1358,7 @@ class ReportService(BaseService):
                 2,
             )
 
-            invoice_date = as_date(inv.created_at) or date.today()
+            invoice_date = as_date(inv.locked_at) or as_date(inv.created_at) or date.today()
 
             rows.append({
                 "invoice": inv,

@@ -34,7 +34,11 @@
     </div>
     <p class="text-sm text-steel-500 mt-4 mb-6">Sign in to continue</p>
 
-    {% if error %}
+    {% if locked %}
+    <div class="bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-lg px-3 py-2 mb-4">
+      Too many failed attempts. Please wait a minute and try again.
+    </div>
+    {% elif error %}
     <div class="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-3 py-2 mb-4">
       Invalid username or password.
     </div>

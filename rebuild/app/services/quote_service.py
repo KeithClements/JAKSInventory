@@ -202,7 +202,10 @@ class QuoteService(BaseService):
         if line is None:
             raise ValueError(f"QuoteLine {line_id} not found")
         updatable = ["description", "qty", "unit_price", "unit_cost", "discount_pct", "sort_order"]
-        qty_changed = "qty" in data and int(data["qty"]) != line.qty
+        # Validate qty up front so a bad value is rejected before any field is set.
+        if "qty" in data:
+            data = {**data, "qty": self._validate_qty(data["qty"])}
+        qty_changed = "qty" in data and data["qty"] != line.qty
         for field in updatable:
             if field in data:
                 value = data[field]
@@ -839,6 +842,24 @@ class QuoteService(BaseService):
         if not (0 <= pct <= 100):
             raise ValueError("Discount must be between 0 and 100")
         return pct
+
+    @staticmethod
+    def _validate_qty(value) -> int:
+        """Normalize a line quantity to an int >= 1.
+
+        The qty cell is the busiest input in the app; without a floor a
+        fat-fingered '-3' or '0' produced a negative/zero LINE TOTAL that
+        cascaded to the quote total and — because a negative quote converts
+        straight into an SO/invoice — carried into the money path. Reject
+        anything below 1. (C-review: qty box accepts negative/zero on quote lines.)
+        """
+        try:
+            qty = int(value)
+        except (TypeError, ValueError):
+            raise ValueError("Quantity must be a whole number of 1 or more")
+        if qty < 1:
+            raise ValueError("Quantity must be at least 1")
+        return qty
 
     def update_header(self, quote_id: int, data: dict, submitted_updated_at: str | None = None) -> Quote:
         """Update quote-level notes and settings. Active (non-converted) quotes only."""
