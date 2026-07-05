@@ -24,13 +24,13 @@ jobs:
   tests:
     runs-on: windows-latest
     timeout-minutes: 30
-    # Pin the string-hash seed so the run is reproducible. A handful of PRE-EXISTING
-    # tests have hash-order-dependent isolation leaks (a different unrelated test — SO/PO,
-    # VCR print, SKU regen — fails per unpinned run; each passes in isolation). Pinning
-    # keeps CI deterministically green; hardening those tests to be order-independent is
-    # tracked as separate tech-debt. The full suite is 3084 green under this seed.
-    env:
-      PYTHONHASHSEED: "0"
+    # No PYTHONHASHSEED pin — the suite is order/seed-independent. The earlier
+    # "hash-order flakiness" (a different unrelated test failing per unpinned run) was
+    # actually leaked background daemon schedulers: a file-DB test spawned them, and
+    # they ticked on the shared global SessionLocal, concurrently using a later test's
+    # single StaticPool connection and corrupting its transaction. Fixed by gating the
+    # scheduler startup on JAKS_DISABLE_SCHEDULERS (app/main.py on_startup +
+    # tests/conftest.py), pinned by tests/test_no_scheduler_threads_in_tests.py.
     steps:
       - uses: actions/checkout@v4
 

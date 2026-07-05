@@ -37,6 +37,19 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 # not the auth middleware (which has its own test when needed).
 os.environ.setdefault("JAKS_SKIP_AUTH", "1")
 
+# Never spawn the background daemon schedulers under the test suite. app.main's
+# on_startup self-skips them on an in-memory engine, but a file-DB test (backup/
+# restore, alembic adoption) points the app at a temp FILE engine, so that guard
+# doesn't fire and the daemon threads spawn. They then persist for the whole
+# session and tick on the shared global app.database.SessionLocal against whatever
+# in-memory engine a LATER test activated — concurrently using that test's single
+# StaticPool connection and corrupting its transaction. That produced a
+# "different unrelated test fails each run" flakiness that looked hash-order
+# dependent but is really daemon-thread timing (see app/main.py on_startup). Set
+# BEFORE any test module imports (this conftest is imported first) so a file-DB
+# module that boots a TestClient at import time is covered too.
+os.environ.setdefault("JAKS_DISABLE_SCHEDULERS", "1")
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool

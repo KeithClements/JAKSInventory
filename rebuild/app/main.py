@@ -289,6 +289,18 @@ def on_startup() -> None:
         _startup_backup(db)
     finally:
         db.close()
+    # Background daemon schedulers must NEVER run under the test suite. Each helper
+    # self-skips an in-memory engine, but a file-DB test (backup/restore, alembic
+    # adoption) legitimately points the app at a temp FILE engine — so that guard
+    # doesn't fire, the daemon threads spawn, and they persist for the rest of the
+    # session ticking on the shared global SessionLocal against whatever in-memory
+    # engine a LATER test activated. That concurrently uses the later test's single
+    # StaticPool connection and corrupts its in-flight transaction — the true source
+    # of the "different unrelated test fails each run" flakiness (mis-attributed to
+    # hash-order). conftest sets JAKS_DISABLE_SCHEDULERS=1 so every test is covered,
+    # file-DB ones included; production never sets it, so the schedulers run normally.
+    if os.environ.get("JAKS_DISABLE_SCHEDULERS") == "1":
+        return
     _start_shopify_scheduler()
     _start_shopify_order_poll()
     _start_shopify_weekly_audit()

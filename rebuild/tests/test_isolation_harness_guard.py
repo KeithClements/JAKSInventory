@@ -29,6 +29,10 @@ _EXEMPT = {
     # is False and real auth/RBAC runs (mirrors test_backup_acceptance.py); it
     # saves/restores the app globals + dependency_overrides itself.
     "test_s22_reports_authz.py",
+    # Scheduler-thread regression: must build a raw FILE engine to reproduce the
+    # exact polluter condition (a file-DB TestClient startup, which the in-memory
+    # fresh_engine() harness cannot express) and assert no daemon schedulers spawn.
+    "test_no_scheduler_threads_in_tests.py",
 }
 
 _TARGETS = sorted(
