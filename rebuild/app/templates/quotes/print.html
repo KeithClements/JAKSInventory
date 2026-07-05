@@ -470,7 +470,8 @@
         {% if customer_addr_lines %}
           <br>{% for ln in customer_addr_lines %}{{ ln }}{% if not loop.last %}<br>{% endif %}{% endfor %}
         {% endif %}
-        {% if quote.customer.phone %}<br><span class="meta-mono">{{ quote.customer.phone }}</span>{% endif %}
+        {# phone is already the trailing line in customer_addr_lines above — see
+           FULL_ERP_REVIEW_2026-07-04 (printed docs showed it twice). #}
       </div>
     </div>
 
@@ -544,11 +545,11 @@
           </td>
 
           <td class="r money">{{ line.qty }}{% if line.product and line.product.unit_of_measure and line.product.unit_of_measure != 'EA' %} {{ line.product.unit_of_measure }}{% endif %}</td>
-          <td class="r money">${{ "%.2f"|format(line.unit_price) }}</td>
+          <td class="r money">${{ "{:,.2f}".format(line.unit_price) }}</td>
           <td class="td-disc">
             {% if line.discount_pct %}{{ "%.0f"|format(line.discount_pct) }}%{% else %}—{% endif %}
           </td>
-          <td class="td-total"><b>${{ "%.2f"|format(line.line_total) }}</b></td>
+          <td class="td-total"><b>${{ "{:,.2f}".format(line.line_total) }}</b></td>
         </tr>
       {% else %}
         <tr>
@@ -571,16 +572,16 @@
       {% if discount_amount > 0 %}
       <div class="row">
         <span class="lbl">Subtotal (list)</span>
-        <span class="val">${{ "%.2f"|format(gross_total) }}</span>
+        <span class="val">${{ "{:,.2f}".format(gross_total) }}</span>
       </div>
       <div class="row disc-row">
         <span class="lbl">Discount</span>
-        <span class="val">&#x2212;${{ "%.2f"|format(discount_amount) }}</span>
+        <span class="val">&#x2212;${{ "{:,.2f}".format(discount_amount) }}</span>
       </div>
       {% endif %}
       <div class="row">
         <span class="lbl">Subtotal</span>
-        <span class="val">${{ "%.2f"|format(subtotal) }}</span>
+        <span class="val">${{ "{:,.2f}".format(subtotal) }}</span>
       </div>
       {# §21 — show estimated sales tax so a taxable customer is not under-quoted.
          A taxable quote with no jurisdiction rate set shows "0% (no rate set)"
@@ -588,7 +589,7 @@
       {% if quote.is_taxable and quote.tax_amount > 0 %}
       <div class="row">
         <span class="lbl">Sales Tax{% if quote.tax_rate_snapshot %} ({{ "%.3g"|format(quote.tax_rate_snapshot) }}%){% endif %}</span>
-        <span class="val">${{ "%.2f"|format(quote.tax_amount) }}</span>
+        <span class="val">${{ "{:,.2f}".format(quote.tax_amount) }}</span>
       </div>
       {% elif quote.is_taxable %}
       <div class="row">
@@ -598,7 +599,7 @@
       {% endif %}
       <div class="grand">
         <span class="l">Quote Total</span>
-        <span class="v">${{ "%.2f"|format(quote.total) }}</span>
+        <span class="v">${{ "{:,.2f}".format(quote.total) }}</span>
       </div>
     </div>
   </div>
@@ -657,11 +658,11 @@
             </div>
           </td>
           <td class="r money">{{ line.qty }}{% if line.product and line.product.unit_of_measure and line.product.unit_of_measure != 'EA' %} {{ line.product.unit_of_measure }}{% endif %}</td>
-          <td class="r money">${{ "%.2f"|format(line.unit_price) }}</td>
+          <td class="r money">${{ "{:,.2f}".format(line.unit_price) }}</td>
           <td class="td-disc">
             {% if line.discount_pct %}{{ "%.0f"|format(line.discount_pct) }}%{% else %}—{% endif %}
           </td>
-          <td class="td-total"><b>${{ "%.2f"|format(line.line_total) }}</b></td>
+          <td class="td-total"><b>${{ "{:,.2f}".format(line.line_total) }}</b></td>
         </tr>
         {% endfor %}
       </tbody>
@@ -674,7 +675,7 @@
   {% if optional_lines %}
   {% set opt_total = optional_lines | sum(attribute='line_total') %}
   <div class="alt-section">
-    <div class="alt-heading">+ Optional Add-ons: ${{ "%.2f"|format(opt_total) }}</div>
+    <div class="alt-heading">+ Optional Add-ons: ${{ "{:,.2f}".format(opt_total) }}</div>
     <div class="alt-subhead">
       The optional items below are <b>not included</b> in the total above. Add any of them on request.
     </div>
@@ -709,9 +710,9 @@
             </div>
           </td>
           <td class="r money">{{ line.qty }}{% if line.product and line.product.unit_of_measure and line.product.unit_of_measure != 'EA' %} {{ line.product.unit_of_measure }}{% endif %}</td>
-          <td class="r money">${{ "%.2f"|format(line.unit_price) }}</td>
+          <td class="r money">${{ "{:,.2f}".format(line.unit_price) }}</td>
           <td class="td-disc">{% if line.discount_pct %}{{ "%.0f"|format(line.discount_pct) }}%{% else %}—{% endif %}</td>
-          <td class="td-total"><b>${{ "%.2f"|format(line.line_total) }}</b></td>
+          <td class="td-total"><b>${{ "{:,.2f}".format(line.line_total) }}</b></td>
         </tr>
         {% endfor %}
       </tbody>

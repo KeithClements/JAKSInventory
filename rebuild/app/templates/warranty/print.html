@@ -249,7 +249,8 @@
         {% if customer_addr_lines %}
           <br>{% for ln in customer_addr_lines %}{{ ln }}{% if not loop.last %}<br>{% endif %}{% endfor %}
         {% endif %}
-        {% if claim.customer and claim.customer.phone %}<br><span class="meta-mono">{{ claim.customer.phone }}</span>{% endif %}
+        {# phone is already the trailing line in customer_addr_lines above — see
+           FULL_ERP_REVIEW_2026-07-04 (printed docs showed it twice). #}
         {% if claim.vendor %}
           <br><br><span class="ref-key">Vendor</span><b>{{ claim.vendor.name }}</b>
         {% endif %}

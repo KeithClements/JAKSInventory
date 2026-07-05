@@ -38,7 +38,7 @@ from app.services.document_messaging import (
 )
 from app.services.public_links import public_doc_url
 from app.services.document_render import (
-    get_company_dict, get_prepared_by, static_url_fetcher,
+    customer_address_lines, get_company_dict, get_prepared_by, static_url_fetcher,
 )
 from app.models.customer import Customer
 from app.models.quote import Quote
@@ -522,19 +522,14 @@ def _quote_print_context(db: Session, quote: Quote, request: Request,
     subtotal = quote.subtotal
     discount_amount = round(gross_total - subtotal, 2)
 
-    # Pre-format customer address lines to avoid Jinja2 filter edge cases
-    c = quote.customer
-    addr_lines: list[str] = [ln for ln in [c.address_line1, c.address_line2] if ln.strip()]
-    city_parts = [p for p in [c.city, c.state] if p.strip()]
-    city_line = ", ".join(city_parts)
-    if city_line and c.zip_code.strip():
-        city_line += " " + c.zip_code.strip()
-    elif not city_line and c.zip_code.strip():
-        city_line = c.zip_code.strip()
-    if city_line:
-        addr_lines.append(city_line)
-    if c.phone.strip():
-        addr_lines.append(c.phone.strip())
+    # Pre-format customer address lines to avoid Jinja2 filter edge cases.
+    # customer_address_lines() (document_render.py) is the shared builder used by
+    # every other document — it already appends phone as the trailing line. This
+    # module used to carry its own duplicate copy AND the print template rendered
+    # customer.phone a second time right after it, so every printed quote showed
+    # the phone number twice (FULL_ERP_REVIEW_2026-07-04). Consolidated onto the
+    # shared helper; the template's separate phone line was removed to match.
+    addr_lines = customer_address_lines(quote.customer)
 
     return {
         "request":             request,

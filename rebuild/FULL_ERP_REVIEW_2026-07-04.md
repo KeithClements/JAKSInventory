@@ -242,10 +242,15 @@ undiscoverable. *Evidence:* `service_install.py:75-89`, `main.py:126-655`, verif
   stock and writes two ledger rows the nightly resync can't heal.
 
 **Customer-facing paper (what they judge you by):**
-- **Every printed quote and invoice prints the customer's phone number twice**, back to back, and
-  **shows money with no thousands separator** — a $12,500 cylinder head prints as `$12500.00`. 52
-  money cells across five documents, zero commas. The dashboard already formats correctly; the print
-  docs were never held to it.
+- ~~Every printed quote and invoice prints the customer's phone number twice, back to back, and
+  shows money with no thousands separator.~~ **✅ FIXED 2026-07-05** — invoices.py/quotes.py's
+  duplicate inline address-line builders consolidated onto the shared `customer_address_lines()`
+  helper (document_render.py), and the redundant separate phone line was removed from all 6
+  affected templates (invoice/quote/SO/warranty/RA/PO). All 52 money cells across all 5 documents
+  (quote/invoice/SO/PO/customer statement) now use `"{:,.2f}".format(x)`, matching the convention
+  dashboard.html already used. Verified live: phone renders exactly once, `$12,500.00` renders with
+  a comma. Regression: `test_h_print_doc_money_and_phone.py` (5 tests); all 48 pre-existing
+  print/PDF tests still green.
 
 ---
 
@@ -329,7 +334,7 @@ undiscoverable. *Evidence:* `service_install.py:75-89`, `main.py:126-655`, verif
       finalized statuses; sales-tax/sales reports bucket by `locked_at` (= QBO TxnDate); quote lines floor qty at 1.
 
 **Should-fix in week 1:**
-- [ ] Fix the printed-doc phone duplication + thousands separators (customers see this first).
+- [x] ~~Fix the printed-doc phone duplication + thousands separators (customers see this first).~~ **DONE**
 - [ ] Ctrl+K: show *available* stock and price. Replace the New Return 19k-`<option>` picker with the typeahead.
 - [ ] Auto-push invoices on finalize; add a loud "QBO token dead — reconnect" dashboard banner.
 - [ ] Add a batch cap / circuit breaker on mass availability flips (one bad scraper run can hide the whole store).

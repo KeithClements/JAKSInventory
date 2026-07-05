@@ -237,7 +237,8 @@
         {% if vendor_addr_lines %}
           <br>{% for ln in vendor_addr_lines %}{{ ln }}{% if not loop.last %}<br>{% endif %}{% endfor %}
         {% endif %}
-        {% if po.vendor and po.vendor.phone %}<br><span class="meta-mono">{{ po.vendor.phone }}</span>{% endif %}
+        {# phone is already the trailing line in vendor_addr_lines above — see
+           FULL_ERP_REVIEW_2026-07-04 (printed docs showed it twice). #}
         {% if po.vendor and po.vendor.account_number %}<br><span class="ref-key">Acct</span><span class="meta-mono">{{ po.vendor.account_number }}</span>{% endif %}
       </div>
     </div>
@@ -298,8 +299,8 @@
               {% endif %}
             </td>
             <td class="r money">{{ line.qty_ordered }}</td>
-            <td class="r money">${{ "%.2f"|format(line.unit_cost) }}</td>
-            <td class="td-total"><b>${{ "%.2f"|format(line.line_total) }}</b></td>
+            <td class="r money">${{ "{:,.2f}".format(line.unit_cost) }}</td>
+            <td class="td-total"><b>${{ "{:,.2f}".format(line.line_total) }}</b></td>
           </tr>
         {%- endif -%}
       {% else %}
@@ -320,32 +321,32 @@
          Subtotal line below is the discounted figure. #}
       <div class="row">
         <span class="lbl">List Subtotal</span>
-        <span class="val">${{ "%.2f"|format(vol_list_subtotal) }}</span>
+        <span class="val">${{ "{:,.2f}".format(vol_list_subtotal) }}</span>
       </div>
       <div class="row">
         <span class="lbl">Volume Discount ({{ '%g'|format(po.volume_discount_pct) }}%)</span>
-        <span class="val">−${{ "%.2f"|format(vol_savings) }}</span>
+        <span class="val">−${{ "{:,.2f}".format(vol_savings) }}</span>
       </div>
       {% endif %}
       <div class="row">
         <span class="lbl">Subtotal</span>
-        <span class="val">${{ "%.2f"|format(po.subtotal) }}</span>
+        <span class="val">${{ "{:,.2f}".format(po.subtotal) }}</span>
       </div>
       {% if po.core_total and po.core_total > 0 %}
       <div class="row">
         <span class="lbl">Core Charges</span>
-        <span class="val">${{ "%.2f"|format(po.core_total) }}</span>
+        <span class="val">${{ "{:,.2f}".format(po.core_total) }}</span>
       </div>
       {% endif %}
       {% if po.freight_in_cost and po.freight_in_cost > 0 %}
       <div class="row">
         <span class="lbl">Freight</span>
-        <span class="val">${{ "%.2f"|format(po.freight_in_cost) }}</span>
+        <span class="val">${{ "{:,.2f}".format(po.freight_in_cost) }}</span>
       </div>
       {% endif %}
       <div class="grand">
         <span class="l">PO Total</span>
-        <span class="v">${{ "%.2f"|format(po.total) }}</span>
+        <span class="v">${{ "{:,.2f}".format(po.total) }}</span>
       </div>
     </div>
   </div>

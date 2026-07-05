@@ -252,7 +252,8 @@
         {% if customer_addr_lines %}
           <br>{% for ln in customer_addr_lines %}{{ ln }}{% if not loop.last %}<br>{% endif %}{% endfor %}
         {% endif %}
-        {% if ra.customer and ra.customer.phone %}<br><span class="meta-mono">{{ ra.customer.phone }}</span>{% endif %}
+        {# phone is already the trailing line in customer_addr_lines above — see
+           FULL_ERP_REVIEW_2026-07-04 (printed docs showed it twice). #}
       </div>
     </div>
 

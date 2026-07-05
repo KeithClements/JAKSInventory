@@ -281,7 +281,8 @@
           {% if customer_addr_lines %}
             <br>{% for ln in customer_addr_lines %}{{ ln }}{% if not loop.last %}<br>{% endif %}{% endfor %}
           {% endif %}
-          {% if so.customer and so.customer.phone %}<br><span class="meta-mono">{{ so.customer.phone }}</span>{% endif %}
+          {# phone is already the trailing line in customer_addr_lines above — see
+             FULL_ERP_REVIEW_2026-07-04 (printed docs showed it twice). #}
         {% endif %}
       </div>
     </div>
@@ -366,8 +367,8 @@
               {% if line.eta_date %}<div class="eta-tag">ETA {{ line.eta_date.strftime('%m/%d') }}</div>{% endif %}
             </td>
             <td class="r money">{{ line.qty_ordered }}</td>
-            <td class="r money">${{ "%.2f"|format(line.unit_price) }}</td>
-            <td class="td-total"><b>${{ "%.2f"|format(line.line_total) }}</b></td>
+            <td class="r money">${{ "{:,.2f}".format(line.unit_price) }}</td>
+            <td class="td-total"><b>${{ "{:,.2f}".format(line.line_total) }}</b></td>
           </tr>
         {%- endif -%}
       {% else %}
@@ -390,20 +391,20 @@
     <div class="tots">
       <div class="row">
         <span class="lbl">Subtotal</span>
-        <span class="val">${{ "%.2f"|format(so.subtotal) }}</span>
+        <span class="val">${{ "{:,.2f}".format(so.subtotal) }}</span>
       </div>
       <div class="grand">
         <span class="l">Order Total</span>
-        <span class="v">${{ "%.2f"|format(so.subtotal) }}</span>
+        <span class="v">${{ "{:,.2f}".format(so.subtotal) }}</span>
       </div>
       {% if so.deposit_amount and so.deposit_amount > 0 %}
       <div class="row paid-row">
         <span class="lbl">Deposit Collected</span>
-        <span class="val">&#x2212;${{ "%.2f"|format(so.deposit_amount) }}</span>
+        <span class="val">&#x2212;${{ "{:,.2f}".format(so.deposit_amount) }}</span>
       </div>
       <div class="balance">
         <span class="l">Balance at Invoice</span>
-        <span class="v">${{ "%.2f"|format((so.subtotal - so.deposit_amount)|round(2)) }}</span>
+        <span class="v">${{ "{:,.2f}".format((so.subtotal - so.deposit_amount)|round(2)) }}</span>
       </div>
       {% endif %}
     </div>

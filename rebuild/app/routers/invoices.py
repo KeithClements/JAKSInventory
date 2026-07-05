@@ -40,7 +40,7 @@ from app.services.document_messaging import (
 )
 from app.services.public_links import public_doc_url
 from app.services.document_render import (
-    get_company_dict, get_prepared_by, static_url_fetcher,
+    customer_address_lines, get_company_dict, get_prepared_by, static_url_fetcher,
 )
 from app.models.customer import Customer
 from app.models.invoice import Invoice, InvoiceLine
@@ -981,21 +981,12 @@ async def invoice_finalise(
 
 
 # ── Print / PDF ───────────────────────────────────────────────────────────────
-
-def _customer_addr_lines(c) -> list[str]:
-    """Customer address block for printed documents (shared by print + PDF)."""
-    addr_lines: list[str] = [ln for ln in [c.address_line1, c.address_line2] if ln and ln.strip()]
-    city_parts = [p for p in [c.city, c.state] if p and p.strip()]
-    city_line = ", ".join(city_parts)
-    if city_line and c.zip_code and c.zip_code.strip():
-        city_line += " " + c.zip_code.strip()
-    elif not city_line and c.zip_code and c.zip_code.strip():
-        city_line = c.zip_code.strip()
-    if city_line:
-        addr_lines.append(city_line)
-    if c.phone and c.phone.strip():
-        addr_lines.append(c.phone.strip())
-    return addr_lines
+# customer_address_lines() (app/services/document_render.py) is the shared builder
+# — it already appends phone as the trailing line. This module used to carry its
+# own duplicate copy AND the print template rendered customer.phone a second time
+# right after it, so every printed invoice showed the phone number twice
+# (FULL_ERP_REVIEW_2026-07-04). Consolidated onto the shared helper; the template's
+# separate phone line was removed to match.
 
 
 def _invoice_core_slip_context(db: Session, inv) -> dict:
@@ -1038,7 +1029,7 @@ def _invoice_print_context(db: Session, inv, user_id: int) -> dict:
     """Shared render context for the invoice print view and the PDF render."""
     ctx = {
         "invoice": inv,
-        "customer_addr_lines": _customer_addr_lines(inv.customer),
+        "customer_addr_lines": customer_address_lines(inv.customer),
         # Invoice-level discount, computed by the model so the printed document
         # agrees with the List total, Preview panel, and workspace totals panel.
         "discount_amount": inv.discount_amount,

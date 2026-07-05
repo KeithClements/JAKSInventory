@@ -399,7 +399,8 @@
         {% if customer_addr_lines %}
           <br>{% for ln in customer_addr_lines %}{{ ln }}{% if not loop.last %}<br>{% endif %}{% endfor %}
         {% endif %}
-        {% if invoice.customer.phone %}<br><span class="meta-mono">{{ invoice.customer.phone }}</span>{% endif %}
+        {# phone is already the trailing line in customer_addr_lines above — see
+           FULL_ERP_REVIEW_2026-07-04 (printed docs showed it twice). #}
       </div>
     </div>
 
@@ -466,8 +467,8 @@
             {% endif %}
           </td>
           <td class="r money">{{ line.qty }}</td>
-          <td class="r money">${{ "%.2f"|format(line.unit_price) }}</td>
-          <td class="td-total"><b>${{ "%.2f"|format(line.line_total) }}</b></td>
+          <td class="r money">${{ "{:,.2f}".format(line.unit_price) }}</td>
+          <td class="td-total"><b>${{ "{:,.2f}".format(line.line_total) }}</b></td>
         </tr>
       {% else %}
         <tr>
@@ -489,18 +490,18 @@
     <div class="tots">
       <div class="row">
         <span class="lbl">Subtotal</span>
-        <span class="val">${{ "%.2f"|format(invoice.subtotal) }}</span>
+        <span class="val">${{ "{:,.2f}".format(invoice.subtotal) }}</span>
       </div>
       {% if invoice.discount_pct and invoice.discount_pct > 0 %}
       <div class="row disc-row">
         <span class="lbl">Discount ({{ invoice.discount_pct | int }}%)</span>
-        <span class="val">&#x2212;${{ "%.2f"|format(discount_amount) }}</span>
+        <span class="val">&#x2212;${{ "{:,.2f}".format(discount_amount) }}</span>
       </div>
       {% endif %}
       {% if invoice.tax_amount and invoice.tax_amount > 0 %}
       <div class="row">
         <span class="lbl">Tax ({{ invoice.tax_rate_snapshot or invoice.tax_rate }}%)</span>
-        <span class="val">${{ "%.2f"|format(invoice.tax_amount) }}</span>
+        <span class="val">${{ "{:,.2f}".format(invoice.tax_amount) }}</span>
       </div>
       {# Distinguish exempt from "taxable, no rate configured": a non-exempt
          document with 0 tax shows "Sales tax 0% (no rate set)"; only a genuinely
@@ -515,25 +516,25 @@
       {% endif %}
       <div class="grand">
         <span class="l">Invoice Total</span>
-        <span class="v">${{ "%.2f"|format(invoice.total) }}</span>
+        <span class="v">${{ "{:,.2f}".format(invoice.total) }}</span>
       </div>
       {# CC surcharge informational note (R1, NOT added to total) #}
       {% if invoice.apply_cc_surcharge %}
       <p class="cc-note">
         If paid by card, a {{ invoice.cc_surcharge_pct }}% convenience fee
-        (~${{ "%.2f"|format(invoice.surcharge_amount) }}) applies to the card
+        (~${{ "{:,.2f}".format(invoice.surcharge_amount) }}) applies to the card
         portion at processing &mdash; not included in the total above.
       </p>
       {% endif %}
       {% if invoice.amount_paid > 0 %}
       <div class="row paid-row">
         <span class="lbl">Amount Paid</span>
-        <span class="val">&#x2212;${{ "%.2f"|format(invoice.amount_paid) }}</span>
+        <span class="val">&#x2212;${{ "{:,.2f}".format(invoice.amount_paid) }}</span>
       </div>
       <div class="balance">
         <span class="l">Balance Due</span>
         <span class="v">
-          {% if invoice.balance_due <= 0.001 %}PAID IN FULL{% else %}${{ "%.2f"|format(invoice.balance_due) }}{% endif %}
+          {% if invoice.balance_due <= 0.001 %}PAID IN FULL{% else %}${{ "{:,.2f}".format(invoice.balance_due) }}{% endif %}
         </span>
       </div>
       {% endif %}
