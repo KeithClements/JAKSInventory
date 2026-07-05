@@ -717,6 +717,9 @@ def test_update_batch_fires_progress_callback(db, monkeypatch):
     ('price/SEO', done, total) — the hook that drives the live job bar — and a
     callback that raises is swallowed (fail-soft: never breaks the push)."""
     p1, p2 = _product(db), _product(db)
+    p1.shopify_product_id = "gid://shopify/Product/91"    # linked
+    p2.shopify_product_id = "gid://shopify/Product/92"    # linked
+    db.commit()
     svc = ShopifyService(db)
     monkeypatch.setattr(svc, "update_listing_fields",
                         lambda p: {"ok": True, "price_synced": True})
@@ -729,6 +732,42 @@ def test_update_batch_fires_progress_callback(db, monkeypatch):
 
     res = svc.update_batch([p1.id], progress=boom)   # must not raise
     assert res["updated"] == 1
+
+
+def test_update_batch_not_linked_is_skipped_not_failed(db, monkeypatch):
+    """2026-07-05: a never-linked product (awaiting Smart Import/Match & Link —
+    the normal state for a freshly-imported ERP part) must count as
+    ``not_linked``, never ``failed``. Before this fix, a pricing CSV's full
+    touched-id list (linked or not) fed straight into update_batch, and a
+    catalog section with a high concentration of un-onboarded parts (measured:
+    30-40% of a 1000-row chunk) drove the reported failure rate high enough to
+    trip a caller's failure-rate gate on every single retry — a permanent state
+    masquerading as a transient one, deadlocking the chunked full push."""
+    linked = _product(db)
+    linked.shopify_product_id = "gid://shopify/Product/93"
+    unlinked = _product(db)                        # _product defaults to ""
+    db.commit()
+    svc = ShopifyService(db)
+    calls = []
+    monkeypatch.setattr(svc, "update_listing_fields",
+                        lambda p: (calls.append(p.id) or
+                                   {"ok": True, "price_synced": True}))
+    res = svc.update_batch([linked.id, unlinked.id])
+    assert res["updated"] == 1 and res["not_linked"] == 1 and res["failed"] == 0
+    assert calls == [linked.id]        # never even attempted for the unlinked one
+
+
+def test_sync_linked_surfaces_not_linked_without_inflating_failed(db, monkeypatch):
+    svc = ShopifyService(db)
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    monkeypatch.setattr(svc, "reconcile_availability",
+                        lambda ids, progress=None: {"hidden": 0, "relisted": 0, "failed": 0})
+    monkeypatch.setattr(svc, "update_batch", lambda ids, progress=None:
+                        {"updated": 1, "price_skipped": 0, "not_linked": 3, "failed": 0, "errors": []})
+    monkeypatch.setattr(svc, "sync_inventory", lambda ids, progress=None:
+                        {"synced": 1, "failed": 0, "errors": []})
+    res = svc.sync_linked([1, 2, 3, 4])
+    assert res["not_linked"] == 3 and res["failed"] == 0
 
 
 # ── Clean image supersedes watermarked (2026-06-13) ─────────────────────────────

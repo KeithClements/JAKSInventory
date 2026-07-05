@@ -633,16 +633,31 @@ class ShopifyService(BaseService):
         """Partial-update many linked listings (price + SEO + tags). Fail-soft.
         ``price_skipped`` counts rows that updated tags/SEO but had no variant GID
         so the price could not be pushed — surfaced so a run never silently
-        under-syncs the headline field. ``progress`` (optional) is called as
+        under-syncs the headline field. ``not_linked`` counts rows that were never
+        published to Shopify at all (no product GID yet) — a normal, PERMANENT
+        state for a freshly-imported ERP part awaiting Smart Import/Match & Link,
+        not a transient error, so it must never inflate ``failed`` (2026-07-05:
+        a caller passing an explicit, un-pre-filtered id list — e.g. every SKU a
+        pricing CSV touches, linked or not — hit whole 1000-row chunks that were
+        30-40% never-linked parts; counting those as ``failed`` made a
+        completely healthy push look broken and, with a failure-rate gate on the
+        caller's side, blocked it from ever completing). Mirrors how
+        ``sync_inventory`` already treats a missing inventory-item GID as
+        ``skipped``, not ``failed``. ``progress`` (optional) is called as
         ``progress("price/SEO", done, total)`` after each listing for live feedback."""
         summary = {"requested": len(product_ids), "updated": 0,
-                   "price_skipped": 0, "policy_skipped": 0, "failed": 0, "errors": []}
+                   "price_skipped": 0, "policy_skipped": 0, "not_linked": 0,
+                   "failed": 0, "errors": []}
         total = len(product_ids)
         for i, pid in enumerate(product_ids, 1):
             p = self.db.get(Product, pid)
             if not p:
                 summary["failed"] += 1
                 summary["errors"].append({"product_id": pid, "error": "not found"})
+                self._tick(progress, "price/SEO", i, total)
+                continue
+            if not (p.shopify_product_id or "").startswith("gid://"):
+                summary["not_linked"] += 1
                 self._tick(progress, "price/SEO", i, total)
                 continue
             res = self.update_listing_fields(p)
@@ -907,6 +922,13 @@ class ShopifyService(BaseService):
                 "stock_synced": stock.get("synced", 0),
                 "hidden": reconcile.get("hidden", 0),
                 "relisted": reconcile.get("relisted", 0),
+                # not-yet-linked products are a normal, permanent state (awaiting
+                # Smart Import/Match & Link) — never a push failure. content's
+                # not_linked and stock's skipped are the SAME products counted by
+                # the two sub-steps; surfaced once here so a caller (e.g. an
+                # explicit id list that was never pre-filtered to linked-only)
+                # can tell "nothing to push here" from "the push broke".
+                "not_linked": content.get("not_linked", 0),
                 "failed": (content.get("failed", 0) + stock.get("failed", 0)
                            + reconcile.get("failed", 0)),
                 "content_errors": (content.get("errors") or [])[:5],

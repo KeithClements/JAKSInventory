@@ -270,7 +270,7 @@ def main(argv: list[str]) -> int:
             res = shop.sync_linked(ids, progress=prog)
             _print("PUSH (reconcile + price/SEO/stock)", res,
                    ["products", "hidden", "relisted", "content_updated",
-                    "stock_synced", "price_skipped", "failed"])
+                    "stock_synced", "price_skipped", "not_linked", "failed"])
         print(f"\nDone. Storefront updated: {res.get('hidden', 0)} hidden, "
               f"{res.get('relisted', 0)} re-listed, {res.get('failed', 0)} failed.")
         return 0 if res.get("ok", True) else 1
