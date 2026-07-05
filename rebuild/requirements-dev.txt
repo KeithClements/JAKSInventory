@@ -1,0 +1,11 @@
+# Test-only dependencies — NOT needed to run the app, only to run the suite.
+# (CI failure 2026-07-05: `pip install -r requirements.txt` alone has no pytest,
+# so a fresh clone / CI runner cannot run tests at all — pytest was only ever
+# present because it happened to be installed globally in the dev venv. This file
+# closes that reproducibility gap; see FULL_ERP_REVIEW_2026-07-04.md QA findings.)
+-r requirements.txt
+pytest==9.0.3
+
+# Playwright (visual/smoke suites) is intentionally NOT here: those are opt-in
+# (JAKS_RUN_SMOKE=1 / the `visual` marker), need a browser binary install step,
+# and are not part of the default `pytest -q` run this file supports.
