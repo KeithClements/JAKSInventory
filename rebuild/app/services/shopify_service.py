@@ -205,8 +205,23 @@ class ShopifyService(BaseService):
             "images": listing_images,
             "metafields": {
                 "pai_part_no": (src.vendor_part_number if src else ""),
+                # MPN — eBay's "Manufacturer Part Number" item-specific. For these
+                # aftermarket lines PAI / Interstate-McBee ARE the manufacturer, so
+                # the source part number IS the MPN. Prefer a curated
+                # manufacturer_part_number when set, else fall back to the vendor
+                # part number (100% populated). Emitted as its OWN cleanly-named
+                # metafield (not just the internal pai_part_no) so the Shopify→eBay
+                # channel can map it without leaking the "pai" key to buyers.
+                "mpn": ((product.manufacturer_part_number or "").strip()
+                        or (src.vendor_part_number if src else "")),
                 "oem_references": oem_refs,
                 "engine_applications": apps,
+                # NOTE: the single canonical engine model is deliberately NOT pushed
+                # here. The storefront theme OWNS custom.engine_model as a
+                # list.single_line_text_field (the fitted-model list that drives the
+                # By-Engine menu/filters); pushing an ERP single value would
+                # type-conflict with that definition and clobber multi-fit fitment.
+                # eBay's "Engine Model" item-specific maps the theme's existing list.
                 "warranty_months": int(product.supplier_warranty_months or 0),
                 "pack_qty": pack if pack > 1 else 0,
             },
@@ -341,6 +356,9 @@ class ShopifyService(BaseService):
         if meta.get("pai_part_no"):
             metafields.append({"namespace": _METAFIELD_NS, "key": "pai_part_no",
                                "type": "single_line_text_field", "value": str(meta["pai_part_no"])})
+        if meta.get("mpn"):
+            metafields.append({"namespace": _METAFIELD_NS, "key": "mpn",
+                               "type": "single_line_text_field", "value": str(meta["mpn"])})
         if meta.get("oem_references"):
             metafields.append({"namespace": _METAFIELD_NS, "key": "oem_references",
                                "type": "list.single_line_text_field", "value": json.dumps(meta["oem_references"])})

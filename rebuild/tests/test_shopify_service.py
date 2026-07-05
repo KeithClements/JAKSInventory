@@ -110,6 +110,49 @@ def test_product_set_input_shape(db):
     assert "id" not in inp                                    # create (no shopify id yet)
 
 
+def test_mpn_metafield_falls_back_to_vendor_part_number(db):
+    """eBay's 'Manufacturer Part Number' item-specific: for PAI / Interstate-McBee
+    aftermarket lines the source part number IS the MPN, so with no curated
+    manufacturer_part_number the MPN mirrors the vendor part number."""
+    p = _product(db)                       # manufacturer_part_number unset ("")
+    svc = ShopifyService(db)
+    L = svc.build_listing(p)
+    assert L["metafields"]["mpn"] == "121250"
+    inp = svc.to_product_set_input(L)
+    mpn = [m for m in inp["metafields"] if m["key"] == "mpn"]
+    assert mpn, "mpn metafield must be emitted"
+    assert mpn[0]["value"] == "121250"
+    assert mpn[0]["namespace"] == "custom"
+    assert mpn[0]["type"] == "single_line_text_field"
+
+
+def test_mpn_metafield_prefers_curated_manufacturer_part_number(db):
+    """A curated manufacturer_part_number overrides the vendor part number so a
+    hand-corrected MPN wins on the eBay listing."""
+    p = _product(db)
+    p.manufacturer_part_number = "OEM-9999"
+    db.commit()
+    L = ShopifyService(db).build_listing(p)
+    assert L["metafields"]["mpn"] == "OEM-9999"
+
+
+def test_erp_never_pushes_engine_model_metafield(db):
+    """The storefront theme OWNS custom.engine_model as a list.single_line_text_field
+    (the fitted-model list that drives the By-Engine menu/filters). The ERP must
+    NOT push a single-value custom.engine_model — it would type-conflict with the
+    theme's list definition and clobber multi-fit fitment. eBay's 'Engine Model'
+    item-specific maps the theme's existing list, not an ERP value. Guard against
+    anyone re-introducing the conflicting push."""
+    p = _product(db)
+    p.engine_model = "C15"                 # even with a value set, never emit it
+    db.commit()
+    svc = ShopifyService(db)
+    L = svc.build_listing(p)
+    assert "engine_model" not in L["metafields"]
+    inp = svc.to_product_set_input(svc.build_listing(p))
+    assert not any(m["key"] == "engine_model" for m in inp["metafields"])
+
+
 def test_product_set_input_omits_zero_weight(db):
     """A 0/blank ERP weight must NOT be sent — sending weight:0 would CLOBBER a
     weight a merchant set by hand on Shopify. Omitting it leaves the store value
