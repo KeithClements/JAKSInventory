@@ -12,6 +12,8 @@ logo and any locally-uploaded product thumbnail silently drop. External images
 (e.g. the PAI CDN) hit a different host and were unaffected, which is exactly
 why only the local assets went missing in the field.
 """
+import pytest
+
 from app.services import document_render as dr
 
 
@@ -66,6 +68,16 @@ def test_fetcher_pins_woff2_mime(tmp_path, monkeypatch):
 
 
 def test_fetcher_delegates_external_to_default(monkeypatch):
+    # This is the only test that forces `import weasyprint`, which loads its
+    # native GTK stack (libgobject/pango/cairo). A bare CI runner (windows-latest)
+    # doesn't ship those, so the import raises OSError there — NOT ImportError,
+    # so pytest.importorskip can't catch it. Skip gracefully when the native libs
+    # are absent; this still runs on the shop's deploy box where GTK is installed.
+    try:
+        import weasyprint  # noqa: F401
+    except OSError as exc:  # native GTK libs unavailable (e.g. bare CI runner)
+        pytest.skip(f"WeasyPrint native libraries unavailable: {exc}")
+
     seen = {}
 
     def fake_default(url, *a, **k):
