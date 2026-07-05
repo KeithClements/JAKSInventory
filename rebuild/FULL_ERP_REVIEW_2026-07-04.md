@@ -1,5 +1,15 @@
 # Axle / JAK's Diesel ERP — Full Multi-Persona Review (2026-07-04)
 
+> **STATUS AS OF 2026-07-05: all 5 CRITICALs + 7 of the original HIGH findings are fixed,
+> committed, and pushed to `backend/workflow-series-3`** (tags `v0.1.0-pretrial` →
+> `v0.1.1-pretrial`). CI now actually runs the suite on every push (previously 0 runs ever).
+> See the inline `✅ FIXED` / `[x]` markers throughout this document for exactly what changed
+> and where. Still genuinely open: Ctrl+K price/availability, the New Return 19k-option picker,
+> QBO auto-push-on-finalize + dead-token banner, overpayment/refund QBO push, credit-memo tax,
+> PO-receive concurrency, session-key-at-rest, login credentials rotation + HTTPS-on-LAN (owner
+> action), and a real (non-hash-order) test-isolation leak under active investigation on a
+> separate branch. Full accounting in the session handoff.
+
 **Method:** 12 persona reviewers read the real code and drove real HTTP through the TestClient
 harness against isolated copies of the live schema. Every Critical/High was then re-read by an
 adversarial verifier whose job was to *refute* it. 45 critical/high claims were verified: **31
