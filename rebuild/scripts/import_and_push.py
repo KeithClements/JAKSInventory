@@ -111,7 +111,7 @@ def _result_json(res: dict) -> str:
                 "availability_updated", "out_of_stock_flagged",
                 "discontinued_deactivated", "reactivation_suggested",
                 "skipped_no_product", "reprice_rows", "cost_anomaly_rows",
-                "skipped_price_locked")
+                "skipped_price_locked", "held_price_drop")
     float_keys = ("price_drop_max_pct", "price_rise_max_pct", "cost_rise_max_pct")
     payload: dict = {k: int(res.get(k, 0) or 0) for k in int_keys}
     payload["total_rows"] = int(res.get("total_rows", res.get("rows", 0)) or 0)
@@ -137,6 +137,11 @@ def _result_json(res: dict) -> str:
         # rows whose sell price was skipped because an ERP operator hand-set it
         # (products.price_override_locked).
         "skipped_price_locked": payload["skipped_price_locked"],
+        # Rows whose sell price was HELD because it would drop more than
+        # --max-price-drop-pct (flagged for review, not applied). Presence of
+        # this key tells the scraper the per-row drop hold is active, so it
+        # no longer aborts the whole push on an extreme single crater.
+        "held_price_drop": payload["held_price_drop"],
     }
     return "RESULT_JSON: " + json.dumps(ordered, separators=(",", ":"))
 
@@ -150,6 +155,19 @@ def _write_new_products(path: str, skus: list[str]) -> None:
         w.writerow(["sku"])
         for sku in skus:
             w.writerow([sku])
+
+
+def _write_held_review(path: str, rows: list[dict]) -> None:
+    """Write the HELD extreme-drop rows to a review CSV (sku, old_price,
+    new_price, drop_pct) so the owner can approve or reject them by hand. These
+    prices were NOT applied to the store — the rest of the push proceeded."""
+    import csv as _csv
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["sku", "old_price", "new_price", "drop_pct"])
+        for r in rows:
+            w.writerow([r.get("sku", ""), r.get("old_price", ""),
+                        r.get("new_price", ""), r.get("drop_pct", "")])
 
 
 def _print(title: str, res: dict, keys: list[str]) -> None:
@@ -179,12 +197,22 @@ def main(argv: list[str]) -> int:
     do_seo = "--seo" in argv
     want_json = "--json" in argv
     new_products_out = _opt_value(argv, "--new-products-out")
-    # Bare positionals are the CSV path — but the value that FOLLOWS
-    # --new-products-out is its argument, not the CSV, so exclude it.
-    paths = [a for a in argv if not a.startswith("-") and a != new_products_out]
+    held_review_out = _opt_value(argv, "--held-review-out")
+    max_drop_raw = _opt_value(argv, "--max-price-drop-pct")
+    try:
+        max_drop_pct = float(max_drop_raw) if max_drop_raw is not None else None
+    except ValueError:
+        max_drop_pct = None
+    # Bare positionals are the CSV path — but the value that FOLLOWS an option
+    # (--new-products-out / --held-review-out / --max-price-drop-pct) is that
+    # option's argument, not the CSV, so exclude those values.
+    _opt_values = {v for v in (new_products_out, held_review_out, max_drop_raw)
+                   if v is not None}
+    paths = [a for a in argv if not a.startswith("-") and a not in _opt_values]
     if not paths:
         print("usage: python -m scripts.import_and_push <csv> [--apply] "
-              "[--reconcile-only] [--json] [--new-products-out <path>]")
+              "[--reconcile-only] [--json] [--new-products-out <path>] "
+              "[--max-price-drop-pct <n>] [--held-review-out <path>]")
         return 2
     csv_path = paths[0]
     if not pathlib.Path(csv_path).exists():
@@ -204,12 +232,23 @@ def main(argv: list[str]) -> int:
         # 1) IMPORT (price + cost + vendor availability). Never creates products
         #    (pricing_update_sell refreshes existing only) — new parts go to review.
         print("Importing CSV (price + cost + availability)…", flush=True)
-        res_imp = imp.pricing_update_sell(text, dry_run=not apply)
+        res_imp = imp.pricing_update_sell(text, dry_run=not apply,
+                                          max_drop_pct=max_drop_pct)
         _print("IMPORT (pricing_update_sell)" + ("" if apply else " - DRY RUN"), res_imp,
                ["matched", "prices_updated", "costs_updated", "availability_updated",
                 "out_of_stock_flagged", "discontinued_deactivated",
                 "reactivation_suggested", "skipped_no_product",
-                "skipped_price_locked"])
+                "skipped_price_locked", "held_price_drop"])
+
+        # Flag the HELD extreme-drop rows for review (both dry-run and apply —
+        # the scraper reads this after its dry-run, and an apply that held rows
+        # should still leave the owner a record of what it did NOT push).
+        if held_review_out:
+            held_rows = res_imp.get("held_price_drop_rows") or []
+            _write_held_review(held_review_out, held_rows)
+            if held_rows:
+                print(f"\nHeld {len(held_rows)} extreme-drop price(s) for review "
+                      f"-> {held_review_out} (NOT pushed; the rest proceeded)")
 
         ids = _csv_product_ids(text, imp)
         print(f"\nCSV touches {len(ids)} existing ERP products.")

@@ -66,6 +66,9 @@ _CONTRACT_KEYS = [
     "skipped_no_product", "total_rows", "price_drop_max_pct", "price_rise_max_pct",
     "reprice_rows", "cost_rise_max_pct", "cost_anomaly_rows",
     "skipped_price_locked",
+    # Appended 2026-07-06 — its PRESENCE tells the scraper the per-row drop hold
+    # is active, so it no longer aborts the push on one extreme crater.
+    "held_price_drop",
 ]
 
 
@@ -185,6 +188,63 @@ def test_big_price_drop_sets_drop_max_and_reprice_count(db):
     assert s["reprice_rows"] == 1   # only the -60% row clears >5%
 
 
+def test_max_drop_pct_holds_extreme_drop_applies_the_rest(db):
+    """The per-row DROP hold (2026-07-06): with max_drop_pct=60, a row that would
+    crater >60% is HELD (price NOT written, flagged), while a moderate drop and a
+    rise in the SAME feed still apply. Cost on a held row still applies. This is
+    what lets one bad part stop aborting the whole catalog correction."""
+    p_crater = _make_product(db, "JAKS-PAI-600", price=100.00)
+    p_moderate = _make_product(db, "JAKS-PAI-601", price=100.00)
+    p_rise = _make_product(db, "JAKS-PAI-602", price=100.00)
+    _seed_pai_source(db, p_crater.id, vendor_cost=50.00)
+    svc = ProductImportService(db, None)
+
+    text = _csv_with_cost([
+        ("JAKS-PAI-600", "3.00", "40.00"),     # -97% -> HELD (but cost applies)
+        ("JAKS-PAI-601", "75.00", ""),         # -25% -> applies
+        ("JAKS-PAI-602", "130.00", ""),        # +30% rise -> applies (never held)
+    ])
+    s = svc.pricing_update_sell(text, dry_run=False, max_drop_pct=60.0)
+
+    assert s["held_price_drop"] == 1
+    assert s["held_price_drop_rows"][0]["sku"] == "JAKS-PAI-600"
+    assert s["held_price_drop_rows"][0]["drop_pct"] == pytest.approx(97.0, abs=0.1)
+    db.refresh(p_crater); db.refresh(p_moderate); db.refresh(p_rise)
+    assert p_crater.price_override == 100.00     # HELD — not applied
+    assert p_moderate.price_override == 75.00    # moderate drop applied
+    assert p_rise.price_override == 130.00       # rise applied
+    # cost on the held row STILL applied (independent field, like below-cost gate)
+    src = db.query(ProductVendorSource).filter(
+        ProductVendorSource.product_id == p_crater.id).first()
+    assert src.vendor_cost == 40.00
+    # blast-radius metric still reports the TRUE scraped move even though held
+    assert s["price_drop_max_pct"] == pytest.approx(97.0, abs=0.1)
+
+
+def test_max_drop_pct_none_applies_everything(db):
+    """Without max_drop_pct (the default), nothing is held — a big drop applies,
+    same as before this feature. held_price_drop stays 0."""
+    p = _make_product(db, "JAKS-PAI-610", price=100.00)
+    svc = ProductImportService(db, None)
+    s = svc.pricing_update_sell(
+        _csv([_price_row("JAKS-PAI-610", "3.00")]), dry_run=False)
+    assert s["held_price_drop"] == 0
+    db.refresh(p)
+    assert p.price_override == 3.00
+
+
+def test_write_held_review_csv(tmp_path):
+    """_write_held_review writes the 4-column review CSV the owner acts on."""
+    from scripts.import_and_push import _write_held_review
+    out = tmp_path / "held.csv"
+    _write_held_review(str(out), [
+        {"sku": "JAKS-PAI-600", "old_price": 100.0, "new_price": 3.0, "drop_pct": 97.0},
+    ])
+    rows = list(csv.reader(out.read_text(encoding="utf-8").splitlines()))
+    assert rows[0] == ["sku", "old_price", "new_price", "drop_pct"]
+    assert rows[1] == ["JAKS-PAI-600", "100.0", "3.0", "97.0"]
+
+
 def test_price_rise_max_tracks_largest_up_move(db):
     p1 = _make_product(db, "JAKS-PAI-400", price=10.00)
     p2 = _make_product(db, "JAKS-PAI-401", price=10.00)
@@ -237,6 +297,7 @@ def test_result_json_line_shape_and_keys():
     assert obj["price_drop_max_pct"] == 60.0
     assert obj["price_rise_max_pct"] == 0.0    # missing float → 0.0
     assert obj["cost_anomaly_rows"] == 1
+    assert obj["held_price_drop"] == 0         # missing → 0
 
 
 def test_write_new_products_csv(tmp_path):

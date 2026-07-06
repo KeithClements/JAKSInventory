@@ -1575,6 +1575,7 @@ class ProductImportService(BaseService):
         *,
         dry_run: bool = True,
         max_change_pct: float | None = None,
+        max_drop_pct: float | None = None,
     ) -> dict:
         """
         Refresh sell price, compare-at, OUR cost, and manufacturer on EXISTING
@@ -1608,6 +1609,16 @@ class ProductImportService(BaseService):
         the sell + compare changes (cost / manufacturer still apply, since
         they're independent fields and a bad scrape of one need not poison the
         others).
+
+        max_drop_pct (optional, DOWNWARD-only) is the scraper reprice-breaker's
+        per-row hold (2026-07-06): a product whose new price would DROP more than
+        that % below its current price_override is HELD (price + compare not
+        written) and surfaced into held_price_drop / held_price_drop_sample /
+        held_price_drop_skus — so an extreme single-row crater is flagged for
+        review instead of aborting the whole push. Cost / availability /
+        manufacturer on the same row still apply (same philosophy as the
+        below-cost gate). A large price RISE is not held — it isn't the
+        money-losing / broken-scrape signature this guards.
         """
         from app.routers.products import MANUFACTURERS as _MFG_CANON
         reader = list(csv.DictReader(io.StringIO(text)))
@@ -1617,6 +1628,12 @@ class ProductImportService(BaseService):
             "skipped_no_sku": 0, "skipped_no_product": 0, "skipped_no_price": 0,
             "matched": 0, "prices_updated": 0, "compare_updated": 0,
             "unchanged": 0, "over_threshold_skipped": 0,
+            # Reprice-breaker per-row hold (max_drop_pct): rows whose sell price
+            # would drop more than the threshold, HELD + flagged for review
+            # instead of aborting the push. held_price_drop_rows carries the full
+            # (sku, old, new, drop%) detail (capped) for the --held-review-out
+            # file; the count feeds the RESULT_JSON contract.
+            "held_price_drop": 0, "held_price_drop_rows": [],
             # Scraper-audit bug #11 — products whose sell price the feed did NOT
             # touch because an operator set it by hand (price_override_locked).
             # Cost / availability / manufacturer on those rows still apply.
@@ -1822,6 +1839,27 @@ class ProductImportService(BaseService):
                     price_change = False
                     compare_change = False  # paired with price for sample-row sanity
 
+            # Drop rail (reprice-breaker per-row hold, 2026-07-06). A DOWNWARD
+            # move larger than max_drop_pct is HELD and flagged for review — the
+            # scraper no longer aborts the whole push on an extreme single crater
+            # (e.g. a 97% drop) but the other ~thousands of legitimate corrections
+            # still land. Cost / availability / manufacturer still apply. Only
+            # downward moves qualify.
+            held_drop = False
+            if (price_change and max_drop_pct is not None
+                    and old_price is not None and old_price > 0):
+                drop_pct = (old_price - new_price) / old_price * 100.0
+                if drop_pct > max_drop_pct:
+                    held_drop = True
+                    summary["held_price_drop"] += 1
+                    if len(summary["held_price_drop_rows"]) < _SKIPPED_SKUS_CAP:
+                        summary["held_price_drop_rows"].append({
+                            "sku": sku, "old_price": old_price,
+                            "new_price": new_price, "drop_pct": round(drop_pct, 1),
+                        })
+                    price_change = False
+                    compare_change = False
+
             # Cost change check — the explicit ``vendor`` column names the vendor
             # whose dealer price "Our Cost" is (JAKS-native export); the SKU prefix
             # is the legacy fallback. Without the column-first rule, a JAKS-native
@@ -1861,9 +1899,9 @@ class ProductImportService(BaseService):
 
             if (not price_change and not compare_change
                     and not mfg_change and not cost_change and not avail_did):
-                # If only an over-threshold or price-locked row landed here, we
-                # already counted it under its own key.
-                if not over_threshold and not price_locked_skip:
+                # If only an over-threshold, held-drop, or price-locked row
+                # landed here, we already counted it under its own key.
+                if not over_threshold and not price_locked_skip and not held_drop:
                     summary["unchanged"] += 1
                 continue
 
