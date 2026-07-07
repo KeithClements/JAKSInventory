@@ -338,7 +338,21 @@ class InventoryService(BaseService):
         if product is None:
             return None
         qty_before = product.qty_on_hand
-        product.qty_on_hand = qty_before + int(delta_pieces)
+        if delta_pieces < 0:
+            # Web SALE. Pull only what is physically on the shelf; the remainder is
+            # DROP-SHIPPED from the vendor (PAI/IMB) and must never push on-hand
+            # negative. Most of the catalog is dropship (0 on-hand), so an unclamped
+            # decrement would accrue large phantom negatives that corrupt inventory
+            # valuation / low-stock / dead-stock. A stocked part decrements exactly as
+            # before (shelf >= sale). Returns None when nothing is on the shelf to
+            # pull — a pure dropship line, so there is no stock movement to record.
+            pulled = min(max(0, qty_before), -int(delta_pieces))
+            if pulled <= 0:
+                return None
+            applied = -pulled
+        else:
+            applied = int(delta_pieces)
+        product.qty_on_hand = qty_before + applied
         # reference_id holds the numeric Shopify order id (~13 digits). Safe on SQLite
         # (INTEGER is 64-bit); if this app is ever moved to a 32-bit-INT backend,
         # widen the column to BigInteger or store the id as text.
@@ -346,7 +360,7 @@ class InventoryService(BaseService):
         txn = InventoryTransaction(
             product_id=product_id,
             transaction_type=InventoryTxnType.SHOPIFY_SALE,
-            qty_change=int(delta_pieces),
+            qty_change=applied,
             qty_after=product.qty_on_hand,
             # Polymorphic ref is all-or-nothing (ck_inventory_txn_ref_complete).
             reference_type=("shopify_order" if ref_id is not None else None),
@@ -362,7 +376,7 @@ class InventoryService(BaseService):
             action=AuditAction.INVENTORY_ADJUSTED,
             old_value={"qty_on_hand": qty_before},
             new_value={"qty_on_hand": product.qty_on_hand,
-                       "delta": int(delta_pieces), "source": "shopify_order",
+                       "delta": applied, "source": "shopify_order",
                        "order": order_name},
         )
         return txn

@@ -13,8 +13,14 @@ Design:
     of the same window (or an at-least-once scheduler tick) never double-decrements.
     All of an order's line decrements + its processed marker commit in ONE
     transaction, so idempotency is atomic.
-  • PACK-AWARE: one storefront unit is one vendor sell pack, so pieces decremented
+  • PACK-AWARE: one storefront unit is one vendor sell pack, so ordered pieces
     = line quantity × product.pack_qty (mirrors the outbound listing math).
+  • DROPSHIP-AWARE: only what is physically on the shelf is decremented; on-hand is
+    floored at 0 and the remainder is counted as dropshipped (pieces_dropshipped).
+    Most of the catalog is 0-stock dropship (PAI/IMB fulfil), so an unclamped
+    decrement would drive on-hand deeply negative. The cancel/refund reversal
+    restocks only the pieces actually pulled from the shelf, never the dropshipped
+    remainder.
   • Fail-soft: an unreadable order / unmatched SKU is recorded, never raised. The
     watermark only advances past orders handled without error, so a transient
     failure is retried on the next poll (never skipped).
@@ -119,7 +125,8 @@ class ShopifyOrderSyncService(BaseService):
                    "orders_processed": 0, "orders_skipped": 0,
                    "orders_reversed": 0, "pieces_restored": 0,
                    "lines_matched": 0, "lines_unmatched": 0,
-                   "pieces_decremented": 0, "errors": [], "watermark_in": wm}
+                   "pieces_decremented": 0, "pieces_dropshipped": 0,
+                   "errors": [], "watermark_in": wm}
         inv = InventoryService(self.db, self.current_user_id)
         cursor = None
         newest = wm            # newest createdAt handled cleanly
@@ -176,15 +183,23 @@ class ShopifyOrderSyncService(BaseService):
                         continue
                     pack = max(1, int(p.pack_qty or 1))
                     line_pieces = qty * pack
-                    matched += 1
-                    pieces += line_pieces
-                    summary["lines_matched"] += 1
-                    detail.append({"sku": sku, "product_id": p.id, "qty": qty,
-                                   "pieces": line_pieces, "matched": True})
-                    if not dry_run:
-                        inv.record_shopify_sale(
+                    if dry_run:
+                        # Simulate the shelf pull without mutating stock.
+                        pulled = min(max(0, int(p.qty_on_hand or 0)), line_pieces)
+                    else:
+                        txn = inv.record_shopify_sale(
                             p.id, line_pieces, order_ref_id=self._numeric(oid),
                             order_name=o.get("name") or "")
+                        # None => a pure dropship line (nothing was on the shelf).
+                        pulled = int(-txn.qty_change) if txn is not None else 0
+                    dropshipped = line_pieces - pulled
+                    matched += 1
+                    pieces += pulled                      # actual shelf movement
+                    summary["lines_matched"] += 1
+                    summary["pieces_dropshipped"] += dropshipped
+                    detail.append({"sku": sku, "product_id": p.id, "qty": qty,
+                                   "pieces": pulled, "ordered_pieces": line_pieces,
+                                   "dropshipped": dropshipped, "matched": True})
                 summary["pieces_decremented"] += pieces
 
                 if dry_run:
@@ -242,7 +257,8 @@ def run_order_poll(user_id: int | None = None) -> None:
         set_setting_value_db(
             db, "shopify_order_poll_last_summary",
             f"{res.get('orders_processed', 0)} orders, "
-            f"{res.get('pieces_decremented', 0)} pieces, "
+            f"{res.get('pieces_decremented', 0)} off shelf, "
+            f"{res.get('pieces_dropshipped', 0)} dropshipped, "
             f"{res.get('lines_unmatched', 0)} unmatched"
             + ("" if res.get("ok") else f" — ERROR: {res.get('error', '')[:120]}"))
         db.commit()

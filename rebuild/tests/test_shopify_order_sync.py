@@ -143,10 +143,15 @@ def test_dry_run_writes_nothing(db):
 def test_watermark_advances_on_apply(db):
     p = _mk(db, sku="JAKS-PAI-OS0007", on_hand=10)
     line = {"quantity": 1, "sku": p.sku, "variant": {"id": p.shopify_variant_id}}
+    # Use a timestamp relative to NOW: the watermark only advances to orders newer
+    # than the first-run lookback floor (now − 2 days), so a hardcoded date would
+    # silently stop advancing once the suite runs >2 days later.
+    from datetime import datetime, timedelta, timezone
+    created = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     svc = _svc(db, [_order("gid://shopify/Order/1007", name="#1007", lines=[line],
-                           created="2026-07-04T12:34:56Z")])
+                           created=created)])
     svc.poll()
-    assert get_setting_value_db(db, "shopify_order_poll_watermark", "") == "2026-07-04T12:34:56Z"
+    assert get_setting_value_db(db, "shopify_order_poll_watermark", "") == created
 
 
 def test_matches_by_master_sku_when_variant_unlinked(db):
@@ -191,3 +196,61 @@ def test_cancelled_after_processing_restocks_once(db):
     assert res3["orders_reversed"] == 0
     db.refresh(p)
     assert p.qty_on_hand == 10
+
+
+# ── dropship-safe decrement (mostly-dropship catalog) ─────────────────────────
+
+def test_dropship_zero_stock_never_goes_negative(db):
+    # 0 on-hand == pure dropship (the vendor fulfils). A web sale must NOT push
+    # on-hand negative; the whole line is counted as dropshipped, order still
+    # marked once so it isn't retried forever.
+    p = _mk(db, sku="JAKS-PAI-DS0001", on_hand=0)
+    line = {"quantity": 3, "sku": p.sku, "variant": {"id": p.shopify_variant_id}}
+    svc = _svc(db, [_order("gid://shopify/Order/2001", name="#2001", lines=[line])])
+    res = svc.poll()
+    assert res["ok"] and res["orders_processed"] == 1 and res["lines_matched"] == 1
+    assert res["pieces_decremented"] == 0
+    assert res["pieces_dropshipped"] == 3
+    db.refresh(p)
+    assert p.qty_on_hand == 0                       # never negative
+    assert db.query(ShopifyProcessedOrder).count() == 1
+
+
+def test_partial_shelf_then_dropship_remainder(db):
+    # 2 on the shelf, sold 5 → pull 2 (shelf → 0), dropship the other 3.
+    p = _mk(db, sku="JAKS-PAI-DS0002", on_hand=2)
+    line = {"quantity": 5, "sku": p.sku, "variant": {"id": p.shopify_variant_id}}
+    svc = _svc(db, [_order("gid://shopify/Order/2002", name="#2002", lines=[line])])
+    res = svc.poll()
+    assert res["pieces_decremented"] == 2 and res["pieces_dropshipped"] == 3
+    db.refresh(p)
+    assert p.qty_on_hand == 0                       # floored, not -3
+
+
+def test_dry_run_dropship_does_not_go_negative(db):
+    p = _mk(db, sku="JAKS-PAI-DS0003", on_hand=0)
+    line = {"quantity": 4, "sku": p.sku, "variant": {"id": p.shopify_variant_id}}
+    svc = _svc(db, [_order("gid://shopify/Order/2003", name="#2003", lines=[line])])
+    res = svc.poll(dry_run=True)
+    assert res["pieces_decremented"] == 0 and res["pieces_dropshipped"] == 4
+    db.refresh(p)
+    assert p.qty_on_hand == 0
+
+
+def test_cancel_restocks_only_shelf_pulled_not_dropshipped(db):
+    # Sell 5 with only 2 on the shelf (pull 2, dropship 3), then cancel: restore
+    # exactly the 2 pulled from the shelf — the 3 dropshipped never touched stock.
+    p = _mk(db, sku="JAKS-PAI-DS0004", on_hand=2)
+    line = {"quantity": 5, "sku": p.sku, "variant": {"id": p.shopify_variant_id}}
+    svc = _svc(db, [_order("gid://shopify/Order/2004", name="#2004", lines=[line])])
+    svc.poll()
+    db.refresh(p)
+    assert p.qty_on_hand == 0
+    cancelled = _order("gid://shopify/Order/2004", name="#2004", lines=[line],
+                       cancelled="2026-07-06T13:00:00Z")
+    svc._shop._graphql = lambda q, v: {"data": {"orders": {  # type: ignore[assignment]
+        "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [cancelled]}}}
+    res = svc.poll()
+    assert res["orders_reversed"] == 1 and res["pieces_restored"] == 2
+    db.refresh(p)
+    assert p.qty_on_hand == 2                        # only the shelf-pulled 2 returned
