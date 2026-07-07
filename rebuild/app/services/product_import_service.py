@@ -1027,6 +1027,17 @@ class ProductImportService(BaseService):
         }
         seen: set[tuple[str, str]] = set()
         committed = 0
+        # In-batch idempotency caches. When several rows of ONE import all
+        # cross-ref-match the SAME existing product — common for turbos, whose
+        # interchange lists share OEM numbers heavily — each row's "does it
+        # already have this?" check below is built from a DB snapshot that does
+        # NOT see the other rows' still-pending inserts. Without these caches
+        # the second matching row re-adds the shared OEM ref / a second active
+        # vendor source, and the flush dies on the (product_id, ref_type,
+        # ref_number) / (product_id, vendor_id) unique index. Keyed by matched
+        # product id; seeded lazily and updated as we add.
+        batch_oem_nk: dict[int, set[str]] = {}
+        batch_vendor_src: set[tuple[int, int]] = set()
 
         for p in rows:
             sku = p.get("sku", "")
@@ -1153,6 +1164,13 @@ class ProductImportService(BaseService):
                     if new_avail:
                         dup_src.availability_status = new_avail
                         dup_src.availability_updated_at = datetime.utcnow()
+                elif (xref_product_id, row_vendor_id) in batch_vendor_src:
+                    # An EARLIER row in this same batch already added this vendor
+                    # as a source on the matched product (its insert is still
+                    # pending, so the dup_src query above can't see it). The
+                    # (product_id, vendor_id) active-source unique index allows
+                    # only one — don't add a second and crash the flush.
+                    pass
                 else:
                     new_src = ProductVendorSource(
                         product_id=xref_product_id, vendor_id=row_vendor_id,
@@ -1164,6 +1182,7 @@ class ProductImportService(BaseService):
                         new_src.availability_status = new_avail
                         new_src.availability_updated_at = datetime.utcnow()
                     self.db.add(new_src)
+                    batch_vendor_src.add((xref_product_id, row_vendor_id))
 
                 # Merge any OEM numbers this row carries that the matched
                 # product doesn't already have (first-brand-wins, same rule
@@ -1176,6 +1195,12 @@ class ProductImportService(BaseService):
                         CrossReference.ref_type == CrossRefType.OEM,
                     ).all()
                 }
+                # Fold in OEM numbers already added to this product by EARLIER
+                # rows of the same batch (still pending, so absent from the DB
+                # query above) — otherwise a shared interchange number inserts
+                # twice and the flush dies on the unique index.
+                seen_batch = batch_oem_nk.setdefault(xref_product_id, set())
+                current_oems |= seen_batch
                 for it in p["oem"]:
                     brand, num = _split_two(it)
                     if num and is_garbage_ref(num):
@@ -1184,6 +1209,7 @@ class ProductImportService(BaseService):
                     nk = (num or "").strip().lower()
                     if num and nk not in current_oems:
                         current_oems.add(nk)
+                        seen_batch.add(nk)
                         self.db.add(CrossReference(
                             product_id=xref_product_id, ref_type=CrossRefType.OEM,
                             ref_number=num, brand=brand, status="proven",

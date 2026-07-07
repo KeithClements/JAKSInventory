@@ -209,6 +209,45 @@ def test_vendor_renumbered_part_refreshes_existing_source_not_duplicate(db):
     assert sources[0].vendor_sku == "JAKS-PAI-NEW100"
 
 
+def test_in_batch_rows_matching_same_product_no_duplicate_crash(db):
+    """Regression (turbo lane, 2026-07-06): several rows in ONE import that all
+    cross-ref-match the SAME existing product used to crash the flush. Turbo
+    interchange lists share OEM numbers heavily, so many rows match one existing
+    PAI turbo AND carry the same extra shared numbers; the 2nd matching row
+    re-added the shared OEM ref (and a 2nd active vendor source) because the
+    'does it already have this?' checks were built from a DB snapshot blind to
+    the 1st row's still-pending inserts → UNIQUE constraint failure."""
+    _seed_vendor(db, name="PAI Industries", code="PAI", digit="9")
+    imb = _seed_vendor(db, name="Interstate-McBee", code="IMB", digit="3")
+    svc = ProductImportService(db, None)
+    # Seed one existing product owning OEM 3068898.
+    svc.full_import(
+        _csv([_prod_row("JAKS-PAI-040049", oem=["CUMMINS 3068898"])]), dry_run=False)
+
+    # TWO IMB rows in ONE import, BOTH matching that product via 3068898 and BOTH
+    # carrying the same NEW shared interchange number 5288-01.
+    summ = svc.full_import(_csv([
+        _prod_row("JAKS-IMB-A", oem=["CUMMINS 3068898", "HOLSET 5288-01"]),
+        _prod_row("JAKS-IMB-B", oem=["CUMMINS 3068898", "HOLSET 5288-01"]),
+    ]), dry_run=False)
+    assert summ.get("error") is None          # no flush crash
+    assert summ["matched_by_xref"] == 2
+    assert summ["created"] == 0
+
+    assert db.query(Product).count() == 1
+    product = db.query(Product).first()
+    refs = {r.ref_number for r in db.query(CrossReference).filter(
+        CrossReference.product_id == product.id,
+        CrossReference.ref_type == CrossRefType.OEM).all()}
+    assert refs == {"3068898", "5288-01"}     # shared new ref added exactly once
+    # Both IMB rows collapse to ONE active IMB source (2nd skipped, not crashed,
+    # not duplicated) — the (product_id, vendor_id) index allows only one.
+    imb_sources = db.query(ProductVendorSource).filter(
+        ProductVendorSource.product_id == product.id,
+        ProductVendorSource.vendor_id == imb.id).all()
+    assert len(imb_sources) == 1
+
+
 def test_oem_numbers_merged_onto_matched_product(db):
     """A new OEM number on the 2nd-vendor row (not already on the matched
     product) is added as a CrossReference; a repeated one is not duplicated."""
