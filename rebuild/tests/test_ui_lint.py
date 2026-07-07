@@ -179,6 +179,10 @@ _QB2_LIST_SCREENS: frozenset[pathlib.Path] = frozenset([
     TEMPLATES_DIR / "returns" / "list.html",
     TEMPLATES_DIR / "warranty" / "list.html",
     TEMPLATES_DIR / "vendor_returns" / "list.html",  # preview dock explicitly deferred
+    # §24 — the inventory-counts list navigates each row to the count workspace
+    # (the document IS the "preview"); no bottom preview dock, same as the QB2
+    # queue boards above. It still carries divide-y / overflow-x-auto / min-w.
+    TEMPLATES_DIR / "counts" / "list.html",
 ])
 
 

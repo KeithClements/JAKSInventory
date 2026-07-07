@@ -773,6 +773,33 @@ class InventoryLocationType(StrEnum):
     CORE_STAGING      = "core_staging"
 
 
+# ─── Inventory Count Sessions (§24) ──────────────────────────────────────────
+
+class CountType(StrEnum):
+    """§24.1 — one count document, four flavors (differ only in scope + posting)."""
+    AUDIT   = "audit"      # spot check — a few SKUs, ad-hoc
+    CYCLE   = "cycle"      # recurring slice (category/vendor/bin/ABC)
+    FULL    = "full"       # wall-to-wall physical inventory (a whole location)
+    OPENING = "opening"    # initial inventory on hand at go-live (baseline vs 0)
+
+
+class CountStatus(StrEnum):
+    """§24.3 — lifecycle. POSTED and CANCELLED are terminal."""
+    DRAFT     = "draft"      # being scoped; scope still editable
+    OPEN      = "open"       # snapshot frozen; counting in progress
+    REVIEW    = "review"     # variances computed, recounts flagged, blind reveal
+    POSTED    = "posted"     # ledger adjustments written; immutable
+    CANCELLED = "cancelled"  # abandoned; zero ledger effect
+
+
+class CountLineStatus(StrEnum):
+    UNCOUNTED = "uncounted"  # in scope, not yet counted
+    COUNTED   = "counted"    # a count was entered
+    RECOUNT   = "recount"    # flagged for recount (over threshold)
+    POSTED    = "posted"     # adjustment written to the ledger
+    SKIPPED   = "skipped"    # not counted and not zeroed at post
+
+
 # ─── Shipping ─────────────────────────────────────────────────────────────────
 
 class ShipmentStatus(StrEnum):
@@ -819,6 +846,7 @@ class AuditAction(StrEnum):
     STATUS_CHANGED     = "status_changed"
     MATCH_RESOLVED     = "match_resolved"
     MATCH_CORRECTED    = "match_corrected"
+    COUNT_POSTED       = "count_posted"   # §24 — a count session posted its adjustments
 
 
 # ─── Scraper / Enrichment ─────────────────────────────────────────────────────
@@ -916,6 +944,7 @@ class EntityType(StrEnum):
     RESEARCH_ITEM        = "research_item"
     INVENTORY_ADJUSTMENT = "inventory_adjustment"
     INVENTORY_TRANSFER   = "inventory_transfer"
+    COUNT_SESSION        = "count_session"   # §24 — physical inventory count
     COMMUNICATION        = "communication"
 
 
@@ -1063,6 +1092,8 @@ class Permission(StrEnum):
     PUBLISH_SHOPIFY             = "publish_shopify"
     MERGE_CATALOG               = "merge_catalog"       # category/brand/manufacturer merges — irreversible bulk reassignment
     IMPORT_CUSTOMERS            = "import_customers"    # bulk customer CSV import confirm
+    INVENTORY_COUNT             = "inventory_count"          # §24 — create/scope/enter physical counts (floor staff)
+    INVENTORY_COUNT_APPROVE     = "inventory_count_approve"  # §24 — review + POST a count (writes stock adjustments)
 
 
 # ─── Engine Make / Model catalog ─────────────────────────────────────────────

@@ -38,6 +38,9 @@ from app.models.competitor import CompetitorPrice, CompetitorPriceHistory
 # ── Inventory ─────────────────────────────────────────────────────────────────
 from app.models.inventory import InventoryLocation, InventoryTransaction
 
+# ── Inventory counts (§24) ──────────────────────────────────────────────────────
+from app.models.count_session import CountSession, CountLine
+
 # ── Company locations (our bill-to / ship-to address book) ──────────────────────
 from app.models.company_location import CompanyLocation
 
@@ -194,6 +197,9 @@ __all_models__ = [
     CommunicationAttachment,
     # Inventory transfers
     InventoryTransfer,
+    # Inventory counts (§24)
+    CountSession,
+    CountLine,
     # Supporting
     Shipment,
     DocumentAttachment,

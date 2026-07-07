@@ -1,0 +1,53 @@
+{# One count line, mobile-first card. Used in the count-entry grid and returned
+   as the HTMX swap after a save. Blind counts NEVER show frozen_qty here — AND
+   they suppress the recount flag during entry (an over-threshold signal would
+   tell the counter "you're off by a lot", a soft anchor). Recount triage still
+   surfaces at REVIEW, where blind is over. #}
+{% set counted = line.counted_qty is not none %}
+{% set show_recount = line.needs_recount and not session.blind %}
+<div id="line-{{ line.id }}"
+     class="rounded-xl border p-3 flex flex-wrap items-center gap-3 transition-colors
+            {% if show_recount %}border-amber-200 bg-amber-50/40
+            {% elif counted %}border-green-200 bg-green-50/30
+            {% else %}border-gray-200 bg-white{% endif %}">
+
+  <div class="flex-1 min-w-[160px]">
+    <div class="flex items-center gap-2 flex-wrap">
+      <span class="font-mono text-sm font-bold text-brand-700">{{ line.sku }}</span>
+      {% if line.bin_location %}
+      <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-600 border border-slate-200"
+            title="Bin location">{{ line.bin_location }}</span>
+      {% endif %}
+      {% if line.is_found %}
+      <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-50 text-sky-600 border border-sky-100">found</span>
+      {% endif %}
+    </div>
+    <p class="text-xs text-gray-500 truncate leading-snug mt-0.5">{{ line.description or '—' }}</p>
+  </div>
+
+  {# Counted-state indicator (blind: quantity only, never the book value or variance) #}
+  {% if counted %}
+  <div class="text-right">
+    <div class="text-sm font-semibold {% if show_recount %}text-amber-700{% else %}text-green-700{% endif %} tabular-nums">
+      {% if show_recount %}⚠ {% else %}✓ {% endif %}{{ line.counted_qty }}
+    </div>
+    {% if not session.blind and line.variance %}
+    <div class="text-[10px] tabular-nums {% if line.variance < 0 %}text-red-500{% else %}text-green-600{% endif %}">
+      {% if line.variance > 0 %}+{% endif %}{{ line.variance }} vs book {{ line.book_baseline }}
+    </div>
+    {% endif %}
+    {% if show_recount %}<div class="text-[10px] text-amber-600">needs recount</div>{% endif %}
+  </div>
+  {% endif %}
+
+  <form hx-post="/counts/{{ session.id }}/count" hx-target="#line-{{ line.id }}" hx-swap="outerHTML"
+        class="flex items-center gap-1.5 shrink-0">
+    <input type="hidden" name="product_id" value="{{ line.product_id }}" />
+    <input type="number" name="counted_qty" min="0" step="1" inputmode="numeric"
+           value="{{ line.counted_qty if line.counted_qty is not none else '' }}"
+           placeholder="qty" aria-label="Counted quantity for {{ line.sku }}"
+           class="w-20 py-1.5 px-2 text-sm text-center border border-gray-300 rounded-lg bg-white
+                  focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400" />
+    <button type="submit" class="btn-primary btn-sm">Save</button>
+  </form>
+</div>

@@ -70,6 +70,7 @@ def bump_counter(db: Session, key: str, prefix: str, year: int) -> str:
             "next_ri_number", "next_core_slip_number", "next_vcr_number",
             # Phase F/G/I — credit memo, vendor credit, vendor return, statement
             "next_cm_number", "next_vcm_number", "next_vr_number", "next_statement_number",
+            "next_count_number",   # §24 — inventory count sessions (COUNT-YYYY-NNNN)
         ]
         db.query(Setting).filter(Setting.key.in_(sequence_keys)).update(
             {Setting.value: "1"}, synchronize_session="fetch"

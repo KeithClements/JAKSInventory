@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ session.session_number }} — Count Sheet</title>
+  {% include "documents/_styles.html" %}
+  <style>
+    .count-write { width: 90px; border-bottom: 1px solid #cbd5e1; }
+    table.lines tbody tr.bin-group td {
+      background: #eef2e4; font-weight: 700; color: #4b5320;
+      font-size: 9pt; letter-spacing: .04em; text-transform: uppercase;
+    }
+    .sheet-meta { font-size: 9pt; color: #6b7280; }
+  </style>
+</head>
+<body>
+
+{% include "documents/_controls.html" %}
+
+<div class="page-shell">
+
+  <div class="doc-header">
+    {% include "documents/_company_header.html" %}
+    <div class="doc-right">
+      <div class="doc-label">Inventory Count Sheet</div>
+      <div class="doc-number">{{ session.session_number }}</div>
+      <div class="doc-dates sheet-meta">
+        <strong>Type:</strong> {{ session.count_type | title }}<br>
+        {% if session.name %}<strong>Name:</strong> {{ session.name }}<br>{% endif %}
+        <strong>Items:</strong> {{ lines | length }}<br>
+        {% if session.blind %}<strong>Blind count</strong> — book quantities hidden<br>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="sheet-meta" style="margin:10px 0 6px;">
+    Counted by: ______________________________ &nbsp;&nbsp; Date: ______________ &nbsp;&nbsp; Page: ______
+  </div>
+
+  <table class="lines" style="margin-top:8px;">
+    <thead>
+      <tr>
+        <th class="ctr" style="width:34px;">#</th>
+        <th class="lft">Part # / SKU</th>
+        <th class="lft">Description</th>
+        <th class="ctr" style="width:80px;">Bin</th>
+        {% if not session.blind %}<th class="rgt" style="width:60px;">Book</th>{% endif %}
+        <th class="ctr" style="width:100px;">Counted</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% set ns = namespace(bin='__none__', row=0) %}
+      {% for line in lines %}
+        {% set _bin = line.bin_location or 'No bin assigned' %}
+        {% if _bin != ns.bin %}
+          {% set ns.bin = _bin %}
+          <tr class="bin-group"><td colspan="{% if session.blind %}5{% else %}6{% endif %}">📍 {{ _bin }}</td></tr>
+        {% endif %}
+        {% set ns.row = ns.row + 1 %}
+        <tr class="{% if ns.row is divisibleby 2 %}even-row{% endif %}">
+          <td class="td-num">{{ ns.row }}</td>
+          <td style="font-family:'IBM Plex Mono',monospace; font-weight:600;">{{ line.sku }}</td>
+          <td>{{ line.description }}</td>
+          <td class="td-ctr">{{ line.bin_location }}</td>
+          {% if not session.blind %}<td class="td-rgt">{{ line.frozen_qty }}</td>{% endif %}
+          <td class="td-ctr"><span class="count-write">&nbsp;</span></td>
+        </tr>
+      {% endfor %}
+      {% if not lines %}
+      <tr><td colspan="{% if session.blind %}5{% else %}6{% endif %}" style="text-align:center; color:#9ca3af; padding:24px;">
+        No items in this count yet — open the count to freeze a snapshot.
+      </td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,411 @@
+{% extends "base.html" %}
+{% block title %}{{ session.session_number }} — Count — Axle{% endblock %}
+{% block heading %}Inventory Count{% endblock %}
+
+{% block header_actions %}
+  <a href="/counts/" class="btn-secondary btn-sm">← All counts</a>
+  {% if session.line_count %}
+  <a href="/counts/{{ session.id }}/sheet" target="_blank" class="btn-secondary btn-sm">Print sheet</a>
+  {% endif %}
+{% endblock %}
+
+{% block content %}
+{% set type_meta = {
+  'audit':   ('Audit',   'bg-sky-50 text-sky-700 border-sky-100'),
+  'cycle':   ('Cycle',   'bg-blue-50 text-blue-700 border-blue-100'),
+  'full':    ('Full',    'bg-purple-50 text-purple-700 border-purple-100'),
+  'opening': ('Opening', 'bg-orange-50 text-orange-700 border-orange-100'),
+} %}
+{% set status_meta = {
+  'draft':     ('Draft',     'bg-gray-100 text-gray-600',   'bg-gray-400'),
+  'open':      ('Counting',  'bg-blue-50 text-blue-700',    'bg-blue-500'),
+  'review':    ('In Review', 'bg-amber-100 text-amber-700', 'bg-amber-500'),
+  'posted':    ('Posted',    'bg-green-50 text-green-700',  'bg-green-500'),
+  'cancelled': ('Cancelled', 'bg-red-100 text-red-700',     'bg-red-400'),
+} %}
+{% set tm = type_meta.get(session.count_type, (session.count_type, 'bg-gray-50 text-gray-600 border-gray-100')) %}
+{% set sm = status_meta.get(session.status, (session.status, 'bg-gray-100 text-gray-600', 'bg-gray-400')) %}
+
+<div class="max-w-5xl space-y-5">
+
+  {% if request.query_params.get('ok') %}
+  <div class="flex items-start gap-3 rounded-lg border border-green-200 bg-green-50 px-4 py-3">
+    <svg class="mt-0.5 w-5 h-5 shrink-0 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+    <p class="text-sm text-green-800">{{ request.query_params.get('ok') }}</p>
+  </div>
+  {% endif %}
+
+  {# ── Header card ── #}
+  <div class="card p-5">
+    <div class="flex items-start justify-between gap-4 flex-wrap">
+      <div>
+        <div class="flex items-center gap-2.5 flex-wrap">
+          <span class="font-mono text-base font-bold text-brand-700">{{ session.session_number }}</span>
+          <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold uppercase tracking-wider border {{ tm[1] }}">{{ tm[0] }}</span>
+          <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold {{ sm[1] }}">
+            <span class="w-1.5 h-1.5 rounded-full {{ sm[2] }} shrink-0"></span>{{ sm[0] }}
+          </span>
+          {% if session.blind and session.status in ('draft','open') %}
+          <span class="text-[11px] text-gray-400" title="Counters do not see the system quantity">🔒 blind</span>
+          {% endif %}
+        </div>
+        {% if session.name %}<p class="text-sm text-gray-700 mt-1.5">{{ session.name }}</p>{% endif %}
+        <p class="text-xs text-gray-400 mt-1">{{ scope_summary | join(' · ') }}</p>
+      </div>
+
+      {# stat tiles #}
+      <div class="flex items-center gap-5 text-right">
+        <div>
+          <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Items</p>
+          <p class="text-lg font-bold text-gray-900 tabular-nums">{{ session.line_count }}</p>
+        </div>
+        <div>
+          <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Counted</p>
+          <p class="text-lg font-bold text-gray-900 tabular-nums">{{ session.counted_count }}</p>
+        </div>
+        {% if session.status in ('review','posted') %}
+        <div>
+          <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Accuracy</p>
+          <p class="text-lg font-bold {% if accuracy is not none and accuracy >= 95 %}text-green-600{% elif accuracy is not none and accuracy >= 85 %}text-amber-600{% else %}text-red-600{% endif %} tabular-nums">
+            {{ accuracy if accuracy is not none else '—' }}{% if accuracy is not none %}%{% endif %}</p>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if session.status in ('open','review','posted') and session.line_count %}
+    <div class="mt-4 pt-4 border-t border-gray-100">
+      {% include "counts/_progress.html" %}
+    </div>
+    {% endif %}
+  </div>
+
+  {# ══════════════════════════════ DRAFT ══════════════════════════════ #}
+  {% if session.status == 'draft' %}
+  <div class="card p-5 space-y-4">
+    <div class="flex items-start gap-3 rounded-lg bg-blue-50/60 border border-blue-100 px-4 py-3">
+      <svg class="mt-0.5 w-5 h-5 shrink-0 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+      <p class="text-sm text-blue-800">This count is still a draft. Review the scope and options, then <strong>Open</strong> it to freeze a snapshot of current on-hand quantities and start counting.</p>
+    </div>
+
+    {# Options (name / blind / thresholds) — preserves the product scope #}
+    <form method="post" action="/counts/{{ session.id }}/scope" class="space-y-4">
+      <div>
+        <label class="block text-xs font-medium text-gray-500 mb-1">Name</label>
+        <input name="name" value="{{ session.name }}" maxlength="200"
+               class="w-full py-2 px-3 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400" />
+      </div>
+      <label class="flex items-start gap-2.5 cursor-pointer">
+        <input type="checkbox" name="blind" {% if session.blind %}checked{% endif %} class="mt-0.5 rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+        <span><span class="text-sm font-medium text-gray-800">Blind count</span>
+          <span class="block text-xs text-gray-500">Hide the system quantity during entry (recommended).</span></span>
+      </label>
+      <div class="grid sm:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">Recount if off by (qty)</label>
+          <input type="number" name="recount_threshold_qty" min="0" step="1" value="{{ session.recount_threshold_qty if session.recount_threshold_qty is not none else '' }}"
+                 class="w-full py-2 px-3 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">Recount if off by ($)</label>
+          <input type="number" name="recount_threshold_value" min="0" step="0.01" value="{{ session.recount_threshold_value if session.recount_threshold_value is not none else '' }}"
+                 class="w-full py-2 px-3 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        </div>
+      </div>
+      <button type="submit" class="btn-secondary btn-sm">Save options</button>
+    </form>
+
+    {# Adjust which products are counted (posts scope_mode → /scope rebuilds the scope) #}
+    <details class="rounded-lg border border-gray-200 bg-gray-50/50">
+      <summary class="cursor-pointer px-4 py-2.5 text-sm font-medium text-gray-600">Adjust which products are counted</summary>
+      <form method="post" action="/counts/{{ session.id }}/scope"
+            x-data="{ mode: '{{ scope.get('mode', 'filtered') }}' }"
+            class="px-4 pb-4 pt-1 space-y-3 border-t border-gray-100">
+        {# carry the current options so this full-session update preserves them #}
+        <input type="hidden" name="name" value="{{ session.name }}" />
+        {% if session.blind %}<input type="hidden" name="blind" value="on" />{% endif %}
+        {% if session.recount_threshold_qty is not none %}<input type="hidden" name="recount_threshold_qty" value="{{ session.recount_threshold_qty }}" />{% endif %}
+        {% if session.recount_threshold_value is not none %}<input type="hidden" name="recount_threshold_value" value="{{ session.recount_threshold_value }}" />{% endif %}
+
+        <div class="flex items-center gap-4 text-sm pt-1">
+          <span class="text-xs font-medium text-gray-500">Scope</span>
+          <label class="inline-flex items-center gap-1.5 cursor-pointer"><input type="radio" name="scope_mode" value="all" x-model="mode" class="text-brand-600 focus:ring-brand-400" /> Everything</label>
+          <label class="inline-flex items-center gap-1.5 cursor-pointer"><input type="radio" name="scope_mode" value="filtered" x-model="mode" class="text-brand-600 focus:ring-brand-400" /> A slice</label>
+        </div>
+
+        <div x-show="mode === 'filtered'" x-cloak class="space-y-3">
+          <div class="grid sm:grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-medium text-gray-500 mb-1">Categories</label>
+              <select name="category_ids" multiple size="4" class="w-full py-2 px-3 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-brand-400">
+                {% for c in categories %}<option value="{{ c.id }}" {% if c.id in (scope.get('category_ids') or []) %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-500 mb-1">Vendors</label>
+              <select name="vendor_ids" multiple size="4" class="w-full py-2 px-3 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-brand-400">
+                {% for v in vendors %}<option value="{{ v.id }}" {% if v.id in (scope.get('vendor_ids') or []) %}selected{% endif %}>{{ v.name }}</option>{% endfor %}
+              </select>
+            </div>
+          </div>
+          <div class="grid sm:grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-medium text-gray-500 mb-1">Bin starts with</label>
+              <input name="bin_prefix" value="{{ scope.get('bin_prefix', '') }}" class="w-full py-2 px-3 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-brand-400" />
+            </div>
+            <label class="inline-flex items-center gap-2 text-sm text-gray-700 sm:mt-6 cursor-pointer">
+              <input type="checkbox" name="only_with_stock" {% if scope.get('only_with_stock') %}checked{% endif %} class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" /> Only items with stock
+            </label>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">Specific SKUs</label>
+            <textarea name="sku_list" rows="2" class="w-full py-2 px-3 text-sm font-mono border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-brand-400">{{ (scope.get('sku_list') or []) | join('\n') }}</textarea>
+          </div>
+        </div>
+
+        <label class="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+          <input type="checkbox" name="include_inactive" {% if scope.get('include_inactive') %}checked{% endif %} class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" /> Include inactive / archived products
+        </label>
+
+        <div><button type="submit" class="btn-secondary btn-sm">Update scope</button></div>
+      </form>
+    </details>
+
+    <div class="flex items-center justify-between gap-3 pt-4 border-t border-gray-100">
+      <form method="post" action="/counts/{{ session.id }}/cancel"
+            onsubmit="return confirm('Cancel this draft count? It will not affect any inventory.')">
+        <button type="submit" class="btn-ghost btn-sm text-red-500">Cancel count</button>
+      </form>
+      <form method="post" action="/counts/{{ session.id }}/open">
+        <button type="submit" class="btn-primary btn-sm">Open count & freeze snapshot →</button>
+      </form>
+    </div>
+  </div>
+
+  {# ══════════════════════════════ OPEN (counting) ══════════════════════════════ #}
+  {% elif session.status == 'open' %}
+  <div class="card p-5 space-y-4">
+    {# Scan / search-to-find #}
+    <form method="get" action="/counts/{{ session.id }}" class="flex items-center gap-2">
+      <div class="relative flex-1">
+        <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/></svg>
+        <input name="q" value="{{ q }}" placeholder="Scan a barcode or type a SKU / bin to jump to an item…"
+               enterkeyhint="search" {% if not q %}autofocus{% endif %}
+               class="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400 placeholder:text-gray-400" />
+      </div>
+      {% if q %}<a href="/counts/{{ session.id }}" class="text-sm text-gray-400 hover:text-gray-600">Clear</a>{% endif %}
+      <button type="submit" class="btn-secondary btn-sm">Find</button>
+    </form>
+
+    <p class="text-xs text-gray-400">
+      {% if q %}Showing {{ shown_count }} of {{ line_total }} item(s) matching "{{ q }}".{% else %}Showing {{ shown_count }} of {{ line_total }} item(s).{% endif %}
+      {% if truncated %} <span class="text-amber-600">Only the first {{ line_cap }} shown — search to narrow, or print the count sheet.</span>{% endif %}
+    </p>
+
+    {# Line cards #}
+    <div class="space-y-2">
+      {% for line in lines %}
+        {% include "counts/_line_card.html" %}
+      {% else %}
+        <p class="text-sm text-gray-400 py-6 text-center">No items match "{{ q }}". <a href="/counts/{{ session.id }}" class="text-brand-700 hover:underline">Clear the filter</a>.</p>
+      {% endfor %}
+    </div>
+
+    {# Add found item #}
+    <details class="rounded-lg border border-gray-200 bg-gray-50/60">
+      <summary class="cursor-pointer px-4 py-2.5 text-sm font-medium text-gray-600">+ Add a found item (on the shelf, not in the count)</summary>
+      <form method="post" action="/counts/{{ session.id }}/found" class="flex flex-wrap items-end gap-2 px-4 pb-4 pt-1">
+        <div>
+          <label class="block text-[10px] font-medium text-gray-500 mb-1">SKU</label>
+          <input name="sku" required placeholder="exact SKU" class="w-48 py-1.5 px-2 text-sm font-mono border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        </div>
+        <div>
+          <label class="block text-[10px] font-medium text-gray-500 mb-1">Counted qty</label>
+          <input type="number" name="counted_qty" min="0" step="1" placeholder="qty" class="w-24 py-1.5 px-2 text-sm text-center border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        </div>
+        <button type="submit" class="btn-secondary btn-sm">Add item</button>
+      </form>
+    </details>
+
+    <div class="flex items-center justify-between gap-3 pt-4 border-t border-gray-100">
+      <form method="post" action="/counts/{{ session.id }}/cancel"
+            onsubmit="return confirm('Cancel this count? Entered counts are discarded and NO inventory changes are made.')">
+        <button type="submit" class="btn-ghost btn-sm text-red-500">Cancel count</button>
+      </form>
+      <form method="post" action="/counts/{{ session.id }}/review">
+        <button type="submit" class="btn-primary btn-sm">Move to review →</button>
+      </form>
+    </div>
+  </div>
+
+  {# ══════════════════════════════ REVIEW ══════════════════════════════ #}
+  {% elif session.status == 'review' %}
+  {% set uncounted = session.line_count - session.counted_count %}
+
+  {% if recount_lines %}
+  <div class="card p-5 border-amber-200">
+    <div class="flex items-center gap-2 mb-3">
+      <svg class="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+      <p class="text-sm font-semibold text-amber-800">{{ recount_lines|length }} line(s) flagged for recount</p>
+    </div>
+    <p class="text-xs text-gray-500 mb-3">The variance exceeds your threshold. Re-count the item (re-enter its quantity below) or accept the variance as real. You can't post until all flags are cleared.</p>
+    <div class="space-y-2">
+      {% for line in recount_lines %}
+      <div class="flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50/40 px-3 py-2">
+        <div class="min-w-0">
+          <span class="font-mono text-sm font-bold text-brand-700">{{ line.sku }}</span>
+          <span class="text-xs text-gray-500 ml-2">book {{ line.book_baseline }} → counted {{ line.counted_qty }}
+            (<span class="{% if line.variance < 0 %}text-red-600{% else %}text-green-600{% endif %}">{% if line.variance > 0 %}+{% endif %}{{ line.variance }}</span>)</span>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          <form method="post" action="/counts/{{ session.id }}/count" class="flex items-center gap-1">
+            <input type="hidden" name="product_id" value="{{ line.product_id }}" />
+            <input type="number" name="counted_qty" min="0" step="1" value="{{ line.counted_qty }}" class="w-20 py-1 px-2 text-sm text-center border border-gray-300 rounded-lg" />
+            <button type="submit" class="btn-secondary btn-sm">Recount</button>
+          </form>
+          <form method="post" action="/counts/{{ session.id }}/accept-recount">
+            <input type="hidden" name="line_id" value="{{ line.id }}" />
+            <button type="submit" class="btn-ghost btn-sm text-amber-700">Accept</button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# Variance table #}
+  <div class="card overflow-hidden">
+    <div class="px-5 py-3 border-b border-gray-100 flex items-center justify-between" style="background:#fafbfa;">
+      <p class="text-sm font-semibold text-gray-700">Variances <span class="text-gray-400 font-normal">({{ variance_lines|length }} item(s) changed)</span></p>
+      <p class="text-sm">Net value:
+        <span class="money font-bold {% if session.variance_value_total < 0 %}text-red-600{% elif session.variance_value_total > 0 %}text-green-600{% else %}text-gray-500{% endif %}">
+          {% if session.variance_value_total > 0 %}+{% endif %}${{ "%.2f"|format(session.variance_value_total) }}</span>
+      </p>
+    </div>
+    {% if variance_lines %}
+    <div class="overflow-x-auto">
+      <table class="w-full min-w-[640px]">
+        <thead>
+          <tr class="border-b border-gray-200" style="background:#fafbfa;">
+            <th class="px-4 py-2.5 text-left label-mini">SKU</th>
+            <th class="px-4 py-2.5 text-left label-mini">Bin</th>
+            <th class="px-4 py-2.5 text-right label-mini">Book</th>
+            <th class="px-4 py-2.5 text-right label-mini">Counted</th>
+            <th class="px-4 py-2.5 text-right label-mini">Variance</th>
+            <th class="px-4 py-2.5 text-right label-mini">$ Impact</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for line in variance_lines %}
+          <tr class="hover:bg-gray-50/80 transition-colors">
+            <td class="px-4 py-2.5 align-middle border-l-4 {% if line.variance < 0 %}border-l-red-400{% else %}border-l-green-400{% endif %}">
+              <span class="font-mono text-sm font-bold text-brand-700">{{ line.sku }}</span>
+              {% if line.is_found %}<span class="ml-1 text-[10px] text-sky-600">found</span>{% endif %}
+            </td>
+            <td class="px-4 py-2.5 align-middle text-xs text-gray-500">{{ line.bin_location or '—' }}</td>
+            <td class="px-4 py-2.5 align-middle text-right money text-sm text-gray-500">{{ line.book_baseline }}</td>
+            <td class="px-4 py-2.5 align-middle text-right money text-sm font-semibold">{{ line.counted_qty }}</td>
+            <td class="px-4 py-2.5 align-middle text-right money text-sm font-bold {% if line.variance < 0 %}text-red-600{% else %}text-green-600{% endif %}">
+              {% if line.variance > 0 %}+{% endif %}{{ line.variance }}</td>
+            <td class="px-4 py-2.5 align-middle text-right money text-sm {% if line.variance_value < 0 %}text-red-600{% else %}text-green-600{% endif %}">
+              {% if line.variance_value > 0 %}+{% endif %}${{ "%.2f"|format(line.variance_value) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="px-5 py-8 text-center text-sm text-gray-400">No variances — every counted item matched the books. 🎯</p>
+    {% endif %}
+  </div>
+
+  {# Post panel #}
+  <div class="card p-5"
+       x-data="{ zero: false }">
+    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
+      <div class="text-sm text-gray-600 space-y-1">
+        <p><strong>{{ session.counted_count }}</strong> counted · <strong>{{ variance_lines|length }}</strong> with variance
+          {% if uncounted %}· <strong class="text-amber-600">{{ uncounted }}</strong> not counted{% endif %}</p>
+        {% if uncounted and session.count_type == 'full' %}
+        <label class="flex items-center gap-2 cursor-pointer text-gray-700">
+          <input type="checkbox" x-model="zero" class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+          Set the {{ uncounted }} uncounted item(s) to zero (they were searched for and not found)
+        </label>
+        {% elif uncounted %}
+        <p class="text-xs text-gray-400">Uncounted items will be left untouched (only counted items post).</p>
+        {% endif %}
+        {% if recount_lines %}<p class="text-xs text-amber-600">Resolve the {{ recount_lines|length }} recount flag(s) above before posting.</p>{% endif %}
+      </div>
+      <div class="flex items-center gap-2 shrink-0">
+        <form method="post" action="/counts/{{ session.id }}/reopen">
+          <button type="submit" class="btn-secondary btn-sm">← Back to counting</button>
+        </form>
+        <form method="post" action="/counts/{{ session.id }}/post"
+              onsubmit="return confirm('Post this count? Inventory adjustments will be written to the ledger. This cannot be undone.')">
+          <input type="hidden" name="zero_uncounted" x-bind:value="zero ? '1' : ''" x-bind:disabled="!zero" />
+          <button type="submit" {% if recount_lines %}disabled title="Resolve recount flags first"{% endif %}
+                  class="btn-primary btn-sm {% if recount_lines %}opacity-50 cursor-not-allowed{% endif %}">
+            Post count →
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  {# ══════════════════════════════ POSTED / CANCELLED ══════════════════════════════ #}
+  {% else %}
+  <div class="card p-5">
+    {% if session.status == 'posted' %}
+    <div class="flex items-start gap-3 rounded-lg bg-green-50 border border-green-100 px-4 py-3 mb-4">
+      <svg class="mt-0.5 w-5 h-5 shrink-0 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+      <div class="text-sm text-green-800">
+        <p class="font-semibold">Posted {% if session.posted_at %}{{ session.posted_at.strftime('%b %d, %Y %I:%M %p') }}{% endif %}.</p>
+        <p class="text-green-700">Inventory adjustments were written to the ledger. Net value change:
+          <span class="font-bold">{% if session.variance_value_total > 0 %}+{% endif %}${{ "%.2f"|format(session.variance_value_total) }}</span>.</p>
+      </div>
+    </div>
+    {% else %}
+    <div class="flex items-start gap-3 rounded-lg bg-gray-50 border border-gray-200 px-4 py-3 mb-4">
+      <p class="text-sm text-gray-600">This count was cancelled — no inventory changes were made.{% if session.notes %} <span class="text-gray-400">({{ session.notes }})</span>{% endif %}</p>
+    </div>
+    {% endif %}
+
+    {% if variance_lines %}
+    <div class="overflow-x-auto">
+      <table class="w-full min-w-[560px]">
+        <thead>
+          <tr class="border-b border-gray-200" style="background:#fafbfa;">
+            <th class="px-4 py-2.5 text-left label-mini">SKU</th>
+            <th class="px-4 py-2.5 text-left label-mini">Bin</th>
+            <th class="px-4 py-2.5 text-right label-mini">Book</th>
+            <th class="px-4 py-2.5 text-right label-mini">Counted</th>
+            <th class="px-4 py-2.5 text-right label-mini">Variance</th>
+            <th class="px-4 py-2.5 text-right label-mini">$ Impact</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for line in variance_lines %}
+          <tr>
+            <td class="px-4 py-2.5 align-middle"><span class="font-mono text-sm font-bold text-brand-700">{{ line.sku }}</span></td>
+            <td class="px-4 py-2.5 align-middle text-xs text-gray-500">{{ line.bin_location or '—' }}</td>
+            <td class="px-4 py-2.5 align-middle text-right money text-sm text-gray-500">{{ line.book_baseline }}</td>
+            <td class="px-4 py-2.5 align-middle text-right money text-sm font-semibold">{{ line.counted_qty }}</td>
+            <td class="px-4 py-2.5 align-middle text-right money text-sm font-bold {% if line.variance < 0 %}text-red-600{% else %}text-green-600{% endif %}">{% if line.variance > 0 %}+{% endif %}{{ line.variance }}</td>
+            <td class="px-4 py-2.5 align-middle text-right money text-sm {% if line.variance_value < 0 %}text-red-600{% else %}text-green-600{% endif %}">{% if line.variance_value > 0 %}+{% endif %}${{ "%.2f"|format(line.variance_value) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% elif session.status == 'posted' %}
+    <p class="text-center text-sm text-gray-400 py-6">No variances — the books were already correct. 🎯</p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

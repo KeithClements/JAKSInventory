@@ -372,6 +372,14 @@ _PENDING_COLUMN_ADDITIONS: list[tuple[str, str, str]] = [
     #    synthetic ACCOUNT_CREDIT payment allocation, replacing the LIKE-on-notes
     #    reversal heuristic. NULL for pre-link rows (legacy fallback applies). ───
     ("credit_memo_allocations", "linked_payment_allocation_id", "INTEGER NULL"),
+
+    # ── §24 Inventory Counts: walkable bin/shelf label on products (indexed
+    #    below in _PENDING_INDEXES). Count sheets sort/group by it. ──────────────
+    ("products",                "bin_location", "VARCHAR(50) NOT NULL DEFAULT ''"),
+    # §24.4 — live on-hand captured when a count line is entered; the posted
+    # adjustment reconciles against THIS (not the snapshot) so documented
+    # mid-count movement is not double-counted. NULL until the line is counted.
+    ("count_lines",             "book_at_count", "INTEGER NULL"),
 ]
 
 
@@ -456,6 +464,9 @@ _PENDING_INDEXES: list[tuple[str, str, str]] = [
     ("ix_invoice_lines_product_id", "invoice_lines", "product_id"),
     # §21 — engine-application search joins product_applications by product_id.
     ("ix_product_applications_product_id", "product_applications", "product_id"),
+    # §24 — count sheets scope/sort products by bin_location (backfills existing DBs;
+    # fresh DBs get it from index=True on the model column).
+    ("ix_products_bin_location", "products", "bin_location"),
 ]
 
 

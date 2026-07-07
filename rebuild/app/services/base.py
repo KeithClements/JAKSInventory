@@ -74,6 +74,9 @@ _ROLE_PERMISSIONS: dict[str, set[str]] = {
         # are owner/bookkeeper actions, not counter-clerk actions.
         Permission.FINALIZE_INVOICE,
         Permission.RECEIVE_PO,
+        # §24 — bookkeeper/manager runs AND posts physical counts.
+        Permission.INVENTORY_COUNT,
+        Permission.INVENTORY_COUNT_APPROVE,
     },
     # SALES (counter clerk) intentionally does NOT get RECORD_PAYMENT,
     # VOID_LOCKED_INVOICE, FINALIZE_INVOICE, or RECEIVE_PO — money-in, invoice
@@ -83,6 +86,8 @@ _ROLE_PERMISSIONS: dict[str, set[str]] = {
     # >>> Permission.FINALIZE_INVOICE to this SALES set. (per owner Q2: kept off.)
     UserRole.SALES: {
         Permission.SEND_EMAIL,
+        # §24 — floor staff can enter counts, but NOT review/post them.
+        Permission.INVENTORY_COUNT,
     },
     UserRole.READ_ONLY: set(),
 }

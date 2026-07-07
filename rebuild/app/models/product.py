@@ -174,6 +174,9 @@ class Product(Base):
     reorder_point: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_stock_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
     weight_lbs: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # §24 — walkable storage location (e.g. "A-03-B"). Single-location shop: this is
+    # an organizing label for count sheets / picking, NOT a per-bin quantity split.
+    bin_location: Mapped[str] = mapped_column(String(50), nullable=False, default="", index=True)
 
     # ── Serial / Kit ──────────────────────────────────────────────────────────
     has_serial_number: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

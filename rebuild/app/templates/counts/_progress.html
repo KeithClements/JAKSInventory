@@ -1,0 +1,13 @@
+{# Count progress bar. Rendered inline in the workspace and re-sent out-of-band
+   after each HTMX line save (oob=True). #}
+<div id="count-progress" {% if oob %}hx-swap-oob="true"{% endif %}
+     class="flex items-center gap-3">
+  <div class="flex-1 h-2 rounded-full bg-gray-100 overflow-hidden">
+    <div class="h-full rounded-full transition-all duration-300 {% if session.progress_pct == 100 %}bg-green-500{% else %}bg-blue-500{% endif %}"
+         style="width: {{ session.progress_pct }}%"></div>
+  </div>
+  <span class="text-sm font-medium text-gray-600 tabular-nums whitespace-nowrap">
+    {{ session.counted_count }}/{{ session.line_count }} counted
+    <span class="text-gray-400">({{ session.progress_pct }}%)</span>
+  </span>
+</div>
