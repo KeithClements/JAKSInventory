@@ -228,6 +228,8 @@ VISIBLE_KEYS = [
     "sku_prefix", "sku_scheme",
     # Pricing
     "cc_surcharge_pct", "default_markup_pct", "default_fuel_service_charge",
+    # Sales tax (R10) — seeded but previously unreachable from the Settings form
+    "default_sales_tax_rate", "company_tax_jurisdiction",
     # Policy
     "default_core_return_days", "default_restock_fee_percent",
     "warranty_require_esn",
