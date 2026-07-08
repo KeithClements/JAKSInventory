@@ -750,8 +750,26 @@ async def customer_create(
 ):
     form = await request.form()
     company_name = str(form.get("company_name", "")).strip()
+    contact_name = str(form.get("contact_name", "")).strip()
     email = str(form.get("email", "")).strip()
     phone = str(form.get("phone", "")).strip()
+
+    # A customer with neither a company name nor a contact name is an
+    # unidentifiable AR record — counter staff can't look it up and it fragments
+    # reporting. The company_name field carries HTML `required`, but that only
+    # guards the happy path; a scripted or JS-less POST otherwise saves a
+    # nameless customer. Require at least one name here.
+    if not company_name and not contact_name:
+        return templates.TemplateResponse(
+            request,
+            "customers/new.html",
+            {
+                **_new_customer_ctx(db),
+                "email_error": "Enter a company name or a contact name.",
+                "prefill": {k: str(v) for k, v in form.items()},
+            },
+            status_code=422,
+        )
 
     # QA — server-side email-format validation. The browser only enforces
     # type=email; a scripted/old-browser POST of "notanemail" otherwise saves.
@@ -827,8 +845,8 @@ async def customer_create(
     # blank → NULL (use system default); explicit value (incl. 0) overrides — mirrors update
     _cs = str(form.get("card_surcharge_pct", "")).strip()
     c = Customer(
-        company_name=str(form.get("company_name", "")).strip(),
-        contact_name=str(form.get("contact_name", "")).strip(),
+        company_name=company_name,
+        contact_name=contact_name,
         customer_type=_form_customer_type(form),
         customer_status=_form_customer_status(form),
         account_number=str(form.get("account_number", "")).strip(),
@@ -2178,11 +2196,14 @@ def customer_statement_print(
     db: Session = Depends(get_db),
 ):
     """Print-ready statement HTML. Also used by /pdf to generate the PDF bytes."""
-    from datetime import date
+    from datetime import date, datetime
     from app.services.statement_service import StatementService
     from app.settings_utils import get_setting_value_db
 
-    today = date.today()
+    # Use the UTC date — invoices are timestamped UTC (func.now()), so a local
+    # date.today() near midnight could exclude "today's" just-created invoices
+    # (mirrors the bulk-statement route above).
+    today = datetime.utcnow().date()
     try:
         period_start = date.fromisoformat(start) if start else today.replace(day=1)
         period_end = date.fromisoformat(end) if end else today
@@ -2222,13 +2243,14 @@ def customer_statement_pdf(
     db: Session = Depends(get_db),
 ):
     """Server-side PDF via WeasyPrint. Falls back to print view if GTK missing."""
-    from datetime import date
+    from datetime import date, datetime
     from urllib.parse import quote as url_quote
     from app.services.statement_service import StatementService
     from app.settings_utils import get_setting_value_db
     from fastapi.responses import Response as FastAPIResponse
 
-    today = date.today()
+    # UTC date to match UTC-stamped invoices (see print route / bulk route).
+    today = datetime.utcnow().date()
     try:
         period_start = date.fromisoformat(start) if start else today.replace(day=1)
         period_end = date.fromisoformat(end) if end else today

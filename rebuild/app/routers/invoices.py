@@ -584,9 +584,17 @@ def invoice_new_picker(
         .order_by(Customer.company_name)
         .all()
     )
+    # HTMX slide-over gets the bare partial to swap in; a direct navigation
+    # (typed URL / bookmark, no HX-Request header) gets the same picker wrapped
+    # in the app shell so it never renders chrome-less.
+    template = (
+        "invoices/_new_picker.html"
+        if request.headers.get("HX-Request") == "true"
+        else "invoices/new_page.html"
+    )
     return templates.TemplateResponse(
         request,
-        "invoices/_new_picker.html",
+        template,
         {"customers": customers},
     )
 
