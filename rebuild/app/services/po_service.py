@@ -406,6 +406,17 @@ class POService(BaseService):
         # cannot mutate inventory/cost. Receiving is a warehouse/AP function.
         self.assert_can(Permission.RECEIVE_PO)
 
+        # Guard — a receipt with no positive quantity would persist an empty
+        # POReceipt header (audit noise) and touch no inventory. The per-line loop
+        # below already skips ``qty <= 0`` lines, so an all-zero/blank submission
+        # (scripted POST, or a receive form submitted with nothing filled in)
+        # otherwise creates a phantom receipt. Reject it before anything is written.
+        if not any((q or 0) > 0 for q in po_line_quantities.values()):
+            raise ValueError(
+                "Nothing to receive — enter a received quantity greater than "
+                "zero on at least one line."
+            )
+
         receipt = POReceipt(
             vendor_id=vendor_id,
             received_by_id=self.current_user_id,
@@ -520,7 +531,7 @@ class POService(BaseService):
                     if po_line.unit_cost > 0 or freight_adder > 0:
                         inv_svc._apply_moving_average_cost(
                             product, qty, po_line.unit_cost,
-                            freight_adder=freight_adder,
+                            freight_adder=freight_adder, po_id=po_line.po_id,
                         )
 
                 # Record cost change if the PO cost differs from vendor source
@@ -702,6 +713,167 @@ class POService(BaseService):
 
         self.db.flush()
         return allocated_total
+
+    def reverse_receipt(self, receipt_id: int, reason: str) -> dict:
+        """
+        Undo a receipt: reverses qty_on_hand, qty_on_order, and — when a prior
+        moving-average snapshot exists (InventoryService._apply_moving_average_cost
+        now always writes one) — product.cost, then marks the whole receipt
+        reversed. Whole-receipt, atomic (every line is validated BEFORE anything
+        is touched), idempotent (a reversed receipt can't be reversed again).
+
+        Deliberately scoped to the cases a reversal can be made EXACT — refuses
+        with a clear reason rather than guessing:
+          * any line already billed (a vendor bill has claimed this receipt's
+            qty — correct it via the bill / a vendor credit instead)
+          * any line that allocated stock to a linked sales order (no way to
+            attribute how much of the SO's committed qty came from THIS
+            receipt specifically if the line was received more than once —
+            correct the sales order line manually instead)
+          * anything else has touched the product's on-hand qty since this
+            receipt (a later sale/adjustment/receipt would make "subtract this
+            receipt back out" mathematically wrong)
+        Cost is restored only when a matching ProductCostHistory snapshot
+        exists — older receipts (predating this feature) may not have one;
+        qty still reverses exactly, cost is left as-is with a clear note.
+        """
+        self.assert_can(Permission.REVERSE_PO_RECEIPT)
+        if not reason.strip():
+            raise ValueError("A reason is required to reverse a receipt.")
+
+        receipt = self.db.query(POReceipt).filter(POReceipt.id == receipt_id).first()
+        if receipt is None:
+            raise ValueError(f"Receipt {receipt_id} not found")
+        if receipt.reversed_at is not None:
+            raise ValueError(f"Receipt #{receipt.id} was already reversed.")
+        if not receipt.lines:
+            raise ValueError(f"Receipt #{receipt.id} has no lines to reverse.")
+
+        # Validate EVERY line before touching anything — atomic, all or nothing.
+        blockers: list[str] = []
+        for rl in receipt.lines:
+            po_line = rl.po_line
+            label = po_line.description or f"po_line {po_line.id}"
+            if po_line.qty_billed > 0:
+                blockers.append(
+                    f"{label}: already billed ({po_line.qty_billed} units) — "
+                    f"correct it via the vendor bill or a vendor credit instead."
+                )
+                continue
+            if po_line.product_id and not po_line.po.is_drop_ship:
+                has_linked_so = (
+                    self.db.query(SOLine.id)
+                    .filter(SOLine.linked_po_line_id == po_line.id)
+                    .first() is not None
+                )
+                if has_linked_so:
+                    blockers.append(
+                        f"{label}: allocated stock to a linked sales order — "
+                        f"reversal can't safely attribute how much came from "
+                        f"this receipt; correct the sales order line manually instead."
+                    )
+                    continue
+                last_txn = (
+                    self.db.query(InventoryTransaction)
+                    .filter(InventoryTransaction.product_id == po_line.product_id)
+                    .order_by(InventoryTransaction.id.desc())
+                    .first()
+                )
+                is_latest_this_receipt = (
+                    last_txn is not None
+                    and last_txn.reference_type == EntityType.PO_RECEIPT
+                    and last_txn.reference_id == receipt.id
+                )
+                if not is_latest_this_receipt:
+                    blockers.append(
+                        f"{label}: other inventory activity has happened on this "
+                        f"product since this receipt — use a manual inventory "
+                        f"adjustment instead."
+                    )
+        if blockers:
+            raise ValueError(
+                f"Cannot reverse receipt #{receipt.id}:\n" + "\n".join(f"  - {b}" for b in blockers)
+            )
+
+        # All lines clear — reverse for real.
+        from app.services.inventory_service import InventoryService
+        inv_svc = InventoryService(self.db, self.current_user_id)
+
+        pos_touched: dict[int, PurchaseOrder] = {}
+        cost_notes: list[str] = []
+        for rl in receipt.lines:
+            po_line = rl.po_line
+            po = po_line.po
+            pos_touched[po.id] = po
+
+            po_line.qty_received = max(0, po_line.qty_received - rl.qty_received)
+            po_line.over_received = po_line.qty_received > po_line.qty_ordered
+            po_line.over_received_qty = max(0, po_line.qty_received - po_line.qty_ordered)
+
+            if po_line.product_id and not po.is_drop_ship and rl.qty_received:
+                product = self.db.query(Product).filter(Product.id == po_line.product_id).first()
+                if product:
+                    inv_svc.apply_stock_delta(
+                        product, -rl.qty_received, InventoryTxnType.CORRECTION,
+                        EntityType.PO_RECEIPT, receipt.id,
+                        notes=f"Reversed PO receipt #{receipt.id} ({po.po_number}): {reason}",
+                    )
+                    product.qty_on_order += rl.qty_received
+
+                    snapshot = (
+                        self.db.query(ProductCostHistory)
+                        .filter(ProductCostHistory.product_id == product.id,
+                                ProductCostHistory.po_id == po_line.po_id,
+                                ProductCostHistory.notes == "Moving-average update on PO receipt")
+                        .order_by(ProductCostHistory.id.desc())
+                        .first()
+                    )
+                    if snapshot is not None:
+                        old_avg = product.cost
+                        product.cost = snapshot.old_cost
+                        self.db.add(ProductCostHistory(
+                            product_id=product.id, po_id=po_line.po_id,
+                            old_cost=old_avg, new_cost=snapshot.old_cost,
+                            changed_by_id=self.current_user_id,
+                            notes=f"Reversed PO receipt #{receipt.id} — cost restored",
+                        ))
+                        cost_notes.append(f"{product.sku}: cost restored to {snapshot.old_cost:.4f}")
+                    else:
+                        cost_notes.append(
+                            f"{product.sku}: cost NOT restored (predates cost-snapshot "
+                            f"tracking) — verify/correct manually if needed"
+                        )
+
+        # Recompute each touched PO's status — but skip a PO the owner
+        # deliberately cancelled; a receipt reversal shouldn't silently un-cancel it.
+        self.db.flush()
+        for po in pos_touched.values():
+            if po.status == POStatus.CANCELLED:
+                continue
+            any_activity = any(ln.qty_received > 0 or ln.qty_cancelled > 0 for ln in po.lines)
+            all_settled = all(
+                (ln.qty_received + ln.qty_cancelled) >= ln.qty_ordered for ln in po.lines
+            )
+            po.status = (
+                POStatus.RECEIVED if all_settled
+                else POStatus.PARTIAL if any_activity
+                else POStatus.SENT
+            )
+
+        receipt.reversed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        receipt.reversed_by_id = self.current_user_id
+        receipt.reversal_reason = reason
+
+        self.audit(
+            entity_type=EntityType.PO_RECEIPT,
+            entity_id=receipt.id,
+            action=AuditAction.STATUS_CHANGED,
+            old_value={"reversed": False},
+            new_value={"reversed": True, "reason": reason, "cost_notes": cost_notes},
+            notes=f"Reversed receipt #{receipt.id}: {reason}",
+        )
+        self.db.commit()
+        return {"receipt_id": receipt.id, "cost_notes": cost_notes}
 
     def cancel(self, po_id: int) -> None:
         """

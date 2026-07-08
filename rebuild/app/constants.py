@@ -1091,9 +1091,11 @@ class Permission(StrEnum):
     APPLY_IMPORT                = "apply_import"
     PUBLISH_SHOPIFY             = "publish_shopify"
     MERGE_CATALOG               = "merge_catalog"       # category/brand/manufacturer merges — irreversible bulk reassignment
+    MERGE_PRODUCTS              = "merge_products"      # merge one product into another — irreversible bulk reassignment
     IMPORT_CUSTOMERS            = "import_customers"    # bulk customer CSV import confirm
     INVENTORY_COUNT             = "inventory_count"          # §24 — create/scope/enter physical counts (floor staff)
     INVENTORY_COUNT_APPROVE     = "inventory_count_approve"  # §24 — review + POST a count (writes stock adjustments)
+    REVERSE_PO_RECEIPT          = "reverse_po_receipt"       # undo a receipt: reverses qty_on_hand + moving-average cost
 
 
 # ─── Engine Make / Model catalog ─────────────────────────────────────────────

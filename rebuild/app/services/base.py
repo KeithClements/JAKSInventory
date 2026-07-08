@@ -74,6 +74,8 @@ _ROLE_PERMISSIONS: dict[str, set[str]] = {
         # are owner/bookkeeper actions, not counter-clerk actions.
         Permission.FINALIZE_INVOICE,
         Permission.RECEIVE_PO,
+        # Undoing a receipt is the same class of action as receiving it.
+        Permission.REVERSE_PO_RECEIPT,
         # §24 — bookkeeper/manager runs AND posts physical counts.
         Permission.INVENTORY_COUNT,
         Permission.INVENTORY_COUNT_APPROVE,

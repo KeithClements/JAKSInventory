@@ -552,6 +552,7 @@ class InventoryService(BaseService):
         qty_received: int,
         receipt_unit_cost: float,
         freight_adder: float = 0.0,
+        po_id: int | None = None,
     ) -> None:
         """
         R11 — Update product.cost via moving weighted average; set product.last_cost.
@@ -570,6 +571,11 @@ class InventoryService(BaseService):
 
         Called WITH qty_on_hand AFTER it has been incremented (so we subtract back
         qty_received to get the pre-receipt qty for the weighting).
+
+        Always records the old→new average on ProductCostHistory (tagged with
+        ``po_id``) — the moving average is otherwise irreversible (it blends
+        into a single number), so this is the only way POService.reverse_receipt
+        can later restore the exact pre-receipt cost instead of guessing.
         """
         landed_unit_cost = receipt_unit_cost + freight_adder
         if qty_received <= 0 or landed_unit_cost <= 0:
@@ -581,12 +587,24 @@ class InventoryService(BaseService):
 
         # If we had no stock, the new cost IS the (landed) receipt cost
         if qty_before <= 0:
-            product.cost = round(landed_unit_cost, 4)
+            new_avg = round(landed_unit_cost, 4)
         else:
-            new_avg = (
-                (qty_before * current_avg) + (qty_received * landed_unit_cost)
-            ) / (qty_before + qty_received)
-            product.cost = round(new_avg, 4)
+            new_avg = round(
+                ((qty_before * current_avg) + (qty_received * landed_unit_cost))
+                / (qty_before + qty_received),
+                4,
+            )
 
+        from app.models.product import ProductCostHistory
+        self.db.add(ProductCostHistory(
+            product_id=product.id,
+            po_id=po_id,
+            old_cost=current_avg,
+            new_cost=new_avg,
+            changed_by_id=self.current_user_id,
+            notes="Moving-average update on PO receipt",
+        ))
+
+        product.cost = new_avg
         product.last_cost = round(landed_unit_cost, 4)
         product.cost_source = "receipt"   # R11 Option A — only valid writer of product.cost

@@ -232,6 +232,12 @@ class POReceipt(Base):
     )
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
+    # Reversal (undo a mis-receive). Whole-receipt, atomic, idempotent — see
+    # POService.reverse_receipt. NULL = never reversed.
+    reversed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reversed_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reversal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # One receipt can span lines from multiple POs.
     # The POs involved are found via: [rl.po_line.po for rl in self.lines]
     lines: Mapped[list[POReceiptLine]] = relationship(

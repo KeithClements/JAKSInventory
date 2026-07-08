@@ -704,8 +704,27 @@
             {% set total_qty = namespace(n=0) %}
             {% for rl in receipt.lines %}{% set total_qty.n = total_qty.n + rl.qty_received %}{% endfor %}
             <span class="text-sm font-semibold text-gray-700">{{ total_qty.n }} unit{{ 's' if total_qty.n != 1 }} received</span>
+            {% if receipt.reversed_at %}
+            <span class="badge-gray block mt-1">Reversed</span>
+            {% else %}
+            <form method="post" action="/purchase-orders/{{ po.id }}/receipts/{{ receipt.id }}/reverse"
+                  class="mt-1 inline"
+                  onsubmit="const reason = prompt('Why is receipt #{{ receipt.id }} being reversed? This undoes its inventory + cost impact and cannot be redone.');
+                            if (!reason || !reason.trim()) return false;
+                            this.querySelector('input[name=reason]').value = reason;">
+              <input type="hidden" name="reason" value="" />
+              <button type="submit" class="text-xs text-red-600 hover:text-red-800 font-medium">
+                Reverse…
+              </button>
+            </form>
+            {% endif %}
           </div>
         </div>
+        {% if receipt.reversed_at %}
+        <p class="text-xs text-gray-500 mt-1 italic">
+          Reversed {{ receipt.reversed_at.strftime('%b %d, %Y at %I:%M %p') }}{{ ' — ' ~ receipt.reversal_reason if receipt.reversal_reason }}
+        </p>
+        {% endif %}
         {% if receipt.lines %}
         <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1">
           {% for rl in receipt.lines %}

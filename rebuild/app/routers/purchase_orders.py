@@ -1285,6 +1285,38 @@ async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)
     return resp
 
 
+@router.post("/{po_id}/receipts/{receipt_id}/reverse", response_class=RedirectResponse)
+async def po_reverse_receipt(po_id: int, receipt_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    """Undo a mis-receive. ``po_id`` only shapes the redirect-back target — a
+    receipt can span multiple POs, so the reversal itself acts on the whole
+    receipt regardless of which PO's page the button was clicked from."""
+    form = await request.form()
+    reason = str(form.get("reason", "")).strip()
+    svc = POService(db, current_user_id=user_id)
+    try:
+        result = svc.reverse_receipt(receipt_id, reason)
+    except PermissionError:
+        db.rollback()
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote('You do not have permission to reverse a receipt. Ask an admin or bookkeeper.')}",
+            status_code=303,
+        )
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(f"/purchase-orders/{po_id}?error={url_quote(str(exc))}", status_code=303)
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error reversing receipt %s", receipt_id)
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote('Unexpected error — receipt was not reversed.')}",
+            status_code=303,
+        )
+    msg = f"Receipt #{result['receipt_id']} reversed."
+    if result["cost_notes"]:
+        msg += " " + " ".join(result["cost_notes"])
+    return RedirectResponse(f"/purchase-orders/{po_id}?ok={url_quote(msg)}", status_code=303)
+
+
 @router.post("/{po_id}/cancel-status", response_class=RedirectResponse)
 def po_cancel(po_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     svc = POService(db, current_user_id=user_id)
