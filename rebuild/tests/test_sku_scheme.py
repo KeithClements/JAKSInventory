@@ -139,14 +139,15 @@ def test_house_brand_uses_owner_number(db):
 
 
 def test_house_brand_without_owner_number_masks_vendor_code(db):
-    """is_house_brand with NO owner-typed number → hide the vendor code, keep the
-    part # under the house prefix: {prefix}-{prefix}-{part#} (JAKS-JAKS-10R1273)."""
+    """is_house_brand with NO owner-typed number → omit the vendor code segment
+    entirely, keep the part # under the house prefix: {prefix}-{part#}
+    (JAKS-10R1273), never doubled."""
     v = _vendor(db, "DFT")
     p = ProductService(db).create_product({
         "vendor_id": v.id, "vendor_part_number": "10R1273", "title": "Reman pump",
         "is_house_brand": True,
     })
-    assert p.sku == "JAKS-JAKS-10R1273"
+    assert p.sku == "JAKS-10R1273"
     assert p.is_house_brand is True
 
 
@@ -154,12 +155,12 @@ def test_house_brand_without_owner_number_masks_vendor_code(db):
 
 def test_private_label_vendor_masks_sku_and_flags_house_brand(db):
     """A vendor flagged private_label → ALL its products are house brand and the
-    SKU hides the vendor code (uses the house prefix instead)."""
+    SKU hides the vendor code (omitted, not masked with a second prefix)."""
     v = _vendor(db, "DFT", private_label=True)
     p = ProductService(db).create_product(
         {"vendor_id": v.id, "vendor_part_number": "pl5001", "title": "Reman"}
     )
-    assert p.sku == "JAKS-JAKS-PL5001"      # not JAKS-DFT-…
+    assert p.sku == "JAKS-PL5001"      # not JAKS-DFT-… and not JAKS-JAKS-…
     assert p.is_house_brand is True
 
 
@@ -178,7 +179,7 @@ def test_create_path_strips_stray_prefix_house_brand(db):
     p = ProductService(db).create_product(
         {"vendor_id": v.id, "vendor_part_number": "JAKS-DFT-99X", "title": "x"}
     )
-    assert p.sku == "JAKS-JAKS-99X"        # not JAKS-JAKS-JAKS-DFT-99X
+    assert p.sku == "JAKS-99X"        # not JAKS-JAKS-99X or JAKS-DFT-99X
 
 
 def test_private_label_collision_raises_clear_message(db):
@@ -203,7 +204,7 @@ def test_private_label_vendor_respects_prefix_setting(db):
     p = ProductService(db).create_product(
         {"vendor_id": v.id, "vendor_part_number": "55-1", "title": "Gasket"}
     )
-    assert p.sku == "AXLE-AXLE-55-1"
+    assert p.sku == "AXLE-55-1"
 
 
 def test_private_label_vendor_still_honors_owner_number(db):

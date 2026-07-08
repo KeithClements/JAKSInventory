@@ -76,6 +76,26 @@ def detect_makes_in_text(text: str) -> set[str]:
     return {canon for pat, canon in _MAKE_TEXT_PATTERNS if pat.search(text)}
 
 
+def canonical_make_for_product(engine_manufacturer: str | None, manufacturer: str | None) -> str:
+    """The one canonical Engine-Make for a product, or '' if neither field
+    resolves to one. engine_manufacturer (the picker-driven field) wins when
+    it resolves; manufacturer (the older free-text field — 'Caterpillar',
+    'Detroit Diesel', 'International', case variants, typos) is the fallback.
+    Single source of truth for both the manufacturer BADGE (list.html) and the
+    manufacturer FILTER (product_list route) — those used to read the two
+    fields with different fallback order and match raw substrings independently,
+    so the same product could badge one color and be invisible to the filter
+    for that same color (§ products list manufacturer-badge/filter fix)."""
+    return normalize_make(engine_manufacturer or "") or normalize_make(manufacturer or "")
+
+
+def raw_tokens_for_canonical_make(canonical: str) -> list[str]:
+    """Every raw alias token that normalizes to `canonical` (e.g. 'CAT / Caterpillar'
+    → ['caterpillar', 'cat']). Lets a SQL filter match the messy raw values actually
+    stored in engine_manufacturer/manufacturer without duplicating _MAKE_NORMALIZE."""
+    return [k for k, v in _MAKE_NORMALIZE.items() if v == canonical]
+
+
 class ClassificationService(BaseService):
 
     def __init__(self, db, current_user_id=None) -> None:

@@ -637,6 +637,102 @@
       </div>
     </div>
     {% endif %}
+
+    {# ── Merge Duplicate — Info tab only. Irreversible bulk reassignment: every
+       table that can reference a product (vendor sources, cross-refs, cost
+       history, inventory ledger, every document line type, …) gets re-pointed
+       onto THIS product; the duplicate is retired (superseded, deactivated),
+       never hard-deleted. Same confirm-before-submit pattern as Archive. #}
+    {% if product.is_active %}
+    <div id="merge-duplicate" class="card border-purple-100 mt-4" x-data="{ open: false }">
+      <div class="card-header">
+        <div>
+          <h3 class="card-title">Merge Duplicate Into This Product</h3>
+          <p class="text-xs text-gray-400 mt-0.5">
+            Found the same part entered twice? Pick the duplicate below — its history moves here and it's retired.
+          </p>
+        </div>
+        <button type="button" @click="open = !open"
+                class="rounded-lg border border-purple-200 px-3 py-1.5 text-sm font-medium
+                       text-purple-700 hover:bg-purple-50 transition-colors">
+          Merge…
+        </button>
+      </div>
+      <div x-show="open" x-cloak class="card-body border-t border-gray-100" style="overflow: visible">
+        <div x-data="{
+               _q: '', _dupId: null, _dupSku: '', _showRes: false, _results: [], _ai: -1,
+               async _doSearch() {
+                 const term = this._q.trim();
+                 if (term.length < 2) { this._results = []; this._ai = -1; return; }
+                 try {
+                   const r = await fetch('/line-items/product-search?q=' + encodeURIComponent(term));
+                   const hits = r.ok ? await r.json() : [];
+                   this._results = hits.filter(p => p.product_id !== {{ product.id }});
+                 } catch (e) { this._results = []; } finally { this._ai = this._results.length ? 0 : -1; }
+               },
+               _select(p) {
+                 this._dupId = p.product_id;
+                 this._dupSku = p.sku || p.part_number || '';
+                 this._q = this._dupSku + ' — ' + (p.title || p.description || '');
+                 this._results = []; this._showRes = false; this._ai = -1;
+               },
+               _confirmMerge(ev) {
+                 const msg = 'Merge ' + this._dupSku + ' into {{ product.sku }}? ' +
+                             'Its history moves here and it is retired (not deleted). This cannot be undone.';
+                 if (!confirm(msg)) ev.preventDefault();
+               },
+               get canSubmit() { return !!this._dupId; }
+             }">
+          <form method="post" :action="'/products/{{ product.id }}/merge/' + _dupId"
+                @submit="_confirmMerge($event)"
+                class="grid grid-cols-1 sm:grid-cols-3 gap-4 items-start">
+            <div class="relative sm:col-span-2">
+              <label class="form-label">Duplicate Product <span class="text-red-500">*</span></label>
+              <input type="text" x-model="_q"
+                     @input.debounce.250ms="_showRes = true; _dupId = null; _doSearch()"
+                     @keydown.down.prevent="_showRes = true; _ai = Math.min(_ai + 1, _results.length - 1)"
+                     @keydown.up.prevent="_ai = Math.max(_ai - 1, 0)"
+                     @keydown.enter.prevent="if (_ai >= 0 && _results[_ai]) _select(_results[_ai])"
+                     @keydown.escape="_showRes = false; _results = []"
+                     placeholder="Search by SKU or title…"
+                     autocomplete="off"
+                     class="form-input" />
+              <div x-show="_showRes && _results.length > 0" x-cloak
+                   @click.outside="_showRes = false"
+                   class="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200
+                          rounded-lg shadow-lg z-40 max-h-52 overflow-y-auto divide-y divide-gray-100">
+                <template x-for="(p, idx) in _results" :key="p.product_id">
+                  <button type="button" @click="_select(p)"
+                          :class="idx === _ai ? 'cust-pick-active' : ''"
+                          class="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-gray-50/80 transition-colors">
+                    <span class="font-mono text-xs font-bold text-brand-700 shrink-0 whitespace-nowrap" x-text="p.sku || p.part_number"></span>
+                    <span class="flex-1 min-w-0 text-sm text-gray-800 truncate" x-text="p.title || p.description"></span>
+                    <span class="shrink-0 text-xs text-gray-500 tabular-nums" x-text="(p.qty_on_hand || 0) + ' on hand'"></span>
+                  </button>
+                </template>
+              </div>
+              <p x-show="_dupId" x-cloak class="mt-1 text-xs text-purple-700">
+                Will retire <span class="font-mono font-bold" x-text="_dupSku"></span> and move its history here.
+              </p>
+            </div>
+            <div>
+              <label class="form-label">New SKU <span class="text-gray-400 font-normal">(optional)</span></label>
+              <input type="text" name="new_sku" placeholder="{{ product.sku }}" class="form-input font-mono" />
+              <p class="form-hint">Leave blank to keep this product's current SKU.</p>
+            </div>
+            <div class="sm:col-span-3 flex gap-2 pt-1">
+              <button type="submit" :disabled="!canSubmit"
+                      :class="canSubmit ? '' : 'opacity-40 cursor-not-allowed'"
+                      class="rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 transition-colors">
+                Merge…
+              </button>
+              <button type="button" @click="open = false" class="btn-secondary btn-sm">Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+    {% endif %}
   </div>
 
 

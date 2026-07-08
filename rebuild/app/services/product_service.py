@@ -16,7 +16,9 @@ from __future__ import annotations
 
 from sqlalchemy import func
 
-from app.constants import AuditAction, CrossRefType, EntityType, InventoryTxnType, ProductStatus
+from app.constants import (
+    AuditAction, CrossRefType, EntityType, InventoryTxnType, Permission, ProductStatus,
+)
 from app.models.inventory import InventoryTransaction
 from app.models.product import (
     CrossReference, Product, ProductApplication, ProductCategory, ProductCostHistory,
@@ -272,12 +274,12 @@ class ProductService(BaseService):
 
         if is_house_brand:
             # House brand: an owner-typed JAKS Product # wins (true private label);
-            # otherwise mask the vendor code with the house prefix and KEEP the
-            # vendor part # → {prefix}-{prefix}-{part#}, e.g. JAKS-JAKS-10R1273.
+            # otherwise the vendor code is simply omitted (no masking segment) →
+            # {prefix}-{part#}, e.g. JAKS-10R1273. Never double the prefix.
             owner_number = (data.get("jaks_product_number")
                             or data.get("sku") or "").strip().upper()
             customer_sku = (owner_number
-                            or build_vendor_sku(prefix, prefix, bare))
+                            or build_vendor_sku(prefix, "", bare))
         elif use_coded:
             if not (vendor.vendor_number or "").strip():
                 raise ValueError(
@@ -537,6 +539,318 @@ class ProductService(BaseService):
             new_value={"status": ProductStatus.SUPERSEDED, "superseded_by_id": new_product_id},
         )
         self.db.commit()
+
+    def merge_products(
+        self, keeper_id: int, duplicate_id: int, new_sku: str | None = None,
+    ) -> dict:
+        """
+        Merge ``duplicate_id`` into ``keeper_id``: re-point every table that can
+        reference a product (vendor sources, cross-refs, applications, cost
+        history, serials, kits, suggested-sells, the inventory ledger, count
+        lines, every document line type, competitor prices, research items,
+        import candidates) onto the keeper, fold the duplicate's on-hand qty
+        into the keeper through the normal ledger-writing path, then retire the
+        duplicate the same way ``supersede_product`` does (status=SUPERSEDED,
+        superseded_by_id, is_active=False) — never a hard delete, so every
+        document that ever pointed at it stays resolvable.
+
+        ``new_sku`` optionally renames the keeper (e.g. the duplicate happened
+        to hold the SKU you actually want). The duplicate's own SKU is always
+        archived first, so the rename can never collide with it.
+
+        Irreversible bulk reassignment across live documents — same class of
+        operation as merge_category/merge_brand (Permission-gated, admin-only).
+        """
+        self.assert_can(Permission.MERGE_PRODUCTS)
+        if keeper_id == duplicate_id:
+            raise ValueError("Cannot merge a product into itself.")
+        keeper = self._get_or_404(keeper_id)
+        duplicate = self._get_or_404(duplicate_id)
+        if keeper.status == ProductStatus.SUPERSEDED:
+            raise ValueError(
+                f"Product {keeper_id} ({keeper.sku}) has itself been merged/"
+                f"superseded — merge into its replacement instead."
+            )
+        if duplicate.superseded_by_id is not None:
+            raise ValueError(
+                f"Product {duplicate_id} ({duplicate.sku}) was already merged "
+                f"into product {duplicate.superseded_by_id} — cannot merge it again."
+            )
+
+        # SKU: validate FIRST (no mutation yet) so a collision never leaves
+        # partial state. The duplicate's own SKU is archived before the keeper's
+        # rename so a rename onto the duplicate's current SKU can never collide.
+        keeper_old_sku = keeper.sku
+        target_sku = (new_sku or "").strip() or keeper.sku
+        if target_sku != keeper.sku:
+            clash = (
+                self.db.query(Product)
+                .filter(Product.sku == target_sku, Product.id.notin_([keeper.id, duplicate.id]))
+                .first()
+            )
+            if clash is not None:
+                raise ValueError(
+                    f"SKU '{target_sku}' is already used by product {clash.id} ({clash.sku})."
+                )
+
+        dup_old_sku = duplicate.sku
+        dup_old_status = duplicate.status
+        duplicate.sku = f"{dup_old_sku}-MERGED-{keeper.id}"[:100]
+        self.db.flush()
+        if target_sku != keeper.sku:
+            keeper.sku = target_sku
+
+        # Late imports (mirrors resync_all_products' local ProductService
+        # import below) — avoids a module-level circular import with the many
+        # models only this method touches.
+        from app.models.competitor import CompetitorPrice
+        from app.models.core import CoreCharge
+        from app.models.count_session import CountLine
+        from app.models.credit_memo import CreditMemoLine
+        from app.models.import_review import ImportCandidate
+        from app.models.inventory_transfer import InventoryTransfer
+        from app.models.invoice import InvoiceLine
+        from app.models.product import ProductKit, ProductKitLine, ProductSerialNumber, SuggestedSell
+        from app.models.purchase_order import POLine
+        from app.models.quote import LostSaleLog, QuoteLine, SOLine
+        from app.models.research import ResearchItem
+        from app.models.returns import ReturnLine
+        from app.models.vendor_return import VendorReturnLine
+        from app.models.warranty import WarrantyClaimLine
+        from app.services.inventory_service import InventoryService
+
+        counts: dict[str, int] = {}
+
+        def _bulk(model, col_name: str) -> None:
+            col = getattr(model, col_name)
+            n = (
+                self.db.query(model)
+                .filter(col == duplicate.id)
+                .update({col_name: keeper.id}, synchronize_session=False)
+            )
+            counts[f"{model.__tablename__}.{col_name}"] = n or 0
+
+        # Vendor sources — partial-unique (product_id, vendor_id) WHERE active.
+        # Deactivate an incoming source only when the keeper already actively
+        # sources that same vendor; never let two active+preferred rows survive.
+        keeper_had_preferred = (
+            self.db.query(ProductVendorSource)
+            .filter(ProductVendorSource.product_id == keeper.id,
+                    ProductVendorSource.is_preferred == True,   # noqa: E712
+                    ProductVendorSource.is_active == True)      # noqa: E712
+            .first() is not None
+        )
+        keeper_active_vendor_ids = {
+            vid for (vid,) in self.db.query(ProductVendorSource.vendor_id)
+            .filter(ProductVendorSource.product_id == keeper.id,
+                    ProductVendorSource.is_active == True)      # noqa: E712
+            .all()
+        }
+        moved_sources = 0
+        for src in list(self.db.query(ProductVendorSource)
+                         .filter(ProductVendorSource.product_id == duplicate.id)):
+            if src.is_active and src.vendor_id in keeper_active_vendor_ids:
+                src.is_active = False
+                src.is_preferred = False
+                note = (f"[merged from product {duplicate.id} — kept inactive, "
+                        f"keeper already sources this vendor]")
+                src.notes = f"{src.notes} {note}".strip()
+            elif keeper_had_preferred:
+                src.is_preferred = False
+            src.product_id = keeper.id
+            moved_sources += 1
+        counts["product_vendor_sources.product_id"] = moved_sources
+
+        # Cross references — unique (product_id, ref_type, ref_number); drop an
+        # incoming row the keeper already has verbatim rather than collide.
+        keeper_xref_keys = {
+            (r.ref_type, r.ref_number)
+            for r in self.db.query(CrossReference).filter(CrossReference.product_id == keeper.id)
+        }
+        moved_xrefs = 0
+        for xr in list(self.db.query(CrossReference).filter(CrossReference.product_id == duplicate.id)):
+            key = (xr.ref_type, xr.ref_number)
+            if key in keeper_xref_keys:
+                self.db.delete(xr)
+                continue
+            xr.product_id = keeper.id
+            keeper_xref_keys.add(key)
+            moved_xrefs += 1
+        counts["cross_references.product_id"] = moved_xrefs
+        # Anyone else's "use this replacement instead" pointer follows the merge too.
+        self.db.query(CrossReference).filter(
+            CrossReference.replacement_product_id == duplicate.id
+        ).update({"replacement_product_id": keeper.id}, synchronize_session=False)
+        # A row can never be its own replacement.
+        self.db.query(CrossReference).filter(
+            CrossReference.product_id == keeper.id,
+            CrossReference.replacement_product_id == keeper.id,
+        ).update({"replacement_product_id": None}, synchronize_session=False)
+
+        # Product applications — dedupe grain is (make, model, cpl); no DB
+        # constraint, but merging shouldn't manufacture literal duplicate rows.
+        keeper_app_keys = {
+            (a.engine_make, a.engine_model, a.cpl)
+            for a in self.db.query(ProductApplication).filter(ProductApplication.product_id == keeper.id)
+        }
+        moved_apps = 0
+        for ap in list(self.db.query(ProductApplication).filter(ProductApplication.product_id == duplicate.id)):
+            key = (ap.engine_make, ap.engine_model, ap.cpl)
+            if key in keeper_app_keys:
+                self.db.delete(ap)
+                continue
+            ap.product_id = keeper.id
+            keeper_app_keys.add(key)
+            moved_apps += 1
+        counts["product_applications.product_id"] = moved_apps
+
+        # Suggested sells — unique (product_id, suggested_product_id); drop
+        # anything that would collide OR self-reference once remapped.
+        keeper_pairs_out = {
+            sp for (sp,) in self.db.query(SuggestedSell.suggested_product_id)
+            .filter(SuggestedSell.product_id == keeper.id)
+        }
+        moved_ss = 0
+        for ss in list(self.db.query(SuggestedSell).filter(SuggestedSell.product_id == duplicate.id)):
+            if ss.suggested_product_id == keeper.id or ss.suggested_product_id in keeper_pairs_out:
+                self.db.delete(ss)
+                continue
+            ss.product_id = keeper.id
+            keeper_pairs_out.add(ss.suggested_product_id)
+            moved_ss += 1
+        keeper_pairs_in = {
+            p for (p,) in self.db.query(SuggestedSell.product_id)
+            .filter(SuggestedSell.suggested_product_id == keeper.id)
+        }
+        for ss in list(self.db.query(SuggestedSell).filter(SuggestedSell.suggested_product_id == duplicate.id)):
+            if ss.product_id == keeper.id or ss.product_id in keeper_pairs_in:
+                self.db.delete(ss)
+                continue
+            ss.suggested_product_id = keeper.id
+            keeper_pairs_in.add(ss.product_id)
+            moved_ss += 1
+        counts["suggested_sells"] = moved_ss
+
+        # Competitor prices — unique (product_id, competitor_name, competitor_part_number).
+        keeper_cp_keys = {
+            (r.competitor_name, r.competitor_part_number)
+            for r in self.db.query(CompetitorPrice).filter(CompetitorPrice.product_id == keeper.id)
+        }
+        moved_cp = 0
+        for cp in list(self.db.query(CompetitorPrice).filter(CompetitorPrice.product_id == duplicate.id)):
+            key = (cp.competitor_name, cp.competitor_part_number)
+            if key in keeper_cp_keys:
+                self.db.delete(cp)
+                continue
+            cp.product_id = keeper.id
+            keeper_cp_keys.add(key)
+            moved_cp += 1
+        counts["competitor_prices.product_id"] = moved_cp
+
+        # Count lines — unique (session_id, product_id); if both products were
+        # counted in the same session, keep the keeper's row.
+        keeper_sessions = {
+            sid for (sid,) in self.db.query(CountLine.session_id).filter(CountLine.product_id == keeper.id)
+        }
+        moved_counts = 0
+        for cl in list(self.db.query(CountLine).filter(CountLine.product_id == duplicate.id)):
+            if cl.session_id in keeper_sessions:
+                self.db.delete(cl)
+                continue
+            cl.product_id = keeper.id
+            keeper_sessions.add(cl.session_id)
+            moved_counts += 1
+        counts["count_lines.product_id"] = moved_counts
+
+        # Simple repoints — historical/transactional rows with no uniqueness
+        # constraint keyed on product_id; a plain bulk UPDATE is safe.
+        _bulk(ProductImage, "product_id")
+        _bulk(ProductCostHistory, "product_id")
+        _bulk(ProductSerialNumber, "product_id")
+        _bulk(ProductKit, "product_id")
+        _bulk(ProductKitLine, "component_product_id")
+        _bulk(InventoryTransaction, "product_id")
+        _bulk(InventoryTransfer, "product_id")
+        _bulk(InvoiceLine, "product_id")
+        _bulk(QuoteLine, "product_id")
+        _bulk(SOLine, "product_id")
+        _bulk(LostSaleLog, "product_id")
+        _bulk(CreditMemoLine, "product_id")
+        _bulk(POLine, "product_id")
+        _bulk(ReturnLine, "product_id")
+        _bulk(VendorReturnLine, "product_id")
+        _bulk(WarrantyClaimLine, "product_id")
+        _bulk(CoreCharge, "product_id")
+        _bulk(ResearchItem, "resolved_product_id")
+        _bulk(ImportCandidate, "matched_product_id")
+        _bulk(ImportCandidate, "applied_product_id")
+
+        # A third product's "superseded by" pointer should follow the merge too.
+        self.db.query(Product).filter(Product.superseded_by_id == duplicate.id).update(
+            {"superseded_by_id": keeper.id}, synchronize_session=False
+        )
+        self.db.flush()
+
+        # Quantities. qty_on_hand is ledger-owned — move it through
+        # InventoryService so the cache and the ledger can never diverge.
+        # qty_committed/on_order/backordered have no ledger of their own (they
+        # are maintained by direct increments in the PO/SO flows that produced
+        # them); summing the cached ints here matches that existing convention.
+        inv_svc = InventoryService(self.db, self.current_user_id)
+        qty_moved = duplicate.qty_on_hand or 0
+        if qty_moved != 0:
+            inv_svc.apply_stock_delta(
+                keeper, qty_moved, InventoryTxnType.MANUAL_ADJUSTMENT,
+                reference_type=EntityType.PRODUCT, reference_id=duplicate.id,
+                notes=f"Merged in on-hand qty from product {duplicate.id} ({dup_old_sku})",
+            )
+            inv_svc.apply_stock_delta(
+                duplicate, -qty_moved, InventoryTxnType.MANUAL_ADJUSTMENT,
+                reference_type=EntityType.PRODUCT, reference_id=keeper.id,
+                notes=f"Qty merged into product {keeper.id} ({keeper.sku})",
+            )
+        keeper.qty_committed = (keeper.qty_committed or 0) + (duplicate.qty_committed or 0)
+        keeper.qty_on_order = (keeper.qty_on_order or 0) + (duplicate.qty_on_order or 0)
+        keeper.qty_backordered = (keeper.qty_backordered or 0) + (duplicate.qty_backordered or 0)
+        duplicate.qty_committed = 0
+        duplicate.qty_on_order = 0
+        duplicate.qty_backordered = 0
+
+        # Retire the duplicate — same soft-retirement shape as
+        # supersede_product (never a hard delete; history stays intact).
+        duplicate.status = ProductStatus.SUPERSEDED
+        duplicate.superseded_by_id = keeper.id
+        duplicate.is_active = False
+
+        self.audit(
+            entity_type=EntityType.PRODUCT,
+            entity_id=duplicate.id,
+            action=AuditAction.STATUS_CHANGED,
+            old_value={"sku": dup_old_sku, "status": str(dup_old_status)},
+            new_value={"sku": duplicate.sku, "status": ProductStatus.SUPERSEDED,
+                       "superseded_by_id": keeper.id},
+            notes=f"Merged into product {keeper.id} ({keeper.sku}).",
+        )
+        self.audit(
+            entity_type=EntityType.PRODUCT,
+            entity_id=keeper.id,
+            action=AuditAction.EDITED,
+            old_value={"sku": keeper_old_sku},
+            new_value={"sku": keeper.sku, "merged_from_product_id": duplicate.id,
+                       "qty_absorbed": qty_moved},
+            notes=f"Absorbed duplicate product {duplicate.id} ({dup_old_sku}).",
+        )
+        self.db.commit()
+
+        return {
+            "keeper_id": keeper.id,
+            "keeper_sku": keeper.sku,
+            "duplicate_id": duplicate.id,
+            "duplicate_old_sku": dup_old_sku,
+            "duplicate_archived_sku": duplicate.sku,
+            "qty_absorbed": qty_moved,
+            "counts": counts,
+        }
 
     # ── Vendor Sources ────────────────────────────────────────────────────────
 

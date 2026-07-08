@@ -2,13 +2,13 @@
 scripts/set_vendor_private_label.py
 ===================================
 Flag one or more vendors as PRIVATE LABEL — their products sell as our house brand
-and the customer-facing SKU hides the vendor code (uses the house prefix instead,
-e.g. JAKS-JAKS-10R1273). Also applies the Alembic column migration if the live DB
-predates it.
+and the customer-facing SKU hides the vendor code (segment omitted entirely,
+e.g. JAKS-10R1273 — never doubled). Also applies the Alembic column migration if
+the live DB predates it.
 
 After running this, run scripts/regenerate_skus_vendor.py to rewrite the affected
-vendors' existing SKUs to the masked {prefix}-{prefix}-{part#} form (it backs up
-first and flags those products is_house_brand).
+vendors' existing SKUs to the {prefix}-{part#} form (it backs up first and flags
+those products is_house_brand).
 
 Run (server STOPPED):
   .venv\\Scripts\\python.exe scripts\\set_vendor_private_label.py DFT MIG

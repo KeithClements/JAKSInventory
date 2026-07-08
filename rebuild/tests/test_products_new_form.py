@@ -189,8 +189,8 @@ def test_post_sku_is_vendor_part_number(client, db_session):
 
 def test_post_house_brand_without_number_masks_sku(client, db_session):
     """Route-level: is_house_brand checked but NO JAKS Product # typed → the SKU
-    masks the vendor code with the house prefix (JAKS-JAKS-{part#}) and the product
-    is flagged house brand. Proves the form-field wiring reaches the masking."""
+    omits the vendor code segment entirely (JAKS-{part#}, never doubled) and the
+    product is flagged house brand. Proves the form-field wiring reaches the masking."""
     vendor = _seed_vendor(db_session)
     cat = _seed_category(db_session, name="Pumps", code="PMP")
     r = client.post("/products/new", data={
@@ -205,7 +205,7 @@ def test_post_house_brand_without_number_masks_sku(client, db_session):
     assert r.status_code == 303, r.text
     pid = int(r.headers["location"].rsplit("/", 1)[-1])
     p = db_session.query(Product).get(pid)
-    assert p.sku == "JAKS-JAKS-10R1273"
+    assert p.sku == "JAKS-10R1273"
     assert p.is_house_brand is True
 
 
@@ -226,7 +226,7 @@ def test_post_private_label_vendor_masks_sku(client, db_session):
     assert r.status_code == 303, r.text
     pid = int(r.headers["location"].rsplit("/", 1)[-1])
     p = db_session.query(Product).get(pid)
-    assert p.sku == "JAKS-JAKS-10R1273"   # DFT hidden
+    assert p.sku == "JAKS-10R1273"   # DFT hidden, not doubled
     assert p.is_house_brand is True
 
 

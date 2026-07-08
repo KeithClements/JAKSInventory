@@ -23,6 +23,7 @@
 {% from "macros/list_behavior.html" import operational_list_script %}
 {% from "macros/bulk_toolbar.html" import bulk_toolbar %}
 {% from "macros/preview_dock.html" import preview_dock_shell %}
+{% from "macros/sortable.html" import sortable_th %}
 {{ operational_list_script() }}
 
 <div
@@ -120,11 +121,29 @@
   ('uncategorized', 'Uncategorized', counts.uncategorized),
 ] %}
 
+{# Shared query fragments — every control below (chips / sort-by / filters /
+   sortable column headers / pagination) must preserve ALL the others, or
+   switching one silently drops another (the "hard to navigate" complaint).
+   _filters_qs = q + the 3 structured filters (never includes tab/sort/direction/page,
+   each caller supplies those itself). _sort_qs additionally carries tab, for the
+   sortable_th column headers. #}
+{% set _struct_filters_qs = ''
+   ~ (('&category_id=' ~ category_id) if category_id else '')
+   ~ (('&manufacturer=' ~ (manufacturer | urlencode)) if manufacturer else '')
+   ~ (('&brand=' ~ (brand | urlencode)) if brand else '')
+%}
+{% set _filters_qs = (('&q=' ~ (q | urlencode)) if q else '') ~ _struct_filters_qs %}
+{% set _sort_qs = ('&tab=' ~ tab) ~ _filters_qs %}
+
 <div class="flex flex-wrap items-center gap-2">
   {# Search — flex 1 per Axle spec #}
   <form method="get" class="flex items-center gap-2 flex-1 min-w-[260px]">
     <input type="hidden" name="tab" value="{{ tab }}" />
     <input type="hidden" name="sort" value="{{ sort }}" />
+    <input type="hidden" name="direction" value="{{ direction }}" />
+    <input type="hidden" name="category_id" value="{{ category_id }}" />
+    <input type="hidden" name="manufacturer" value="{{ manufacturer }}" />
+    <input type="hidden" name="brand" value="{{ brand }}" />
     <div class="relative flex-1">
       <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
            fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -137,29 +156,37 @@
                     placeholder:text-gray-400" />
     </div>
     {% if q %}
-    <a href="?tab={{ tab }}{% if sort != 'sku' %}&sort={{ sort }}{% endif %}"
+    <a href="?tab={{ tab }}{% if sort != 'sku' %}&sort={{ sort }}{% endif %}{% if direction != 'asc' %}&direction={{ direction }}{% endif %}{{ _struct_filters_qs }}"
        class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</a>
     {% endif %}
   </form>
 
   {# Axle filter chips (.fchip / .fchip.on) — bordered radius-14 pills, active = solid steel-900 #}
   {% for slug, label, count in product_tabs %}
-  <a href="?tab={{ slug }}{% if q %}&q={{ q }}{% endif %}{% if sort != 'sku' %}&sort={{ sort }}{% endif %}"
+  <a href="?tab={{ slug }}{{ _filters_qs }}{% if sort != 'sku' %}&sort={{ sort }}{% endif %}{% if direction != 'asc' %}&direction={{ direction }}{% endif %}"
      class="fchip {% if tab == slug %}on{% endif %}">
     {{ label }}<span class="ml-1.5 tabular-nums opacity-70">{{ count }}</span>
   </a>
   {% endfor %}
 </div>
 
-{# Sort row — kept compact below the fbar (not in Axle spec but the route requires it) #}
+{# Sort row — kept compact below the fbar (not in Axle spec but the route requires it).
+   Covers Vendor/Category (not visible table columns, so no header to click); SKU/Cost/
+   Avail are also sortable directly from their column headers below. #}
 <form method="get" class="flex items-center gap-2">
   <input type="hidden" name="tab" value="{{ tab }}" />
+  <input type="hidden" name="direction" value="{{ direction }}" />
+  <input type="hidden" name="category_id" value="{{ category_id }}" />
+  <input type="hidden" name="manufacturer" value="{{ manufacturer }}" />
+  <input type="hidden" name="brand" value="{{ brand }}" />
   {% if q %}<input type="hidden" name="q" value="{{ q }}" />{% endif %}
   <label for="product-sort" class="label-mini">Sort by</label>
   <select id="product-sort" name="sort" onchange="this.form.submit()"
           class="py-1.5 pl-3 pr-8 text-xs border border-gray-200 rounded-md bg-white cursor-pointer
                  focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400">
     <option value="sku"      {% if sort == 'sku' %}selected{% endif %}>SKU</option>
+    <option value="cost"     {% if sort == 'cost' %}selected{% endif %}>Cost</option>
+    <option value="avail"    {% if sort == 'avail' %}selected{% endif %}>Avail</option>
     <option value="vendor"   {% if sort == 'vendor' %}selected{% endif %}>Vendor</option>
     <option value="category" {% if sort == 'category' %}selected{% endif %}>Category</option>
   </select>
@@ -171,6 +198,7 @@
 <form method="get" class="flex flex-wrap items-center gap-2">
   <input type="hidden" name="tab" value="{{ tab }}" />
   <input type="hidden" name="sort" value="{{ sort }}" />
+  <input type="hidden" name="direction" value="{{ direction }}" />
   {% if q %}<input type="hidden" name="q" value="{{ q }}" />{% endif %}
   <span class="text-xs font-medium text-gray-500">Filter</span>
   <select name="category_id" onchange="this.form.submit()"
@@ -195,7 +223,7 @@
     {% endfor %}
   </select>
   {% if category_id or manufacturer or brand %}
-  <a href="?tab={{ tab }}&sort={{ sort }}{% if q %}&q={{ q|urlencode }}{% endif %}"
+  <a href="?tab={{ tab }}&sort={{ sort }}{% if direction != 'asc' %}&direction={{ direction }}{% endif %}{% if q %}&q={{ q|urlencode }}{% endif %}"
      class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear filters</a>
   {% endif %}
 </form>
@@ -306,12 +334,12 @@
                    aria-label="Select all products"
                    class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
           </th>
-          <th class="px-4 py-3 text-left label-mini">Part #</th>
+          {{ sortable_th('Part #', 'sku', sort, direction, qs=_sort_qs, align='left') }}
           <th class="px-4 py-3 text-left label-mini">Description</th>
-          <th class="px-4 py-3 text-right label-mini">Cost</th>
+          {{ sortable_th('Cost', 'cost', sort, direction, qs=_sort_qs, align='right') }}
           <th class="px-4 py-3 text-right label-mini">List</th>
           <th class="px-4 py-3 text-right label-mini">Margin</th>
-          <th class="px-4 py-3 text-right label-mini">Avail</th>
+          {{ sortable_th('Avail', 'avail', sort, direction, qs=_sort_qs, align='right') }}
           <th class="px-4 py-3 text-left label-mini">Status</th>
           <th class="px-4 py-3 w-12"></th>
         </tr>
@@ -363,25 +391,27 @@
           {% set margin_badge = 'bg-red-50 text-red-700 border-red-100' %}
         {% endif %}
 
-        {# Manufacturer badge color #}
-        {# §18 A1 — Manufacturer column = Engine Make (engine_manufacturer); legacy fallback #}
-        {% set _mfr_display = p.engine_manufacturer or p.manufacturer or '' %}
-        {% set _ml = _mfr_display | lower %}
-        {% if 'cummins' in _ml %}
-          {% set mfr_cls = 'bg-blue-100 text-blue-700 border-blue-200' %}
-        {% elif 'caterpillar' in _ml %}
-          {% set mfr_cls = 'bg-yellow-100 text-yellow-700 border-yellow-200' %}
-        {% elif 'detroit' in _ml %}
-          {% set mfr_cls = 'bg-slate-100 text-slate-600 border-slate-200' %}
-        {% elif 'mack' in _ml %}
-          {% set mfr_cls = 'bg-red-100 text-red-700 border-red-200' %}
-        {% elif 'volvo' in _ml %}
-          {% set mfr_cls = 'bg-teal-100 text-teal-700 border-teal-200' %}
-        {% elif 'international' in _ml %}
-          {% set mfr_cls = 'bg-orange-100 text-orange-700 border-orange-200' %}
-        {% else %}
-          {% set mfr_cls = 'bg-slate-100 text-slate-600 border-slate-200' %}
-        {% endif %}
+        {# Manufacturer badge — §18 A1. Canonical Engine-Make (mfr_map, computed once in
+           the route via classification_service.canonical_make_for_product) drives BOTH
+           the color and the text now, not a per-row substring guess. engine_manufacturer
+           and the legacy manufacturer column disagree on ~11.8k active products (one
+           abbreviated 'CAT', the other 'CAT / Caterpillar', etc.) — matching the raw
+           field text made the same manufacturer badge two different colors depending on
+           which field happened to be populated. Falls back to the raw field only when
+           neither resolves to a known make (keeps unrecognized owner-entered text visible
+           instead of hiding it). Exact-match dict, not substring — 'CAT' no longer needs
+           to literally contain the word 'caterpillar' to be recognized. #}
+        {% set _mfr_canon = (mfr_map | default({})).get(p.id, '') %}
+        {% set _mfr_display = _mfr_canon or p.engine_manufacturer or p.manufacturer or '' %}
+        {% set _mfr_badge_classes = {
+          'Cummins':                  'bg-blue-100 text-blue-700 border-blue-200',
+          'CAT / Caterpillar':        'bg-yellow-100 text-yellow-700 border-yellow-200',
+          'Detroit':                  'bg-slate-100 text-slate-600 border-slate-200',
+          'Mack':                     'bg-red-100 text-red-700 border-red-200',
+          'Volvo':                    'bg-teal-100 text-teal-700 border-teal-200',
+          'International / Navistar': 'bg-orange-100 text-orange-700 border-orange-200',
+        } %}
+        {% set mfr_cls = _mfr_badge_classes.get(_mfr_canon, 'bg-slate-100 text-slate-600 border-slate-200') %}
 
         {# ── Row ── #}
         <tr
@@ -571,8 +601,9 @@
       <span x-show="selectedCount > 0" x-cloak class="ml-2 text-brand-700 font-medium"><span x-text="selectedCount"></span> selected</span>
     </span>
     {% if total_pages > 1 %}
-    {% set _qs = ('&q=' ~ (q | urlencode)) if q else '' %}
-    {% set _qs = _qs ~ (('&tab=' ~ tab) if (tab and tab != 'all') else '') ~ (('&sort=' ~ sort) if (sort and sort != 'sku') else '') %}
+    {% set _qs = (('&tab=' ~ tab) if (tab and tab != 'all') else '') ~ _filters_qs
+       ~ (('&sort=' ~ sort) if (sort and sort != 'sku') else '')
+       ~ (('&direction=' ~ direction) if (direction and direction != 'asc') else '') %}
     <div class="flex items-center gap-1.5 shrink-0">
       {% if page > 1 %}
         <a href="?page={{ page - 1 }}{{ _qs }}"
@@ -614,7 +645,7 @@
   {% if q %}
   <p class="text-sm font-semibold text-gray-700">No products match "{{ q }}"</p>
   <p class="text-xs text-gray-400 mt-1 mb-4">Try fewer words, or search by part name, number, engine (e.g. C15), or cross-ref.</p>
-  <a href="?tab={{ tab }}" class="btn-secondary btn-sm">Clear search</a>
+  <a href="?tab={{ tab }}{% if sort != 'sku' %}&sort={{ sort }}{% endif %}{% if direction != 'asc' %}&direction={{ direction }}{% endif %}{{ _struct_filters_qs }}" class="btn-secondary btn-sm">Clear search</a>
   {% elif tab == 'low_stock' %}
   <p class="text-sm font-semibold text-gray-700">No low-stock products</p>
   <p class="text-xs text-gray-400 mt-1">All products are above their reorder points.</p>
@@ -624,6 +655,13 @@
   {% elif tab == 'special_order' %}
   <p class="text-sm font-semibold text-gray-700">No special-order products</p>
   <p class="text-xs text-gray-400 mt-1">Mark products as special-order on their detail page.</p>
+  {% elif category_id or manufacturer or brand %}
+  {# The filters/tab combination is a real, valid empty result (e.g. "0 of these
+     in stock right now") — NOT an empty catalog. Offer to relax the filters
+     instead of "Add Product", which reads as onboarding on a 30k+ row catalog. #}
+  <p class="text-sm font-semibold text-gray-700">No products match these filters</p>
+  <p class="text-xs text-gray-400 mt-1 mb-4">Try a different category, manufacturer, or brand — or clear the filters.</p>
+  <a href="?tab={{ tab }}&sort={{ sort }}{% if direction != 'asc' %}&direction={{ direction }}{% endif %}{% if q %}&q={{ q|urlencode }}{% endif %}" class="btn-secondary btn-sm">Clear filters</a>
   {% else %}
   <p class="text-sm font-semibold text-gray-700">No products yet</p>
   <p class="text-xs text-gray-400 mt-1 mb-4">Add your first product to get started.</p>

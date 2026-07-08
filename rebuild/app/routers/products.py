@@ -277,12 +277,14 @@ def product_list(
     q: str = "",
     tab: str = "all",
     sort: str = "sku",
+    direction: str = "asc",     # sortable_th — 'asc' | 'desc', pairs with `sort`
     page: int = 1,
     category_id: int = 0,       # §18 — filter by category (incl. descendants)
     manufacturer: str = "",     # §18 — filter by Manufacturer / Engine Make
     brand: str = "",            # §18 — filter by Brand
     db: Session = Depends(get_db),
 ):
+    direction = "desc" if str(direction).lower() == "desc" else "asc"
     base = db.query(Product).filter(Product.is_active == True)  # noqa: E712
 
     # Tab filter
@@ -319,7 +321,27 @@ def product_list(
     if category_id:
         query = query.filter(Product.category_id.in_(_descendant_category_ids(db, category_id)))
     if manufacturer:
-        query = query.filter(Product.engine_manufacturer == manufacturer)
+        # engine_manufacturer and the older free-text manufacturer column drift
+        # apart (11,787 active products disagree between them — e.g. engine_
+        # manufacturer='CAT' vs manufacturer='CAT / Caterpillar', or one blank).
+        # An exact match on engine_manufacturer alone silently hid real, correctly
+        # -tagged products. Match raw alias tokens (from the same table the badge
+        # canonicalizer uses) against BOTH columns instead.
+        from app.services.classification_service import raw_tokens_for_canonical_make
+        _tokens = raw_tokens_for_canonical_make(manufacturer)
+        if _tokens:
+            query = query.filter(or_(*[
+                col.ilike(f"%{tok}%")
+                for tok in _tokens
+                for col in (Product.engine_manufacturer, Product.manufacturer)
+            ]))
+        else:
+            # Not one of the known aliased makes (e.g. an owner-added custom
+            # Manufacturer row) — fall back to the old exact-match behavior on
+            # either column.
+            query = query.filter(
+                (Product.engine_manufacturer == manufacturer) | (Product.manufacturer == manufacturer)
+            )
     if brand:
         query = query.filter(Product.brand == brand)
 
@@ -398,31 +420,55 @@ def product_list(
             )
             .limit(PAGE_SIZE).offset(offset).all()
         )
+    elif sort == "cost":
+        _cost_col = Product.cost.desc() if direction == "desc" else Product.cost.asc()
+        products = (
+            q_eager.order_by(*rel_order, _cost_col, Product.sku)
+            .limit(PAGE_SIZE).offset(offset).all()
+        )
+    elif sort == "avail":
+        _avail_col = Product.qty_on_hand.desc() if direction == "desc" else Product.qty_on_hand.asc()
+        products = (
+            q_eager.order_by(*rel_order, _avail_col, Product.sku)
+            .limit(PAGE_SIZE).offset(offset).all()
+        )
     else:
         sort = "sku"  # normalize unknown values back to the default
-        products = q_eager.order_by(*rel_order, Product.sku).limit(PAGE_SIZE).offset(offset).all()
+        _sku_col = Product.sku.desc() if direction == "desc" else Product.sku.asc()
+        products = q_eager.order_by(*rel_order, _sku_col).limit(PAGE_SIZE).offset(offset).all()
 
     page_start = (offset + 1) if total else 0
     page_end = min(offset + PAGE_SIZE, total)
 
     # Tab counts — full active set ignoring the current tab, but honoring the
     # search (R3: base is search-filtered above so counts match the list).
-    counts = {
-        "all": base.count(),
-        "in_stock": base.filter(Product.qty_on_hand > 0).count(),
-        "low_stock": base.filter(
+    # ONE conditional-aggregate pass instead of 7 separate COUNT queries: on a
+    # 31k catalog each count re-ran the contains-search full scan, so a search hit
+    # the DB 8× (7 tabs + total) for ~0.8-1.6s/keystroke (live-QA 2026-07-05). This
+    # collapses the 7 tab scans into a single SUM(CASE) pass — identical numbers.
+    _cnt = base.with_entities(
+        func.count().label("all"),
+        func.sum(case((Product.qty_on_hand > 0, 1), else_=0)).label("in_stock"),
+        func.sum(case((and_(
             Product.reorder_point > 0,
             Product.qty_on_hand > 0,
             Product.qty_on_hand <= Product.reorder_point,
-        ).count(),
-        "out_of_stock": base.filter(
-            Product.qty_on_hand == 0, Product.special_order_only == False  # noqa: E712
-        ).count(),
-        "special_order": base.filter(
-            Product.special_order_only == True  # noqa: E712
-        ).count(),
-        "needs_review": base.filter(Product.needs_review == True).count(),  # noqa: E712
-        "uncategorized": base.filter(Product.category_id.is_(None)).count(),
+        ), 1), else_=0)).label("low_stock"),
+        func.sum(case((and_(
+            Product.qty_on_hand == 0, Product.special_order_only == False,  # noqa: E712
+        ), 1), else_=0)).label("out_of_stock"),
+        func.sum(case((Product.special_order_only == True, 1), else_=0)).label("special_order"),  # noqa: E712
+        func.sum(case((Product.needs_review == True, 1), else_=0)).label("needs_review"),  # noqa: E712
+        func.sum(case((Product.category_id.is_(None), 1), else_=0)).label("uncategorized"),
+    ).one()
+    counts = {
+        "all": _cnt.all or 0,
+        "in_stock": _cnt.in_stock or 0,
+        "low_stock": _cnt.low_stock or 0,
+        "out_of_stock": _cnt.out_of_stock or 0,
+        "special_order": _cnt.special_order or 0,
+        "needs_review": _cnt.needs_review or 0,
+        "uncategorized": _cnt.uncategorized or 0,
     }
 
     # §18 — filter dropdown options (active category tree + maintained lists)
@@ -450,13 +496,23 @@ def product_list(
     # "Why it matched" hints — only computed when there's a query, over the page rows.
     match_hints = _compute_match_hints(db, products, q) if q else {}
 
+    # Canonical Engine-Make per row (page-scoped, mirrors sell_price_map above) —
+    # single source of truth for the manufacturer badge, replacing the fragile
+    # per-row substring matching that used to disagree with the filter above.
+    from app.services.classification_service import canonical_make_for_product
+    mfr_map: dict[int, str] = {
+        p.id: canonical_make_for_product(p.engine_manufacturer, p.manufacturer) for p in products
+    }
+
     return templates.TemplateResponse(request, "products/list.html", {
         "products": products,
         "sell_price_map": sell_price_map,
+        "mfr_map": mfr_map,
         "match_hints": match_hints,
         "q": q,
         "tab": tab,
         "sort": sort,
+        "direction": direction,
         "counts": counts,
         "page": page,
         "total_pages": total_pages,
@@ -1357,6 +1413,27 @@ async def product_reactivate(product_id: int, db: Session = Depends(get_db)):
         p.is_active = True
         db.commit()
     return RedirectResponse(f"/products/{product_id}", status_code=303)
+
+
+# ── Merge duplicate ──────────────────────────────────────────────────────────
+
+@router.post("/{keeper_id}/merge/{duplicate_id}", response_class=RedirectResponse)
+async def product_merge(keeper_id: int, duplicate_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    from urllib.parse import quote
+    form = await request.form()
+    new_sku = str(form.get("new_sku", "")).strip() or None
+    try:
+        result = _svc(db, user_id).merge_products(keeper_id, duplicate_id, new_sku=new_sku)
+    except PermissionDeniedError:
+        return RedirectResponse(
+            f"/products/{keeper_id}?error={quote('Merging products requires admin access.')}",
+            status_code=303,
+        )
+    except ValueError as exc:
+        return RedirectResponse(f"/products/{keeper_id}?error={quote(str(exc))}", status_code=303)
+    msg = (f"Merged {result['duplicate_old_sku']} into {result['keeper_sku']} — "
+           f"{result['qty_absorbed']} unit(s) absorbed. Duplicate retired (not deleted).")
+    return RedirectResponse(f"/products/{keeper_id}?ok={quote(msg)}", status_code=303)
 
 
 # ── Vendor Sources ────────────────────────────────────────────────────────────

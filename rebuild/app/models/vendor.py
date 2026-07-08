@@ -44,8 +44,8 @@ class Vendor(Base):
     # which stays on the internal vendor_sku only. '' until assigned.
     vendor_number: Mapped[str] = mapped_column(String(2), nullable=False, default="")
     # Private label: when True, this vendor's products are sold as our house brand —
-    # the customer-facing SKU HIDES the vendor code and uses the house prefix instead
-    # ({prefix}-{prefix}-{part#}, e.g. JAKS-JAKS-10R1273). Products created/imported
+    # the customer-facing SKU HIDES the vendor code by omitting that segment
+    # ({prefix}-{part#}, e.g. JAKS-10R1273 — never doubled). Products created/imported
     # under this vendor are flagged is_house_brand. Per-product override = the
     # is_house_brand checkbox on the product form. See [[jaks-sku-scheme]].
     private_label: Mapped[bool] = mapped_column(

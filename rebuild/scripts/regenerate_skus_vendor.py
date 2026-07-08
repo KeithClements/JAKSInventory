@@ -79,13 +79,13 @@ def main() -> None:
     counts = {"already": 0, "no_part": 0, "collision": 0}
     pl_collisions = []  # private-label losers of a masked-SKU collision (id, old, would-be)
     for pid, old_sku, vcode, part, vsku, private_label in rows:
-        # Private-label vendor → hide the vendor code, use the house prefix
-        # instead ({prefix}-{prefix}-{part#}, e.g. JAKS-JAKS-10R1273). Strip any
+        # Private-label vendor → omit the vendor code segment entirely (never
+        # double the prefix) → {prefix}-{part#}, e.g. JAKS-10R1273. Strip any
         # stray prefix the source part # already carries (shared helper) so we
         # never double it on re-runs.
-        code = prefix if private_label else vcode
+        code = "" if private_label else vcode
         bare = bare_part_number(part or "")
-        if not (code and bare.strip()):
+        if not bare.strip() or (not private_label and not code):
             counts["no_part"] += 1
             continue
         new_sku = build_vendor_sku(prefix, code, bare)
