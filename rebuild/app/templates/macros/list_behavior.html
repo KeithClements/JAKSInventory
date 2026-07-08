@@ -16,6 +16,29 @@
 ═════════════════════════════════════════════════════════════════════════════ #}
 {% macro operational_list_script() %}
 <script>
+  // Filter/tab/sort persistence — every screen that calls operational_list_script()
+  // gets this for free. Runs immediately (top of the content block, before the
+  // filtered table below renders) so a bare return to the screen — e.g. clicking its
+  // sidebar link after navigating away — restores the last filtered/sorted/searched
+  // view instead of resetting to the unfiltered default. Saved per screen (by
+  // pathname) in localStorage; `page` is stripped so a stale page number never
+  // stands past a smaller restored result set. An explicit "Clear filters" / "Clear
+  // search" link (any non-empty query string) naturally overwrites/narrows the saved
+  // state — there's no separate reset path to maintain.
+  (function () {
+    var key = 'jaksListFilters:' + location.pathname;
+    if (location.search) {
+      var params = new URLSearchParams(location.search);
+      params.delete('page');
+      var toSave = params.toString();
+      if (toSave) { localStorage.setItem(key, '?' + toSave); }
+      else { localStorage.removeItem(key); }
+    } else {
+      var saved = localStorage.getItem(key);
+      if (saved) { location.replace(location.pathname + saved); }
+    }
+  })();
+
   function operationalListData(previewBodyId, previewUrlPrefix, allIds) {
     return {
       selected: {},
