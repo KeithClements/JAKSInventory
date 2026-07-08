@@ -254,8 +254,11 @@
 {% include "line_items/_line_adder.html" %}
 {% endif %}
 
-{# ── Axle two-column layout: main lines column (flex 1) + 284px right rail ── #}
-<div class="flex gap-4 items-start">
+{# ── Axle two-column layout: main lines column (flex 1) + 284px right rail.
+   Stacks to a single column below md (≤767px) so the line table gets the full
+   width on a phone instead of being crushed to a ~41px scroll slot beside the
+   fixed rail (live-QA 2026-07-05). ── #}
+<div class="flex flex-col md:flex-row gap-4 items-stretch md:items-start">
 
   {# ═══════════════════════ MAIN COLUMN — Line Items ════════════════════════ #}
   <div class="flex-1 min-w-0 flex flex-col gap-3">
@@ -348,7 +351,7 @@
   </div>{# /main column #}
 
   {# ═══════════════════════ RIGHT RAIL (284px) ══════════════════════════════ #}
-  <aside class="w-[284px] shrink-0 flex flex-col gap-3.5">
+  <aside class="w-full md:w-[284px] shrink-0 flex flex-col gap-3.5">
 
     {# Customer card — keyed identity for this quote (the header strip already
        shows balances; this is the rail summary). #}
@@ -451,6 +454,15 @@
           var hid = form.querySelector('input[name="updated_at"]');
           if (ts && hid) hid.value = ts;
           emit('clean');
+          // Blanket header Disc% cascaded to the lines server-side — re-pull the
+          // totals card AND the line rows so the Quote Total and per-line Disc %
+          // reflect it immediately (no full reload).
+          if (r.headers.get('X-Refresh-Lines')) {
+            var totalsEl = document.getElementById('quote-totals');
+            var tbodyEl = document.getElementById('quote-lines-tbody');
+            if (totalsEl) htmx.trigger(totalsEl, 'refreshTotals');
+            if (tbodyEl) htmx.trigger(tbodyEl, 'refreshLines');
+          }
           if (manual) window.dispatchEvent(new CustomEvent('quote-saved-toast'));
         } else {
           if (r.status === 409) {

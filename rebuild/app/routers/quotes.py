@@ -1040,9 +1040,16 @@ async def autosave_quote(
         # X-Updated-At lets the autosave JS refresh its hidden updated_at so
         # the NEXT save carries the fresh version and never self-conflicts.
         fresh_ts = quote.updated_at.isoformat() if quote.updated_at else ""
+        resp_headers = {"X-Updated-At": fresh_ts}
+        # X-Refresh-Lines tells the autosave JS to re-pull the totals + line rows
+        # when a blanket-discount cascade actually changed the lines, so the on-
+        # screen total moves without a full reload (the autosave uses fetch(), so
+        # it can't ride HTMX's HX-Trigger — the JS triggers the refresh instead).
+        if getattr(quote, "_discount_cascaded", False):
+            resp_headers["X-Refresh-Lines"] = "1"
         return HTMLResponse(
             '<span class="text-xs text-green-600 font-medium">&#10003; Saved</span>',
-            headers={"X-Updated-At": fresh_ts},
+            headers=resp_headers,
         )
     except ConcurrentEditError as exc:
         # Optimistic lock (R9): someone else saved this quote since the page

@@ -29,6 +29,7 @@ from app.constants import (
 from app.models.quote import LostSaleLog, Quote, QuoteLine
 from app.services.base import BaseService, apply_product_line_defaults
 from app.settings_utils import bump_counter
+from app.utils import validate_line_qty
 
 
 class QuoteService(BaseService):
@@ -152,12 +153,23 @@ class QuoteService(BaseService):
             # Force zero regardless of what the caller passed
             merged["discount_pct"] = 0.0
         elif "discount_pct" not in data:
-            # Auto-apply customer default when caller didn't specify. A legacy
-            # out-of-range stored default is treated as UNSET (0) — raising here
-            # would brick add-line for that customer, and clamping 150→100 would
-            # give the parts away.
+            # Inherit the quote's blanket header discount when one is set, so a
+            # line added AFTER the clerk set Disc% joins the blanket instead of
+            # coming in at full price. Fall back to the customer's standing
+            # discount otherwise. A legacy out-of-range stored default is treated
+            # as UNSET (0) — raising here would brick add-line for that customer,
+            # and clamping 150→100 would give the parts away.
             from app.services.invoice_service import _safe_customer_discount
-            merged["discount_pct"] = _safe_customer_discount(customer.discount_pct) if customer else 0.0
+            blanket = _safe_customer_discount(quote.discount_pct)
+            if blanket > 0:
+                merged["discount_pct"] = blanket
+            else:
+                merged["discount_pct"] = _safe_customer_discount(customer.discount_pct) if customer else 0.0
+
+        # Floor+ceiling the qty on add too (the search-row stepper can set it before
+        # the line exists), mirroring update_line's _validate_qty.
+        if "qty" in merged:
+            merged["qty"] = validate_line_qty(merged["qty"])
 
         line = self._add_line_internal(quote_id, merged, sort_order)
         # Attach the transient pricing render-context for templates (chip/badge/
@@ -845,28 +857,33 @@ class QuoteService(BaseService):
 
     @staticmethod
     def _validate_qty(value) -> int:
-        """Normalize a line quantity to an int >= 1.
+        """Normalize a line quantity to an int in [1, MAX_LINE_QTY].
 
-        The qty cell is the busiest input in the app; without a floor a
-        fat-fingered '-3' or '0' produced a negative/zero LINE TOTAL that
-        cascaded to the quote total and — because a negative quote converts
-        straight into an SO/invoice — carried into the money path. Reject
-        anything below 1. (C-review: qty box accepts negative/zero on quote lines.)
+        Delegates to the shared validate_line_qty so quotes, invoices, and SOs
+        enforce the identical floor AND ceiling — a fat-fingered '-3'/'0' (which
+        cascaded a negative/zero into the quote total) or an absurd '999999999'
+        (a multi-trillion-dollar line) both carry into the money path on convert,
+        so neither can be accepted here. (C-review + live-QA 2026-07-05.)
         """
-        try:
-            qty = int(value)
-        except (TypeError, ValueError):
-            raise ValueError("Quantity must be a whole number of 1 or more")
-        if qty < 1:
-            raise ValueError("Quantity must be at least 1")
-        return qty
+        return validate_line_qty(value)
 
     def update_header(self, quote_id: int, data: dict, submitted_updated_at: str | None = None) -> Quote:
-        """Update quote-level notes and settings. Active (non-converted) quotes only."""
+        """Update quote-level notes and settings. Active (non-converted) quotes only.
+
+        The header Disc% is a BLANKET discount: when it changes it cascades onto
+        every discountable line the clerk hasn't individually overridden, so the
+        Quote Total actually moves (and the discount carries forward to the SO/
+        invoice via each line's discount_pct). Before this, the field saved to an
+        inert column no total property read — it flashed "Saved" and did nothing
+        (live-QA 2026-07-05). Overridden lines keep their manual value.
+        """
         quote = self._get_or_404(quote_id)
         self.check_version(quote, submitted_updated_at)
         if quote.status in (QuoteStatus.CONVERTED, QuoteStatus.DECLINED):
             raise ValueError("Cannot edit a converted or declined quote")
+        # Transient (non-column) flag — the autosave route reads it to tell the
+        # browser to refresh the totals + line rows when a cascade actually ran.
+        quote._discount_cascaded = False
         # Whitelist of quote header fields the workspace can write. ESN/engine and
         # the customer reference fields mirror InvoiceService.update_header so the
         # same data the user enters on a quote persists (and later carries to SO).
@@ -879,9 +896,24 @@ class QuoteService(BaseService):
                 value = data[field]
                 if field == "discount_pct":
                     value = self._validate_discount_pct(value)
+                    if abs(value - float(quote.discount_pct or 0.0)) > 1e-9:
+                        self._cascade_blanket_discount(quote, value)
+                        quote._discount_cascaded = True
                 setattr(quote, field, value)
         self.db.commit()
         return quote
+
+    def _cascade_blanket_discount(self, quote: Quote, new_pct: float) -> None:
+        """Apply the quote-level blanket discount to every discountable line the
+        clerk hasn't individually overridden. Non-discountable line types (cores,
+        freight, fees) and lines flagged discount_overridden are left untouched,
+        so a manual per-line discount always wins over the blanket."""
+        for ln in quote.lines:
+            if ln.line_type in NON_DISCOUNTABLE_LINE_TYPES:
+                continue
+            if ln.discount_overridden:
+                continue
+            ln.discount_pct = round(float(new_pct), 4)
 
     def _get_or_404(self, quote_id: int) -> Quote:
         q = self.db.query(Quote).filter(Quote.id == quote_id).first()

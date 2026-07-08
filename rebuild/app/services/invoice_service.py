@@ -32,6 +32,7 @@ from app.models.invoice import Invoice, InvoiceLine
 from app.models.product import Product
 from app.settings_utils import bump_counter, get_setting_value_db
 from app.services.base import BaseService, apply_product_line_defaults
+from app.utils import validate_line_qty
 
 log = logging.getLogger(__name__)
 
@@ -349,6 +350,10 @@ class InvoiceService(BaseService):
         sort_order = max((ln.sort_order for ln in invoice.lines), default=-1) + 1
 
         merged = {**data, "product_id": product_id}
+        # Guard the qty on add too (mirrors update_line) so a huge/zero value can't
+        # enter a directly-built walk-in invoice line.
+        if "qty" in merged:
+            merged["qty"] = validate_line_qty(merged["qty"])
         # Render-context dict the line carries to the template (chip/badge/last-price);
         # presentation-only, never touches totals/tax. See apply_product_line_defaults.
         _render_ctx: dict = {}
@@ -418,6 +423,11 @@ class InvoiceService(BaseService):
             raise ValueError(f"InvoiceLine {line_id} not found")
         self._assert_editable(line.invoice)
 
+        # Floor+ceiling the qty before any field is set — a fat-fingered negative,
+        # zero, or absurd value (999999999 → trillion-dollar line) must not reach a
+        # draft line and slip through finalize. Shared with quote/SO editing.
+        if "qty" in data:
+            data = {**data, "qty": validate_line_qty(data["qty"])}
         updatable = ("description", "qty", "unit_price", "unit_cost",
                      "discount_pct", "sort_order", "line_type")
         qty_changed = False

@@ -18,6 +18,36 @@ def calc_line_total(unit_price: float, qty: int, discount_pct: float = 0.0) -> f
     return round(discounted * qty, 2)
 
 
+# The qty cell is the busiest input in the app. A floor keeps a fat-fingered
+# negative/zero out of the money path; a ceiling keeps an absurd fat-finger
+# (e.g. 999999999 → a multi-trillion-dollar line) from producing a document no
+# one would ever mean. 100k units on a single parts line is already unheard-of
+# at a diesel counter — split into lines if a real order somehow exceeds it.
+MAX_LINE_QTY = 100_000
+
+
+def validate_line_qty(value) -> int:
+    """Normalize a line quantity to an int in [1, MAX_LINE_QTY].
+
+    Shared by quote/invoice/SO line editing so the SAME floor+ceiling guards
+    every document's money path — a bad qty on any of them carries straight into
+    conversion and the ledger otherwise. Raises ValueError on non-int, < 1, or
+    > MAX_LINE_QTY.
+    """
+    try:
+        qty = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("Quantity must be a whole number of 1 or more")
+    if qty < 1:
+        raise ValueError("Quantity must be at least 1")
+    if qty > MAX_LINE_QTY:
+        raise ValueError(
+            f"Quantity looks too large (max {MAX_LINE_QTY:,}). "
+            "Split into multiple lines if this is real."
+        )
+    return qty
+
+
 def calc_margin_pct(unit_price: float, unit_cost: float) -> float:
     """
     Gross margin % = (sell - cost) / sell * 100.

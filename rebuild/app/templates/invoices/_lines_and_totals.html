@@ -9,7 +9,7 @@
 ═════════════════════════════════════════════════════════════════════════════ #}
 {% from "macros/line_thumb.html" import line_thumb %}
 {% from "macros/pricing.html" import price_rule_chip, last_price_hint %}
-<div id="lines-and-totals" class="flex gap-4 items-start">
+<div id="lines-and-totals" class="flex flex-col md:flex-row gap-4 items-stretch md:items-start">
 
   {# ═══════════════════════ MAIN COLUMN — Line Items ════════════════════════ #}
   <div class="flex-1 min-w-0 flex flex-col gap-3">
@@ -239,7 +239,7 @@
   </div>{# /main column #}
 
   {# ═══════════════════════ RIGHT RAIL (284px) ══════════════════════════════ #}
-  <aside class="w-[284px] shrink-0 flex flex-col gap-3.5">
+  <aside class="w-full md:w-[284px] shrink-0 flex flex-col gap-3.5">
 
     {# Customer card — rail summary (header strip already shows balances). #}
     <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">

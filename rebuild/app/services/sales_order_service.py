@@ -38,6 +38,7 @@ from app.models.product import Product
 from app.models.quote import SalesOrder, SOLine
 from app.settings_utils import bump_counter
 from app.services.base import BaseService, apply_product_line_defaults
+from app.utils import validate_line_qty
 
 
 class SalesOrderService(BaseService):
@@ -231,6 +232,11 @@ class SalesOrderService(BaseService):
 
         if "discount_pct" in data:
             data["discount_pct"] = self._validated_discount_pct(data["discount_pct"])
+
+        # Floor+ceiling qty_ordered before it drives the stock-commitment delta or
+        # gets written — shared guard with quote/invoice line editing.
+        if "qty_ordered" in data:
+            data = {**data, "qty_ordered": validate_line_qty(data["qty_ordered"])}
 
         if "qty_ordered" in data and line.line_type == LineType.PRODUCT and line.product_id:
             new_qty_ordered = int(data["qty_ordered"])
