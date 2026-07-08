@@ -8,6 +8,12 @@
       "port": 8000
     },
     {
+      "name": "jaks-review",
+      "runtimeExecutable": ".venv\\Scripts\\python.exe",
+      "runtimeArgs": ["C:\\Users\\keith\\AppData\\Local\\Temp\\claude\\C--Users-keith-JAKSInventory-rebuild\\460d881f-3c86-480c-b373-3435c895117b\\scratchpad\\review_run.py"],
+      "port": 8077
+    },
+    {
       "name": "lead-finder",
       "runtimeExecutable": "C:\\Users\\keith\\JAKSLeadFinder\\.venv\\Scripts\\python.exe",
       "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--app-dir", "C:\\Users\\keith\\JAKSLeadFinder", "--host", "127.0.0.1", "--port", "8200"],
@@ -24,6 +30,12 @@
       "runtimeExecutable": "C:\\Users\\keith\\AxleShop\\.venv\\Scripts\\python.exe",
       "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--app-dir", "C:\\Users\\keith\\AxleShop", "--host", "127.0.0.1", "--port", "8100"],
       "port": 8100
+    },
+    {
+      "name": "axleforge",
+      "runtimeExecutable": "C:\\Users\\keith\\AxleForge\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "app.web.server:app", "--app-dir", "C:\\Users\\keith\\AxleForge", "--host", "127.0.0.1", "--port", "8765"],
+      "port": 8765
     },
     {
       "name": "pai-info",

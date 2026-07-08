@@ -135,7 +135,7 @@ Current target mapping (last audited 2026-06-07):
 
 | Screen | Current | Target | Notes |
 |---|---|---|---|
-| Products List | ✅ L2 ref | L2 ref | Official reference. Governance pass done. |
+| Products List | ✅ L2 ref | L2 ref | Official reference. Governance pass done. 2026-07-07: adopted `sortable_th` on Part#/Cost/Avail (§8Q primitive, first list to actually adopt it); manufacturer badge + filter now read a canonicalized `mfr_map` (`classification_service.canonical_make_for_product`) instead of independent per-field substring checks — fixes badge-color drift and a filter that silently excluded products where `engine_manufacturer` was blank/abbreviated; shared filter/tab persistence (localStorage, per-pathname) added to `operational_list_script()` so all 11 lists using it now remember state across navigation. |
 | PO List | ✅ L2 | L2 | Governance pass done. Overdue bug fixed. |
 | Invoice List | ✅ L2 | L2 | Governance pass done 2026-05-28. Red stripe for financial overdue (intentional domain distinction). |
 | Quotes List | L2 | L2 | Has tabs+divide-y. §8W: sortable columns (Total/Margin, Valid Until via `th_class`), rich QOH hover card, UoM badge. Preview dock pending. |
@@ -2451,8 +2451,17 @@ allowed, sort, direction, default=…)`, and echoes the normalized `sort`/`direc
 operational lists for identical sort UX. The href is built as one expression so autoescape renders separators as
 `&amp;` uniformly (injection-safe — `qs` is never `|safe`). Tests in `tests/test_phase2_ui_macros.py`.
 **Note:** the macro originally emitted `dir`; reconciled to `direction` @ (this commit) when Backend's
-apply_sort landed @3cb1a86 — macro was unadopted, so it conformed to the shipped routes. Not yet adopted on any
-list (UI-Builder: add `{{ sortable_th(...) }}` to the four list theads).
+apply_sort landed @3cb1a86 — macro was unadopted, so it conformed to the shipped routes.
+**2026-07-07: Products List adopted it** (Part#/Cost/Avail headers) — NOT via `apply_sort` (Products' sort
+already has bespoke SQL: search-relevance ordering, vendor/category scalar subqueries with NULLS-last
+tiebreakers that a generic whitelist-dict helper would regress) — added `cost`/`avail` as new `elif` branches
+alongside the existing ones, all direction-aware. List/Margin are NOT sortable yet — they're PricingService-
+computed (markup tiers, price_override, zero-cost vendor fallback), not a stored column, and Products is
+30k+ rows (the Special Order tab alone is 30k+), so the invoices-style "Python-sort a capped ~2000 rows" approach
+would silently misorder most of a large filtered set. Needs an explicit approach decision (SQL-approximated via
+a markup CASE expression, vs. a capped Python sort with a clearly-communicated limit) before it's added — flagged
+to the owner, not yet decided. Still open on Quotes/Invoices/PO/SO lists too (UI-Builder: add
+`{{ sortable_th(...) }}` to their theads).
 
 **(3) Sticky-thead — define-once CSS** (`.sticky-thead` in `app/static/css/input.css`, @layer components):
 apply `.sticky-thead` to a `<thead>` and all its `<th>` stick to the top while the body scrolls (opaque gray-50
@@ -3233,6 +3242,62 @@ tools" page for backups. Shipped alongside the backend fix (two retention pools 
   cloud-synced folder for the automatic offsite copy of the newest backup + Fernet keyfile.
 - Create/restore POSTs stay ADMIN-gated server-side; a bookkeeper's 403 surfaces in the
   panel's error row. Owner runbook: `docs/BACKUP_RESTORE_RUNBOOK.md`.
+
+---
+
+#### §8AA. Products List — manufacturer canonicalization fix + shared filter-persistence primitive (2026-07-07)
+
+Two owner-reported Products List bugs traced to the same root cause, plus a new cross-list primitive.
+
+##### §8AA-1. Manufacturer badge color drift + broken manufacturer filter
+
+**Problem:** the same manufacturer badge rendered two different colors depending on which product it was
+on (e.g. "CAT" yellow on one row, grey on another), and filtering by Category + Manufacturer + In Stock
+could return zero results even when matching products existed and were visibly on-screen. Root cause:
+`Product.engine_manufacturer` and the older free-text `Product.manufacturer` column disagree on **11,787**
+active products (7,661 with `engine_manufacturer` blank entirely — abbreviations like `'CAT'` vs the
+canonical `'CAT / Caterpillar'`, case variants, `'Detroit Diesel'` vs `'Detroit'`, etc.). The badge color
+picked whichever field was non-blank and did a raw substring check (`'caterpillar' in value`); the filter
+did an exact-equality check on `engine_manufacturer` ONLY. Two independent, fragile readings of the same
+messy data, so they disagreed with each other and with reality.
+
+**Fix (code-only, no data backfill — owner-decided):** `classification_service.py` gained two small public
+helpers built on the existing `normalize_make()` alias table (`_MAKE_NORMALIZE`) — no new vocabulary:
+- `canonical_make_for_product(engine_manufacturer, manufacturer)` — the one canonical Engine-Make for a
+  product (engine_manufacturer wins when it resolves, else manufacturer), used by the route to build a
+  page-scoped `mfr_map` (mirrors the existing `sell_price_map` pattern) that the badge now reads via an
+  **exact-match dict lookup**, not a substring guess.
+- `raw_tokens_for_canonical_make(canonical)` — reverse-looks-up every raw alias token for a canonical name
+  (e.g. `'CAT / Caterpillar'` → `['caterpillar', 'cat']`), used by the manufacturer filter to `ilike` match
+  BOTH `engine_manufacturer` and `manufacturer` instead of exact-equality on one column. Unmapped custom
+  manufacturers (owner-added via Category Maintenance, not yet in the alias table) fall back to the old
+  exact-match-on-either-column behavior — never a regression, only additive coverage.
+
+**Rule:** any future "which manufacturer is this product" logic reads `canonical_make_for_product` /
+`raw_tokens_for_canonical_make` — do not add a third independent reading of `engine_manufacturer` /
+`manufacturer`.
+
+##### §8AA-2. Shared filter/tab/sort persistence — new Primitive, folded into `operational_list_script()`
+
+**Problem:** every operational list forgot its filters/tab/sort the moment you navigated away and back
+(e.g. via the sidebar link) — no screen had a "remember where I was" behavior.
+
+**Fix:** `macros/list_behavior.html`'s `operational_list_script()` (§7 Primitive 2, already included by
+all 11 list screens — Products/Quotes/PO/Invoices/Payments/SO/Vendors/Customers/Vendor Returns/Import
+Review) now also emits a small IIFE: on a filtered/sorted/searched load (non-empty `location.search`) it
+saves the query string (minus `page`) to `localStorage` keyed by `location.pathname`; on a bare load (empty
+`location.search` — e.g. clicking the screen's sidebar link) it restores the saved query string via
+`location.replace()`. Zero per-screen wiring — every screen calling the macro got this automatically.
+"Clear filters" / "Clear search" links need no special-casing: they navigate to a narrower (but still
+non-empty, unless truly default) query string, which naturally overwrites the saved state.
+
+**Rule:** this is now standing behavior for every operational list, not just Products. A screen that
+genuinely needs a query param to NOT persist (a one-shot flash/highlight param, say) must strip it
+client-side before the macro's script block runs, or via a route-level redirect — flag it to the Architect
+before adding such a param to a list screen's querystring.
+
+**Deferred (owner-flagged, not yet decided):** List-price and Margin sortable columns on Products — see
+§8Q's note on this same date for the SQL-approximate vs. capped-Python-sort tradeoff at 30k+ row scale.
 
 ---
 
