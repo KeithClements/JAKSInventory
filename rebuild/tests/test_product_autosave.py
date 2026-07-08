@@ -12,8 +12,8 @@ These tests lock the contract:
   * the whole-form payload doesn't blank untouched fields;
   * an invalid payload returns non-200 AND persists nothing (so the pill can
     honestly show "Save failed" instead of a false "saved");
-  * SKU is never mutated by autosave (update_product ignores it), so a debounced
-    save mid-edit can't corrupt the identity key.
+  * a valid SKU rename persists (the detail-page Info tab saves via autosave), but
+    a blank SKU is rejected so a debounced save mid-edit can't wipe the identity key.
 """
 from __future__ import annotations
 
@@ -121,20 +121,33 @@ def test_autosave_invalid_payload_saves_nothing(client, db_session):
     assert p.has_core is False
 
 
-def test_autosave_never_mutates_sku(client, db_session):
-    """SKU is the identity key; update_product intentionally ignores it. A debounced
-    autosave firing while the SKU field is mid-edit must not rewrite it."""
+def test_autosave_persists_sku_rename_but_rejects_blank(client, db_session):
+    """SKU is owner-editable from the detail page, whose Info-tab form saves via the
+    autosave route — the owner-reported "edited the SKU, it flashed Saved, then
+    reverted" bug (see test_product_validation.test_autosave_route_persists_new_sku).
+    A valid rename must persist; a blank SKU (field cleared mid-edit) must be rejected
+    so the required identity key is never wiped."""
     pid = _seed(db_session)
+
+    # A valid new SKU persists — and other editable fields still save.
     resp = client.post(
         f"/products/{pid}/autosave",
-        data=_form(sku="JAKS-DIFFERENT", title="Renamed"),
+        data=_form(sku="JAKS-RENAMED", title="Renamed"),
     )
     assert resp.status_code == 200, resp.text
-
     db_session.expire_all()
     p = db_session.query(Product).get(pid)
-    assert p.sku == "JAKS-AUTOSAVE-1"   # unchanged
+    assert p.sku == "JAKS-RENAMED"       # rename now persists via autosave
     assert p.title == "Renamed"          # other editable fields still save
+
+    # A cleared SKU is rejected (422) and must NOT wipe the identity key.
+    resp = client.post(
+        f"/products/{pid}/autosave",
+        data=_form(sku="", title="Renamed"),
+    )
+    assert resp.status_code != 200
+    db_session.expire_all()
+    assert db_session.query(Product).get(pid).sku == "JAKS-RENAMED"
 
 
 def test_detail_page_wires_autosave_and_single_adjust_card(client, db_session):
