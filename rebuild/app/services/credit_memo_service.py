@@ -130,7 +130,7 @@ class CreditMemoService(BaseService):
             warranty_claim_id=warranty_claim_id,
             trigger_type=trigger_type,
             total_amount=total_amount,
-            applied_amount=0.0,
+            # §21 — applied_amount is computed from allocations now (no column write).
             unapplied_amount=total_amount,
             status=CreditMemoStatus.OPEN,
             reason=reason or "",
@@ -195,7 +195,7 @@ class CreditMemoService(BaseService):
           - amount > 0
           - amount <= cm.unapplied_amount
           - amount <= invoice.balance_due
-          - Invoice is not VOID
+          - Invoice is not VOID and not DRAFT (must be finalized)
 
         After allocation:
           - cm.applied_amount increases, cm.unapplied_amount decreases
@@ -230,6 +230,13 @@ class CreditMemoService(BaseService):
             raise ValueError(
                 f"Invoice {invoice.invoice_number} is void; cannot apply credit memo"
             )
+        if invoice.status == InvoiceStatus.DRAFT:
+            # C2 gate — a draft has never passed finalise(); applying a CM would
+            # flip it to PAID with no tax freeze / inventory decrement done.
+            raise ValueError(
+                f"Invoice {invoice.invoice_number} is still a draft — "
+                f"finalize it before applying a credit memo."
+            )
         if invoice.customer_id != cm.customer_id:
             raise ValueError(
                 f"Customer mismatch: invoice belongs to customer #{invoice.customer_id}, "
@@ -255,7 +262,11 @@ class CreditMemoService(BaseService):
             amount_received=amount,
             status=PaymentStatus.APPLIED,
             notes=f"Credit memo {cm.cm_number} applied to invoice {invoice.invoice_number}",
-            qbo_sync_status=QBOSyncStatus.PENDING,
+            # SKIPPED, never PENDING: this payment is synthetic bookkeeping for
+            # invoice.amount_paid — no cash moved. Pushing it to QBO would book
+            # phantom cash into Undeposited Funds on top of the QBO CreditMemo
+            # (double credit). The CM document itself is the QBO-side record.
+            qbo_sync_status=QBOSyncStatus.SKIPPED,
         )
         self.db.add(payment)
         self.db.flush()
@@ -266,18 +277,22 @@ class CreditMemoService(BaseService):
             amount_applied=amount,
         )
         self.db.add(pmt_alloc)
+        self.db.flush()  # assign pmt_alloc.id so the CM allocation can hard-link it
 
-        # Also create the CreditMemoAllocation for the CM-side ledger
+        # Also create the CreditMemoAllocation for the CM-side ledger.
+        # linked_payment_allocation_id lets reverse_credit_memo unwind the exact
+        # synthetic PaymentAllocation instead of guessing by notes text.
         cm_alloc = CreditMemoAllocation(
             credit_memo_id=cm.id,
             invoice_id=invoice.id,
             amount_applied=amount,
             applied_by_user_id=self.current_user_id,
+            linked_payment_allocation_id=pmt_alloc.id,
         )
         self.db.add(cm_alloc)
 
-        # Adjust CM totals
-        cm.applied_amount = round(cm.applied_amount + amount, 2)
+        # Adjust CM totals — applied_amount is computed from the allocation we just
+        # added (no write); only the stored unapplied_amount is decremented.
         cm.unapplied_amount = round(cm.unapplied_amount - amount, 2)
         if cm.unapplied_amount <= 0.001:
             cm.status = CreditMemoStatus.APPLIED
@@ -393,25 +408,53 @@ class CreditMemoService(BaseService):
         for cm_alloc in cm.allocations:
             if cm_alloc.is_reversed:
                 continue
-            cm_alloc.is_reversed = True
-            affected_invoice_ids.add(cm_alloc.invoice_id)
 
-            # Find the synthetic payment allocation that mirrored this CM allocation
-            # Match by invoice + amount + non-reversed + payment method ACCOUNT_CREDIT
-            pmt_allocs = (
-                self.db.query(PaymentAllocation)
-                .join(Payment)
-                .filter(
-                    PaymentAllocation.invoice_id == cm_alloc.invoice_id,
-                    PaymentAllocation.amount_applied == cm_alloc.amount_applied,
-                    PaymentAllocation.is_reversed == False,  # noqa: E712
-                    Payment.payment_method == "account_credit",
-                    Payment.notes.like(f"%{cm.cm_number}%"),
+            # Resolve the synthetic payment allocation that mirrored this CM
+            # allocation. Rows written since the link column exists carry the
+            # PaymentAllocation id directly; legacy NULL-link rows fall back to
+            # the old notes-text heuristic. Resolve BEFORE mutating anything so
+            # a failed match leaves no partial reversal in the session.
+            if cm_alloc.linked_payment_allocation_id is not None:
+                pa = (
+                    self.db.query(PaymentAllocation)
+                    .filter(
+                        PaymentAllocation.id == cm_alloc.linked_payment_allocation_id,
+                        PaymentAllocation.is_reversed == False,  # noqa: E712
+                    )
+                    .first()
                 )
-                .all()
-            )
-            for pa in pmt_allocs:
-                pa.is_reversed = True
+            else:
+                # Legacy heuristic: invoice + amount + non-reversed +
+                # ACCOUNT_CREDIT payment whose notes name this CM. One pmt_alloc
+                # per cm_alloc by construction, so take the oldest match.
+                pa = (
+                    self.db.query(PaymentAllocation)
+                    .join(Payment)
+                    .filter(
+                        PaymentAllocation.invoice_id == cm_alloc.invoice_id,
+                        PaymentAllocation.amount_applied == cm_alloc.amount_applied,
+                        PaymentAllocation.is_reversed == False,  # noqa: E712
+                        Payment.payment_method == "account_credit",
+                        Payment.notes.like(f"%{cm.cm_number}%"),
+                    )
+                    .order_by(PaymentAllocation.id)
+                    .first()
+                )
+
+            if pa is None:
+                # Never silently no-op a money reversal: the invoice would keep
+                # credit it no longer has while the CM flips to REVERSED.
+                raise ValueError(
+                    f"Cannot reverse credit memo {cm.cm_number}: no matching "
+                    f"payment allocation found for invoice #{cm_alloc.invoice_id} "
+                    f"(${cm_alloc.amount_applied:.2f} applied). The synthetic "
+                    f"account-credit payment could not be resolved — fix the "
+                    f"allocation link before reversing."
+                )
+
+            cm_alloc.is_reversed = True
+            pa.is_reversed = True
+            affected_invoice_ids.add(cm_alloc.invoice_id)
 
         # Deduct from credit_balance if any went there via close_credit_memo
         if balance_credited > 0:

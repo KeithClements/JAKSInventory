@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ quote.quote_number }} — JAKS Inventory{% endblock %}
+{% block title %}{{ quote.quote_number }} — Axle{% endblock %}
 {% block heading %}{{ quote.quote_number }}{% endblock %}
 
 {% block header_actions %}
@@ -7,9 +7,48 @@
 {% endblock %}
 
 {% block content %}
+{% from "macros/linked_docs.html" import linked_strip %}
+{% import "macros/customer_flags.html" as flagmacro %}
+{% import "macros/credit_status.html" as creditmacro %}
+{% from "macros/engine_picker.html" import engine_picker %}
+{% import "macros/motion.html" as motion %}
+
+{% if linked_documents %}
+<div class="mb-3">{{ linked_strip(linked_documents) }}</div>
+{% endif %}
+
+{# ── §21 credit-hold WARN-and-CONFIRM — convert-to-SO bounced here because the
+     customer is on credit hold (owner #6: warn, never block). ───────────────── #}
+{% if request.query_params.get('credit_hold') %}
+<div class="mb-3 rounded-lg bg-amber-50 border border-amber-300 px-4 py-3 text-sm text-amber-900 flex items-start gap-3">
+  <svg class="w-5 h-5 mt-0.5 text-amber-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3L12.74 5a2 2 0 00-3.48 0L3.2 16a2 2 0 001.73 3z"/>
+  </svg>
+  <div class="flex-1">
+    <strong>{{ quote.customer.company_name if quote.customer else 'This customer' }} is on credit hold.</strong>
+    Review the account before putting parts on an order. You can convert anyway if you've approved it.
+  </div>
+  <form method="post" action="/quotes/{{ quote.id }}/convert-to-so" class="shrink-0">
+    <input type="hidden" name="confirm_credit_hold" value="1">
+    <input type="hidden" name="payment_mode" value="{{ SOPaymentMode.NONE }}">
+    <button type="submit" class="px-3 py-1.5 rounded-md bg-amber-600 text-white text-xs font-semibold hover:bg-amber-700">
+      Convert to SO anyway
+    </button>
+  </form>
+</div>
+{% endif %}
+
+{# ── §4.5 credit warn (WARN-ONLY) — on_hold / over_limit banner ───────────── #}
+{% if (credit_status | default({})).get('warn') %}
+<div class="mb-3">{{ creditmacro.credit_warn(credit_status) }}</div>
+{% endif %}
 
 {# ── Quote header: info strip + balance chips + notes ─────────────────────── #}
 <form id="quote-header-form" action="/quotes/{{ quote.id }}" method="post" onsubmit="return false">
+{# Optimistic-lock version (R9) — the autosave JS refreshes this from the
+   response's X-Updated-At header after every successful save, so only a save
+   from ANOTHER session/user trips the conflict. #}
+<input type="hidden" name="updated_at" value="{{ quote.updated_at.isoformat() if quote.updated_at else '' }}">
 <div class="bg-white rounded-xl border border-gray-200 shadow-sm mb-3">
 
   {# Row 1: Customer · metadata · edit controls · balance chips (all one line) #}
@@ -21,6 +60,7 @@
       <a href="/customers/{{ quote.customer_id }}" target="_blank" rel="noopener" class="font-semibold link">
         {{ quote.customer.company_name }}
       </a>
+      {{ flagmacro.customer_flags(quote.customer.flag_keys | default([])) }}
     </div>
 
     {# Created #}
@@ -55,24 +95,15 @@
                     focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
     </div>
 
-    {# Autosave status — the quote saves automatically; no manual save needed #}
-    <span id="autosave-status" class="inline-flex items-center gap-1 text-xs text-gray-400 shrink-0">
-      <svg class="w-3 h-3 text-green-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
-      </svg>
-      Saved automatically
-    </span>
+    {# Save status moved to the sticky save bar (Save Standard v2). The banned permanent
+       "Saved automatically" indicator (which lied mid-edit / on failure) is removed. #}
 
     {# ── Balance chips — right-aligned ── #}
     <div class="ml-auto flex items-center gap-2 flex-wrap">
       <span class="inline-flex items-center text-xs px-2 py-0.5 bg-gray-100 rounded text-gray-600 font-medium">
         {{ cust_payment_terms | upper | replace('_', ' ') }}
       </span>
-      {% if quote.customer.is_tax_exempt %}
-      <span class="inline-flex items-center text-xs px-2 py-0.5 bg-gray-100 rounded text-gray-600 font-medium">
-        Tax Exempt{% if quote.customer.tax_exempt_cert_number %} · {{ quote.customer.tax_exempt_cert_number }}{% endif %}
-      </span>
-      {% endif %}
+      {# Tax-exempt now shown once, as a flag chip beside the customer name (de-duped per §8M governance). #}
       {% if cust_open_balance > 0 %}
       <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-gray-100 rounded text-gray-600">
         Open: <span class="font-bold text-gray-800 ml-1 tabular-nums">${{ '%.2f' % cust_open_balance }}</span>
@@ -104,6 +135,13 @@
       {% if cust_last_payment_date %}
       <span class="text-xs text-gray-400">Last pmt: {{ cust_last_payment_date.strftime('%b %d') }}</span>
       {% endif %}
+      {# §8T-2 quote intelligence (Seam-3) — cores already shown above via cust_cores_owed_qty #}
+      {% if cust_last_purchase %}
+      <span class="text-xs text-gray-400">Last sale: {{ cust_last_purchase.strftime('%b %d') }}</span>
+      {% endif %}
+      {% if cust_lifetime_sales %}
+      <span class="hidden lg:inline text-xs text-gray-400">Lifetime: ${{ '%.0f' % cust_lifetime_sales }}</span>
+      {% endif %}
       <a href="/customers/{{ quote.customer_id }}" target="_blank" rel="noopener"
          class="inline-flex items-center gap-0.5 text-xs text-brand-600 hover:underline font-medium ml-1">
         Account
@@ -121,6 +159,45 @@
     <p class="text-xs text-gray-600 whitespace-pre-wrap min-w-0">{{ quote.customer.notes }}</p>
   </div>
   {% endif %}
+
+  {# Vehicle / Engine Info (expandable) — parity with Invoice (invoices/workspace.html).
+     Inputs live inside quote-header-form and save via autosave. Backend @640c2e2 added
+     esn/engine_manufacturer/engine_model/customer_po_number/customer_job_number to the
+     Quote model + both route handlers (autosave + update_header). Carry-through to
+     SO and Invoice is wired in convert_to_sales_order / convert_to_invoice. #}
+  <div class="border-b border-gray-100 px-4 py-2"
+       x-data="{ showVehicle: {{ 'true' if (quote.esn or quote.engine_manufacturer or quote.engine_model or quote.customer_po_number or quote.customer_job_number) else 'false' }} }">
+    <button type="button" @click="showVehicle = !showVehicle"
+            class="flex items-center gap-1 text-xs font-medium text-brand-700 hover:text-brand-600">
+      <svg class="w-3.5 h-3.5" :class="showVehicle ? 'rotate-90' : ''" style="transition: transform 0.15s"
+           fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+      </svg>
+      Vehicle / Engine Info
+      {% if quote.esn or quote.engine_manufacturer or quote.engine_model %}
+      <span class="badge-brand">filled</span>
+      {% endif %}
+    </button>
+    <div x-show="showVehicle" x-cloak class="mt-2 grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+      <div>
+        <label class="form-label">ESN</label>
+        <input type="text" name="esn" value="{{ quote.esn or '' }}" class="form-input text-sm" />
+      </div>
+      {# Engine Make / Model — standardized cascading dropdowns (replaces free text).
+         Renders two grid cells via display:contents and submits engine_manufacturer /
+         engine_model exactly as before, so autosave + carry-forward are unchanged. #}
+      {{ engine_picker(quote.engine_manufacturer, quote.engine_model, engine_makes, engine_models_by_make) }}
+      <div>
+        <label class="form-label">Customer PO #</label>
+        <input type="text" name="customer_po_number" value="{{ quote.customer_po_number or '' }}" class="form-input text-sm" />
+      </div>
+      <div>
+        <label class="form-label">Truck / Job</label>
+        <input type="text" name="customer_job_number" value="{{ quote.customer_job_number or '' }}" class="form-input text-sm" />
+      </div>
+    </div>
+    <p x-show="showVehicle" x-cloak class="text-xs text-gray-400 italic mt-1.5">Optional — recommended for warranty traceability.</p>
+  </div>
 
   {# Row 2: Notes (compact inline, 1 row) #}
   <div class="grid grid-cols-2 divide-x divide-gray-100">
@@ -159,398 +236,275 @@
 
 {# ── Add-line search (above the table, always visible) ────────────────────── #}
 {% if quote.status in (QuoteStatus.DRAFT, QuoteStatus.SENT) %}
-<div x-data="lineAdder({{ quote.id }}, {{ quote.discount_pct }})"
-     @start-child-add.window="setChildMode($event.detail)"
-     @record-created.window="
-       if ($event.detail.type === 'product') {
-         selectProduct({
-           product_id: $event.detail.id,
-           part_number: $event.detail.part_number,
-           description: $event.detail.description,
-           current_cost: $event.detail.current_cost,
-           suggested_sell: $event.detail.suggested_sell
-         });
-       }
-     "
-     class="bg-white rounded-xl border border-gray-200 shadow-sm mb-3 px-3 py-3">
+{# Shared one-click line-item builder (Architect §8H) — sell mode, inline
+   per-line discount, child-mode sub-lines. Click a result → immediate add. #}
+{% set la = {
+     'doc_type':      'quote',
+     'doc_id':        quote.id,
+     'search_url':    '/line-items/product-search',
+     'post_url':      '/quotes/' ~ quote.id ~ '/lines',
+     'mode':          'sell',
+     'show_discount': true,
+     'target':        '#quote-lines-tbody',
+     'swap':          'beforeend',
+     'child_mode':    true,
+     'new_product':   true,
+     'freight':       true,
+   } %}
+{% include "line_items/_line_adder.html" %}
+{% endif %}
 
-  {# Child-mode banner #}
-  <div x-show="childMode" x-cloak
-       class="flex items-center gap-2 mb-2 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700">
-    <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 9l3 3-3 3M6 12h10"/>
-    </svg>
-    <span>Adding <span class="font-semibold" x-text="childModeLabel"></span> to line <span class="font-mono" x-text="'#' + parentLineId"></span></span>
-    <button type="button" @click="clearChildMode()" class="ml-auto text-amber-400 hover:text-amber-600">✕</button>
-  </div>
+{# ── Axle two-column layout: main lines column (flex 1) + 284px right rail.
+   Stacks to a single column below md (≤767px) so the line table gets the full
+   width on a phone instead of being crushed to a ~41px scroll slot beside the
+   fixed rail (live-QA 2026-07-05). ── #}
+<div class="flex flex-col md:flex-row gap-4 items-stretch md:items-start">
 
-  {# Row 1: Full-width part search (prominent, like Design B) #}
-  <div class="relative mb-2" @click.away="results = []">
-    <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
-         fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-            d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
-    </svg>
-    <input
-      type="text"
-      id="line-search-input"
-      x-ref="searchInput"
-      x-model="q"
-      @input.debounce.250ms="doSearch()"
-      @keydown.escape="results = []; q = ''; selectedProduct = null"
-      @keydown.arrow-down.prevent="focusResult(0)"
-      placeholder="Search parts: Part#, OEM#, cross-ref, description — or type free text to add a misc line"
-      autocomplete="off"
-      class="w-full pl-10 pr-20 py-2.5 text-sm border-2 border-gray-300 rounded-lg
-             focus:border-brand-400 focus:outline-none focus:ring-0 bg-white font-medium"
-    />
-    {# Spinner + keyboard hint #}
-    <div class="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
-      <div x-show="loading" class="pointer-events-none">
-        <svg class="w-3.5 h-3.5 animate-spin text-gray-400" fill="none" viewBox="0 0 24 24">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-        </svg>
+  {# ═══════════════════════ MAIN COLUMN — Line Items ════════════════════════ #}
+  <div class="flex-1 min-w-0 flex flex-col gap-3">
+
+    {# Line items card #}
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      {# Card header — Axle .chd style (Oswald uppercase label + right-rail count) #}
+      <div class="flex items-center gap-2 px-4 py-2.5 border-b border-steel-150">
+        <h4 class="label-mini text-steel-500">Line Items</h4>
+        <span class="ml-auto font-mono text-[10.5px] text-steel-400">
+          {{ sorted_lines | length }} line{% if (sorted_lines | length) != 1 %}s{% endif %}
+        </span>
       </div>
-      <span x-show="!loading" class="text-xs text-gray-400 font-mono pointer-events-none">/</span>
-    </div>
-    {# Results dropdown #}
-    <div x-show="results.length > 0" x-cloak
-         class="absolute left-0 top-full z-40 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl
-                max-h-60 overflow-y-auto w-full">
-      <template x-for="(r, idx) in results" :key="r.product_id">
-        <button
-          type="button"
-          :id="'result-' + idx"
-          @click="selectProduct(r)"
-          @keydown.enter.prevent="selectProduct(r)"
-          @keydown.arrow-down.prevent="focusResult(idx + 1)"
-          @keydown.arrow-up.prevent="idx > 0 ? focusResult(idx - 1) : $refs.searchInput.focus()"
-          class="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-blue-50
-                 transition-colors focus:bg-blue-50 focus:outline-none border-b border-gray-50 last:border-0">
-          <span class="font-mono text-xs font-bold text-blue-700 w-24 shrink-0 truncate" x-text="r.part_number"></span>
-          <span class="flex-1 text-sm text-gray-800 truncate" x-text="r.description"></span>
-          <span class="text-xs shrink-0 tabular-nums font-medium"
-                :class="r.qty_on_hand <= 0 ? 'text-red-500' : 'text-gray-400'"
-                x-text="r.qty_on_hand <= 0 ? 'Out' : r.qty_on_hand + ' ea'"></span>
-          <span class="text-xs text-gray-500 shrink-0 tabular-nums" x-text="'$' + r.suggested_sell.toFixed(2)"></span>
-          <span x-show="r.last_sold_price"
-                class="text-xs text-brand-400 shrink-0 tabular-nums"
-                x-text="r.last_sold_price ? 'Last $' + r.last_sold_price.toFixed(2) : ''"></span>
+
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-steel-200 bg-[#fafbfa] font-display font-semibold text-steel-400 uppercase tracking-[.07em] text-[10px]">
+              <th class="text-left px-3 py-2 w-28">Part</th>
+              <th class="text-left px-2 py-2">Description</th>
+              <th class="text-center px-2 py-2 w-14">Bin</th>
+              <th class="text-right px-2 py-2 w-12">Qty</th>
+              <th class="text-right px-2 py-2 w-32 min-w-[7.5rem]">Unit</th>
+              <th class="text-right px-2 py-2 w-16">Disc %</th>
+              <th class="text-right px-2 py-2 w-20">Margin %</th>
+              <th class="text-right px-3 py-2 w-24">Ext</th>
+              <th class="w-8 px-2 py-2"></th>
+            </tr>
+          </thead>
+          <tbody id="quote-lines-tbody"
+                 hx-get="/quotes/{{ quote.id }}/lines"
+                 hx-trigger="refreshLines"
+                 hx-swap="innerHTML">
+            {% for line in sorted_lines %}
+              {% include "quotes/_line_row.html" %}
+            {% endfor %}
+            {% if not sorted_lines %}
+            <tr id="empty-state-row">
+              <td colspan="9" class="px-4 py-8 text-center text-gray-400 text-sm">
+                No lines yet — search for a part above to get started.
+              </td>
+            </tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+
+      {# Card footer — Add Line / Scan ghost actions. .alertchip slot intentionally
+         omitted: no price-expiry alert field is in the current quote context, and
+         the spec forbids fabricating data. Slot returns when the data does. #}
+      <div class="flex items-center gap-2 px-4 py-2.5 border-t border-steel-150">
+        <button type="button" @click="document.getElementById('line-search-input')?.focus()"
+                class="btn-secondary btn-sm" title="Focus the part search above">
+          + Add Line
         </button>
-      </template>
-    </div>
-  </div>
+        <button type="button" @click="document.getElementById('line-search-input')?.focus()"
+                class="btn-secondary btn-sm" title="Scan a barcode / type a SKU">
+          Scan
+        </button>
+      </div>
+    </div>{# /lines card #}
 
-  {# Row 2: Selected indicator (left) + controls (right) #}
-  <div class="flex items-center gap-2">
-
-    {# Selected product indicator — shrinks when space is tight #}
-    <p x-show="selectedProduct" x-cloak
-       class="min-w-0 text-xs text-green-600 flex items-center gap-1 truncate mr-auto">
-      <svg class="w-3 h-3 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
-      </svg>
-      <span class="truncate" x-text="selectedProduct ? selectedProduct.description : ''"></span>
-    </p>
-
-    {# Qty #}
-    <div class="flex items-center gap-1 shrink-0">
-      <label class="text-xs text-gray-500 font-medium">Qty</label>
-      <input
-        type="number"
-        x-ref="qtyInput"
-        x-model.number="qty"
-        min="1"
-        @keydown.enter.prevent="$refs.priceInput.select()"
-        class="w-14 text-right border border-gray-300 rounded-lg px-2 py-1.5 text-sm
-               focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400"
-      />
-    </div>
-
-    {# Price #}
-    <div class="flex items-center gap-1 shrink-0">
-      <label class="text-xs text-gray-500 font-medium">$</label>
-      <input
-        type="number"
-        x-ref="priceInput"
-        x-model.number="unitPrice"
-        step="0.01"
-        min="0"
-        @keydown.enter.prevent="$refs.discInput.select()"
-        class="w-24 text-right border border-gray-300 rounded-lg px-2 py-1.5 text-sm
-               focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400"
-      />
-    </div>
-
-    {# Discount % #}
-    <div class="flex items-center gap-1 shrink-0">
-      <label class="text-xs text-gray-500 font-medium">Disc&nbsp;%</label>
-      <input
-        type="number"
-        x-ref="discInput"
-        x-model.number="discountPct"
-        step="0.5"
-        min="0"
-        max="100"
-        @keydown.enter.prevent="addLine()"
-        class="w-14 text-right border border-gray-300 rounded-lg px-2 py-1.5 text-sm
-               focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400"
-      />
-    </div>
-
-    {# New Product shortcut — opens quick-create slide-over #}
-    <button
-      type="button"
-      hx-get="/products/quick-create-form"
-      hx-target="#create-slide-content"
-      hx-swap="innerHTML"
-      @click="$dispatch('open-create-slide', { title: 'New Product' })"
-      class="px-3 py-1.5 text-xs font-medium text-brand-700 border border-brand-200
-             rounded-lg bg-brand-50 hover:bg-brand-100 transition-colors shrink-0"
-      title="Create a new product record and auto-select it"
-    >
-      + New Product
-    </button>
-
-    {# Add button #}
-    <button
-      type="button"
-      @click="addLine()"
-      :disabled="!selectedProduct && q.trim().length < 2"
-      class="px-4 py-1.5 bg-brand-700 text-white text-sm font-medium rounded-lg
-             hover:bg-brand-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
-    >
-      + Add Line
-    </button>
-
-  </div>{# /controls row #}
-</div>
-{% endif %}{# /add-line card #}
-
-{# ── Line items ───────────────────────────────────────────────────────────── #}
-<div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden mb-0">
-  <div class="overflow-x-auto">
-    <table class="w-full text-sm">
-      <thead>
-        <tr class="border-b border-gray-100 bg-gray-50 text-xs font-semibold text-gray-400 uppercase tracking-wide">
-          <th class="text-left px-3 py-2 w-28">SKU</th>
-          <th class="text-left px-2 py-2">Description</th>
-          <th class="text-center px-2 py-2 w-14">QOH</th>
-          <th class="text-right px-2 py-2 w-12">Qty</th>
-          <th class="text-right px-2 py-2 w-24">Sell $</th>
-          <th class="text-right px-2 py-2 w-16">Disc %</th>
-          <th class="text-right px-2 py-2 w-14">Margin %</th>
-          <th class="text-right px-3 py-2 w-24">Total</th>
-          <th class="w-8 px-2 py-2"></th>
-        </tr>
-      </thead>
-      <tbody id="quote-lines-tbody"
-             hx-get="/quotes/{{ quote.id }}/lines"
-             hx-trigger="refreshLines"
-             hx-swap="innerHTML">
-        {% for line in sorted_lines %}
-          {% include "quotes/_line_row.html" %}
+    {# Optional Add-ons (excluded optionals — not in the quote total).
+       Static: renders from sorted_lines on load; the /totals partial carries no line data, so it
+       does NOT live-refresh — reload to update after adding/removing an optional (Bug 6). #}
+    {% set optional_lines = sorted_lines | selectattr('line_role', 'equalto', 'optional') | rejectattr('is_included') | list %}
+    {% if optional_lines %}
+    <div class="bg-white border border-gray-200 rounded-xl shadow-sm px-4 py-3">
+      <div class="flex items-center justify-between">
+        <span class="text-xs font-semibold text-sky-700 uppercase tracking-wide">Optional Add-ons</span>
+        <span class="text-sm font-bold text-sky-700 tabular-nums">${{ '%.2f' % (optional_lines | sum(attribute='line_total')) }}</span>
+      </div>
+      <p class="text-xs text-gray-400 mt-0.5">Not included in the quote total — the customer can add these on request.</p>
+      <div class="mt-2 divide-y divide-gray-50">
+        {% for line in optional_lines %}
+        <div class="flex items-center justify-between gap-3 py-1 text-xs">
+          <span class="min-w-0 truncate text-gray-700">
+            {% if line.product %}<span class="font-mono text-sky-600">{{ line.product.sku }}</span> {% endif %}{{ line.description }}
+          </span>
+          <span class="shrink-0 tabular-nums text-gray-500">{{ line.qty }} × ${{ '%.2f' % line.unit_price }} = <span class="font-medium text-gray-700">${{ '%.2f' % line.line_total }}</span></span>
+        </div>
         {% endfor %}
-        {% if not sorted_lines %}
-        <tr id="empty-state-row">
-          <td colspan="9" class="px-4 py-8 text-center text-gray-400 text-sm">
-            No lines yet — search for a part above to get started.
-          </td>
-        </tr>
+      </div>
+    </div>
+    {% endif %}
+
+    {# Follow-Up Bar — stays in the main column #}
+    {% include "quotes/_follow_up_bar.html" %}
+
+  </div>{# /main column #}
+
+  {# ═══════════════════════ RIGHT RAIL (284px) ══════════════════════════════ #}
+  <aside class="w-full md:w-[284px] shrink-0 flex flex-col gap-3.5">
+
+    {# Customer card — keyed identity for this quote (the header strip already
+       shows balances; this is the rail summary). #}
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="flex items-center gap-2 px-4 py-2.5 border-b border-steel-150">
+        <h4 class="label-mini text-steel-500">Customer</h4>
+        {% if quote.customer.account_number %}
+        <span class="ml-auto font-mono text-[10.5px] text-steel-400">Acct {{ quote.customer.account_number }}</span>
         {% endif %}
-      </tbody>
-    </table>
+      </div>
+      <div class="px-4 pt-2.5 pb-3">
+        <div class="font-display font-semibold text-[15px] text-ink">{{ quote.customer.company_name }}</div>
+        <div class="text-xs text-steel-500 mt-1 leading-relaxed">
+          {{ cust_payment_terms | replace('_', ' ') | title }}
+          {% if quote.customer.is_tax_exempt %} · Tax-exempt{% endif %}
+          {% if quote.customer.contact_name %}<br>{{ quote.customer.contact_name }}{% if quote.customer.phone %} — {{ quote.customer.phone }}{% endif %}{% endif %}
+        </div>
+      </div>
+    </div>
+
+    {# Totals card — .kv rows + .tot block + .margin (admin-only via showMargin). #}
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="flex items-center gap-2 px-4 py-2.5 border-b border-steel-150">
+        <h4 class="label-mini text-steel-500">Totals</h4>
+      </div>
+      <div id="quote-totals"
+           hx-get="/quotes/{{ quote.id }}/totals"
+           hx-trigger="refreshTotals">
+        {% include "quotes/_totals.html" %}
+      </div>
+      {# Deal economics (cost / profit / blended margin↔markup) now render INSIDE
+         #quote-totals via quotes/_totals.html — so they refresh on every line change
+         and honor the Show-margin + Margin/Markup header toggles. #}
+    </div>
+
+    {# QuickBooks sync card — .sync LED. #}
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="sync">
+        <span class="led"></span>
+        <span><b>QuickBooks</b> ready</span>
+        <span class="t">on convert</span>
+      </div>
+    </div>
+
+  </aside>{# /rail #}
+
+</div>{# /flex layout #}
+
+{# ── Sticky save bar (Save Standard v2) — honest dirty-state pill + manual Save + toast.
+   saveState is driven by the autosave JS via window 'quote-save-state' events; the Save
+   button force-flushes via 'quote-save-flush'. Green ONLY after a confirmed save. ── #}
+<div x-data="{ saveState: 'clean', toast: false, savedAt: '', errMsg: '' }"
+     @quote-save-state.window="saveState = $event.detail; if ($event.detail === 'clean') { savedAt = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); errMsg = '' }"
+     @quote-save-conflict.window="errMsg = $event.detail"
+     @quote-saved-toast.window="toast = true; setTimeout(() => toast = false, 2200)"
+     class="sticky bottom-0 z-20 mt-3 flex items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white/95 backdrop-blur px-4 py-2.5 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
+  <span class="text-xs flex items-center gap-1.5"
+        :class="{ 'text-amber-600': saveState==='dirty', 'text-gray-400': saveState==='clean'||saveState==='saving', 'text-red-600': saveState==='error' }">
+    <span class="w-1.5 h-1.5 rounded-full"
+          :class="{ 'bg-amber-400': saveState==='dirty', 'bg-green-400': saveState==='clean', 'bg-gray-300 animate-pulse': saveState==='saving', 'bg-red-500': saveState==='error' }"></span>
+    {# Save Standard v2: pill shows the last-saved time once a save has confirmed this session (green ONLY when truly saved). #}
+    {# errMsg (set on a 409 conflict) overrides the generic error copy #}
+    <span x-text="saveState==='error' && errMsg ? errMsg : (saveState==='clean' && savedAt ? ('Saved ' + savedAt) : ({clean:'Saved', dirty:'Unsaved changes', saving:'Saving…', error:'Save failed — retry'})[saveState])"></span>
+  </span>
+  <button type="button" @click="$dispatch('quote-save-flush')" class="btn-primary btn-sm">
+    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/></svg>
+    Save
+  </button>
+  <div x-show="toast" x-cloak {{ motion.toast_rise() }}
+       class="fixed bottom-20 right-6 z-50 flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white shadow-lg">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+    Quote saved
   </div>
-
-</div>{# /card #}
-
-{# ── Totals bar ───────────────────────────────────────────────────────────── #}
-<div id="quote-totals"
-     hx-get="/quotes/{{ quote.id }}/totals"
-     hx-trigger="refreshTotals"
-     class="bg-white border border-gray-200 rounded-xl shadow-sm mt-3 px-4 py-3">
-  {% include "quotes/_totals.html" %}
 </div>
 
-{# ── Follow-Up Bar ────────────────────────────────────────────────────────── #}
-{% include "quotes/_follow_up_bar.html" %}
-
-{# ── JS: Alpine lineAdder component + htmx:afterRequest → totals refresh ─── #}
+{# ── JS: header autosave + line-row keyboard nav + totals refresh. The line-adder Alpine component lives in the shared line_items/_line_adder.html ─── #}
 <script>
-function lineAdder(quoteId, defaultDisc) {
-  return {
-    q: '',
-    results: [],
-    loading: false,
-    selectedProduct: null,
-    qty: 1,
-    unitPrice: 0.00,
-    unitCost: 0.00,
-    discountPct: defaultDisc,
 
-    // ── Child-mode state ──────────────────────────────────────────────────
-    childMode: false,       // true when adding a child to a specific parent
-    parentLineId: null,     // which parent
-    childLineRole: 'primary', // 'upgrade_option' | 'optional' | 'warranty' | 'suggested'
-    childModeLabel: '',     // human label for the banner
-
-    setChildMode(detail) {
-      this.childMode = true;
-      this.parentLineId = detail.parentLineId;
-      this.childLineRole = detail.lineRole || 'upgrade_option';
-      this.childModeLabel = detail.label || 'child line';
-      this.$nextTick(() => {
-        this.$refs.searchInput.focus();
-        this.$refs.searchInput.select();
-      });
-    },
-
-    clearChildMode() {
-      this.childMode = false;
-      this.parentLineId = null;
-      this.childLineRole = 'primary';
-      this.childModeLabel = '';
-    },
-
-    async doSearch() {
-      if (this.q.trim().length < 2) {
-        this.results = [];
-        return;
-      }
-      this.loading = true;
-      try {
-        const resp = await fetch('/quotes/product-search?q=' + encodeURIComponent(this.q.trim()));
-        this.results = await resp.json();
-      } finally {
-        this.loading = false;
-      }
-    },
-
-    focusResult(idx) {
-      const el = document.getElementById('result-' + idx);
-      if (el) el.focus();
-    },
-
-    selectProduct(r) {
-      this.selectedProduct = r;
-      this.q = r.part_number;
-      this.unitCost = r.current_cost;
-      this.unitPrice = r.suggested_sell;
-      this.results = [];
-      this.$nextTick(() => {
-        this.$refs.qtyInput.focus();
-        this.$refs.qtyInput.select();
-      });
-    },
-
-    addLine() {
-      const desc = (this.selectedProduct ? this.selectedProduct.description : '') || this.q.trim();
-      if (!desc) return;
-
-      // Remove empty-state row if present
-      const emptyRow = document.getElementById('empty-state-row');
-      if (emptyRow) emptyRow.remove();
-
-      const values = {
-        description: desc,
-        qty: this.qty,
-        unit_price: this.unitPrice,
-        unit_cost: this.unitCost,
-        discount_pct: this.discountPct,
-        line_type: this.selectedProduct ? 'product' : 'misc',
-        line_role: this.childMode ? this.childLineRole : 'primary',
-      };
-      if (this.selectedProduct) {
-        values.product_id = this.selectedProduct.product_id;
-      }
-
-      if (this.childMode && this.parentLineId) {
-        // Insert child line immediately before the parent's chips row
-        values.parent_line_id = this.parentLineId;
-        htmx.ajax('POST', '/quotes/' + quoteId + '/lines', {
-          values: values,
-          target: '#chips-' + this.parentLineId,
-          swap: 'beforebegin',
-        });
-      } else {
-        // Normal top-level line: append to tbody
-        htmx.ajax('POST', '/quotes/' + quoteId + '/lines', {
-          values: values,
-          target: '#quote-lines-tbody',
-          swap: 'beforeend',
-        });
-      }
-
-      this.reset();
-    },
-
-    reset() {
-      this.q = '';
-      this.results = [];
-      this.selectedProduct = null;
-      this.qty = 1;
-      this.unitPrice = 0;
-      this.unitCost = 0;
-      this.clearChildMode();
-      this.$nextTick(() => this.$refs.searchInput.focus());
-    },
-  };
-}
-
-// ── Autosave: debounced header field save ──────────────────────────────────
+// ── Autosave (Save Standard v2): debounced header save with an honest dirty state ──
+// Emits window 'quote-save-state' (clean|dirty|saving|error) to the sticky save bar's
+// pill; the manual Save button dispatches 'quote-save-flush' to force an immediate save.
 (function () {
   var timer = null;
-  var savedAt = null;
-
-  function setStatus(text, cls) {
-    var el = document.getElementById('autosave-status');
-    if (el) { el.textContent = text; el.className = cls; }
+  var currentState = 'clean';   // mirrored for the beforeunload guard
+  function emit(state) {
+    currentState = state;
+    window.dispatchEvent(new CustomEvent('quote-save-state', { detail: state }));
   }
 
-  function doSave() {
-    setStatus('Saving…', 'text-xs text-gray-400');
+  function doSave(manual) {
+    emit('saving');
     var form = document.getElementById('quote-header-form');
-    if (!form) return;
-    fetch('/quotes/{{ quote.id }}/autosave', {
-      method: 'POST',
-      body: new FormData(form),
-    }).then(function (r) {
-      if (r.ok) {
-        savedAt = Date.now();
-        setStatus('✓ All changes saved', 'text-xs text-green-600 font-medium');
-      } else {
-        setStatus('Save failed', 'text-xs text-red-500 font-medium');
-      }
-    }).catch(function () {
-      setStatus('Save failed', 'text-xs text-red-500 font-medium');
-    });
+    if (!form) { emit('clean'); return; }
+    fetch('/quotes/{{ quote.id }}/autosave', { method: 'POST', body: new FormData(form) })
+      .then(function (r) {
+        if (r.ok) {
+          // Optimistic lock (R9): adopt the server's fresh version so the
+          // NEXT autosave doesn't conflict with this one.
+          var ts = r.headers.get('X-Updated-At');
+          var hid = form.querySelector('input[name="updated_at"]');
+          if (ts && hid) hid.value = ts;
+          emit('clean');
+          // Blanket header Disc% cascaded to the lines server-side — re-pull the
+          // totals card AND the line rows so the Quote Total and per-line Disc %
+          // reflect it immediately (no full reload).
+          if (r.headers.get('X-Refresh-Lines')) {
+            var totalsEl = document.getElementById('quote-totals');
+            var tbodyEl = document.getElementById('quote-lines-tbody');
+            if (totalsEl) htmx.trigger(totalsEl, 'refreshTotals');
+            if (tbodyEl) htmx.trigger(tbodyEl, 'refreshLines');
+          }
+          if (manual) window.dispatchEvent(new CustomEvent('quote-saved-toast'));
+        } else {
+          if (r.status === 409) {
+            window.dispatchEvent(new CustomEvent('quote-save-conflict', {
+              detail: 'Changed by another user — reload this page, then re-apply your edit.'
+            }));
+          }
+          emit('error');
+        }
+      })
+      .catch(function () { emit('error'); });
   }
+
+  // Warn before leaving while an autosave is pending, in flight, or failed —
+  // otherwise the 2s debounce silently eats the last edit on a fast tab close.
+  window.addEventListener('beforeunload', function (e) {
+    if (currentState === 'dirty' || currentState === 'saving' || currentState === 'error') {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  });
 
   function schedule() {
+    emit('dirty');
     clearTimeout(timer);
-    timer = setTimeout(doSave, 2500);
+    timer = setTimeout(function () { doSave(false); }, 2000);
   }
 
-  // Attach listeners after DOM is ready
   document.addEventListener('DOMContentLoaded', function () {
     var form = document.getElementById('quote-header-form');
     if (!form) return;
-    form.querySelectorAll('input, textarea').forEach(function (el) {
+    form.querySelectorAll('input, textarea, select').forEach(function (el) {
       el.addEventListener('input', schedule);
       el.addEventListener('change', schedule);
     });
   });
 
-  // Update "Saved X ago" every 30s so it doesn't freeze on "Saved"
-  setInterval(function () {
-    if (!savedAt) return;
-    var secs = Math.floor((Date.now() - savedAt) / 1000);
-    if (secs < 15) return; // still shows "✓ Saved" — fresh enough
-    var mins = Math.floor(secs / 60);
-    var label = mins < 1 ? 'Saved ' + secs + 's ago' : 'Saved ' + mins + 'm ago';
-    setStatus(label, 'text-xs text-gray-400');
-  }, 30000);
+  // Manual Save — force-flush: cancel the debounce, save now, then toast on success.
+  window.addEventListener('quote-save-flush', function () {
+    clearTimeout(timer);
+    doSave(true);
+  });
 })();
 
 // After any HTMX request that modifies lines, refresh the totals bar.

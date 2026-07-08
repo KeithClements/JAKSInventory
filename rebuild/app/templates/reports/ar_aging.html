@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}AR Aging — JAKS Inventory{% endblock %}
+{% block title %}AR Aging — Axle{% endblock %}
 {% block heading %}AR Aging{% endblock %}
 
 {% block content %}
@@ -7,19 +7,31 @@
 <div class="max-w-6xl space-y-4">
   {% include "reports/_nav.html" %}
 
-  {# ── Filter + actions row ─────────────────────────────────────────────── #}
-  <form method="get" action="/reports/ar-aging"
-        class="flex flex-wrap items-end gap-3 bg-white border border-gray-200 rounded-xl p-3">
-    <div>
-      <label class="form-label">As of</label>
-      <input type="date" name="as_of" value="{{ as_of.isoformat() }}" class="form-input w-44"/>
-    </div>
-    <button type="submit" class="btn-primary btn-sm">Update</button>
+  {% if request.query_params.get('ok') %}
+  <div class="rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800">{{ request.query_params.get('ok') }}</div>
+  {% endif %}
+  {% if request.query_params.get('error') %}
+  <div class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">{{ request.query_params.get('error') }}</div>
+  {% endif %}
+
+  {# ── Filter + actions row (filter form + bulk-statement form are SIBLINGS —
+       never nest <form>s) ─────────────────────────────────────────────────── #}
+  <div class="flex flex-wrap items-end gap-3 bg-white border border-gray-200 rounded-xl p-3">
+    <form method="get" action="/reports/ar-aging" class="flex items-end gap-3">
+      <div>
+        <label class="form-label">As of</label>
+        <input type="date" name="as_of" value="{{ as_of.isoformat() }}" class="form-input w-44"/>
+      </div>
+      <button type="submit" class="btn-primary btn-sm">Update</button>
+    </form>
     <div class="flex-1"></div>
-    <button type="button" class="btn-secondary btn-sm" disabled title="Coming soon">
-      Export CSV
-    </button>
-  </form>
+    {# §21 — month-end: generate a statement for every customer with a balance #}
+    <form method="post" action="/customers/statements/bulk-generate"
+          onsubmit="return confirm('Generate + save a month-to-date statement for every customer with an open balance?');">
+      <button type="submit" class="btn-secondary btn-sm">Generate Month-End Statements</button>
+    </form>
+    <a href="/reports/ar-aging/export.csv?as_of={{ as_of.isoformat() }}" class="btn-secondary btn-sm">Export CSV</a>
+  </div>
 
   <p class="text-xs text-gray-400">As of {{ as_of.strftime('%B %d, %Y') }}</p>
 

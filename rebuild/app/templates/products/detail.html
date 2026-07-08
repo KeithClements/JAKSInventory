@@ -1,20 +1,25 @@
 {% extends "base.html" %}
-{% block title %}{{ product.sku }} — JAKS Inventory{% endblock %}
+{% block title %}{{ product.sku }} — Axle{% endblock %}
 {% block heading %}{{ product.sku }}{% endblock %}
 
 {% block header_actions %}
   <a href="/products/" class="text-sm text-gray-500 hover:text-gray-700">← Products</a>
-  <div class="flex items-center gap-2 ml-4">
-    {% for src_name, src_code in [('PAI', 'pai'), ('HHP', 'hhp'), ('ATL', 'atl')] %}
-    <button type="button"
-            hx-get="/products/{{ product.id }}/enrich-panel?source={{ src_code }}"
-            hx-target="#create-slide-content"
-            @click="createSlideTitle = 'Enrich from {{ src_name }}'; createSlideOpen = true"
-            class="btn-secondary btn-sm">
-      ⟳ {{ src_name }}
+  {# Push to Shopify now — instant reflection of the current ERP price / SEO / tags
+     (and availability state, in the sold-out model) on the linked storefront listing.
+     Shown only when the product is already linked to a live listing; the nightly
+     sync is the batch fallback. #}
+  {% if product.shopify_product_id and product.shopify_product_id.startswith('gid://') %}
+  <form method="post" action="/products/{{ product.id }}/push-shopify" class="inline">
+    <button type="submit" class="text-sm text-blue-600 hover:text-blue-800 font-medium">
+      ⬆ Push to Shopify now
     </button>
-    {% endfor %}
-  </div>
+  </form>
+  {% endif %}
+  {# "Adjust Inventory" used to live here as a global header action, so it appeared on
+     EVERY tab. Owner feedback 2026-06-06: it belongs on the Info tab only — it now sits
+     in a card at the bottom of the Info panel below. #}
+  {# Scraper enrichment (PAI/HHP/ATL) removed — P2-D9 / §8P: vendor-catalog
+     integration is out of ERP scope. Backend drops the /enrich-panel route. #}
 {% endblock %}
 
 {% block content %}
@@ -37,7 +42,7 @@
 
   {# ── Tab bar ── #}
   <nav class="tab-bar mb-5">
-    {% set tabs = [('info', 'Info'), ('sources', 'Vendor Sources'), ('xrefs', 'Cross Refs'), ('images', 'Images'), ('suggestions', 'Suggested Sells'), ('history', 'Cost History')] %}
+    {% set tabs = [('info', 'Info'), ('sources', 'Vendor Sources'), ('xrefs', 'Cross Refs'), ('apps', 'Applications'), ('images', 'Images'), ('suggestions', 'Suggested Sells'), ('history', 'Cost History')] %}
     {% for key, label in tabs %}
     <button type="button"
             @click="tab='{{ key }}'"
@@ -47,6 +52,8 @@
         <span class="ml-1 text-xs text-gray-400">({{ product.vendor_sources|selectattr('is_active')|list|length }})</span>
       {% elif key == 'xrefs' %}
         <span class="ml-1 text-xs text-gray-400">({{ product.cross_references|length }})</span>
+      {% elif key == 'apps' %}
+        <span class="ml-1 text-xs text-gray-400">({{ product.applications|length }})</span>
       {% elif key == 'images' %}
         <span class="ml-1 text-xs text-gray-400">({{ product.images|length }})</span>
       {% elif key == 'suggestions' %}
@@ -68,91 +75,257 @@
       <input type="hidden" name="reason" value="archived via UI" />
     </form>
 
-    <form method="post" action="/products/{{ product.id }}" class="max-w-3xl space-y-4">
+    {# Unlock-price form also lives outside the main edit form (same no-nesting
+       pattern as deactivate). Clears ONLY the manual price lock — the price is
+       kept; the nightly scraper feed may manage it again. #}
+    {% if product.price_override_locked %}
+    <form id="unlock-price-form" method="post" action="/products/{{ product.id }}/unlock-price"
+          onsubmit="return confirm('Unlock this price? The current price is kept, but the nightly vendor feed may change it again.')"></form>
+    {% endif %}
 
-      {# Identity card #}
-      <div class="card">
-        <div class="card-header">
+    {# Save Standard v2: this form TRULY auto-saves. The JS at the bottom of the page
+       debounces edits and POSTs the whole form to /products/{id}/autosave, then drives
+       the honest save-state pill below off the real HTTP result. The manual "Save
+       Changes" button remains as a native no-JS fallback. (Owner feedback 2026-06-06:
+       the old _dirty flag was cosmetic — it showed "All changes saved" on load and was
+       never wired to an actual save, so edits were silently lost on navigation.) #}
+    <form id="product-info-form" method="post" action="/products/{{ product.id }}"
+          class="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start"
+          @ai-accept="
+            const name = $event.detail.field;
+            const value = $event.detail.value || '';
+            const el = $el.querySelector('[name=&quot;' + name + '&quot;]');
+            if (el) {
+              el.value = value;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+          ">
+
+      {# Identity card — product fields (left) + single square primary photo (right),
+         one full-width row. Replaces the old separate Identity + Photos cards (owner
+         feedback 2026-06-06). The Images tab stays the full manager (upload / delete /
+         reorder / set-primary); "Manage Photos →" jumps there. #}
+      <div class="card xl:col-span-2">
+        <div class="card-header flex items-center justify-between">
           <h2 class="card-title">Identity</h2>
+          {# ── Suggest with AI — sits in the Identity card header so it's
+               adjacent to Title / Description. HTMX posts the current form
+               fields to /products/ai-suggest; hx-sync prevents stacked
+               requests. The panel below this row receives the partial. #}
+          <button type="button"
+                  hx-post="/products/ai-suggest"
+                  hx-include="closest form"
+                  hx-target="#ai-suggestion-panel"
+                  hx-swap="outerHTML"
+                  hx-indicator="#ai-suggest-indicator"
+                  hx-sync="this:replace"
+                  class="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100 transition-colors disabled:opacity-50">
+            <svg class="w-3.5 h-3.5 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M10 1l1.7 4.6L16 7.3l-4.3 1.7L10 13.6 8.3 9 4 7.3l4.3-1.7L10 1zm6 8.5l.85 2.3L19 12.65l-2.15.85L16 15.8l-.85-2.3L13 12.65l2.15-.85L16 9.5zM4 14l.85 2.3L7 17.15l-2.15.85L4 14z"/>
+            </svg>
+            <span>Suggest with AI</span>
+            <span id="ai-suggest-indicator" class="htmx-indicator text-[10px] text-amber-700">Asking Claude…</span>
+          </button>
         </div>
-        <div class="card-body space-y-4">
-          <div class="grid grid-cols-2 gap-4">
-            <div>
-              <label class="form-label">SKU</label>
-              <input name="sku" value="{{ product.sku }}" required class="form-input font-mono" />
+        <div class="card-body">
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+            {# ── Left: product fields ── #}
+            <div class="md:col-span-2 space-y-4">
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="form-label">SKU</label>
+                  <input name="sku" value="{{ product.sku }}" required class="form-input font-mono" />
+                </div>
+                <div>
+                  <label class="form-label">Title</label>
+                  <input name="title" value="{{ product.title }}" class="form-input" />
+                </div>
+              </div>
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="form-label">Manufacturer</label>
+                  <select name="manufacturer" class="form-select">
+                    <option value="">— Select —</option>
+                    {% for m in manufacturers %}
+                      <option value="{{ m }}" {% if product.manufacturer == m %}selected{% endif %}>{{ m }}</option>
+                    {% endfor %}
+                    {# Legacy-preserving: a stored value outside the canonical
+                       list still shows selected instead of silently reading
+                       as blank (same pattern as the engine picker). #}
+                    {% if product.manufacturer and product.manufacturer not in manufacturers %}
+                      <option value="{{ product.manufacturer }}" selected>{{ product.manufacturer }}</option>
+                    {% endif %}
+                  </select>
+                </div>
+                <div>
+                  <label class="form-label">Brand</label>
+                  {# §23.3 Phase 2 — constrained to the managed Brand list
+                     (Category Maintenance), same legacy-preserving pattern
+                     as Manufacturer above (a stored value outside the
+                     canonical list still shows selected, never silently
+                     blanked). #}
+                  <select name="brand" class="form-select">
+                    <option value="">— Select —</option>
+                    {% for b in brands %}
+                      <option value="{{ b }}" {% if product.brand == b %}selected{% endif %}>{{ b }}</option>
+                    {% endfor %}
+                    {% if product.brand and product.brand not in brands %}
+                      <option value="{{ product.brand }}" selected>{{ product.brand }}</option>
+                    {% endif %}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label class="form-label">Category</label>
+                <select name="category_id" class="form-select">
+                  <option value="">— None —</option>
+                  {% for cat in categories %}
+                    <option value="{{ cat.id }}" {% if product.category_id == cat.id %}selected{% endif %}>
+                      {{ cat.full_path }}
+                    </option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div>
+                <label class="form-label">Description</label>
+                <textarea name="description" rows="3" class="form-textarea">{{ product.description }}</textarea>
+              </div>
+              {# Meta description — AI suggest writes here. Product model has no
+                 column for this yet, so the POST handler silently drops it; the
+                 input is here so the AI accept handler has a target. #}
+              <div>
+                <label class="form-label">Meta description <span class="text-gray-400 font-normal">(search / SEO)</span></label>
+                <textarea name="meta_description" rows="2" placeholder="Short, search-friendly summary — ≤155 chars."
+                          class="form-textarea">{{ product.meta_description if product.meta_description is defined else '' }}</textarea>
+              </div>
+              {# AI suggestion panel target — replaced by the partial when
+                 "Suggest with AI" returns. Starts empty so the panel doesn't
+                 push the photo down before it's used. #}
+              <div id="ai-suggestion-panel"></div>
             </div>
-            <div>
-              <label class="form-label">Title</label>
-              <input name="title" value="{{ product.title }}" class="form-input" />
+
+            {# ── Right: single square primary photo ── #}
+            <div class="md:col-span-1">
+              <div class="flex items-center justify-between mb-2">
+                <label class="form-label">Primary Image</label>
+                <button type="button" @click="tab='images'" class="text-xs text-brand-700 hover:underline">Manage Photos →</button>
+              </div>
+              {% set primary_image = (product.images|selectattr('is_primary')|first) or (product.images|first) %}
+              {% if primary_image %}
+              <img src="{{ primary_image.url }}" alt="{{ primary_image.alt_text or product.title }}" loading="lazy"
+                   class="w-full max-w-xs aspect-square object-contain rounded-lg border border-gray-200 bg-gray-50 p-2" />
+              {% else %}
+              <button type="button" @click="tab='images'"
+                      class="w-full max-w-xs aspect-square rounded-lg border-2 border-dashed border-gray-200 bg-gray-50 flex flex-col items-center justify-center gap-2 text-gray-400 hover:border-brand-400 hover:text-brand-700 transition-colors">
+                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M3.75 19.5h16.5a1.5 1.5 0 001.5-1.5V6a1.5 1.5 0 00-1.5-1.5H3.75A1.5 1.5 0 002.25 6v12a1.5 1.5 0 001.5 1.5z" />
+                </svg>
+                <span class="text-sm">No image yet</span>
+              </button>
+              {% endif %}
             </div>
-          </div>
-          <div class="grid grid-cols-2 gap-4">
-            <div>
-              <label class="form-label">Manufacturer</label>
-              <select name="manufacturer" class="form-select">
-                <option value="">— Select —</option>
-                {% for m in manufacturers %}
-                  <option value="{{ m }}" {% if product.manufacturer == m %}selected{% endif %}>{{ m }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div>
-              <label class="form-label">Brand</label>
-              <input name="brand" value="{{ product.brand }}" class="form-input" />
-            </div>
-          </div>
-          <div>
-            <label class="form-label">Category</label>
-            <select name="category_id" class="form-select">
-              <option value="">— None —</option>
-              {% for cat in categories %}
-                <option value="{{ cat.id }}" {% if product.category_id == cat.id %}selected{% endif %}>
-                  {{ cat.full_path }}
-                </option>
-              {% endfor %}
-            </select>
-          </div>
-          <div>
-            <label class="form-label">Description</label>
-            <textarea name="description" rows="3" class="form-textarea">{{ product.description }}</textarea>
+
           </div>
         </div>
       </div>
 
-      {# Pricing card #}
-      <div class="card">
+      {# Pricing card — Markup % ⇄ Margin % ⇄ Price ($) are all editable and
+         cross-linked: type any one, the other two recompute off Our Cost. The
+         shared window.productPricing factory (base.html) owns the math; two hidden
+         inputs submit the same markup_pct + price_override columns as before, so
+         the autosave / Save contract is unchanged. Seeded from the saved product so
+         the number is identical before Alpine boots. #}
+      <div class="card" x-data="window.productPricing({
+             cost: {{ product.cost|float(0) }},
+             markup: {% if product.markup_pct is not none %}{{ product.markup_pct|float(0) }}{% else %}null{% endif %},
+             priceOverride: {% if product.price_override %}{{ product.price_override|float(0) }}{% else %}null{% endif %},
+             defaultMarkup: {{ default_markup|float(30) }}
+           })">
+
+        {# Hidden submit fields — the three visible boxes only compute these two. #}
+        <input type="hidden" name="markup_pct" :value="markupSubmit" />
+        <input type="hidden" name="price_override" :value="overrideSubmit" />
+
         <div class="card-header">
           <h2 class="card-title flex items-center gap-3">
             Pricing
-            <span class="text-green-700 font-bold text-base">→ ${{ "%.2f"|format(product.selling_price) }}</span>
-            {% if product.price_override %}
-              <span class="badge-amber font-normal">price override</span>
+            <span class="text-green-700 font-bold text-base"
+                  x-text="'→ $' + sellPrice.toFixed(2)">→ ${{ "%.2f"|format(product.selling_price) }}</span>
+            <span x-show="isPinned" x-cloak class="badge-amber font-normal">pinned (no cost yet)</span>
+            {% if product.price_override_locked %}
+            {# Operator price lock (scraper-audit bug #11): set automatically when
+               the price is changed by hand; the nightly scraper feed skips this
+               product's sell price while locked. "unlock" clears just the lock
+               (price kept) via the external unlock-price-form above. #}
+            <span class="badge-amber font-normal inline-flex items-center gap-1.5"
+                  title="Set by hand in the ERP — the nightly vendor feed will not change this price while locked.">
+              &#128274; price locked (manual)
+              <button type="submit" form="unlock-price-form"
+                      class="link text-xs font-medium">unlock</button>
+            </span>
             {% endif %}
           </h2>
         </div>
         <div class="card-body space-y-4">
-          <div class="grid grid-cols-3 gap-4">
+          <div class="grid grid-cols-2 gap-4">
             <div>
               <label class="form-label">Our Cost ($)</label>
               <input name="cost" type="number" step="0.01" min="0"
-                     value="{{ product.cost }}" class="form-input" />
+                     x-model.number="cost" @input="onCostChange($event.target.value)"
+                     value="{{ "%.2f"|format(product.cost) }}" class="form-input" />
               {% if product.cost_source %}
                 <p class="mt-0.5 text-xs text-gray-400">Source: {{ product.cost_source }}</p>
               {% endif %}
             </div>
             <div>
               <label class="form-label">Markup %</label>
-              <input name="markup_pct" type="number" step="0.1" min="0"
-                     value="{{ product.markup_pct or '' }}" placeholder="Global default"
+              {# step="any": auto-filled by productPricing with a 2-decimal value
+                 (r2), which would violate step="0.1" and silently block submit via
+                 HTML5 constraint validation. Display-only (no name) — markupSubmit
+                 (hidden input above) carries the real value. #}
+              <input type="number" step="any" min="0"
+                     x-model.number="markup" @input="onMarkup()"
+                     placeholder="Global default"
                      class="form-input" />
             </div>
             <div>
-              <label class="form-label">Price Override ($)</label>
-              <input name="price_override" type="number" step="0.01" min="0"
-                     value="{{ product.price_override or '' }}" placeholder="Leave blank for markup"
+              <label class="form-label">Margin %</label>
+              {# step="any": auto-filled with a 2-decimal margin (e.g. 25.37) that
+                 would violate step="0.1" and silently block Save. Display-only. #}
+              <input type="number" step="any" min="0" max="99.9"
+                     x-model.number="margin" @input="onMargin()"
+                     placeholder="—"
+                     class="form-input" />
+            </div>
+            <div>
+              <label class="form-label">Price ($) <span class="text-gray-400 font-normal">(exact)</span></label>
+              <input type="number" step="0.01" min="0"
+                     x-model.number="price" @input="onPrice()"
+                     placeholder="0.00"
                      class="form-input" />
             </div>
           </div>
+
+          {# Market price references — importer-populated (read-only here). The live
+             margin now lives in the editable Margin % box above, so it's dropped
+             from this read-only reference strip. #}
+          {% if product.list_price or product.map_price or product.compare_at_price %}
+          <div class="grid grid-cols-3 gap-4">
+            <div>
+              <label class="form-label">List / MSRP</label>
+              <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm text-gray-700 tabular-nums">{{ "$%.2f"|format(product.list_price) if product.list_price else "—" }}</div>
+            </div>
+            <div>
+              <label class="form-label">MAP</label>
+              <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm text-gray-700 tabular-nums">{{ "$%.2f"|format(product.map_price) if product.map_price else "—" }}</div>
+            </div>
+            <div>
+              <label class="form-label">Compare-At</label>
+              <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm text-gray-700 tabular-nums">{{ "$%.2f"|format(product.compare_at_price) if product.compare_at_price else "—" }}</div>
+            </div>
+          </div>
+          {% endif %}
 
           {# Core charge toggle #}
           <div x-data="{ hasCore: {{ 'true' if product.has_core else 'false' }} }">
@@ -175,6 +348,42 @@
               </div>
             </div>
           </div>
+        </div>
+      </div>
+
+      {# Competitor prices — read-only market intelligence (populated by the Pricing-Update importer) #}
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">Competitor Prices
+            <span class="text-xs font-normal text-gray-400">market intelligence — not cost</span></h2>
+        </div>
+        <div class="card-body">
+          {% if product.competitor_prices %}
+          <table class="w-full text-sm divide-y divide-gray-100">
+            <thead><tr class="text-xs text-gray-500 uppercase tracking-wide text-left">
+              <th class="py-1.5 pr-3">Competitor</th><th class="py-1.5 pr-3">Their Part #</th>
+              <th class="py-1.5 pr-3 text-right">Price</th><th class="py-1.5 pr-3 text-right">Ship</th>
+              <th class="py-1.5 pr-3">Avail</th><th class="py-1.5 pr-3">Seen</th><th></th>
+            </tr></thead>
+            <tbody class="divide-y divide-gray-50">
+              {% for cp in product.competitor_prices|sort(attribute='price') %}
+              <tr>
+                <td class="py-1.5 pr-3 font-medium text-gray-800">{{ cp.competitor_name }}{% if cp.competitor_brand %} <span class="text-gray-400">({{ cp.competitor_brand }})</span>{% endif %}</td>
+                <td class="py-1.5 pr-3 font-mono text-xs text-gray-600">{{ cp.competitor_part_number or "—" }}</td>
+                <td class="py-1.5 pr-3 text-right tabular-nums">${{ "%.2f"|format(cp.price) }}</td>
+                <td class="py-1.5 pr-3 text-right tabular-nums text-gray-500">{{ "$%.2f"|format(cp.shipping_price) if cp.shipping_price else "—" }}</td>
+                <td class="py-1.5 pr-3 text-xs text-gray-500">{{ cp.availability_status or "—" }}</td>
+                <td class="py-1.5 pr-3 text-xs text-gray-400">{{ cp.seen_at.strftime("%Y-%m-%d") if cp.seen_at else "—" }}</td>
+                <td class="py-1.5 text-right">{% if cp.url %}<a href="{{ cp.url }}" target="_blank" rel="noopener" class="link text-xs">view</a>{% endif %}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          <p class="mt-2 text-xs text-gray-400">Our price <span class="font-medium text-gray-600">${{ "%.2f"|format(product.selling_price) }}</span> · lowest competitor <span class="font-medium text-gray-600">${{ "%.2f"|format(product.competitor_prices|map(attribute='price')|min) }}</span></p>
+          {% else %}
+          <p class="text-sm text-gray-400 italic">No competitor prices yet. Load them via
+            <a href="/products/import" class="link">Import Products → Pricing Update → Competitor</a>.</p>
+          {% endif %}
         </div>
       </div>
 
@@ -298,10 +507,64 @@
         </div>
       </div>
 
-      {# Actions — Archive uses deactivate-form defined above to avoid form nesting #}
-      <div class="flex items-center gap-3">
+      {# SEO & Marketplace card — feeds the storefront/eBay export-sync (Shopify
+         title ≤70 chars, meta description ≤160). Saved through the same Info-tab
+         autosave; importer/AI-enrich may pre-fill, owner edits win. #}
+      <div class="card"
+           x-data="{ st: {{ (product.seo_title or '')|length }}, sd: {{ (product.seo_description or '')|length }} }">
+        <div class="card-header">
+          <h2 class="card-title">SEO &amp; Marketplace</h2>
+          <span class="text-xs text-steel-400">used by Shopify / eBay export &amp; sync</span>
+        </div>
+        <div class="card-body space-y-4">
+          <div>
+            <label class="form-label flex items-center justify-between">
+              <span>SEO Title</span>
+              <span class="normal-case font-normal tracking-normal"
+                    :class="st > 70 ? 'text-red-600 font-semibold' : 'text-gray-400'"
+                    x-text="st + ' / 70'"></span>
+            </label>
+            <input name="seo_title" maxlength="255" class="form-input"
+                   @input="st = $el.value.length"
+                   placeholder="{{ product.title }}"
+                   value="{{ product.seo_title }}" />
+            <p class="form-hint">Listing title for the storefront. Blank = product title is used.</p>
+          </div>
+          <div>
+            <label class="form-label flex items-center justify-between">
+              <span>SEO Description</span>
+              <span class="normal-case font-normal tracking-normal"
+                    :class="sd > 160 ? 'text-red-600 font-semibold' : 'text-gray-400'"
+                    x-text="sd + ' / 160'"></span>
+            </label>
+            <textarea name="seo_description" rows="3" class="form-textarea"
+                      @input="sd = $el.value.length">{{ product.seo_description }}</textarea>
+            <p class="form-hint">Meta / listing description shown in search results and marketplace listings.</p>
+          </div>
+          <div>
+            <label class="form-label">Search Keywords / Tags</label>
+            <input name="search_keywords" class="form-input"
+                   value="{{ product.search_keywords }}"
+                   placeholder="comma, separated, tags" />
+            <p class="form-hint">Comma-separated tags — fills Shopify tags / eBay item specifics. Imports pre-fill this from the feed's Tags column.</p>
+          </div>
+        </div>
+      </div>
+
+      {# Actions — honest save-state pill (Save Standard v2). saveState is driven by the
+         autosave JS via 'product-save-state' window events; green "All changes saved"
+         appears ONLY after a confirmed save. Archive uses deactivate-form (no nesting). #}
+      <div class="flex items-center gap-3 xl:col-span-2"
+           x-data="{ saveState: 'clean' }"
+           @product-save-state.window="saveState = $event.detail">
         <button type="submit" class="btn-primary">Save Changes</button>
         <a href="/products/" class="btn-secondary">Cancel</a>
+        <span class="inline-flex items-center gap-1.5 text-xs"
+              :class="{ 'text-amber-600': saveState==='dirty', 'text-gray-400': saveState==='clean'||saveState==='saving', 'text-red-600': saveState==='error' }">
+          <span class="w-1.5 h-1.5 rounded-full shrink-0"
+                :class="{ 'bg-amber-400': saveState==='dirty', 'bg-green-500': saveState==='clean', 'bg-gray-300 animate-pulse': saveState==='saving', 'bg-red-500': saveState==='error' }"></span>
+          <span x-text="({clean:'All changes saved', dirty:'Unsaved changes — saving…', saving:'Saving…', error:'Save failed — retry'})[saveState]"></span>
+        </span>
         <button type="submit" form="deactivate-form"
                 class="ml-auto rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors">
           Archive Product
@@ -309,6 +572,167 @@
       </div>
 
     </form>
+
+    {# ── Adjust Inventory — Info tab only ──────────────────────────────────────
+       Was a global header button + a card outside the tab wrapper, so it rendered on
+       EVERY tab. Owner feedback 2026-06-06: keep it on the Info tab only. #}
+    {% if product.is_active %}
+    <div id="adjust-inventory" class="card border-amber-100 mt-4"
+         x-data="{ open: false }">
+      <div class="card-header">
+        <div>
+          <h3 class="card-title">Adjust Inventory</h3>
+          <p class="text-xs text-gray-400 mt-0.5">
+            Cycle count correction, damaged goods, found stock, internal use, etc.
+          </p>
+        </div>
+        <button type="button" @click="open = !open"
+                class="rounded-lg border border-amber-200 px-3 py-1.5 text-sm font-medium
+                       text-amber-700 hover:bg-amber-50 transition-colors">
+          Adjust…
+        </button>
+      </div>
+      <div x-show="open" x-cloak class="card-body border-t border-gray-100">
+        <form method="post" action="/products/{{ product.id }}/adjust-inventory"
+              class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label class="form-label">Qty Change</label>
+            <p class="text-xs text-gray-400 mb-1">Positive = add stock. Negative = remove stock.</p>
+            <input type="number" name="qty_delta" value="0" required
+                   class="form-input w-32 text-right" />
+          </div>
+          <div>
+            <label class="form-label">Reason</label>
+            <select name="reason" class="form-select" required>
+              <option value="">— Select —</option>
+              <option value="cycle_count_over">Cycle Count — Over</option>
+              <option value="cycle_count_short">Cycle Count — Short</option>
+              <option value="found">Found</option>
+              <option value="damaged">Damaged / Write-off</option>
+              <option value="lost">Lost</option>
+              <option value="internal_use">Internal Use</option>
+              <option value="initial_inventory_load">Initial Inventory Load</option>
+              <option value="correction">Correction</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <div class="sm:col-span-2">
+            <label class="form-label">Note <span class="text-gray-400 font-normal">(required for Correction / Other)</span></label>
+            <input type="text" name="note" placeholder="Brief explanation…"
+                   class="form-input" />
+          </div>
+          <div>
+            <label class="form-label">Unit Cost <span class="text-gray-400 font-normal">(optional — updates avg cost if adding stock)</span></label>
+            <div class="relative">
+              <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
+              <input type="number" name="unit_cost" step="0.01" min="0" placeholder="—"
+                     class="form-input w-32 pl-6 text-right" />
+            </div>
+          </div>
+          <div class="sm:col-span-2 flex gap-2 pt-1">
+            <button type="submit" class="btn-primary">Apply Adjustment</button>
+            <button type="button" @click="open = false" class="btn-secondary btn-sm">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    {% endif %}
+
+    {# ── Merge Duplicate — Info tab only. Irreversible bulk reassignment: every
+       table that can reference a product (vendor sources, cross-refs, cost
+       history, inventory ledger, every document line type, …) gets re-pointed
+       onto THIS product; the duplicate is retired (superseded, deactivated),
+       never hard-deleted. Same confirm-before-submit pattern as Archive. #}
+    {% if product.is_active %}
+    <div id="merge-duplicate" class="card border-purple-100 mt-4" x-data="{ open: false }">
+      <div class="card-header">
+        <div>
+          <h3 class="card-title">Merge Duplicate Into This Product</h3>
+          <p class="text-xs text-gray-400 mt-0.5">
+            Found the same part entered twice? Pick the duplicate below — its history moves here and it's retired.
+          </p>
+        </div>
+        <button type="button" @click="open = !open"
+                class="rounded-lg border border-purple-200 px-3 py-1.5 text-sm font-medium
+                       text-purple-700 hover:bg-purple-50 transition-colors">
+          Merge…
+        </button>
+      </div>
+      <div x-show="open" x-cloak class="card-body border-t border-gray-100" style="overflow: visible">
+        <div x-data="{
+               _q: '', _dupId: null, _dupSku: '', _showRes: false, _results: [], _ai: -1,
+               async _doSearch() {
+                 const term = this._q.trim();
+                 if (term.length < 2) { this._results = []; this._ai = -1; return; }
+                 try {
+                   const r = await fetch('/line-items/product-search?q=' + encodeURIComponent(term));
+                   const hits = r.ok ? await r.json() : [];
+                   this._results = hits.filter(p => p.product_id !== {{ product.id }});
+                 } catch (e) { this._results = []; } finally { this._ai = this._results.length ? 0 : -1; }
+               },
+               _select(p) {
+                 this._dupId = p.product_id;
+                 this._dupSku = p.sku || p.part_number || '';
+                 this._q = this._dupSku + ' — ' + (p.title || p.description || '');
+                 this._results = []; this._showRes = false; this._ai = -1;
+               },
+               _confirmMerge(ev) {
+                 const msg = 'Merge ' + this._dupSku + ' into {{ product.sku }}? ' +
+                             'Its history moves here and it is retired (not deleted). This cannot be undone.';
+                 if (!confirm(msg)) ev.preventDefault();
+               },
+               get canSubmit() { return !!this._dupId; }
+             }">
+          <form method="post" :action="'/products/{{ product.id }}/merge/' + _dupId"
+                @submit="_confirmMerge($event)"
+                class="grid grid-cols-1 sm:grid-cols-3 gap-4 items-start">
+            <div class="relative sm:col-span-2">
+              <label class="form-label">Duplicate Product <span class="text-red-500">*</span></label>
+              <input type="text" x-model="_q"
+                     @input.debounce.250ms="_showRes = true; _dupId = null; _doSearch()"
+                     @keydown.down.prevent="_showRes = true; _ai = Math.min(_ai + 1, _results.length - 1)"
+                     @keydown.up.prevent="_ai = Math.max(_ai - 1, 0)"
+                     @keydown.enter.prevent="if (_ai >= 0 && _results[_ai]) _select(_results[_ai])"
+                     @keydown.escape="_showRes = false; _results = []"
+                     placeholder="Search by SKU or title…"
+                     autocomplete="off"
+                     class="form-input" />
+              <div x-show="_showRes && _results.length > 0" x-cloak
+                   @click.outside="_showRes = false"
+                   class="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200
+                          rounded-lg shadow-lg z-40 max-h-52 overflow-y-auto divide-y divide-gray-100">
+                <template x-for="(p, idx) in _results" :key="p.product_id">
+                  <button type="button" @click="_select(p)"
+                          :class="idx === _ai ? 'cust-pick-active' : ''"
+                          class="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-gray-50/80 transition-colors">
+                    <span class="font-mono text-xs font-bold text-brand-700 shrink-0 whitespace-nowrap" x-text="p.sku || p.part_number"></span>
+                    <span class="flex-1 min-w-0 text-sm text-gray-800 truncate" x-text="p.title || p.description"></span>
+                    <span class="shrink-0 text-xs text-gray-500 tabular-nums" x-text="(p.qty_on_hand || 0) + ' on hand'"></span>
+                  </button>
+                </template>
+              </div>
+              <p x-show="_dupId" x-cloak class="mt-1 text-xs text-purple-700">
+                Will retire <span class="font-mono font-bold" x-text="_dupSku"></span> and move its history here.
+              </p>
+            </div>
+            <div>
+              <label class="form-label">New SKU <span class="text-gray-400 font-normal">(optional)</span></label>
+              <input type="text" name="new_sku" placeholder="{{ product.sku }}" class="form-input font-mono" />
+              <p class="form-hint">Leave blank to keep this product's current SKU.</p>
+            </div>
+            <div class="sm:col-span-3 flex gap-2 pt-1">
+              <button type="submit" :disabled="!canSubmit"
+                      :class="canSubmit ? '' : 'opacity-40 cursor-not-allowed'"
+                      class="rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 transition-colors">
+                Merge…
+              </button>
+              <button type="button" @click="open = false" class="btn-secondary btn-sm">Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+    {% endif %}
   </div>
 
 
@@ -362,7 +786,9 @@
                         hx-delete="/products/{{ product.id }}/vendor-sources/{{ source.id }}"
                         hx-target="closest tr"
                         hx-swap="outerHTML swap:200ms"
-                        hx-confirm="Remove this vendor source?"
+                        hx-trigger="confirmed"
+                        @click.prevent="jakConfirm({ title: 'Remove Vendor Source', body: 'This vendor source will be permanently removed from the product.', cta: 'Remove', danger: true, confirmEvent: 'jak-del-vsrc-{{ source.id }}' })"
+                        @jak-del-vsrc-{{ source.id }}.window="htmx.trigger($el, 'confirmed')"
                         class="rounded-lg border border-red-200 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors">
                   Remove
                 </button>
@@ -387,6 +813,7 @@
               hx-target="#vendor-sources-body"
               hx-swap="beforeend"
               hx-on::after-request="this.reset()"
+              data-unsaved-guard data-guard-field="vendor_id"
               x-data
               @record-created.window="
                 if ($event.detail.type === 'vendor') {
@@ -478,15 +905,17 @@
       </div>
     </div>
 
-    <div class="card">
+    {# overflow-visible so the select dropdown isn't clipped by the card boundary #}
+    <div class="card" style="overflow: visible">
       <div class="card-header">
         <h2 class="card-title">Add Cross Reference</h2>
       </div>
-      <div class="card-body">
+      <div class="card-body" style="overflow: visible">
         <form hx-post="/products/{{ product.id }}/cross-refs"
               hx-target="#cross-refs-body"
               hx-swap="beforeend"
               hx-on::after-request="this.reset()"
+              data-unsaved-guard data-guard-field="ref_number"
               class="grid grid-cols-3 gap-4">
           <div>
             <label class="form-label">Type</label>
@@ -519,6 +948,53 @@
           </div>
           <div class="flex items-end justify-end">
             <button type="submit" class="btn-primary">Add Cross Ref</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+
+  {# ══ APPLICATIONS TAB (§21 — engine fitment) ══ #}
+  {% from "macros/engine_picker.html" import engine_picker %}
+  <div x-show="tab==='apps'" x-cloak class="space-y-4">
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">Engine Applications</h2>
+        <p class="text-xs text-gray-400">Engines this part fits — drives the ENGINE search match.</p>
+      </div>
+      <div class="card-body">
+        <table class="min-w-full">
+          <thead>
+            <tr class="text-left text-xs font-semibold uppercase tracking-wide text-gray-500 border-b border-gray-100">
+              <th class="px-4 py-2">Make</th>
+              <th class="px-4 py-2">Model</th>
+              <th class="px-4 py-2">CPL</th>
+              <th class="px-4 py-2">ESN Range</th>
+              <th class="px-4 py-2 text-right"></th>
+            </tr>
+          </thead>
+          {% include "products/_applications_list.html" %}
+        </table>
+
+        {# Add form — engine make/model from the standardized picker #}
+        <form class="mt-4 grid grid-cols-1 md:grid-cols-4 gap-3 items-end border-t border-gray-100 pt-4"
+              hx-post="/products/{{ product.id }}/applications"
+              hx-target="#apps-list" hx-swap="outerHTML"
+              hx-on::after-request="if(event.detail.successful) this.reset()">
+          {{ engine_picker(None, None, engine_makes, engine_models_by_make,
+                           make_field='engine_make', model_field='engine_model') }}
+          <div>
+            <label class="form-label">CPL / Config</label>
+            <input name="cpl" class="form-input text-sm" placeholder="e.g. 2732" />
+          </div>
+          <div>
+            <label class="form-label">ESN Range</label>
+            <input name="esn_range" class="form-input text-sm" placeholder="optional" />
+          </div>
+          <div class="md:col-span-4 flex items-end justify-between gap-3">
+            <input name="notes" class="form-input text-sm flex-1" placeholder="Notes (optional)" />
+            <button type="submit" class="btn-primary whitespace-nowrap">Add Application</button>
           </div>
         </form>
       </div>
@@ -607,21 +1083,83 @@
       </div>
     </div>
 
-    <div class="card">
+    {# overflow-visible so the product-search dropdown isn't clipped by the card boundary #}
+    <div class="card" style="overflow: visible">
       <div class="card-header">
         <h2 class="card-title">Add Suggested Product</h2>
       </div>
-      <div class="card-body">
+      <div class="card-body" style="overflow: visible">
         <form hx-post="/products/{{ product.id }}/suggested-sells"
               hx-target="#suggested-sells-body"
               hx-swap="beforeend"
               hx-on::after-request="this.reset()"
+              data-unsaved-guard data-guard-field="sku"
               class="grid grid-cols-3 gap-4">
-          <div>
-            <label class="form-label">SKU <span class="text-red-500">*</span></label>
-            <input name="sku" type="text" placeholder="e.g. JAKS-PAI-12345"
-                   class="form-input font-mono" />
-            <p class="mt-0.5 text-xs text-gray-400">Exact SKU of the product to suggest</p>
+          <div x-data="{
+                 _q: '', _sku: '', _showRes: false, _results: [], _loading: false, _ai: -1,
+                 async _doSearch() {
+                   const term = this._q.trim();
+                   if (term.length < 2) { this._results = []; this._ai = -1; return; }
+                   this._loading = true;
+                   try {
+                     const r = await fetch('/line-items/product-search?q=' + encodeURIComponent(term));
+                     this._results = r.ok ? await r.json() : [];
+                   } catch (e) { this._results = []; } finally { this._loading = false; }
+                   this._ai = this._results.length ? 0 : -1;
+                 },
+                 _move(d) {
+                   if (!this._results.length) return;
+                   this._ai = (this._ai + d + this._results.length) % this._results.length;
+                   const el = document.getElementById('ss-result-' + this._ai);
+                   if (el) el.scrollIntoView({ block: 'nearest' });
+                 },
+                 _choose() {
+                   if (this._ai >= 0 && this._results[this._ai]) this._select(this._results[this._ai]);
+                 },
+                 _select(p) {
+                   this._sku = p.sku || p.part_number || '';
+                   this._q = this._sku + ' — ' + (p.title || p.description || '');
+                   this._results = []; this._showRes = false; this._ai = -1;
+                 }
+               }">
+            <label class="form-label">Product <span class="text-red-500">*</span></label>
+            <input type="hidden" name="sku" :value="_sku" />
+            <div class="relative">
+              {# Repointed to the canonical /line-items/product-search (JSON) — shared-adder
+                 search pattern, sell mode. Replaces the old per-doc HTML endpoint so the last
+                 consumer of /purchase-orders/_/product-search is gone (Contract §4 cleanup). #}
+              <input type="text" x-model="_q"
+                     @input.debounce.250ms="_showRes = true; _sku = ''; _doSearch()"
+                     @keydown.down.prevent="_showRes = true; _move(1)"
+                     @keydown.up.prevent="_move(-1)"
+                     @keydown.enter.prevent="_choose()"
+                     @keydown.escape="_showRes = false; _results = []"
+                     placeholder="Search by SKU or title…"
+                     autocomplete="off"
+                     class="form-input" />
+              <div id="ss-product-results"
+                   x-show="_showRes && _results.length > 0"
+                   x-cloak
+                   @click.outside="_showRes = false"
+                   class="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200
+                          rounded-lg shadow-lg z-40 max-h-52 overflow-y-auto divide-y divide-gray-100">
+                <template x-for="(p, idx) in _results" :key="p.product_id">
+                  <button type="button" @click="_select(p)"
+                          @mouseenter="_ai = idx"
+                          :id="'ss-result-' + idx"
+                          :class="idx === _ai ? 'cust-pick-active' : ''"
+                          class="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-gray-50/80 transition-colors">
+                    <span class="font-mono text-xs font-bold text-brand-700 shrink-0 whitespace-nowrap" x-text="p.sku || p.part_number"></span>
+                    <span class="flex-1 min-w-0 text-sm text-gray-800 truncate" x-text="p.title || p.description"></span>
+                    <span class="shrink-0 text-xs text-gray-500 tabular-nums" x-text="'$' + (Number(p.suggested_sell) || 0).toFixed(2)"></span>
+                  </button>
+                </template>
+              </div>
+            </div>
+            <p x-show="_sku" x-cloak class="mt-1 text-xs text-green-700">
+              <svg class="w-3 h-3 text-green-500 inline" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+              <span class="font-mono font-bold" x-text="_sku"></span> selected
+            </p>
           </div>
           <div>
             <label class="form-label">Type</label>
@@ -708,65 +1246,56 @@
 
 </div>
 
-{# ── Inventory Adjustment ──────────────────────────────────────────────── #}
-{% if product.is_active %}
-<div class="card border-amber-100 mt-6" x-data="{ open: false }">
-  <div class="card-header">
-    <div>
-      <h3 class="card-title">Adjust Inventory</h3>
-      <p class="text-xs text-gray-400 mt-0.5">
-        Cycle count correction, damaged goods, found stock, internal use, etc.
-      </p>
-    </div>
-    <button type="button" @click="open = !open"
-            class="rounded-lg border border-amber-200 px-3 py-1.5 text-sm font-medium
-                   text-amber-700 hover:bg-amber-50 transition-colors">
-      Adjust…
-    </button>
-  </div>
-  <div x-show="open" x-cloak class="card-body border-t border-gray-100">
-    <form method="post" action="/products/{{ product.id }}/adjust-inventory"
-          class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-      <div>
-        <label class="form-label">Qty Change</label>
-        <p class="text-xs text-gray-400 mb-1">Positive = add stock. Negative = remove stock.</p>
-        <input type="number" name="qty_delta" value="0" required
-               class="form-input w-32 text-right" />
-      </div>
-      <div>
-        <label class="form-label">Reason</label>
-        <select name="reason" class="form-select" required>
-          <option value="">— Select —</option>
-          <option value="cycle_count_over">Cycle Count — Over</option>
-          <option value="cycle_count_short">Cycle Count — Short</option>
-          <option value="found">Found</option>
-          <option value="damaged">Damaged / Write-off</option>
-          <option value="lost">Lost</option>
-          <option value="internal_use">Internal Use</option>
-          <option value="initial_inventory_load">Initial Inventory Load</option>
-          <option value="correction">Correction</option>
-          <option value="other">Other</option>
-        </select>
-      </div>
-      <div class="sm:col-span-2">
-        <label class="form-label">Note <span class="text-gray-400 font-normal">(required for Correction / Other)</span></label>
-        <input type="text" name="note" placeholder="Brief explanation…"
-               class="form-input" />
-      </div>
-      <div>
-        <label class="form-label">Unit Cost <span class="text-gray-400 font-normal">(optional — updates avg cost if adding stock)</span></label>
-        <div class="relative">
-          <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
-          <input type="number" name="unit_cost" step="0.01" min="0" placeholder="—"
-                 class="form-input w-32 pl-6 text-right" />
-        </div>
-      </div>
-      <div class="sm:col-span-2 flex gap-2 pt-1">
-        <button type="submit" class="btn-primary">Apply Adjustment</button>
-        <button type="button" @click="open = false" class="btn-secondary btn-sm">Cancel</button>
-      </div>
-    </form>
-  </div>
-</div>
-{% endif %}
+{# ── Autosave (Save Standard v2) + unsaved-entry guard ──────────────────────────
+   Real auto-save for the Info edit form: debounced fetch → /products/{id}/autosave,
+   driving the honest save-state pill (green ONLY after a confirmed save). The
+   beforeunload guard warns when an "Add …" form on another tab has a started-but-not-
+   added entry (e.g. a vendor selected but "Add Source" not clicked) so it isn't lost on
+   navigation — the exact loss owner reported 2026-06-06. #}
+<script>
+(function () {
+  // ── Info-tab autosave ──────────────────────────────────────────────────────
+  var timer = null;
+  function emit(state) { window.dispatchEvent(new CustomEvent('product-save-state', { detail: state })); }
+  function doSave() {
+    var form = document.getElementById('product-info-form');
+    if (!form) return;
+    emit('saving');
+    fetch('/products/{{ product.id }}/autosave', { method: 'POST', body: new FormData(form) })
+      .then(function (r) { emit(r.ok ? 'clean' : 'error'); })
+      .catch(function () { emit('error'); });
+  }
+  function schedule() { emit('dirty'); clearTimeout(timer); timer = setTimeout(doSave, 1500); }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    var form = document.getElementById('product-info-form');
+    if (form) {
+      form.querySelectorAll('input, select, textarea').forEach(function (el) {
+        el.addEventListener('input', schedule);
+        el.addEventListener('change', schedule);
+      });
+      // A native "Save Changes" submit flushes the pending debounce so we don't post a
+      // half-typed value via fetch and then reload over it.
+      form.addEventListener('submit', function () { clearTimeout(timer); });
+    }
+  });
+
+  // ── Unsaved "Add …" entry guard ────────────────────────────────────────────
+  // Each guarded add-form declares (data-guard-field) the one field whose non-emptiness
+  // means the user started an entry but hasn't clicked Add yet. HTMX add requests don't
+  // navigate, so this only fires on a real page-leave.
+  function hasUnsavedEntry() {
+    var dirty = false;
+    document.querySelectorAll('form[data-unsaved-guard]').forEach(function (f) {
+      var name = f.getAttribute('data-guard-field');
+      var el = name && f.querySelector('[name="' + name + '"]');
+      if (el && String(el.value || '').trim() !== '') dirty = true;
+    });
+    return dirty;
+  }
+  window.addEventListener('beforeunload', function (e) {
+    if (hasUnsavedEntry()) { e.preventDefault(); e.returnValue = ''; }
+  });
+})();
+</script>
 {% endblock %}

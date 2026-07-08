@@ -1,236 +1,340 @@
+{% from "macros/print_line_thumb.html" import print_line_thumb %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{{ invoice.invoice_number }} — {{ invoice.customer.company_name }}</title>
+  {# Axle print spec §7: Oswald (display) + Barlow (body) + IBM Plex Mono (numbers).
+     Self-host preferred in production; Google Fonts mirrors the handoff reference
+     and degrades gracefully via system fallbacks if offline. Mirrors quotes/print.html. #}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Barlow:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
-    /* ── Reset ─────────────────────────────────────────────────────────────── */
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    /* ── Axle tokens (B&W-safe subset; amber renders gray in B&W which is fine) ── */
+    :root{
+      --ink:#0b0c0d;
+      --amber:#e7891d;
+      --s700:#2f343a; --s500:#565d65; --s400:#7c838b; --s300:#a9afb6;
+      --s200:#cdd1d5; --s100:#e7e9eb;
+      --disp:"Oswald",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      --body:"Barlow",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+      --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    }
 
-    /* ── Base ──────────────────────────────────────────────────────────────── */
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                   Helvetica, Arial, sans-serif;
-      font-size: 10.5pt;
-      color: #111;
-      background: #e8eaf0;
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html{ -webkit-font-smoothing:antialiased; }
+    body{
+      font-family: var(--body);
+      color: var(--ink);
+      background: #cfd2d6;
+      font-size: 12.5px;            /* §7: 12.5px ≈ 9.5pt — print floor */
+      line-height: 1.45;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
 
-    /* ── Screen: white page card ───────────────────────────────────────────── */
-    .page-shell {
-      max-width: 8.5in;
-      margin: 0.4in auto 0.8in;
+    /* ── Letter sheet shell ──────────────────────────────────────────────── */
+    .page-shell{
+      width: 8.5in;
+      min-height: 11in;
+      margin: 24px auto;
       background: #fff;
-      box-shadow: 0 2px 32px rgba(0,0,0,.14);
-      padding: 0.65in 0.75in 0.75in;
+      box-shadow: 0 8px 30px rgba(0,0,0,.18);
+      padding: 0.7in 0.75in 0.65in;  /* §7: top/bot .7in, sides .75in */
+      display: flex;
+      flex-direction: column;
     }
 
-    /* ── Screen-only controls ──────────────────────────────────────────────── */
-    .controls {
-      position: fixed; top: 16px; right: 16px;
+    /* ── Screen-only controls ────────────────────────────────────────────── */
+    .controls{
+      position: fixed; top: 14px; right: 16px;
       display: flex; gap: 8px; z-index: 9999;
     }
-    .btn {
-      padding: 8px 18px; border: none; border-radius: 8px;
-      font-size: 13px; font-weight: 600; cursor: pointer;
-      line-height: 1.4;
+    .btn{
+      font-family: var(--disp); font-weight: 600;
+      text-transform: uppercase; letter-spacing: .06em;
+      font-size: 12px; padding: 9px 14px; border-radius: 6px;
+      cursor: pointer; border: none; line-height: 1.4;
     }
-    .btn-primary { background: #4b5320; color: #fff; }
-    .btn-primary:hover { background: #3b4119; }
-    .btn-secondary { background: #e5e7eb; color: #374151; }
-    .btn-secondary:hover { background: #d1d5db; }
+    .btn-primary  { background: var(--ink); color: #fff; }
+    .btn-secondary{ background: #e5e7eb; color: #374151; }
 
-    /* ── Document header ───────────────────────────────────────────────────── */
-    .doc-header {
+    /* ── VOID banner (kept B&W safe — thin ink stroke instead of red) ────── */
+    .void-banner{ text-align:center; padding: 6px 0 10px; margin-bottom: 10px; }
+    .void-badge{
+      display: inline-block;
+      font-family: var(--disp); font-weight: 700;
+      font-size: 14px; letter-spacing: .25em;
+      text-transform: uppercase;
+      padding: 5px 26px; border-radius: 4px;
+      border: 2px solid var(--ink); color: var(--ink); background: #fff;
+    }
+
+    /* ── Header (2.5px ink rule below) ───────────────────────────────────── */
+    .doc-header{
       display: flex;
       justify-content: space-between;
       align-items: flex-start;
-      padding-bottom: 18px;
-      border-bottom: 3px solid #4b5320;
-      margin-bottom: 22px;
+      border-bottom: 2.5px solid var(--ink);
+      padding-bottom: 16px;
     }
-    .co-name {
-      font-size: 21pt;
-      font-weight: 800;
-      color: #4b5320;
-      letter-spacing: -0.5px;
-      line-height: 1.05;
+    .co-name{
+      font-family: var(--disp); font-weight: 700;
+      text-transform: uppercase; font-size: 28px;
+      line-height: .9; letter-spacing: .01em; color: var(--ink);
     }
-    .co-info {
-      margin-top: 5px;
-      font-size: 8.5pt;
-      color: #6b7280;
-      line-height: 1.8;
+    .co-logo{
+      max-height: 56px; max-width: 360px; width: auto;
+      display: block; margin-bottom: 4px;
     }
-    .doc-right { text-align: right; }
-    .doc-label {
-      font-size: 7pt; font-weight: 700;
-      text-transform: uppercase; letter-spacing: 0.13em;
-      color: #9ca3af;
+    .co-info{
+      font-family: var(--body); font-size: 11px;
+      color: var(--s500); line-height: 1.7; margin-top: 6px;
     }
-    .doc-number {
-      font-size: 15pt; font-weight: 700;
-      color: #4b5320; margin: 2px 0;
-    }
-    .doc-dates {
-      font-size: 8.5pt;
-      color: #6b7280;
-      line-height: 1.85;
-    }
-    .doc-dates strong { color: #374151; }
-    .doc-dates .overdue { color: #dc2626; font-weight: 600; }
 
-    /* ── "Bill To" block ───────────────────────────────────────────────────── */
-    .bill-row {
-      display: flex;
-      gap: 48px;
-      margin-bottom: 22px;
+    .doc-right{ text-align: right; }
+    .doc-title{
+      font-family: var(--disp); font-weight: 700;
+      text-transform: uppercase; font-size: 30px;
+      line-height: .9; color: var(--ink);
     }
-    .bill-block { flex: 1; }
-    .bill-label {
-      font-size: 7pt; font-weight: 700;
-      text-transform: uppercase; letter-spacing: 0.11em;
-      color: #9ca3af; margin-bottom: 4px;
+    .doc-meta{
+      font-family: var(--mono); font-size: 11px;
+      color: var(--s500); margin-top: 7px; line-height: 1.7;
     }
-    .bill-company { font-size: 12pt; font-weight: 700; color: #111; }
-    .bill-detail  { font-size: 8.5pt; color: #555; line-height: 1.75; margin-top: 2px; }
-
-    /* ── Reference fields block ────────────────────────────────────────────── */
-    .ref-block { font-size: 8.5pt; color: #555; line-height: 1.85; }
-    .ref-row { display: flex; gap: 8px; }
-    .ref-label { color: #9ca3af; width: 90px; shrink: 0; font-size: 7.5pt; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; }
-    .ref-val   { font-family: monospace; color: #374151; }
-
-    /* ── Lines table ───────────────────────────────────────────────────────── */
-    table.lines {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 9.5pt;
+    .doc-meta strong{ color: var(--ink); font-weight: 600; }
+    .doc-meta .overdue{ color: var(--ink); font-weight: 700; text-decoration: underline; }
+    .qbo-tag{
+      display: inline-block; font-family: var(--mono); font-size: 9.5px;
+      color: var(--s500); border: 1px solid var(--s200); border-radius: 3px;
+      padding: 0 5px; margin-top: 4px;
     }
-    table.lines thead tr { background: #4b5320; color: #fff; }
-    table.lines thead th {
-      padding: 7px 8px;
-      font-size: 7pt; font-weight: 700;
-      text-transform: uppercase; letter-spacing: 0.08em;
-      border: none;
+
+    /* ── Three-column meta row (From / Bill to / Terms-Reference) ────────── */
+    .meta-row{
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 24px;
+      padding: 16px 0 18px;
+      border-bottom: 1px solid var(--s200);
     }
-    table.lines thead th.lft { text-align: left; }
-    table.lines thead th.rgt { text-align: right; }
-    table.lines thead th.ctr { text-align: center; }
+    .meta-lab{
+      font-family: var(--disp); font-weight: 600;
+      text-transform: uppercase; letter-spacing: .07em;
+      font-size: 10px; color: var(--s400); margin-bottom: 5px;
+    }
+    .meta-val{ font-size: 12.5px; color: var(--s700); line-height: 1.55; }
+    .meta-val b{ color: var(--ink); font-weight: 600; font-size: 13.5px; }
+    .meta-mono{ font-family: var(--mono); font-size: 11.5px; color: var(--s700); }
+    .ref-key{
+      color: var(--s400); font-family: var(--disp);
+      font-weight: 600; text-transform: uppercase;
+      letter-spacing: .05em; font-size: 10px; margin-right: 4px;
+    }
 
-    table.lines tbody tr { border-bottom: 1px solid #f0f0f0; page-break-inside: avoid; }
-    table.lines tbody tr:last-child { border-bottom: 2px solid #e5e7eb; }
-    table.lines tbody tr.even-row td { background: #fafafa; }
-    table.lines tbody tr.core-row td { background: #fffbeb; }
-    table.lines tbody td { padding: 8px 8px; vertical-align: top; }
+    /* ── Items table (1.5px ink rule under header) ───────────────────────── */
+    table.lines{ width: 100%; border-collapse: collapse; margin-top: 18px; }
+    table.lines thead th{
+      font-family: var(--disp); font-weight: 600;
+      text-transform: uppercase; letter-spacing: .07em;
+      font-size: 9.5px; color: var(--s400);
+      text-align: left; padding: 7px 8px;
+      border-bottom: 1.5px solid var(--ink);
+    }
+    table.lines thead th.r{ text-align: right; }
+    table.lines thead th.c{ text-align: center; }
 
-    .td-num   { text-align: center; color: #c0c0c0; font-size: 8pt; }
-    .td-rgt   { text-align: right; }
-    .td-total { text-align: right; font-weight: 600; }
+    table.lines tbody td{
+      padding: 9px 8px; border-bottom: 1px solid var(--s100);
+      vertical-align: top; font-size: 12.5px; page-break-inside: avoid;
+    }
+    table.lines tbody tr:last-child td{ border-bottom: 1px solid var(--s200); }
 
-    /* Core line indentation + badge */
-    .core-indent { padding-left: 18px !important; }
-    .badge {
-      display: inline-block;
-      font-size: 6.5pt; font-weight: 700;
-      text-transform: uppercase; letter-spacing: 0.07em;
-      padding: 1px 4px; border-radius: 3px;
+    td.td-num   { color: var(--s300); font-family: var(--mono); font-size: 11.5px; text-align: center; }
+    td.r        { text-align: right; }
+    td.td-total { text-align: right; font-family: var(--mono); font-size: 12px; }
+    td.td-total b{ font-weight: 600; }
+
+    .pn{
+      font-family: var(--mono); font-weight: 600;
+      font-size: 11.5px; color: var(--ink); white-space: nowrap;
+    }
+    .ds{
+      font-family: var(--body); color: var(--s500);
+      font-size: 11.5px; margin-top: 1px; line-height: 1.4;
+    }
+    .money{ font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+
+    /* Line-item product thumbnail (print) — flex so the row height tracks the
+       image while the part/description text flows to its right. object-fit:contain
+       shows wide parts (injectors/manifolds) whole rather than cropped. */
+    .pd-cell{ display:flex; gap:10px; align-items:flex-start; }
+    .pd-text{ flex:1; min-width:0; }
+    .line-thumb{
+      flex:0 0 42px;
+      width:42px; height:42px;
+      object-fit:contain;
+      border:1px solid var(--s200);
+      border-radius:4px;
+      background:#fff;
+      padding:1px;
+    }
+
+    .child-indent{ padding-left: 20px !important; }
+    .role-badge{
+      display: inline-block; font-family: var(--disp);
+      font-size: 9px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .06em; padding: 1px 5px; border-radius: 3px;
       vertical-align: middle; margin-right: 4px;
+      border: 1px solid var(--s200); color: var(--s700); background: #fff;
     }
-    .badge-core { background: #fef3c7; color: #92400e; }
-
-    /* ── Totals ────────────────────────────────────────────────────────────── */
-    .totals-wrap {
-      display: flex;
-      justify-content: flex-end;
-      border-top: 2px solid #e5e7eb;
-      padding-top: 10px;
-      margin-bottom: 18px;
-    }
-    .totals-inner { width: 260px; }
-    .t-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-      padding: 3px 0;
-      font-size: 9.5pt;
-    }
-    .t-row .lbl { color: #666; }
-    .t-row .val { font-weight: 500; font-variant-numeric: tabular-nums; }
-    .t-row.disc-row .lbl, .t-row.disc-row .val { color: #dc2626; }
-    .t-row.surcharge-row .lbl, .t-row.surcharge-row .val { color: #92400e; }
-    .t-row.paid-row .lbl, .t-row.paid-row .val { color: #059669; font-weight: 600; }
-    .t-row.balance-row .lbl, .t-row.balance-row .val { color: #d97706; font-weight: 700; }
-    .t-row.balance-paid .lbl, .t-row.balance-paid .val { color: #059669; font-weight: 700; }
-    .t-row.grand {
-      border-top: 2px solid #4b5320;
-      margin-top: 6px; padding-top: 8px;
-      font-size: 12.5pt; font-weight: 700;
-      color: #4b5320;
-    }
-    .t-divider {
-      border: none;
-      border-top: 1px solid #e5e7eb;
-      margin: 4px 0;
+    .part-num{
+      display: block; font-family: var(--mono);
+      font-size: 10px; color: var(--s400); margin-top: 1px;
     }
 
-    /* ── Notes ─────────────────────────────────────────────────────────────── */
-    .notes-section {
-      margin-top: 18px;
-      padding-top: 14px;
-      border-top: 1px solid #e5e7eb;
+    /* ── Totals (right-aligned, 3.1in, 2.5px ink rule above grand) ───────── */
+    .tot-wrap{ display: flex; justify-content: flex-end; margin-top: 14px; }
+    .tots{ width: 3.1in; }
+    .tots .row{
+      display: flex; justify-content: space-between;
+      padding: 5px 10px; font-size: 12.5px; color: var(--s700);
     }
-    .sec-label {
-      font-size: 7pt; font-weight: 700;
-      text-transform: uppercase; letter-spacing: 0.11em;
-      color: #9ca3af; margin-bottom: 5px;
+    .tots .row .lbl{ font-family: var(--body); }
+    .tots .row .val{ font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+    .tots .row.disc-row .lbl,
+    .tots .row.disc-row .val{ color: var(--ink); }
+    .tots .row.paid-row .lbl,
+    .tots .row.paid-row .val{ color: var(--ink); font-weight: 600; }
+    .tots .grand{
+      display: flex; justify-content: space-between; align-items: center;
+      margin-top: 6px;
+      border-top: 2.5px solid var(--ink);
+      padding: 10px 10px 0;
     }
-    .notes-body { font-size: 9pt; color: #444; line-height: 1.65; white-space: pre-wrap; }
+    .tots .grand .l{
+      font-family: var(--disp); font-weight: 700;
+      text-transform: uppercase; letter-spacing: .08em;
+      font-size: 12px; color: var(--ink);
+    }
+    .tots .grand .v{
+      font-family: var(--mono); font-weight: 600;
+      font-size: 19px; color: var(--ink);
+    }
+    .tots .balance{
+      display: flex; justify-content: space-between; align-items: center;
+      margin-top: 6px; border-top: 1px solid var(--s200);
+      padding: 8px 10px 0;
+    }
+    .tots .balance .l{
+      font-family: var(--disp); font-weight: 700;
+      text-transform: uppercase; letter-spacing: .07em;
+      font-size: 11px; color: var(--ink);
+    }
+    .tots .balance .v{
+      font-family: var(--mono); font-weight: 600;
+      font-size: 14px; color: var(--ink);
+    }
+    .tots .cc-note{
+      margin: 8px 10px 0;
+      font-size: 10.5px; color: var(--s500); line-height: 1.5;
+      font-style: italic;
+    }
+    .tots .exempt-note{
+      margin: 6px 10px 0;
+      font-family: var(--mono); font-size: 10px; color: var(--s500);
+    }
 
-    /* ── Payment terms / due reminder ──────────────────────────────────────── */
-    .terms-line {
-      margin-top: 14px;
-      font-size: 8pt; color: #aaa; font-style: italic;
+    /* ── Account-pricing note (§5 — gated; absent by default) ────────────── */
+    .acct-price-note{
+      margin-top: 8px;
+      font-size: 10.5px; color: var(--s500);
+      font-style: italic; line-height: 1.5;
     }
 
-    /* ── VOID watermark ────────────────────────────────────────────────────── */
-    .void-banner {
-      text-align: center;
-      padding: 6px 0 10px;
-      margin-bottom: 14px;
+    /* ── Notes ───────────────────────────────────────────────────────────── */
+    .notes-section{
+      margin-top: 18px; padding-top: 14px;
+      border-top: 1px solid var(--s100);
     }
-    .void-badge {
-      display: inline-block;
-      background: #fee2e2;
-      color: #b91c1c;
-      font-size: 11pt; font-weight: 800;
-      text-transform: uppercase; letter-spacing: 0.15em;
-      padding: 5px 24px; border-radius: 6px;
-      border: 2px solid #fca5a5;
+    .sec-label{
+      font-family: var(--disp); font-size: 10px;
+      font-weight: 600; text-transform: uppercase;
+      letter-spacing: .08em; color: var(--s400); margin-bottom: 5px;
     }
-
-    /* ── Footer ────────────────────────────────────────────────────────────── */
-    .doc-footer {
-      margin-top: 36px;
-      padding-top: 12px;
-      border-top: 1px solid #e5e7eb;
-      text-align: center;
-      font-size: 7.5pt;
-      color: #bbb;
+    .notes-body{
+      font-size: 11.5px; color: var(--s500);
+      line-height: 1.65; white-space: pre-wrap;
     }
 
-    /* ── Print overrides ───────────────────────────────────────────────────── */
-    @media print {
-      @page { size: letter portrait; margin: 0.6in 0.65in 0.75in 0.65in; }
-      body  { background: none; }
-      .page-shell {
-        max-width: none; margin: 0; padding: 0;
-        box-shadow: none;
+    /* ── Terms box (§7: 3px amber left border — prints as gray) ──────────── */
+    .terms{ margin-top: 22px; padding-top: 4px; }
+    .terms .box{
+      border: 1px solid var(--s200);
+      border-left: 3px solid var(--amber);
+      padding: 10px 14px;
+      font-size: 11px; color: var(--s500); line-height: 1.6;
+    }
+    .terms .box b{ color: var(--ink); font-weight: 600; }
+
+    /* ── Mono footer (§7) ────────────────────────────────────────────────── */
+    .doc-foot{
+      display: flex; justify-content: space-between; align-items: center;
+      margin-top: 18px; padding-top: 12px;
+      border-top: 1px solid var(--s200);
+      font-family: var(--mono); font-size: 9.5px;
+      color: var(--s400); letter-spacing: .04em; text-transform: uppercase;
+    }
+    .doc-foot .mid{ text-align: center; }
+    .doc-foot .rt { text-align: right; }
+    .page-shell .doc-footer{ display: none; }
+
+    /* ── Companion Core Return Slip (second page) ────────────────────────── */
+    .slip-note{
+      margin-top: 16px;
+      border: 1px solid var(--s200);
+      border-left: 3px solid var(--amber);   /* prints gray in B&W */
+      padding: 10px 14px;
+      font-size: 11.5px; color: var(--s500); line-height: 1.6;
+    }
+    .slip-note b{ color: var(--ink); font-weight: 600; }
+    .sig-row{
+      display: grid; grid-template-columns: 1fr 1fr; gap: 40px;
+      margin-top: 46px; page-break-inside: avoid;
+    }
+    .sig-cell .sig-cap{
+      font-family: var(--disp); font-weight: 600;
+      text-transform: uppercase; letter-spacing: .07em;
+      font-size: 10px; color: var(--s400); margin-bottom: 30px;
+    }
+    .sig-cell .sig-line{
+      border-top: 1px solid var(--ink); padding-top: 5px;
+      font-family: var(--mono); font-size: 9.5px;
+      color: var(--s400); text-transform: uppercase; letter-spacing: .04em;
+    }
+
+    /* ── Customer acknowledgement / received-by sign-off (on the invoice) ─── */
+    .ack-section{
+      margin-top: 20px; padding-top: 14px;
+      border-top: 1px solid var(--s100);
+      page-break-inside: avoid;
+    }
+    .ack-note{ font-size: 11px; color: var(--s500); line-height: 1.6; }
+    .ack-section .sig-row{ margin-top: 30px; }
+
+    /* ── Print overrides ─────────────────────────────────────────────────── */
+    @page { size: letter portrait; margin: 0; }
+    @media print{
+      body{ background: #fff; }
+      .page-shell{
+        width: auto; min-height: auto; margin: 0;
+        box-shadow: none; padding: 0.7in 0.75in 0.65in;
       }
-      .controls { display: none !important; }
+      /* Core return slip always starts on a fresh sheet after the invoice */
+      .core-slip-page{ page-break-before: always; }
+      .controls{ display: none !important; }
     }
   </style>
 </head>
@@ -244,107 +348,94 @@
 
 <div class="page-shell">
 
-  {# VOID watermark #}
+  {# VOID watermark (B&W-safe outlined badge) #}
   {% if invoice.status == 'void' %}
   <div class="void-banner">
     <span class="void-badge">VOID</span>
   </div>
   {% endif %}
 
-  {# ── Header: company left | doc info right ──────────────────────────────── #}
+  {# ── Header: company identity LEFT (owner's brand wins) | doc title RIGHT ── #}
   <div class="doc-header">
-    <div>
-      <div class="co-name">{{ company.name or "JAKS Parts" }}</div>
-      <div class="co-info">
-        {% if company.address %}{{ company.address }}<br>{% endif %}
-        {% if company.phone %}Tel:&nbsp;{{ company.phone }}{% if company.email %}&nbsp;&nbsp;·&nbsp;&nbsp;{% endif %}{% endif %}
-        {% if company.email %}{{ company.email }}{% endif %}
-      </div>
-    </div>
+    {# §5.12 branded company header — one shared definition. Renders owner's
+       uploaded logo if set, otherwise their text name. #}
+    {% include "documents/_company_header.html" %}
     <div class="doc-right">
-      <div class="doc-label">Invoice</div>
-      <div class="doc-number">{{ invoice.invoice_number }}</div>
-      <div class="doc-dates">
-        <strong>Date:</strong> {{ invoice.created_at.strftime('%B %d, %Y') }}<br>
+      <div class="doc-title">Invoice</div>
+      <div class="doc-meta">
+        <strong>No.</strong> {{ invoice.invoice_number }}<br>
+        {{ invoice.created_at.strftime('%B %d, %Y') }}
         {% if invoice.due_date %}
           {% if invoice.is_overdue and invoice.status not in ('paid', 'void') %}
-            <strong class="overdue">Due:</strong>
-            <span class="overdue">{{ invoice.due_date.strftime('%B %d, %Y') }} — OVERDUE</span>
+            · <span class="overdue">Due {{ invoice.due_date.strftime('%m/%d/%Y') }} — OVERDUE</span>
           {% else %}
-            <strong>Due:</strong> {{ invoice.due_date.strftime('%B %d, %Y') }}
+            · due {{ invoice.due_date.strftime('%m/%d/%Y') }}
           {% endif %}
         {% endif %}
-        {% if invoice.customer.payment_terms %}
-          <br><strong>Terms:</strong> {{ invoice.customer.payment_terms | upper }}
+        {% if invoice.qbo_id %}
+          <br><span class="qbo-tag">Synced &#x2713; {{ invoice.qbo_id }}</span>
         {% endif %}
       </div>
     </div>
   </div>
 
-  {# ── Bill To + Reference Fields ──────────────────────────────────────────── #}
-  <div class="bill-row">
+  {# ── Three-column meta row: From / Bill to / Terms-Reference ───────────── #}
+  <div class="meta-row">
 
-    {# Bill To #}
-    <div class="bill-block">
-      <div class="bill-label">Bill To</div>
-      <div class="bill-company">{{ invoice.customer.company_name }}</div>
-      {% if customer_addr_lines %}
-      <div class="bill-detail">
-        {% for ln in customer_addr_lines %}{{ ln }}<br>{% endfor %}
+    <div>
+      <div class="meta-lab">From</div>
+      <div class="meta-val">
+        {% if company.name %}<b>{{ company.name }}</b><br>{% endif %}
+        {% if company.address %}{{ company.address }}<br>{% endif %}
+        {% if company.phone %}<span class="meta-mono">{{ company.phone }}</span>{% if company.email %}<br>{% endif %}{% endif %}
+        {% if company.email %}<span class="meta-mono">{{ company.email }}</span>{% endif %}
       </div>
-      {% endif %}
     </div>
 
-    {# Reference fields — only if any populated #}
-    {% if invoice.customer_po_number or invoice.customer_job_number or invoice.esn or invoice.engine_manufacturer or invoice.engine_model or invoice.sales_order %}
-    <div class="bill-block">
-      <div class="bill-label">Reference</div>
-      <div class="ref-block">
-        {% if invoice.customer_po_number %}
-        <div class="ref-row">
-          <span class="ref-label">Customer PO</span>
-          <span class="ref-val">{{ invoice.customer_po_number }}</span>
-        </div>
+    <div>
+      <div class="meta-lab">Bill to</div>
+      <div class="meta-val">
+        <b>{{ invoice.customer.company_name }}</b>
+        {% if customer_addr_lines %}
+          <br>{% for ln in customer_addr_lines %}{{ ln }}{% if not loop.last %}<br>{% endif %}{% endfor %}
         {% endif %}
-        {% if invoice.customer_job_number %}
-        <div class="ref-row">
-          <span class="ref-label">Job #</span>
-          <span class="ref-val">{{ invoice.customer_job_number }}</span>
-        </div>
-        {% endif %}
-        {% if invoice.esn %}
-        <div class="ref-row">
-          <span class="ref-label">ESN</span>
-          <span class="ref-val">{{ invoice.esn }}</span>
-        </div>
-        {% endif %}
+        {# phone is already the trailing line in customer_addr_lines above — see
+           FULL_ERP_REVIEW_2026-07-04 (printed docs showed it twice). #}
+      </div>
+    </div>
+
+    <div>
+      <div class="meta-lab">Terms &amp; Reference</div>
+      <div class="meta-val">
+        {% if invoice.due_date %}Due <span class="meta-mono">{{ invoice.due_date.strftime('%m/%d/%Y') }}</span><br>{% endif %}
+        {% if invoice.customer.payment_terms %}<span class="ref-key">Terms</span>{{ invoice.customer.payment_terms | upper }}<br>{% endif %}
+        {% if prepared_by %}Prepared by {{ prepared_by }}<br>{% endif %}
+        {% if invoice.customer_po_number %}<span class="ref-key">PO</span><span class="meta-mono">{{ invoice.customer_po_number }}</span><br>{% endif %}
+        {% if invoice.customer_job_number %}<span class="ref-key">Job</span><span class="meta-mono">{{ invoice.customer_job_number }}</span><br>{% endif %}
+        {% if invoice.esn %}<span class="ref-key">ESN</span><span class="meta-mono">{{ invoice.esn }}</span><br>{% endif %}
         {% if invoice.engine_manufacturer or invoice.engine_model %}
-        <div class="ref-row">
-          <span class="ref-label">Engine</span>
-          <span class="ref-val">{{ invoice.engine_manufacturer }} {{ invoice.engine_model }}</span>
-        </div>
+          <span class="ref-key">Engine</span>{{ invoice.engine_manufacturer }} {{ invoice.engine_model }}<br>
         {% endif %}
-        {% if invoice.sales_order %}
-        <div class="ref-row">
-          <span class="ref-label">Sales Order</span>
-          <span class="ref-val">{{ invoice.sales_order.so_number }}</span>
-        </div>
-        {% endif %}
+        {% if invoice.sales_order %}<span class="ref-key">SO</span><span class="meta-mono">{{ invoice.sales_order.so_number }}</span>{% endif %}
       </div>
     </div>
-    {% endif %}
 
-  </div>{# /bill-row #}
+  </div>
+
+  {# CUSTOMER_PRICING_DESIGN.md §5 — optional "Your account price" label. Default
+     silent: when the setting is off OR the customer has no active price rule the
+     gate is False and the output below is byte-for-byte unchanged. #}
+  {% set show_acct_price = company.account_price_label is defined and company.account_price_label(invoice.customer) %}
 
   {# ── Line Items ──────────────────────────────────────────────────────────── #}
   <table class="lines">
     <thead>
       <tr>
-        <th class="ctr" style="width:28px">#</th>
-        <th class="lft">Description</th>
-        <th class="rgt" style="width:42px">Qty</th>
-        <th class="rgt" style="width:90px">Unit Price</th>
-        <th class="rgt" style="width:90px">Extended</th>
+        <th class="c" style="width:26px">#</th>
+        <th>Part / Description</th>
+        <th class="r" style="width:48px">Qty</th>
+        <th class="r" style="width:88px">{% if show_acct_price %}Your Price{% else %}Unit{% endif %}</th>
+        <th class="r" style="width:92px">Ext</th>
       </tr>
     </thead>
     <tbody>
@@ -353,26 +444,35 @@
         {%- if not line.is_core_line -%}
           {%- set ns.row = ns.row + 1 -%}
         {%- endif -%}
-        <tr class="{% if line.is_core_line %}core-row{% elif ns.row % 2 == 0 %}even-row{% endif %}">
+        <tr>
           <td class="td-num">{% if not line.is_core_line %}{{ ns.row }}{% endif %}</td>
-          <td{% if line.is_core_line %} class="core-indent"{% endif %}>
+          <td{% if line.is_core_line %} class="child-indent"{% endif %}>
             {% if line.is_core_line %}
-              <span class="badge badge-core">Core</span>
-            {% endif %}
-            {{ line.description }}
-            {% if line.product and not line.is_core_line %}
-              <span style="display:block;font-family:monospace;font-size:7.5pt;color:#aaa;margin-top:1px">
-                {{ line.product.sku }}
-              </span>
+              {# Core child lines stay text-only — no thumbnail. #}
+              <span class="role-badge">Core</span>
+              <span class="ds" style="color:var(--s700)">{{ line.description }}</span>
+              {% if line.product and line.product.sku %}<span class="part-num">{{ line.product.sku }}</span>{% endif %}
+            {% else %}
+              <div class="pd-cell">
+                {{ print_line_thumb(line.product) }}
+                <div class="pd-text">
+                  {% if line.product and line.product.sku %}
+                    <div class="pn">{{ line.product.sku }}</div>
+                    <div class="ds">{{ line.description }}</div>
+                  {% else %}
+                    <span class="ds" style="color:var(--s700)">{{ line.description }}</span>
+                  {% endif %}
+                </div>
+              </div>
             {% endif %}
           </td>
-          <td class="td-rgt">{{ line.qty }}</td>
-          <td class="td-rgt">${{ "%.2f"|format(line.unit_price) }}</td>
-          <td class="td-total">${{ "%.2f"|format(line.line_total) }}</td>
+          <td class="r money">{{ line.qty }}</td>
+          <td class="r money">${{ "{:,.2f}".format(line.unit_price) }}</td>
+          <td class="td-total"><b>${{ "{:,.2f}".format(line.line_total) }}</b></td>
         </tr>
       {% else %}
         <tr>
-          <td colspan="5" style="text-align:center;padding:18px;color:#aaa;font-style:italic">
+          <td colspan="5" style="text-align:center;padding:18px;color:var(--s300);font-style:italic">
             No line items.
           </td>
         </tr>
@@ -380,52 +480,63 @@
     </tbody>
   </table>
 
-  {# ── Totals ──────────────────────────────────────────────────────────────── #}
-  <div class="totals-wrap">
-    <div class="totals-inner">
-      <div class="t-row">
+  {# CUSTOMER_PRICING_DESIGN.md §5 — one-line account-pricing note (gated). #}
+  {% if show_acct_price %}
+  <p class="acct-price-note">Pricing reflects your account agreement.</p>
+  {% endif %}
+
+  {# ── Totals (right-aligned, 3.1in, ink rule above grand) ─────────────────── #}
+  <div class="tot-wrap">
+    <div class="tots">
+      <div class="row">
         <span class="lbl">Subtotal</span>
-        <span class="val">${{ "%.2f"|format(invoice.subtotal) }}</span>
+        <span class="val">${{ "{:,.2f}".format(invoice.subtotal) }}</span>
       </div>
       {% if invoice.discount_pct and invoice.discount_pct > 0 %}
-      <div class="t-row disc-row">
+      <div class="row disc-row">
         <span class="lbl">Discount ({{ invoice.discount_pct | int }}%)</span>
-        <span class="val">&#x2212;${{ "%.2f"|format(discount_amount) }}</span>
+        <span class="val">&#x2212;${{ "{:,.2f}".format(discount_amount) }}</span>
       </div>
       {% endif %}
-      {% if invoice.is_taxable %}
-      <div class="t-row">
-        <span class="lbl">Tax ({{ invoice.tax_rate }}%)</span>
-        <span class="val">${{ "%.2f"|format(invoice.tax_amount) }}</span>
+      {% if invoice.tax_amount and invoice.tax_amount > 0 %}
+      <div class="row">
+        <span class="lbl">Tax ({{ invoice.tax_rate_snapshot or invoice.tax_rate }}%)</span>
+        <span class="val">${{ "{:,.2f}".format(invoice.tax_amount) }}</span>
       </div>
-      {% endif %}
-      {% if invoice.apply_cc_surcharge %}
-      <div class="t-row surcharge-row">
-        <span class="lbl">CC Surcharge ({{ invoice.cc_surcharge_pct }}%)</span>
-        <span class="val">${{ "%.2f"|format(invoice.surcharge_amount) }}</span>
-      </div>
-      {% endif %}
-      <div class="t-row grand">
-        <span class="lbl">Total</span>
-        <span class="val">${{ "%.2f"|format(invoice.total) }}</span>
-      </div>
-      {% if invoice.amount_paid > 0 %}
-      <hr class="t-divider">
-      <div class="t-row paid-row">
-        <span class="lbl">Amount Paid</span>
-        <span class="val">&#x2212;${{ "%.2f"|format(invoice.amount_paid) }}</span>
-      </div>
-      {% if invoice.balance_due <= 0.001 %}
-      <div class="t-row balance-paid">
-        <span class="lbl">Balance Due</span>
-        <span class="val">PAID IN FULL</span>
+      {# Distinguish exempt from "taxable, no rate configured": a non-exempt
+         document with 0 tax shows "Sales tax 0% (no rate set)"; only a genuinely
+         exempt customer/document shows "Tax exempt". #}
+      {% elif invoice.is_taxable %}
+      <div class="row">
+        <span class="lbl">Sales Tax (0% — no rate set)</span>
+        <span class="val">$0.00</span>
       </div>
       {% else %}
-      <div class="t-row balance-row">
-        <span class="lbl">Balance Due</span>
-        <span class="val">${{ "%.2f"|format(invoice.balance_due) }}</span>
-      </div>
+      <div class="exempt-note">Tax exempt</div>
       {% endif %}
+      <div class="grand">
+        <span class="l">Invoice Total</span>
+        <span class="v">${{ "{:,.2f}".format(invoice.total) }}</span>
+      </div>
+      {# CC surcharge informational note (R1, NOT added to total) #}
+      {% if invoice.apply_cc_surcharge %}
+      <p class="cc-note">
+        If paid by card, a {{ invoice.cc_surcharge_pct }}% convenience fee
+        (~${{ "{:,.2f}".format(invoice.surcharge_amount) }}) applies to the card
+        portion at processing &mdash; not included in the total above.
+      </p>
+      {% endif %}
+      {% if invoice.amount_paid > 0 %}
+      <div class="row paid-row">
+        <span class="lbl">Amount Paid</span>
+        <span class="val">&#x2212;${{ "{:,.2f}".format(invoice.amount_paid) }}</span>
+      </div>
+      <div class="balance">
+        <span class="l">Balance Due</span>
+        <span class="v">
+          {% if invoice.balance_due <= 0.001 %}PAID IN FULL{% else %}${{ "{:,.2f}".format(invoice.balance_due) }}{% endif %}
+        </span>
+      </div>
       {% endif %}
     </div>
   </div>
@@ -438,28 +549,78 @@
   </div>
   {% endif %}
 
-  {# ── Payment terms reminder ──────────────────────────────────────────────── #}
-  {% if invoice.status not in ('paid', 'void') %}
-  <p class="terms-line">
-    {% if invoice.due_date %}
-      Payment due by {{ invoice.due_date.strftime('%B %d, %Y') }}.
-    {% endif %}
-    {% if invoice.customer.payment_terms %}
-      Terms: {{ invoice.customer.payment_terms | upper }}.
-    {% endif %}
-    Make checks payable to {{ company.name or "JAKS Parts" }}.
-  </p>
+  {# ── Terms box (§7: 3px amber left border — gray in B&W) ─────────────────── #}
+  {% if company.terms_text %}
+  <div class="terms">
+    <div class="box">
+      <b>Terms &amp; Conditions:</b> {{ company.terms_text }}
+    </div>
+  </div>
+  {% else %}
+  <div class="terms">
+    <div class="box">
+      {% if invoice.status not in ('paid', 'void') %}
+        <b>Payment:</b>
+        {% if invoice.due_date %}due by {{ invoice.due_date.strftime('%B %d, %Y') }}. {% endif %}
+        {% if invoice.customer.payment_terms %}Terms: {{ invoice.customer.payment_terms | upper }}. {% endif %}
+        Make checks payable to {{ company.name or "JAKS Parts" }}.
+      {% else %}
+        <b>Thank you</b> for your business.
+      {% endif %}
+    </div>
+  </div>
   {% endif %}
 
-  {# ── Footer ──────────────────────────────────────────────────────────────── #}
-  <div class="doc-footer">
-    Thank you for your business
-    {% if company.name %} &nbsp;·&nbsp; {{ company.name }}{% endif %}
-    {% if company.phone %} &nbsp;·&nbsp; {{ company.phone }}{% endif %}
-    {% if company.email %} &nbsp;·&nbsp; {{ company.email }}{% endif %}
+  {# ── Customer acknowledgement / received-by sign-off ─────────────────────
+       Gives the customer a place to sign that they received the parts/services.
+       Hidden on void invoices (nothing to acknowledge). Reuses the .sig-row /
+       .sig-cell sign-off styling shared with the core return slip. ── #}
+  {% if invoice.status != 'void' %}
+  <div class="ack-section">
+    <div class="ack-note">
+      I acknowledge receipt of the parts and/or services listed above in good condition.
+    </div>
+    <div class="sig-row">
+      <div class="sig-cell">
+        <div class="sig-cap">Received By (Print Name)</div>
+        <div class="sig-line">Printed Name</div>
+      </div>
+      <div class="sig-cell">
+        <div class="sig-cap">Customer Signature</div>
+        <div class="sig-line">Signature &amp; Date</div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Disclaimer + configurable footer_text from Settings (§5.12) ────────── #}
+  {% include "documents/_footer.html" %}
+
+  {# ── Axle three-cell mono footer (§7) ────────────────────────────────────── #}
+  <div class="doc-foot">
+    <span>
+      <svg viewBox="0 0 64 64" width="11" height="11" style="vertical-align:-1px;margin-right:5px"
+           fill="none" stroke="#7c838b" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="32" cy="32" r="28"></circle>
+        <circle cx="32" cy="32" r="17" stroke-width="3"></circle>
+        <circle cx="32" cy="32" r="6.5" fill="#7c838b" stroke="none"></circle>
+        <rect x="30" y="20" width="4" height="6" rx="1" fill="#7c838b" stroke="none"></rect>
+      </svg>
+      Axle &middot; Parts Counter System
+    </span>
+    <span class="mid">{{ invoice.invoice_number }} &middot; {{ invoice.created_at.strftime('%m/%d/%Y') }}</span>
+    <span class="rt">{% if company.email %}{{ company.email }}{% elif company.phone %}{{ company.phone }}{% elif company.name %}{{ company.name }}{% endif %}</span>
   </div>
 
 </div>{# /page-shell #}
+
+{# ── Companion Core Return Slip — printed only when this invoice carries core
+   charges. Mimics the invoice (shares the styles above); lists the cores the
+   customer owes back with a sign-off block. Omitted entirely when no cores. ── #}
+{% if invoice_cores %}
+  {% include "invoices/_core_return_slip_page.html" %}
+{% endif %}
+
 <script>
 (function () {
   var params = new URLSearchParams(window.location.search);

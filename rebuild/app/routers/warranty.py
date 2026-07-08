@@ -22,7 +22,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
-from app.constants import WarrantyDecision, WarrantyResolution, WarrantyStatus
+from app.constants import (
+    LineType, WarrantyDecision, WarrantyResolution, WarrantyStatus, WarrantyType,
+)
 from app.deps import get_current_user_id, get_db
 from app.models.customer import Customer
 from app.models.invoice import Invoice
@@ -49,33 +51,105 @@ templates = Jinja2Templates(
 @router.get("/", response_class=HTMLResponse)
 def warranty_list(
     request: Request,
-    status: str = "",
     q: str = "",
     db: Session = Depends(get_db),
 ):
-    from sqlalchemy import or_
-    query = db.query(WarrantyClaim).join(Customer)
-    if status:
-        query = query.filter(WarrantyClaim.status == status)
-    else:
-        # Default: hide closed claims
-        query = query.filter(WarrantyClaim.status != WarrantyStatus.CLOSED)
+    """
+    Warranty Queue — QB2 Queue Board (§2A): active claims grouped by vendor, with a
+    metrics strip and a per-state stripe/chip + next-action link into the claim.
+    Closed claims are excluded — this is a work queue, not an archive.  Queue-route
+    assembly is UI-builder scope per the §6 queue-board precedent (cf. po_receiving_queue).
+    """
+    from datetime import datetime
+
+    # status → queue-state slug (drives stripe / chip / next-action in the template)
+    _state_of = {
+        WarrantyStatus.DRAFT:               "draft",
+        WarrantyStatus.SUBMITTED_TO_VENDOR: "submitted",
+        WarrantyStatus.VENDOR_APPROVED:     "approved",
+        WarrantyStatus.VENDOR_DENIED:       "denied",
+        WarrantyStatus.CUSTOMER_CREDITED:   "credited",
+        WarrantyStatus.CUSTOMER_NOTIFIED:   "notified",
+        WarrantyStatus.CLOSED:              "closed",   # search results only
+    }
+    NO_VENDOR = "— No Vendor Assigned —"
+    STALE_DAYS = 14  # awaiting a vendor decision longer than this flags red
+
+    # All open (non-closed) claims drive the metrics; the visible rows may be search-filtered.
+    active = (
+        db.query(WarrantyClaim)
+        .join(Customer)
+        .filter(WarrantyClaim.status != WarrantyStatus.CLOSED)
+        .order_by(WarrantyClaim.claim_date.desc())
+        .all()
+    )
+
+    claims = active
     if q:
-        query = query.filter(
-            or_(
-                WarrantyClaim.claim_number.ilike(f"%{q}%"),
-                Customer.company_name.ilike(f"%{q}%"),
-            )
+        ql = q.lower()
+        # §23.3 Phase 3 — a search is a HISTORY lookup, not just a queue filter:
+        # match the claim ESN and per-line failed-part serials too ("has this
+        # engine been claimed before?"), and include CLOSED claims — an
+        # engine's warranty history outlives the work queue.
+        searchable = (
+            db.query(WarrantyClaim)
+            .join(Customer)
+            .order_by(WarrantyClaim.claim_date.desc())
+            .all()
         )
-    claims = query.order_by(WarrantyClaim.claim_date.desc()).limit(200).all()
+
+        def _matches(c: WarrantyClaim) -> bool:
+            if ql in (c.claim_number or "").lower():
+                return True
+            if ql in (c.customer.company_name or "").lower():
+                return True
+            if ql in (c.esn or "").lower():
+                return True
+            return any(
+                ql in (ln.serial_number or "").lower() for ln in c.claim_lines
+            )
+
+        claims = [c for c in searchable if _matches(c)]
+
+    now = datetime.now()
+    rows = []
+    for c in claims:
+        wait_days = None
+        stale = False
+        if c.status == WarrantyStatus.SUBMITTED_TO_VENDOR and c.submitted_to_vendor_at:
+            wait_days = (now - c.submitted_to_vendor_at).days
+            stale = wait_days >= STALE_DAYS
+        rows.append({
+            "claim": c,
+            "vendor_name": c.vendor.name if c.vendor else NO_VENDOR,
+            "state": _state_of.get(c.status, "draft"),
+            "wait_days": wait_days,
+            "stale": stale,
+        })
+
+    # Group by vendor — real vendors first (alpha), "no vendor" last; newest first within.
+    rows.sort(key=lambda r: (
+        r["vendor_name"] == NO_VENDOR,
+        r["vendor_name"],
+        -(r["claim"].claim_date.timestamp() if r["claim"].claim_date else 0.0),
+    ))
+
+    metrics = {
+        "drafts":          sum(1 for c in active if c.status == WarrantyStatus.DRAFT),
+        "awaiting_vendor": sum(1 for c in active if c.status == WarrantyStatus.SUBMITTED_TO_VENDOR),
+        "to_credit":       sum(1 for c in active if c.status == WarrantyStatus.VENDOR_APPROVED),
+        "to_notify":       sum(1 for c in active if c.status == WarrantyStatus.VENDOR_DENIED),
+    }
+
     return templates.TemplateResponse(
+        request,
         "warranty/list.html",
         {
-            "request": request,
-            "claims": claims,
-            "status_filter": status,
+            "rows": rows,
+            "metrics": metrics,
+            "total": len(rows),
             "q": q,
-            "WarrantyStatus": WarrantyStatus,
+            "now": now,
         },
     )
 
@@ -113,14 +187,43 @@ def warranty_new(
         db.query(Customer).filter(Customer.id == customer_id).first()
         if customer_id else None
     )
+
+    # ── Seed from an originating invoice (After-Sale Service entry point) ──
+    # Pre-fills the customer, carries the invoice number, and pre-loads the
+    # invoice's physical parts (PRODUCT lines) as editable claim lines.
+    selected_invoice = None
+    seed_lines: list[dict] = []
+    if invoice_id:
+        selected_invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+        if selected_invoice is not None:
+            if selected_customer is None:
+                selected_customer = selected_invoice.customer
+            for ln in selected_invoice.lines:
+                if ln.line_type == LineType.PRODUCT and ln.product_id:
+                    seed_lines.append(
+                        {"productId": ln.product_id, "qty": ln.qty, "credit": ""}
+                    )
+
+    # Keep seeded products selectable even if since deactivated (the <select>
+    # only lists active products otherwise, dropping the pre-filled option).
+    if seed_lines:
+        have = {p.id for p in products}
+        missing = [s["productId"] for s in seed_lines if s["productId"] not in have]
+        if missing:
+            extra = db.query(Product).filter(Product.id.in_(missing)).all()
+            products = sorted([*products, *extra], key=lambda p: (p.sku or ""))
+
     return templates.TemplateResponse(
+        request,
         "warranty/_new_picker.html",
         {
-            "request": request,
             "customers": customers,
             "vendors": vendors,
             "products": products,
             "selected_customer": selected_customer,
+            "selected_invoice": selected_invoice,
+            "seed_lines": seed_lines,
+            "WarrantyType": WarrantyType,
         },
     )
 
@@ -142,6 +245,11 @@ async def warranty_create(
 
     failure_description = str(form.get("failure_description", "")).strip()
     notes = str(form.get("notes", "")).strip()
+    esn = str(form.get("esn", "")).strip()
+
+    # R2 — warranty type select; anything unexpected falls back to VENDOR
+    # (the pre-R2 implicit default), service validates again.
+    warranty_type = str(form.get("warranty_type", "")).strip() or WarrantyType.VENDOR
 
     # Optional invoice and vendor links
     inv_raw = str(form.get("invoice_number", "")).strip()
@@ -158,6 +266,13 @@ async def warranty_create(
     product_ids = form.getlist("product_id[]")
     qty_claimeds = form.getlist("qty_claimed[]")
     credit_amounts = form.getlist("credit_amount[]")
+    # Q6 — optional per-line serial/ESN + labor (hours × rate) captured at filing.
+    serial_numbers = form.getlist("serial_number[]")
+    labor_hours_arr = form.getlist("labor_hours[]")
+    labor_rate_arr = form.getlist("labor_rate[]")
+
+    def _at(arr, i):
+        return arr[i] if i < len(arr) else ""
 
     lines = []
     for i, pid in enumerate(product_ids):
@@ -169,6 +284,9 @@ async def warranty_create(
             "product_id": int(pid),
             "qty_claimed": max(1, int(qty_raw)) if qty_raw else 1,
             "credit_amount": float(amt_raw) if amt_raw else 0.0,
+            "serial_number": str(_at(serial_numbers, i)).strip(),
+            "labor_hours": float(_at(labor_hours_arr, i) or 0.0),
+            "labor_rate": float(_at(labor_rate_arr, i) or 0.0),
         })
 
     if not lines:
@@ -182,6 +300,8 @@ async def warranty_create(
             failure_description=failure_description,
             lines=lines,
             notes=notes,
+            warranty_type=warranty_type,
+            esn=esn,
         )
     except ValueError as exc:
         db.rollback()
@@ -205,15 +325,108 @@ def warranty_detail(claim_id: int, request: Request, db: Session = Depends(get_d
     claim = db.query(WarrantyClaim).filter(WarrantyClaim.id == claim_id).first()
     if not claim:
         return RedirectResponse("/warranty/", status_code=303)
+    # §23.3 Phase 3 — the blank-ESN banner tells the clerk whether submission
+    # is actually blocked (gate on, the default) or just inadvisable (gate off).
+    from app.settings_utils import get_setting_value_db
+    esn_required = (
+        get_setting_value_db(db, "warranty_require_esn", "true").strip().lower() == "true"
+    )
     return templates.TemplateResponse(
+        request,
         "warranty/workspace.html",
         {
-            "request": request,
             "claim": claim,
             "WarrantyStatus": WarrantyStatus,
             "WarrantyDecision": WarrantyDecision,
             "WarrantyResolution": WarrantyResolution,
+            "WarrantyType": WarrantyType,
+            "esn_required": esn_required,
         },
+    )
+
+
+# ── Repair labor & serials (Q6) ───────────────────────────────────────────────
+
+@router.post("/{claim_id}/service-info", response_class=RedirectResponse)
+async def warranty_service_info(
+    claim_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Record per-line serial/ESN + labor (hours × rate) + replacement-invoice
+    link during the claim process. Parallel arrays keyed by line_id[]; labor is
+    distinct from the parts credit."""
+    from app.services.warranty_service import WarrantyService
+
+    form = await request.form()
+    line_ids = form.getlist("line_id[]")
+    serials = form.getlist("serial_number[]")
+    hours = form.getlist("labor_hours[]")
+    rates = form.getlist("labor_rate[]")
+    repl_invoices = form.getlist("replacement_invoice[]")
+
+    def _at(arr, i):
+        return arr[i] if i < len(arr) else ""
+
+    updates: dict[int, dict] = {}
+    for i, lid in enumerate(line_ids):
+        if not str(lid).strip().isdigit():
+            continue
+        updates[int(lid)] = {
+            "serial_number": str(_at(serials, i)).strip(),
+            "labor_hours": float(_at(hours, i) or 0.0),
+            "labor_rate": float(_at(rates, i) or 0.0),
+        }
+        # §23.3 Phase 3 — only touch the replacement link when the form carried
+        # the field (older cached forms without it must not clear saved links).
+        if repl_invoices:
+            updates[int(lid)]["replacement_invoice_number"] = str(
+                _at(repl_invoices, i)
+            ).strip()
+
+    try:
+        WarrantyService(db, user_id).update_service_info(claim_id, updates)
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error={url_quote(str(exc))}", status_code=303
+        )
+    return RedirectResponse(f"/warranty/{claim_id}?ok=service", status_code=303)
+
+
+# ── ESN (engine serial) ───────────────────────────────────────────────────────
+
+@router.post("/{claim_id}/esn", response_class=RedirectResponse)
+async def warranty_set_esn(
+    claim_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """§23.3 Phase 3 — set/correct the claim ESN after creation (the submit
+    gate requires one on vendor claims by default, so a blank-ESN draft must
+    be repairable from the workspace)."""
+    from app.services.warranty_service import WarrantyService
+
+    form = await request.form()
+    esn = str(form.get("esn", "")).strip()
+    try:
+        WarrantyService(db, user_id).set_esn(claim_id, esn)
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error={url_quote(str(exc))}", status_code=303
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error setting ESN for claim %s", claim_id)
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error={url_quote('Unexpected error — the ESN was not saved.')}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        f"/warranty/{claim_id}?ok={url_quote('ESN saved.')}", status_code=303
     )
 
 
@@ -323,6 +536,62 @@ def warranty_credit_customer(
     return RedirectResponse(f"/warranty/{claim_id}", status_code=303)
 
 
+# ── Record Vendor Credit ──────────────────────────────────────────────────────
+
+@router.post("/{claim_id}/vendor-credit", response_class=RedirectResponse)
+async def warranty_vendor_credit(
+    claim_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """R2 — record the credit the vendor actually issued to JAKS (VendorCredit
+    ledger entry, type=WARRANTY). Independent of the customer-side credit."""
+    from app.services.warranty_service import WarrantyService
+
+    form = await request.form()
+
+    claim = db.query(WarrantyClaim).filter(WarrantyClaim.id == claim_id).first()
+    if not claim:
+        return RedirectResponse("/warranty/", status_code=303)
+    if not claim.vendor_id:
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error="
+            f"{url_quote('No vendor on this claim — a vendor credit needs a vendor.')}",
+            status_code=303,
+        )
+
+    try:
+        credit_amount = float(str(form.get("credit_amount", "")).strip() or 0.0)
+    except ValueError:
+        credit_amount = 0.0
+    reference = str(form.get("reference", "")).strip() or None
+
+    try:
+        WarrantyService(db, user_id).record_vendor_credit(
+            claim_id=claim_id,
+            vendor_id=claim.vendor_id,
+            credit_amount=credit_amount,
+            reference=reference,
+        )
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error={url_quote(str(exc))}", status_code=303
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error recording vendor credit for claim %s", claim_id)
+        return RedirectResponse(
+            f"/warranty/{claim_id}?error={url_quote('Unexpected error — vendor credit was not recorded.')}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        f"/warranty/{claim_id}?ok={url_quote('Vendor credit recorded.')}",
+        status_code=303,
+    )
+
+
 # ── Notify Customer of Denial ─────────────────────────────────────────────────
 
 @router.post("/{claim_id}/notify-denial", response_class=RedirectResponse)
@@ -404,8 +673,7 @@ def warranty_print(claim_id: int, request: Request, db: Session = Depends(get_db
     if claim is None:
         return RedirectResponse("/warranty/", status_code=303)
     ctx = _claim_print_context(claim, db)
-    ctx["request"] = request
-    return templates.TemplateResponse("warranty/print.html", ctx)
+    return templates.TemplateResponse(request, "warranty/print.html", ctx)
 
 
 @router.get("/{claim_id}/pdf")

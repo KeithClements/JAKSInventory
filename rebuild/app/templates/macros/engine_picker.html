@@ -1,0 +1,94 @@
+{# ── Engine Make / Model cascading picker ──────────────────────────────────────
+   Standardized engine make + dependent model dropdowns, replacing free-text entry
+   so the ERP stops collecting "Cat"/"CAT"/"Caterpillar" and "C15 Acert"/"c-15".
+
+   • Make is a preset <select>; the Model options depend on the chosen Make.
+   • Selecting "Other" on either field reveals a free-text input for a custom value.
+   • Submits through two HIDDEN inputs whose names default to the existing columns
+     (engine_manufacturer / engine_model) so autosave, update_header, and the
+     quote→SO→invoice carry-forward keep working unchanged — this is a widget swap,
+     not a schema change.
+   • A stored value that doesn't match a preset (legacy free-text) is preserved as
+     an "Other" custom value, never silently dropped.
+   • The display:contents wrapper drops the two fields straight into the parent grid,
+     so it slots in wherever two free-text engine inputs lived before.
+
+   Reusable: import and call from any header form (quote now; SO / invoice later).
+
+   Params
+     make_value / model_value : current stored strings (or None)
+     makes                    : constants.ENGINE_MAKES
+     models_by_make           : constants.ENGINE_MODELS_BY_MAKE
+     make_field / model_field : submitted field names
+                                (default engine_manufacturer / engine_model)
+#}
+{% macro engine_picker(make_value, model_value, makes, models_by_make, make_field='engine_manufacturer', model_field='engine_model') %}
+<div class="contents"
+     data-make="{{ make_value or '' }}"
+     data-model="{{ model_value or '' }}"
+     x-data="{
+       makes: [], models: {}, make: '', model: '', customMake: '', customModel: '',
+       init() {
+         try {
+           const src = JSON.parse(this.$el.querySelector('[data-engine-json]').textContent);
+           this.makes = src.makes; this.models = src.models;
+         } catch (e) { this.makes = []; this.models = {}; }
+         const sMake = (this.$el.dataset.make || '').trim();
+         const sModel = (this.$el.dataset.model || '').trim();
+         // Seed the make synchronously (its options are the static makes list).
+         if (sMake) {
+           if (this.makes.includes(sMake)) { this.make = sMake; }
+           else { this.make = 'Other'; this.customMake = sMake; }
+         }
+         // Seed the model after its make-dependent options have rendered, then watch.
+         this.$nextTick(() => {
+           if (sModel) {
+             if (this.modelOptions.includes(sModel)) { this.model = sModel; }
+             else { this.model = 'Other'; this.customModel = sModel; }
+           }
+           // User rule: changing the make clears the previously chosen model.
+           this.$watch('make', () => { this.model = ''; this.customModel = ''; });
+         });
+       },
+       get modelOptions() { return this.models[this.make] || (this.make ? ['Other'] : []); },
+       get resolvedMake() { return this.make === 'Other' ? this.customMake.trim() : this.make; },
+       get resolvedModel() { return this.model === 'Other' ? this.customModel.trim() : this.model; },
+     }"
+     x-init="init()">
+
+  {# make→models map, embedded as JSON (safe only in script text content — NEVER in an
+     x-data attribute, where the JSON's quotes would break the attribute). #}
+  <script type="application/json" data-engine-json>{{ {"makes": makes, "models": models_by_make} | tojson }}</script>
+
+  {# Resolved values posted to the server — names match the existing columns. #}
+  <input type="hidden" name="{{ make_field }}"  :value="resolvedMake" />
+  <input type="hidden" name="{{ model_field }}" :value="resolvedModel" />
+
+  {# Engine Make #}
+  <div>
+    <label class="form-label">Engine Make</label>
+    <select x-model="make" class="form-select text-sm">
+      <option value="">— Select Make —</option>
+      <template x-for="mk in makes" :key="mk">
+        <option :value="mk" x-text="mk"></option>
+      </template>
+    </select>
+    <input x-show="make === 'Other'" x-cloak x-model="customMake" type="text"
+           placeholder="Type engine make…" class="form-input text-sm mt-1" />
+  </div>
+
+  {# Engine Model — options depend on the chosen Make; disabled until a make is set #}
+  <div>
+    <label class="form-label">Engine Model</label>
+    <select x-model="model" :disabled="!make"
+            class="form-select text-sm" :class="!make && 'opacity-50 cursor-not-allowed'">
+      <option value="" x-text="make ? '— Select Model —' : '— Select make first —'"></option>
+      <template x-for="md in modelOptions" :key="md">
+        <option :value="md" x-text="md"></option>
+      </template>
+    </select>
+    <input x-show="model === 'Other'" x-cloak x-model="customModel" type="text"
+           placeholder="Type engine model…" class="form-input text-sm mt-1" />
+  </div>
+</div>
+{% endmacro %}

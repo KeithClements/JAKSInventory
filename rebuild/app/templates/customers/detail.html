@@ -1,20 +1,47 @@
 {% extends "base.html" %}
-{% block title %}{{ customer.company_name }} — JAKS Inventory{% endblock %}
+{% block title %}{{ customer.company_name }} — Axle{% endblock %}
 {% block heading %}{{ customer.company_name }}{% endblock %}
 
 {% block header_actions %}
   <a href="/quotes/new?customer_id={{ customer.id }}" class="btn-primary btn-sm">New Quote</a>
+  {# #11 Statement promoted to a first-class labeled icon button, beside New Quote #}
+  <a href="/customers/{{ customer.id }}/statement"
+     class="btn-secondary btn-sm inline-flex items-center gap-1.5" title="Account statement">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+    </svg>
+    Statement
+  </a>
   <a href="/invoices/new?customer_id={{ customer.id }}" class="btn-secondary btn-sm">New Invoice</a>
-  <a href="/customers/{{ customer.id }}/statement" class="btn-secondary btn-sm">Statement</a>
+  {# §21 — charge accrued interest as a DRAFT finance-charge invoice (only worth
+     showing when the customer accrues interest). #}
+  {% if customer.interest_rate and customer.interest_rate > 0 %}
+  <form method="post" action="/customers/{{ customer.id }}/post-interest" class="inline"
+        onsubmit="return confirm('Create a DRAFT finance-charge invoice for this customer’s accrued interest? You’ll review and finalize it.');">
+    <button type="submit" class="btn-secondary btn-sm" title="Charge accrued interest on the overdue balance">Charge Interest</button>
+  </form>
+  {% endif %}
   <a href="/customers/" class="text-sm text-gray-500 hover:text-gray-700">← Customers</a>
 {% endblock %}
 
 {% block content %}
+{% import "macros/customer_flags.html" as flagmacro %}
+{% import "macros/intelligence.html" as intel %}
+{% import "macros/credit_status.html" as creditmacro %}
+{% from "macros/pricing.html" import pricing_deals_panel, quick_deal_modal, bulk_deal_form %}
 <div class="space-y-4"
-     x-data="{ tab: '{{ 'account' if not request.query_params.get('tab') else request.query_params.get('tab') }}' }">
+     x-data="{ tab: '{{ 'timeline' if not request.query_params.get('tab') else request.query_params.get('tab') }}' }">
 
   {# ── Tab bar ── #}
   <div class="tab-bar">
+    <button type="button" @click="tab = 'timeline'"
+            :class="tab === 'timeline' ? 'tab-active' : 'tab-inactive'">
+      Timeline
+      {% if timeline %}
+      <span class="ml-1 badge-gray">{{ timeline|length }}</span>
+      {% endif %}
+    </button>
     <button type="button" @click="tab = 'account'"
             :class="tab === 'account' ? 'tab-active' : 'tab-inactive'">
       Account
@@ -46,13 +73,61 @@
   </div>
 
   {# ═══════════════════════════════════════════════════════════════════════ #}
+  {# TIMELINE TAB (#8 — unified activity feed: calls, quotes, SOs, invoices,  #}
+  {# payments). Backend: CRMService.get_unified_timeline → ctx `timeline`.    #}
+  {# ═══════════════════════════════════════════════════════════════════════ #}
+  <div x-show="tab === 'timeline'" x-cloak>
+    <div class="card overflow-hidden">
+      <div class="px-6 py-3 border-b border-gray-100 bg-gray-50/60">
+        <h3 class="text-sm font-semibold text-gray-700">Activity Timeline</h3>
+        <p class="text-xs text-gray-400">Calls, quotes, orders, invoices &amp; payments — newest first.</p>
+      </div>
+      {% set items = timeline %}
+      {% include "customers/_timeline.html" %}
+    </div>
+  </div>
+
+  {# ═══════════════════════════════════════════════════════════════════════ #}
   {# ACCOUNT TAB                                                             #}
   {# ═══════════════════════════════════════════════════════════════════════ #}
   <div x-show="tab === 'account'" x-cloak>
 
-    {# Deactivate form — placed outside the edit form to avoid nesting #}
+    {# Status-change forms live outside the edit form to avoid nesting. Only the
+       form matching the current state renders, so an inactive customer's page
+       carries no deactivate path and an active one carries no reactivate path. #}
+    {% if customer.is_active %}
     <form id="deactivate-form" method="post" action="/customers/{{ customer.id }}/deactivate"
           onsubmit="return confirm('Deactivate {{ customer.company_name }}?')"></form>
+    {% else %}
+    <form id="reactivate-form" method="post" action="/customers/{{ customer.id }}/reactivate"></form>
+
+    {# Inactive banner — gray (§4 inactive semantics) with a one-click Reactivate.
+       Sits above the account card so it stays visible in both view and edit mode. #}
+    <div class="rounded-xl bg-gray-100 border border-gray-200 px-5 py-3 mb-4 flex items-center justify-between gap-4">
+      <div class="flex items-center gap-2.5 min-w-0">
+        <span class="badge-gray shrink-0">Inactive</span>
+        <span class="text-sm text-gray-600 truncate">This customer is deactivated and hidden from the default lists.</span>
+      </div>
+      <button type="submit" form="reactivate-form" class="btn-primary btn-sm shrink-0">Reactivate</button>
+    </div>
+    {% endif %}
+
+    {# ── Credit warn banner (§4.5 / P2-D4 — warn-only, never blocks) ── #}
+    {% if (credit_status | default({})).get('warn') %}
+    <div class="mb-4">{{ creditmacro.credit_warn(credit_status) }}</div>
+    {% endif %}
+
+    {# ── Customer Intelligence Panel (§4.4 / P2-Q1) — credit posture via credit_badge (§4.5) ── #}
+    {% set _m = metrics | default({}) %}
+    <div class="card mb-4">
+      <div class="card-header flex items-center justify-between">
+        <h3 class="card-title">Customer Intelligence</h3>
+        {{ creditmacro.credit_badge(credit_status | default({})) }}
+      </div>
+      <div class="card-body">
+        {{ intel.customer_intelligence_panel(_m) }}
+      </div>
+    </div>
 
     <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
 
@@ -90,7 +165,19 @@
                 {% if customer.contact_name %}
                 <p class="text-sm text-gray-500 mt-0.5">{{ customer.contact_name }}</p>
                 {% endif %}
+                {% if customer.account_number %}<p class="text-xs text-gray-400 mt-0.5 font-mono">Acct #{{ customer.account_number }}</p>{% endif %}
+                {# P2-D2 flag chips — operational warnings (Requires PO, Credit Hold, …) + tax-exempt #}
+                {% set _flags = flags | default([]) %}
+                {% if _flags %}<div class="mt-2">{{ flagmacro.customer_flags(_flags) }}</div>{% endif %}
                 <div class="flex flex-wrap gap-1.5 mt-2">
+                  {# Customer lifecycle status (on_hold / credit_hold / inactive) #}
+                  {% if customer.customer_status == 'on_hold' %}
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-700">On Hold</span>
+                  {% elif customer.customer_status == 'credit_hold' %}
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-700">Credit Hold</span>
+                  {% elif customer.customer_status == 'inactive' %}
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">Inactive</span>
+                  {% endif %}
                   {% if customer.payment_terms == 'cod' %}
                   <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-orange-100 text-orange-700">COD</span>
                   {% elif customer.payment_terms == 'net_30' %}
@@ -109,9 +196,6 @@
                   {% endif %}
                   {% if customer.discount_pct > 0 %}
                   <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-700">{{ "%.0f"|format(customer.discount_pct) }}% off</span>
-                  {% endif %}
-                  {% if customer.is_tax_exempt %}
-                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">Tax Exempt{% if customer.tax_exempt_cert_number %} · {{ customer.tax_exempt_cert_number }}{% endif %}</span>
                   {% endif %}
                 </div>
               </div>
@@ -138,6 +222,28 @@
                 <a href="mailto:{{ customer.email }}" class="text-brand-700 hover:underline truncate">{{ customer.email }}</a>
               </div>
               {% else %}<div class="text-gray-400">No email</div>{% endif %}
+            </div>
+
+            {# ── SMS consent / opt-out controls (§22 Function B) ──
+               Three-state: Do Not Contact → "Allow contact"; else texting OK →
+               green chip + "Stop texting"; else → "OK to text". Each posts a
+               normal form (303 back to this page). #}
+            <div class="mt-4 flex flex-wrap items-center gap-2">
+              {% if customer.do_not_contact %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-700">Do Not Contact</span>
+                <form method="post" action="/customers/{{ customer.id }}/contact-allow" class="inline">
+                  <button type="submit" class="btn-secondary btn-sm">Allow contact</button>
+                </form>
+              {% elif customer.allow_sms %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-700">Texting OK{% if customer.sms_consent_at %} since {{ customer.sms_consent_at.strftime('%b %d, %Y') }}{% endif %}</span>
+                <form method="post" action="/customers/{{ customer.id }}/sms-optout" class="inline">
+                  <button type="submit" class="btn-secondary btn-sm">Stop texting</button>
+                </form>
+              {% else %}
+                <form method="post" action="/customers/{{ customer.id }}/sms-consent" class="inline">
+                  <button type="submit" class="btn-secondary btn-sm">OK to text</button>
+                </form>
+              {% endif %}
             </div>
           </div>
 
@@ -197,15 +303,32 @@
         <div x-show="editMode" x-cloak class="card-body">
           <form method="post" action="/customers/{{ customer.id }}" class="space-y-5">
 
-            {# Contact Info #}
+            {# Contact — Company → [Type] → Contact → Phone → Email (§4.10).
+               Address moved below the fold; see the Billing Address section. #}
             <div>
               <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide border-b border-gray-100 pb-2 mb-3">Contact Info</h3>
               <div class="grid grid-cols-2 gap-4">
-                <div>
+                <div class="col-span-2">
                   <label class="form-label">Company Name <span class="text-red-500 normal-case">*</span></label>
                   <input name="company_name" value="{{ customer.company_name }}" required class="form-input" />
                 </div>
-                <div>
+                <div class="col-span-2">
+                  <label class="form-label">Account #</label>
+                  <input name="account_number" value="{{ customer.account_number or '' }}" class="form-input" placeholder="Internal account number" />
+                </div>
+
+                <div class="col-span-2">
+                  <label class="form-label">Customer Type</label>
+                  <select name="customer_type" class="form-select">
+                    {% for t in customer_types %}
+                    <option value="{{ t }}" {% if customer.customer_type == t %}selected{% endif %}>
+                      {{ customer_type_labels.get(t, t) }}
+                    </option>
+                    {% endfor %}
+                  </select>
+                </div>
+
+                <div class="col-span-2">
                   <label class="form-label">Contact Name</label>
                   <input name="contact_name" value="{{ customer.contact_name }}" class="form-input" />
                 </div>
@@ -217,28 +340,6 @@
                   <label class="form-label">Email</label>
                   <input name="email" type="email" value="{{ customer.email }}" class="form-input" />
                 </div>
-                <div class="col-span-2">
-                  <label class="form-label">Address Line 1</label>
-                  <input name="address_line1" value="{{ customer.address_line1 }}" class="form-input" />
-                </div>
-                <div class="col-span-2">
-                  <label class="form-label">Address Line 2</label>
-                  <input name="address_line2" value="{{ customer.address_line2 }}" class="form-input" />
-                </div>
-                <div>
-                  <label class="form-label">City</label>
-                  <input name="city" value="{{ customer.city }}" class="form-input" />
-                </div>
-                <div class="grid grid-cols-2 gap-3">
-                  <div>
-                    <label class="form-label">State</label>
-                    <input name="state" value="{{ customer.state }}" maxlength="2" class="form-input" />
-                  </div>
-                  <div>
-                    <label class="form-label">ZIP</label>
-                    <input name="zip_code" value="{{ customer.zip_code }}" class="form-input" />
-                  </div>
-                </div>
               </div>
             </div>
 
@@ -247,21 +348,20 @@
               <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide border-b border-gray-100 pb-2 mb-3">Terms &amp; Pricing</h3>
               <div class="grid grid-cols-2 gap-4">
                 <div>
+                  <label class="form-label">Customer Status</label>
+                  <select name="customer_status" class="form-select">
+                    <option value="active"      {% if customer.customer_status == 'active' %}selected{% endif %}>Active</option>
+                    <option value="on_hold"     {% if customer.customer_status == 'on_hold' %}selected{% endif %}>On Hold</option>
+                    <option value="credit_hold" {% if customer.customer_status == 'credit_hold' %}selected{% endif %}>Credit Hold</option>
+                    <option value="inactive"    {% if customer.customer_status == 'inactive' %}selected{% endif %}>Inactive</option>
+                  </select>
+                </div>
+                <div>
                   <label class="form-label">Payment Terms</label>
                   <select name="payment_terms" class="form-select">
                     {% for term in payment_terms %}
                     <option value="{{ term }}" {% if customer.payment_terms == term %}selected{% endif %}>
                       {{ term.replace('_', ' ').upper() }}
-                    </option>
-                    {% endfor %}
-                  </select>
-                </div>
-                <div>
-                  <label class="form-label">Pricing Tier</label>
-                  <select name="pricing_tier" class="form-select">
-                    {% for tier in pricing_tiers %}
-                    <option value="{{ tier }}" {% if customer.pricing_tier == tier %}selected{% endif %}>
-                      {{ tier.title() }}
                     </option>
                     {% endfor %}
                   </select>
@@ -283,6 +383,13 @@
                   <label class="form-label">Interest Rate % (annual)</label>
                   <input name="interest_rate" type="number" step="0.1" min="0" max="100"
                          value="{{ customer.interest_rate }}" class="form-input" />
+                </div>
+                <div>
+                  <label class="form-label">Card Surcharge % (default)</label>
+                  <input name="card_surcharge_pct" type="number" step="0.1" min="0" max="100"
+                         value="{{ '%.1f'|format(customer.card_surcharge_pct) if customer.card_surcharge_pct is not none else '' }}"
+                         placeholder="system default" class="form-input" />
+                  <p class="mt-1 text-xs text-gray-400">Blank = use system default · 0 = no surcharge for this customer</p>
                 </div>
                 <div class="flex flex-col justify-center">
                   <label class="flex items-center gap-2 cursor-pointer select-none">
@@ -320,14 +427,65 @@
               </div>
             </div>
 
+            {# Billing Address — below the fold (§4.10: address often unknown at entry) #}
+            <div>
+              <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide border-b border-gray-100 pb-2 mb-3">Billing Address</h3>
+              <div class="grid grid-cols-2 gap-4">
+                <div class="col-span-2">
+                  <label class="form-label">Address Line 1</label>
+                  <input name="address_line1" value="{{ customer.address_line1 }}" class="form-input" />
+                </div>
+                <div class="col-span-2">
+                  <label class="form-label">Address Line 2</label>
+                  <input name="address_line2" value="{{ customer.address_line2 }}" class="form-input" />
+                </div>
+                <div>
+                  <label class="form-label">City</label>
+                  <input name="city" value="{{ customer.city }}" class="form-input" />
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label class="form-label">State</label>
+                    <input name="state" value="{{ customer.state }}" maxlength="2" class="form-input" />
+                  </div>
+                  <div>
+                    <label class="form-label">ZIP</label>
+                    <input name="zip_code" value="{{ customer.zip_code }}" class="form-input" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {# Operational Flags (P2-D2) — Requires-PO, Call-First, Warranty-
+               Escalation, Credit-Hold. The hidden flags_submitted marker tells
+               the route to rewrite the stored flag set (without it, a save from
+               a form lacking this editor would wipe the flags). #}
+            <div>
+              <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide border-b border-gray-100 pb-2 mb-3">Flags</h3>
+              <input type="hidden" name="flags_submitted" value="1">
+              <div class="grid grid-cols-2 gap-2">
+                {% for key, label in stored_flag_options %}
+                <label class="flex items-center gap-2 text-sm text-gray-700">
+                  <input type="checkbox" name="flags" value="{{ key }}"
+                         {% if key in customer_stored_flags %}checked{% endif %}
+                         class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+                  {{ label }}
+                </label>
+                {% endfor %}
+              </div>
+              <p class="mt-1 text-xs text-gray-400">Credit-Hold also follows the Customer Status above.</p>
+            </div>
+
             {# Actions — right-aligned footer bar, full-width within the card,
                stays visible at the bottom of the edit form. #}
             <div class="sticky bottom-0 z-10 -mx-5 -mb-5 mt-6 flex items-center gap-3
                         border-t border-gray-200 bg-white px-5 py-3">
+              {% if customer.is_active %}
               <button type="submit" form="deactivate-form"
                       class="px-4 py-2 border border-red-200 text-sm font-medium text-red-600 rounded-lg hover:bg-red-50 transition-colors">
                 Deactivate
               </button>
+              {% endif %}
               <div class="flex-1"></div>
               <button type="button" @click="editMode = false" class="btn-secondary">Cancel</button>
               <button type="submit" class="btn-primary">Save Changes</button>
@@ -386,7 +544,7 @@
               <div class="flex justify-between items-center">
                 <span class="text-xs text-gray-400">Tax exempt</span>
                 {% if customer.is_tax_exempt %}
-                <span class="badge-green">Yes</span>
+                <span class="badge-green">Yes{% if customer.tax_exempt_cert_number %} · {{ customer.tax_exempt_cert_number }}{% endif %}</span>
                 {% else %}
                 <span class="text-xs text-gray-500">No</span>
                 {% endif %}
@@ -417,6 +575,157 @@
 
       </div>
     </div>
+
+    {# ═══════════════════════════════════════════════════════════════════════ #}
+    {# PRICING & DEALS (Customer-Specific Product Pricing — §5.1)              #}
+    {# Lists the account's cost-plus rules (live margin-at-current-cost, red    #}
+    {# when under target) + an "Add deal" that opens the scoped Quick Deal      #}
+    {# modal. The modal form posts to the customer's price-rules route, which   #}
+    {# returns JSON — so we intercept its submit, POST via fetch, and reload on #}
+    {# success (Phase-1; no panel-partial endpoint yet — see cross-lane note).  #}
+    {# Deactivate is rule-scoped: it lights up once each rule dict carries      #}
+    {# `rule_id` (currently omitted by the detail context — see follow-up).     #}
+    {# ═══════════════════════════════════════════════════════════════════════ #}
+    <div class="mt-4"
+         {# Intercept the scoped Quick Deal form (the modal is a descendant) so a
+            native submit to a JSON route doesn't navigate the browser to raw JSON.
+            CREATE-vs-EDIT branch: the modal binds window.customerPriceDeal, which
+            exposes submitMethod (POST|PATCH), submitUrl (…/price-rules[/{id}]) and a
+            JSON payload getter. We read those off the form's Alpine scope so EDIT
+            fires PATCH /…/price-rules/{rule_id} and CREATE keeps POSTing exactly as
+            in Phase 1. JSON body (Content-Type: application/json) matches the JSON
+            price-rule route; on {ok:true} reload, else surface the route's error. #}
+         @submit="
+           const f = $event.target;
+           if (!f.matches('form[action$=\'/price-rules\']')) return;
+           $event.preventDefault();
+           const scope = (window.Alpine && Alpine.$data) ? Alpine.$data(f) : null;
+           const method = (scope && scope.submitMethod) || 'POST';
+           const url    = (scope && scope.submitUrl) || f.action;
+           const body   = scope ? JSON.stringify(scope.payload) : new FormData(f);
+           {# HX-Request → the route returns the #pricing-deals-panel partial; on
+              success we swap it in place (no full reload). On 400 the route still
+              returns JSON {ok:false,error}, which we surface as a toast. #}
+           const headers = { 'X-Requested-With': 'fetch', 'HX-Request': 'true' };
+           if (scope) headers['Content-Type'] = 'application/json';
+           fetch(url, { method: method, body: body, headers: headers })
+             .then(r => r.ok
+               ? r.text().then(html => ({ ok: true, html: html }))
+               : r.json().then(d => ({ ok: false, error: d && d.error })).catch(() => ({ ok: false })))
+             .then(res => {
+               if (res.ok) {
+                 {# The partial ships its own <div id="pricing-deals-panel"> wrapper,
+                    so replace the whole element (outerHTML) — innerHTML would nest a
+                    duplicate id. #}
+                 const panel = document.getElementById('pricing-deals-panel');
+                 if (panel) { panel.outerHTML = res.html; }
+                 if (scope && scope.close) { scope.close(); }
+               } else {
+                 $dispatch('toast', { kind: 'error', message: res.error || 'Could not save the deal.' });
+               }
+             })
+             .catch(() => $dispatch('toast', { kind: 'error', message: 'Could not save the deal.' }));
+         "
+         {# Deactivate confirmed via the shared jakConfirm primitive → this event
+            carries the rule id back; fetch the deactivate route then reload. #}
+         @deal-deactivate-confirm.window="
+           const id = $event.detail && $event.detail.ruleId;
+           if (id === undefined || id === null) return;
+           fetch('/customers/{{ customer.id }}/price-rules/' + id + '/deactivate', { method: 'POST', headers: { 'X-Requested-With': 'fetch', 'HX-Request': 'true' } })
+             .then(r => { if (!r.ok) throw new Error(); return r.text(); })
+             .then(html => {
+               const panel = document.getElementById('pricing-deals-panel');
+               if (panel) { panel.outerHTML = html; }
+             })
+             .catch(() => $dispatch('toast', { kind: 'error', message: 'Could not deactivate the deal.' }));
+         ">
+
+      {# Swap target #pricing-deals-panel — the price-rule routes return THIS same
+         partial (HX-Request) so create/edit/deactivate/bulk refresh it in place. #}
+      {% set target_label = 'Customer-specific cost-plus rules — margins shown at current cost, red under target.' %}
+      {% include "customers/_pricing_deals_panel.html" %}
+
+      {# The per-rule "Manage active deals" deactivate manager now lives INSIDE the
+         swap target (customers/_pricing_deals_panel.html) so it refreshes in place
+         on every HTMX panel swap. The @deal-deactivate-confirm.window handler above
+         still owns the customer-scoped deactivate fetch. #}
+
+      {# Scoped Quick Deal modal for THIS customer — native form action posts to
+         the customer's price-rules route; the @submit handler above intercepts it. #}
+      {{ quick_deal_modal(
+           customer_id=customer_id,
+           categories=deal_categories,
+           brands=deal_brands,
+           post_url='/customers/' ~ customer_id ~ '/price-rules'
+         ) }}
+
+      {# ── Bulk deals (Phase 2) ───────────────────────────────────────────────
+         A collapsed disclosure under the panel — for setting several category- or
+         brand-wide cost-plus deals in one go without cluttering the default view.
+         The bulk_deal_form binds window.bulkDeal; we intercept its @submit to POST
+         serialize() ({customer_id, rules:[…]}) as JSON to /price-rules/bulk. The
+         endpoint is ALL-OR-NOTHING: 201 {ok, created} → reload; 400 {ok:false,
+         errors:[{index,error}]} → surface the bad rows (nothing was written) via a
+         toast naming each 1-based row. We read serialize() off the form's Alpine
+         scope so the empty/incomplete scaffolding rows are dropped. #}
+      <details class="mt-3 group">
+        <summary class="card flex items-center justify-between px-4 py-3 cursor-pointer select-none list-none">
+          <div class="min-w-0">
+            <h3 class="text-sm font-semibold text-gray-900">Bulk deals</h3>
+            <p class="text-[11px] text-gray-400 mt-0.5">Enter several category- or brand-wide deals at once.</p>
+          </div>
+          <svg class="w-4 h-4 text-gray-400 shrink-0 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+          </svg>
+        </summary>
+
+        <div class="mt-3"
+             {# Intercept the bulk grid submit — POST serialize() as JSON; on 201
+                reload, on 400 list the offending rows (all-or-nothing, none saved). #}
+             @submit.prevent="
+               const f = $event.target;
+               if (!f.matches('form')) return;
+               const scope = (window.Alpine && Alpine.$data) ? Alpine.$data(f) : null;
+               const data = scope ? scope.serialize() : null;
+               if (!data || !data.rules || !data.rules.length) {
+                 $dispatch('toast', { kind: 'error', message: 'Add at least one complete deal row first.' });
+                 return;
+               }
+               fetch('/customers/{{ customer_id }}/price-rules/bulk', {
+                 method: 'POST',
+                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'fetch', 'HX-Request': 'true' },
+                 body: JSON.stringify(data),
+               })
+                 {# 201 → the route returns the #pricing-deals-panel partial (HX-Request);
+                    swap it in place. 400 → JSON {ok:false, errors:[{index,error}]};
+                    surface the offending rows (all-or-nothing, none were saved). #}
+                 .then(r => r.ok
+                   ? r.text().then(html => ({ ok: true, html: html }))
+                   : r.json().then(d => ({ ok: false, d: d })).catch(() => ({ ok: false, d: null })))
+                 .then(res => {
+                   if (res.ok) {
+                     const panel = document.getElementById('pricing-deals-panel');
+                     if (panel) { panel.outerHTML = res.html; }
+                     if (scope && scope.reset) { scope.reset(); }
+                     return;
+                   }
+                   const errs = (res.d && res.d.errors) || [];
+                   const msg = errs.length
+                     ? ('Could not save — ' + errs.map(e => 'row ' + ((e.index|0) + 1) + ': ' + (e.error || 'invalid')).join('; '))
+                     : ((res.d && res.d.error) || 'Could not save these deals.');
+                   $dispatch('toast', { kind: 'error', message: msg });
+                 })
+                 .catch(() => $dispatch('toast', { kind: 'error', message: 'Could not save these deals.' }));
+             ">
+          {{ bulk_deal_form(
+               customer_id=customer_id,
+               categories=deal_categories,
+               brands=deal_brands,
+               post_url='/customers/' ~ customer_id ~ '/price-rules/bulk'
+             ) }}
+        </div>
+      </details>
+    </div>
   </div>
 
   {# ═══════════════════════════════════════════════════════════════════════ #}
@@ -434,33 +743,33 @@
       {% if recent_invoices %}
       <div class="overflow-x-auto">
         <table class="tbl">
-          <thead class="tbl-head">
+          <thead class="bg-gray-50">
             <tr>
-              <th class="tbl-th">Invoice #</th>
-              <th class="tbl-th">Status</th>
-              <th class="tbl-th-r">Total</th>
-              <th class="tbl-th-r">Paid</th>
-              <th class="tbl-th-r">Balance</th>
-              <th class="tbl-th">Date</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Invoice #</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Status</th>
+              <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Total</th>
+              <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Paid</th>
+              <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Balance</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Date</th>
             </tr>
           </thead>
           <tbody>
             {% for inv in recent_invoices %}
-            <tr class="tbl-row">
-              <td class="tbl-td">
+            <tr class="cursor-pointer hover:bg-gray-50/80 transition-colors group">
+              <td class="px-4 py-4 align-middle">
                 <a href="/invoices/{{ inv.id }}" class="tbl-link font-mono text-xs">{{ inv.invoice_number }}</a>
               </td>
-              <td class="tbl-td">
+              <td class="px-4 py-4 align-middle">
                 <span class="{{ inv_badges.get(inv.status, 'badge-gray') }}">
                   {{ inv.status | title }}
                 </span>
               </td>
-              <td class="tbl-td-r">${{ "%.2f"|format(inv.total) }}</td>
-              <td class="tbl-td-r text-gray-500">${{ "%.2f"|format(inv.amount_paid) }}</td>
-              <td class="tbl-td-r {% if inv.balance_due > 0 %}font-medium text-gray-800{% else %}text-gray-400{% endif %}">
+              <td class="px-4 py-4 align-middle text-right">${{ "%.2f"|format(inv.total) }}</td>
+              <td class="px-4 py-4 align-middle text-right text-gray-500">${{ "%.2f"|format(inv.amount_paid) }}</td>
+              <td class="px-4 py-4 align-middle text-right {% if inv.balance_due > 0 %}font-medium text-gray-800{% else %}text-gray-400{% endif %}">
                 ${{ "%.2f"|format(inv.balance_due) }}
               </td>
-              <td class="tbl-td text-gray-500">{{ inv.created_at.strftime('%b %d, %Y') }}</td>
+              <td class="px-4 py-4 align-middle text-gray-500">{{ inv.created_at.strftime('%b %d, %Y') }}</td>
             </tr>
             {% endfor %}
           </tbody>
@@ -489,29 +798,29 @@
       {% if open_quotes %}
       <div class="overflow-x-auto">
         <table class="tbl">
-          <thead class="tbl-head">
+          <thead class="bg-gray-50">
             <tr>
-              <th class="tbl-th">Quote #</th>
-              <th class="tbl-th">Status</th>
-              <th class="tbl-th">Lines</th>
-              <th class="tbl-th-r">Total</th>
-              <th class="tbl-th">Created</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Quote #</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Status</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Lines</th>
+              <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Total</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Created</th>
             </tr>
           </thead>
           <tbody>
             {% for q in open_quotes %}
-            <tr class="tbl-row">
-              <td class="tbl-td">
+            <tr class="cursor-pointer hover:bg-gray-50/80 transition-colors group">
+              <td class="px-4 py-4 align-middle">
                 <a href="/quotes/{{ q.id }}" class="tbl-link font-mono text-xs">{{ q.quote_number }}</a>
               </td>
-              <td class="tbl-td">
+              <td class="px-4 py-4 align-middle">
                 <span class="{{ q_badges.get(q.status, 'badge-gray') }}">
                   {{ q.status | title }}
                 </span>
               </td>
-              <td class="tbl-td text-gray-500">{{ q.lines|length }}</td>
-              <td class="tbl-td-r">${{ "%.2f"|format(q.subtotal) }}</td>
-              <td class="tbl-td text-gray-500">{{ q.created_at.strftime('%b %d, %Y') }}</td>
+              <td class="px-4 py-4 align-middle text-gray-500">{{ q.lines|length }}</td>
+              <td class="px-4 py-4 align-middle text-right">${{ "%.2f"|format(q.subtotal) }}</td>
+              <td class="px-4 py-4 align-middle text-gray-500">{{ q.created_at.strftime('%b %d, %Y') }}</td>
             </tr>
             {% endfor %}
           </tbody>

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}New Vendor — JAKS Inventory{% endblock %}
+{% block title %}New Vendor — Axle{% endblock %}
 {% block heading %}New Vendor{% endblock %}
 
 {% block header_actions %}
@@ -7,7 +7,14 @@
 {% endblock %}
 
 {% block content %}
+{% set fd = form_data or {} %}
 <form method="post" action="/vendors/new" class="max-w-2xl space-y-6">
+
+  {% if error %}
+  <div class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+    ⚠ {{ error }}
+  </div>
+  {% endif %}
 
   <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
     <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Vendor Information</h2>
@@ -18,41 +25,67 @@
         <label class="block text-xs font-medium text-gray-500 mb-1">
           Vendor Name <span class="text-red-500">*</span>
         </label>
-        <input name="name" required placeholder="e.g. PAI Industries"
+        <input name="name" required placeholder="e.g. PAI Industries" value="{{ fd.get('name', '') }}"
                class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
       </div>
 
       <div>
         <label class="block text-xs font-medium text-gray-500 mb-1">
-          Vendor Code <span class="text-red-500">*</span>
-          <span class="font-normal text-gray-400 normal-case">(max 4 chars, used in SKUs)</span>
+          Feed SKU Code <span class="text-red-500">*</span>
+          <span class="font-normal text-gray-400 normal-case">(matches JAKS-[CODE]- feed SKUs, e.g. PAI / IMB)</span>
         </label>
-        <input name="vendor_code" required maxlength="4" placeholder="e.g. PAI"
+        <input name="vendor_code" required maxlength="4" placeholder="e.g. PAI" value="{{ fd.get('vendor_code', '') }}"
                oninput="this.value=this.value.toUpperCase()"
                class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full font-mono uppercase focus:outline-none focus:ring-2 focus:ring-brand-400" />
       </div>
 
       <div>
+        <label class="block text-xs font-medium text-gray-500 mb-1">
+          SKU # <span class="font-normal text-gray-400 normal-case">(leave blank — auto-converts to the next free digit)</span>
+        </label>
+        <input name="vendor_number" maxlength="1" inputmode="numeric" pattern="[0-9]*"
+               placeholder="auto" value="{{ fd.get('vendor_number', '') }}"
+               class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        <p class="mt-1 text-xs text-gray-400">The opaque digit baked into JAKS SKUs (PAI = 9, IMB = 3). Changeable until this vendor's first SKU is minted, frozen after.</p>
+      </div>
+
+      <div class="col-span-2">
+        <label class="inline-flex items-start gap-2 cursor-pointer">
+          <input type="checkbox" name="private_label" value="1"
+                 {% if fd.get('private_label') %}checked{% endif %}
+                 class="mt-0.5 rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+          <span class="text-sm">
+            <span class="font-medium text-gray-700">Private label (sell as house brand)</span>
+            <span class="block text-xs text-gray-400 normal-case">
+              Hide this vendor's code in SKUs — use the house prefix instead
+              (e.g. <span class="font-mono">JAKS-JAKS-10R1273</span>). New products
+              under this vendor are flagged house brand.
+            </span>
+          </span>
+        </label>
+      </div>
+
+      <div>
         <label class="block text-xs font-medium text-gray-500 mb-1">Account Number</label>
-        <input name="account_number" placeholder="Your account # with this vendor"
+        <input name="account_number" placeholder="Your account # with this vendor" value="{{ fd.get('account_number', '') }}"
                class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
       </div>
 
       <div>
         <label class="block text-xs font-medium text-gray-500 mb-1">Contact Name</label>
-        <input name="contact_name"
+        <input name="contact_name" value="{{ fd.get('contact_name', '') }}"
                class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
       </div>
 
       <div>
         <label class="block text-xs font-medium text-gray-500 mb-1">Phone</label>
-        <input name="phone" type="tel"
+        <input name="phone" type="tel" value="{{ fd.get('phone', '') }}"
                class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
       </div>
 
       <div>
         <label class="block text-xs font-medium text-gray-500 mb-1">Email</label>
-        <input name="email" type="email"
+        <input name="email" type="email" value="{{ fd.get('email', '') }}"
                class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
       </div>
 
@@ -70,14 +103,14 @@
 
       <div class="col-span-2">
         <label class="block text-xs font-medium text-gray-500 mb-1">Website</label>
-        <input name="website" type="url" placeholder="https://"
+        <input name="website" type="url" placeholder="https://" value="{{ fd.get('website', '') }}"
                class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
       </div>
 
       <div class="col-span-2">
         <label class="block text-xs font-medium text-gray-500 mb-1">Notes</label>
         <textarea name="notes" rows="3" placeholder="Return policies, lead times, special instructions…"
-                  class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400"></textarea>
+                  class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">{{ fd.get('notes', '') }}</textarea>
       </div>
 
     </div>

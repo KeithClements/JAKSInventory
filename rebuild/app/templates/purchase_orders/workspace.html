@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ po.po_number }} — JAKS Inventory{% endblock %}
+{% block title %}{{ po.po_number }} — Axle{% endblock %}
 {% block heading %}{{ po.po_number }}{% endblock %}
 
 {% set status_pill = {
@@ -13,15 +13,65 @@
 } %}
 
 {% block header_actions %}
+  {# 1366×768 counter screens: the h-14 topbar can't wrap — below 1440px swap
+     long action labels for short ones and drop the convenience back-link.
+     Scoped style (not a Tailwind utility): purged app.css has no ≥1440 variants. #}
+  <style>
+    .hdr-full { display: none; }
+    .hdr-abbr { display: inline; }
+    @media (min-width: 1440px) {
+      .hdr-full { display: inline; }
+      .hdr-abbr { display: none; }
+    }
+  </style>
+
   <span class="{{ status_pill[po.status][0] }}">{{ status_pill[po.status][1] }}</span>
 
   <a href="/purchase-orders/{{ po.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
   <a href="/purchase-orders/{{ po.id }}/pdf" class="btn-secondary btn-sm">PDF</a>
 
+  {# Return to Vendor — seed a Vendor Return (VR) from this PO's lines (real
+     products + costs). The natural "send some of this PO back" entry point. #}
+  {% if po.status != 'cancelled' %}
+  <a href="/vendor-returns/new?po_id={{ po.id }}" class="btn-secondary btn-sm">
+    <span class="hdr-full">Return to Vendor</span><span class="hdr-abbr">Return</span>
+  </a>
+  {% endif %}
+
+  {# ── Email to Vendor — separate from placing the order. SMTP isn't configured,
+     so this opens an honest pre-filled mail draft + the PDF to attach, rather
+     than pretending to send. Available on any live (non-cancelled) PO. ── #}
+  {% if po.status != 'cancelled' %}
+  {% set _subj = 'Purchase Order ' ~ po.po_number %}
+  {% set _body = 'Hello,\n\nPlease find attached our purchase order ' ~ po.po_number ~ '. Please confirm receipt and the expected ship date.\n\nThank you.' %}
+  <div x-data="{ open: false }" class="relative">
+    <button type="button" @click="open = !open" data-no-pending class="btn-secondary btn-sm"><span class="hdr-full">Email to Vendor</span><span class="hdr-abbr">Email</span></button>
+    <div x-show="open" x-cloak @click.outside="open = false"
+         class="absolute right-0 mt-2 w-80 rounded-xl border border-gray-100 bg-white p-4 text-left shadow-2xl z-[70]">
+      {% if po.vendor.email %}
+      <p class="text-xs text-gray-500 mb-1">Send PO <span class="font-mono">{{ po.po_number }}</span> to</p>
+      <p class="text-sm font-medium text-gray-800 mb-3 break-all">{{ po.vendor.email }}</p>
+      <a href="mailto:{{ po.vendor.email }}?subject={{ _subj | urlencode }}&body={{ _body | urlencode }}"
+         class="btn-primary btn-sm w-full justify-center mb-2">Open email draft</a>
+      <a href="/purchase-orders/{{ po.id }}/pdf"
+         class="btn-secondary btn-sm w-full justify-center">Download PO PDF to attach</a>
+      <p class="mt-2 text-[11px] leading-snug text-gray-400">
+        Opens your mail app with the message pre-filled — attach the downloaded PDF before sending.
+        (In-app sending isn't set up yet.)
+      </p>
+      {% else %}
+      <p class="text-sm text-gray-600 mb-2">No email on file for this vendor.</p>
+      <a href="/vendors/{{ po.vendor.id }}" class="btn-secondary btn-sm w-full justify-center">Add a vendor email</a>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
   {% if editable %}
     <form method="post" action="/purchase-orders/{{ po.id }}/send">
-      <button type="submit" class="btn-primary btn-sm">
-        {{ 'Convert to PO' if po.status == 'verbal_order' else 'Send to Vendor' }}
+      <button type="submit" class="btn-primary btn-sm"
+              title="Mark this PO as ordered — puts the items on-order in inventory">
+        {{ 'Confirm Verbal Order' if po.status == 'verbal_order' else 'Place Order' }}
       </button>
     </form>
     {# Empty form holds the POST action; the modal submits it on confirm (§3 Modal standard) #}
@@ -37,12 +87,21 @@
             @click="$dispatch('po-confirm', {formId:'cancel-po-form', title:'Cancel purchase order?', body:'Inventory on-order will be reversed.', cta:'Cancel PO', danger:true})">
       Cancel PO
     </button>
+
+  {% elif po.status == 'partial' %}
+    <form id="cancel-po-form" method="post" action="/purchase-orders/{{ po.id }}/cancel-status" class="hidden"></form>
+    <button type="button" class="btn-ghost btn-sm text-red-500"
+            @click="$dispatch('po-confirm', {formId:'cancel-po-form', title:'Cancel purchase order?', body:'This partially-received PO will be cancelled. Received inventory will be kept; outstanding quantities will be cleared.', cta:'Cancel PO', danger:true})">
+      Cancel PO
+    </button>
   {% endif %}
 
-  <a href="/purchase-orders/" class="text-sm text-gray-500 hover:text-gray-700">← Purchase Orders</a>
+  <a href="/purchase-orders/" class="hdr-full text-sm text-gray-500 hover:text-gray-700">← Purchase Orders</a>
 {% endblock %}
 
 {% block content %}
+{% from "macros/linked_docs.html" import linked_strip %}
+{% import "macros/motion.html" as motion %}
 <div class="max-w-5xl space-y-4"
      x-data="{
        showNotes: {{ 'true' if (po.notes or po.internal_notes) else 'false' }},
@@ -57,23 +116,39 @@
      @po-confirm.window="askConfirm($event.detail.formId, $event.detail.title, $event.detail.body, $event.detail.cta, $event.detail.danger)"
      @keydown.escape.window="confirm.open = false">
 
+  {# ── Linked documents (cross-document navigation strip) ── #}
+  {{ linked_strip(linked_documents|default([])) }}
+
   {# ── Flash banners ── #}
   {% set ok_msg = {
     'sent':         'PO sent to vendor — inventory on-order updated.',
     'received':     'Goods received and inventory updated.',
     'billed':       'Vendor bill created successfully.',
     'bill_approved':'Vendor bill approved.',
+    'bill_paid':    'Vendor bill marked paid.',
+    'match_resolved':'Match line resolved.',
+    'match_corrected':'Match corrected — PO and bill now reconcile. Bill is ready to approve.',
   } %}
   {% if request.query_params.get('ok') %}
+  {# Known slugs map to friendly copy; routes that already return human-readable
+     text (e.g. "Vendor credit VCM-… created") fall through and display as-is. #}
+  {% set ok_key = request.query_params.get('ok') %}
   <div class="rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800 flex items-center gap-2">
     <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
-    {{ ok_msg.get(request.query_params.get('ok'), 'Saved.') }}
+    {{ ok_msg.get(ok_key, ok_key) }}
   </div>
   {% endif %}
   {% if request.query_params.get('error') %}
   <div class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700 flex items-center gap-2">
     <svg class="w-4 h-4 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
     {{ request.query_params.get('error') }}
+  </div>
+  {% endif %}
+  {# R3 — informational note (non-fatal; e.g. serial-count mismatch on receive) #}
+  {% if request.query_params.get('info') %}
+  <div class="rounded-lg bg-blue-50 border border-blue-200 px-4 py-3 text-sm text-blue-800 flex items-center gap-2">
+    <svg class="w-4 h-4 text-blue-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+    {{ request.query_params.get('info') }}
   </div>
   {% endif %}
 
@@ -103,8 +178,32 @@
   <div id="po-header-strip">
     <form hx-post="/purchase-orders/{{ po.id }}/header"
           hx-swap="none"
-          hx-trigger="change from:input,select,textarea delay:600ms"
+          hx-trigger="change from:input,select,textarea delay:600ms, submit"
+          x-data="{ ...customerPicker('po-dropship-results'), _saving: false, _saveError: '', shipType: '{{ effective_ship_to_type | default('location') }}', customerId: '{{ po.drop_ship_customer_id or '' }}' }"
+          x-init="
+            _wireResults();
+            $el.addEventListener('htmx:beforeRequest', function(e){ if (e.detail.requestConfig && (e.detail.requestConfig.path||'').indexOf('/header') !== -1) _saving = true; });
+            $el.addEventListener('htmx:afterRequest',  function(e){
+              if (!(e.detail.requestConfig && (e.detail.requestConfig.path||'').indexOf('/header') !== -1)) return;
+              _saving = false;
+              var xhr = e.detail.xhr;
+              if (xhr && xhr.status >= 200 && xhr.status < 300) {
+                _saveError = '';
+                /* Optimistic lock (R9): adopt the fresh version so the next autosave never self-conflicts. */
+                var ts = xhr.getResponseHeader('X-Updated-At');
+                var hid = $el.querySelector('input[name=&quot;_updated_at&quot;]');
+                if (ts && hid) hid.value = ts;
+              } else {
+                _saveError = (xhr && xhr.status === 409)
+                  ? 'Changed by another user — reload the page, then re-apply your edit.'
+                  : 'Save failed — your last change was not saved.';
+              }
+            });
+          "
+          @customer-selected.window="onCustomerSelected($event.detail)"
           class="card card-body space-y-3">
+      {# Optimistic-lock version (R9) — refreshed from X-Updated-At after each save #}
+      <input type="hidden" name="_updated_at" value="{{ po.updated_at.isoformat() if po.updated_at else '' }}">
 
       {# Row 1: Vendor + key fields + total #}
       <div class="flex flex-wrap items-start gap-4">
@@ -141,9 +240,30 @@
             {% endif %}
           </div>
 
+          {# Vendor-confirmed checkbox — record an acknowledgement even with no conf # #}
+          <div class="min-w-36 self-end">
+            {% if editable or po.status in ('sent', 'partial') %}
+            <label class="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer py-2">
+              <input type="checkbox" name="vendor_confirmed" value="1"
+                     {% if po.vendor_confirmed %}checked{% endif %}
+                     class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+              Vendor confirmed
+            </label>
+            {% else %}
+            <label class="form-label">Confirmed</label>
+            <p class="text-sm {% if po.vendor_confirmed %}text-green-600 font-medium{% else %}text-gray-400{% endif %}">
+              {{ '✓ Confirmed' if po.vendor_confirmed else '—' }}
+            </p>
+            {% endif %}
+          </div>
+
           <div class="min-w-32">
             <label class="form-label">Freight In</label>
-            {% if editable %}
+            {# Freight stays correctable after the PO is sent — vendor freight is
+               often known only when the parts (or the bill) arrive. Editable
+               through SENT/PARTIAL/RECEIVED; locks with the rest of the header at
+               BILLED/CANCELLED. Mirrors save_header's gate. #}
+            {% if editable or po.status in ('sent', 'partial', 'received') %}
             <input type="number" name="freight_in_cost" step="0.01" min="0"
                    value="{{ '%.2f' | format(po.freight_in_cost) }}"
                    class="form-input text-right font-mono" />
@@ -163,6 +283,85 @@
           <p class="text-xs text-gray-400 mt-1">Ordered {{ po.ordered_at.strftime('%b %d') }}</p>
           {% endif %}
           <p class="text-xs text-gray-400">Created {{ po.created_at.strftime('%b %d, %Y') }}</p>
+        </div>
+      </div>
+
+      {# ── Bill-To / Ship-To ── #}
+      <div class="border-t border-gray-50 pt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
+        {# Bill To — always one of our company locations #}
+        <div>
+          <label class="form-label">Bill To</label>
+          {% if editable or po.status in ('sent', 'partial') %}
+          <select name="bill_to_location_id" class="form-select">
+            {% for loc in company_locations | default([]) %}
+            <option value="{{ loc.id }}" {% if (po.bill_to_location_id or default_location_id) == loc.id %}selected{% endif %}>
+              {{ loc.name }}{% if loc.is_primary %} (default){% endif %}
+            </option>
+            {% endfor %}
+          </select>
+          {% else %}
+          <p class="text-sm text-gray-700">{{ bill_to.name if bill_to else '—' }}</p>
+          {% for l in (bill_to.lines if bill_to else []) %}<p class="text-xs text-gray-500">{{ l }}</p>{% endfor %}
+          {% endif %}
+        </div>
+
+        {# Ship To — our location | one-time address | drop-ship to a customer #}
+        <div>
+          <label class="form-label">Ship To</label>
+          {% if editable or po.status in ('sent', 'partial') %}
+          <select name="ship_to_type" x-model="shipType" class="form-select">
+            <option value="location">Our location</option>
+            <option value="ad_hoc">One-time address</option>
+            <option value="drop_ship">Drop-ship to a customer</option>
+          </select>
+
+          {# location → which one (primary reads "ship to me") #}
+          <div x-show="shipType === 'location'" x-cloak class="mt-2">
+            <select name="ship_to_location_id" class="form-select">
+              {% for loc in company_locations | default([]) %}
+              <option value="{{ loc.id }}" {% if (po.ship_to_location_id or default_location_id) == loc.id %}selected{% endif %}>
+                {{ loc.name }}{% if loc.is_primary %} — ship to me{% endif %}
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+
+          {# drop-ship → customer typeahead (sets the hidden customer id) #}
+          <div x-show="shipType === 'drop_ship'" x-cloak class="mt-2">
+            <input type="hidden" name="drop_ship_customer_id" :value="customerId">
+            {% if effective_ship_to_type == 'drop_ship' and ship_to and ship_to.name %}
+            <p class="text-xs text-gray-500 mb-1">Current: <span class="font-medium text-gray-700">{{ ship_to.name }}</span></p>
+            {% endif %}
+            <div class="relative">
+              <input type="text" autocomplete="off" name="q"
+                     placeholder="Search customer to drop-ship to…"
+                     :value="displayName"
+                     @input="pickInput($el.value)"
+                     @keydown.down.prevent="pickMove(1)"
+                     @keydown.up.prevent="pickMove(-1)"
+                     @keydown.enter.prevent="pickChoose()"
+                     @keydown.escape.prevent="pickClose()"
+                     hx-get="/customers/search-json"
+                     hx-trigger="input changed delay:200ms"
+                     hx-target="#po-dropship-results"
+                     class="form-input">
+              <div id="po-dropship-results"
+                   class="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-30 max-h-56 overflow-y-auto text-sm"
+                   x-show="displayName.length >= 2 && !customerId && !_dismissed" x-cloak></div>
+            </div>
+          </div>
+
+          {# one-time + drop-ship share a single free-text address (no duplicate name) #}
+          <div x-show="shipType === 'ad_hoc' || shipType === 'drop_ship'" x-cloak class="mt-2">
+            <textarea name="ship_to_snapshot" rows="3" class="form-textarea"
+                      :placeholder="shipType === 'drop_ship' ? 'Drop-ship address (blank = use the customer\'s address on file)' : 'Name / company, street, city ST ZIP'">{{ po.ship_to_snapshot or '' }}</textarea>
+          </div>
+          {% else %}
+          <p class="text-sm text-gray-700">
+            {% if ship_to and ship_to.is_drop_ship %}<span class="badge-amber">Drop-ship</span> {% endif %}{{ ship_to.name if ship_to else '—' }}
+          </p>
+          {% for l in (ship_to.lines if ship_to else []) %}<p class="text-xs text-gray-500">{{ l }}</p>{% endfor %}
+          {% endif %}
         </div>
       </div>
 
@@ -195,8 +394,58 @@
         </div>
       </div>
 
+      {# Autosave indicator + explicit Save — mirrors the Quote workspace §8C pattern #}
+      <div class="flex items-center justify-end gap-3 pt-1">
+        <span class="inline-flex items-center gap-1 text-xs text-gray-400">
+          <template x-if="_saving">
+            <span>Saving…</span>
+          </template>
+          {# R9 — surfaced header-save failure (409 conflict / error). hx-swap is
+             "none", so without this the failure would be invisible. #}
+          <template x-if="!_saving && _saveError">
+            <span class="text-red-600 font-medium" x-text="_saveError"></span>
+          </template>
+          <template x-if="!_saving && !_saveError">
+            <span class="inline-flex items-center gap-1">
+              <svg class="w-3 h-3 text-green-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+              </svg>
+              Saved automatically
+            </span>
+          </template>
+        </span>
+        {% if editable or po.status in ('sent', 'partial') %}
+        {# Explicit Save — dispatches the header form's submit event, which htmx catches via
+           the form's `submit` trigger (mirrors invoices/workspace.html Save Draft). Autosave
+           still fires on change; this is the trust affordance, plan §498-502. #}
+        <button type="button" class="btn-primary btn-sm"
+                @click="$el.closest('form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}))"
+                title="Save header changes">Save</button>
+        {% endif %}
+      </div>
+
     </form>
   </div>
+
+  {# ── Shared one-click line-adder (Architect §8H, cost+core variant). Sibling
+     ABOVE #po-lines-section so an add (section outerHTML swap) keeps the search
+     box. §8H rollout step 5 — surgical line-adder swap; does NOT lift the #11 hold. #}
+  {% if editable %}
+  {% set la = {
+       'doc_type':      'purchase_order',
+       'doc_id':        po.id,
+       'vendor_id':     po.vendor_id,
+       'search_url':    '/line-items/product-search',
+       'post_url':      '/purchase-orders/' ~ po.id ~ '/lines',
+       'mode':          'cost',
+       'show_discount': false,
+       'target':        '#po-lines-section',
+       'swap':          'outerHTML',
+       'child_mode':    false,
+       'new_product':   true,
+     } %}
+  {% include "line_items/_line_adder.html" %}
+  {% endif %}
 
   {# ── Lines section ── #}
   {% include "purchase_orders/_lines_section.html" %}
@@ -216,6 +465,17 @@
     <div class="card-body">
       <form method="post" action="/purchase-orders/{{ po.id }}/receive" class="space-y-4">
 
+        {# R1-12 — qtys default to 0 so a careless submit can't fully receive a
+           partial delivery; "Receive All" fills each line's outstanding qty. #}
+        <div class="flex items-center justify-between gap-3">
+          <p class="text-xs text-gray-400">Enter the quantity actually received — lines left at 0 are skipped.</p>
+          <button type="button"
+                  class="text-xs font-semibold text-brand-700 hover:text-brand-800 underline shrink-0"
+                  @click="$el.closest('form').querySelectorAll('input[name^=recv_]').forEach(i => i.value = i.max)">
+            Receive All
+          </button>
+        </div>
+
         <div class="space-y-3">
           {% for line in unreceived_lines %}
           <div class="flex items-center gap-4 py-1">
@@ -228,24 +488,28 @@
             <span class="text-xs text-gray-400 shrink-0">{{ line.qty_outstanding }} outstanding</span>
             <div class="flex flex-col shrink-0 gap-1">
               <input type="number" name="recv_{{ line.id }}"
-                     min="0" max="{{ line.qty_outstanding }}" value="{{ line.qty_outstanding }}"
+                     min="0" max="{{ line.qty_outstanding }}" value="0"
                      class="w-20 form-input text-right" />
               <input type="text" name="condition_{{ line.id }}"
                      placeholder="Condition notes…"
                      class="w-44 text-xs border border-gray-200 rounded px-2 py-1 text-gray-500
                             focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              {# R3 — optional serial capture for serialized products (warranty/
+                 liability data). Receiving with no serials stays allowed. #}
+              {% if line.product and line.product.has_serial_number %}
+              <textarea name="serials_{{ line.id }}" rows="2"
+                        placeholder="Serial #s (comma or newline separated) — optional"
+                        class="w-44 text-xs border border-gray-200 rounded px-2 py-1 text-gray-500
+                               focus:outline-none focus:ring-1 focus:ring-brand-400"></textarea>
+              {% endif %}
             </div>
-            {# Cancel outstanding qty — posts separately from the receive form #}
+            {# Cancel outstanding qty — the cancel <form> is rendered OUTSIDE the receive form (below the loop)
+               so it doesn't nest inside it; the confirm modal submits it by id. #}
             <button type="button"
                     class="text-xs text-gray-400 hover:text-red-600 underline shrink-0"
                     @click="askConfirm('cancel-line-{{ line.id }}', 'Cancel outstanding line?', 'Cancel the outstanding {{ line.qty_outstanding }} unit(s) for this line? The remaining quantity will be cleared.', 'Cancel line', true)">
               Cancel
             </button>
-            <form id="cancel-line-{{ line.id }}" method="post"
-                  action="/purchase-orders/{{ po.id }}/cancel-line" class="hidden">
-              <input type="hidden" name="line_id" value="{{ line.id }}"/>
-              <input type="hidden" name="reason" value="cancelled by user"/>
-            </form>
           </div>
           {% endfor %}
         </div>
@@ -275,6 +539,17 @@
         </div>
         <button type="submit" class="btn-primary">Receive &amp; Update Inventory</button>
       </form>
+
+      {# Per-line cancel forms — kept OUTSIDE the receive form above. Nesting <form> elements is invalid HTML:
+         the browser closes the receive form at the first nested </form>, orphaning its submit button so
+         receiving silently no-ops. The confirm modal submits these by id (see askConfirm). #}
+      {% for line in unreceived_lines %}
+      <form id="cancel-line-{{ line.id }}" method="post"
+            action="/purchase-orders/{{ po.id }}/cancel-line" class="hidden">
+        <input type="hidden" name="line_id" value="{{ line.id }}"/>
+        <input type="hidden" name="reason" value="cancelled by user"/>
+      </form>
+      {% endfor %}
     </div>
   </div>
   {% endif %}
@@ -349,7 +624,7 @@
                 <td class="px-4 py-4 align-middle text-right tabular-nums">
                   <input type="number" name="unit_cost_{{ line.id }}" step="0.01" min="0"
                          value="{{ '%.2f' | format(line.unit_cost) }}"
-                         class="w-24 form-input text-right" />
+                         class="w-32 form-input text-right" />
                 </td>
                 <td class="px-4 py-4 align-middle text-right text-sm font-medium tabular-nums text-gray-700">
                   ${{ '%.2f' | format(line.qty_received * line.unit_cost) }}
@@ -358,6 +633,24 @@
               {% endfor %}
             </tbody>
           </table>
+        </div>
+
+        {# Vendor-billed freight — defaults to the PO's freight still unbilled, so
+           the bill total matches the vendor's invoice when freight rides on the
+           same invoice (e.g. PAI). Zero it when a separate carrier bills freight. #}
+        {% set billed_freight = po.bills | sum(attribute='freight_amount') %}
+        {% set freight_default = (po.freight_in_cost or 0) - billed_freight %}
+        {% set freight_default = freight_default if freight_default > 0 else 0 %}
+        <div class="flex flex-col items-end gap-1 border-t border-gray-100 pt-4">
+          <div class="w-48">
+            <label class="form-label">Freight on this bill ($)</label>
+            <input type="number" name="freight_amount" step="0.01" min="0"
+                   value="{{ '%.2f' | format(freight_default) }}"
+                   class="w-full form-input text-right tabular-nums" />
+            <p class="text-[11px] text-gray-400 mt-1 text-right">
+              PO freight-in ${{ '%.2f' | format(po.freight_in_cost or 0) }}{% if billed_freight %} · ${{ '%.2f' | format(billed_freight) }} already billed{% endif %}
+            </p>
+          </div>
         </div>
 
         {# Discrepancy warning — shown when any qty_billed > qty_received #}
@@ -383,6 +676,9 @@
     </div>
   </div>
   {% endif %}
+
+  {# ── Core Returns to Vendor (print slip + tracking + mark shipped) ── #}
+  {% include "purchase_orders/_core_returns_section.html" %}
 
   {# ── Related Bills ── #}
   {# ── Receipt History ── #}
@@ -416,8 +712,27 @@
             {% set total_qty = namespace(n=0) %}
             {% for rl in receipt.lines %}{% set total_qty.n = total_qty.n + rl.qty_received %}{% endfor %}
             <span class="text-sm font-semibold text-gray-700">{{ total_qty.n }} unit{{ 's' if total_qty.n != 1 }} received</span>
+            {% if receipt.reversed_at %}
+            <span class="badge-gray block mt-1">Reversed</span>
+            {% else %}
+            <form method="post" action="/purchase-orders/{{ po.id }}/receipts/{{ receipt.id }}/reverse"
+                  class="mt-1 inline"
+                  onsubmit="const reason = prompt('Why is receipt #{{ receipt.id }} being reversed? This undoes its inventory + cost impact and cannot be redone.');
+                            if (!reason || !reason.trim()) return false;
+                            this.querySelector('input[name=reason]').value = reason;">
+              <input type="hidden" name="reason" value="" />
+              <button type="submit" class="text-xs text-red-600 hover:text-red-800 font-medium">
+                Reverse…
+              </button>
+            </form>
+            {% endif %}
           </div>
         </div>
+        {% if receipt.reversed_at %}
+        <p class="text-xs text-gray-500 mt-1 italic">
+          Reversed {{ receipt.reversed_at.strftime('%b %d, %Y at %I:%M %p') }}{{ ' — ' ~ receipt.reversal_reason if receipt.reversal_reason }}
+        </p>
+        {% endif %}
         {% if receipt.lines %}
         <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1">
           {% for rl in receipt.lines %}
@@ -435,7 +750,9 @@
   {% endif %}
 
   {% if po.bills %}
-  <div class="card">
+  {# x-data lives on the card so a bill row's Edit button and its expandable edit
+     row (sibling <tr>s) share one toggle keyed by bill id. #}
+  <div id="vendor-bills" class="card scroll-mt-4" x-data="{ editingBill: null }">
     <div class="card-header">
       <h2 class="card-title">Vendor Bills</h2>
       <span class="text-xs text-gray-400">{{ po.bills | length }} bill{{ 's' if po.bills | length != 1 }}</span>
@@ -449,6 +766,7 @@
             <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Due</th>
             <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Amount</th>
             <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Status</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">QBO</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-gray-100">
@@ -457,44 +775,366 @@
             <td class="px-4 py-4 align-middle text-sm text-gray-700 font-mono text-xs font-semibold">{{ bill.bill_number or '—' }}</td>
             <td class="px-4 py-4 align-middle text-sm text-gray-600">{{ bill.bill_date.strftime('%b %d, %Y') if bill.bill_date else '—' }}</td>
             <td class="px-4 py-4 align-middle text-sm text-gray-600">{{ bill.due_date.strftime('%b %d, %Y') if bill.due_date else '—' }}</td>
-            <td class="px-4 py-4 align-middle text-right text-sm font-medium tabular-nums">${{ '%.2f' | format(bill.total_amount) }}</td>
+            <td class="px-4 py-4 align-middle text-right text-sm font-medium tabular-nums">
+              ${{ '%.2f' | format(bill.total_amount) }}
+              {% if bill.freight_amount %}
+              <span class="block text-[10px] font-normal text-gray-400 mt-0.5"
+                    title="Parts ${{ '%.2f' | format(bill.parts_subtotal) }} + vendor-billed freight ${{ '%.2f' | format(bill.freight_amount) }}">
+                incl. ${{ '%.2f' | format(bill.freight_amount) }} freight
+              </span>
+              {% endif %}
+            </td>
             <td class="px-4 py-4 align-middle text-sm text-gray-700">
               {% if bill.status == 'paid' %}<span class="badge-green">Paid</span>
               {% elif bill.status == 'discrepancy' %}<span class="badge-red">Discrepancy</span>
-              {% elif bill.status == 'approved' %}<span class="badge-blue">Approved</span>
+              {% elif bill.status == 'approved' %}
+              <span class="badge-blue">Approved</span>
+              {# R1-12 — AP reconciliation: only APPROVED bills are payable. The hidden
+                 form is submitted by the confirm modal (askConfirm pattern). #}
+              <form id="pay-bill-{{ bill.id }}" method="post"
+                    action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/pay" class="hidden"></form>
+              <button type="button"
+                      @click="askConfirm('pay-bill-{{ bill.id }}', 'Mark bill paid?', 'This records the bill as paid for AP reconciliation — no money moves in JAKS.', 'Mark Paid', false)"
+                      class="ml-2 px-2 py-1 text-[11px] font-semibold text-green-700 border border-green-200 rounded-md hover:bg-green-50 transition-colors">
+                Mark Paid
+              </button>
               {% else %}<span class="badge-gray">Pending</span>{% endif %}
+              {# Phase 2 — correct a posted bill (header + line qty/cost). Paid bills
+                 are excluded (use a vendor credit); discrepancy bills use the
+                 line-level Correct flow in the detail row below. #}
+              {% if bill.status in ('pending', 'approved') %}
+              <button type="button"
+                      @click="editingBill = (editingBill === {{ bill.id }} ? null : {{ bill.id }})"
+                      class="ml-2 px-2 py-1 text-[11px] font-semibold text-gray-600 border border-gray-200 rounded-md hover:bg-gray-50 transition-colors">
+                Edit
+              </button>
+              {% endif %}
+            </td>
+            {# ── R3 — QuickBooks bill push (mirrors the payment-detail chip idiom):
+               synced → green chip; APPROVED/PAID + unsynced → fail-soft push
+               button (Retry when the last attempt errored); PENDING/DISCREPANCY
+               bills are never pushable (3-way-match gate, enforced server-side
+               too). The route never touches money — it just flashes the outcome. #}
+            <td class="px-4 py-4 align-middle text-sm text-gray-700 whitespace-nowrap">
+              {% if bill.qbo_id and bill.qbo_sync_status == 'pending' %}
+              {# Phase 3 — bill corrected after it was synced: re-push the change as
+                 a QBO Bill update (same endpoint; push_vendor_bill updates in place). #}
+              <form method="post" action="/qbo/push-bill/{{ bill.id }}" class="inline">
+                <button type="submit"
+                        class="px-2 py-1 text-[11px] font-semibold text-amber-700 border border-amber-200 rounded-md hover:bg-amber-50 transition-colors"
+                        title="This bill was corrected after syncing — re-sync the change to QuickBooks.">
+                  Re-sync to QBO
+                </button>
+              </form>
+              {% elif bill.qbo_id %}
+              <span class="inline-flex items-center gap-1 rounded-md bg-green-50 border border-green-200 text-green-700 px-2.5 py-1 text-xs font-medium"
+                    title="Synced to QuickBooks (id {{ bill.qbo_id }})">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                </svg>
+                QBO Synced
+              </span>
+              {% elif bill.status in ('approved', 'paid') %}
+              <form method="post" action="/qbo/push-bill/{{ bill.id }}" class="inline">
+                <button type="submit"
+                        class="px-2 py-1 text-[11px] font-semibold text-gray-600 border border-gray-200 rounded-md hover:bg-gray-50 transition-colors"
+                        {% if bill.qbo_sync_status == 'error' and bill.qbo_sync_error %}title="Last error: {{ bill.qbo_sync_error }}"{% endif %}>
+                  {% if bill.qbo_sync_status == 'error' %}Retry QBO push{% else %}Push to QBO{% endif %}
+                </button>
+              </form>
+              {% else %}
+              <span class="text-xs text-gray-400" title="Only an approved or paid bill can be pushed to QuickBooks.">—</span>
+              {% endif %}
             </td>
           </tr>
+          {# Phase 2 — inline bill-correction row. Toggled by the Edit button; posts
+             to /edit (server requires a reason, re-validates the 3-way match, and
+             re-flags an already-synced bill for QBO). #}
+          {% if bill.status in ('pending', 'approved') %}
+          <tr x-show="editingBill === {{ bill.id }}" x-cloak class="bg-blue-50/30">
+            <td colspan="6" class="px-4 py-3">
+              <form method="post" action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/edit" class="space-y-3">
+                <div class="flex flex-wrap gap-3">
+                  <div>
+                    <label class="form-label">Bill #</label>
+                    <input type="text" name="bill_number" value="{{ bill.bill_number or '' }}" class="form-input font-mono w-40" />
+                  </div>
+                  <div>
+                    <label class="form-label">Bill date</label>
+                    <input type="date" name="bill_date" value="{{ bill.bill_date.strftime('%Y-%m-%d') if bill.bill_date else '' }}" class="form-input" />
+                  </div>
+                  <div>
+                    <label class="form-label">Due date</label>
+                    <input type="date" name="due_date" value="{{ bill.due_date.strftime('%Y-%m-%d') if bill.due_date else '' }}" class="form-input" />
+                  </div>
+                  <div>
+                    <label class="form-label">Freight ($)</label>
+                    <input type="number" name="freight_amount" step="0.01" min="0"
+                           value="{{ '%.2f' | format(bill.freight_amount or 0) }}"
+                           class="form-input w-32 text-right tabular-nums" />
+                  </div>
+                </div>
+                <table class="w-full text-xs border-t border-gray-100 pt-2">
+                  <thead>
+                    <tr class="text-gray-400">
+                      <th class="text-left py-1 font-medium">Item</th>
+                      <th class="text-right font-medium">Billed qty</th>
+                      <th class="text-right font-medium">Unit cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for bl in bill.lines %}
+                    <tr>
+                      <td class="py-1 font-mono text-gray-600">{{ bl.po_line.product.sku if bl.po_line and bl.po_line.product else (bl.po_line.description if bl.po_line else '—') }}</td>
+                      <td class="text-right"><input type="number" name="qty_{{ bl.id }}" value="{{ bl.qty_billed }}" min="0" class="form-input w-20 text-right tabular-nums" /></td>
+                      <td class="text-right"><input type="number" name="cost_{{ bl.id }}" value="{{ '%.2f' | format(bl.unit_cost) }}" step="0.01" min="0" class="form-input w-32 text-right font-mono tabular-nums" /></td>
+                    </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+                <div class="flex items-end gap-2">
+                  <div class="flex-1">
+                    <label class="form-label">Reason (required)</label>
+                    <input type="text" name="reason" required maxlength="200"
+                           placeholder="Why is this bill being corrected?" class="form-input w-full" />
+                  </div>
+                  <button type="submit" class="btn-primary btn-sm">Save bill</button>
+                  <button type="button" @click="editingBill = null" class="btn-ghost btn-sm">Cancel</button>
+                </div>
+              </form>
+            </td>
+          </tr>
+          {% endif %}
           {# Discrepancy detail row — expands below the bill when status is discrepancy #}
           {% if bill.status == 'discrepancy' %}
           <tr class="bg-red-50/30">
-            <td colspan="5" class="px-4 py-3">
+            <td colspan="6" class="px-4 py-3">
               <div class="text-xs text-red-800">
-                <p class="font-semibold mb-1 flex items-center gap-1.5">
+                <p class="font-semibold mb-2 flex items-center gap-1.5">
                   <svg class="w-3.5 h-3.5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01"/>
                   </svg>
-                  Discrepancy — billed qty exceeds received qty on:
+                  Discrepancy — billed amounts differ from the PO on:
                 </p>
-                <ul class="space-y-0.5 pl-5 list-disc mb-3">
+                <ul class="space-y-1.5 mb-3">
                   {% for bl in bill.lines if bl.has_discrepancy %}
-                  <li>
-                    <span class="font-mono">{{ bl.po_line.product.sku if bl.po_line and bl.po_line.product else '—' }}</span>
-                    — billed <span class="font-semibold">{{ bl.qty_billed }}</span>,
-                    received {{ bl.po_line.qty_received if bl.po_line else '?' }}
-                    <span class="text-red-600 font-semibold">
-                      (+{{ bl.qty_billed - bl.po_line.qty_received if bl.po_line else '?' }} over)
-                    </span>
+                  {% set pol = bl.po_line %}
+                  {# Suggested vendor-credit amount comes straight from the 3-way match compute. #}
+                  {% set sug = (match.rows | selectattr('line.id', 'equalto', pol.id) | map(attribute='suggested_credit') | first) if pol else None %}
+                  <li x-data="{ panel: '' }" class="border border-red-100 rounded-lg bg-white/60 px-3 py-2">
+                    <div class="flex items-start justify-between gap-3">
+                      <div class="leading-relaxed">
+                        <span class="font-mono font-semibold text-gray-700">{{ pol.product.sku if pol and pol.product else '—' }}</span>
+                        {# Branch the clause: qty over-bill vs cost-only variance — has_discrepancy covers both
+                           (qty_billed > qty_received OR |unit_cost − po unit_cost| ≥ tolerance). #}
+                        {% if pol and bl.qty_billed > pol.qty_received %}
+                        — billed <span class="font-semibold">{{ bl.qty_billed }}</span>,
+                        received {{ pol.qty_received }}
+                        <span class="text-red-600 font-semibold">(+{{ bl.qty_billed - pol.qty_received }} over)</span>
+                        {% elif pol %}
+                        — unit cost differs
+                        <span class="text-red-600 font-semibold">(billed ${{ '%.2f' | format(bl.unit_cost) }} vs PO ${{ '%.2f' | format(pol.unit_cost) }})</span>
+                        {% endif %}
+                        {# Surface the current AP decision so re-deciding a line is unambiguous. #}
+                        {% if pol and pol.match_resolution and pol.match_resolution != 'unresolved' %}
+                        <span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide
+                                     {% if pol.match_resolution == 'rejected' %}bg-red-100 text-red-700{% else %}bg-gray-100 text-gray-600{% endif %}">
+                          {{ pol.match_resolution | replace('_', ' ') }}
+                        </span>
+                        {% endif %}
+                      </div>
+                    </div>
+
+                    {% if pol %}
+                    {# ── AP resolution actions — wired to POST .../lines/{id}/resolve and .../create-credit ── #}
+                    <div class="mt-2 flex flex-wrap items-center gap-1.5">
+                      {# Accept — pay as billed; acknowledges the variance (no reason needed). #}
+                      <form id="resolve-accept-{{ pol.id }}" method="post"
+                            action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/lines/{{ pol.id }}/resolve" class="hidden">
+                        <input type="hidden" name="decision" value="accepted">
+                      </form>
+                      <button type="button"
+                              @click="askConfirm('resolve-accept-{{ pol.id }}', 'Accept variance?', 'This line will be paid as billed — the variance is acknowledged and accepted.', 'Accept', false)"
+                              class="px-2 py-1 text-[11px] font-semibold text-green-700 border border-green-200 rounded-md hover:bg-green-50 transition-colors">
+                        Accept
+                      </button>
+
+                      {# Reject — dispute the line; requires a reason (inline form). #}
+                      <button type="button" @click="panel = panel === 'reject' ? '' : 'reject'"
+                              class="px-2 py-1 text-[11px] font-semibold text-red-700 border border-red-200 rounded-md hover:bg-red-50 transition-colors"
+                              x-text="panel === 'reject' ? 'Cancel' : 'Reject'"></button>
+
+                      {# On-Hold — park pending more info (no reason needed). #}
+                      <form id="resolve-hold-{{ pol.id }}" method="post"
+                            action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/lines/{{ pol.id }}/resolve" class="hidden">
+                        <input type="hidden" name="decision" value="on_hold">
+                      </form>
+                      <button type="button"
+                              @click="askConfirm('resolve-hold-{{ pol.id }}', 'Put line on hold?', 'Parks this line pending more info. The bill stays flagged until you decide.', 'Put on hold', false)"
+                              class="px-2 py-1 text-[11px] font-semibold text-amber-700 border border-amber-200 rounded-md hover:bg-amber-50 transition-colors">
+                        On&#8209;Hold
+                      </button>
+
+                      {# Create Vendor Credit — issue a VCM for the overage (inline form). #}
+                      <button type="button" @click="panel = panel === 'credit' ? '' : 'credit'"
+                              class="px-2 py-1 text-[11px] font-semibold text-brand-700 border border-brand-200 rounded-md hover:bg-brand-50 transition-colors"
+                              x-text="panel === 'credit' ? 'Cancel' : 'Create Credit'"></button>
+
+                      {# Correct & Reconcile — edit the numbers so PO + bill match (inline form). #}
+                      <button type="button" @click="panel = panel === 'correct' ? '' : 'correct'"
+                              class="px-2 py-1 text-[11px] font-semibold text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+                              x-text="panel === 'correct' ? 'Cancel' : 'Correct'"></button>
+                    </div>
+
+                    {# ── Reject: dispute — reason required ── #}
+                    <form x-show="panel === 'reject'" x-cloak method="post"
+                          action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/lines/{{ pol.id }}/resolve"
+                          class="mt-2.5 pt-2.5 border-t border-red-100 space-y-2">
+                      <input type="hidden" name="decision" value="rejected">
+                      <p class="text-[11px] text-gray-500">
+                        Dispute this line — it stays flagged while you wait for a corrected bill or credit from the vendor.
+                      </p>
+                      <label class="block">
+                        <span class="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-0.5">Reason <span class="text-red-500">*</span></span>
+                        <textarea name="reason" required rows="2" maxlength="500"
+                                  placeholder="e.g. Billed qty exceeds what we received — disputed with vendor"
+                                  class="w-full px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-1 focus:ring-brand-400 focus:border-brand-400"></textarea>
+                      </label>
+                      <button type="submit"
+                              class="px-3 py-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors">
+                        Reject line
+                      </button>
+                    </form>
+
+                    {# ── Create Vendor Credit: amount (suggested from the variance) + reason ── #}
+                    <form x-show="panel === 'credit'" x-cloak method="post"
+                          action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/create-credit"
+                          class="mt-2.5 pt-2.5 border-t border-red-100 space-y-2.5">
+                      <input type="hidden" name="po_line_id" value="{{ pol.id }}">
+                      <p class="text-[11px] text-gray-500">
+                        Issue a vendor credit memo for the overage and mark this line credited.
+                      </p>
+                      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <label class="block">
+                          <span class="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-0.5">Credit amount</span>
+                          <input type="number" step="0.01" min="0.01" name="amount"
+                                 value="{{ '%.2f' | format(sug) if sug else '' }}"
+                                 placeholder="Leave blank to auto-compute"
+                                 class="w-full px-2 py-1 text-sm border border-gray-300 rounded-md tabular-nums focus:ring-1 focus:ring-brand-400 focus:border-brand-400">
+                          {% if sug %}<span class="block text-[10px] text-gray-400 mt-0.5">Suggested: ${{ '%.2f' | format(sug) }}</span>{% endif %}
+                        </label>
+                        <label class="block">
+                          <span class="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-0.5">Reason</span>
+                          <input type="text" name="reason" maxlength="500"
+                                 placeholder="e.g. Vendor overcharged — credit requested"
+                                 class="w-full px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-1 focus:ring-brand-400 focus:border-brand-400">
+                        </label>
+                      </div>
+                      <label class="flex items-center gap-1.5 text-[11px] text-gray-600">
+                        <input type="checkbox" name="apply_now" value="1"
+                               class="rounded border-gray-300 text-brand-600 focus:ring-brand-400">
+                        Apply the credit to this bill immediately
+                      </label>
+                      <button type="submit"
+                              class="px-3 py-1.5 text-xs font-semibold text-white bg-brand-700 hover:bg-brand-600 rounded-lg transition-colors">
+                        Create vendor credit
+                      </button>
+                    </form>
+
+                    {# ── Correct & Reconcile — edit the side that's wrong so PO + bill match ── #}
+                    <form x-show="panel === 'correct'" x-cloak method="post"
+                          action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/lines/{{ pol.id }}/correct"
+                          class="mt-2.5 pt-2.5 border-t border-red-100 space-y-2.5">
+                      <p class="text-[11px] text-gray-500">
+                        Fix the number that's wrong, then save. The PO and bill must reconcile —
+                        this isn't an override. (To keep the variance instead, use Approve&nbsp;Anyway below.)
+                      </p>
+                      <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <label class="block">
+                          <span class="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-0.5">PO unit cost</span>
+                          <input type="number" step="0.01" min="0" name="po_unit_cost"
+                                 value="{{ '%.2f' | format(pol.unit_cost) }}"
+                                 class="w-full px-2 py-1 text-sm border border-gray-300 rounded-md tabular-nums focus:ring-1 focus:ring-brand-400 focus:border-brand-400">
+                        </label>
+                        <label class="block">
+                          <span class="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-0.5">Billed qty</span>
+                          <input type="number" step="1" min="0" name="billed_qty"
+                                 value="{{ bl.qty_billed }}"
+                                 class="w-full px-2 py-1 text-sm border border-gray-300 rounded-md tabular-nums focus:ring-1 focus:ring-brand-400 focus:border-brand-400">
+                        </label>
+                        <label class="block">
+                          <span class="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-0.5">Billed unit cost</span>
+                          <input type="number" step="0.01" min="0" name="billed_unit_cost"
+                                 value="{{ '%.2f' | format(bl.unit_cost) }}"
+                                 class="w-full px-2 py-1 text-sm border border-gray-300 rounded-md tabular-nums focus:ring-1 focus:ring-brand-400 focus:border-brand-400">
+                        </label>
+                      </div>
+                      <label class="block">
+                        <span class="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-0.5">Reason <span class="text-red-500">*</span></span>
+                        <input type="text" name="reason" required maxlength="500"
+                               placeholder="e.g. Vendor raised price — PO updated to match the invoice"
+                               class="w-full px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-1 focus:ring-brand-400 focus:border-brand-400">
+                      </label>
+                      <div class="flex flex-wrap items-center gap-2">
+                        <button type="submit"
+                                class="px-3 py-1.5 text-xs font-semibold text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors">
+                          Save &amp; Reconcile
+                        </button>
+                        <span class="text-[10px] text-gray-400">Records-only — does not re-cost received inventory.</span>
+                      </div>
+                    </form>
+                    {% endif %}
                   </li>
                   {% endfor %}
                 </ul>
+                {# ── Approve Anyway — override the discrepancy gate; reason required & audit-logged ── #}
+                <div x-data="{ open: false }" class="border-t border-red-100 pt-3 mt-1">
+                  <button type="button" @click="open = !open"
+                          class="px-3 py-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors"
+                          x-text="open ? 'Cancel override' : 'Approve Anyway'"></button>
+                  <form x-show="open" x-cloak method="post"
+                        action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/approve"
+                        class="mt-2.5 space-y-2 max-w-xl">
+                    <p class="text-[11px] text-gray-500">
+                      This bill still differs from the PO (quantity and/or unit cost). Approving accepts the
+                      variance as-is and posts it for payment. A reason is required and recorded in the audit trail.
+                    </p>
+                    <label class="block">
+                      <span class="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-0.5">Override reason <span class="text-red-500">*</span></span>
+                      <textarea name="override_reason" required rows="2" maxlength="500"
+                                placeholder="e.g. Vendor confirmed the price increase by phone — paying as billed"
+                                class="w-full px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-1 focus:ring-brand-400 focus:border-brand-400"></textarea>
+                    </label>
+                    <button type="submit"
+                            class="px-3 py-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors">
+                      Approve anyway
+                    </button>
+                  </form>
+                </div>
+              </div>
+            </td>
+          </tr>
+          {% elif bill.status == 'pending' %}
+          {# Risk #5 — PENDING covers BOTH a clean 3-way match (no variance, lands
+             PENDING for an explicit human Approve) AND a once-discrepant bill whose
+             variances were all resolved. Either way it routes through AP: only an
+             Approve here posts it for payment + QBO sync (gated server-side on
+             APPROVE_VENDOR_BILL — counter/SALES clerks cannot approve). #}
+          <tr class="bg-green-50/40">
+            <td colspan="6" class="px-4 py-3">
+              <div class="flex items-center justify-between gap-3">
+                <p class="text-xs text-green-800 flex items-center gap-1.5">
+                  <svg class="w-3.5 h-3.5 text-green-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                  </svg>
+                  The PO and bill reconcile — review and approve to post it for payment.
+                </p>
                 <form id="approve-bill-{{ bill.id }}" method="post"
                       action="/purchase-orders/{{ po.id }}/bills/{{ bill.id }}/approve" class="hidden"></form>
                 <button type="button"
-                        @click="askConfirm('approve-bill-{{ bill.id }}', 'Approve bill with discrepancy?', 'Billed quantity exceeds received quantity on this bill. Approving accepts the variance.', 'Approve anyway', true)"
-                        class="px-3 py-1.5 text-xs font-semibold text-white bg-red-600
-                               hover:bg-red-700 rounded-lg transition-colors">
-                  Approve Anyway
+                        @click="askConfirm('approve-bill-{{ bill.id }}', 'Approve this bill?', 'The PO and bill reconcile. Approving posts it for payment and QBO sync.', 'Approve', false)"
+                        class="shrink-0 px-3 py-1.5 text-xs font-semibold text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors">
+                  Approve Bill
                 </button>
               </div>
             </td>
@@ -511,9 +1151,7 @@
   <div x-show="confirm.open" x-cloak class="fixed inset-0 z-[60] flex items-center justify-center">
     <div class="fixed inset-0 bg-black/40" @click="confirm.open = false"></div>
     <div class="relative z-[60] w-full max-w-lg mx-4 bg-white rounded-2xl shadow-2xl"
-         x-transition:enter="transition ease-out duration-150"
-         x-transition:enter-start="opacity-0 scale-95"
-         x-transition:enter-end="opacity-100 scale-100">
+         {{ motion.modal_scale() }}>
       <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
         <h3 class="font-semibold text-sm text-gray-900" x-text="confirm.title"></h3>
         <button type="button" @click="confirm.open = false"
@@ -531,7 +1169,7 @@
         <button type="button"
                 @click="confirm.hxPost
                           ? htmx.ajax('POST', confirm.hxPost, { target: confirm.hxTarget, swap: confirm.hxSwap })
-                          : document.getElementById(confirm.formId).submit();
+                          : document.getElementById(confirm.formId).requestSubmit();
                         confirm.open = false"
                 :class="confirm.danger ? 'bg-red-600 hover:bg-red-700' : 'bg-brand-700 hover:bg-brand-600'"
                 class="px-3 py-1.5 rounded-lg text-xs font-semibold text-white transition-colors"

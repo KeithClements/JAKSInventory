@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}New Payment — JAKS Inventory{% endblock %}
+{% block title %}New Payment — Axle{% endblock %}
 {% block heading %}New Payment{% endblock %}
 
 {% block header_actions %}
@@ -29,8 +29,8 @@
         <input type="hidden" name="select_customer" value="1" />
         <div class="flex-1">
           <label class="form-label">Select customer</label>
-          <select name="customer_id" class="form-select"
-                  onchange="this.form.submit()">
+          <select name="customer_id" class="form-select" autofocus
+                  onchange="this.form.requestSubmit()">
             <option value="">— choose a customer —</option>
             {% for c in customers %}
             <option value="{{ c.id }}"

@@ -1,0 +1,143 @@
+{# ── Vendor bottom preview panel — loaded via htmx.ajax() on row click ────────
+   §2B context (GET /vendors/preview/{id}):
+     vendor         : Vendor (with .contacts, .purchase_orders)
+     open_po_count  : int
+     open_bill_count: int
+     credit_count   : int
+     credit_amount  : float
+     last_po_date   : datetime | None
+     avg_lead_days  : int | None
+     POStatus       : enum
+─────────────────────────────────────────────────────────────────────────── #}
+{% from "macros/chips.html" import status_chip %}
+
+{% set primary = vendor.primary_contact %}
+
+<div class="px-6 py-4">
+  <div class="grid grid-cols-4 gap-6">
+
+    {# ── Identity ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Identity</p>
+      <div class="space-y-1.5">
+        <div class="flex items-center gap-2 flex-wrap">
+          <a href="/vendors/{{ vendor.id }}"
+             class="text-base font-bold text-brand-700 hover:text-brand-900 hover:underline leading-none">
+            {{ vendor.name }}
+          </a>
+          {% if not vendor.is_active %}
+          <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-100 text-gray-500">
+            Inactive
+          </span>
+          {% endif %}
+        </div>
+        {% if vendor.vendor_code %}
+        <p class="font-mono text-xs text-gray-400">{{ vendor.vendor_code }}</p>
+        {% endif %}
+        {% if vendor.account_number %}
+        <p class="text-[11px] text-gray-400">Acct: {{ vendor.account_number }}</p>
+        {% endif %}
+        <div class="pt-0.5">
+          {% if vendor.payment_terms %}
+          {{ status_chip('bg-blue-50 text-blue-700', 'bg-blue-500', vendor.payment_terms | replace('_', ' ') | upper) }}
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    {# ── Contact ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Primary Contact</p>
+      <div class="space-y-1.5">
+        {% if primary %}
+          <p class="text-sm font-medium text-gray-800">{{ primary.name }}</p>
+          {% if primary.title %}<p class="text-[11px] text-gray-400">{{ primary.title }}</p>{% endif %}
+          {% if primary.phone %}<p class="text-[11px] text-gray-500">{{ primary.phone }}</p>{% endif %}
+          {% if primary.email %}<p class="text-[11px] text-gray-500 truncate">{{ primary.email }}</p>{% endif %}
+        {% elif vendor.contact_name %}
+          <p class="text-sm font-medium text-gray-800">{{ vendor.contact_name }}</p>
+          {% if vendor.phone %}<p class="text-[11px] text-gray-500">{{ vendor.phone }}</p>{% endif %}
+          {% if vendor.email %}<p class="text-[11px] text-gray-500 truncate">{{ vendor.email }}</p>{% endif %}
+        {% else %}
+          <p class="text-sm text-gray-400">—</p>
+        {% endif %}
+        {% if vendor.website %}
+        <p class="text-[11px] text-gray-400 truncate">{{ vendor.website }}</p>
+        {% endif %}
+      </div>
+    </div>
+
+    {# ── AP / Activity ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">AP &amp; Activity</p>
+      <div class="space-y-1.5">
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Open POs</span>
+          {% if open_po_count > 0 %}
+          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 tabular-nums">
+            {{ open_po_count }}
+          </span>
+          {% else %}
+          <span class="text-sm text-gray-300">0</span>
+          {% endif %}
+        </div>
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Open Bills</span>
+          {% if open_bill_count > 0 %}
+          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold
+                        {{ 'bg-red-100 text-red-700' if open_bill_count > 0 else 'bg-gray-50 text-gray-400' }} tabular-nums">
+            {{ open_bill_count }}
+          </span>
+          {% else %}
+          <span class="text-sm text-gray-300">0</span>
+          {% endif %}
+        </div>
+        {% if credit_count > 0 %}
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Credits Pending</span>
+          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-green-50 text-green-700 tabular-nums">
+            ${{ "%.0f"|format(credit_amount) }}
+          </span>
+        </div>
+        {% endif %}
+        <div class="flex items-center justify-between pt-1 border-t border-gray-100">
+          <span class="text-xs text-gray-500">Last PO</span>
+          <span class="text-xs text-gray-600 tabular-nums">
+            {{ last_po_date.strftime('%b %d, %Y') if last_po_date else '—' }}
+          </span>
+        </div>
+        {% if avg_lead_days is not none %}
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Avg Lead Time</span>
+          <span class="text-xs text-gray-600 tabular-nums">{{ avg_lead_days }}d</span>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    {# ── Actions ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Actions</p>
+      <div class="flex flex-col gap-1.5">
+        <a href="/vendors/{{ vendor.id }}"
+           class="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold
+                  bg-brand-700 text-white hover:bg-brand-600 transition-colors">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+          </svg>
+          Open Vendor
+        </a>
+        <a href="/purchase-orders/new?vendor_id={{ vendor.id }}"
+           class="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold
+                  bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 transition-colors">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+          </svg>
+          New PO
+        </a>
+      </div>
+    </div>
+
+  </div>{# end grid #}
+</div>

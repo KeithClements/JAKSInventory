@@ -7,20 +7,23 @@ from the invoice detail page (single invoice).
 """
 from __future__ import annotations
 
+import csv
+import io
 import logging
 from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import quote as url_quote
 
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy.orm import Session
+from sqlalchemy import func, or_
+from sqlalchemy.orm import Session, selectinload
 
-from app.constants import InvoiceStatus, PaymentMethod, PaymentStatus
+from app.constants import InvoiceStatus, PaymentDirection, PaymentMethod, PaymentStatus
 from app.deps import get_current_user_id, get_db
 from app.models.customer import Customer
-from app.models.invoice import Invoice, Payment
+from app.models.invoice import Invoice, Payment, PaymentAllocation
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +31,25 @@ router = APIRouter(prefix="/payments", tags=["payments"])
 templates = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent.parent / "templates")
 )
+
+# Valid status-tab slugs — shared by the list view and its CSV export.
+_VALID_PMT_TABS = {"", PaymentStatus.APPLIED, PaymentStatus.REVERSED, PaymentStatus.NSF}
+
+
+def _apply_payment_list_filters(query, active_tab: str, q: str):
+    """Shared tab/q filter chain for the payment list AND its CSV export — one
+    implementation so "export what I see" can never drift from the list view.
+    Caller must have already joined Customer."""
+    if active_tab:
+        query = query.filter(Payment.status == active_tab)
+    if q:
+        query = query.filter(
+            or_(
+                Customer.company_name.ilike(f"%{q}%"),
+                Payment.check_number.ilike(f"%{q}%"),
+            )
+        )
+    return query
 
 
 # ── New Payment (multi-invoice) ───────────────────────────────────────────────
@@ -63,9 +85,9 @@ def new_payment_form(
                 .all()
             )
     return templates.TemplateResponse(
+        request,
         "payments/new.html",
         {
-            "request": request,
             "customers": customers,
             "selected_customer": selected_customer,
             "open_invoices": open_invoices,
@@ -126,12 +148,40 @@ async def create_payment(
             except (ValueError, TypeError):
                 pass
 
+        # R1-3 — collect the card surcharge at payment time: card method AND
+        # every selected invoice flagged (a mixed selection would surcharge
+        # principal destined for non-flagged invoices). Pct = LOWEST invoice
+        # R1 snapshot (normally identical — all resolve from the same
+        # customer override / system default; when they differ, the lowest
+        # rate can never overcharge the lower-pct invoice's portion).
+        apply_surcharge = False
+        surcharge_pct: float | None = None
+        if payment_method == PaymentMethod.CREDIT_CARD and invoice_ids:
+            sel_invoices = (
+                db.query(Invoice)
+                .filter(Invoice.id.in_(invoice_ids), Invoice.customer_id == customer_id)
+                .all()
+            )
+            if sel_invoices and all(i.apply_cc_surcharge for i in sel_invoices):
+                apply_surcharge = True
+                surcharge_pct = min(i.cc_surcharge_pct for i in sel_invoices)
+
         pmt = PaymentService(db, user_id).record_payment(
             customer_id=customer_id,
             amount_received=amount,
             payment_method=payment_method,
             data=data,
             invoice_ids=invoice_ids or None,
+            apply_surcharge=apply_surcharge,
+            surcharge_pct=surcharge_pct,
+        )
+    except PermissionError:
+        db.rollback()
+        cid = str(form.get("customer_id", ""))
+        return RedirectResponse(
+            f"/payments/new?customer_id={cid}&error="
+            f"{url_quote('You do not have permission to record payments.')}",
+            status_code=303,
         )
     except ValueError as exc:
         db.rollback()
@@ -156,34 +206,220 @@ async def create_payment(
 @router.get("/", response_class=HTMLResponse)
 def payment_list(
     request: Request,
+    tab: str = "",
     status: str = "",
     q: str = "",
+    sort: str = "date",
+    direction: str = "desc",
     db: Session = Depends(get_db),
 ):
-    from sqlalchemy import or_
-    query = db.query(Payment).join(Customer)
+    from app.utils import apply_sort
+    # ── Unfiltered tab counts ─────────────────────────────────────────────
+    _raw: dict = dict(
+        db.query(Payment.status, func.count(Payment.id))
+        .group_by(Payment.status)
+        .all()
+    )
+    counts: dict = {
+        "":                      sum(_raw.values()),
+        PaymentStatus.APPLIED:   _raw.get(PaymentStatus.APPLIED,  0),
+        PaymentStatus.REVERSED:  _raw.get(PaymentStatus.REVERSED, 0),
+        PaymentStatus.NSF:       _raw.get(PaymentStatus.NSF,      0),
+    }
 
-    if status:
-        query = query.filter(Payment.status == status)
-    if q:
-        query = query.filter(
-            or_(
-                Customer.company_name.ilike(f"%{q}%"),
-                Payment.check_number.ilike(f"%{q}%"),
-            )
+    active_tab = tab if tab in _VALID_PMT_TABS else (status if status in _VALID_PMT_TABS else "")
+
+    query = (
+        db.query(Payment)
+        .join(Customer)
+        .options(selectinload(Payment.allocations))  # fix N+1 on amount_unallocated
+    )
+    query = _apply_payment_list_filters(query, active_tab, q)
+    # Sort (#4 — whitelisted keys, asc/desc).
+    _P_SORT = {
+        "date":     Payment.payment_date,
+        "amount":   Payment.amount_received,
+        "customer": Customer.company_name,
+        "method":   Payment.payment_method,
+    }
+    query, sort, direction = apply_sort(query, _P_SORT, sort, direction, default="date")
+    payments = query.limit(300).all()
+
+    # ── Bulk §2B: invoice numbers per payment (fixes N+1 on alloc.invoice) ─
+    from collections import defaultdict
+    _pmt_ids = [p.id for p in payments]
+    _alloc_rows = (
+        db.query(PaymentAllocation.payment_id, Invoice.invoice_number, Invoice.id)
+        .join(Invoice, PaymentAllocation.invoice_id == Invoice.id)
+        .filter(
+            PaymentAllocation.payment_id.in_(_pmt_ids),
+            PaymentAllocation.is_reversed == False,  # noqa: E712
         )
+        .all()
+    ) if _pmt_ids else []
 
-    payments = query.order_by(Payment.payment_date.desc()).limit(300).all()
+    # invoice_nums_map: {payment_id: [(invoice_number, invoice_id), ...]}
+    invoice_nums_map: dict = defaultdict(list)
+    for pmt_id, inv_num, inv_id in _alloc_rows:
+        invoice_nums_map[pmt_id].append((inv_num, inv_id))
 
     return templates.TemplateResponse(
+        request,
         "payments/list.html",
         {
-            "request": request,
-            "payments": payments,
-            "status_filter": status,
-            "q": q,
-            "PaymentStatus": PaymentStatus,
-            "PaymentMethod": PaymentMethod,
+            "request":           request,
+            "payments":          payments,
+            "active_tab":        active_tab,
+            "status_filter":     active_tab,  # back-compat alias
+            "counts":            counts,
+            "q":                 q,
+            "sort":              sort,
+            "direction":         direction,
+            "PaymentStatus":     PaymentStatus,
+            "PaymentMethod":     PaymentMethod,
+            "invoice_nums_map":  dict(invoice_nums_map),
+        },
+    )
+
+
+# ── Export CSV — MUST stay registered before /{payment_id} ───────────────────
+
+@router.get("/export.csv")
+def payment_export_csv(
+    tab: str = "",
+    q: str = "",
+    # `status` kept for parity with the list view's legacy param.
+    status: str = "",
+    db: Session = Depends(get_db),
+):
+    """
+    Stream the current filtered payment list as a CSV download.
+    Respects the same tab/q filters as the list view so "export what I see"
+    works, and streams ALL matching rows — not just the visible page.
+    (Same pattern as /invoices/export.csv and /products/export.csv.)
+    """
+    from collections import defaultdict
+
+    from sqlalchemy.orm import joinedload
+
+    active_tab = tab if tab in _VALID_PMT_TABS else (status if status in _VALID_PMT_TABS else "")
+    query = (
+        db.query(Payment)
+        .join(Customer)
+        .options(
+            joinedload(Payment.customer),
+            selectinload(Payment.allocations),  # amount_allocated/unallocated walk these
+        )
+    )
+    query = _apply_payment_list_filters(query, active_tab, q)
+    payments = query.order_by(Payment.payment_date.desc(), Payment.id.desc()).all()
+
+    # Applied invoice numbers per payment (active allocations only) — one join
+    # query, mirroring the list view's §2B bulk map.
+    _pmt_ids = [p.id for p in payments]
+    _alloc_rows = (
+        db.query(PaymentAllocation.payment_id, Invoice.invoice_number)
+        .join(Invoice, PaymentAllocation.invoice_id == Invoice.id)
+        .filter(
+            PaymentAllocation.payment_id.in_(_pmt_ids),
+            PaymentAllocation.is_reversed == False,  # noqa: E712
+        )
+        .all()
+    ) if _pmt_ids else []
+    inv_nums: dict = defaultdict(list)
+    for pmt_id, inv_num in _alloc_rows:
+        inv_nums[pmt_id].append(inv_num)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "payment_id", "payment_date", "customer", "method", "check_number",
+        "status", "amount_received", "surcharge", "amount_applied",
+        "amount_unapplied", "nsf_fee", "applied_invoices", "reversal_reason",
+    ])
+    for pmt in payments:
+        writer.writerow([
+            pmt.id,
+            pmt.payment_date.strftime("%Y-%m-%d") if pmt.payment_date else "",
+            pmt.customer.company_name if pmt.customer else "",
+            pmt.payment_method,
+            pmt.check_number or "",
+            pmt.status,
+            f"{pmt.amount_received:.2f}",
+            f"{pmt.surcharge_amount:.2f}",
+            f"{pmt.amount_allocated:.2f}",
+            f"{pmt.amount_unallocated:.2f}",
+            f"{pmt.nsf_fee:.2f}",
+            "; ".join(inv_nums.get(pmt.id, [])),
+            pmt.reversal_reason or "",
+        ])
+
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=payments.csv"},
+    )
+
+
+# ── Preview panel — MUST stay registered before /{payment_id} ────────────────
+
+@router.get("/preview/{payment_id}", response_class=HTMLResponse)
+def payment_preview_panel(
+    payment_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Bottom-dock preview partial for the Payment List (§7 Primitive 5).
+    Loaded via htmx.ajax() on row click; returns payments/_preview_panel.html.
+
+    Context published to UI lane:
+      payment         — Payment ORM (with .customer, .allocations pre-loaded)
+      invoice_entries — list[(invoice_number, invoice_id, amount_applied)]
+                        active (non-reversed) allocations only
+      PaymentStatus   — enum class
+      PaymentMethod   — enum class
+      PaymentDirection— enum class
+    """
+    pmt = (
+        db.query(Payment)
+        .options(selectinload(Payment.allocations))
+        .filter(Payment.id == payment_id)
+        .first()
+    )
+    if pmt is None:
+        return HTMLResponse(
+            '<p class="px-6 py-4 text-sm text-red-500">Payment not found.</p>',
+            status_code=404,
+        )
+
+    # Active allocations with invoice numbers — one join query
+    active_alloc_ids = [a.invoice_id for a in pmt.allocations if not a.is_reversed]
+    _inv_map: dict = {}
+    if active_alloc_ids:
+        _inv_map = dict(
+            db.query(Invoice.id, Invoice.invoice_number)
+            .filter(Invoice.id.in_(active_alloc_ids))
+            .all()
+        )
+
+    invoice_entries: list[tuple] = [
+        (_inv_map.get(a.invoice_id, f"INV-{a.invoice_id}"), a.invoice_id, a.amount_applied)
+        for a in pmt.allocations
+        if not a.is_reversed
+    ]
+
+    return templates.TemplateResponse(
+        request,
+        "payments/_preview_panel.html",
+        {
+            "request":          request,
+            "payment":          pmt,
+            "invoice_entries":  invoice_entries,
+            "PaymentStatus":    PaymentStatus,
+            "PaymentMethod":    PaymentMethod,
+            "PaymentDirection": PaymentDirection,
         },
     )
 
@@ -203,9 +439,9 @@ def payment_detail(
     active_allocations = [a for a in pmt.allocations if not a.is_reversed]
 
     return templates.TemplateResponse(
+        request,
         "payments/detail.html",
         {
-            "request": request,
             "payment": pmt,
             "active_allocations": active_allocations,
             "PaymentStatus": PaymentStatus,

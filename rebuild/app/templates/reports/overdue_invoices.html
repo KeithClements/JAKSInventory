@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Overdue Invoices — JAKS Inventory{% endblock %}
+{% block title %}Overdue Invoices — Axle{% endblock %}
 {% block heading %}Overdue Invoices{% endblock %}
 
 {% block content %}
@@ -16,9 +16,9 @@
     </div>
     <button type="submit" class="btn-primary btn-sm">Update</button>
     <div class="flex-1"></div>
-    <button type="button" class="btn-secondary btn-sm" disabled title="Coming soon">
+    <a href="/reports/overdue-invoices/export.csv?as_of={{ as_of.isoformat() }}" class="btn-secondary btn-sm">
       Export CSV
-    </button>
+    </a>
   </form>
 
   <p class="text-xs text-gray-400">As of {{ as_of.strftime('%B %d, %Y') }} · Open and partial invoices past due date only</p>

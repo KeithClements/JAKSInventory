@@ -2,11 +2,17 @@
    Expects `match` in context (see _match_summary in the router). Only render
    when match.has_activity is true. #}
 {% set state_meta = {
-  'matched':          ('badge-green', 'Matched'),
-  'awaiting_receipt': ('badge-gray',  'Awaiting receipt'),
-  'awaiting_bill':    ('badge-blue',  'Awaiting bill'),
-  'over_billed':      ('badge-red',   'Over-billed'),
-  'cost_variance':    ('badge-amber', 'Cost variance'),
+  'matched':            ('badge-green', 'Matched'),
+  'awaiting_receipt':   ('badge-gray',  'Awaiting receipt'),
+  'awaiting_bill':      ('badge-blue',  'Awaiting bill'),
+  'over_billed':        ('badge-red',   'Over-billed'),
+  'cost_variance':      ('badge-amber', 'Cost variance'),
+  'rejected':           ('badge-red',   'Rejected'),
+  'on_hold':            ('badge-gray',  'On hold'),
+  'resolved_accepted':  ('badge-green', 'Accepted'),
+  'resolved_credited':  ('badge-green', 'Credited'),
+  'resolved_cleared':   ('badge-green', 'Cleared'),
+  'resolved_corrected': ('badge-green', 'Corrected'),
 } %}
 <div id="match" class="card scroll-mt-20">
   <div class="card-header">
@@ -40,7 +46,7 @@
       <tbody class="divide-y divide-gray-100">
         {% for r in match.rows %}
         {% set line = r.line %}
-        {% set sm = state_meta[r.state] %}
+        {% set sm = state_meta.get(r.state, ('badge-gray', r.state | replace('_', ' ') | title)) %}
         <tr class="{% if r.state == 'over_billed' %}bg-red-50/20{% elif r.state == 'cost_variance' %}bg-amber-50/20{% endif %}">
 
           {# Item — left-edge stripe lives on the first td (plan §Stripe) #}

@@ -33,7 +33,7 @@ from datetime import datetime
 from app.constants import (
     AuditAction, EntityType,
     VendorCreditStatus, VendorCreditType,
-    WarrantyDecision, WarrantyResolution, WarrantyStatus,
+    WarrantyDecision, WarrantyResolution, WarrantyStatus, WarrantyType,
 )
 from app.models.warranty import WarrantyClaim, WarrantyClaimLine
 from app.settings_utils import bump_counter
@@ -52,14 +52,19 @@ class WarrantyService(BaseService):
         failure_description: str,
         lines: list[dict],
         notes: str = "",
+        warranty_type: str = WarrantyType.VENDOR,
+        esn: str = "",
     ) -> WarrantyClaim:
         """
         Create a warranty claim in DRAFT status. Generates WC-YEAR-NNNN.
         lines: list of {invoice_line_id?, product_id?, qty_claimed, credit_amount?}
         At least one line is required.
+        esn: engine serial number — required by PAI/Interstate-McBee on submission.
         """
         if not lines:
             raise ValueError("Warranty claim must have at least one line")
+        if warranty_type not in (WarrantyType.VENDOR, WarrantyType.JAKS_EXTENDED):
+            warranty_type = WarrantyType.VENDOR
 
         year = datetime.utcnow().year
         claim_number = bump_counter(self.db, "next_warranty_number", "WC", year)
@@ -70,6 +75,8 @@ class WarrantyService(BaseService):
             invoice_id=invoice_id,
             vendor_id=vendor_id,
             status=WarrantyStatus.DRAFT,
+            warranty_type=warranty_type,
+            esn=(esn or "").strip(),
             failure_description=failure_description,
             vendor_decision=WarrantyDecision.PENDING,
             total_credit_amount=0.0,
@@ -90,11 +97,38 @@ class WarrantyService(BaseService):
                 "customer_id": customer_id,
                 "invoice_id": invoice_id,
                 "vendor_id": vendor_id,
+                "warranty_type": warranty_type,
+                "esn": claim.esn,
                 "line_count": len(lines),
             },
         )
         self.db.commit()
         return claim
+
+    def set_esn(self, claim_id: int, esn: str) -> None:
+        """§23.3 Phase 3 — set/correct the claim-level ESN after creation.
+
+        The ESN gate defaults ON now, so a draft filed before the serial was
+        known must be repairable in place (previously the ESN was only settable
+        at create time — a blank-ESN draft was permanently un-submittable).
+        Allowed on any not-CLOSED claim: vendors also bounce claims for a wrong
+        serial after submission.
+        """
+        claim = self._get_claim_or_404(claim_id)
+        if claim.status == WarrantyStatus.CLOSED:
+            raise ValueError(
+                f"Claim {claim.claim_number} is closed — the ESN can no longer be edited."
+            )
+        old_esn = claim.esn
+        claim.esn = (esn or "").strip()
+        self.audit(
+            entity_type=EntityType.WARRANTY_CLAIM,
+            entity_id=claim_id,
+            action=AuditAction.EDITED,
+            old_value={"esn": old_esn},
+            new_value={"esn": claim.esn},
+        )
+        self.db.commit()
 
     def add_claim_line(self, claim_id: int, data: dict) -> WarrantyClaimLine:
         """Add a line to a DRAFT claim."""
@@ -125,6 +159,25 @@ class WarrantyService(BaseService):
             raise ValueError(
                 f"Claim {claim.claim_number} has no lines — add at least one before submitting"
             )
+        # R2 — a vendor-warranty claim with no vendor has nobody to submit to.
+        # (JAKS-extended claims are absorbed in-house, so no vendor is required.)
+        if claim.warranty_type == WarrantyType.VENDOR and not claim.vendor_id:
+            raise ValueError(
+                f"Claim {claim.claim_number} has no vendor assigned — "
+                "assign a vendor before submitting"
+            )
+        # §21 — PAI / Interstate-McBee reject a vendor warranty claim with no ESN
+        # (engine serial). Gated by the `warranty_require_esn` setting — default
+        # ON since §23.3 Phase 3 (both vendors require it); flip it off in
+        # Settings for vendors that don't. In-house JAKS-extended claims never
+        # need one.
+        if claim.warranty_type == WarrantyType.VENDOR and not (claim.esn or "").strip():
+            from app.settings_utils import get_setting_value_db
+            if get_setting_value_db(self.db, "warranty_require_esn", "true").strip().lower() == "true":
+                raise ValueError(
+                    f"Claim {claim.claim_number} has no ESN (engine serial) — "
+                    "vendor warranty claims require one (warranty_require_esn is on)"
+                )
 
         old_status = claim.status
         claim.status = WarrantyStatus.SUBMITTED_TO_VENDOR
@@ -233,6 +286,16 @@ class WarrantyService(BaseService):
             raise ValueError(
                 f"Claim {claim.claim_number} has no credit amount to apply"
             )
+
+        # Idempotency guard — if a credit memo already exists for this claim (a prior
+        # credit_customer committed the CM but may have crashed before flipping the
+        # claim status), do NOT issue a second one. Prevents double-credit on retry.
+        from app.models.credit_memo import CreditMemo as _CMGuard
+        if self.db.query(_CMGuard).filter(_CMGuard.warranty_claim_id == claim.id).first():
+            claim.status = WarrantyStatus.CUSTOMER_CREDITED
+            claim.resolution_type = WarrantyResolution.CREDIT
+            self.db.commit()
+            return
 
         # R8 — issue credit memo for the warranty amount; auto-close pushes to credit balance.
         cm = CreditMemoService(self.db, self.current_user_id).create_credit_memo(
@@ -420,7 +483,94 @@ class WarrantyService(BaseService):
             approved_qty=0,
             credit_amount=round(float(data.get("credit_amount", 0.0)), 2),
             resolution=None,
+            # Q6 — serial/ESN + labor reimbursement captured at filing time
+            # (also editable later via update_service_info during the process).
+            serial_number=(str(data.get("serial_number") or "").strip() or None),
+            labor_hours=round(float(data.get("labor_hours", 0.0) or 0.0), 2),
+            labor_rate=round(float(data.get("labor_rate", 0.0) or 0.0), 2),
         )
         self.db.add(line)
         self.db.flush()
         return line
+
+    def update_service_info(self, claim_id: int, line_updates: dict[int, dict]) -> None:
+        """Q6 — record per-line serial number + labor (hours × rate) during the
+        warranty process. line_updates = {line_id: {serial_number, labor_hours,
+        labor_rate, replacement_invoice_number}}. Labor is reimbursement
+        tracking, distinct from the parts credit_amount, so it is editable for
+        any not-yet-closed claim (you often learn the repair labor after
+        filing). No status transition.
+
+        §23.3 Phase 3 — replacement_invoice_number links the replacement part
+        that went out on a NEW invoice: the number is resolved to that
+        invoice's first product line matching this claim line's product
+        (lowest line id when several) and stored in
+        replacement_invoice_line_id. Blank clears the link. An unknown invoice
+        number, or an invoice with no line for this product, raises so the
+        clerk never silently records a bad link."""
+        claim = self._get_claim_or_404(claim_id)
+        if claim.status == WarrantyStatus.CLOSED:
+            raise ValueError(
+                f"Claim {claim.claim_number} is closed — service info can no longer be edited."
+            )
+        by_id = {ln.id: ln for ln in claim.claim_lines}
+        for line_id, vals in line_updates.items():
+            line = by_id.get(int(line_id))
+            if line is None:
+                continue
+            if "serial_number" in vals:
+                line.serial_number = (str(vals["serial_number"] or "").strip() or None)
+            if "labor_hours" in vals:
+                line.labor_hours = round(float(vals["labor_hours"] or 0.0), 2)
+            if "labor_rate" in vals:
+                line.labor_rate = round(float(vals["labor_rate"] or 0.0), 2)
+            if "replacement_invoice_number" in vals:
+                line.replacement_invoice_line_id = self._resolve_replacement_line(
+                    line, str(vals["replacement_invoice_number"] or "").strip()
+                )
+        self.audit(
+            entity_type=EntityType.WARRANTY_CLAIM,
+            entity_id=claim_id,
+            action=AuditAction.EDITED,
+            new_value={"service_info_lines": list(line_updates.keys())},
+            notes="Updated warranty line serial/labor",
+        )
+        self.db.commit()
+
+    def _resolve_replacement_line(self, claim_line, invoice_number: str) -> int | None:
+        """§23.3 Phase 3 — resolve a typed invoice number to the replacement
+        invoice line for this claim line's product. See update_service_info."""
+        if not invoice_number:
+            return None
+        if claim_line.product_id is None:
+            raise ValueError(
+                "This claim line has no product — a replacement link needs one "
+                "to match against the invoice"
+            )
+        from app.constants import LineType
+        from app.models.invoice import Invoice, InvoiceLine
+
+        invoice = (
+            self.db.query(Invoice)
+            .filter(Invoice.invoice_number == invoice_number)
+            .first()
+        )
+        if invoice is None:
+            raise ValueError(f"Invoice {invoice_number} not found")
+        candidates = (
+            self.db.query(InvoiceLine)
+            .filter(
+                InvoiceLine.invoice_id == invoice.id,
+                InvoiceLine.line_type == LineType.PRODUCT,
+                InvoiceLine.product_id == claim_line.product_id,
+            )
+            .order_by(InvoiceLine.id.asc())
+            .all()
+        )
+        if not candidates:
+            sku = claim_line.product.sku if claim_line.product else f"product {claim_line.product_id}"
+            raise ValueError(
+                f"Invoice {invoice_number} has no product line for {sku} — "
+                "the replacement link must point at the same part"
+            )
+        return candidates[0].id

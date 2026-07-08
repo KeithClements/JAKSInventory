@@ -10,7 +10,27 @@
     <p class="text-lg font-semibold {% if balance.overdue_amount > 0 %}text-red-700{% else %}text-gray-400{% endif %}">
       ${{ "%.2f"|format(balance.overdue_amount) }}
     </p>
-    {% if balance.oldest_overdue_days > 0 %}
+    {# #3 — A/R aging bar reading balance.buckets from CRMService.get_account_balance
+       (keys per ar_aging_utils.AGING_BUCKETS: current / 1_30 / 31_60 / 61_90 / over_90 → $).
+       §4 ramp green→amber→red (no orange — reserved for cores). Falls back to the
+       "Xd oldest" line when buckets are absent. Tailwind utilities only (no new CSS class). #}
+    {% if balance.buckets %}
+    {% set _bk = balance.buckets %}
+    {% set _bt = (_bk.current | default(0)) + (_bk['1_30'] | default(0)) + (_bk['31_60'] | default(0)) + (_bk['61_90'] | default(0)) + (_bk['over_90'] | default(0)) %}
+    {% if _bt > 0 %}
+    <div class="mt-1.5" title="A/R aging — Current · 1-30 · 31-60 · 61-90 · 90+">
+      <div class="flex h-1.5 rounded-full overflow-hidden bg-gray-100">
+        {% for _k, _cls in [('current','bg-green-500'), ('1_30','bg-green-300'), ('31_60','bg-amber-300'), ('61_90','bg-amber-500'), ('over_90','bg-red-500')] %}
+        {% set _v = _bk[_k] | default(0) %}
+        {% if _v > 0 %}<div class="{{ _cls }}" style="width:{{ (_v / _bt * 100) | round(1) }}%"></div>{% endif %}
+        {% endfor %}
+      </div>
+      {% if (_bk['over_90'] | default(0)) > 0 %}
+      <p class="text-[10px] text-red-500 mt-0.5 tabular-nums">${{ '%.0f' % _bk['over_90'] }} over 90d</p>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% elif balance.oldest_overdue_days > 0 %}
     <p class="text-xs text-red-400 mt-0.5">{{ balance.oldest_overdue_days }}d oldest</p>
     {% endif %}
   </div>

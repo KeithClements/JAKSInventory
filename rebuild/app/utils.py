@@ -6,6 +6,8 @@ No database access, no imports from app modules — safe to import anywhere.
 """
 from __future__ import annotations
 
+import re
+
 
 def calc_line_total(unit_price: float, qty: int, discount_pct: float = 0.0) -> float:
     """
@@ -14,6 +16,36 @@ def calc_line_total(unit_price: float, qty: int, discount_pct: float = 0.0) -> f
     """
     discounted = unit_price * (1 - discount_pct / 100)
     return round(discounted * qty, 2)
+
+
+# The qty cell is the busiest input in the app. A floor keeps a fat-fingered
+# negative/zero out of the money path; a ceiling keeps an absurd fat-finger
+# (e.g. 999999999 → a multi-trillion-dollar line) from producing a document no
+# one would ever mean. 100k units on a single parts line is already unheard-of
+# at a diesel counter — split into lines if a real order somehow exceeds it.
+MAX_LINE_QTY = 100_000
+
+
+def validate_line_qty(value) -> int:
+    """Normalize a line quantity to an int in [1, MAX_LINE_QTY].
+
+    Shared by quote/invoice/SO line editing so the SAME floor+ceiling guards
+    every document's money path — a bad qty on any of them carries straight into
+    conversion and the ledger otherwise. Raises ValueError on non-int, < 1, or
+    > MAX_LINE_QTY.
+    """
+    try:
+        qty = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("Quantity must be a whole number of 1 or more")
+    if qty < 1:
+        raise ValueError("Quantity must be at least 1")
+    if qty > MAX_LINE_QTY:
+        raise ValueError(
+            f"Quantity looks too large (max {MAX_LINE_QTY:,}). "
+            "Split into multiple lines if this is real."
+        )
+    return qty
 
 
 def calc_margin_pct(unit_price: float, unit_cost: float) -> float:
@@ -67,3 +99,52 @@ def calc_sell_price(cost: float, markup_pct: float) -> float:
     markup_pct = 30 means sell = cost * 1.30
     """
     return round(cost * (1 + markup_pct / 100), 2)
+
+
+def apply_sort(query, allowed: dict, sort: str, direction: str = "asc", default: str | None = None):
+    """Whitelisted, injection-safe ORDER BY for list view-functions (mirrors the
+    products.py sort pattern). ``allowed`` maps a sort-key string → a SQLAlchemy
+    column. An unknown ``sort`` normalizes to ``default`` (or the first key); an
+    unknown ``direction`` normalizes to 'asc'. Returns
+    ``(query, sort_key, direction)`` so the view can echo the normalized values
+    back to the template.
+    """
+    key = sort if sort in allowed else (default if default in allowed else next(iter(allowed)))
+    direction = "desc" if str(direction).lower() == "desc" else "asc"
+    col = allowed[key]
+    return query.order_by(col.desc() if direction == "desc" else col.asc()), key, direction
+
+
+def compute_pager(page: int, total: int, per_page: int = 50) -> dict:
+    """§21 — list pagination math. Returns a dict the macros/_pager.html partial
+    renders: {page, per_page, total, total_pages, start, end, offset}. Clamps the
+    page into range so a bad ?page= never errors."""
+    per_page = max(1, int(per_page))
+    total = max(0, int(total))
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    try:
+        page = int(page)
+    except (TypeError, ValueError):
+        page = 1
+    page = min(max(1, page), total_pages)
+    offset = (page - 1) * per_page
+    start = (offset + 1) if total else 0
+    end = min(offset + per_page, total)
+    return {"page": page, "per_page": per_page, "total": total,
+            "total_pages": total_pages, "start": start, "end": end, "offset": offset}
+
+
+def normalize_part(s: str) -> str:
+    """
+    Fold a part / OEM / cross-reference number for matching: strip every
+    non-alphanumeric character and lower-case the rest.  Lets a user find a
+    part regardless of how separators or case were entered:
+
+        normalize_part("OK-1")  == "ok1"
+        normalize_part("ok 1")  == "ok1"
+        normalize_part("OK.1")  == "ok1"
+
+    Used by SearchService to match SKUs, cross-references, and vendor part
+    numbers.  Pure function — safe to import anywhere.
+    """
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())

@@ -1,6 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
+import re
+import time
 from datetime import datetime
 from urllib.parse import quote as url_quote
 
@@ -8,10 +10,10 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
-from app.constants import POStatus
-from app.deps import get_db
+from app.constants import POStatus, POShipToType
+from app.deps import get_db, get_current_user_id
 from app.models.customer import Customer, CustomerAddress
 from app.models.product import Product
 from app.models.purchase_order import PurchaseOrder, POLine, VendorBill
@@ -22,14 +24,14 @@ from app.services.document_render import (
     render_pdf_or_fallback,
     vendor_address_lines,
 )
+from app.services.base import ConcurrentEditError
 from app.services.po_service import POService
+from app.services.serial_service import SerialService, parse_serials
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/purchase-orders", tags=["purchase_orders"])
 templates = Jinja2Templates(directory="app/templates")
-
-CURRENT_USER_ID = 1
 
 # ── L2 list tab definitions (JAKS_UI_Change_Plan.md §2) ──────────────────────
 # Maps user-facing tab slug → underlying PO statuses it covers.
@@ -78,20 +80,58 @@ def _match_summary(po: PurchaseOrder) -> dict:
     return POService.compute_match_summary(po)
 
 
+def _volume_discount_ctx(po: PurchaseOrder) -> dict:
+    """Vendor volume-discount state for the lines-section nudge / applied row.
+    `vol_program` is the eligible (not-yet-applied) program for the Apply nudge;
+    `vol_applied` flags that the discount is on; `vol_savings` is the actual
+    rounded dollars off (parts only)."""
+    applied = (po.volume_discount_pct or 0.0) > 0
+    list_subtotal = POService._list_subtotal(po)
+    program = POService.eligible_volume_program(po)
+    if applied:
+        savings = round(
+            sum(
+                ((ln.list_unit_cost or ln.unit_cost) - ln.unit_cost) * ln.qty_ordered
+                for ln in po.lines
+            ),
+            2,
+        )
+    elif program is not None:
+        savings = round(list_subtotal * (program.discount_percent or 0.0) / 100.0, 2)
+    else:
+        savings = 0.0
+    return {
+        "vol_program": program,
+        "vol_applied": applied,
+        "vol_list_subtotal": list_subtotal,
+        "vol_savings": savings,
+    }
+
+
 def _workspace_ctx(po: PurchaseOrder) -> dict:
     editable   = po.status in (POStatus.DRAFT, POStatus.VERBAL_ORDER)
-    can_receive = po.status in (POStatus.SENT, POStatus.PARTIAL)
+    # Phase 2 — costs stay correctable after the order is committed (a mis-keyed
+    # cost found post-send). Not free-form line editing (that's `editable`); a
+    # per-line "correct cost" affordance gated to lines not yet on a vendor bill.
+    cost_correctable = po.status in (POStatus.SENT, POStatus.PARTIAL, POStatus.RECEIVED)
+    # §21 — VERBAL_ORDER POs are receivable directly. A phone/verbal order with
+    # same-day delivery is a daily diesel-counter event; forcing staff through a
+    # "Place Order" (→ SENT) step first is needless friction and inflates
+    # qty_on_order. The receiving queue already lists VERBAL_ORDER as awaiting.
+    can_receive = po.status in (POStatus.VERBAL_ORDER, POStatus.SENT, POStatus.PARTIAL)
     can_bill    = po.status in (POStatus.RECEIVED, POStatus.PARTIAL)
     match = _match_summary(po)
     return {
         "po": po,
         "editable": editable,
+        "cost_correctable": cost_correctable,
         "can_receive": can_receive,
         "can_bill": can_bill,
         "POStatus": POStatus,
         "unreceived_lines": [ln for ln in po.lines if ln.qty_outstanding > 0] if can_receive else [],
         "received_lines":   [ln for ln in po.lines if ln.qty_received > 0 and (ln.qty_received - (ln.qty_billed or 0)) > 0] if can_bill else [],
         "match": match,
+        **_volume_discount_ctx(po),
     }
 
 
@@ -101,6 +141,34 @@ def _workspace_ctx(po: PurchaseOrder) -> dict:
 # Mirrors the Products List pattern: grouped tab filter with counts from the
 # *unfiltered* dataset, search across PO #, vendor name, and vendor confirmation
 # number, and a per-row preview dock (loaded via /purchase-orders/preview/{id}).
+
+
+def _filtered_pos(db: Session, tab: str, q: str) -> list[PurchaseOrder]:
+    """One tab/q filter shared by the list view and its CSV export so
+    'export what I see' matches the table exactly."""
+    query = (
+        db.query(PurchaseOrder)
+        # selectinload(lines): the CSV export + subtotal/total properties walk
+        # .lines per row — without this each exported PO fires a lazy-load SELECT
+        # (N+1). Mirrors the SO export.
+        .options(joinedload(PurchaseOrder.vendor), selectinload(PurchaseOrder.lines))
+        .order_by(PurchaseOrder.created_at.desc())
+    )
+    statuses = TAB_GROUPS.get(tab, [])
+    if statuses:  # empty list = "all" → no filter
+        query = query.filter(PurchaseOrder.status.in_(statuses))
+    if q:
+        like = f"%{q.strip()}%"
+        _qd = q.replace("-", "").replace(" ", "")
+        _po_dedash = func.replace(func.replace(PurchaseOrder.po_number, "-", ""), " ", "")
+        query = query.outerjoin(Vendor, PurchaseOrder.vendor_id == Vendor.id).filter(
+            PurchaseOrder.po_number.ilike(like)
+            # de-dash so "po20260001" still finds "PO-2026-0001"
+            | _po_dedash.ilike(f"%{_qd}%")
+            | PurchaseOrder.vendor_confirmation_number.ilike(like)
+            | Vendor.name.ilike(like)
+        )
+    return query.all()
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -137,28 +205,11 @@ def po_list(
         "cancelled": _group_count("cancelled"),
     }
 
-    # Filtered query
-    query = (
-        db.query(PurchaseOrder)
-        .options(joinedload(PurchaseOrder.vendor))
-        .order_by(PurchaseOrder.created_at.desc())
-    )
-    statuses = TAB_GROUPS.get(tab, [])
-    if statuses:  # empty list = "all" → no filter
-        query = query.filter(PurchaseOrder.status.in_(statuses))
-    if q:
-        like = f"%{q.strip()}%"
-        query = query.outerjoin(Vendor, PurchaseOrder.vendor_id == Vendor.id).filter(
-            PurchaseOrder.po_number.ilike(like)
-            | PurchaseOrder.vendor_confirmation_number.ilike(like)
-            | Vendor.name.ilike(like)
-        )
-
-    pos = query.all()
+    pos = _filtered_pos(db, tab, q)
     return templates.TemplateResponse(
+        request,
         "purchase_orders/list.html",
         {
-            "request": request,
             "pos": pos,
             "tabs": PO_LIST_TABS,
             "tab": tab,
@@ -167,6 +218,59 @@ def po_list(
             "POStatus": POStatus,
             "now": datetime.utcnow(),
         },
+    )
+
+
+# ── Export CSV — multi-segment path, registered before /{po_id} ──────────────
+
+@router.get("/export.csv")
+def po_export_csv(
+    tab: str = "all",
+    q: str = "",
+    # `status` kept for backward-compat, same as the list view.
+    status: str = "",
+    db: Session = Depends(get_db),
+):
+    """Stream the current filtered PO list as a CSV download. Mirrors the list
+    view's tab/q filters (same pattern as /products/export.csv and
+    /customers/export.csv) so "export what I see" matches exactly."""
+    import csv
+    import io
+
+    from fastapi.responses import StreamingResponse
+
+    if status and tab == "all":
+        tab = _STATUS_TO_TAB.get(status, "all")
+    if tab not in TAB_GROUPS:
+        tab = "all"
+
+    pos = _filtered_pos(db, tab, q)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "po_number", "vendor", "status", "created", "expected",
+        "vendor_confirmation_number", "lines", "subtotal", "freight_in", "total",
+    ])
+    for p in pos:
+        writer.writerow([
+            p.po_number,
+            p.vendor.name if p.vendor else "",
+            p.status,
+            p.created_at.strftime("%Y-%m-%d") if p.created_at else "",
+            p.expected_at.strftime("%Y-%m-%d") if p.expected_at else "",
+            p.vendor_confirmation_number or "",
+            len(p.lines),
+            f"{p.subtotal:.2f}",
+            f"{(p.freight_in_cost or 0.0):.2f}",
+            f"{p.total:.2f}",
+        ])
+
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=purchase_orders.csv"},
     )
 
 
@@ -189,8 +293,9 @@ def po_preview_panel(po_id: int, request: Request, db: Session = Depends(get_db)
             '<p class="px-6 py-4 text-sm text-gray-400">Purchase order not found.</p>'
         )
     return templates.TemplateResponse(
+        request,
         "purchase_orders/_preview_panel.html",
-        {"request": request, "po": po},
+        {"po": po},
     )
 
 
@@ -288,9 +393,9 @@ def po_receiving_queue(request: Request, q: str = "", db: Session = Depends(get_
     ))
 
     return templates.TemplateResponse(
+        request,
         "purchase_orders/receiving_queue.html",
         {
-            "request": request,
             "rows": rows,
             "metrics": metrics,
             "q": q,
@@ -298,6 +403,182 @@ def po_receiving_queue(request: Request, q: str = "", db: Session = Depends(get_
             "now": now,
         },
     )
+
+
+# ── Multi-PO "Receive Shipment" (one truck, one action, spans a vendor's POs) ─
+#
+# The per-PO /{po_id}/receive path stays for single-PO receiving. This vendor-
+# scoped screen lets a clerk receive a delivery that fulfills SEVERAL of one
+# vendor's open POs in a single action — the model already supports it
+# (POReceipt.vendor_id; POReceiptLine.po_id per line). §23.3 Phase 1.
+# NOTE: both routes are static two-segment paths, registered before the
+# /{po_id} routes below, so "receive-shipment" never binds as a po_id.
+
+@router.get("/receive-shipment", response_class=HTMLResponse)
+def po_receive_shipment_form(
+    request: Request, vendor_id: int | None = None, db: Session = Depends(get_db)
+):
+    svc = POService(db)
+    if vendor_id is None:
+        # Vendor picker — every vendor with at least one open receivable line.
+        pos = (
+            db.query(PurchaseOrder)
+            .options(joinedload(PurchaseOrder.vendor), joinedload(PurchaseOrder.lines))
+            .filter(PurchaseOrder.status.in_(POService.RECEIVABLE_STATUSES))
+            .all()
+        )
+        picks: dict[int, dict] = {}
+        for po in pos:
+            if not po.vendor:
+                continue
+            open_lines = [ln for ln in po.lines if ln.qty_outstanding > 0]
+            if not open_lines:
+                continue
+            entry = picks.setdefault(
+                po.vendor_id, {"vendor": po.vendor, "po_count": 0, "line_count": 0}
+            )
+            entry["po_count"] += 1
+            entry["line_count"] += len(open_lines)
+        vendor_picks = sorted(picks.values(), key=lambda e: (e["vendor"].name or "").lower())
+        return templates.TemplateResponse(
+            request, "purchase_orders/receive_shipment.html",
+            {"vendor": None, "vendor_picks": vendor_picks},
+        )
+
+    vendor = db.get(Vendor, vendor_id)
+    if vendor is None:
+        return RedirectResponse("/purchase-orders/receive-shipment", status_code=303)
+    groups = svc.get_open_receivable_lines_for_vendor(vendor_id)
+    for g in groups:
+        st = g["po"].status
+        g["status_kind"] = "partial" if st == POStatus.PARTIAL else "open"
+        g["status_label"] = "Partial" if st == POStatus.PARTIAL else "Open"
+    total_lines = sum(len(g["open_lines"]) for g in groups)
+    return templates.TemplateResponse(
+        request, "purchase_orders/receive_shipment.html",
+        {"vendor": vendor, "groups": groups, "total_lines": total_lines},
+    )
+
+
+@router.post("/receive-shipment", response_class=RedirectResponse)
+async def po_receive_shipment(
+    request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    form = await request.form()
+    raw_vendor = str(form.get("vendor_id", "")).strip()
+    if not raw_vendor.isdigit():
+        return RedirectResponse("/purchase-orders/receive-shipment", status_code=303)
+    vendor_id = int(raw_vendor)
+    _back = f"/purchase-orders/receive-shipment?vendor_id={vendor_id}"
+
+    # Collect recv_/condition_/serials_ for every line across the vendor's POs.
+    po_line_quantities: dict[int, int] = {}
+    condition_notes_map: dict[int, str] = {}
+    serials_map: dict[int, list[str]] = {}
+    for key in list(form.keys()):
+        if not key.startswith("recv_"):
+            continue
+        lid_raw = key[len("recv_"):]
+        if not lid_raw.isdigit():
+            continue
+        lid = int(lid_raw)
+        raw = str(form.get(key, "")).strip()
+        qty = int(raw) if raw.isdigit() else 0
+        if qty > 0:
+            po_line_quantities[lid] = qty
+        cond = str(form.get(f"condition_{lid}", "")).strip()
+        if cond:
+            condition_notes_map[lid] = cond
+        parsed = parse_serials(str(form.get(f"serials_{lid}", "") or ""))
+        if parsed:
+            serials_map[lid] = parsed
+
+    # Same guard as the per-PO route: an all-zero submit is not a receipt.
+    if not po_line_quantities:
+        return RedirectResponse(
+            f"{_back}&error={url_quote('No receive quantities entered — lines left at 0 are skipped.')}",
+            status_code=303,
+        )
+
+    receipt = None
+    try:
+        svc = POService(db, current_user_id=user_id)
+        receipt = svc.create_receipt(
+            vendor_id=vendor_id,
+            po_line_quantities=po_line_quantities,
+            data={
+                "tracking_number": str(form.get("tracking_number", "")).strip() or None,
+                "carrier": str(form.get("carrier", "")).strip() or None,
+                "notes": str(form.get("notes", "")).strip(),
+                "condition_notes_map": condition_notes_map,
+            },
+        )
+    except PermissionError:
+        db.rollback()
+        return RedirectResponse(
+            f"{_back}&error={url_quote('You do not have permission to receive POs. Ask an admin or bookkeeper.')}",
+            status_code=303,
+        )
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(f"{_back}&error={url_quote(str(exc))}", status_code=303)
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error receiving shipment for vendor %s", vendor_id)
+        return RedirectResponse(
+            f"{_back}&error={url_quote('Unexpected error — receipt was not recorded.')}",
+            status_code=303,
+        )
+
+    # Serial capture — a follow-up transaction (mirrors the per-PO route); a
+    # serial problem can never undo the already-committed goods receipt.
+    info_notes: list[str] = []
+    if serials_map and receipt is not None:
+        try:
+            serial_svc = SerialService(db, current_user_id=user_id)
+            receipt_line_by_po_line = {rl.po_line_id: rl for rl in receipt.lines}
+            line_by_id = {rl.po_line.id: rl.po_line for rl in receipt.lines}
+            for po_line_id, serials in serials_map.items():
+                line = line_by_id.get(po_line_id)
+                if line is None or not line.product_id:
+                    continue
+                product = line.product
+                if not product or not product.has_serial_number:
+                    continue
+                label = product.sku or f"line {po_line_id}"
+                qty_received = po_line_quantities.get(po_line_id, 0)
+                if qty_received <= 0:
+                    continue
+                receipt_line = receipt_line_by_po_line.get(po_line_id)
+                result = serial_svc.record_received_serials(
+                    product_id=line.product_id,
+                    serials=serials,
+                    po_receipt_line_id=receipt_line.id if receipt_line else None,
+                )
+                if result["skipped"]:
+                    info_notes.append(
+                        f"{label}: {len(result['skipped'])} duplicate serial(s) skipped."
+                    )
+                if len(serials) != qty_received:
+                    info_notes.append(
+                        f"{label}: {len(serials)} serial(s) entered for {qty_received} unit(s) received."
+                    )
+            db.commit()
+        except Exception:
+            db.rollback()
+            log.exception(
+                "Serial capture failed for vendor %s shipment — receipt already recorded",
+                vendor_id,
+            )
+            info_notes = ["Serial numbers could not be recorded — the goods receipt itself was saved."]
+
+    pos_count = len({rl.po_id for rl in receipt.lines})
+    msg = f"Received {len(po_line_quantities)} line(s) across {pos_count} PO(s)."
+    redirect = f"{_back}&ok={url_quote(msg)}"
+    if info_notes:
+        redirect += f"&info={url_quote(' '.join(info_notes))}"
+    return RedirectResponse(redirect, status_code=303)
 
 
 # ── 3-Way Match Queue ───────────────────────────────────────────────────────
@@ -331,9 +612,9 @@ def po_match_queue(request: Request, db: Session = Depends(get_db)):
             flagged.append({"po": p, "match": summary})
 
     return templates.TemplateResponse(
+        request,
         "purchase_orders/match_queue.html",
         {
-            "request": request,
             "flagged": flagged,
             "total": len(flagged),
             "now": datetime.utcnow(),
@@ -344,20 +625,36 @@ def po_match_queue(request: Request, db: Session = Depends(get_db)):
 # ── New PO picker (slide-over) ─────────────────────────────────────────────
 
 @router.get("/new", response_class=HTMLResponse)
-def po_new(request: Request, db: Session = Depends(get_db)):
+def po_new(
+    request: Request,
+    db: Session = Depends(get_db),
+    product_id: int | None = None,
+    vendor_id: int | None = None,
+):
     if not request.headers.get("HX-Request"):
         return RedirectResponse("/purchase-orders/", status_code=303)
-    vendors = db.query(Vendor).filter(Vendor.is_active == True).order_by(Vendor.name).all()
+    vendors = db.query(Vendor).filter(Vendor.is_active == True).order_by(Vendor.name).all()  # noqa: E712
+    # When launched from a product ("New PO" in the product preview dock) seed the
+    # part being ordered and pre-select its preferred vendor.
+    product = (
+        db.query(Product).filter(Product.id == product_id).first() if product_id else None
+    )
     return templates.TemplateResponse(
+        request,
         "purchase_orders/_new_picker.html",
-        {"request": request, "vendors": vendors, "POStatus": POStatus},
+        {
+            "vendors": vendors,
+            "POStatus": POStatus,
+            "product": product,
+            "preselect_vendor_id": vendor_id,
+        },
     )
 
 
 @router.post("/new", response_class=RedirectResponse)
-async def po_create(request: Request, db: Session = Depends(get_db)):
+async def po_create(request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+    svc = POService(db, current_user_id=user_id)
 
     po_data: dict = {
         "notes": str(form.get("notes", "")).strip(),
@@ -380,14 +677,152 @@ async def po_create(request: Request, db: Session = Depends(get_db)):
 
     po = svc.create_po(vendor_id=int(form["vendor_id"]), data=po_data)
 
+    # Seed the selected part as the first line when launched from a product
+    # ("New PO" in the product preview dock). add_line backfills the unit cost
+    # (from this vendor's source), description, and core charge from the product.
+    seed_pid = str(form.get("product_id", "")).strip()
+    if seed_pid.isdigit():
+        try:
+            svc.add_line(po_id=po.id, product_id=int(seed_pid), data={"qty_ordered": 1})
+        except ValueError as exc:
+            log.warning("New-PO product seed failed (po=%s, product=%s): %s", po.id, seed_pid, exc)
+
     if status_override == POStatus.VERBAL_ORDER:
-        po.status = POStatus.VERBAL_ORDER
-        db.commit()
+        # C9 — mark_verbal_order sets the status AND puts the lines on order
+        # (qty_on_order). The old code only set the status, so verbal/phone
+        # orders never showed as on-order anywhere.
+        svc.mark_verbal_order(po.id)
 
     return RedirectResponse(f"/purchase-orders/{po.id}", status_code=303)
 
 
 # ── Workspace ─────────────────────────────────────────────────────────────────
+
+def _po_core_return_context(db: Session, po: PurchaseOrder) -> dict:
+    """
+    Cores ready to ship back to THIS PO's vendor + this vendor's recent core
+    returns (VCRs) — surfaced on the PO so a vendor core return slip can be
+    printed and shipped from the order the cores belong to.
+
+    A customer-returned core is offered for this vendor when ANY of: it is
+    explicitly tagged to the vendor, the part was purchased on THIS PO, or the
+    product's preferred vendor source is this vendor. Customer cores carry no
+    vendor_id until batched, and vendor sources can be sparse, so we union the
+    signals rather than rely on one.
+    """
+    from app.constants import (
+        CoreDirection, CoreStatus, CoreVendorStatus, CoreInspectionOutcome,
+    )
+    from app.models.core import CoreCharge, VendorCoreReturn
+
+    vendor_id = po.vendor_id
+    po_product_ids = {ln.product_id for ln in po.lines if ln.product_id}
+
+    ready_all = (
+        db.query(CoreCharge)
+        .filter(
+            CoreCharge.direction == CoreDirection.CUSTOMER_OWES_RETURN,
+            CoreCharge.status == CoreStatus.RETURNED,
+            CoreCharge.vendor_status == CoreVendorStatus.PENDING,
+            CoreCharge.inspection_outcome != CoreInspectionOutcome.HOLD,
+            CoreCharge.vcr_id.is_(None),
+        )
+        .order_by(CoreCharge.updated_at)
+        .all()
+    )
+
+    def _for_this_vendor(c: CoreCharge) -> bool:
+        if c.vendor_id == vendor_id:
+            return True
+        if c.product_id in po_product_ids:
+            return True
+        pvs = c.product.preferred_vendor_source if c.product else None
+        return bool(pvs and pvs.vendor_id == vendor_id)
+
+    ready = [c for c in ready_all if _for_this_vendor(c)]
+
+    vcrs = (
+        db.query(VendorCoreReturn)
+        .filter(VendorCoreReturn.vendor_id == vendor_id)
+        .order_by(VendorCoreReturn.created_at.desc())
+        .limit(10)
+        .all()
+    )
+
+    return {"core_return_ready": ready, "core_return_vcrs": vcrs}
+
+
+# ── Standalone vendor-bill list (§21) ────────────────────────────────────────
+# Registered BEFORE /{po_id} so "bills" isn't matched as a PO id. All vendor
+# bills across POs, with their net-of-vendor-credit balance, filterable by status.
+
+@router.get("/bills", response_class=HTMLResponse)
+def vendor_bill_list(request: Request, tab: str = "open", q: str = "", db: Session = Depends(get_db)):
+    from app.constants import VendorBillStatus
+    from app.models.vendor_credit import VendorCreditMemoAllocation
+
+    _OPEN = [VendorBillStatus.PENDING, VendorBillStatus.APPROVED, VendorBillStatus.DISCREPANCY]
+    TAB_STATUS = {
+        "open": _OPEN,
+        "pending": [VendorBillStatus.PENDING],
+        "discrepancy": [VendorBillStatus.DISCREPANCY],
+        "paid": [VendorBillStatus.PAID],
+        "all": [],
+    }
+
+    raw_counts = dict(
+        db.query(VendorBill.status, func.count(VendorBill.id)).group_by(VendorBill.status).all()
+    )
+    counts = {
+        "open": sum(raw_counts.get(s, 0) for s in _OPEN),
+        "pending": raw_counts.get(VendorBillStatus.PENDING, 0),
+        "discrepancy": raw_counts.get(VendorBillStatus.DISCREPANCY, 0),
+        "paid": raw_counts.get(VendorBillStatus.PAID, 0),
+        "all": sum(raw_counts.values()),
+    }
+
+    query = (
+        db.query(VendorBill)
+        .options(joinedload(VendorBill.vendor), joinedload(VendorBill.lines))
+        .order_by(VendorBill.created_at.desc())
+    )
+    statuses = TAB_STATUS.get(tab, _OPEN)
+    if statuses:
+        query = query.filter(VendorBill.status.in_(statuses))
+    if q:
+        like = f"%{q.strip()}%"
+        query = query.outerjoin(Vendor, VendorBill.vendor_id == Vendor.id).filter(
+            VendorBill.bill_number.ilike(like) | Vendor.name.ilike(like)
+        )
+    bills = query.all()
+
+    # Net-of-vendor-credit balance per shown bill.
+    bill_ids = [b.id for b in bills]
+    credit_by_bill: dict[int, float] = {}
+    if bill_ids:
+        for bid, amt in (
+            db.query(VendorCreditMemoAllocation.vendor_bill_id,
+                     func.sum(VendorCreditMemoAllocation.amount_applied))
+            .filter(VendorCreditMemoAllocation.vendor_bill_id.in_(bill_ids),
+                    VendorCreditMemoAllocation.is_reversed == False)  # noqa: E712
+            .group_by(VendorCreditMemoAllocation.vendor_bill_id).all()
+        ):
+            credit_by_bill[bid] = float(amt or 0.0)
+    balance_map = {
+        b.id: (0.0 if b.status == VendorBillStatus.PAID
+               else round(b.total_amount - credit_by_bill.get(b.id, 0.0), 2))
+        for b in bills
+    }
+
+    return templates.TemplateResponse(
+        request, "purchase_orders/bills_list.html",
+        {
+            "bills": bills, "tab": tab, "q": q, "counts": counts,
+            "balance_map": balance_map, "VendorBillStatus": VendorBillStatus,
+            "now": datetime.utcnow(),
+        },
+    )
+
 
 @router.get("/{po_id}", response_class=HTMLResponse)
 def po_workspace(po_id: int, request: Request, db: Session = Depends(get_db)):
@@ -399,17 +834,92 @@ def po_workspace(po_id: int, request: Request, db: Session = Depends(get_db)):
     )
     if not po:
         return RedirectResponse("/purchase-orders/", status_code=303)
+    from app.services.document_links import related_documents
     ctx = _workspace_ctx(po)
-    ctx["request"] = request
-    return templates.TemplateResponse("purchase_orders/workspace.html", ctx)
+    ctx["linked_documents"] = related_documents(db, po)
+    ctx.update(_po_core_return_context(db, po))
+    # Bill-to / ship-to controls + resolved blocks for the header.
+    primary = _primary_company_location(db)
+    ctx["company_locations"] = _active_company_locations(db)
+    ctx["default_location_id"] = primary.id if primary else None
+    ctx["effective_ship_to_type"] = _effective_ship_to_type(po)
+    ctx.update(_resolve_po_addresses(po, db))
+    return templates.TemplateResponse(request, "purchase_orders/workspace.html", ctx)
+
+
+# ── Core Returns to Vendor (reuses the cores/VCR ledger; print ≠ ship) ─────────
+
+@router.post("/{po_id}/core-return", response_class=RedirectResponse)
+async def po_core_return_create(
+    po_id: int, request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Batch the selected ready cores into a vendor core return (VCR) for this
+    PO's vendor, then open the printable slip (vendor + office copies). Tracking
+    is captured later via mark-shipped — printing never requires it."""
+    from app.services.core_service import CoreService
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()
+    if not po:
+        return RedirectResponse("/purchase-orders/", status_code=303)
+    form = await request.form()
+    try:
+        core_ids = [int(i) for i in form.getlist("core_ids")]
+        vcr = CoreService(db, user_id).create_vcr(
+            vendor_id=po.vendor_id,
+            core_charge_ids=core_ids,
+            notes=f"Core return for PO {po.po_number}",
+        )
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote(str(exc))}", status_code=303)
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error creating core return for PO %s", po_id)
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error="
+            f"{url_quote('Unexpected error — the core return was not created.')}",
+            status_code=303)
+    return RedirectResponse(f"/cores/vcr/{vcr.id}/print?copies=both", status_code=303)
+
+
+@router.post("/{po_id}/core-return/{vcr_id}/ship", response_class=RedirectResponse)
+async def po_core_return_ship(
+    po_id: int, vcr_id: int, request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Mark a vendor core return shipped — tracking + RMA optional (printed,
+    signed, boxed now; shipped/recorded later). Stays on the PO."""
+    from app.services.core_service import CoreService
+    form = await request.form()
+    try:
+        CoreService(db, user_id).ship_vcr(
+            vcr_id=vcr_id,
+            tracking_number=str(form.get("tracking_number", "")).strip(),
+            rma_number=str(form.get("rma_number", "")).strip(),
+        )
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote(str(exc))}", status_code=303)
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error shipping core return %s for PO %s", vcr_id, po_id)
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error="
+            f"{url_quote('Unexpected error — the core return was not marked shipped.')}",
+            status_code=303)
+    return RedirectResponse(
+        f"/purchase-orders/{po_id}?ok={url_quote('Core return marked shipped.')}",
+        status_code=303)
 
 
 # ── Header autosave ───────────────────────────────────────────────────────────
 
 @router.post("/{po_id}/header", response_class=HTMLResponse)
-async def po_header_save(po_id: int, request: Request, db: Session = Depends(get_db)):
+async def po_header_save(po_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+    svc = POService(db, current_user_id=user_id)
 
     expected_raw = str(form.get("expected_at", "")).strip()
     expected_dt = None
@@ -419,18 +929,49 @@ async def po_header_save(po_id: int, request: Request, db: Session = Depends(get
         except ValueError:
             pass
 
+    def _opt_int(key: str):
+        raw = str(form.get(key, "")).strip()
+        return int(raw) if raw.isdigit() else None
+
     data = {
         "notes": str(form.get("notes", "")).strip(),
         "internal_notes": str(form.get("internal_notes", "")).strip(),
         "vendor_confirmation_number": str(form.get("vendor_confirmation_number", "")).strip() or None,
+        # Checkbox: present in the form body only when ticked.
+        "vendor_confirmed": form.get("vendor_confirmed") is not None,
         "freight_in_cost": float(form.get("freight_in_cost") or 0.0),
         "expected_at": expected_dt,
+        # Bill-to / ship-to (save_header sorts out which ship-to fields apply).
+        "bill_to_location_id": _opt_int("bill_to_location_id"),
+        "ship_to_type": str(form.get("ship_to_type", "")).strip() or None,
+        "ship_to_location_id": _opt_int("ship_to_location_id"),
+        "ship_to_snapshot": str(form.get("ship_to_snapshot", "")).strip() or None,
+        "drop_ship_customer_id": _opt_int("drop_ship_customer_id"),
+        "drop_ship_address_id": _opt_int("drop_ship_address_id"),
     }
+    # Only let the header autosave touch ship-to when the form actually carries it
+    # (the field is present on the PO workspace form). Guards other callers.
+    if "ship_to_type" not in form:
+        for k in ("bill_to_location_id", "ship_to_type", "ship_to_location_id",
+                  "ship_to_snapshot", "drop_ship_customer_id", "drop_ship_address_id"):
+            data.pop(k, None)
+    # Optimistic locking (R9) — the workspace form carries the updated_at the
+    # user loaded; a mismatch means someone else saved since. The template JS
+    # refreshes the hidden field from X-Updated-At after every successful save
+    # so the autosave never conflicts with itself.
+    submitted_updated_at = str(form.get("_updated_at", "")).strip() or None
     try:
-        svc.save_header(po_id, data)
+        svc.save_header(po_id, data, submitted_updated_at)
+    except ConcurrentEditError as exc:
+        db.rollback()
+        return HTMLResponse(
+            f'<div class="text-xs text-red-600">{exc}</div>', status_code=409
+        )
     except ValueError:
         pass
-    return HTMLResponse("", status_code=204)
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()
+    fresh_ts = po.updated_at.isoformat() if po and po.updated_at else ""
+    return HTMLResponse("", status_code=204, headers={"X-Updated-At": fresh_ts})
 
 
 # ── Line CRUD (HTMX) ──────────────────────────────────────────────────────────
@@ -443,18 +984,18 @@ def _lines_response(po_id: int, request: Request, db: Session) -> HTMLResponse:
         .first()
     )
     ctx = _workspace_ctx(po)
-    ctx["request"] = request
-    return templates.TemplateResponse("purchase_orders/_lines_section.html", ctx)
+    return templates.TemplateResponse(request, "purchase_orders/_lines_section.html", ctx)
 
 
 @router.post("/{po_id}/lines", response_class=HTMLResponse)
-async def po_add_line(po_id: int, request: Request, db: Session = Depends(get_db)):
+async def po_add_line(po_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+    svc = POService(db, current_user_id=user_id)
 
     pid_raw = str(form.get("product_id", "")).strip()
     desc = str(form.get("description", "")).strip()
-    qty_raw = str(form.get("qty_ordered", "1")).strip()
+    # Canonical line-item field is `qty`; accept legacy `qty_ordered` too.
+    qty_raw = str(form.get("qty", form.get("qty_ordered", "1"))).strip()
     cost_raw = str(form.get("unit_cost", "")).strip()
     core_raw = str(form.get("core_charge_per_unit", "")).strip()
 
@@ -482,9 +1023,9 @@ async def po_add_line(po_id: int, request: Request, db: Session = Depends(get_db
 
 
 @router.post("/{po_id}/lines/{line_id}", response_class=HTMLResponse)
-async def po_update_line(po_id: int, line_id: int, request: Request, db: Session = Depends(get_db)):
+async def po_update_line(po_id: int, line_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+    svc = POService(db, current_user_id=user_id)
 
     data: dict = {}
     if "description" in form:
@@ -511,9 +1052,29 @@ async def po_update_line(po_id: int, line_id: int, request: Request, db: Session
     return _lines_response(po_id, request, db)
 
 
+@router.post("/{po_id}/lines/{line_id}/correct-cost", response_class=HTMLResponse)
+async def po_correct_line_cost(po_id: int, line_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    """Phase 2 — correct a line's unit cost on a SENT/PARTIAL/RECEIVED PO (a
+    mis-keyed cost found after the order was placed). Reason is required; the
+    service audits old→new and keeps the change records-only (no inventory
+    re-cost). Errors fail soft — the section just re-renders unchanged."""
+    form = await request.form()
+    svc = POService(db, current_user_id=user_id)
+    reason = str(form.get("reason", "")).strip()
+    try:
+        new_cost = float(str(form.get("unit_cost", "")).strip())
+    except (ValueError, TypeError):
+        return _lines_response(po_id, request, db)
+    try:
+        svc.correct_po_line_cost(line_id, new_cost, reason)
+    except ValueError as exc:
+        log.warning("correct_po_line_cost error on line %s: %s", line_id, exc)
+    return _lines_response(po_id, request, db)
+
+
 @router.post("/{po_id}/lines/{line_id}/delete", response_class=HTMLResponse)
-async def po_delete_line(po_id: int, line_id: int, request: Request, db: Session = Depends(get_db)):
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+async def po_delete_line(po_id: int, line_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    svc = POService(db, current_user_id=user_id)
     try:
         svc.delete_line(line_id)
     except ValueError as exc:
@@ -521,34 +1082,44 @@ async def po_delete_line(po_id: int, line_id: int, request: Request, db: Session
     return _lines_response(po_id, request, db)
 
 
-# ── Product search (HTMX typeahead) ──────────────────────────────────────────
+# ── Vendor volume discount (apply / remove) ──────────────────────────────────
+# Both re-render #po-lines-section, so the nudge → applied-row (and back) swap
+# happens in place. Errors (PO not editable, no eligible program) fail soft —
+# the section just re-renders unchanged.
 
-@router.get("/_/product-search", response_class=HTMLResponse)
-def po_product_search(q: str = "", db: Session = Depends(get_db), request: Request = None):
-    results = []
-    if q and len(q) >= 2:
-        pattern = f"%{q}%"
-        results = (
-            db.query(Product)
-            .filter(
-                Product.is_active == True,
-                (Product.sku.ilike(pattern) | Product.title.ilike(pattern)),
-            )
-            .order_by(Product.sku)
-            .limit(12)
-            .all()
-        )
-    return templates.TemplateResponse(
-        "purchase_orders/_product_search_results.html",
-        {"request": request, "results": results},
-    )
+@router.post("/{po_id}/apply-volume-discount", response_class=HTMLResponse)
+async def po_apply_volume_discount(po_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    svc = POService(db, current_user_id=user_id)
+    try:
+        svc.apply_volume_discount(po_id)
+    except ValueError as exc:
+        log.warning("apply_volume_discount error on PO %s: %s", po_id, exc)
+    return _lines_response(po_id, request, db)
+
+
+@router.post("/{po_id}/remove-volume-discount", response_class=HTMLResponse)
+async def po_remove_volume_discount(po_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    svc = POService(db, current_user_id=user_id)
+    try:
+        svc.remove_volume_discount(po_id)
+    except ValueError as exc:
+        log.warning("remove_volume_discount error on PO %s: %s", po_id, exc)
+    return _lines_response(po_id, request, db)
+
+
+# ── Product search ───────────────────────────────────────────────────────────
+# The per-doc /purchase-orders/_/product-search HTML endpoint was removed after
+# the §8H migration (its partial purchase_orders/_product_search_results.html is
+# gone, along with the now-redundant de-dash patch — separator-insensitive SKU
+# matching lives once in SearchService/normalize_part). The PO workspace and the
+# product-detail special-order box now call GET /line-items/product-search (JSON).
 
 
 # ── Status transitions ─────────────────────────────────────────────────────────
 
 @router.post("/{po_id}/send", response_class=RedirectResponse)
-def po_send(po_id: int, db: Session = Depends(get_db)):
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+def po_send(po_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    svc = POService(db, current_user_id=user_id)
     try:
         svc.send_to_vendor(po_id)
     except ValueError as exc:
@@ -568,21 +1139,27 @@ def po_send(po_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{po_id}/receive", response_class=RedirectResponse)
-async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)):
+async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    _t0 = time.perf_counter()
+
     po = db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()
     if not po:
         return RedirectResponse("/purchase-orders/", status_code=303)
 
-    # Status guard — only SENT or PARTIAL POs can be received
-    if po.status not in (POStatus.SENT, POStatus.PARTIAL):
+    # Status guard — VERBAL_ORDER, SENT, or PARTIAL POs can be received (§21:
+    # verbal/phone orders receive directly without a Place Order step).
+    if po.status not in (POStatus.VERBAL_ORDER, POStatus.SENT, POStatus.PARTIAL):
         return RedirectResponse(
-            f"/purchase-orders/{po_id}?error={url_quote('Cannot receive: PO must be in SENT or PARTIAL status.')}",
+            f"/purchase-orders/{po_id}?error={url_quote('Cannot receive: PO must be in VERBAL ORDER, SENT, or PARTIAL status.')}",
             status_code=303,
         )
 
     form = await request.form()
+    _t_form = time.perf_counter()
+
     po_line_quantities: dict[int, int] = {}
     condition_notes_map: dict[int, str] = {}
+    serials_map: dict[int, list[str]] = {}
     for line in po.lines:
         raw = form.get(f"recv_{line.id}", "")
         qty = int(raw) if raw and str(raw).strip().isdigit() else 0
@@ -592,20 +1169,42 @@ async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)
         cond = str(form.get(f"condition_{line.id}", "")).strip()
         if cond:
             condition_notes_map[line.id] = cond
+        # R3 — optional per-line serial numbers (serialized products only;
+        # textarea is comma/newline separated). Parsed here, recorded AFTER
+        # the receipt service call succeeds.
+        parsed_serials = parse_serials(str(form.get(f"serials_{line.id}", "") or ""))
+        if parsed_serials:
+            serials_map[line.id] = parsed_serials
 
+    # R1-12 — qty inputs default to 0 so a careless submit can't fully receive
+    # a partial delivery; an all-zero submit must not flash "received".
+    if not po_line_quantities:
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote('No receive quantities entered — lines left at 0 are skipped.')}",
+            status_code=303,
+        )
+
+    receipt = None
     if po_line_quantities:
         try:
-            svc = POService(db, current_user_id=CURRENT_USER_ID)
+            svc = POService(db, current_user_id=user_id)
             receipt_data = {
                 "tracking_number": str(form.get("tracking_number", "")).strip() or None,
                 "carrier": str(form.get("carrier", "")).strip() or None,
                 "notes": str(form.get("notes", "")).strip(),
                 "condition_notes_map": condition_notes_map,
             }
-            svc.create_receipt(
+            receipt = svc.create_receipt(
                 vendor_id=po.vendor_id,
                 po_line_quantities=po_line_quantities,
                 data=receipt_data,
+            )
+        except PermissionError:
+            # C3 — SALES role lacks RECEIVE_PO. Friendly message, not a 500.
+            db.rollback()
+            return RedirectResponse(
+                f"/purchase-orders/{po_id}?error={url_quote('You do not have permission to receive POs. Ask an admin or bookkeeper.')}",
+                status_code=303,
             )
         except ValueError as exc:
             db.rollback()
@@ -621,12 +1220,106 @@ async def po_receive(po_id: int, request: Request, db: Session = Depends(get_db)
                 status_code=303,
             )
 
-    return RedirectResponse(f"/purchase-orders/{po_id}?ok=received", status_code=303)
+    # R3 — serial-number capture (fail-safe). The receipt above has already
+    # committed; serials are recorded in a follow-up transaction so a serial
+    # problem can never undo the goods receipt. Receiving with no serials is
+    # always allowed; count mismatches are allowed but flashed as an info note.
+    info_notes: list[str] = []
+    if serials_map and receipt is not None:
+        try:
+            serial_svc = SerialService(db, current_user_id=user_id)
+            receipt_line_by_po_line = {rl.po_line_id: rl for rl in receipt.lines}
+            line_by_id = {ln.id: ln for ln in po.lines}
+            for po_line_id, serials in serials_map.items():
+                line = line_by_id.get(po_line_id)
+                if line is None or not line.product_id:
+                    continue
+                product = line.product
+                if not product or not product.has_serial_number:
+                    continue  # serials only tracked for serialized products
+                label = product.sku or f"line {po_line_id}"
+                qty_received = po_line_quantities.get(po_line_id, 0)
+                if qty_received <= 0:
+                    info_notes.append(
+                        f"{label}: serial numbers entered but the line was not received — not recorded."
+                    )
+                    continue
+                receipt_line = receipt_line_by_po_line.get(po_line_id)
+                result = serial_svc.record_received_serials(
+                    product_id=line.product_id,
+                    serials=serials,
+                    po_receipt_line_id=receipt_line.id if receipt_line else None,
+                )
+                if result["skipped"]:
+                    info_notes.append(
+                        f"{label}: {len(result['skipped'])} duplicate serial(s) skipped "
+                        f"({', '.join(result['skipped'][:5])})."
+                    )
+                if len(serials) != qty_received:
+                    info_notes.append(
+                        f"{label}: {len(serials)} serial(s) entered for {qty_received} unit(s) received."
+                    )
+            db.commit()
+        except Exception:
+            db.rollback()
+            log.exception(
+                "Serial capture failed for PO %s — receipt itself was already recorded", po_id
+            )
+            info_notes = ["Serial numbers could not be recorded — the goods receipt itself was saved."]
+
+    _t_svc = time.perf_counter()
+    _form_ms  = (_t_form - _t0) * 1000
+    _svc_ms   = (_t_svc - _t_form) * 1000
+    _total_ms = (_t_svc - _t0) * 1000
+    log.info(
+        "TIMING po_receive po=%s  total=%.1fms  form=%.1fms  svc=%.1fms",
+        po_id, _total_ms, _form_ms, _svc_ms,
+    )
+    _redirect_url = f"/purchase-orders/{po_id}?ok=received"
+    if info_notes:
+        _redirect_url += f"&info={url_quote(' '.join(info_notes))}"
+    resp = RedirectResponse(_redirect_url, status_code=303)
+    resp.headers["Server-Timing"] = (
+        f"form;dur={_form_ms:.1f},svc;dur={_svc_ms:.1f},total;dur={_total_ms:.1f}"
+    )
+    return resp
+
+
+@router.post("/{po_id}/receipts/{receipt_id}/reverse", response_class=RedirectResponse)
+async def po_reverse_receipt(po_id: int, receipt_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    """Undo a mis-receive. ``po_id`` only shapes the redirect-back target — a
+    receipt can span multiple POs, so the reversal itself acts on the whole
+    receipt regardless of which PO's page the button was clicked from."""
+    form = await request.form()
+    reason = str(form.get("reason", "")).strip()
+    svc = POService(db, current_user_id=user_id)
+    try:
+        result = svc.reverse_receipt(receipt_id, reason)
+    except PermissionError:
+        db.rollback()
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote('You do not have permission to reverse a receipt. Ask an admin or bookkeeper.')}",
+            status_code=303,
+        )
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(f"/purchase-orders/{po_id}?error={url_quote(str(exc))}", status_code=303)
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error reversing receipt %s", receipt_id)
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote('Unexpected error — receipt was not reversed.')}",
+            status_code=303,
+        )
+    msg = f"Receipt #{result['receipt_id']} reversed."
+    if result["cost_notes"]:
+        msg += " " + " ".join(result["cost_notes"])
+    return RedirectResponse(f"/purchase-orders/{po_id}?ok={url_quote(msg)}", status_code=303)
 
 
 @router.post("/{po_id}/cancel-status", response_class=RedirectResponse)
-def po_cancel(po_id: int, db: Session = Depends(get_db)):
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+def po_cancel(po_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    svc = POService(db, current_user_id=user_id)
     try:
         svc.cancel(po_id)
     except ValueError as exc:
@@ -646,12 +1339,12 @@ def po_cancel(po_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{po_id}/cancel-line", response_class=RedirectResponse)
-async def po_cancel_line(po_id: int, request: Request, db: Session = Depends(get_db)):
+async def po_cancel_line(po_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
     try:
         line_id = int(str(form.get("line_id", "0")))
         reason = str(form.get("reason", "")).strip() or "cancelled"
-        POService(db, current_user_id=CURRENT_USER_ID).cancel_line(line_id, reason)
+        POService(db, current_user_id=user_id).cancel_line(line_id, reason)
     except (ValueError, TypeError) as exc:
         db.rollback()
         return RedirectResponse(
@@ -672,13 +1365,13 @@ async def po_cancel_line(po_id: int, request: Request, db: Session = Depends(get
 
 
 @router.post("/{po_id}/create-bill", response_class=RedirectResponse)
-async def po_create_bill(po_id: int, request: Request, db: Session = Depends(get_db)):
+async def po_create_bill(po_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     po = db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()
     if not po:
         return RedirectResponse("/purchase-orders/", status_code=303)
 
     form = await request.form()
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+    svc = POService(db, current_user_id=user_id)
 
     bill_number = str(form.get("bill_number", "")).strip()
     bill_date: datetime | None = None
@@ -716,6 +1409,18 @@ async def po_create_bill(po_id: int, request: Request, db: Session = Depends(get
             status_code=303,
         )
 
+    # Vendor-billed freight (PAI puts it on the same invoice). Field present →
+    # use it (incl. an explicit 0 when a carrier bills freight separately);
+    # absent → None so the service defaults from the PO's freight_in_cost.
+    freight_amount: float | None = None
+    if "freight_amount" in form:
+        freight_raw = str(form.get("freight_amount", "")).strip()
+        if freight_raw != "":
+            try:
+                freight_amount = float(freight_raw)
+            except (ValueError, TypeError):
+                freight_amount = None
+
     try:
         svc.create_vendor_bill(
             po_id=po_id,
@@ -724,6 +1429,7 @@ async def po_create_bill(po_id: int, request: Request, db: Session = Depends(get
             bill_date=bill_date,
             due_date=due_date,
             lines=lines,
+            freight_amount=freight_amount,
         )
     except ValueError as exc:
         db.rollback()
@@ -743,11 +1449,20 @@ async def po_create_bill(po_id: int, request: Request, db: Session = Depends(get
 
 
 @router.post("/{po_id}/bills/{bill_id}/approve", response_class=RedirectResponse)
-async def po_approve_bill(po_id: int, bill_id: int, db: Session = Depends(get_db)):
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+async def po_approve_bill(
+    po_id: int, bill_id: int,
+    request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    # `override_reason` (optional) documents an "Approve Anyway" override when the
+    # bill is still in DISCREPANCY. Empty for a normal reconciled approval.
+    form = await request.form()
+    override_reason = str(form.get("override_reason", "")).strip()
+
+    svc = POService(db, current_user_id=user_id)
     try:
-        svc.approve_bill(bill_id)
-    except ValueError as exc:
+        svc.approve_bill(bill_id, override_reason=override_reason)
+    except (ValueError, PermissionError) as exc:
         db.rollback()
         return RedirectResponse(
             f"/purchase-orders/{po_id}?error={url_quote(str(exc))}",
@@ -763,10 +1478,37 @@ async def po_approve_bill(po_id: int, bill_id: int, db: Session = Depends(get_db
     return RedirectResponse(f"/purchase-orders/{po_id}?ok=bill_approved", status_code=303)
 
 
+@router.post("/{po_id}/bills/{bill_id}/pay", response_class=RedirectResponse)
+def po_pay_bill(
+    po_id: int, bill_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    # R1-12 — AP reconciliation: records the bill as paid; no money moves here.
+    svc = POService(db, current_user_id=user_id)
+    try:
+        svc.mark_bill_paid(bill_id)
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote(str(exc))}",
+            status_code=303,
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error marking bill %s paid for PO %s", bill_id, po_id)
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote('Unexpected error — bill was not marked paid.')}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/purchase-orders/{po_id}?ok=bill_paid", status_code=303)
+
+
 @router.post("/{po_id}/bills/{bill_id}/lines/{line_id}/resolve", response_class=RedirectResponse)
 async def po_resolve_match_line(
     po_id: int, bill_id: int, line_id: int,
     request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     """
     Record an AP resolution decision on a flagged PO match line.
@@ -779,7 +1521,7 @@ async def po_resolve_match_line(
     decision = str(form.get("decision", "")).strip()
     reason = str(form.get("reason", "")).strip()
 
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+    svc = POService(db, current_user_id=user_id)
     try:
         svc.resolve_match_line(line_id, decision, reason)
     except (ValueError, PermissionError) as exc:
@@ -802,6 +1544,7 @@ async def po_resolve_match_line(
 async def po_create_match_credit(
     po_id: int, bill_id: int,
     request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     """
     Create a vendor credit memo for a match discrepancy on a specific PO line.
@@ -834,7 +1577,7 @@ async def po_create_match_credit(
                 status_code=303,
             )
 
-    svc = POService(db, current_user_id=CURRENT_USER_ID)
+    svc = POService(db, current_user_id=user_id)
     try:
         vcm = svc.create_match_vendor_credit(
             po_line_id=po_line_id,
@@ -859,6 +1602,223 @@ async def po_create_match_credit(
         f"/purchase-orders/{po_id}?ok={url_quote(f'Vendor credit {vcm.vcm_number} created')}",
         status_code=303,
     )
+
+
+@router.post("/{po_id}/bills/{bill_id}/lines/{line_id}/correct", response_class=RedirectResponse)
+async def po_correct_match_line(
+    po_id: int, bill_id: int, line_id: int,
+    request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """
+    Correct the actual PO/bill numbers on a flagged match line so they reconcile,
+    then clear the flag (match_resolution = CORRECTED). Requires APPROVE_VENDOR_BILL.
+
+    Unlike /resolve (which only records a decision and leaves the numbers diverged),
+    this edits POLine.unit_cost and/or the bill line's qty_billed / unit_cost,
+    recomputes the bill total, and enforces a must-match gate. Opens the bill
+    DISCREPANCY -> PENDING when the last flag clears; does NOT approve.
+
+    `line_id` is the PO line id (mirrors the /resolve route).
+    Form fields (all the numeric ones optional; blank = leave that side unchanged):
+      po_unit_cost · billed_qty · billed_unit_cost · reason (required)
+    """
+    form = await request.form()
+    reason = str(form.get("reason", "")).strip()
+
+    def _opt_float(key: str) -> float | None:
+        raw = str(form.get(key, "")).strip()
+        return float(raw) if raw else None
+
+    def _opt_int(key: str) -> int | None:
+        raw = str(form.get(key, "")).strip()
+        return int(raw) if raw else None
+
+    try:
+        po_unit_cost = _opt_float("po_unit_cost")
+        billed_unit_cost = _opt_float("billed_unit_cost")
+        billed_qty = _opt_int("billed_qty")
+    except (ValueError, TypeError):
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote('Enter valid numbers for the corrected cost / qty.')}",
+            status_code=303,
+        )
+
+    svc = POService(db, current_user_id=user_id)
+    try:
+        svc.correct_match_line(
+            po_line_id=line_id,
+            bill_id=bill_id,
+            new_po_unit_cost=po_unit_cost,
+            new_billed_qty=billed_qty,
+            new_billed_unit_cost=billed_unit_cost,
+            reason=reason,
+        )
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote(str(exc))}",
+            status_code=303,
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error correcting match line %s on bill %s", line_id, bill_id)
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote('Unexpected error — line was not corrected.')}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/purchase-orders/{po_id}?ok=match_corrected", status_code=303)
+
+
+@router.post("/{po_id}/bills/{bill_id}/edit", response_class=RedirectResponse)
+async def po_edit_bill(
+    po_id: int, bill_id: int,
+    request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """
+    Phase 2 — correct a posted vendor bill: header (bill_number / bill_date /
+    due_date) and per-line qty/cost. Re-validates the 3-way match, re-derives the
+    PO billed status, and re-flags an already-synced bill for QBO. Reason required.
+
+    Form fields:
+      bill_number · bill_date (YYYY-MM-DD) · due_date (YYYY-MM-DD) · reason (required)
+      per line:  qty_<bill_line_id>  ·  cost_<bill_line_id>
+    Header / line fields are only applied when present in the body.
+    """
+    form = await request.form()
+    reason = str(form.get("reason", "")).strip()
+
+    def _parse_date(key: str):
+        raw = str(form.get(key, "")).strip()
+        if not raw:
+            return None
+        try:
+            return datetime.strptime(raw, "%Y-%m-%d")
+        except ValueError:
+            return None
+
+    header: dict = {}
+    if "bill_number" in form:
+        header["bill_number"] = str(form.get("bill_number", "")).strip()
+    if "bill_date" in form:
+        header["bill_date"] = _parse_date("bill_date")
+    if "due_date" in form:
+        header["due_date"] = _parse_date("due_date")
+    if "freight_amount" in form:
+        freight_raw = str(form.get("freight_amount", "")).strip()
+        if freight_raw != "":
+            try:
+                header["freight_amount"] = round(float(freight_raw), 2)
+            except (ValueError, TypeError):
+                return RedirectResponse(
+                    f"/purchase-orders/{po_id}?error={url_quote('Enter a valid freight amount.')}",
+                    status_code=303,
+                )
+
+    # Per-line edits arrive as qty_<id> / cost_<id>; group by bill_line id.
+    by_line: dict[int, dict] = {}
+    for key in form.keys():
+        for prefix, field in (("qty_", "qty_billed"), ("cost_", "unit_cost")):
+            if key.startswith(prefix) and key[len(prefix):].isdigit():
+                raw = str(form.get(key, "")).strip()
+                if raw == "":
+                    continue
+                blid = int(key[len(prefix):])
+                try:
+                    val = int(raw) if field == "qty_billed" else float(raw)
+                except (ValueError, TypeError):
+                    return RedirectResponse(
+                        f"/purchase-orders/{po_id}?error={url_quote('Enter valid numbers for the corrected cost / qty.')}",
+                        status_code=303,
+                    )
+                by_line.setdefault(blid, {"bill_line_id": blid})[field] = val
+    line_edits = list(by_line.values())
+
+    svc = POService(db, current_user_id=user_id)
+    try:
+        svc.edit_vendor_bill(bill_id, reason=reason, header=header or None, line_edits=line_edits)
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote(str(exc))}",
+            status_code=303,
+        )
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error editing bill %s on PO %s", bill_id, po_id)
+        return RedirectResponse(
+            f"/purchase-orders/{po_id}?error={url_quote('Unexpected error — bill was not edited.')}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/purchase-orders/{po_id}?ok=bill_edited", status_code=303)
+
+
+# ── Bill-to / Ship-to ───────────────────────────────────────────────────────
+
+def _active_company_locations(db: Session) -> list:
+    from app.models.company_location import CompanyLocation
+    return (
+        db.query(CompanyLocation)
+        .filter(CompanyLocation.is_active == True)  # noqa: E712
+        .order_by(CompanyLocation.is_primary.desc(), CompanyLocation.name)
+        .all()
+    )
+
+
+def _primary_company_location(db: Session):
+    from app.models.company_location import CompanyLocation
+    return (
+        db.query(CompanyLocation)
+        .filter(CompanyLocation.is_active == True,  # noqa: E712
+                CompanyLocation.is_primary == True)  # noqa: E712
+        .first()
+    )
+
+
+def _effective_ship_to_type(po: PurchaseOrder) -> str:
+    """ship_to_type, but legacy drop-ship POs (created before the field existed,
+    so type is still the 'location' default) are treated as drop_ship."""
+    stype = po.ship_to_type or POShipToType.LOCATION
+    if po.is_drop_ship and stype == POShipToType.LOCATION:
+        return POShipToType.DROP_SHIP
+    return stype
+
+
+def _resolve_po_addresses(po: PurchaseOrder, db: Session) -> dict:
+    """Render-ready {name, lines} blocks for the PO's bill-to and ship-to, used by
+    both the workspace and the print/PDF so the branching lives in one place."""
+    primary = _primary_company_location(db)
+
+    bill_loc = po.bill_to_location or primary
+    bill_to = {
+        "name": bill_loc.name if bill_loc else (get_company_dict(db).get("name") or ""),
+        "lines": bill_loc.address_lines if bill_loc else [],
+    }
+
+    stype = _effective_ship_to_type(po)
+    if stype == POShipToType.DROP_SHIP:
+        cust = (
+            db.query(Customer).filter(Customer.id == po.drop_ship_customer_id).first()
+            if po.drop_ship_customer_id else None
+        )
+        snap = [ln.strip() for ln in (po.ship_to_snapshot or "").splitlines() if ln.strip()]
+        lines = snap or (customer_address_lines(cust) if cust else [])
+        cust_name = ""
+        if cust is not None:
+            cust_name = (getattr(cust, "display_name", "") or getattr(cust, "company_name", "")
+                         or getattr(cust, "name", "") or "")
+        ship_to = {"kind": "drop_ship", "name": cust_name or "Drop-ship",
+                   "lines": lines, "is_drop_ship": True}
+    elif stype == POShipToType.AD_HOC:
+        lines = [ln.strip() for ln in (po.ship_to_snapshot or "").splitlines() if ln.strip()]
+        ship_to = {"kind": "ad_hoc", "name": "One-time address",
+                   "lines": lines, "is_drop_ship": False}
+    else:
+        loc = po.ship_to_location or primary
+        ship_to = {"kind": "location", "name": loc.name if loc else "",
+                   "lines": loc.address_lines if loc else [], "is_drop_ship": False}
+    return {"bill_to": bill_to, "ship_to": ship_to}
 
 
 # ── Print / PDF ───────────────────────────────────────────────────────────────
@@ -903,6 +1863,7 @@ def _po_print_context(po: PurchaseOrder, db: Session) -> dict:
         if not dropship_addr_lines and dropship_customer is not None:
             dropship_addr_lines = customer_address_lines(dropship_customer)
 
+    addrs = _resolve_po_addresses(po, db)
     return {
         "po": po,
         "company": company,
@@ -910,6 +1871,9 @@ def _po_print_context(po: PurchaseOrder, db: Session) -> dict:
         "vendor_addr_lines": vendor_addr_lines_,
         "dropship_customer": dropship_customer,
         "dropship_addr_lines": dropship_addr_lines,
+        "bill_to": addrs["bill_to"],
+        "ship_to": addrs["ship_to"],
+        **_volume_discount_ctx(po),
     }
 
 
@@ -919,8 +1883,7 @@ def po_print(po_id: int, request: Request, db: Session = Depends(get_db)):
     if po is None:
         return RedirectResponse("/purchase-orders/", status_code=303)
     ctx = _po_print_context(po, db)
-    ctx["request"] = request
-    return templates.TemplateResponse("purchase_orders/print.html", ctx)
+    return templates.TemplateResponse(request, "purchase_orders/print.html", ctx)
 
 
 @router.get("/{po_id}/pdf")
@@ -937,4 +1900,73 @@ def po_pdf(po_id: int, request: Request, db: Session = Depends(get_db)):
         context=ctx,
         fallback_print_url=f"/purchase-orders/{po_id}/print",
         download_filename=po.po_number,
+    )
+
+
+@router.get("/{po_id}/receiving-slip", response_class=HTMLResponse)
+def po_receiving_slip(po_id: int, request: Request, db: Session = Depends(get_db)):
+    """R2 — warehouse receiving slip (dock check-off sheet).
+
+    Print-styled internal document for checking a delivery against the PO:
+    one row per line with SKU, title, vendor part #, qty ordered, qty received
+    so far, qty outstanding, and a blank write-in check-off column. No money
+    columns — the dock doesn't need costs. Opened in a new tab from the
+    Receiving Queue (same idiom as the PO print button).
+    """
+    po = (
+        db.query(PurchaseOrder)
+        .options(
+            joinedload(PurchaseOrder.vendor),
+            joinedload(PurchaseOrder.lines).joinedload(POLine.product),
+        )
+        .filter(PurchaseOrder.id == po_id)
+        .first()
+    )
+    if po is None:
+        return RedirectResponse("/purchase-orders/", status_code=303)
+
+    company = get_company_dict(db)
+    company_addr_lines = [
+        ln.strip() for ln in (company.get("address") or "").splitlines() if ln.strip()
+    ]
+    if company.get("phone"):
+        company_addr_lines.append(company["phone"])
+
+    # Vendor part numbers: prefer the active source for THIS PO's vendor,
+    # fall back to the product's preferred source. Keyed by product_id.
+    from app.models.product import ProductVendorSource
+
+    product_ids = [ln.product_id for ln in po.lines if ln.product_id]
+    vendor_part_map: dict[int, str] = {}
+    if product_ids:
+        sources = (
+            db.query(ProductVendorSource)
+            .filter(
+                ProductVendorSource.product_id.in_(product_ids),
+                ProductVendorSource.vendor_id == po.vendor_id,
+                ProductVendorSource.is_active == True,  # noqa: E712
+            )
+            .all()
+        )
+        vendor_part_map = {
+            s.product_id: s.vendor_part_number
+            for s in sources
+            if s.vendor_part_number
+        }
+        for ln in po.lines:
+            if ln.product_id and ln.product_id not in vendor_part_map and ln.product:
+                src = ln.product.preferred_vendor_source
+                if src and src.vendor_part_number:
+                    vendor_part_map[ln.product_id] = src.vendor_part_number
+
+    return templates.TemplateResponse(
+        request,
+        "purchase_orders/receiving_slip_print.html",
+        {
+            "po": po,
+            "company": company,
+            "company_addr_lines": company_addr_lines,
+            "vendor_addr_lines": vendor_address_lines(po.vendor),
+            "vendor_part_map": vendor_part_map,
+        },
     )

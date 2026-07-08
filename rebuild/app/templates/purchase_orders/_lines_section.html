@@ -1,4 +1,43 @@
 <div id="po-lines-section">
+
+  {# ── Vendor volume discount: nudge (eligible) → applied strip ──────────────
+     The whole section is the HTMX swap target, so Apply/Remove re-render this
+     banner in place. Parts only — core charges and freight-in are untouched. #}
+  {% if vol_applied %}
+  <div class="mb-3 flex items-center justify-between gap-3 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5">
+    <div class="flex items-center gap-2 text-sm text-green-800">
+      <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+      <span>
+        {{ po.vendor.name }} volume discount
+        <span class="font-semibold">{{ '%g' | format(po.volume_discount_pct) }}%</span>
+        applied to all parts — <span class="font-semibold tabular-nums">−${{ '%.2f' | format(vol_savings) }}</span>
+      </span>
+    </div>
+    {% if editable %}
+    <button type="button"
+            hx-post="/purchase-orders/{{ po.id }}/remove-volume-discount"
+            hx-target="#po-lines-section" hx-swap="outerHTML"
+            class="text-xs font-medium text-gray-500 hover:text-red-600 transition-colors shrink-0">Remove</button>
+    {% endif %}
+  </div>
+  {% elif editable and vol_program %}
+  <div class="mb-3 flex items-center justify-between gap-3 rounded-lg border border-brand-200 bg-brand-50 px-4 py-2.5">
+    <div class="flex items-center gap-2 text-sm text-brand-800">
+      <svg class="w-4 h-4 text-brand-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7 7h.01M7 3h5a1.99 1.99 0 011.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.99 1.99 0 013 12V7a4 4 0 014-4z"/></svg>
+      <span>
+        This PO qualifies for {{ po.vendor.name }}'s
+        <span class="font-semibold">{{ '%g' | format(vol_program.discount_percent) }}% volume discount</span>
+        (orders over <span class="tabular-nums">${{ "{:,.0f}".format(vol_program.threshold_amount or 0) }}</span>)
+        — saves about <span class="font-semibold tabular-nums">${{ '%.2f' | format(vol_savings) }}</span>.
+      </span>
+    </div>
+    <button type="button"
+            hx-post="/purchase-orders/{{ po.id }}/apply-volume-discount"
+            hx-target="#po-lines-section" hx-swap="outerHTML"
+            class="btn-primary btn-sm shrink-0">Apply {{ '%g' | format(vol_program.discount_percent) }}% discount</button>
+  </div>
+  {% endif %}
+
   <div class="card">
     <div class="card-header">
       <h2 class="card-title">Line Items</h2>
@@ -73,16 +112,55 @@
 
             <td class="px-4 py-4 align-middle text-sm text-gray-700 text-right tabular-nums">
               {% if editable %}
-              <input type="number" value="{{ '%.2f' | format(line.unit_cost) }}" name="unit_cost"
-                     step="0.01" min="0"
-                     hx-post="/purchase-orders/{{ po.id }}/lines/{{ line.id }}"
-                     hx-target="#po-lines-section"
-                     hx-swap="outerHTML"
-                     hx-trigger="change delay:400ms"
-                     class="w-24 rounded border border-transparent px-1.5 py-1 text-sm text-right font-mono
-                            hover:border-gray-200 focus:border-brand-400 focus:ring-1 focus:ring-brand-400
-                            focus:outline-none bg-transparent tabular-nums" />
+              <div class="flex flex-col items-end gap-0.5">
+                <input type="number" value="{{ '%.2f' | format(line.unit_cost) }}" name="unit_cost"
+                       step="0.01" min="0"
+                       hx-post="/purchase-orders/{{ po.id }}/lines/{{ line.id }}"
+                       hx-target="#po-lines-section"
+                       hx-swap="outerHTML"
+                       hx-trigger="change delay:400ms"
+                       class="w-24 rounded border border-transparent px-1.5 py-1 text-sm text-right font-mono
+                              hover:border-gray-200 focus:border-brand-400 focus:ring-1 focus:ring-brand-400
+                              focus:outline-none bg-transparent tabular-nums" />
+                {% if line.list_unit_cost is not none and line.list_unit_cost > line.unit_cost %}
+                <span class="text-[10px] text-gray-400 line-through tabular-nums" title="List price before volume discount">${{ '%.2f' | format(line.list_unit_cost) }}</span>
+                {% endif %}
+              </div>
+              {% elif cost_correctable and not line.bill_lines %}
+              {# Phase 2 — correct a mis-keyed cost after the PO is sent. Records-only
+                 (no inventory re-cost); reason required + audited server-side. Lines
+                 already on a vendor bill drop to the plain read-only branch below and
+                 must be fixed through Correct & Reconcile instead. #}
+              <div x-data="{ editing: false }" class="inline-flex flex-col items-end gap-0.5">
+                <button type="button" x-show="!editing" @click="editing = true"
+                        class="group inline-flex items-center gap-1 text-sm tabular-nums text-gray-700 hover:text-brand-600"
+                        title="Correct this cost">
+                  {% if line.list_unit_cost is not none and line.list_unit_cost > line.unit_cost %}
+                  <span class="text-[10px] text-gray-400 line-through tabular-nums">${{ '%.2f' | format(line.list_unit_cost) }}</span>
+                  {% endif %}
+                  <span>${{ '%.2f' | format(line.unit_cost) }}</span>
+                  <span class="text-gray-300 group-hover:text-brand-500 text-xs leading-none">✎</span>
+                </button>
+                <form x-show="editing" x-cloak
+                      hx-post="/purchase-orders/{{ po.id }}/lines/{{ line.id }}/correct-cost"
+                      hx-target="#po-lines-section" hx-swap="outerHTML"
+                      class="flex flex-col items-end gap-1 bg-gray-50 border border-gray-200 rounded-md p-2 mt-1">
+                  <input type="number" name="unit_cost" step="0.01" min="0"
+                         value="{{ '%.2f' | format(line.unit_cost) }}"
+                         class="form-input w-24 text-right font-mono py-1" />
+                  <input type="text" name="reason" required maxlength="200"
+                         placeholder="Reason (required)"
+                         class="form-input w-44 text-xs py-1" />
+                  <div class="flex items-center gap-1">
+                    <button type="submit" class="btn-primary btn-sm">Save</button>
+                    <button type="button" @click="editing = false" class="btn-ghost btn-sm">Cancel</button>
+                  </div>
+                </form>
+              </div>
               {% else %}
+              {% if line.list_unit_cost is not none and line.list_unit_cost > line.unit_cost %}
+              <span class="text-[10px] text-gray-400 line-through tabular-nums mr-1" title="List price before volume discount">${{ '%.2f' | format(line.list_unit_cost) }}</span>
+              {% endif %}
               <span class="text-sm tabular-nums">${{ '%.2f' | format(line.unit_cost) }}</span>
               {% endif %}
             </td>
@@ -135,110 +213,24 @@
           </tr>
           {% endfor %}
 
-          {# ── Add line row (editable only) ── #}
-          {% if editable %}
-          <tr x-data="{
-                productId: '',
-                sku: '',
-                desc: '',
-                cost: '',
-                core: '',
-                qty: 1,
-              }"
-              @product-selected.window="
-                productId = $event.detail.id;
-                sku = $event.detail.sku;
-                desc = $event.detail.desc || desc;
-                cost = $event.detail.cost || cost;
-                core = $event.detail.core || '';
-                $nextTick(() => $el.querySelector('[name=qty_ordered]').focus());
-              "
-              @record-created.window="
-                if ($event.detail.type === 'product') {
-                  productId = String($event.detail.id);
-                  sku = $event.detail.part_number || '';
-                  desc = $event.detail.description || desc;
-                  cost = $event.detail.current_cost != null ? $event.detail.current_cost : cost;
-                  core = '';
-                  $nextTick(() => $el.querySelector('[name=qty_ordered]').focus());
-                }
-              "
-              class="border-t-2 border-dashed border-gray-100">
-            <td class="px-4 py-4 align-middle text-sm text-gray-700">
-              <div class="relative flex gap-1 items-start">
-                <div class="flex-1 min-w-0">
-                  <input type="text" placeholder="Search SKU…"
-                         :value="sku"
-                         @input.debounce.300ms="
-                           sku = $event.target.value;
-                           productId = '';
-                           htmx.ajax('GET',
-                             '/purchase-orders/_/product-search?q=' + encodeURIComponent($event.target.value),
-                             {target: '#po-product-results', swap: 'innerHTML'});
-                         "
-                         class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs
-                                focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
-                  <div id="po-product-results" class="absolute left-0 top-full z-20 w-72 bg-white shadow-lg rounded-lg border border-gray-100 mt-0.5 empty:hidden"></div>
-                </div>
-                <button type="button"
-                        hx-get="/products/quick-create-form"
-                        hx-target="#create-slide-content"
-                        hx-swap="innerHTML"
-                        @click="$dispatch('open-create-slide', { title: 'New Product' })"
-                        title="Create a new product and add it to this line"
-                        class="shrink-0 px-1.5 py-1 text-xs font-medium text-brand-700 border border-brand-200
-                               rounded bg-brand-50 hover:bg-brand-100 transition-colors">
-                  + New
-                </button>
-              </div>
-            </td>
-            <td class="px-4 py-4 align-middle text-sm text-gray-700">
-              <input type="text" name="description" x-model="desc" placeholder="Description"
-                     class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs
-                            focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
-            </td>
-            <td class="px-4 py-4 align-middle text-sm text-gray-700 text-right tabular-nums">
-              <input type="number" name="qty_ordered" x-model="qty" min="1" value="1"
-                     class="w-16 rounded border border-gray-200 px-2 py-1.5 text-xs text-right
-                            focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
-            </td>
-            <td class="px-4 py-4 align-middle text-sm text-gray-700 text-right tabular-nums">
-              <input type="number" name="unit_cost" x-model="cost" step="0.01" min="0" placeholder="0.00"
-                     class="w-24 rounded border border-gray-200 px-2 py-1.5 text-xs text-right font-mono
-                            focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
-            </td>
-            <td class="px-4 py-4 align-middle text-sm text-gray-700 text-right tabular-nums">
-              <input type="number" name="core_charge_per_unit" x-model="core" step="0.01" min="0" placeholder="0.00"
-                     class="w-20 rounded border border-gray-200 px-2 py-1.5 text-xs text-right font-mono
-                            focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
-            </td>
-            <td class="px-4 py-4 align-middle text-right tabular-nums text-gray-300 text-sm">—</td>
-            <td class="px-4 py-4 align-middle text-sm text-gray-700"></td>
-            <td class="px-4 py-4 align-middle text-sm text-gray-700">
-              <button type="button"
-                      @click="
-                        htmx.ajax('POST', '/purchase-orders/{{ po.id }}/lines', {
-                          target: '#po-lines-section',
-                          swap: 'outerHTML',
-                          values: {
-                            product_id: productId,
-                            description: desc,
-                            qty_ordered: qty,
-                            unit_cost: cost,
-                            core_charge_per_unit: core,
-                          }
-                        });
-                        productId = ''; sku = ''; desc = ''; cost = ''; core = ''; qty = 1;
-                      "
-                      class="text-xs font-medium text-green-600 hover:text-green-700 whitespace-nowrap">
-                + Add
-              </button>
-            </td>
-          </tr>
-          {% endif %}
         </tbody>
 
         <tfoot class="border-t border-gray-100 bg-gray-50/50">
+          {% if vol_applied %}
+          {# Volume-discount waterfall: list → discount → (discounted) subtotal.
+             po.subtotal already reflects the discounted unit costs, so the
+             "Subtotal" row below is the net figure. #}
+          <tr>
+            <td colspan="{{ 5 if editable else 4 }}" class="px-4 py-1.5 text-right text-xs text-gray-400">List Subtotal</td>
+            <td class="px-4 py-1.5 text-right text-xs text-gray-500 tabular-nums">${{ '%.2f' | format(vol_list_subtotal) }}</td>
+            <td colspan="{{ 3 if editable else (2 + (1 if po.core_total > 0 else 0)) }}"></td>
+          </tr>
+          <tr>
+            <td colspan="{{ 5 if editable else 4 }}" class="px-4 py-1.5 text-right text-xs text-green-600">Volume discount ({{ '%g' | format(po.volume_discount_pct) }}%)</td>
+            <td class="px-4 py-1.5 text-right text-xs text-green-600 tabular-nums">−${{ '%.2f' | format(vol_savings) }}</td>
+            <td colspan="{{ 3 if editable else (2 + (1 if po.core_total > 0 else 0)) }}"></td>
+          </tr>
+          {% endif %}
           <tr>
             <td colspan="{{ 5 if editable else 4 }}" class="px-4 py-2.5 text-right text-xs text-gray-500 font-medium">Subtotal</td>
             <td class="px-4 py-2.5 text-right text-sm font-bold text-gray-800 tabular-nums">${{ '%.2f' | format(po.subtotal) }}</td>
@@ -247,6 +239,15 @@
             {% endif %}
             <td colspan="2"></td>
           </tr>
+          {% if editable and po.core_total > 0 %}
+          {# In edit mode core is a per-line input column but has no footer subtotal;
+             surface it here so the Order Total is fully explained. #}
+          <tr>
+            <td colspan="5" class="px-4 py-1.5 text-right text-xs text-gray-400">Core Charges</td>
+            <td class="px-4 py-1.5 text-right text-xs text-amber-600 tabular-nums">${{ '%.2f' | format(po.core_total) }}</td>
+            <td colspan="3"></td>
+          </tr>
+          {% endif %}
           {% if po.freight_in_cost > 0 %}
           <tr>
             <td colspan="{{ 5 if editable else 4 }}" class="px-4 py-1.5 text-right text-xs text-gray-400">Freight In</td>

@@ -1,4 +1,4 @@
-"""
+﻿"""
 app/routers/notifications.py
 =============================
 In-app notification bell — HTMX-driven.
@@ -58,8 +58,9 @@ async def notification_panel(
     svc = NotificationService(db, user_id)
     notifications = svc.get_unacknowledged(user_id=user_id, limit=30)
     return templates.TemplateResponse(
+        request,
         "notifications/_panel.html",
-        {"request": request, "notifications": notifications},
+        {"notifications": notifications},
     )
 
 
@@ -76,6 +77,7 @@ async def acknowledge_notification(
     db.commit()
     notifications = svc.get_unacknowledged(user_id=user_id, limit=30)
     return templates.TemplateResponse(
+        request,
         "notifications/_panel.html",
-        {"request": request, "notifications": notifications},
+        {"notifications": notifications},
     )

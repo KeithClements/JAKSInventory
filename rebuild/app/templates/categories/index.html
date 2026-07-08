@@ -1,0 +1,536 @@
+{% extends "base.html" %}
+{% block title %}Category Maintenance — Axle{% endblock %}
+{% block heading %}Category Maintenance{% endblock %}
+
+{% block content %}
+<div class="space-y-5 pb-12 max-w-5xl">
+
+  {# ════════════════════════════════════════════════════════════════════════════
+     FLASH BANNERS — ?ok= / ?error= from the POST → redirect round-trip
+  ══════════════════════════════════════════════════════════════════════════════ #}
+  {% if ok %}
+  <div class="flex items-center gap-2 rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800"
+       x-data x-init="setTimeout(() => $el.remove(), 4000)">
+    <svg class="w-4 h-4 text-green-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+      <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+    </svg>
+    {{ ok }}
+  </div>
+  {% endif %}
+  {% if error %}
+  <div class="flex items-center gap-2 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-800">
+    <svg class="w-4 h-4 text-red-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+      <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"/>
+    </svg>
+    {{ error }}
+  </div>
+  {% endif %}
+
+  {# ════════════════════════════════════════════════════════════════════════════
+     1. CATEGORY STRUCTURE — Category → Subcategory → Product Family tree
+  ══════════════════════════════════════════════════════════════════════════════ #}
+  <section class="card">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Category Structure</h2>
+      </div>
+      <span class="text-xs text-gray-400">{{ tree|length }} node{{ '' if tree|length == 1 else 's' }}</span>
+    </div>
+
+    <div class="card-body space-y-4">
+      <p class="text-sm text-gray-500">
+        Category &rarr; Subcategory &rarr; Product Family. The importer maps Shopify Type to the
+        top-level Category only; keywords below drive deeper suggestions (&sect;18).
+      </p>
+
+      {# ── Add a category / subcategory / family ───────────────────────────── #}
+      <div x-data="{ open: false }"
+           class="rounded-xl border border-gray-200 bg-gray-50/50">
+        <button type="button" @click="open = !open"
+                class="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 rounded-xl transition-colors">
+          <span class="flex items-center gap-2">
+            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+            Add category / subcategory / family
+          </span>
+          <svg class="w-4 h-4 text-gray-400 transition-transform" :class="open ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+        </button>
+
+        <div x-show="open" x-cloak class="px-4 pb-4 pt-1 border-t border-gray-100">
+          <form method="post" action="/categories/category/create"
+                class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div class="md:col-span-2">
+              <label class="form-label">Name <span class="text-red-500 normal-case">*</span></label>
+              <input type="text" name="name" required placeholder="e.g. Engine Components" class="form-input" />
+            </div>
+            <div>
+              <label class="form-label">Parent</label>
+              <select name="parent_id" class="form-select">
+                <option value="">— Top level (Category) —</option>
+                {% for c in categories_flat %}
+                <option value="{{ c.id }}">{{ c.full_path }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div>
+              <label class="form-label">SKU code</label>
+              <input type="text" name="code" maxlength="6" placeholder="e.g. INJ (blank = auto)"
+                     class="form-input uppercase" />
+            </div>
+            <div>
+              <label class="form-label">Sort order</label>
+              <input type="number" name="sort_order" value="0" class="form-input" />
+            </div>
+            <div>
+              <label class="form-label">Default markup %</label>
+              <input type="number" step="0.1" name="default_markup_pct" placeholder="optional" class="form-input" />
+            </div>
+            <div>
+              <label class="form-label">Import keywords</label>
+              <input type="text" name="import_keywords" placeholder="head, gasket, bolt" class="form-input" />
+            </div>
+            <div class="md:col-span-2 flex justify-end">
+              <button type="submit" class="btn-primary btn-sm">Add</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      {# ── The tree itself ─────────────────────────────────────────────────── #}
+      {% if tree %}
+      <div class="rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
+        {% for row in tree %}
+        {% set cat = row.cat %}
+        <div x-data="{ edit: false, tools: false }" class="bg-white">
+
+          {# Display row #}
+          <div class="flex items-center gap-3 px-4 py-3 hover:bg-gray-50/70 transition-colors">
+
+            {# Name + level pill (indented by depth) #}
+            <div class="flex-1 min-w-0" style="padding-left: {{ row.depth * 1.5 + 0.75 }}rem;">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-sm font-semibold text-gray-900 truncate">{{ cat.name }}</span>
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600">{{ row.label }}</span>
+                {% if cat.is_active %}
+                <span class="badge-green text-[10px]">Active</span>
+                {% else %}
+                <span class="badge-gray text-[10px]">Inactive</span>
+                {% endif %}
+              </div>
+              {% if cat.import_keywords %}
+              <p class="text-xs text-gray-400 mt-0.5 truncate" title="{{ cat.import_keywords }}">
+                Keywords: {{ cat.import_keywords|truncate(60, true, '…') }}
+              </p>
+              {% endif %}
+            </div>
+
+            {# Meta columns #}
+            <div class="hidden sm:flex items-center gap-5 text-xs text-gray-500 tabular-nums shrink-0">
+              <span title="Products directly in this category{% if row.total_count > row.product_count %}, plus products in its subcategories{% endif %}">
+                {{- row.product_count }} item{{ '' if row.product_count == 1 else 's' }}
+                {%- if row.total_count > row.product_count %} <span class="text-gray-400">(+{{ row.total_count - row.product_count }} below)</span>{% endif -%}
+              </span>
+              <span title="Sort order">sort {{ cat.sort_order }}</span>
+              <span title="Default markup">{{ "%.1f"|format(cat.default_markup_pct) ~ '%' if cat.default_markup_pct is not none else '—' }}</span>
+            </div>
+
+            {# Actions #}
+            <div class="flex items-center gap-1 shrink-0">
+              <button type="button" @click="edit = !edit"
+                      class="btn-ghost"
+                      :class="edit ? 'text-brand-700 bg-brand-50' : ''">Edit</button>
+
+              <button type="button" @click="tools = !tools"
+                      class="btn-ghost"
+                      :class="tools ? 'text-brand-700 bg-brand-50' : ''">Move/Merge</button>
+
+              <form method="post" action="/categories/category/{{ cat.id }}/toggle" class="inline">
+                <input type="hidden" name="active" value="{{ '0' if cat.is_active else '1' }}" />
+                <button type="submit" class="btn-ghost">{{ 'Deactivate' if cat.is_active else 'Activate' }}</button>
+              </form>
+
+              {# sq attr + tojson: tojson emits a double-quoted JS string and
+                 unicode-escapes apostrophes, so names cannot break attr or JS #}
+              <form method="post" action="/categories/category/{{ cat.id }}/delete" class="inline"
+                    onsubmit='return confirm("Delete category " + {{ cat.name|tojson }} + "? It is removed if empty, or deactivated if it still has products or sub-nodes.")'>
+                <button type="submit" class="btn-ghost text-red-500 hover:text-red-700 hover:bg-red-50">Delete</button>
+              </form>
+            </div>
+          </div>
+
+          {# Inline edit form #}
+          <div x-show="edit" x-cloak class="px-4 pb-4 pt-1 bg-gray-50/60 border-t border-gray-100"
+               style="padding-left: {{ (row.depth * 1.5 + 1.0) }}rem;">
+            <form method="post" action="/categories/category/{{ cat.id }}/update"
+                  class="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div class="md:col-span-2">
+                <label class="form-label">Name</label>
+                <input type="text" name="name" value="{{ cat.name }}" class="form-input" />
+              </div>
+              <div>
+                <label class="form-label">SKU code</label>
+                <input type="text" name="code" maxlength="6" value="{{ cat.code }}"
+                       placeholder="blank = auto" class="form-input uppercase" />
+              </div>
+              <div>
+                <label class="form-label">Sort order</label>
+                <input type="number" name="sort_order" value="{{ cat.sort_order }}" class="form-input" />
+              </div>
+              <div>
+                <label class="form-label">Default markup %</label>
+                <input type="number" step="0.1" name="default_markup_pct"
+                       value="{{ cat.default_markup_pct if cat.default_markup_pct is not none else '' }}" class="form-input" />
+              </div>
+              <div class="md:col-span-2">
+                <label class="form-label">Import keywords</label>
+                <input type="text" name="import_keywords" value="{{ cat.import_keywords }}"
+                       placeholder="head, gasket, bolt" class="form-input" />
+              </div>
+              <div class="md:col-span-2 flex justify-end gap-2">
+                <button type="button" @click="edit = false" class="btn-secondary btn-sm">Cancel</button>
+                <button type="submit" class="btn-primary btn-sm">Save</button>
+              </div>
+            </form>
+          </div>
+
+          {# R3 — Move / Merge tools #}
+          <div x-show="tools" x-cloak class="px-4 pb-4 pt-3 bg-gray-50/60 border-t border-gray-100 space-y-3"
+               style="padding-left: {{ (row.depth * 1.5 + 1.0) }}rem;">
+
+            {# Move to… (reparent — whole subtree moves, levels recompute) #}
+            {% if row.reparent_targets or cat.parent_id %}
+            <form method="post" action="/categories/category/{{ cat.id }}/reparent"
+                  class="flex flex-wrap items-end gap-3">
+              <div class="flex-1 min-w-[14rem]">
+                <label class="form-label">Move to&hellip;</label>
+                <select name="parent_id" class="form-select">
+                  {% if cat.parent_id %}
+                  <option value="">&mdash; Top level (Category) &mdash;</option>
+                  {% endif %}
+                  {% for t in row.reparent_targets %}
+                  <option value="{{ t.id }}">{{ t.full_path }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <button type="submit" class="btn-secondary btn-sm">Move</button>
+            </form>
+            {% endif %}
+
+            {# Merge into… (products + keywords + children → destination, then deactivate) #}
+            {% if row.merge_targets %}
+            <form method="post" id="merge-form-{{ cat.id }}" x-data="{ dest: '' }"
+                  :action="'/categories/category/{{ cat.id }}/merge-into/' + dest"
+                  class="flex flex-wrap items-end gap-3">
+              <div class="flex-1 min-w-[14rem]">
+                <label class="form-label">Merge into&hellip;</label>
+                <select x-model="dest" class="form-select">
+                  <option value="">&mdash; Choose destination &mdash;</option>
+                  {% for t in row.merge_targets %}
+                  <option value="{{ t.id }}">{{ t.full_path }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <button type="button" :disabled="!dest"
+                      @click="window.jakConfirm({
+                        formId: 'merge-form-{{ cat.id }}',
+                        title: 'Merge this category?',
+                        body: 'All its products move to the destination, import keywords are combined, children are adopted, and this category is deactivated.',
+                        cta: 'Merge', danger: true,
+                      })"
+                      class="btn-secondary btn-sm text-red-600 hover:text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:pointer-events-none">Merge</button>
+            </form>
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="rounded-xl border border-dashed border-gray-200 px-4 py-10 text-center text-sm text-gray-400">
+        No categories yet. Add your first category above.
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+  {# ════════════════════════════════════════════════════════════════════════════
+     2. BRANDS — the parts brand on the box
+  ══════════════════════════════════════════════════════════════════════════════ #}
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">Brands</h2>
+      <span class="text-xs text-gray-400">{{ brands|length }} brand{{ '' if brands|length == 1 else 's' }}</span>
+    </div>
+
+    <div class="card-body space-y-4">
+      <p class="text-sm text-gray-500">
+        The parts brand on the box — separate from Vendor and from Manufacturer/Engine-Make.
+      </p>
+
+      {# ── Add a brand ─────────────────────────────────────────────────────── #}
+      <div x-data="{ open: false }" class="rounded-xl border border-gray-200 bg-gray-50/50">
+        <button type="button" @click="open = !open"
+                class="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 rounded-xl transition-colors">
+          <span class="flex items-center gap-2">
+            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+            Add brand
+          </span>
+          <svg class="w-4 h-4 text-gray-400 transition-transform" :class="open ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+        </button>
+
+        <div x-show="open" x-cloak class="px-4 pb-4 pt-1 border-t border-gray-100">
+          <form method="post" action="/categories/brand/create"
+                class="flex flex-wrap items-end gap-3">
+            <div class="flex-1 min-w-[12rem]">
+              <label class="form-label">Name <span class="text-red-500 normal-case">*</span></label>
+              <input type="text" name="name" required placeholder="e.g. Interstate-McBee" class="form-input" />
+            </div>
+            <div class="w-28">
+              <label class="form-label">Sort order</label>
+              <input type="number" name="sort_order" value="0" class="form-input" />
+            </div>
+            <label class="flex items-center gap-2 h-10 cursor-pointer">
+              <input type="checkbox" name="is_house_brand" value="1" class="form-checkbox" />
+              <span class="text-sm text-gray-700">House brand</span>
+            </label>
+            <button type="submit" class="btn-primary btn-sm">Add</button>
+          </form>
+        </div>
+      </div>
+
+      {# ── Brand list ──────────────────────────────────────────────────────── #}
+      {% if brands %}
+      <div class="rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
+        {% for b in brands %}
+        <div x-data="{ edit: false, merge: false }" class="bg-white">
+
+          <div class="flex items-center gap-3 px-4 py-3 hover:bg-gray-50/70 transition-colors">
+            <div class="flex-1 min-w-0 flex items-center gap-2 flex-wrap">
+              <span class="text-sm font-semibold text-gray-900 truncate">{{ b.name }}</span>
+              {% if b.is_house_brand %}
+              <span class="badge-brand text-[10px]">House</span>
+              {% endif %}
+              {% if b.is_active %}
+              <span class="badge-green text-[10px]">Active</span>
+              {% else %}
+              <span class="badge-gray text-[10px]">Inactive</span>
+              {% endif %}
+            </div>
+            <div class="hidden sm:flex items-center text-xs text-gray-500 tabular-nums shrink-0">
+              <span title="Sort order">sort {{ b.sort_order }}</span>
+            </div>
+            <div class="flex items-center gap-1 shrink-0">
+              <button type="button" @click="edit = !edit" class="btn-ghost" :class="edit ? 'text-brand-700 bg-brand-50' : ''">Edit</button>
+              {% if brands|length > 1 %}
+              <button type="button" @click="merge = !merge" class="btn-ghost" :class="merge ? 'text-brand-700 bg-brand-50' : ''">Merge</button>
+              {% endif %}
+              {# sq attr + tojson: tojson emits a double-quoted JS string and
+                 unicode-escapes apostrophes, so names cannot break attr or JS #}
+              <form method="post" action="/categories/brand/{{ b.id }}/delete" class="inline"
+                    onsubmit='return confirm("Delete brand " + {{ b.name|tojson }} + "? It is removed if unused, or deactivated if products still carry it.")'>
+                <button type="submit" class="btn-ghost text-red-500 hover:text-red-700 hover:bg-red-50">Delete</button>
+              </form>
+            </div>
+          </div>
+
+          <div x-show="edit" x-cloak class="px-4 pb-4 pt-1 bg-gray-50/60 border-t border-gray-100">
+            <form method="post" action="/categories/brand/{{ b.id }}/update"
+                  class="flex flex-wrap items-end gap-3">
+              <div class="flex-1 min-w-[12rem]">
+                <label class="form-label">Name</label>
+                <input type="text" name="name" value="{{ b.name }}" class="form-input" />
+              </div>
+              <div class="w-28">
+                <label class="form-label">Sort order</label>
+                <input type="number" name="sort_order" value="{{ b.sort_order }}" class="form-input" />
+              </div>
+              <label class="flex items-center gap-2 h-10 cursor-pointer">
+                <input type="checkbox" name="is_house_brand" value="1" class="form-checkbox" {% if b.is_house_brand %}checked{% endif %} />
+                <span class="text-sm text-gray-700">House brand</span>
+              </label>
+              <label class="flex items-center gap-2 h-10 cursor-pointer">
+                <input type="checkbox" name="is_active" value="1" class="form-checkbox" {% if b.is_active %}checked{% endif %} />
+                <span class="text-sm text-gray-700">Active</span>
+              </label>
+              <div class="flex items-center gap-2">
+                <button type="button" @click="edit = false" class="btn-secondary btn-sm">Cancel</button>
+                <button type="submit" class="btn-primary btn-sm">Save</button>
+              </div>
+            </form>
+          </div>
+
+          {# §23.3 Phase 2 — merge a duplicate brand (typo/re-import dupe) into
+             another. Mirrors the category Merge-into tool: products carrying
+             this brand move to the destination, then this brand deactivates. #}
+          {% if brands|length > 1 %}
+          <div x-show="merge" x-cloak class="px-4 pb-4 pt-3 bg-gray-50/60 border-t border-gray-100 space-y-3">
+            <form method="post" id="brand-merge-form-{{ b.id }}" x-data="{ dest: '' }"
+                  :action="'/categories/brand/{{ b.id }}/merge-into/' + dest"
+                  class="flex flex-wrap items-end gap-3">
+              <div class="flex-1 min-w-[14rem]">
+                <label class="form-label">Merge into&hellip;</label>
+                <select x-model="dest" class="form-select">
+                  <option value="">&mdash; Choose destination &mdash;</option>
+                  {% for other in brands if other.id != b.id and other.is_active %}
+                  <option value="{{ other.id }}">{{ other.name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <button type="button" :disabled="!dest"
+                      @click="window.jakConfirm({
+                        formId: 'brand-merge-form-{{ b.id }}',
+                        title: 'Merge this brand?',
+                        body: 'Every product tagged \'{{ b.name }}\' moves to the destination brand, and this brand is deactivated.',
+                        cta: 'Merge', danger: true,
+                      })"
+                      class="btn-secondary btn-sm text-red-600 hover:text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:pointer-events-none">Merge</button>
+            </form>
+          </div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="rounded-xl border border-dashed border-gray-200 px-4 py-10 text-center text-sm text-gray-400">
+        No brands yet. Add your first brand above.
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+  {# ════════════════════════════════════════════════════════════════════════════
+     3. MANUFACTURERS / ENGINE MAKES
+  ══════════════════════════════════════════════════════════════════════════════ #}
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">Manufacturers / Engine Makes</h2>
+      <span class="text-xs text-gray-400">{{ manufacturers|length }} make{{ '' if manufacturers|length == 1 else 's' }}</span>
+    </div>
+
+    <div class="card-body space-y-4">
+      <p class="text-sm text-gray-500">
+        Cummins, CAT, Detroit, … — the engine platform a part fits. Same field as a product's Engine Make.
+      </p>
+
+      {# ── Add a manufacturer ──────────────────────────────────────────────── #}
+      <div x-data="{ open: false }" class="rounded-xl border border-gray-200 bg-gray-50/50">
+        <button type="button" @click="open = !open"
+                class="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 rounded-xl transition-colors">
+          <span class="flex items-center gap-2">
+            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+            Add manufacturer
+          </span>
+          <svg class="w-4 h-4 text-gray-400 transition-transform" :class="open ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+        </button>
+
+        <div x-show="open" x-cloak class="px-4 pb-4 pt-1 border-t border-gray-100">
+          <form method="post" action="/categories/manufacturer/create"
+                class="flex flex-wrap items-end gap-3">
+            <div class="flex-1 min-w-[12rem]">
+              <label class="form-label">Name <span class="text-red-500 normal-case">*</span></label>
+              <input type="text" name="name" required placeholder="e.g. Cummins" class="form-input" />
+            </div>
+            <div class="w-28">
+              <label class="form-label">Sort order</label>
+              <input type="number" name="sort_order" value="0" class="form-input" />
+            </div>
+            <button type="submit" class="btn-primary btn-sm">Add</button>
+          </form>
+        </div>
+      </div>
+
+      {# ── Manufacturer list ───────────────────────────────────────────────── #}
+      {% if manufacturers %}
+      <div class="rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
+        {% for m in manufacturers %}
+        <div x-data="{ edit: false, merge: false }" class="bg-white">
+
+          <div class="flex items-center gap-3 px-4 py-3 hover:bg-gray-50/70 transition-colors">
+            <div class="flex-1 min-w-0 flex items-center gap-2 flex-wrap">
+              <span class="text-sm font-semibold text-gray-900 truncate">{{ m.name }}</span>
+              {% if m.is_active %}
+              <span class="badge-green text-[10px]">Active</span>
+              {% else %}
+              <span class="badge-gray text-[10px]">Inactive</span>
+              {% endif %}
+            </div>
+            <div class="hidden sm:flex items-center text-xs text-gray-500 tabular-nums shrink-0">
+              <span title="Sort order">sort {{ m.sort_order }}</span>
+            </div>
+            <div class="flex items-center gap-1 shrink-0">
+              <button type="button" @click="edit = !edit" class="btn-ghost" :class="edit ? 'text-brand-700 bg-brand-50' : ''">Edit</button>
+              {% if manufacturers|length > 1 %}
+              <button type="button" @click="merge = !merge" class="btn-ghost" :class="merge ? 'text-brand-700 bg-brand-50' : ''">Merge</button>
+              {% endif %}
+              {# sq attr + tojson: tojson emits a double-quoted JS string and
+                 unicode-escapes apostrophes, so names cannot break attr or JS #}
+              <form method="post" action="/categories/manufacturer/{{ m.id }}/delete" class="inline"
+                    onsubmit='return confirm("Delete manufacturer " + {{ m.name|tojson }} + "? It is removed if unused, or deactivated if products still reference it.")'>
+                <button type="submit" class="btn-ghost text-red-500 hover:text-red-700 hover:bg-red-50">Delete</button>
+              </form>
+            </div>
+          </div>
+
+          <div x-show="edit" x-cloak class="px-4 pb-4 pt-1 bg-gray-50/60 border-t border-gray-100">
+            <form method="post" action="/categories/manufacturer/{{ m.id }}/update"
+                  class="flex flex-wrap items-end gap-3">
+              <div class="flex-1 min-w-[12rem]">
+                <label class="form-label">Name</label>
+                <input type="text" name="name" value="{{ m.name }}" class="form-input" />
+              </div>
+              <div class="w-28">
+                <label class="form-label">Sort order</label>
+                <input type="number" name="sort_order" value="{{ m.sort_order }}" class="form-input" />
+              </div>
+              <label class="flex items-center gap-2 h-10 cursor-pointer">
+                <input type="checkbox" name="is_active" value="1" class="form-checkbox" {% if m.is_active %}checked{% endif %} />
+                <span class="text-sm text-gray-700">Active</span>
+              </label>
+              <div class="flex items-center gap-2">
+                <button type="button" @click="edit = false" class="btn-secondary btn-sm">Cancel</button>
+                <button type="submit" class="btn-primary btn-sm">Save</button>
+              </div>
+            </form>
+          </div>
+
+          {# §23.3 Phase 2 — merge a duplicate manufacturer/engine-make into
+             another. Reassigns BOTH Product.manufacturer AND
+             Product.engine_manufacturer (the "same concept" per the model
+             docstring), unlike update_manufacturer's own rename cascade
+             which only touches engine_manufacturer. #}
+          {% if manufacturers|length > 1 %}
+          <div x-show="merge" x-cloak class="px-4 pb-4 pt-3 bg-gray-50/60 border-t border-gray-100 space-y-3">
+            <form method="post" id="mfg-merge-form-{{ m.id }}" x-data="{ dest: '' }"
+                  :action="'/categories/manufacturer/{{ m.id }}/merge-into/' + dest"
+                  class="flex flex-wrap items-end gap-3">
+              <div class="flex-1 min-w-[14rem]">
+                <label class="form-label">Merge into&hellip;</label>
+                <select x-model="dest" class="form-select">
+                  <option value="">&mdash; Choose destination &mdash;</option>
+                  {% for other in manufacturers if other.id != m.id and other.is_active %}
+                  <option value="{{ other.id }}">{{ other.name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <button type="button" :disabled="!dest"
+                      @click="window.jakConfirm({
+                        formId: 'mfg-merge-form-{{ m.id }}',
+                        title: 'Merge this manufacturer?',
+                        body: 'Every product with \'{{ m.name }}\' as its manufacturer or engine make moves to the destination, and this manufacturer is deactivated.',
+                        cta: 'Merge', danger: true,
+                      })"
+                      class="btn-secondary btn-sm text-red-600 hover:text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:pointer-events-none">Merge</button>
+            </form>
+          </div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="rounded-xl border border-dashed border-gray-200 px-4 py-10 text-center text-sm text-gray-400">
+        No manufacturers yet. Add your first manufacturer above.
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+</div>
+{% endblock %}

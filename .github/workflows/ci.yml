@@ -1,0 +1,47 @@
+name: CI
+
+# The app lives in the rebuild/ subfolder, but GitHub only reads workflows from
+# .github/workflows at the REPOSITORY ROOT — the pre-existing rebuild/.github/
+# workflows were never registered (0 runs ever). This file lives at the root so
+# the test suite actually runs on every push/PR. Runs on windows-latest to match
+# the shop's deployment target (the launchers, service install, and some path
+# handling are Windows-specific).
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: rebuild
+
+jobs:
+  tests:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    # No PYTHONHASHSEED pin — the suite is order/seed-independent. The earlier
+    # "hash-order flakiness" (a different unrelated test failing per unpinned run) was
+    # actually leaked background daemon schedulers: a file-DB test spawned them, and
+    # they ticked on the shared global SessionLocal, concurrently using a later test's
+    # single StaticPool connection and corrupting its transaction. Fixed by gating the
+    # scheduler startup on JAKS_DISABLE_SCHEDULERS (app/main.py on_startup +
+    # tests/conftest.py), pinned by tests/test_no_scheduler_threads_in_tests.py.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: rebuild/requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run test suite
+        run: python -m pytest -q

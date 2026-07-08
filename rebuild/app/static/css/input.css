@@ -137,7 +137,8 @@
   .tbl-th-r { @apply tbl-th text-right; }
   .tbl-td   { @apply px-4 py-3.5 text-sm text-gray-700; }
   .tbl-td-r { @apply px-4 py-3.5 text-sm text-gray-700 text-right tabular-nums; }
-  .tbl-row  { @apply group border-t border-gray-100 hover:bg-stone-100/70 transition-colors duration-100; }
+  /* 'group' must be added directly in HTML — @apply group is not permitted by the CLI */
+  .tbl-row  { @apply border-t border-gray-100 hover:bg-stone-100/70 transition-colors duration-100; }
   .tbl-link { @apply font-semibold text-brand-700 hover:text-brand-600 hover:underline; }
   .tbl-empty{ @apply px-4 py-12 text-center text-sm text-gray-400 italic; }
 
@@ -158,11 +159,12 @@
   }
   .tbl-row-danger:hover { background-color: rgba(239, 68, 68, 0.09); }
 
-  /* Hover-revealed action column — parent <tr> must carry the "group" class */
+  /* Hover-revealed action column — parent <tr> must carry the "group" class.
+     group-hover: variants cannot be @applied; use the equivalent CSS selector instead. */
   .row-actions {
-    @apply flex items-center justify-end gap-0.5 opacity-0 group-hover:opacity-100
-           transition-opacity duration-150;
+    @apply flex items-center justify-end gap-0.5 opacity-0 transition-opacity duration-150;
   }
+  .group:hover .row-actions { opacity: 1; }
 
   /* ── Context menu ────────────────────────────────────────────────────── */
   .ctx-menu {
@@ -220,6 +222,19 @@
 
   /* ── Section heading ─────────────────────────────────────────────────── */
   .section-title { @apply text-xs font-semibold text-gray-600 uppercase tracking-widest mb-3; }
+
+  /* ── Sticky table header (long lists; pairs with the sortable_th macro) ───
+     Add `.sticky-thead` to a <thead>: all its <th> stick to the top of the
+     scroll container while the body scrolls. Needs an opaque header bg (gray-50
+     here) so rows scroll cleanly underneath. Does NOT touch the colored left-edge
+     row stripes (§2/§4 border-l-4 — a LOCKED operational feature). Define-once;
+     activates on the next `npm run build:css`. */
+  .sticky-thead th {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: #f9fafb; /* gray-50 — matches the §2 list header */
+  }
 
 }
 

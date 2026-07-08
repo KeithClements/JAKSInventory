@@ -1,5 +1,8 @@
+{# ⚠ DEAD TEMPLATE — NOT routed by any handler. The live "New Warranty Claim"
+   form is warranty/_new_picker.html (rendered into the global create slide-over via
+   warranty.py). Editing this file has NO user-visible effect — fix _new_picker.html. #}
 {% extends "base.html" %}
-{% block title %}New Warranty Claim — JAKS Inventory{% endblock %}
+{% block title %}New Warranty Claim — Axle{% endblock %}
 {% block heading %}New Warranty Claim{% endblock %}
 {% block header_actions %}
   <a href="/warranty/" class="text-sm text-gray-500 hover:text-gray-700">← Warranty Claims</a>
@@ -81,9 +84,12 @@
       <table class="w-full text-sm">
         <thead class="text-xs text-gray-500 uppercase">
           <tr>
-            <th class="pb-2 text-left font-medium w-2/5">Product</th>
-            <th class="pb-2 text-right font-medium w-20">Qty Claimed</th>
-            <th class="pb-2 text-right font-medium w-28">Credit Amount ($)</th>
+            <th class="pb-2 text-left font-medium w-1/4">Product</th>
+            <th class="pb-2 text-right font-medium w-16">Qty</th>
+            <th class="pb-2 text-right font-medium w-24">Credit ($)</th>
+            <th class="pb-2 text-left font-medium w-28">Serial / ESN</th>
+            <th class="pb-2 text-right font-medium w-16">Labor Hrs</th>
+            <th class="pb-2 text-right font-medium w-20">Rate ($/hr)</th>
             <th class="pb-2 w-8"></th>
           </tr>
         </thead>
@@ -107,6 +113,24 @@
               </td>
               <td class="py-2 pr-3">
                 <input :name="'credit_amount[]'" type="number" step="0.01" min="0" x-model="line.credit"
+                       placeholder="0.00"
+                       class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs text-right
+                              focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              </td>
+              <td class="py-2 pr-3">
+                <input :name="'serial_number[]'" type="text" x-model="line.serial"
+                       placeholder="optional"
+                       class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs font-mono
+                              focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              </td>
+              <td class="py-2 pr-3">
+                <input :name="'labor_hours[]'" type="number" step="0.1" min="0" x-model="line.hours"
+                       placeholder="0"
+                       class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs text-right
+                              focus:outline-none focus:ring-1 focus:ring-brand-400" />
+              </td>
+              <td class="py-2 pr-3">
+                <input :name="'labor_rate[]'" type="number" step="0.01" min="0" x-model="line.rate"
                        placeholder="0.00"
                        class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs text-right
                               focus:outline-none focus:ring-1 focus:ring-brand-400" />
@@ -137,8 +161,8 @@
 <script>
 function wcForm() {
   return {
-    lines: [{ qty: 1, credit: '' }],
-    addLine() { this.lines.push({ qty: 1, credit: '' }); },
+    lines: [{ qty: 1, credit: '', serial: '', hours: '', rate: '' }],
+    addLine() { this.lines.push({ qty: 1, credit: '', serial: '', hours: '', rate: '' }); },
   };
 }
 </script>

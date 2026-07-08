@@ -32,6 +32,19 @@ def get_setting_value_db(db: Session, key: str, fallback: str = "") -> str:
     return row.value if row else fallback
 
 
+def set_setting_value_db(db: Session, key: str, value: str, label: str = "") -> None:
+    """Upsert a single setting value using an existing session.
+
+    Does NOT commit — the caller controls the transaction boundary (so several
+    setting writes can be batched into one commit). Creates the row if absent.
+    """
+    row = db.query(Setting).filter(Setting.key == key).first()
+    if row:
+        row.value = value
+    else:
+        db.add(Setting(key=key, value=value, label=label))
+
+
 def bump_counter(db: Session, key: str, prefix: str, year: int) -> str:
     """
     Atomically increment a document sequence number and return the formatted string.
@@ -57,6 +70,7 @@ def bump_counter(db: Session, key: str, prefix: str, year: int) -> str:
             "next_ri_number", "next_core_slip_number", "next_vcr_number",
             # Phase F/G/I — credit memo, vendor credit, vendor return, statement
             "next_cm_number", "next_vcm_number", "next_vr_number", "next_statement_number",
+            "next_count_number",   # §24 — inventory count sessions (COUNT-YYYY-NNNN)
         ]
         db.query(Setting).filter(Setting.key.in_(sequence_keys)).update(
             {Setting.value: "1"}, synchronize_session="fetch"
@@ -74,5 +88,9 @@ def bump_counter(db: Session, key: str, prefix: str, year: int) -> str:
         row.value = str(n + 1)
     else:
         db.add(Setting(key=key, value=str(n + 1), label=""))
-    db.commit()
+    # Flush (not commit) so the counter increment participates in the CALLER's
+    # transaction. If the caller rolls back after allocating a number, the increment
+    # rolls back too — no silent document-number gaps ("invoice numbers are sacred").
+    # Every caller inserts its document and commits once, covering this increment.
+    db.flush()
     return formatted

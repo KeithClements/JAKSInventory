@@ -22,17 +22,14 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import app.database as _appdb
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+from tests.conftest import activate, fresh_engine
 
 from app.models import __all_models__  # noqa: F401
-from app.database import Base
 
 import pytest
 
 from app.constants import (
-    MatchResolution, POStatus, UserRole,
+    MatchResolution, POStatus, QBOSyncStatus, UserRole,
     VendorBillStatus, VendorCreditMemoTrigger,
 )
 from app.models.purchase_order import (
@@ -43,28 +40,13 @@ from app.models.vendor import Vendor
 from app.services.base import PermissionDeniedError
 from app.services.po_service import POService
 
-# ── Test isolation (mirrors conftest pattern) ─────────────────────────────────
-
-_engine = create_engine(
-    "sqlite:///:memory:",
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
-Base.metadata.create_all(bind=_engine)
-_SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
-
 _counter = itertools.count(1)
-
-
-@pytest.fixture(autouse=True)
-def _activate_engine():
-    from tests.conftest import activate
-    activate(_engine)
 
 
 @pytest.fixture()
 def db():
-    session = _SessionLocal()
+    activate(fresh_engine())
+    session = _appdb.SessionLocal()
     try:
         yield session
     finally:
@@ -658,4 +640,79 @@ class TestAdvanceBillAfterMatch:
         svc._advance_bill_after_match(db.get(VendorBill, bill.id))
         db.expire_all()
         # APPROVED should be unchanged
+        assert db.get(VendorBill, bill.id).status == VendorBillStatus.APPROVED
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# approve_bill: documented "Approve Anyway" override
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestApproveBillOverride:
+    """A DISCREPANCY bill may be approved as-is ONLY with a documented reason."""
+
+    def test_no_override_still_blocked(self, db):
+        """Default call (no reason) keeps the discrepancy gate — existing behavior."""
+        _, _, bill = _make_over_billed_setup(db)
+        admin = _make_admin_user(db)
+        svc = POService(db, current_user_id=admin.id)
+        with pytest.raises(ValueError, match="unresolved match discrepanc"):
+            svc.approve_bill(bill.id)
+        db.expire_all()
+        assert db.get(VendorBill, bill.id).status == VendorBillStatus.DISCREPANCY
+
+    def test_blank_override_reason_still_blocked(self, db):
+        """Whitespace-only reason is treated as empty — gate stands."""
+        _, _, bill = _make_over_billed_setup(db)
+        admin = _make_admin_user(db)
+        svc = POService(db, current_user_id=admin.id)
+        with pytest.raises(ValueError, match="unresolved match discrepanc"):
+            svc.approve_bill(bill.id, override_reason="   ")
+        db.expire_all()
+        assert db.get(VendorBill, bill.id).status == VendorBillStatus.DISCREPANCY
+
+    def test_override_with_reason_approves(self, db):
+        """A non-empty reason overrides the gate: bill → APPROVED, queued for QBO."""
+        _, line, bill = _make_over_billed_setup(db)
+        admin = _make_admin_user(db)
+        svc = POService(db, current_user_id=admin.id)
+        # The flagged line is never resolved — the override accepts the variance as-is.
+        svc.approve_bill(bill.id, override_reason="Vendor confirmed price by phone")
+        db.expire_all()
+        updated = db.get(VendorBill, bill.id)
+        assert updated.status == VendorBillStatus.APPROVED
+        assert updated.qbo_sync_status == QBOSyncStatus.PENDING
+        # Line resolution is left untouched by an override approval.
+        assert db.get(POLine, line.id).match_resolution == MatchResolution.UNRESOLVED
+
+    def test_override_audit_logged(self, db):
+        """The override is recorded in the audit trail (discrepancy_override=True)."""
+        import json
+        from app.models.audit import AuditLog
+        from app.constants import AuditAction
+        _, _, bill = _make_over_billed_setup(db)
+        admin = _make_admin_user(db)
+        svc = POService(db, current_user_id=admin.id)
+        svc.approve_bill(bill.id, override_reason="Accepting overage")
+        db.expire_all()
+        entry = (
+            db.query(AuditLog)
+            .filter(AuditLog.action == AuditAction.STATUS_CHANGED)
+            .order_by(AuditLog.id.desc())
+            .first()
+        )
+        assert entry is not None
+        payload = json.loads(entry.new_value)
+        assert payload.get("discrepancy_override") is True
+        assert payload.get("override_reason") == "Accepting overage"
+
+    def test_override_reason_ignored_on_clean_bill(self, db):
+        """Passing a reason on a PENDING (reconciled) bill is harmless — normal approval."""
+        _, line, bill = _make_over_billed_setup(db)
+        admin = _make_admin_user(db)
+        svc = POService(db, current_user_id=admin.id)
+        # Resolve the flag so the bill is PENDING (gate open), then approve with a reason.
+        svc.resolve_match_line(line.id, decision=MatchResolution.ACCEPTED)
+        db.expire_all()
+        svc.approve_bill(bill.id, override_reason="not needed but harmless")
+        db.expire_all()
         assert db.get(VendorBill, bill.id).status == VendorBillStatus.APPROVED

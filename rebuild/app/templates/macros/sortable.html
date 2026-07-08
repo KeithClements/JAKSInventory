@@ -1,0 +1,45 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   sortable_th(label, key, sort, direction='asc', qs='', align='left')  — Primitive 13
+   Governance: JAKS_UI_Change_Plan.md §7 + §8Q + §2 (operational list standard)
+
+   A clickable column header for the operational lists. The link sets
+   ?sort={key}&direction={asc|desc}, toggling direction when the column is already
+   the active sort; other query params (q / tab / filters) are preserved via `qs`
+   (the caller passes e.g. qs="&tab={{tab}}&q={{q}}"). Shows ▲ / ▼ on the active
+   column and a faint ↕ otherwise.
+
+   ROUTE CONTRACT — aligned to Backend's `app.utils.apply_sort` (@3cb1a86): the list
+   route reads `sort` (str, whitelisted) + `direction` ('asc'|'desc'), calls
+   apply_sort(query, allowed, sort, direction, default=…), and echoes the normalized
+   `sort` / `direction` back into the template. Param name is `direction`, NOT `dir`
+   (matches invoices/quotes/payments/customers list routes). Pairs with `.sticky-thead`
+   (app/static/css/input.css) for long scrolling lists.
+
+   PURE PRESENTATION. align ∈ left | right | center (numeric columns → right).
+═════════════════════════════════════════════════════════════════════════════ #}
+{% macro sortable_th(label, key, sort=None, direction='asc', qs='', align='left', th_class='') %}
+{%- set active = (sort == key) -%}
+{%- set next_dir = 'desc' if (active and direction == 'asc') else 'asc' -%}
+{# Build the href as one expression so autoescape renders every separator as
+   &amp; uniformly (correct HTML; the browser decodes it). qs is caller-built and
+   stays autoescaped — never |safe — so a search term in `q=` can't break out. #}
+{%- set _href = '?sort=' ~ key ~ '&direction=' ~ next_dir ~ qs -%}
+{# Axle pass: header cells use .label-mini (10px Oswald uppercase steel-400) #}
+<th class="px-4 py-3 text-{{ align }} label-mini whitespace-nowrap {{ th_class }}">
+  <a href="{{ _href }}"
+     class="inline-flex items-center gap-1 hover:text-gray-700 transition-colors"
+     title="Sort by {{ label }} — {{ 'descending' if next_dir == 'desc' else 'ascending' }}"
+     aria-label="Sort by {{ label }}">
+    <span>{{ label }}</span>
+    {%- if active %}
+    <svg class="w-3 h-3 text-brand-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5">
+      <path stroke-linecap="round" stroke-linejoin="round" d="{{ 'M5 15l7-7 7 7' if direction == 'asc' else 'M19 9l-7 7-7-7' }}"/>
+    </svg>
+    {%- else %}
+    <svg class="w-3 h-3 text-gray-300 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M8 9l4-4 4 4m0 6l-4 4-4-4"/>
+    </svg>
+    {%- endif %}
+  </a>
+</th>
+{% endmacro %}

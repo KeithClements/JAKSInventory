@@ -1,0 +1,29 @@
+{# products/_applications_list.html
+   §21 — engine-application (fitment) rows for a product. Rendered inside the
+   Applications tab AND returned by POST/DELETE /products/{id}/applications so the
+   whole <tbody> swaps (targets #apps-list) — the dedup-refresh path can never
+   leave a duplicate row in the DOM. #}
+<tbody id="apps-list" class="divide-y divide-gray-100">
+  {% for app in product.applications %}
+  <tr>
+    <td class="px-4 py-2 text-sm font-medium text-gray-800">{{ app.engine_make }}</td>
+    <td class="px-4 py-2 text-sm text-gray-700">{{ app.engine_model or '—' }}</td>
+    <td class="px-4 py-2 text-sm font-mono text-brand-700">{{ app.cpl or '—' }}</td>
+    <td class="px-4 py-2 text-sm text-gray-600">{{ app.esn_range or '—' }}</td>
+    <td class="px-4 py-2 text-right">
+      <button type="button"
+              class="text-xs font-medium text-red-500 hover:text-red-700"
+              hx-delete="/products/{{ product.id }}/applications/{{ app.id }}"
+              hx-target="#apps-list" hx-swap="outerHTML"
+              hx-confirm="Remove this engine application?">Remove</button>
+    </td>
+  </tr>
+  {% else %}
+  <tr>
+    <td colspan="5" class="px-4 py-6 text-center text-sm text-gray-400">
+      No engine applications yet — add the engine(s) this part fits below so it
+      shows up in engine search.
+    </td>
+  </tr>
+  {% endfor %}
+</tbody>

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
-{% block title %}Inventory Valuation — JAKS Inventory{% endblock %}
+{% from "macros/_pager.html" import pager with context %}
+{% block title %}Inventory Valuation — Axle{% endblock %}
 {% block heading %}Inventory Valuation{% endblock %}
 
 {% block content %}
@@ -8,11 +9,21 @@
   {% include "reports/_nav.html" %}
 
   <div class="flex items-center justify-between">
-    <p class="text-xs text-gray-400">As of {{ today.strftime('%B %d, %Y') }} · Active SKUs only</p>
-    <button type="button" class="btn-secondary btn-sm" disabled title="Coming soon">
-      Export CSV
-    </button>
+    <p class="text-xs text-gray-400">
+      As of {{ today.strftime('%B %d, %Y') }} · Active SKUs only
+      {% set cs = totals.cost_source_breakdown %}
+      {% if cs %}
+      · Cost basis: {{ cs.get('receipt', 0) }} from receipts · {{ cs.get('manual', 0) }} manual/unset{% if cs.get('vendor', 0) %} · {{ cs.get('vendor', 0) }} legacy vendor-set{% endif %}
+      {% endif %}
+    </p>
+    <a href="/reports/inventory-valuation/export.csv" class="btn-secondary btn-sm">Export CSV</a>
   </div>
+
+  {% if error_message %}
+  <div class="rounded-md bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+    {{ error_message }}
+  </div>
+  {% endif %}
 
   {# ── Summary tiles ─────────────────────────────────────────────────────── #}
   <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -35,16 +46,83 @@
       <p class="stat-value {% if totals.zero_cost_count > 0 %}text-amber-700{% else %}text-gray-400{% endif %}">
         {{ totals.zero_cost_count }}
       </p>
-      <p class="stat-sub">in-stock SKUs with no cost</p>
+      <p class="stat-sub">
+        in-stock SKUs with no cost
+        {% if totals.zero_cost_recoverable_count %}· {{ totals.zero_cost_recoverable_count }} have a vendor cost on file{% endif %}
+      </p>
     </div>
   </div>
 
-  {# ── Product table ────────────────────────────────────────────────────── #}
+  {# ── Value by category (fast SQL aggregate) ────────────────────────────── #}
+  {% if by_category %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Value by Category</h2>
+      <span class="text-xs text-gray-400">{{ by_category | length }} categor{{ 'y' if by_category | length == 1 else 'ies' }}</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">Category</th>
+            <th class="tbl-th-r">SKUs</th>
+            <th class="tbl-th-r">In Stock</th>
+            <th class="tbl-th-r">Units</th>
+            <th class="tbl-th-r">Zero-Cost</th>
+            <th class="tbl-th-r">Total Value</th>
+            <th class="tbl-th"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in by_category %}
+          {% set drill = ('/reports/inventory-valuation?uncategorized=1') if c.category_id is none else ('/reports/inventory-valuation?category_id=' ~ c.category_id) %}
+          {% set is_active_cat = (uncategorized and c.category_id is none) or (category_id is not none and c.category_id == category_id) %}
+          <tr class="tbl-row {% if is_active_cat %}bg-brand-50/50{% endif %}">
+            <td class="tbl-td font-medium text-gray-700">{{ c.category }}</td>
+            <td class="tbl-td-r tabular-nums text-gray-600">{{ c.sku_count }}</td>
+            <td class="tbl-td-r tabular-nums text-gray-600">{{ c.in_stock_skus }}</td>
+            <td class="tbl-td-r tabular-nums text-gray-600">{{ c.total_units }}</td>
+            <td class="tbl-td-r tabular-nums {% if c.zero_cost_count > 0 %}text-amber-600 font-medium{% else %}text-gray-300{% endif %}">
+              {% if c.zero_cost_count > 0 %}{{ c.zero_cost_count }}{% else %}—{% endif %}
+            </td>
+            <td class="tbl-td-r font-semibold tabular-nums {% if c.total_value != 0 %}text-brand-700{% else %}text-gray-300{% endif %}">
+              {% if c.total_value != 0 %}${{ '%.2f' % c.total_value }}{% else %}—{% endif %}
+            </td>
+            <td class="tbl-td-r">
+              <a href="{{ drill }}" class="tbl-link text-xs">View parts →</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="border-t-2 border-gray-200 bg-gray-50">
+          <tr>
+            <td class="px-4 py-3 text-sm font-bold text-gray-700">All categories</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-gray-700 tabular-nums">{{ totals.sku_count }}</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-gray-700 tabular-nums">{{ totals.in_stock_skus }}</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-gray-700 tabular-nums">{{ totals.total_units }}</td>
+            <td class="px-4 py-3 text-right text-sm font-bold text-amber-700 tabular-nums">{{ totals.zero_cost_count }}</td>
+            <td class="px-4 py-3 text-right text-lg font-bold text-brand-700 tabular-nums">${{ '%.2f' % totals.total_value }}</td>
+            <td></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Detail rows (paginated; optionally scoped to one category) ─────────── #}
   {% if rows %}
   <div class="card">
     <div class="card-header">
-      <h2 class="card-title">Stock on Hand</h2>
-      <span class="text-xs text-gray-400">{{ rows | length }} SKU{{ 's' if rows | length != 1 }}</span>
+      <h2 class="card-title">
+        Stock on Hand{% if active_category_name %} · {{ active_category_name }}{% endif %}
+      </h2>
+      <div class="flex items-center gap-3">
+        <span class="text-xs text-gray-400">{{ total_rows }} SKU{{ 's' if total_rows != 1 }}</span>
+        {% if category_id is not none or uncategorized %}
+        <a href="/reports/inventory-valuation" class="tbl-link text-xs">Clear filter ✕</a>
+        {% endif %}
+      </div>
     </div>
     <div class="overflow-x-auto">
       <table class="tbl">
@@ -94,7 +172,10 @@
             </td>
             <td class="tbl-td">
               {% if row.warning == 'zero_cost' %}
-              <span class="badge-amber" title="Stock on hand but cost is zero">Zero Cost</span>
+              <span class="badge-amber" title="Stock on hand but cost is zero ({{ row.cost_source }})">Zero Cost</span>
+              {% if row.recoverable_cost %}
+              <div class="text-[10px] text-gray-400 mt-0.5">${{ '%.2f' % row.recoverable_cost }} via vendor cost</div>
+              {% endif %}
               {% elif row.warning == 'negative_qty' %}
               <span class="badge-red" title="Negative quantity on hand">Negative</span>
               {% endif %}
@@ -102,22 +183,24 @@
           </tr>
           {% endfor %}
         </tbody>
-        <tfoot class="border-t-2 border-gray-200 bg-gray-50">
-          <tr>
-            <td colspan="2" class="px-4 py-3 text-sm font-bold text-gray-700">Totals</td>
-            <td class="px-4 py-3 text-right text-sm font-bold text-gray-700 tabular-nums">{{ totals.total_units }}</td>
-            <td colspan="4"></td>
-            <td class="px-4 py-3 text-right text-lg font-bold text-brand-700 tabular-nums">${{ '%.2f' % totals.total_value }}</td>
-            <td></td>
-          </tr>
-        </tfoot>
       </table>
     </div>
+
+    {# ── Pager (preserves category_id / uncategorized via querystring) ────── #}
+    {% set _start = ((page - 1) * page_size) + 1 if total_rows else 0 %}
+    {% set _end = page * page_size if (page * page_size) < total_rows else total_rows %}
+    {{ pager({'page': page, 'per_page': page_size, 'total': total_rows,
+              'total_pages': total_pages, 'start': _start, 'end': _end},
+             '/reports/inventory-valuation') }}
   </div>
   {% else %}
   <div class="card flex flex-col items-center justify-center py-16">
-    <p class="text-gray-500 font-medium">No active products</p>
-    <p class="text-gray-400 text-sm mt-1">Create products to populate inventory.</p>
+    <p class="text-gray-500 font-medium">
+      {% if category_id is not none or uncategorized %}No active products in this category{% else %}No active products{% endif %}
+    </p>
+    <p class="text-gray-400 text-sm mt-1">
+      {% if category_id is not none or uncategorized %}<a href="/reports/inventory-valuation" class="tbl-link">Clear filter</a> to see all parts.{% else %}Create products to populate inventory.{% endif %}
+    </p>
   </div>
   {% endif %}
 </div>

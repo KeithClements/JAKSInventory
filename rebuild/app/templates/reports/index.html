@@ -1,21 +1,33 @@
 {% extends "base.html" %}
-{% block title %}Reports — JAKS Inventory{% endblock %}
+{% block title %}Reports — Axle{% endblock %}
 {% block heading %}Reports{% endblock %}
 
 {% block content %}
 {% set active_report = 'overview' %}
+{# None-safe renderers — a metric whose ReportService fetch failed arrives as
+   None and must render an em-dash, never 500 or fake a $0.00. #}
+{% macro money(v) %}{% if v is not none %}${{ '%.2f' % v }}{% else %}—{% endif %}{% endmacro %}
+{% macro num(v) %}{{ v if v is not none else '—' }}{% endmacro %}
 <div class="max-w-6xl space-y-5">
   {% include "reports/_nav.html" %}
 
   <p class="text-xs text-gray-400">As of {{ today.strftime('%B %d, %Y') }}</p>
 
+  {% if error_message %}
+  <div class="rounded-lg bg-amber-50 border border-amber-200 px-4 py-2.5 text-sm text-amber-800">
+    {{ error_message }}
+  </div>
+  {% endif %}
+
   {# ── KPI snapshot row ─────────────────────────────────────────────────── #}
   <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
     <div class="stat-card-brand">
       <p class="stat-label">A/R Total</p>
-      <p class="stat-value text-brand-700">${{ '%.2f' % ar_total }}</p>
-      {% if ar_over_90 > 0 %}
-      <p class="stat-sub text-red-600">${{ '%.2f' % ar_over_90 }} over 90d</p>
+      <p class="stat-value text-brand-700">{{ money(ar_total) }}</p>
+      {% if ar_over_90 %}
+      <p class="stat-sub text-red-600">{{ money(ar_over_90) }} over 90d</p>
+      {% elif ar_over_90 is none %}
+      <p class="stat-sub">—</p>
       {% else %}
       <p class="stat-sub">All within 90d</p>
       {% endif %}
@@ -23,30 +35,32 @@
 
     <div class="stat-card-green">
       <p class="stat-label">{{ month_label }} Revenue</p>
-      <p class="stat-value text-green-700">${{ '%.2f' % mtd_revenue }}</p>
+      <p class="stat-value text-green-700">{{ money(mtd_revenue) }}</p>
       <p class="stat-sub">
-        Margin ${{ '%.2f' % mtd_margin }}{% if mtd_margin_pct is not none %} ({{ '%.1f' % mtd_margin_pct }}%){% endif %}
+        Margin {{ money(mtd_margin) }}{% if mtd_margin_pct is not none %} ({{ '%.1f' % mtd_margin_pct }}%){% endif %}
       </p>
     </div>
 
     <div class="stat-card">
       <p class="stat-label">Inventory Value</p>
-      <p class="stat-value text-brand-700">${{ '%.2f' % inv_value }}</p>
-      <p class="stat-sub">{{ inv_skus }} SKU{{ 's' if inv_skus != 1 }} in stock</p>
+      <p class="stat-value text-brand-700">{{ money(inv_value) }}</p>
+      <p class="stat-sub">{{ num(inv_skus) }} SKU{{ 's' if inv_skus != 1 }} in stock</p>
     </div>
 
-    <div class="stat-card {% if po_count > 0 %}stat-card-blue{% endif %}">
+    <div class="stat-card {% if po_count %}stat-card-blue{% endif %}">
       <p class="stat-label">Open POs</p>
-      <p class="stat-value">{{ po_count }}</p>
-      <p class="stat-sub">${{ '%.2f' % po_value }} outstanding</p>
+      <p class="stat-value">{{ num(po_count) }}</p>
+      <p class="stat-sub">{{ money(po_value) }} outstanding</p>
     </div>
 
-    <div class="stat-card {% if core_overdue > 0 %}stat-card-red{% else %}stat-card-amber{% endif %}">
+    <div class="stat-card {% if core_overdue %}stat-card-red{% else %}stat-card-amber{% endif %}">
       <p class="stat-label">Cores Out</p>
-      <p class="stat-value">${{ '%.2f' % core_amount }}</p>
+      <p class="stat-value">{{ money(core_amount) }}</p>
       <p class="stat-sub">
-        {% if core_overdue > 0 %}
+        {% if core_overdue %}
         <span class="text-red-600 font-semibold">{{ core_overdue }} overdue</span>
+        {% elif core_overdue is none %}
+        —
         {% else %}
         None overdue
         {% endif %}
@@ -97,6 +111,26 @@
       </div>
     </a>
 
+    <a href="/reports/low-stock" class="card hover:shadow-md transition-shadow">
+      <div class="card-body">
+        <p class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Inventory</p>
+        <p class="mt-1 text-base font-semibold text-gray-900">Low Stock / Reorder</p>
+        <p class="mt-1 text-sm text-gray-500">
+          {{ num(low_stock_count) }} item{{ 's' if low_stock_count != 1 }} at or below reorder point — est. {{ money(low_stock_order_cost) }} to restock. Printable reorder list with vendor part #s.
+        </p>
+      </div>
+    </a>
+
+    <a href="/reports/dead-stock" class="card hover:shadow-md transition-shadow">
+      <div class="card-body">
+        <p class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Inventory</p>
+        <p class="mt-1 text-base font-semibold text-gray-900">Dead Stock</p>
+        <p class="mt-1 text-sm text-gray-500">
+          {{ num(dead_stock_count) }} item{{ 's' if dead_stock_count != 1 }} on hand with no sale in 90 days — {{ money(dead_stock_value) }} tied up. The opposite problem from Low Stock.
+        </p>
+      </div>
+    </a>
+
     <a href="/reports/open-pos" class="card hover:shadow-md transition-shadow">
       <div class="card-body">
         <p class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Purchasing</p>
@@ -117,12 +151,22 @@
       </div>
     </a>
 
+    <a href="/reports/overdue-cores" class="card hover:shadow-md transition-shadow">
+      <div class="card-body">
+        <p class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Cores</p>
+        <p class="mt-1 text-base font-semibold text-gray-900">Overdue Cores</p>
+        <p class="mt-1 text-sm text-gray-500">
+          {{ num(core_overdue) }} core{{ 's' if core_overdue != 1 }} past the return deadline — the chase list, with customer phone numbers.
+        </p>
+      </div>
+    </a>
+
     <a href="/reports/overdue-invoices" class="card hover:shadow-md transition-shadow">
       <div class="card-body">
         <p class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Receivables</p>
         <p class="mt-1 text-base font-semibold text-gray-900">Overdue + Interest</p>
         <p class="mt-1 text-sm text-gray-500">
-          Past-due invoices with accrued interest — {{ overdue_count }} invoice{{ 's' if overdue_count != 1 }}, ${{ '%.2f' % overdue_total }} total owed.
+          Past-due invoices with accrued interest — {{ num(overdue_count) }} invoice{{ 's' if overdue_count != 1 }}, {{ money(overdue_total) }} total owed.
         </p>
       </div>
     </a>
@@ -132,7 +176,7 @@
         <p class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Tax</p>
         <p class="mt-1 text-base font-semibold text-gray-900">Sales Tax Collected</p>
         <p class="mt-1 text-sm text-gray-500">
-          Tax collected by rate — ${{ '%.2f' % mtd_tax_collected }} MTD. Filter by date range for filing periods.
+          Tax collected by rate — {{ money(mtd_tax_collected) }} MTD. Filter by date range for filing periods.
         </p>
       </div>
     </a>
@@ -142,7 +186,27 @@
         <p class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Pipeline</p>
         <p class="mt-1 text-base font-semibold text-gray-900">Lost Sales</p>
         <p class="mt-1 text-sm text-gray-500">
-          Lost-quote log — {{ lost_count }} entr{{ 'y' if lost_count == 1 else 'ies' }} MTD. Track competitor pricing and loss reasons.
+          Lost-quote log — {{ num(lost_count) }} entr{{ 'y' if lost_count == 1 else 'ies' }} MTD. Track competitor pricing and loss reasons.
+        </p>
+      </div>
+    </a>
+
+    <a href="/reports/customer-deals" class="card hover:shadow-md transition-shadow">
+      <div class="card-body">
+        <p class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Pricing</p>
+        <p class="mt-1 text-base font-semibold text-gray-900">Customer Deals</p>
+        <p class="mt-1 text-sm text-gray-500">
+          Active customer price rules with live margin-at-cost and expiring-soon flags. The standing-deals worklist.
+        </p>
+      </div>
+    </a>
+
+    <a href="/reports/margin-leakage" class="card hover:shadow-md transition-shadow">
+      <div class="card-body">
+        <p class="text-xs font-semibold text-brand-700 uppercase tracking-widest">Pricing</p>
+        <p class="mt-1 text-base font-semibold text-gray-900">Margin Leakage</p>
+        <p class="mt-1 text-sm text-gray-500">
+          Finalized invoice lines that sold below their cost-bracket target margin — worst gap first.
         </p>
       </div>
     </a>

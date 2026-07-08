@@ -56,6 +56,12 @@
           <span class="text-xs text-gray-500">Subtotal</span>
           <span class="text-sm text-gray-700 tabular-nums">${{ "%.2f"|format(inv.subtotal) }}</span>
         </div>
+        {% if inv.discount_amount > 0 %}
+        <div class="flex items-center justify-between text-red-600">
+          <span class="text-xs">Discount ({{ "%g"|format(inv.discount_pct) }}%)</span>
+          <span class="text-sm tabular-nums">−${{ "%.2f"|format(inv.discount_amount) }}</span>
+        </div>
+        {% endif %}
         {% if inv.is_taxable %}
         <div class="flex items-center justify-between">
           <span class="text-xs text-gray-500">Tax ({{ "%.2f"|format(inv.tax_rate) }}%)</span>

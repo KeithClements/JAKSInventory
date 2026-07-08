@@ -1,0 +1,388 @@
+{% extends "base.html" %}
+{% block title %}Import Products — Axle{% endblock %}
+{% block heading %}Import{% endblock %}
+
+{% block content %}
+{% include "_import_tabs.html" %}
+<div class="max-w-3xl space-y-4" x-data="productImport()">
+
+  {# ── Mode + file ─────────────────────────────────────────────────────────── #}
+  <div class="card">
+    <div class="card-header"><h2 class="card-title">Catalog Importer</h2></div>
+    <div class="card-body space-y-5">
+
+      {# Mode #}
+      <div>
+        <label class="form-label">Mode</label>
+        <div class="flex flex-col sm:flex-row gap-3">
+          <label class="flex-1 flex items-start gap-2.5 rounded-lg border px-3 py-2.5 cursor-pointer"
+                 :class="mode==='full' ? 'border-brand-400 bg-brand-50' : 'border-gray-200'">
+            <input type="radio" name="mode" value="full" x-model="mode" class="form-checkbox mt-0.5"/>
+            <span>
+              <span class="block text-sm font-semibold text-gray-800">Full Product Import</span>
+              <span class="block text-xs text-gray-500">Create new products AND refresh sell price / cost / vendor availability on ones that already exist. One file can carry new + changed + availability rows.</span>
+            </span>
+          </label>
+          <label class="flex-1 flex items-start gap-2.5 rounded-lg border px-3 py-2.5 cursor-pointer"
+                 :class="mode==='pricing' ? 'border-brand-400 bg-brand-50' : 'border-gray-200'">
+            <input type="radio" name="mode" value="pricing" x-model="mode" class="form-checkbox mt-0.5"/>
+            <span>
+              <span class="block text-sm font-semibold text-gray-800">Pricing Update</span>
+              <span class="block text-xs text-gray-500">Update existing products only — PAI cost or competitor prices. Never creates products.</span>
+            </span>
+          </label>
+          <label class="flex-1 flex items-start gap-2.5 rounded-lg border px-3 py-2.5 cursor-pointer"
+                 :class="mode==='applications' ? 'border-brand-400 bg-brand-50' : 'border-gray-200'">
+            <input type="radio" name="mode" value="applications" x-model="mode" class="form-checkbox mt-0.5"/>
+            <span>
+              <span class="block text-sm font-semibold text-gray-800">Applications (Engine Fitment)</span>
+              <span class="block text-xs text-gray-500">Batch-add engine make/model/CPL/ESN fitment onto existing products. Never creates products.</span>
+            </span>
+          </label>
+        </div>
+      </div>
+
+      {# Applications columns (only for applications mode) #}
+      <div x-show="mode==='applications'" x-cloak class="text-xs text-gray-500 space-y-2">
+        <p>
+          Columns: <code>sku</code> (required — product SKU or the parked vendor SKU), <code>make</code>
+          (required — engine make), <code>model</code>, <code>cpl</code>, <code>esn_range</code>
+          (all optional). Idempotent on (product, make, model, CPL) — a repeat row refreshes the ESN range
+          instead of duplicating.
+        </p>
+      </div>
+
+      {# Pricing source (only for pricing mode) #}
+      <div x-show="mode==='pricing'" x-cloak>
+        <label class="form-label">Pricing source</label>
+        <div class="flex flex-col gap-2">
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="radio" name="source_type" value="sell" x-model="sourceType" class="form-checkbox"/>
+            <span class="text-sm text-gray-700"><strong>Sell price</strong> (scraper Shopify export) → <code>price_override</code> + <code>compare_at_price</code></span>
+          </label>
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="radio" name="source_type" value="pai_cost" x-model="sourceType" class="form-checkbox"/>
+            <span class="text-sm text-gray-700">PAI cost → <code>vendor_cost</code> (+ cost history)</span>
+          </label>
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="radio" name="source_type" value="competitor" x-model="sourceType" class="form-checkbox"/>
+            <span class="text-sm text-gray-700">Competitor prices (+ price history)</span>
+          </label>
+        </div>
+        <div class="mt-2 text-xs text-gray-500 space-y-2">
+          <p x-show="sourceType==='sell'">
+            Re-runs the scraper's standard Shopify CSV against existing products. Reads <code>Variant SKU</code> + <code>Variant Price</code> + <code>Variant Compare At Price</code> always; <strong>also</strong> reads <code>Our Cost</code>/<code>pai_cost</code>, <code>Manufacturer</code>, and <code>availability</code> when the scraper emits them. <code>availability=out_of_stock</code> hides the part from the storefront push; <code>discontinued</code> deactivates it. Updates only what's present in the file — never creates products (use <em>Full Product Import</em> to add new parts in the same file). Shopify image-only rows are silently skipped. See <code>SCRAPER_REQUIREMENTS.md</code> for the columns the scraper should emit.
+          </p>
+          <p x-show="sourceType==='pai_cost'">Needs a SKU column + a true cost column (<code>pai_cost</code>, <code>vendor_cost</code>, or <code>cost</code>). Updates the PAI vendor_cost and appends cost history. (The Shopify export has no cost column — use <em>Sell price</em> for that.)</p>
+          <p x-show="sourceType==='competitor'">Columns: <code>sku</code>, <code>competitor_name</code>, <code>competitor_part_number</code>, <code>competitor_brand</code>, <code>price</code>, <code>shipping_price</code>, <code>core_charge</code>, <code>availability_status</code>, <code>url</code>, <code>source</code>, <code>confidence</code>, <code>notes</code>. Updates competitor_prices + appends price history.</p>
+        </div>
+
+        {# Sell-mode safety rail #}
+        <div x-show="sourceType==='sell'" class="mt-3 flex items-center gap-2">
+          <label class="flex items-center gap-1.5 text-sm text-gray-700">
+            <input type="checkbox" x-model="useThreshold" class="form-checkbox"/>
+            Cap per-product change at
+          </label>
+          <input type="number" min="1" max="500" step="1" x-model.number="maxChangePct"
+                 :disabled="!useThreshold" class="form-input w-20 text-sm" />
+          <span class="text-sm text-gray-500">%</span>
+          <span class="text-xs text-gray-400 ml-2">Bad scraper run → big swings are skipped + listed.</span>
+        </div>
+      </div>
+
+      {# Images (only for full import) #}
+      <div x-show="mode==='full'" x-cloak>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" x-model="importImages" class="form-checkbox"/>
+          <span class="text-sm text-gray-700">Import product image URLs</span>
+        </label>
+      </div>
+
+      {# File #}
+      <div>
+        <label class="form-label">CSV file</label>
+        <input type="file" x-ref="file" accept=".csv,text/csv" required
+               class="text-sm text-gray-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-brand-50 file:text-brand-700 hover:file:bg-brand-100 file:cursor-pointer"/>
+      </div>
+
+      {# Actions #}
+      <div class="flex flex-wrap items-center gap-3 pt-1">
+        <button type="button" @click="run(true)" :disabled="busy" class="btn-secondary">
+          <span x-show="!busy">Dry-run preview</span>
+          <span x-show="busy" x-cloak>Working…</span>
+        </button>
+        <button type="button" @click="confirming=true; confirmText=''" :disabled="busy || !result || lastDryRun===false"
+                class="btn-primary" x-show="!confirming"
+                title="Run a dry-run preview first, then commit">
+          Commit import
+        </button>
+        <span class="text-xs text-gray-400" x-show="!confirming">Preview first — Commit is enabled after a dry-run.</span>
+      </div>
+      {# Typed confirmation — a live commit bypasses the Review Queue entirely, so
+         a yes/no click isn't enough; the server rejects any non-dry-run without
+         the exact phrase (nothing written). #}
+      <template x-if="confirming">
+        <div class="space-y-2">
+          <p class="text-sm text-red-700 font-medium">
+            This bypasses the Review Queue and writes straight to the live catalog.
+            Type <span class="font-mono font-bold">APPLY TO LIVE CATALOG</span> to confirm.
+          </p>
+          <div class="flex flex-wrap items-center gap-2">
+            <input type="text" x-model="confirmText" placeholder="APPLY TO LIVE CATALOG"
+                   class="form-input w-64 text-sm font-mono" />
+            <button type="button" @click="confirming=false; run(false)"
+                    :disabled="confirmText.trim() !== 'APPLY TO LIVE CATALOG'"
+                    class="btn-danger btn-sm">Yes, commit</button>
+            <button type="button" @click="confirming=false; confirmText=''" class="btn-secondary btn-sm">Cancel</button>
+          </div>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  {# ── Utilities ───────────────────────────────────────────────────────────── #}
+  <div class="card">
+    <div class="card-header"><h2 class="card-title">Catalog Utilities</h2></div>
+    <div class="card-body space-y-5">
+      <div x-data="mfgBackfill()" class="space-y-3">
+        <div>
+          <p class="text-sm font-semibold text-gray-800">Derive manufacturers from descriptions</p>
+          <p class="text-xs text-gray-500 mt-0.5">
+            Fills the blank Manufacturer field on existing products from what's already stored —
+            OEM reference brands, applications, title, keywords. One clear make wins; multi-make
+            parts stay blank; never overwrites a manufacturer you set by hand.
+          </p>
+        </div>
+        <div class="flex items-center gap-3">
+          <button type="button" @click="run(true)" :disabled="busy" class="btn-secondary btn-sm">
+            <span x-show="!busy">Preview</span><span x-show="busy" x-cloak>Working…</span>
+          </button>
+          <button type="button" @click="run(false)" :disabled="busy || !result" class="btn-primary btn-sm"
+                  title="Preview first, then apply">Apply</button>
+          <span x-show="result" x-cloak class="text-xs text-gray-600"
+                x-text="result ? (result.dry_run ? 'Preview: ' : 'Applied: ') + result.filled + ' filled · '
+                        + result.multi_make_skipped + ' multi-make skipped · ' + result.no_signal + ' no signal' : ''"></span>
+        </div>
+        <div x-show="err" x-cloak class="text-xs text-red-600" x-text="err"></div>
+      </div>
+
+      {# §23.3 Phase 1 #5 — re-sweep the catalog with the CURRENT classification
+         rules; only fills a still-blank category/engine make/engine model,
+         same "never overwrite a confirmed value" contract as the utility above. #}
+      <div x-data="reclassifyAll()" class="space-y-3 border-t border-gray-100 pt-4">
+        <div>
+          <p class="text-sm font-semibold text-gray-800">Re-classify with current rules</p>
+          <p class="text-xs text-gray-500 mt-0.5">
+            Re-runs category + engine make/model detection across every product still missing
+            one, using today's classification rules (they improve after products were first
+            imported). Only fills blanks; never overwrites a category or engine make/model
+            you (or a prior import) already set.
+          </p>
+        </div>
+        <div class="flex items-center gap-3">
+          <button type="button" @click="run(true)" :disabled="busy" class="btn-secondary btn-sm">
+            <span x-show="!busy">Preview</span><span x-show="busy" x-cloak>Working…</span>
+          </button>
+          <button type="button" @click="run(false)" :disabled="busy || !result" class="btn-primary btn-sm"
+                  title="Preview first, then apply">Apply</button>
+          <span x-show="result" x-cloak class="text-xs text-gray-600"
+                x-text="result ? (result.dry_run ? 'Preview: ' : 'Applied: ') + result.reclassified + ' reclassified · '
+                        + result.category_filled + ' category · ' + result.engine_manufacturer_filled + ' engine make · '
+                        + result.engine_model_filled + ' engine model' : ''"></span>
+        </div>
+        <div x-show="err" x-cloak class="text-xs text-red-600" x-text="err"></div>
+      </div>
+
+      {# Reorder-point backfill by category — makes the Low-Stock/Reorder tab
+         real. Fills only reorder_point=0 products under the picked category
+         (subcategories included); a deliberately-set value is never touched. #}
+      <div x-data="reorderBackfill()" class="space-y-3 border-t border-gray-100 pt-4">
+        <div>
+          <p class="text-sm font-semibold text-gray-800">Set reorder points by category</p>
+          <p class="text-xs text-gray-500 mt-0.5">
+            Applies the value to every active product under the chosen category (subcategories
+            included) that still has a reorder point of 0 — never overwrites a reorder point
+            someone already set. Products at or below their reorder point surface on the
+            Low-Stock tab and the reorder report.
+          </p>
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+          <select x-model="categoryId"
+                  class="py-2 pl-3 pr-8 text-sm border border-gray-200 rounded-lg bg-white">
+            <option value="">— choose category —</option>
+            {% for c in categories %}
+            <option value="{{ c.id }}">{{ c.full_path }}</option>
+            {% endfor %}
+          </select>
+          <input type="number" min="1" step="1" x-model.number="value" placeholder="e.g. 2"
+                 class="form-input w-20 text-sm" />
+          <button type="button" @click="run(true)" :disabled="busy || !categoryId || !(value > 0)" class="btn-secondary btn-sm">
+            <span x-show="!busy">Preview</span><span x-show="busy" x-cloak>Working…</span>
+          </button>
+          <button type="button" @click="run(false)" :disabled="busy || !result" class="btn-primary btn-sm"
+                  title="Preview first, then apply">Apply</button>
+          <span x-show="result" x-cloak class="text-xs text-gray-600"
+                x-text="result ? (result.dry_run ? 'Preview: ' : 'Applied: ') + result.updated
+                        + ' product(s) → reorder point ' + result.reorder_point + ' (' + result.category + ')' : ''"></span>
+        </div>
+        <div x-show="err" x-cloak class="text-xs text-red-600" x-text="err"></div>
+      </div>
+    </div>
+  </div>
+
+  {# ── Errors ──────────────────────────────────────────────────────────────── #}
+  <div x-show="error" x-cloak class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700" x-text="error"></div>
+
+  {# ── Results ─────────────────────────────────────────────────────────────── #}
+  <template x-if="result">
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title">
+          <span x-text="result.dry_run ? 'Dry-run preview' : 'Import committed'"></span>
+          <span class="text-xs font-normal text-gray-500" x-text="'· ' + (result.mode || '') + (result.source ? ' / ' + result.source : '')"></span>
+        </h3>
+        <span class="badge" :class="result.dry_run ? 'badge-amber' : 'badge-green'"
+              x-text="result.dry_run ? 'NOTHING WRITTEN' : 'WRITTEN'"></span>
+      </div>
+      <div class="card-body">
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-2">
+          <template x-for="[k,v] in Object.entries(result).filter(e => e[0] !== 'sample')" :key="k">
+            <div class="flex items-center justify-between border-b border-gray-50 py-1">
+              <span class="text-xs text-gray-500" x-text="k.replace(/_/g,' ')"></span>
+              <span class="text-sm font-semibold text-gray-900 tabular-nums" x-text="String(v)"></span>
+            </div>
+          </template>
+        </div>
+        <template x-if="result.sample && result.sample.length">
+          <div class="mt-4">
+            <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Sample</p>
+            <pre class="text-xs bg-gray-50 rounded-lg p-3 overflow-x-auto" x-text="JSON.stringify(result.sample, null, 2)"></pre>
+          </div>
+        </template>
+      </div>
+    </div>
+  </template>
+</div>
+
+<script>
+// §21.3 CSRF (double-submit cookie) — base.html's own csrfToken() is scoped
+// inside its IIFE and isn't reachable here, and htmx:configRequest only stamps
+// hx-*/htmx requests, not plain fetch(). Same cookie + header base.html uses,
+// duplicated locally (fixes a pre-existing 403 on BOTH utility cards below —
+// a bare fetch() POST here never carried the token before this fix).
+function _csrfToken() {
+  var m = document.cookie.match(/(?:^|;\s*)jaks_csrf=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : "";
+}
+
+function mfgBackfill() {
+  return {
+    busy: false, result: null, err: null,
+    async run(dryRun) {
+      this.busy = true; this.err = null;
+      const fd = new FormData();
+      fd.append('dry_run', dryRun ? 'true' : 'false');
+      try {
+        const resp = await fetch('/products/backfill-manufacturers', {
+          method: 'POST', body: fd, headers: { 'X-CSRF-Token': _csrfToken() },
+        });
+        if (!resp.ok) { this.err = 'Failed (HTTP ' + resp.status + ').'; }
+        else { this.result = await resp.json(); }
+      } catch (e) { this.err = 'Error: ' + e; }
+      finally { this.busy = false; }
+    }
+  };
+}
+
+function reclassifyAll() {
+  return {
+    busy: false, result: null, err: null,
+    async run(dryRun) {
+      this.busy = true; this.err = null;
+      const fd = new FormData();
+      fd.append('dry_run', dryRun ? 'true' : 'false');
+      try {
+        const resp = await fetch('/products/reclassify-all', {
+          method: 'POST', body: fd, headers: { 'X-CSRF-Token': _csrfToken() },
+        });
+        if (!resp.ok) { this.err = 'Failed (HTTP ' + resp.status + ').'; }
+        else { this.result = await resp.json(); }
+      } catch (e) { this.err = 'Error: ' + e; }
+      finally { this.busy = false; }
+    }
+  };
+}
+
+function reorderBackfill() {
+  return {
+    busy: false, result: null, err: null, categoryId: '', value: null,
+    async run(dryRun) {
+      this.busy = true; this.err = null;
+      const fd = new FormData();
+      fd.append('category_id', this.categoryId);
+      fd.append('reorder_point', String(this.value || 0));
+      fd.append('dry_run', dryRun ? 'true' : 'false');
+      try {
+        const resp = await fetch('/products/reorder-backfill', {
+          method: 'POST', body: fd, headers: { 'X-CSRF-Token': _csrfToken() },
+        });
+        if (!resp.ok) { this.err = 'Failed (HTTP ' + resp.status + ').'; }
+        else {
+          const d = await resp.json();
+          if (d.error) { this.err = d.error; this.result = null; }
+          else { this.result = d; }
+        }
+      } catch (e) { this.err = 'Error: ' + e; }
+      finally { this.busy = false; }
+    }
+  };
+}
+
+function productImport() {
+  return {
+    mode: 'full', sourceType: 'sell', importImages: true,
+    useThreshold: true, maxChangePct: 50,
+    busy: false, result: null, error: null, lastDryRun: true, confirming: false,
+    confirmText: '',
+    async run(dryRun) {
+      const fileEl = this.$refs.file;
+      if (!fileEl || !fileEl.files.length) { this.error = 'Choose a CSV file first.'; return; }
+      this.busy = true; this.error = null; this.result = null; this.lastDryRun = dryRun;
+      const fd = new FormData();
+      fd.append('file', fileEl.files[0]);
+      fd.append('mode', this.mode);
+      fd.append('source_type', this.sourceType);
+      fd.append('dry_run', dryRun ? 'true' : 'false');
+      fd.append('import_images', this.importImages ? 'true' : 'false');
+      // Live commits require the typed phrase — the server rejects without it.
+      if (!dryRun) { fd.append('confirm_text', this.confirmText); }
+      if (this.mode === 'pricing' && this.sourceType === 'sell'
+          && this.useThreshold && this.maxChangePct > 0) {
+        fd.append('max_change_pct', String(this.maxChangePct));
+      }
+      try {
+        // §23.3 Phase 2 — this fetch() never stamped the CSRF header either
+        // (found while adding the Applications mode, same bug class as the
+        // two Catalog Utilities buttons below: base.html's csrfToken() is
+        // IIFE-scoped and htmx:configRequest only covers hx-*/htmx requests).
+        // This means the ENTIRE product importer — Full Import + Pricing
+        // Update, the primary catalog-ingestion path — has 403'd since CSRF
+        // was added (§21.3), silently. Fixed with the same local helper.
+        const resp = await fetch('/products/import-run', {
+          method: 'POST', body: fd, headers: { 'X-CSRF-Token': _csrfToken() },
+        });
+        if (!resp.ok) {
+          // The route returns {"error": ...} on 400 (missing/wrong confirm
+          // phrase) and 403 (permission) — show the server's own words.
+          let msg = 'Import failed (HTTP ' + resp.status + ').';
+          try { const d = await resp.json(); if (d && d.error) { msg = d.error; } } catch (e) {}
+          this.error = msg;
+        }
+        else { this.result = await resp.json(); }
+      } catch (e) { this.error = 'Upload error: ' + e; }
+      finally { this.busy = false; }
+    }
+  };
+}
+</script>
+{% endblock %}

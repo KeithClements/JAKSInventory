@@ -93,6 +93,10 @@ class CoreCharge(Base):
 
     # ── Credit issued when core returned ──────────────────────────────────────
     credit_method: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # BUG-4 guard: set when the customer credit for this core has been issued
+    # (by record_customer_return/complete_inspection ACCEPTED, or issue_core_credit).
+    # issue_core_credit checks this to avoid crediting the same core twice.
+    credit_issued_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # ── Tracking ──────────────────────────────────────────────────────────────
     # Printed on the customer core return slip — future barcode/QR ready

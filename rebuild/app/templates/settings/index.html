@@ -1,83 +1,1144 @@
 {% extends "base.html" %}
-{% block title %}Settings — JAKS Inventory{% endblock %}
+{% block title %}Settings — Axle{% endblock %}
 {% block heading %}Settings{% endblock %}
 
 {% block content %}
-<form method="post" action="/settings/" class="max-w-2xl space-y-6">
+<div class="max-w-2xl"
+     x-data="{ tab: (new URLSearchParams(window.location.search)).get('tab') || 'company' }">
 
-  <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
-    <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Company</h2>
-    {% for s in settings %}
-    {% if s.key in ['company_name','company_address','company_phone','company_email','invoice_notes'] %}
-    <div>
-      <label class="block text-xs font-medium text-gray-600 mb-1">{{ s.label }}</label>
-      {% if s.key == 'invoice_notes' %}
-      <textarea name="{{ s.key }}" rows="2" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">{{ s.value }}</textarea>
-      {% else %}
-      <input name="{{ s.key }}" value="{{ s.value }}" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
-      {% endif %}
-    </div>
-    {% endif %}
-    {% endfor %}
+  {# Saved flash #}
+  {% if flash and flash.saved %}
+  <div class="rounded-lg bg-green-50 border border-green-200 text-green-700 px-4 py-2 text-sm mb-4">Settings saved.</div>
+  {% endif %}
+
+  {# ── Tab bar (reuses the customers/detail.html tab-bar pattern) ── #}
+  <div class="tab-bar mb-4">
+    <button type="button" @click="tab = 'company'"    :class="tab === 'company'    ? 'tab-active' : 'tab-inactive'">Company</button>
+    <button type="button" @click="tab = 'pricing'"    :class="tab === 'pricing'    ? 'tab-active' : 'tab-inactive'">Pricing</button>
+    <button type="button" @click="tab = 'quickbooks'" :class="tab === 'quickbooks' ? 'tab-active' : 'tab-inactive'">QuickBooks</button>
+    <button type="button" @click="tab = 'shopify'"    :class="tab === 'shopify'    ? 'tab-active' : 'tab-inactive'">Shopify</button>
+    <button type="button" @click="tab = 'messaging'"  :class="tab === 'messaging'  ? 'tab-active' : 'tab-inactive'">Messaging</button>
+    <button type="button" @click="tab = 'tax'"        :class="tab === 'tax'        ? 'tab-active' : 'tab-inactive'">Tax</button>
+    <button type="button" @click="tab = 'system'"     :class="tab === 'system'     ? 'tab-active' : 'tab-inactive'">System</button>
+    <button type="button" @click="tab = 'reviews'"    :class="tab === 'reviews'    ? 'tab-active' : 'tab-inactive'">Reviews</button>
+    <button type="button" @click="tab = 'ai'"         :class="tab === 'ai'         ? 'tab-active' : 'tab-inactive'">AI</button>
   </div>
 
-  <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
-    <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Pricing Defaults</h2>
-    {% for s in settings %}
-    {% if s.key in ['default_markup_pct','cc_surcharge_pct'] %}
-    <div>
-      <label class="block text-xs font-medium text-gray-600 mb-1">{{ s.label }}</label>
-      <div class="flex items-center gap-2">
-        <input name="{{ s.key }}" value="{{ s.value }}" type="number" step="0.1" min="0"
-          class="w-32 rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
-        <span class="text-sm text-gray-400">%</span>
+  {# Main settings form — every tab's inputs live in one form so Save persists all of
+     them (hidden tab panels stay in the DOM via x-show, so their inputs still post). #}
+  <form method="post" action="/settings/" class="space-y-6">
+
+    {# ═══ COMPANY TAB ═══ #}
+    <div x-show="tab === 'company'" x-cloak class="space-y-6">
+
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Company</h2>
+        {% for s in settings %}
+        {% if s.key in ['company_name','company_address','company_phone','company_email','company_website','invoice_notes'] %}
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">{{ s.label }}</label>
+          {% if s.key == 'invoice_notes' %}
+          <textarea name="{{ s.key }}" rows="2" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">{{ s.value }}</textarea>
+          {% else %}
+          <input name="{{ s.key }}" value="{{ s.value }}" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
+          {% endif %}
+        </div>
+        {% endif %}
+        {% endfor %}
+        <a href="/settings/locations"
+           class="inline-flex items-center gap-1 text-sm font-medium text-brand-700 hover:text-brand-800">
+          Manage bill-to / ship-to locations →
+        </a>
       </div>
-    </div>
-    {% endif %}
-    {% endfor %}
+
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Documents &amp; PDFs</h2>
+        {% for s in settings %}
+        {% if s.key in ['document_footer_text','document_terms_text'] %}
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">{{ s.label }}</label>
+          <textarea name="{{ s.key }}" rows="3"
+            class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">{{ s.value }}</textarea>
+        </div>
+        {% elif s.key == 'document_show_logo' %}
+        <label class="flex items-center gap-2 text-sm text-gray-600">
+          <input type="checkbox" name="document_show_logo" value="true" {% if s.value == 'true' %}checked{% endif %}
+            class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+          Show the company logo on document headers
+        </label>
+        {% elif s.key == 'document_logo_height' %}
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Logo size — height on documents</label>
+          <div class="flex items-center gap-2">
+            <input type="number" name="document_logo_height" value="{{ s.value }}" min="24" max="160" step="2"
+              class="w-28 rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
+            <span class="text-sm text-gray-400">px</span>
+          </div>
+          <p class="text-[11px] text-gray-400 mt-1">Default 56. Larger = bigger logo on quotes, sales orders &amp; invoices.</p>
+        </div>
+        {% elif s.key == 'pricing_show_account_price_label' %}
+        <div>
+          <label class="flex items-center gap-2 text-sm text-gray-600">
+            <input type="checkbox" name="pricing_show_account_price_label" value="true" {% if s.value == 'true' %}checked{% endif %}
+              class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+            Show &ldquo;Your Price&rdquo; label on customer documents
+          </label>
+          <p class="text-[11px] text-gray-400 mt-1 ml-6">For customers with an account-pricing agreement, the price column reads
+            &ldquo;Your Price&rdquo; and a short note is added. Off by default — prices print silently.</p>
+        </div>
+        {% endif %}
+        {% endfor %}
+        <p class="text-xs text-gray-400">These print on quotes, sales orders &amp; invoices. Terms appear near the bottom; the logo is uploaded below.</p>
+      </div>
+
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">SKU Generation</h2>
+        {% for s in settings %}
+        {% if s.key == 'sku_prefix' %}
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Customer SKU prefix</label>
+          <input name="sku_prefix" value="{{ s.value }}"
+            class="w-40 rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono uppercase focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        </div>
+        {% elif s.key == 'sku_scheme' %}
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Default SKU scheme (new products)</label>
+          <select name="sku_scheme" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">
+            <option value="vendor" {% if s.value == 'vendor' %}selected{% endif %}>Vendor part # &mdash; JAKS-PAI-340097</option>
+            <option value="coded"  {% if s.value == 'coded'  %}selected{% endif %}>Coded &mdash; JAKS-CAT-HBLT-90001</option>
+          </select>
+        </div>
+        {% endif %}
+        {% endfor %}
+        <p class="text-xs text-gray-400">Used when minting new product SKUs (importer + New Product). The New Product
+          form can override the scheme per item. Coded SKUs need the vendor's 1-digit SKU number set on the vendor form.</p>
+      </div>
+
+    </div>{# /company tab #}
+
+    {# ═══ PRICING TAB ═══ #}
+    <div x-show="tab === 'pricing'" x-cloak class="space-y-6">
+
+      {% if flash and flash.error %}
+      <div class="rounded-lg bg-red-50 border border-red-200 text-red-700 px-4 py-2 text-sm">{{ flash.error }}</div>
+      {% endif %}
+
+      {# §23.3 Phase 2 #5 — Cost-bracket Markup Tiers: full admin CRUD + the
+         "Activate grid" toggle. Mirrors the Category-Maintenance Brand/
+         Manufacturer admin-list pattern (collapsible Add form, per-row
+         inline Edit, Delete). #}
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <div class="flex items-center justify-between border-b border-gray-100 pb-3">
+          <h2 class="text-sm font-semibold text-gray-700">Cost-bracket Markup Tiers</h2>
+          <span class="text-xs text-gray-400">{{ markup_tiers|length }} tier{{ 's' if markup_tiers|length != 1 }}</span>
+        </div>
+
+        {# Activate grid toggle — the switch that makes the grid the LIVE
+           pricing source instead of the flat default. #}
+        <form method="post" action="/settings/pricing/toggle-active"
+              class="flex items-center justify-between rounded-lg bg-gray-50/70 border border-gray-100 px-4 py-3">
+          <div>
+            <p class="text-sm font-medium text-gray-800">Activate grid</p>
+            <p class="text-xs text-gray-500">When on, products WITHOUT an explicit markup % price off these tiers instead of the flat default below.</p>
+          </div>
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" name="active" value="1" class="form-checkbox"
+                   {% if markup_tiers_active %}checked{% endif %}
+                   onchange="this.form.requestSubmit()" />
+            <span class="text-sm font-medium {% if markup_tiers_active %}text-green-700{% else %}text-gray-500{% endif %}">
+              {{ 'Active' if markup_tiers_active else 'Inactive' }}
+            </span>
+          </label>
+        </form>
+
+        {# Add a tier #}
+        <div x-data="{ open: false }" class="rounded-xl border border-gray-200 bg-gray-50/50">
+          <button type="button" @click="open = !open"
+                  class="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 rounded-xl transition-colors">
+            <span class="flex items-center gap-2">
+              <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+              Add tier
+            </span>
+            <svg class="w-4 h-4 text-gray-400 transition-transform" :class="open ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+          </button>
+          <div x-show="open" x-cloak class="px-4 pb-4 pt-1 border-t border-gray-100">
+            <form method="post" action="/settings/pricing/tiers" class="flex flex-wrap items-end gap-3">
+              <div class="w-28">
+                <label class="form-label">Min cost</label>
+                <input type="number" name="min_cost" step="0.01" min="0" value="0" class="form-input" />
+              </div>
+              <div class="w-28">
+                <label class="form-label">Max cost</label>
+                <input type="number" name="max_cost" step="0.01" min="0" placeholder="No limit" class="form-input" />
+              </div>
+              <div class="w-24">
+                <label class="form-label">Markup % <span class="text-red-500 normal-case">*</span></label>
+                <input type="number" name="markup_pct" step="0.1" min="0" required class="form-input" />
+              </div>
+              <div class="w-20">
+                <label class="form-label">Sort</label>
+                <input type="number" name="sort_order" value="0" class="form-input" />
+              </div>
+              <button type="submit" class="btn-primary btn-sm">Add</button>
+            </form>
+          </div>
+        </div>
+
+        {# Tier list #}
+        {% if markup_tiers %}
+        <div class="rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
+          {% for t in markup_tiers %}
+          <div x-data="{ edit: false }" class="bg-white">
+            <div class="flex items-center gap-3 px-4 py-3 hover:bg-gray-50/70 transition-colors">
+              <div class="flex-1 min-w-0 flex items-center gap-3 flex-wrap text-sm">
+                <span class="font-mono text-gray-700">${{ '%.2f' % t.min_cost }} &ndash; {{ 'and up' if t.max_cost is none else '$' + '%.2f' % t.max_cost }}</span>
+                <span class="font-semibold text-brand-700">{{ '%.1f' % t.markup_pct }}%</span>
+                {% if t.is_active %}
+                <span class="badge-green text-[10px]">Active</span>
+                {% else %}
+                <span class="badge-gray text-[10px]">Inactive</span>
+                {% endif %}
+              </div>
+              <div class="hidden sm:flex items-center text-xs text-gray-500 tabular-nums shrink-0">
+                <span title="Sort order">sort {{ t.sort_order }}</span>
+              </div>
+              <div class="flex items-center gap-1 shrink-0">
+                <button type="button" @click="edit = !edit" class="btn-ghost" :class="edit ? 'text-brand-700 bg-brand-50' : ''">Edit</button>
+                <form method="post" action="/settings/pricing/tiers/{{ t.id }}/delete" class="inline">
+                  <button type="submit" class="btn-ghost text-red-500 hover:text-red-700 hover:bg-red-50">Delete</button>
+                </form>
+              </div>
+            </div>
+            <div x-show="edit" x-cloak class="px-4 pb-4 pt-1 bg-gray-50/60 border-t border-gray-100">
+              <form method="post" action="/settings/pricing/tiers/{{ t.id }}/update" class="flex flex-wrap items-end gap-3">
+                <div class="w-28">
+                  <label class="form-label">Min cost</label>
+                  <input type="number" name="min_cost" step="0.01" min="0" value="{{ t.min_cost }}" class="form-input" />
+                </div>
+                <div class="w-28">
+                  <label class="form-label">Max cost</label>
+                  <input type="number" name="max_cost" step="0.01" min="0"
+                         value="{{ t.max_cost if t.max_cost is not none else '' }}"
+                         placeholder="No limit" class="form-input" />
+                </div>
+                <div class="w-24">
+                  <label class="form-label">Markup %</label>
+                  <input type="number" name="markup_pct" step="0.1" min="0" value="{{ t.markup_pct }}" class="form-input" />
+                </div>
+                <div class="w-20">
+                  <label class="form-label">Sort</label>
+                  <input type="number" name="sort_order" value="{{ t.sort_order }}" class="form-input" />
+                </div>
+                <label class="flex items-center gap-2 h-10 cursor-pointer">
+                  <input type="checkbox" name="is_active" value="1" class="form-checkbox" {% if t.is_active %}checked{% endif %} />
+                  <span class="text-sm text-gray-700">Active</span>
+                </label>
+                <div class="flex items-center gap-2">
+                  <button type="button" @click="edit = false" class="btn-secondary btn-sm">Cancel</button>
+                  <button type="submit" class="btn-primary btn-sm">Save</button>
+                </div>
+              </form>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="rounded-xl border border-dashed border-gray-200 px-4 py-10 text-center text-sm text-gray-400">
+          No tiers yet. Add your first tier above.
+        </div>
+        {% endif %}
+      </div>
+
+      {# Cost-bracket markup grid — read-only preview via GET /settings/pricing/preview
+         (Backend @02154c1, returns tiers + impact as JSON → rendered client-side). #}
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4"
+           x-data="{
+             loading: false, loaded: false, error: null,
+             tiers: [], affected: 0, moved: 0, sample: [],
+             async preview() {
+               this.loading = true; this.error = null;
+               try {
+                 const r = await fetch('/settings/pricing/preview');
+                 if (!r.ok) { this.error = 'Preview failed (HTTP ' + r.status + '). Pricing preview is admin-only.'; }
+                 else { const d = await r.json(); this.tiers = d.tiers; this.affected = d.affected_count; this.moved = d.moved_count; this.sample = d.sample; this.loaded = true; }
+               } catch (e) { this.error = 'Error: ' + e; }
+               finally { this.loading = false; }
+             }
+           }">
+        <div class="flex items-center justify-between border-b border-gray-100 pb-3">
+          <h2 class="text-sm font-semibold text-gray-700">Cost-bracket Markup Grid</h2>
+          <button type="button" @click="preview()" :disabled="loading"
+                  class="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 transition-colors">
+            <span x-show="!loading">Preview impact</span>
+            <span x-show="loading" x-cloak>Loading…</span>
+          </button>
+        </div>
+        <p class="text-xs text-gray-400">Preview what the tiers ABOVE would do to sell prices before turning "Activate grid" on. This is a read-only dry run — nothing changes.</p>
+
+        <div x-show="error" x-cloak class="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700" x-text="error"></div>
+
+        <template x-if="loaded">
+          <div class="space-y-4">
+            {# Tiers #}
+            <div>
+              <p class="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1">Cost brackets</p>
+              <table class="w-full text-sm">
+                <thead><tr class="text-[11px] text-gray-400 uppercase"><th class="text-left py-1 font-medium">Min Cost</th><th class="text-left font-medium">Max Cost</th><th class="text-right font-medium">Markup %</th></tr></thead>
+                <tbody>
+                  <template x-for="t in tiers" :key="t.id">
+                    <tr class="border-t border-gray-50">
+                      <td class="py-1 tabular-nums" x-text="'$' + t.min_cost.toFixed(2)"></td>
+                      <td class="tabular-nums" x-text="t.max_cost === null ? 'and up' : '$' + t.max_cost.toFixed(2)"></td>
+                      <td class="text-right tabular-nums font-medium" x-text="t.markup_pct.toFixed(1) + '%'"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+            {# Impact #}
+            <div class="flex flex-wrap gap-6 text-sm border-t border-gray-100 pt-3">
+              <div><span class="text-gray-500">Products affected:</span> <b class="tabular-nums" x-text="affected"></b></div>
+              <div><span class="text-gray-500">Price would change:</span> <b class="text-amber-600 tabular-nums" x-text="moved"></b></div>
+            </div>
+            {# Before / after sample #}
+            <template x-if="sample.length">
+              <div>
+                <p class="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1">Sample — before → after (max 25)</p>
+                <div class="overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead><tr class="text-[11px] text-gray-400 uppercase"><th class="text-left py-1 font-medium">SKU</th><th class="text-right font-medium">Cost</th><th class="text-right font-medium">Old</th><th class="text-right font-medium">New</th><th class="text-right font-medium">Δ</th></tr></thead>
+                    <tbody>
+                      <template x-for="row in sample" :key="row.sku">
+                        <tr class="border-t border-gray-50">
+                          <td class="py-1 font-mono text-xs" x-text="row.sku"></td>
+                          <td class="text-right tabular-nums" x-text="'$' + row.cost.toFixed(2)"></td>
+                          <td class="text-right tabular-nums text-gray-500" x-text="'$' + row.old_sell.toFixed(2)"></td>
+                          <td class="text-right tabular-nums font-medium" x-text="'$' + row.new_sell.toFixed(2)"></td>
+                          <td class="text-right tabular-nums" :class="row.delta >= 0 ? 'text-green-600' : 'text-red-600'" x-text="(row.delta >= 0 ? '+$' : '-$') + Math.abs(row.delta).toFixed(2)"></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+
+      {# Flat fallback — the live pricing when the grid is inactive (kept per §8R) #}
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Flat Defaults <span class="text-xs text-gray-400 font-normal ml-1">(fallback — live when the grid is off)</span></h2>
+        {% for s in settings %}
+        {% if s.key in ['default_markup_pct','cc_surcharge_pct'] %}
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">{{ s.label }}</label>
+          <div class="flex items-center gap-2">
+            <input name="{{ s.key }}" value="{{ s.value }}" type="number" step="0.1" min="0"
+              class="w-32 rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
+            <span class="text-sm text-gray-400">%</span>
+          </div>
+        </div>
+        {% endif %}
+        {% endfor %}
+      </div>
+    </div>{# /pricing tab #}
+
+    {# ═══ QUICKBOOKS TAB — credentials (connection panel is below, outside the form) ═══ #}
+    <div x-show="tab === 'quickbooks'" x-cloak class="space-y-6">
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">QuickBooks Online — Credentials</h2>
+        {% for s in settings %}
+        {% if s.key in ['qbo_client_id','qbo_client_secret'] %}
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">{{ s.label }}</label>
+          {# §21 — the secret is never echoed back (value stays blank). Encrypted
+             at rest; leave blank on save to keep the stored value. #}
+          <input name="{{ s.key }}" value="{{ s.value }}" type="password" autocomplete="off"
+            placeholder="{{ '•••••••• saved — leave blank to keep' if s.is_set else '' }}"
+            class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+          {% if s.key == 'qbo_client_secret' and s.is_set %}
+          <p class="text-[11px] text-gray-400 mt-1">Stored encrypted. Re-enter only to change it.</p>
+          {% endif %}
+        </div>
+        {% elif s.key == 'qbo_environment' %}
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Environment</label>
+          <select name="qbo_environment"
+            class="w-48 rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">
+            <option value="sandbox" {% if s.value == 'sandbox' %}selected{% endif %}>Sandbox</option>
+            <option value="production" {% if s.value == 'production' %}selected{% endif %}>Production</option>
+          </select>
+        </div>
+        {% elif s.key == 'qbo_redirect_uri' %}
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Redirect URI
+            <span class="text-gray-400 font-normal">— register this EXACT value in your Intuit app</span></label>
+          <input name="qbo_redirect_uri" value="{{ s.value }}"
+            class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        </div>
+        {% elif s.key == 'qbo_push_tax' %}
+        <label class="flex items-center gap-2 text-sm text-gray-600">
+          <input type="checkbox" name="qbo_push_tax" value="true" {% if s.value == 'true' %}checked{% endif %}
+            class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+          Send JAKS-computed tax to QBO
+          <span class="text-gray-400">(uncheck if QBO uses Automated Sales Tax)</span>
+        </label>
+        {% endif %}
+        {% endfor %}
+        <p class="text-xs text-gray-400">Save credentials first, then use <b>Connect to QuickBooks</b> below. Changed the environment or redirect URI? Save, then reconnect.</p>
+      </div>
+    </div>{# /quickbooks tab (credentials) #}
+
+    {# ═══ SHOPIFY TAB ═══ #}
+    <div x-show="tab === 'shopify'" x-cloak class="space-y-6">
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Shopify</h2>
+        {% for s in settings %}
+        {% if s.key in ['shopify_store_url','shopify_api_key','shopify_api_secret','shopify_access_token'] %}
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">{{ s.label }}</label>
+          <input name="{{ s.key }}" value="{{ s.value }}"
+            {% if 'secret' in s.key or 'key' in s.key or 'token' in s.key %}type="password"{% endif %}
+            class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        </div>
+        {% endif %}
+        {% endfor %}
+        <p class="text-xs text-gray-400">
+          The sync uses the <b>Store URL</b> + <b>Admin API Access Token</b> (create a custom app in
+          Shopify Admin → Settings → Apps → Develop apps; token starts with <span class="font-mono">shpat_</span>).
+          Save here first, then link below.
+        </p>
+      </div>
+
+      {# Phase A — match & link existing store listings to ERP products.
+         Read-only against Shopify; idempotent. Button lives OUTSIDE the main
+         settings <form> semantics via type="button" + fetch (no nested-form). #}
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-3"
+           x-data="{ busy: false, result: null, status: null,
+                     async load() {
+                       try { this.status = await (await fetch('/shopify/status')).json(); } catch(e) {}
+                     },
+                     async link() {
+                       this.busy = true; this.result = null;
+                       try {
+                         const r = await fetch('/shopify/link-products', { method: 'POST' });
+                         this.result = await r.json();
+                       } catch(e) { this.result = { ok: false, error: String(e) }; }
+                       this.busy = false; this.load();
+                     } }"
+           x-init="load()">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Catalog Link <span class="text-xs text-gray-400 font-normal ml-1">(sync step 1)</span></h2>
+        <p class="text-xs text-gray-500">
+          The storefront already carries the catalog. Linking matches each ERP product to its existing
+          Shopify listing (by SKU, then handle) and stores the real Shopify IDs — required before any
+          push so the sync updates listings instead of duplicating them. Reads only; safe to re-run.
+        </p>
+        <div class="flex items-center gap-4" x-show="status" x-cloak>
+          <span class="text-xs text-gray-500">Linked:
+            <b class="font-mono" x-text="status ? status.linked : '–'"></b> /
+            <span class="font-mono" x-text="status ? status.total : '–'"></span>
+          </span>
+          <span class="text-xs" :class="status && status.configured ? 'text-green-700' : 'text-amber-700'"
+                x-text="status && status.configured ? 'Credentials configured' : 'Not configured — save URL + token above'"></span>
+        </div>
+        <button type="button" @click="link()" :disabled="busy"
+                class="btn-primary btn-sm">
+          <span x-show="!busy">Match &amp; Link Products</span>
+          <span x-show="busy" x-cloak>Linking… (walks the whole store — may take a few minutes)</span>
+        </button>
+        <template x-if="result">
+          <div class="text-xs rounded-lg px-3 py-2 border"
+               :class="result.ok ? 'bg-green-50 border-green-200 text-green-800' : 'bg-red-50 border-red-200 text-red-700'">
+            <template x-if="result.ok">
+              <span>
+                Linked <b x-text="result.linked"></b> of <b x-text="result.candidates"></b> unlinked products
+                (store has <span x-text="result.store_variants"></span> variants;
+                <span x-text="result.unmatched"></span> unmatched<span x-show="result.unmatched > 0">
+                — first few: <span class="font-mono" x-text="(result.sample_unmatched || []).join(', ')"></span></span>).
+              </span>
+            </template>
+            <template x-if="!result.ok">
+              <span x-text="result.error"></span>
+            </template>
+          </div>
+        </template>
+      </div>
+
+      {# Phase B — push price + stock to linked listings (sync step 2) + nightly schedule #}
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-3"
+           x-data="{ busy:false, msg:null, st:null, autoOn:false, autoHour:2,
+                     async load(){ try{ this.st = await (await fetch('/shopify/sync-status')).json();
+                                         this.autoOn = this.st.auto_enabled; this.autoHour = this.st.auto_hour; }catch(e){} },
+                     async syncNow(){ this.busy=true; this.msg=null;
+                       try{ const r = await fetch('/shopify/sync-now', {method:'POST'}); this.msg = await r.json(); }
+                       catch(e){ this.msg = {ok:false, error:String(e)}; }
+                       this.busy=false; setTimeout(()=>this.load(), 1500); },
+                     async saveAuto(){ const f=new FormData(); f.append('enabled', this.autoOn?'1':'0'); f.append('hour', this.autoHour);
+                       try{ await fetch('/shopify/auto-sync', {method:'POST', body:f}); }catch(e){} this.load(); } }"
+           x-init="load()">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Sync Price &amp; Stock <span class="text-xs text-gray-400 font-normal ml-1">(sync step 2)</span></h2>
+        <p class="text-xs text-gray-500">
+          Pushes our selling price and sellable stock to every <b>linked</b> listing. Safe to re-run — it never
+          changes a product's title, photos, or publish status. (Link products in step 1 first.)
+        </p>
+        <div class="text-xs text-gray-500" x-show="st" x-cloak>
+          Last sync: <b class="font-mono" x-text="(st && st.last_sync) || 'never'"></b>
+          <template x-if="st && st.last_summary"><span> — <span x-text="st.last_summary"></span></span></template>
+          <template x-if="st && st.last_error"><span class="text-red-600"> — <span x-text="st.last_error"></span></span></template>
+        </div>
+        <button type="button" @click="syncNow()" :disabled="busy" class="btn-primary btn-sm">
+          <span x-show="!busy">Sync price &amp; stock now</span>
+          <span x-show="busy" x-cloak>Starting…</span>
+        </button>
+        <template x-if="msg">
+          <div class="text-xs rounded-lg px-3 py-2 border"
+               :class="msg.ok ? 'bg-green-50 border-green-200 text-green-800' : 'bg-red-50 border-red-200 text-red-700'"
+               x-text="msg.message || msg.error"></div>
+        </template>
+        <div class="border-t border-gray-100 pt-3 mt-1">
+          <label class="flex items-center gap-2 text-xs text-gray-600">
+            <input type="checkbox" x-model="autoOn" @change="saveAuto()" class="rounded border-gray-300">
+            <span>Run automatically every night at</span>
+            <input type="number" min="0" max="23" x-model="autoHour" @change="saveAuto()"
+                   class="w-14 rounded border border-gray-200 px-2 py-1 text-xs font-mono">
+            <span>:00</span>
+          </label>
+          <p class="text-xs text-gray-400 mt-1">Off by default. When on, refreshes price + stock for all linked listings nightly.</p>
+        </div>
+      </div>
+    </div>{# /shopify tab #}
+
+    {# ═══ MESSAGING TAB ═══ #}
+    <div x-show="tab === 'messaging'" x-cloak class="space-y-6">
+      {# Safe-mode kill switch #}
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Sending Mode</h2>
+        <label class="flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" name="messaging_log_only_mode" value="true"
+                 {% if msg.messaging_log_only_mode == 'true' %}checked{% endif %}
+                 class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+          <span><b>Log-only (safe mode)</b> — compose, consent-check and record every message, but do NOT transmit.</span>
+        </label>
+        <p class="text-xs text-gray-400">Leave this ON until your email/SMS credentials below are saved and tested.
+          Uncheck it to start actually sending. Consent rules, opt-out and rate limits still apply when sending is live.</p>
+      </div>
+
+      {# Email (SMTP) #}
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Email (SMTP)</h2>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Email provider</label>
+          <select name="messaging_email_provider" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">
+            <option value="null" {% if msg.messaging_email_provider == 'null' %}selected{% endif %}>Off</option>
+            <option value="smtp" {% if msg.messaging_email_provider in ['smtp','m365','gmail'] %}selected{% endif %}>SMTP (Workspace / Microsoft 365 / Gmail)</option>
+          </select>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">SMTP host</label>
+            <input name="smtp_host" value="{{ msg.smtp_host }}" placeholder="smtp.gmail.com / smtp.office365.com"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">Port</label>
+            <input name="smtp_port" value="{{ msg.smtp_port }}" placeholder="587"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">Username</label>
+            <input name="smtp_username" value="{{ msg.smtp_username }}" placeholder="you@jaksdiesel.com"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">Password / App password
+            {% if msg.smtp_password_is_set %}<span class="text-green-600 normal-case">· saved</span>{% endif %}</label>
+            <input name="smtp_password_encrypted" type="password" value="" autocomplete="off"
+              placeholder="{% if msg.smtp_password_is_set %}leave blank to keep{% else %}app password{% endif %}"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">From address</label>
+            <input name="smtp_from_address" value="{{ msg.smtp_from_address }}" placeholder="parts@jaksdiesel.com"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">From name</label>
+            <input name="smtp_from_name" value="{{ msg.smtp_from_name }}" placeholder="JAK's Diesel Parts"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+        </div>
+        <label class="flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" name="smtp_use_tls" value="true" {% if msg.smtp_use_tls == 'true' %}checked{% endif %}
+                 class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+          Use STARTTLS (port 587). Uncheck only for implicit-TLS port 465.
+        </label>
+        <p class="text-xs text-gray-400">
+          Google Workspace: <span class="font-mono">smtp.gmail.com:587</span>, username = full address, password = a
+          <b>16-char App Password</b> (Google account → Security → 2-Step Verification → App passwords).
+          Microsoft 365: <span class="font-mono">smtp.office365.com:587</span>.
+        </p>
+      </div>
+
+      {# SMS (Twilio) #}
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Texting (Twilio)</h2>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">SMS provider</label>
+          <select name="messaging_sms_provider" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">
+            <option value="null"   {% if msg.messaging_sms_provider == 'null' %}selected{% endif %}>Off</option>
+            <option value="twilio" {% if msg.messaging_sms_provider == 'twilio' %}selected{% endif %}>Twilio</option>
+          </select>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">Account SID</label>
+            <input name="twilio_account_sid" value="{{ msg.twilio_account_sid }}" placeholder="ACxxxxxxxx…"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">API Key SID <span class="normal-case font-normal text-gray-400">(optional)</span></label>
+            <input name="twilio_api_key_sid" value="{{ msg.twilio_api_key_sid }}" placeholder="SKxxxxxxxx… (leave blank to use Auth Token)"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">Auth token / API Key secret
+            {% if msg.twilio_auth_token_is_set %}<span class="text-green-600 normal-case">· saved</span>{% endif %}</label>
+            <input name="twilio_auth_token_encrypted" type="password" value="" autocomplete="off"
+              placeholder="{% if msg.twilio_auth_token_is_set %}leave blank to keep{% else %}auth token or API Key secret{% endif %}"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">From number (10DLC)</label>
+            <input name="twilio_from_number" value="{{ msg.twilio_from_number }}" placeholder="+13035551234"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+        </div>
+        <p class="text-xs text-gray-400"><strong>Account SID</strong> is always your <code>AC…</code> SID (Twilio Console home).
+          To use an <strong>API Key</strong> (recommended), also fill <strong>API Key SID</strong> (<code>SK…</code>) and put its
+          <strong>secret</strong> in the token field; otherwise leave API Key SID blank and use your Auth Token. Use your
+          A2P 10DLC-registered number in E.164 (+1…); customer numbers are normalized automatically. SMS only sends to
+          customers who consented (allow_sms + consent date).</p>
+      </div>
+
+      {# Public document links (§22.7) #}
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Customer document links</h2>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Public base URL</label>
+          <input name="public_base_url" value="{{ msg.public_base_url }}"
+            placeholder="https://axle.jaksdiesel.com  (leave blank to disable links)"
+            class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        </div>
+        <p class="text-xs text-gray-400">When set, sent texts/emails include a secure, expiring
+          <strong>“View document”</strong> link (a signed <code>/p/d/…</code> URL that needs no login and serves only that one
+          PDF). Only works once this app is reachable at that address from the internet — <strong>leave blank</strong> until then.</p>
+      </div>
+
+      {# Rate limits #}
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Rate Limits</h2>
+        <div class="grid grid-cols-2 gap-3">
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">Max outbound / hour (all customers)</label>
+            <input name="messaging_max_outbound_per_hour" value="{{ msg.messaging_max_outbound_per_hour }}"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+          <div><label class="block text-xs font-medium text-gray-600 mb-1">Max / customer / day</label>
+            <input name="messaging_max_outbound_per_customer_per_day" value="{{ msg.messaging_max_outbound_per_customer_per_day }}"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" /></div>
+        </div>
+      </div>
+    </div>{# /messaging tab #}
+
+    {# ═══ TAX TAB ═══ #}
+    <div x-show="tab === 'tax'" x-cloak class="space-y-6">
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">TaxJar <span class="text-xs text-gray-400 font-normal ml-1">(Phase 2)</span></h2>
+        {% for s in settings %}
+        {% if s.key == 'taxjar_api_key' %}
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">{{ s.label }}</label>
+          <input name="{{ s.key }}" value="{{ s.value }}" type="password"
+            class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        </div>
+        {% endif %}
+        {% endfor %}
+        <p class="text-xs text-gray-400">Sales tax is applied per-customer / per-invoice (the invoice tax gate). TaxJar automation lands in Phase 2.</p>
+      </div>
+    </div>{# /tax tab #}
+
+    {# ═══ SYSTEM TAB — operational policy defaults ═══ #}
+    <div x-show="tab === 'system'" x-cloak class="space-y-6">
+      <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Policy Defaults</h2>
+        {% for s in settings %}
+        {% if s.key in ['default_fuel_service_charge','default_core_return_days','default_restock_fee_percent','business_close_time'] %}
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">{{ s.label }}</label>
+          <input name="{{ s.key }}" value="{{ s.value }}"
+            class="w-48 rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
+        </div>
+        {% endif %}
+        {% if s.key == 'backup_offsite_dir' %}
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">{{ s.label }}</label>
+          <input name="{{ s.key }}" value="{{ s.value }}" placeholder="%OneDrive%\JAKS Backups"
+            class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+          <p class="text-xs text-gray-400 mt-1">After every backup the newest copy + the encryption keyfile land here. Point it at a cloud-synced folder (OneDrive / Google Drive / Dropbox); %VARS% expand; blank turns offsite copies off.</p>
+        </div>
+        {% endif %}
+        {% endfor %}
+        <p class="text-xs text-gray-400">Document sequences are managed automatically. Backups &amp; restore live in the panel below on this tab.</p>
+      </div>
+    </div>{# /system tab #}
+
+    {# ═══ AI TAB — placeholder so the tab content sits within the form spacer.
+       The actual AI form lives OUTSIDE the main settings <form> below, because
+       it POSTs to /settings/ai (encrypts the key with Fernet) instead of the
+       plain KV /settings/ endpoint. We render an empty div here so the Save
+       Settings button below stays hidden when the AI tab is active. ═══ #}
+    <div x-show="tab === 'ai'" x-cloak></div>
+
+    {# Reviews tab body lives OUTSIDE the form (download links + guidance, nothing to save). #}
+    <div x-show="tab === 'reviews'" x-cloak></div>
+
+    <button type="submit" x-show="tab !== 'ai' && tab !== 'reviews'" class="rounded-lg bg-brand-700 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-600 transition-colors">Save Settings</button>
+  </form>
+
+  {# ── Company tab: Logo upload — a SEPARATE multipart form (can't nest in the main form) ── #}
+  <div x-show="tab === 'company'" x-cloak class="mt-6">
+    <form method="post" action="/settings/logo" enctype="multipart/form-data"
+          class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-3">
+      <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Company Logo</h2>
+      {% if flash and flash.logo_error %}
+      <div class="rounded-lg bg-red-50 border border-red-200 text-red-700 px-4 py-2 text-sm">{{ flash.logo_error }}</div>
+      {% endif %}
+      {% if flash and flash.logo_saved %}
+      <div class="rounded-lg bg-green-50 border border-green-200 text-green-700 px-4 py-2 text-sm">Logo uploaded.</div>
+      {% endif %}
+      <div class="flex flex-wrap items-center gap-3">
+        <input type="file" name="file" accept="image/png,image/jpeg,image/gif,image/webp" required
+               class="text-sm text-gray-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-brand-50 file:text-brand-700 hover:file:bg-brand-100 file:cursor-pointer" />
+        <button type="submit" class="rounded-lg bg-brand-700 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 transition-colors">Upload Logo</button>
+      </div>
+      <p class="text-xs text-gray-400">PNG / JPG / GIF / WebP, max 8 MB. Appears on document headers when "Show the company logo" is on.</p>
+    </form>
   </div>
 
-  <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
-    <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">QuickBooks Online</h2>
-    <p class="text-xs text-gray-400">OAuth flow coming in Phase 2. Enter credentials manually for now.</p>
-    {% for s in settings %}
-    {% if s.key in ['qbo_client_id','qbo_client_secret'] %}
-    <div>
-      <label class="block text-xs font-medium text-gray-600 mb-1">{{ s.label }}</label>
-      <input name="{{ s.key }}" value="{{ s.value }}" type="password"
-        class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+  {# ── System tab: Backups & Restore — fetch-driven panel over /admin/backup (C1).
+     Sits OUTSIDE the main settings form (buttons must not submit it). Create/
+     restore POSTs are ADMIN-gated server-side; a 403 surfaces as the error line. ── #}
+  <div x-show="tab === 'system'" x-cloak class="mt-6"
+       x-data="{
+         st: null, busy: false, msg: '', err: '',
+         async load() {
+           this.err = '';
+           try {
+             const r = await fetch('/admin/backup');
+             if (!r.ok) throw new Error(r.status);
+             this.st = await r.json();
+           } catch (e) { this.err = 'Could not load backup status.'; }
+         },
+         fmtSize(b) { return (b / 1048576).toFixed(1) + ' MB'; },
+         async runNow() {
+           this.busy = true; this.msg = ''; this.err = '';
+           try {
+             const r = await fetch('/admin/backup/run', { method: 'POST' });
+             const j = await r.json().catch(() => ({}));
+             if (r.ok && j.ok) {
+               this.msg = 'Backup created: ' + j.created + (j.offsite && j.offsite.length ? ' (offsite copy updated)' : '');
+             } else { this.err = j.error || j.detail || ('Backup failed (HTTP ' + r.status + ').'); }
+           } catch (e) { this.err = 'Backup failed: ' + e; }
+           this.busy = false; await this.load();
+         },
+         async restore(name) {
+           if (!confirm('Restore \'' + name + '\' over the CURRENT database?\n\nEverything entered since that backup was taken will be gone. A safety copy of the current database is saved first.\n\nAfter the restore finishes, close and restart JAKS.')) return;
+           this.busy = true; this.msg = ''; this.err = '';
+           try {
+             const fd = new FormData(); fd.append('filename', name);
+             const r = await fetch('/admin/backup/restore', { method: 'POST', body: fd });
+             const j = await r.json().catch(() => ({}));
+             if (r.ok && j.ok) { this.msg = 'Restored ' + j.restored + ' — please close and restart JAKS now.'; }
+             else { this.err = j.error || j.detail || ('Restore failed (HTTP ' + r.status + ').'); }
+           } catch (e) { this.err = 'Restore failed: ' + e; }
+           this.busy = false; await this.load();
+         }
+       }"
+       x-init="load()">
+    <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+      <div class="flex items-center justify-between border-b border-gray-100 pb-3">
+        <h2 class="text-sm font-semibold text-gray-700">Backups &amp; Restore</h2>
+        <button type="button" @click="runNow()" :disabled="busy"
+                class="rounded-lg bg-brand-700 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 transition-colors disabled:opacity-50">
+          <span x-text="busy ? 'Working…' : 'Back Up Now'"></span>
+        </button>
+      </div>
+
+      <div x-show="msg" x-cloak class="rounded-lg bg-green-50 border border-green-200 text-green-700 px-4 py-2 text-sm" x-text="msg"></div>
+      <div x-show="err" x-cloak class="rounded-lg bg-red-50 border border-red-200 text-red-700 px-4 py-2 text-sm" x-text="err"></div>
+
+      <template x-if="st">
+        <div class="space-y-4">
+          <dl class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+            <div><dt class="font-medium text-gray-600">Last automatic backup</dt>
+                 <dd class="text-gray-500 mt-0.5" x-text="st.last_run ? st.last_run.replace('T', ' ') : 'never'"></dd></div>
+            <div><dt class="font-medium text-gray-600">Backup folder</dt>
+                 <dd class="text-gray-500 mt-0.5 font-mono break-all" x-text="st.backup_dir"></dd></div>
+            <div><dt class="font-medium text-gray-600">Offsite copy</dt>
+                 <dd class="text-gray-500 mt-0.5 font-mono break-all" x-text="st.offsite_dir || 'off'"></dd></div>
+          </dl>
+
+          <div>
+            <h3 class="text-xs font-semibold text-gray-600 mb-2">Daily backups <span class="font-normal text-gray-400">(newest first, keeps <span x-text="st.retention"></span>)</span></h3>
+            <p x-show="!st.backups.length" class="text-xs text-gray-400">No backups yet — click "Back Up Now" or restart JAKS to create the first one.</p>
+            <ul class="divide-y divide-gray-100">
+              <template x-for="b in st.backups" :key="b.name">
+                <li class="flex items-center justify-between py-1.5 text-sm">
+                  <span class="font-mono text-xs text-gray-600" x-text="b.name"></span>
+                  <span class="flex items-center gap-3">
+                    <span class="text-xs text-gray-400" x-text="fmtSize(b.size_bytes)"></span>
+                    <button type="button" @click="restore(b.name)" :disabled="busy"
+                            class="text-xs font-medium text-brand-700 hover:text-brand-600 disabled:opacity-50">Restore</button>
+                  </span>
+                </li>
+              </template>
+            </ul>
+          </div>
+
+          <details x-show="st.snapshots.length" class="text-sm">
+            <summary class="text-xs font-semibold text-gray-600 cursor-pointer select-none">
+              Pre-migration &amp; script snapshots (<span x-text="st.snapshots.length"></span>)
+            </summary>
+            <ul class="divide-y divide-gray-100 mt-2">
+              <template x-for="s in st.snapshots" :key="s.name">
+                <li class="flex items-center justify-between py-1.5 text-sm">
+                  <span class="font-mono text-xs text-gray-600" x-text="s.name"></span>
+                  <span class="flex items-center gap-3">
+                    <span class="text-xs text-gray-400" x-text="fmtSize(s.size_bytes)"></span>
+                    <button type="button" @click="restore(s.name)" :disabled="busy"
+                            class="text-xs font-medium text-brand-700 hover:text-brand-600 disabled:opacity-50">Restore</button>
+                  </span>
+                </li>
+              </template>
+            </ul>
+          </details>
+
+          <p class="text-xs text-gray-400">
+            A backup runs automatically at startup (at most every <span x-text="st.min_interval_hours"></span>h) and the newest one — plus the
+            encryption keyfile — is copied to the offsite folder above. Restoring overwrites the current database
+            (a safety copy is taken first); restart JAKS afterwards. Full steps: <code>docs/BACKUP_RESTORE_RUNBOOK.md</code>.
+          </p>
+        </div>
+      </template>
     </div>
-    {% endif %}
-    {% endfor %}
   </div>
 
-  <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
-    <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Shopify</h2>
-    {% for s in settings %}
-    {% if s.key in ['shopify_store_url','shopify_api_key','shopify_api_secret'] %}
-    <div>
-      <label class="block text-xs font-medium text-gray-600 mb-1">{{ s.label }}</label>
-      <input name="{{ s.key }}" value="{{ s.value }}"
-        {% if 'secret' in s.key or 'key' in s.key %}type="password"{% endif %}
-        class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+  {# ── QuickBooks tab: connection panel — SEPARATE actions, outside the settings form ── #}
+  <div x-show="tab === 'quickbooks'" x-cloak class="mt-6 space-y-3">
+    {% if flash and flash.error %}
+    <div class="rounded-lg bg-red-50 border border-red-200 text-red-700 px-4 py-2 text-sm">{{ flash.error }}</div>
+    {% endif %}
+    {% if flash and flash.qbo_connected %}
+    <div class="rounded-lg bg-green-50 border border-green-200 text-green-700 px-4 py-2 text-sm">QuickBooks connected.</div>
+    {% endif %}
+    {% if flash and flash.qbo_disconnected %}
+    <div class="rounded-lg bg-gray-50 border border-gray-200 text-gray-600 px-4 py-2 text-sm">QuickBooks disconnected.</div>
+    {% endif %}
+    {% if flash and flash.qbo_msg %}
+    <div class="rounded-lg bg-green-50 border border-green-200 text-green-700 px-4 py-2 text-sm">{{ flash.qbo_msg }}</div>
+    {% endif %}
+
+    <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+      <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">QuickBooks Connection</h2>
+      <div class="flex items-center gap-3">
+        {% if qbo and qbo.connected %}
+          <span class="inline-flex items-center gap-1.5 rounded-full bg-green-100 text-green-800 px-2.5 py-0.5 text-xs font-medium">
+            <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>Connected</span>
+          <span class="text-xs text-gray-500">{{ qbo.environment }} · realm {{ qbo.realm_id }}</span>
+        {% else %}
+          <span class="inline-flex items-center gap-1.5 rounded-full bg-gray-100 text-gray-600 px-2.5 py-0.5 text-xs font-medium">
+            <span class="w-1.5 h-1.5 rounded-full bg-gray-400"></span>Not connected</span>
+        {% endif %}
+      </div>
+
+      {% if qbo and qbo.connected %}
+      {# Per-entity sync counts (connection_summary().entities) — the retry
+         worker covers all four, so failures anywhere must be visible here. #}
+      <div class="flex flex-wrap gap-4 text-xs text-gray-500">
+        {% for label, e in [('Invoices', qbo.entities.invoices),
+                            ('Payments', qbo.entities.payments),
+                            ('Vendor bills', qbo.entities.vendor_bills),
+                            ('Credit memos', qbo.entities.credit_memos)] %}
+        <span>{{ label }}:
+          <b class="text-gray-700">{{ e.synced }}</b> synced
+          {%- if e.pending %} · <b class="text-gray-700">{{ e.pending }}</b> pending{% endif %}
+          {%- if e.failed %} · <b class="text-red-600">{{ e.failed }}</b> failed{% endif %}</span>
+        {% endfor %}
+      </div>
+      {% if qbo.needs_reversal %}
+      <div class="rounded-lg bg-red-50 border border-red-200 text-red-700 px-4 py-2 text-xs">
+        <b>{{ qbo.needs_reversal }} payment{{ 's' if qbo.needs_reversal != 1 else '' }}
+        reversed/NSF after syncing to QuickBooks</b> — QBO still shows that cash as
+        received. Void the QBO payment (and any JAKS-SC surcharge receipt) manually:
+        payment id{{ 's' if qbo.needs_reversal != 1 else '' }}
+        {% for pid in qbo.needs_reversal_ids %}<a class="underline font-mono" href="/payments/{{ pid }}">#{{ pid }}</a>{% if not loop.last %}, {% endif %}{% endfor %}.
+      </div>
+      {% endif %}
+      {% endif %}
+
+      <div class="flex flex-wrap items-center gap-2 pt-1">
+        {% if qbo and qbo.connected %}
+          <form method="post" action="/qbo/setup-items">
+            <button class="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors">Set up QBO items</button>
+          </form>
+          <form method="post" action="/qbo/disconnect">
+            <button class="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors">Disconnect</button>
+          </form>
+        {% elif qbo and qbo.has_credentials %}
+          <a href="/qbo/connect" class="rounded-lg bg-brand-700 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-600 transition-colors">Connect to QuickBooks</a>
+        {% else %}
+          <span class="text-xs text-gray-400">Enter your Client ID + Secret above and Save before connecting.</span>
+        {% endif %}
+        {# Always reachable — the mapping page lets you set account names even before
+           connecting (it just can't show live dropdowns / verify until connected). #}
+        <a href="/settings/qbo-accounts"
+           class="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors">Map chart of accounts</a>
+      </div>
+
+      <p class="text-xs text-gray-400 border-t border-gray-100 pt-3">
+        After connecting, click <b>Set up QBO items</b> once — it creates the generic income items
+        (Parts Sales, Core Charge, Freight &amp; Delivery, Fees &amp; Other, Adjustments) the push maps to.
+        Then push an invoice from its workspace.
+      </p>
+    </div>
+  </div>{# /quickbooks connection panel #}
+
+  {# ── Messaging tab: Send-test card — SEPARATE form (can't nest in the main
+       settings form), posts to /settings/messaging/test. Fires a one-off test
+       message through the real provider; under log-only safe mode it just records
+       a LOGGED_ONLY audit row and reports back. §22.5 ── #}
+  <div x-show="tab === 'messaging'" x-cloak class="mt-6">
+    <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+      <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Send test</h2>
+
+      {% if flash and flash.msg_test %}
+        {% if flash.msg_test == 'sent' %}
+        <div class="rounded-lg bg-green-50 border border-green-200 text-green-700 px-4 py-2 text-sm">
+          Test sent (status: sent).
+        </div>
+        {% elif flash.msg_test == 'logged_only' %}
+        <div class="rounded-lg bg-amber-50 border border-amber-200 text-amber-700 px-4 py-2 text-sm">
+          logged_only — turn off log-only (safe mode) above to actually send.
+        </div>
+        {% elif flash.msg_test == 'failed' %}
+        <div class="rounded-lg bg-red-50 border border-red-200 text-red-700 px-4 py-2 text-sm">
+          Test failed{% if flash.msg_test_err %}: {{ flash.msg_test_err }}{% endif %}.
+        </div>
+        {% else %}
+        <div class="rounded-lg bg-gray-50 border border-gray-200 text-gray-600 px-4 py-2 text-sm">
+          Test status: {{ flash.msg_test }}.
+        </div>
+        {% endif %}
+      {% endif %}
+
+      <p class="text-xs text-gray-500">
+        Sends one test message through the saved provider so you can confirm your email / SMS
+        credentials work. While <b>log-only (safe mode)</b> is on it records the attempt without
+        transmitting — uncheck it above first to actually send.
+      </p>
+
+      <form method="post" action="/settings/messaging/test" class="space-y-4">
+        <div class="grid grid-cols-3 gap-3">
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Channel</label>
+            <select name="test_channel"
+                    class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">
+              <option value="email">Email</option>
+              <option value="sms">Text (SMS)</option>
+            </select>
+          </div>
+          <div class="col-span-2">
+            <label class="block text-xs font-medium text-gray-600 mb-1">Send to</label>
+            <input name="test_to" placeholder="you@jaksdiesel.com or +13035551234"
+                   class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+          </div>
+        </div>
+        <button type="submit"
+                class="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors">
+          Send test
+        </button>
+      </form>
+    </div>
+  </div>{# /messaging send-test card #}
+
+  {# ── AI tab body — separate form because /settings/ai encrypts with Fernet
+       (different storage shape from the plain KV /settings/ POST). Sits outside
+       the main form so its inputs never accidentally post the API key plaintext
+       to the wrong endpoint. ── #}
+  <div x-show="tab === 'ai'" x-cloak class="space-y-4">
+
+    {% if flash and flash.ai_saved %}
+    <div class="rounded-lg bg-green-50 border border-green-200 text-green-700 px-4 py-2 text-sm">AI settings saved.</div>
+    {% endif %}
+    {% if flash and flash.ai_cleared %}
+    <div class="rounded-lg bg-amber-50 border border-amber-200 text-amber-700 px-4 py-2 text-sm">
+      API key cleared. The AI suggest button will be disabled until a new key is set.
     </div>
     {% endif %}
-    {% endfor %}
-  </div>
-
-  <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
-    <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">TaxJar <span class="text-xs text-gray-400 font-normal ml-1">(Phase 2)</span></h2>
-    {% for s in settings %}
-    {% if s.key == 'taxjar_api_key' %}
-    <div>
-      <label class="block text-xs font-medium text-gray-600 mb-1">{{ s.label }}</label>
-      <input name="{{ s.key }}" value="{{ s.value }}" type="password"
-        class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
-    </div>
+    {% if flash and flash.ai_error %}
+    <div class="rounded-lg bg-red-50 border border-red-200 text-red-700 px-4 py-2 text-sm">{{ flash.ai_error }}</div>
     {% endif %}
-    {% endfor %}
-  </div>
 
-  <button type="submit" class="rounded-lg bg-brand-700 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-600 transition-colors">Save Settings</button>
-</form>
+    <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-5">
+      <div class="flex items-start justify-between gap-3 border-b border-gray-100 pb-3">
+        <div>
+          <h2 class="text-sm font-semibold text-gray-700 flex items-center gap-2">
+            {# sparkles icon #}
+            <svg class="w-4 h-4 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M10 1l1.7 4.6L16 7.3l-4.3 1.7L10 13.6 8.3 9 4 7.3l4.3-1.7L10 1zm6 8.5l.85 2.3L19 12.65l-2.15.85L16 15.8l-.85-2.3L13 12.65l2.15-.85L16 9.5zM4 14l.85 2.3L7 17.15l-2.15.85L4 20.3l-.85-2.3L1 17.15l2.15-.85L4 14z"/>
+            </svg>
+            Claude (Anthropic) — product description generator
+          </h2>
+          <p class="text-xs text-gray-500 mt-1">
+            Powers the <b>Suggest with AI</b> button on the product form (title, description, meta description).
+          </p>
+        </div>
+        {# Status chip — read from ai context #}
+        {% if ai and ai.is_configured %}
+          <span class="inline-flex items-center gap-1.5 rounded-full bg-green-100 text-green-800 px-2.5 py-0.5 text-xs font-medium whitespace-nowrap">
+            <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+            Configured
+          </span>
+        {% else %}
+          <span class="inline-flex items-center gap-1.5 rounded-full bg-amber-100 text-amber-800 px-2.5 py-0.5 text-xs font-medium whitespace-nowrap">
+            <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+            Not configured
+          </span>
+        {% endif %}
+      </div>
+
+      <form method="post" action="/settings/ai" class="space-y-4">
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">
+            Anthropic API key
+          </label>
+          <input name="anthropic_api_key" type="password" autocomplete="off"
+                 placeholder="{% if ai and ai.is_configured %}Leave blank to keep the current key{% else %}sk-ant-…{% endif %}"
+                 class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400" />
+          <p class="text-xs text-gray-400 mt-1">
+            Get a key at
+            <a href="https://console.anthropic.com/" target="_blank" rel="noopener" class="underline">console.anthropic.com</a>
+            → Settings → API keys. Stored encrypted at rest. Never logged.
+          </p>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Model</label>
+          {% set _m = (ai.model if ai else '') %}
+          <select name="ai_description_model"
+                  class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400">
+            <option value="claude-sonnet-4-6"  {% if _m == 'claude-sonnet-4-6'  or not _m %}selected{% endif %}>claude-sonnet-4-6 (default — best quality)</option>
+            <option value="claude-haiku-4-5-20251001" {% if _m == 'claude-haiku-4-5-20251001' %}selected{% endif %}>claude-haiku-4-5-20251001 (~5× cheaper / faster)</option>
+            <option value="claude-opus-4-8"    {% if _m == 'claude-opus-4-8' %}selected{% endif %}>claude-opus-4-8 (premium)</option>
+            {# Preserve any non-canonical override (e.g. a future model the owner
+               typed via the standalone /settings/ai page) so it isn't silently lost. #}
+            {% if _m and _m not in ['claude-sonnet-4-6', 'claude-haiku-4-5-20251001', 'claude-opus-4-8'] %}
+              <option value="{{ _m }}" selected>{{ _m }} (custom)</option>
+            {% endif %}
+          </select>
+          <p class="text-xs text-gray-400 mt-1">
+            Sonnet 4.6 is the right default. Haiku is ~5× cheaper if you're back-filling many products.
+          </p>
+        </div>
+
+        <div class="flex items-center gap-3 pt-2">
+          <button type="submit"
+                  class="rounded-lg bg-brand-700 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-600 transition-colors">
+            Save AI Settings
+          </button>
+          {% if ai and ai.is_configured %}
+          <button type="submit" name="clear" value="1"
+                  class="text-xs text-red-700 underline hover:no-underline"
+                  onclick="return confirm('Clear the Anthropic API key? AI suggestions will be disabled until a new key is set.');">
+            Clear key
+          </button>
+          {% endif %}
+        </div>
+      </form>
+    </div>
+
+    {# ── Test connection — pings POST /products/ai-suggest with a known sample part.
+         Renders the same panel partial the product form uses, so the owner can SEE
+         a real suggestion (or a real error) the moment they save the key. ── #}
+    <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-3">
+      <h2 class="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">Test connection</h2>
+      <p class="text-xs text-gray-500">
+        Sends a hardcoded sample part (Cummins ISX, vendor part <span class="font-mono">TEST-CONN</span>)
+        to Claude so you can verify the key works. The suggestion appears below — accept buttons are a no-op here.
+      </p>
+      <form hx-post="/products/ai-suggest"
+            hx-target="#ai-test-result"
+            hx-swap="innerHTML"
+            hx-indicator="#ai-test-indicator"
+            hx-sync="this:replace">
+        {# Hardcoded sample — DO NOT include the API key anywhere. #}
+        <input type="hidden" name="vendor_part_number" value="TEST-CONN" />
+        <input type="hidden" name="manufacturer" value="Cummins" />
+        <input type="hidden" name="engine_make" value="Cummins" />
+        <input type="hidden" name="engine_model" value="ISX" />
+        <button type="submit"
+                class="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                {% if not (ai and ai.is_configured) %}disabled title="Save an API key first."{% endif %}>
+          <svg class="w-4 h-4 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
+            <path d="M10 1l1.7 4.6L16 7.3l-4.3 1.7L10 13.6 8.3 9 4 7.3l4.3-1.7L10 1z"/>
+          </svg>
+          Test connection
+          <span id="ai-test-indicator" class="htmx-indicator text-xs text-gray-400">Asking Claude…</span>
+        </button>
+      </form>
+      <div id="ai-test-result"></div>
+    </div>
+  </div>{# /ai tab #}
+
+  {# ── REVIEWS tab — cold-start social-proof kit. Builds review-request lists
+       from finalized sales history. Outside the main form: pure downloads +
+       guidance. Routes + consent rules: app/services/review_outreach_service.py. ── #}
+  <div x-show="tab === 'reviews'" x-cloak class="space-y-4"
+       x-data="{ allSales: false,
+                 get qs(){ return this.allSales ? '?paid_only=false' : ''; } }">
+
+    <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+      <div class="border-b border-gray-100 pb-3">
+        <h2 class="text-sm font-semibold text-gray-700">Reviews &amp; Social Proof</h2>
+        <p class="text-xs text-gray-500 mt-1">
+          The storefront has almost no reviews while competitors run 800–1,200. The fastest honest fix is to
+          ask the customers who already bought from you. These two lists are built from your finalized sales —
+          one for product reviews (Judge.me), one for company reviews (Google).
+          Customers marked <b>do-not-contact</b> or opted-out are always excluded.
+        </p>
+      </div>
+
+      <label class="flex items-center gap-2 text-xs text-gray-600">
+        <input type="checkbox" x-model="allSales" class="rounded border-gray-300 text-brand-600 focus:ring-brand-400">
+        Include all finalized sales (open &amp; partial), not just fully-paid invoices
+      </label>
+
+      {# Track A — Google / company reviews #}
+      <div class="rounded-lg border border-gray-100 p-4 space-y-2">
+        <h3 class="text-sm font-medium text-gray-700">1 · Google reviews (the trust signal buyers check first)</h3>
+        <p class="text-xs text-gray-500">
+          A personal-ask list of your best customers (highest spend first) with per-channel consent flags.
+          Set up a <b>Google Business Profile</b>, grab your review link, then email/text these folks. Google
+          forbids incentives for its reviews — just ask.
+        </p>
+        <a :href="'/customers/review-requests/google.csv' + qs" download
+           class="inline-flex items-center gap-2 rounded-lg bg-brand-700 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 transition-colors">
+          Download Google outreach list (CSV)
+        </a>
+      </div>
+
+      {# Track B — Judge.me / product reviews #}
+      <div class="rounded-lg border border-gray-100 p-4 space-y-2">
+        <h3 class="text-sm font-medium text-gray-700">2 · Product reviews (puts star ratings on product pages)</h3>
+        <p class="text-xs text-gray-500">
+          Ready to upload to <b>Judge.me</b> (Shopify): Settings → Review requests → import CSV. One row per
+          customer + product they bought, deduped to the most recent purchase. Only includes products already
+          linked to Shopify and customers who allow email. Your product pages already render the star schema —
+          they just need data.
+        </p>
+        <a :href="'/customers/review-requests/judgeme.csv' + qs" download
+           class="inline-flex items-center gap-2 rounded-lg bg-brand-700 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 transition-colors">
+          Download Judge.me request CSV
+        </a>
+      </div>
+
+      <p class="text-xs text-gray-400 border-t border-gray-100 pt-3">
+        Ready-to-use email &amp; text copy lives in
+        <span class="font-mono">app/messaging_templates/review_request_email.txt</span> and
+        <span class="font-mono">review_request_sms.txt</span>. Keep asking every customer going forward — a
+        weekly export turns past sales into a steady stream of reviews.
+      </p>
+    </div>
+  </div>{# /reviews tab #}
+
+</div>
 {% endblock %}

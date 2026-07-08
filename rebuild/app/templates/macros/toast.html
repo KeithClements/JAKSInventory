@@ -1,0 +1,76 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   TOAST MACRO  —  two complementary patterns for toast feedback
+   (class-tokens §16 — position/colors/copy/dismiss rules apply)
+
+   ── Pattern A: HX-Trigger (preferred for HTMX partial responses) ──────────
+   Server returns the header — NO body HTML needed:
+
+       response.headers["HX-Trigger"] = json.dumps({
+           "toast": {"message": "Quote sent!", "kind": "success"}
+       })
+
+   Kinds: "success" (4 s) · "error" (6 s) · "warning" (4 s) · "info" (4 s)
+   Alpine in base.html listens for @toast.window and injects the toast.
+   Works even for 204 responses or responses that redirect the HTMX target.
+
+   ── Pattern B: OOB swap (for HTML responses that already return a body) ───
+   Call {{ toast_oob("Message here", kind="success") }} inside a template
+   that is returned as an HTMX response.  Generates an hx-swap-oob div that
+   HTMX appends to #toast-container.  Alpine auto-dismisses via x-init.
+
+       # In a router that returns TemplateResponse / HTMLResponse:
+       return templates.TemplateResponse(request, "some_partial.html",
+           {"toast_msg": "Saved!", "toast_kind": "success", ...})
+       # then in some_partial.html:
+       {% from "macros/toast.html" import toast_oob %}
+       {{ toast_oob(toast_msg, kind=toast_kind) }}
+
+   ── Choosing between A and B ──────────────────────────────────────────────
+   Pattern A is preferred for HTMX actions:  it separates the feedback signal
+   from the response body, works for 204/redirect targets, and never risks a
+   duplicate toast if the OOB is accidentally included twice.
+   Pattern B is useful when the response already returns HTML and you need the
+   toast without an additional round-trip.
+
+   copy rule (§16): past tense.  "Record saved", "Quote created" — NOT "Success!"
+═══════════════════════════════════════════════════════════════════════════ #}
+
+{# ── Internal helpers ────────────────────────────────────────────────── #}
+{% macro _toast_icon(kind) %}
+{%- if kind == 'success' -%}
+<svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+</svg>
+{%- elif kind == 'error' -%}
+<svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
+</svg>
+{%- elif kind == 'warning' -%}
+<svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3L13.74 5a2 2 0 00-3.48 0L3.19 16a2 2 0 001.74 3z"/>
+</svg>
+{%- else -%}{# info #}
+<svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+</svg>
+{%- endif -%}
+{% endmacro %}
+
+
+{# ── Pattern B: OOB swap ─────────────────────────────────────────────── #}
+{% macro toast_oob(message, kind='success', ms=4000) %}
+{#  Appends a self-dismissing toast to #toast-container via hx-swap-oob.
+    Include in an HTMX partial response body.
+    Alpine processes x-init on OOB-injected elements via MutationObserver.
+#}
+<div id="toast-container" hx-swap-oob="beforeend">
+  <div x-data="{show: true}"
+       x-show="show"
+       x-cloak
+       x-init="setTimeout(() => { show = false; setTimeout(() => $el.remove(), 150); }, {{ ms }})"
+       class="toast toast-{{ kind }}">
+    {{ _toast_icon(kind) | trim }}
+    <span>{{ message }}</span>
+  </div>
+</div>
+{% endmacro %}

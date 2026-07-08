@@ -1,7 +1,7 @@
 # JAKS UI Change Plan
 *Living document — updated as screens are built.*
 
-**Status:** Products List ✅ L2 ref · PO List ✅ L2 · Invoice List ✅ L2 · Customer List ✅ L2 (governance 2026-05-29, §2B complete) · Primitives extraction ✅ complete · **Build quality pass ✅ 2026-05-29** (Tailwind build infra, class-token spec, motion primitives — see §Build) · Quotes List ⏳ next — alignment pass (stripe + dock + pb-52).
+**Status:** Products ✅ · PO ✅ · Invoices ✅ · Customers ✅ · Invoice Workspace ✅ L3 · Quotes ✅ · Sales Orders ✅ · Vendors ✅ · Returns ✅ · **Payments ✅ L2** (all lists complete 2026-05-29) · **#10/#11 HOLD — functional-test mode** · FIX 1-4 + bcda974 landed · "Can't receive" = NameError@po_service.py:448 FIXED @3a700fd (pending owner re-test) · Compiled Tailwind ✅ LIVE · §8B + Save-button + method-chip-colors ✅ RULED · **§2C Line-Item Workspace Standard ✅ RATIFIED 2026-05-30** · **§9 Functional Gate ✅ RATIFIED 2026-05-30** · **⚠️ P0 core-path failures active — §9 re-sequencing in effect** · **⚠️ Quotes/Returns/Quote-WS "complete" marks gated on post-b514196 owner re-test (§8G)**.
 
 **Scope:** All list and workspace screens in the JAKS Inventory ERP system.
 
@@ -131,16 +131,18 @@ Define four levels:
 - **L3 — Workspace-grade workflow screen** — autosave, inline editing, live totals, slide-over integration, keyboard support, real-time state feedback
 - **L4 — Power-user optimized screen** — all of L3 plus bulk operations, keyboard-driven navigation, Ctrl+K integration, side-by-side or docked panels
 
-Current target mapping (last audited 2026-05-29):
+Current target mapping (last audited 2026-06-07):
 
 | Screen | Current | Target | Notes |
 |---|---|---|---|
-| Products List | ✅ L2 ref | L2 ref | Official reference. Governance pass done. |
+| Products List | ✅ L2 ref | L2 ref | Official reference. Governance pass done. 2026-07-07: adopted `sortable_th` on Part#/Cost/Avail (§8Q primitive, first list to actually adopt it); manufacturer badge + filter now read a canonicalized `mfr_map` (`classification_service.canonical_make_for_product`) instead of independent per-field substring checks — fixes badge-color drift and a filter that silently excluded products where `engine_manufacturer` was blank/abbreviated; shared filter/tab persistence (localStorage, per-pathname) added to `operational_list_script()` so all 11 lists using it now remember state across navigation. |
 | PO List | ✅ L2 | L2 | Governance pass done. Overdue bug fixed. |
 | Invoice List | ✅ L2 | L2 | Governance pass done 2026-05-28. Red stripe for financial overdue (intentional domain distinction). |
-| Quotes List | L2 | L2 | Has tabs+divide-y but no preview dock, no border-l-4 stripe. Pending final alignment pass. |
-| Quote Workspace | L3 | L3 | Autosave, inline editing done. |
-| Customers List | ✅ L2 | L2 | Governance pass done 2026-05-29. §2B operational intelligence complete (Balance Due, Open Invoices/Quotes/SOs, Cores, Last Sale, Terms). M1/M2 cosmetic deferred. |
+| Quotes List | L2 | L2 | Has tabs+divide-y. §8W: sortable columns (Total/Margin, Valid Until via `th_class`), rich QOH hover card, UoM badge. Preview dock pending. |
+| Quote Workspace | ✅ L3 | L3 | §8B/§8T done @f73cc2f: always-visible action bar, Zone 1 back-link, `jakConfirm()` on Convert. §8X: customer-name removed (overflow fix). Save pill shows last-saved time. Intel chips wired. |
+| Dashboard | ✅ L2 | L2 | §8T-1 rLayout done @f73cc2f: revenue chart + Top Customers + Follow-Ups. Security banner @acf3c34. KPI strip (7 tiles) + sidebar wired. |
+| Customers List | ✅ L2 | L2 | §2B intelligence complete. `pricing_tier` wired @4f4b5db (no longer cosmetic). **§8Y: credit-hold red stripe BLESSED** (`border-l-red-400`, highest priority). `customer_status_chip` adoption (§8U-3) still OPEN on 3 files. |
+| Customer Detail | L2 | L3 | **§8Y rulings**: Call Log + Communications tabs retire → Timeline. Contacts + Addresses cards via `#create-slide`. Fleet tab gated on Backend `CustomerVehicle` table. |
 | Product Detail | L1 | L2 | Raw form, no card sections. |
 | Sales Orders List | L1 | L2 | Old tbl-* table, no L2 elements. |
 | Vendors List | L1 | L2 | Old tbl-* table, no L2 elements. |
@@ -149,7 +151,7 @@ Current target mapping (last audited 2026-05-29):
 | Warranty List | L1 | L2 | Old tbl-* table, no L2 elements. |
 | Cores List | L1 | L2 | Old tbl-* table, no L2 elements. |
 | PO Receiving Queue | ✅ QB2 | QB2 | Queue Board archetype ratified 2026-05-28. Official QB2 reference implementation. |
-| PO Match Queue | ✅ QB2 | QB2 | Queue Board archetype ratified 2026-05-28. No metrics strip — non-blocking, entry via Receiving Queue provides context. |
+| PO Match Queue | ✅ QB2 | QB2 | Queue Board archetype ratified 2026-05-28. No metrics strip — non-blocking. |
 
 ---
 
@@ -161,13 +163,24 @@ Every major list screen must include these elements:
 2. **Search field** — icon-prefixed input, left-aligned, preserves other query params on submit
 3. **Filter tabs with counts** — pill-style nav (`bg-brand-700` active, `bg-gray-100` container), tab counts always reflect full unfiltered dataset
 4. **Operational grid/table** — `divide-y divide-gray-100` rows, explicit Tailwind padding (not `tbl-td`), `overflow-x-auto` wrapper
-5. **Left-edge status stripe** — `border-l-4` on first cell: red = critical/out-of-stock, amber = warning/low/overdue, blue = informational/on-order, transparent = normal
+5. **Left-edge status stripe** — `border-l-4` on first cell: red = critical/out-of-stock, amber = warning/low/overdue, blue = informational/on-order, transparent = normal. **🔒 LOCKED operational feature (§8Q): no future redesign / "modernization" may remove these colored row stripes or their color semantics.**
 6. **Always-visible status chips** — never hover-to-reveal, inline dot + label format
 7. **Clear hover state** — `hover:bg-gray-50/80 transition-colors` on every row
 8. **Selected row state** — `ring-inset ring-1 ring-brand-300 bg-brand-50/40` when preview is open or row is active
 9. **Bulk action toolbar** — appears above table when `selectedCount > 0`, `x-show` driven by Alpine, shows count + relevant actions
 10. **Empty state** — centered card with icon, distinguishes: no records yet (CTA to create) vs no filter match (CTA to clear filter) vs no search match (CTA to clear search)
 11. **Preview dock** — fixed bottom panel (`fixed bottom-0 left-64`) loaded via `htmx.ajax()` on row click, shows key fields in 3-4 columns, includes action buttons, dismisses on X or second row click
+
+**Optional — Sort control (Builder-introduced 2026-06-01, pending Architect ratification):** lists that
+need user-controlled ordering add a compact sort dropdown to the toolbar, right-aligned alongside the
+search — a `<form method="get">` carrying hidden `tab`/`q`, a `<select name="sort"
+onchange="this.form.submit()">` styled like the search field, and a `Sort by` label. The route reads
+`sort` (default = the list's natural key) and normalizes unknown values back to the default; the search
+form and Clear link must carry `sort` so it survives a search. Products list (`sku` / `vendor` /
+`category`) is the reference. **Ordering that depends on a self-referential hierarchy (category
+`full_path` = Major Group → Category → Sub-category) or a relationship's display name (preferred
+vendor) is computed in Python after `.all()` with the relevant `joinedload`s — not raw SQL — with
+no-value rows sorted last and the natural key as the tiebreaker.**
 
 ---
 
@@ -191,6 +204,7 @@ Every major list screen must include these elements:
    - Title: `text-sm font-semibold text-gray-800`
    - Count badge: `text-xs text-gray-400 font-medium tabular-nums ml-2`
    - Optional: a group-level action button (e.g., "Receive All") right-aligned
+   - **As-built (ratified `receiving_queue.html` — the QB2 source of truth, 2026-05-28):** because queues render as a `<table>`, the divider is a full-width `<tr><td colspan="N">` using `bg-gray-50/70 px-4 py-2 text-xs font-bold text-gray-600 tracking-wide` with the group title; the **item-count badge is OPTIONAL** (neither receiving nor warranty render it). A queue that copies the reference verbatim is **conformant — do NOT punch it for the missing count or for `text-xs`/`py-2`.** The flex+count format above applies to non-table queue layouts; reconcile any future QB2 pass (Cores #16, Returns #17) against the reference, not this idealized prose.
 
 3. **Grouped item rows** — within each group, items are listed. Tighter row padding than Operational List is permitted: `px-4 py-2.5 align-middle`. Must still use `divide-y divide-gray-100` within a group.
 
@@ -250,6 +264,8 @@ These elements apply to both archetypes:
 
 **When building Warranty, Cores, or Returns queues:** copy `receiving_queue.html` structure. Adapt the state_meta mapping, group-by key, and metrics cards. Keep everything else identical.
 
+**Inline-action-form variant — ratified 2026-05-31 via Cores #16 (`cores/list.html` @c6468af).** When a queue's items have **no per-item workspace** to link to, the always-visible action (§2A.6) may **expand a stage-specific inline `<form>` row** instead of linking out. Implement with **ONE board-level `x-data`** (e.g. `{ openId, … }`) on the wrapper `<div>` and `x-show="openId === {{ id }}"` on the form `<tr>`s — the form rows **must be descendants** of that div. **Do NOT** put `x-data` on a main `<tr>` and `x-show` on a *sibling* `<tr>`: Alpine scopes don't bridge siblings, so the toggle silently fails. `cores/list.html` is the reference for this variant; the group-by key may be a **lifecycle stage** (not just vendor).
+
 #### Queue Board Maturity Levels
 
 | Level | Name | What it means |
@@ -298,6 +314,142 @@ do not block the screen. No new schema may be introduced without UI Architect ap
 
 ---
 
+### 2C. Line-Item Workspace Standard
+
+**Ratified 2026-05-30.**
+
+The app has two ratified screen archetypes (§2 Operational List, §2A Queue Board). Neither covers
+the third major screen type — the workspace where the business actually makes money: a document
+header + an editable line grid where the user finds parts, sets prices, and commits records.
+
+Quote / Sales Order / Invoice / PO all implement this pattern. Before this standard existed, each
+grew its own "add a part" implementation (different transport, different wiring, different search
+quality), producing four divergent code paths — three of which were confirmed broken in the
+2026-05-30 functional test pass. This section defines the standard so the shared implementation
+replaces all four.
+
+#### What a Line-Item Workspace is
+
+A screen that combines a **document header** (customer, dates, status, autosave/save) with an
+**editable line grid** (products, quantities, prices, totals) and **workflow actions** (Finalize,
+Fulfill, Receive, Convert). The user finds parts, stages them, and commits.
+
+Examples: Quote Workspace, Sales Order Workspace, Invoice Workspace, PO Workspace.
+
+This is **not** an Operational List (it is not filtered/browsed — it is one record open for editing)
+and **not** a Queue Board (it does not group work items for sequential processing).
+
+#### Required Elements
+
+1. **Document header card** — customer name, document number, status chip, date fields, discount,
+   any screen-specific header fields (ESN, PO #, etc.). Autosave wired per §3. Back link always
+   visible per §8B standard.
+
+2. **Add-line panel** — full-width search input (icon-prefixed, 2+ character trigger) that returns
+   product results. Selection **immediately adds the line** at qty 1 / suggested sell — no separate
+   "Add" button step. Qty, price, and disc % are editable inline in the resulting row. Misc/free-text
+   lines supported (search ≥2 chars, no product selected → adds a free-text line on Enter).
+
+3. **One shared search endpoint** — `GET /search/products?q=` returns JSON:
+   ```json
+   [{"product_id": 1, "part_number": "OK-1", "description": "...", "qty_on_hand": 3,
+     "suggested_sell": 45.00, "current_cost": 22.00, "last_sold_price": 44.00}]
+   ```
+   Search normalizes: strip punctuation/spaces, case-fold, match on SKU **and** OEM **and**
+   cross-ref SKU. "ok1", "OK-1", "ok 1" must all resolve to the same result. All four workspace
+   types call this one endpoint — no per-screen product-search routes.
+
+4. **Line grid** — `divide-y divide-gray-100`, explicit `px-4 py-4 align-middle` (no `tbl-*`),
+   `overflow-x-auto` wrapper with `min-w-[...]`. Each row editable inline with HTMX
+   (`hx-trigger="change"`, `hx-target="#lines-section"`, `hx-swap="outerHTML"`). Delete via
+   Alpine confirm modal (§3) — never `window.confirm()`.
+
+5. **Totals bar** — HTMX-refreshed after every line action. Shows subtotal, tax, total,
+   balance-due or amount-paid as applicable. Stays pinned at the bottom of the line section.
+   **R1 — CC convenience fee (documented design decision; do NOT re-flag as a math bug):** the card
+   surcharge is applied *at payment time* on the card portion only. The totals bar shows an
+   **informational estimate** ("~$X.XX if paid by card") with a helper note — it is NOT added to the
+   invoice total. Source: `app/invoice_totals.py:117-120` ("R1 — CC surcharge is applied AT PAYMENT TIME
+   on the card portion only; this is an INFORMATIONAL estimate … and is NOT added to the total.").
+   QA rule: any test that expects the surcharge in `invoice.total` or `balance_due` is testing the wrong
+   thing — the total intentionally excludes the fee. Relabelling the estimate is UI polish; changing the
+   math would violate R1.
+   **Tax gate — `invoice.is_taxable` is AUTHORITATIVE (do NOT re-introduce the `or tax_rate_display > 0`
+   fallback).** The totals engine (`app/invoice_totals.py:83-110`) has two paths: the finalized path uses
+   per-line `is_taxable` (correct); the draft/legacy fallback used `invoice.is_taxable or tax_rate_display > 0`,
+   meaning an invoice could appear taxable even when `is_taxable=False` if the customer had a tax rate on file
+   — wrong for tax-exempt customers. The fallback is being removed: `invoice.is_taxable` is the only gate.
+   At finalize, `invoice_service.py:589` reconciles it: `invoice.is_taxable = any(ln.is_taxable for ln in
+   invoice.lines)`. Any future draft-path calc must also key off `invoice.is_taxable` only — the rate-based
+   fallback has caused silent tax errors and is permanently banned.
+
+6. **Workflow action bar** — reflects current status. Primary action rightmost (`btn-primary btn-sm`).
+   Destructive action uses `btn-ghost btn-sm text-red-500` + Alpine confirm modal. Follows §8B
+   workspace header zone order.
+
+7. **Save affordance** — per **Save Standard v2 (2026-05-31)**. Autosave (L3) screens show **all three**:
+   manual `btn-primary` Save + honest dirty-state pill + sticky save bar (the old "indicator-only, no Save
+   button" rule is **superseded**). L1/L2 non-autosaved screens: real `btn-primary` Save in the footer.
+   No ambiguity about whether work is persisted.
+
+8. **Customer-context bar** — on sales-side workspaces (Quote, SO, Invoice): a compact strip
+   showing terms, tax-exempt status, open AR balance, overdue balance, credit balance, cores owed.
+   Collapsed by default to a single line; does not obscure the line grid.
+
+#### Reference Implementation
+
+`app/templates/quotes/workspace.html` is the official L3 reference for Line-Item Workspaces.
+
+It demonstrates:
+- Full-width part search with Alpine `lineAdder` component (JSON endpoint, keyboard-navigable results)
+- Immediate qty/price/disc staging after product selection, then `+ Add Line` commit
+- Child-line mode (warranty, upgrade options, optional lines)
+- Autosave indicator with `setInterval` staleness label
+- HTMX line mutations with chips-row lifecycle management
+- Keyboard navigation across Qty → Price → Disc → search (Enter-driven)
+- Misc/free-text line support (no product required)
+
+**Note on one-click vs. two-step add:** The reference currently uses a two-step flow (select
+product → + Add Line). Owner testing confirmed this reads as broken. **Decision pending Architect
+ruling:** either (a) selecting a product immediately adds the line with editable defaults, or
+(b) the "Add Line" button becomes much more prominent (large, brand-colored, keyboard-focused)
+and shows "↵ Enter to add" hint. Resolve before adopting for SO/Invoice/PO.
+
+#### What Is NOT Required
+
+| Element | Why exempt |
+|---|---|
+| Filter tabs with counts | One record open — not a browsable list |
+| Bulk action toolbar | Line-level actions only; no multi-select across lines |
+| Preview dock | The record IS open — the workspace is the "preview" |
+| Row selection checkboxes | No bulk actions |
+| `pb-52` on wrapper | No preview dock |
+
+#### Shared with Operational List and Queue Board
+
+- Color semantics (§4) — identical meaning for all status chips and stripes
+- Status chip format — `inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold`
+- Left-edge stripe on first `<td>` — same color logic as §2 (when used for line-level urgency)
+- Alpine confirm modal for all destructive actions (§3) — never `window.confirm()`
+- Motion macros for any overlays (§ Build → Motion primitives)
+- No `tbl-*` classes — explicit Tailwind padding only
+- Monospace identifiers — SKU, PO #, Quote #, Invoice # use `font-mono text-sm font-bold text-brand-700`
+
+#### Governance Checklist (Line-Item Workspace screens)
+
+- [ ] One shared `/search/products?q=` JSON endpoint used — no per-screen product-search route
+- [ ] Search normalizes punctuation and case (ok1 → OK-1; q2026 → Q-2026)
+- [ ] Line add is discoverable — result selection either adds immediately or reveals a clear, prominent Add button
+- [ ] No `window.confirm()` anywhere — all destructive actions use Alpine modal per §3
+- [ ] Save Standard v2: autosave (L3) screens show manual Save + honest dirty-state pill + sticky save bar; L1/L2 have a real footer Save — never ambiguous; pill green ONLY when truly saved
+- [ ] Customer-context bar (AR, terms, cores) present on sales-side workspaces
+- [ ] Totals bar HTMX-refreshed after every line mutation
+- [ ] `divide-y divide-gray-100` on line tbody; no `tbl-*` classes
+- [ ] Workspace header follows §8B zone order (chip → back → secondaries → destructive → primary)
+- [ ] Functional gate (§9) passed — end-to-end smoke completed, not just visual checklist
+
+---
+
 ### 3. Shared Interaction Rules
 
 These rules apply to every screen in the app. Do not deviate without updating this document.
@@ -307,6 +459,17 @@ These rules apply to every screen in the app. Do not deviate without updating th
 - Entire row click = open preview dock (not navigate — **Operational List only**; Queue Boards use inline actions instead)
 - Ctrl+click or action button = navigate to detail page
 - Checkbox click must `@click.stop` to prevent row click
+
+**Action buttons inside injected content (preview dock, htmx fragments):**
+- A button rendered inside content loaded via `htmx.ajax()` (e.g. the preview dock partial) that needs
+  to open a slide-over must trigger the load with an **explicit `htmx.ajax('GET', url,
+  {target:'#create-slide-content', swap:'innerHTML'})` from `@click`**. Declarative `hx-get`/`hx-target`
+  are **not** reliably wired on htmx-injected descendants, so a declarative button silently no-ops — the
+  slide-over opens but stays on the loading skeleton. Alpine `@click` itself *does* run on injected
+  content, so combine `@click` (open the slide + fire `htmx.ajax`) and stash the URL in a `data-` attribute
+  read via `$el.dataset` to keep quoting sane. Reference: products `_preview_panel.html` "New PO" (2026-06-01).
+- A plain `<a href="/…/new?…">` to a GET route that gates on the `HX-Request` header will redirect to that
+  resource's list for a normal click — never use one for an action meant to open a slide-over.
 
 **Overlays (Esc to close):**
 - Slide-over panel: backdrop `z-40`, panel `z-50`
@@ -357,6 +520,57 @@ These rules apply to every screen in the app. Do not deviate without updating th
 - Error: red dot/icon
 - Auto-dismiss at 4000ms
 
+**Save Standard v2 — RATIFIED 2026-05-31 (SUPERSEDES the 2026-05-29 rule below; the owner asked repeatedly).**
+Every **autosave workspace** (Quote / SO / Invoice / PO / Product Detail) now shows **all three**:
+1. **Manual `btn-primary` Save** — fires the same persist POST as autosave. Reverses the 2026-05-29 "remove
+   redundant Save"; generalizes the 2026-05-30 PO + Product-Detail override to **all** autosave workspaces.
+2. **Honest dirty-state pill** — reflects the **actual** state, never a permanent "Saved" lie:
+   `dirty` (amber · "Unsaved changes") → `saving` (gray pulse · "Saving…") → `clean` (green · "Saved") →
+   `error` (red · "Save failed — retry"). Driven by a real Alpine `saveState`: set `dirty` on `@input`,
+   `saving` on POST, `clean` only on a 2xx, `error` on failure. Format under "Dirty-state pill format" below.
+3. **Sticky save bar** — a `sticky bottom-0` bar within the workspace holding the pill (left) + Save (right),
+   always reachable without scrolling.
+The Invoice **Save Draft** exception and the L1/L2 (no-autosave) real-Save rows below still stand.
+
+---
+
+**Save button standard — RULED 2026-05-29 — ⚠️ SUPERSEDED 2026-05-31 by Save Standard v2 above (kept as history):**
+
+| Screen grade | Standard | Rationale |
+|---|---|---|
+| **L3 workspace with autosave wired** | **Remove Save button. Add always-visible autosave indicator.** | The button is redundant and owner-confusing when autosave is running. |
+| **Invoice workspace "Save Draft" exception** | **Keep it.** | "Save Draft" signals workflow state (you need to Finalize), not just persistence. Removing it would confuse the Draft→Finalize progression. |
+| **L1/L2 form screens (no autosave)** | **Keep a real `btn-primary` Save in the footer.** | No autosave = user's only save mechanism. |
+| **Owner override — PO Workspace + Product Detail (RULED 2026-05-30)** | **Show BOTH — explicit `btn-primary` Save AND the autosave/dirty indicator.** | Owner explicitly wants a visible Save on these two screens; overrides the "remove redundant button" row above **for them only.** Quote / SO / Invoice workspaces unchanged (indicator-only stands). |
+
+**Dirty-state pill format (v2 — replaces the old always-green "Saved automatically" indicator):**
+```html
+<!-- Alpine saveState ∈ 'clean'|'dirty'|'saving'|'error': set 'dirty' on @input, 'saving' on POST,
+     'clean' on a 2xx response, 'error' on failure. Green ONLY when truly persisted. -->
+<span class="text-xs flex items-center gap-1.5"
+      :class="{ 'text-amber-600': saveState==='dirty', 'text-gray-400': saveState==='clean'||saveState==='saving', 'text-red-600': saveState==='error' }">
+  <span class="w-1.5 h-1.5 rounded-full"
+        :class="{ 'bg-amber-400': saveState==='dirty', 'bg-green-400': saveState==='clean', 'bg-gray-300 animate-pulse': saveState==='saving', 'bg-red-500': saveState==='error' }"></span>
+  <span x-text="({clean:'Saved', dirty:'Unsaved changes', saving:'Saving…', error:'Save failed — retry'})[saveState]"></span>
+</span>
+```
+Lives in the **sticky save bar** beside the manual Save — not in `header_actions`. A permanent green "Saved
+automatically" is **banned**: it lied while mid-edit or when autosave failed (the owner's recurring complaint).
+The pill shows green **only** after a confirmed successful save.
+
+**Screens that need this fix applied:**
+- `purchase_orders/workspace.html` — autosave indicator is already wired (lines 204-218). **Per the
+  2026-05-30 owner override: ADD an explicit `btn-primary btn-sm` Save submit alongside the indicator —
+  do NOT remove the indicator.** The header form already `hx-post`s (`workspace.html:104`); add `submit`
+  to its `hx-trigger` (line 106 → `…delay:600ms, submit`) so the button fires the same POST. Mirrors the
+  pattern already live at `invoices/workspace.html:155`.
+- `products/detail.html` — **already compliant, no rework:** visible `Save Changes` submit at
+  `detail.html:314` + dirty/clean indicator at line 316. Owner re-test only.
+- (Quote workspace: indicator-only, already fixed 2026-05-29 ✅ — **not** in the override scope.)
+
+**The PO Save-button add is approved (2026-05-30 override); it is a surgical add only and does NOT lift
+the #11 PO-Workspace L3 HOLD. All other screens still require explicit per-screen instruction.**
+
 ---
 
 ### 4. Shared Visual Rules
@@ -373,6 +587,19 @@ These rules apply to every screen in the app. Do not deviate without updating th
 | Purple | Vendor, waiting, special workflow, serialized | `purple-*` |
 | Orange | Core charge, special cost items | `orange-*` |
 | Gray | Inactive, archived, neutral, metadata | `gray-*` / `slate-*` |
+
+**Payment method chip colors — RULED 2026-05-29:**
+
+| Method | `bg` / `dot` | Rationale |
+|---|---|---|
+| Cash | `bg-green-50 text-green-700` / `bg-green-500` | Immediate, certain — §4 "success/paid" |
+| Check | `bg-blue-50 text-blue-700` / `bg-blue-500` | Standard AR transaction — §4 "informational" |
+| Card (credit/debit) | `bg-purple-50 text-purple-700` / `bg-purple-500` | External processor workflow — §4 "special workflow" |
+| ACH | `bg-blue-50 text-blue-700` / `bg-blue-500` | Electronic transfer — §4 "informational/activity" |
+| Wire | `bg-sky-50 text-sky-700` / `bg-sky-500` | Builder used `sky-*` (not initial `gray-*` recommendation) — **ratified 2026-05-29.** `sky-*` is §4-permitted (`blue-*/sky-*` co-listed); better semantic than gray for an active transfer. |
+| Account Credit | `bg-gray-100 text-gray-700` / `bg-gray-400` | Internal balance — §4 "neutral/metadata" |
+
+Applied and verified in committed code (`payments/list.html:38-45`). Replaces `indigo-*` (ACH) and `cyan-*` (Wire) — both §4 violations. QA: no lint advisory on any of these families.
 
 **Badge/chip sizes:**
 
@@ -437,6 +664,11 @@ It demonstrates:
 
 ### 6. Rollout Order
 
+**⚠️ Priority re-sequence in effect (2026-05-30):** Core money-path flows (Quote → SO/Invoice →
+PO receive) must be functionally verified before any new screen enters L2 work. See §9 Functional
+Gate — Re-sequencing Rule and the P0/P1 issue table there. The Rollout Order below reflects the
+visual governance history; §9 governs what gets worked next.
+
 Apply the Operational Workspace UI System to screens in this order. Do not skip ahead — each screen informs the next.
 
 | # | Screen | Status | Current → Target | Notes |
@@ -445,19 +677,20 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 | 2 | PO List | ✅ L2 complete | L1 → L2 | Governance pass done; overdue bug fixed |
 | 3 | Invoice List | ✅ L2 complete | L1 → L2 | Governance pass 2026-05-28. Red stripe for financial overdue — accepted + codified in §4. |
 | — | **Primitives extraction** | ✅ Complete (2026-05-29) | — | All 6 macros extracted + governance-approved. Products/PO/Invoice ported. See §7 as-built. |
-| 4 | Customer List | ✅ L2 complete | L1.5 → L2 | Governance pass approved 2026-05-29. All §2 + §2B fields satisfied (Balance Due, Open Invoices/Quotes/SOs, Cores, Last Sale, Terms). M1/M2 cosmetic deferred. |
-| 5 | Quotes List | ⏳ Pending | L2 → L2 | Has tabs + divide-y. Needs: border-l-4 stripe, preview dock, pb-52. Alignment pass after Customer List. |
-| 6 | Sales Orders List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
-| 7 | Vendors List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
-| 8 | Returns List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
-| 9 | Payments List | ⏳ Pending | L1 → L2 | Old tbl-* table. Full L2 upgrade needed. |
-| 10 | Product Detail | ⏳ Pending | L1 → L2 | Section-based card layout. |
-| 11 | PO Workspace | ⏳ Pending | L1 → L3 | Autosave, line editor, receive flow. |
-| 12 | Invoice Workspace | 🟡 REQUIRED FIXES | L3 candidate → L3 | Governance pass 2026-05-29. Blocker: Finalize uses native `window.confirm()` — convert to Alpine modal per §3. Minor: void title color, hx-confirm on line delete/unlink, tbl-* in payments sub-table. |
+| — | **Line-item builder (§8H) — 4 workspaces** | ✅ **Governance PASS (2026-05-31)** | — | Shared `line_items/_line_adder.html` migrated to Quote/SO/Invoice/PO (`797a407`/`2d76b83`/`5bb0bc0`/`1fb562c`). Immediate-add (no staging), sibling-above placement, match-type/orange-core/red-at-0/cost-vs-sell-by-mode visual contract all verified **in-tree**. §7 3-screen gate MET (macro promotion optional). Full record + punch list in §8H. |
+| 4 | Customer List | ✅ L2 complete | L1.5 → L2 | Governance pass approved 2026-05-29. All §2 + §2B fields satisfied (Balance Due, Open Invoices/Quotes/SOs, Cores, Last Sale, Terms). M1/M2 cosmetic deferred. **Inactive customers now reachable + reactivatable (2026-05-31, see As-Built "Fix"); locked by `tests/test_customer_list_tabs.py`.** |
+| 5 | Quotes List | ⏳ **L2 — pending post-b514196 owner re-test** | L2 → L2 | **⚠️ The 2026-05-29 "FULL PASS" was recorded against a 500-ing build — the committed visual baseline `quotes_list@1280px.png` is an "Internal Server Error" screenshot (see §8G re-test gate). NOT re-affirmed until the owner re-tests a post-`b514196` pull + §9 passes.** Original record (unverified): all 11 §2 + §2B; AR chip `ar_map` bulk-computed (zero N+1); 5 non-blocking cosmetics in §8F. |
+| 6 | Sales Orders List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** Dock confirmed: import line 25, call line 346 (verified in committed code). All 11 §2 elements + §2B. `py-4` correct. Backend-contract guard accepted. |
+| 7 | Vendors List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS.** Dock wired (import line 21 + call line 333). All 11 §2 elements + §2B (Open POs/Bills/Credits/LastPO/Contact). **Tab slugs realigned to the router contract (active/inactive/all) — RESOLVED 2026-05-31 (see "Fix 2" below); inactive vendors are now reachable and the detail page gained a Reactivate button. Locked by `tests/test_vendor_list_tabs.py`.** Lead time deferred per "if stored" qualifier. |
+| 8 | Returns List | ⏳ **L2 — pending post-b514196 owner re-test** | L1 → L2 | **⚠️ The 2026-05-29 "FULL PASS" was recorded in the same 500-era build as Quotes (see §8G re-test gate); not re-affirmed until the owner re-tests a post-`b514196` pull + §9 passes.** Original record (unverified): all 11 §2 + §2B; real tab counts from router group_by (no stub guard); dock wired at line 339; stripe amber=received/blue=open/transparent=draft-closed. |
+| 9 | Payments List | ✅ L2 complete | L1 → L2 | **Governance pass 2026-05-29 — FULL PASS (re-pass).** Dock: import line 16, call line 314 (live, not commented). Method chips: Cash=green, Check=blue, Card=purple, ACH=blue, Wire=sky (§4-permitted; sky co-listed with blue). All §2 + §2B previously verified. |
+| 10 | Product Detail | ⏳ **HOLD — functional-test mode** | L1 → L2 | Section-based card layout. Do not start until hold lifted. **When lifted, the owner's UX review IS the spec** (not a generic L2 card upgrade) — build to the owner's review; Architect governs against it. Save Standard v2 applies (manual Save + honest pill + sticky bar). |
+| 11 | PO Workspace | ⏳ **HOLD — functional-test mode** | L1 → L3 | Autosave, line editor, receive flow. Do not start until hold lifted. **Line-adder swap (§8H) applied during hold — line-adder ONLY; full L3 build remains HELD pending owner.** |
+| 12 | Invoice Workspace | ✅ L3 complete | L3 candidate → L3 | Governance pass 2026-05-29. **PASS confirmed 2026-05-29** — window.confirm already cleared prior to pass. No blocking defects remain. A11y follow-up (role=dialog/aria-modal/focus-trap on payment/void/change-customer modals) tracked under §8 #4 a11y sweep — non-blocking for L3. |
 | 13 | PO Receiving Queue | ✅ QB2 complete | QB1 → QB2 | Queue Board archetype — §2A. Governance pass 2026-05-28. Official QB2 reference. |
 | 14 | PO Match Queue | ✅ QB2 complete | QB1 → QB2 | Queue Board archetype — §2A. Governance pass 2026-05-28. |
-| 15 | Warranty Queue | ⏳ Pending | QB1 → QB2 | Queue Board archetype. Copy `receiving_queue.html`. UI Builder A owns. |
-| 16 | Cores Queue | ⏳ Pending | QB1 → QB2 | Queue Board archetype. Copy `receiving_queue.html`. UI Builder A owns. |
+| 15 | Warranty Queue | ✅ **QB2 — Governance PASS 2026-05-31** | QB1 → QB2 | **PASS @e93cef9** — verified faithful copy of the ratified `receiving_queue.html`: metrics card-grid (Drafts/Awaiting Vendor/To Credit/To Notify), vendor group dividers, always-visible inline next-action+open+print, `border-l-4` on first `<td>`, `divide-y`, **no `tbl-*`**. Stripe/chip palette §4-consistent (purple=awaiting-vendor, green=approved/credited, amber=notified, red=denied, gray=draft). **1 required cosmetic (non-blocking):** `JAKS Ext` type chip uses orange (`list.html:156`) — §4 reserves orange for **core charges**; recolor to neutral gray/slate, and move the `Vendor` type chip off purple (collides with the 'Awaiting Vendor' status purple on the same row) — **fix before Cores Queue #16 ships.** Filename `list.html` kept (rename to `queue.html` declined — needless churn). UI Builder A owns. |
+| 16 | Cores Queue | ✅ **QB2 — Governance PASS 2026-05-31** | QB1 → QB2 | **PASS @c6468af** — owner-ruled variant: ONE **stage-grouped** board (Awaiting Return → Pending Inspection → Ready to Ship → Awaiting Vendor) that **keeps inline action forms** (cores have no per-item workspace to link to). All §2A QB2 elements present: metrics card-grid (4 stages + overdue sub-count), colspan-td stage dividers, `border-l-4` on first `<td>` (red override for overdue), always-visible primary buttons expanding inline forms, status chips, `divide-y`, **no `tbl-*`**. Orange at `list.html:176` is the **legitimate** §4 core-charge (`customer_unit_charge`) — correctly NOT punished. Alpine expandable rows verified: ONE board-level `x-data`, form `<tr>`s as descendants (fixes the old sibling-scope toggle bug). **No punch items.** UI Builder A owns. |
 | 17 | Returns Queue | ⏳ Pending | QB1 → QB2 | Queue Board archetype (or L2 list if returns are browsed not worked). Confirm with builder. |
 
 **Constraint:** Do not redesign every screen differently. Do not create new modal, table, or badge patterns without updating this plan. Use shared UI primitives wherever possible:
@@ -470,6 +703,17 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 - Modal shell — centered, `max-w-lg rounded-2xl shadow-2xl`
 - Bulk action toolbar — `x-show="selectedCount > 0"` Alpine pattern
 - Empty state block — icon + heading + body + optional CTA
+- `line_thumb` macro (`macros/line_thumb.html`) — small product image at the left of the
+  Description cell on Quote/SO/Invoice line rows (on-screen workspaces). Mirrors the
+  preview-dock thumbnail but `object-contain` (no crop) + `h-9 w-9`. Renders nothing for
+  lines with no product/image (core/warranty/misc stay clean). Added 2026-06-17; 3-screen
+  gate met (quote/SO/invoice). Product detail + image-gallery cards also switched
+  `object-cover` → `object-contain` so wide parts (injectors/manifolds) show whole.
+- `print_line_thumb` macro (`macros/print_line_thumb.html`) — print/PDF counterpart for the
+  customer-facing quote/SO/invoice docs. Emits a plain `<img class="line-thumb">`; each
+  print.html defines `.line-thumb`/`.pd-cell`/`.pd-text` in its own `<style>` (print docs
+  have no Tailwind). 42px, `object-fit:contain`, flex-wrapped so row height tracks the image.
+  Wired into the main line tables plus the quote's Alternatives + Optional add-on tables.
 
 **Goal:** The app should feel like one polished operational ERP system built by one team — not separate pages built by different coders in different sessions.
 
@@ -551,6 +795,268 @@ Apply the Operational Workspace UI System to screens in this order. Do not skip 
 **Do not invent anything.** If a situation arises that isn't covered by this brief or the reference screens, ask before building.
 
 **Submit for governance review** when complete — do not self-mark as L2.
+
+---
+
+#### Quotes List — As-Built Record — ✅ L2 complete (governance 2026-05-29)
+
+**Governance pass: FULL PASS. AR chip landed; all §2 + §2B verified.**
+
+All 11 §2 structural elements verified present:
+- `pb-52` wrapper · `divide-y divide-gray-100` tbody · `overflow-x-auto` + `min-w-[1040px]` ·
+  `border-l-4` stripe on first `<td>` (checkbox cell) · `filter_tabs` macro (7 tabs incl. Follow-up Due) ·
+  `bulk_toolbar` macro · `status_chip` macro · `operationalListData` factory · `preview_dock_shell` macro ·
+  Row click → `togglePreview()` · `@click.stop` on checkbox + action `<td>` ✅
+
+§2B fields verified: Total · Margin % (computed inline from loaded lines, cost×qty vs subtotal) ·
+Follow-up date / status with overdue flag · Customer terms chip (`terms_map`) · Line count ·
+Valid-until date · Conversion status chip ✅
+
+**AR chip — LANDED (cleared 2026-05-29):**
+`ar_map` bulk-computed in `list_quotes` route using `defaultdict` over open invoices grouped by
+`customer_id` — zero N+1 queries. Passes `open_balance` (float, sum of `balance_due`) and
+`is_overdue` (bool). Template renders chip with two variants: `bg-red-100` (overdue) or
+`bg-amber-50` (open, not yet overdue). Amount displayed as `Overdue $NNN` / `AR $NNN`.
+
+**Accepted decisions:**
+- `emerald-*` color for Converted status chip — accepted (green family, semantically correct for
+  completed conversion). Logged as cosmetic for future unification to `green-*`.
+- Truck-down urgency dot (`animate-pulse`) — approved pattern, aligns with operational urgency intent.
+- Legend row for urgency indicators — non-standard but genuinely useful; accepted.
+- `trapFocus` inline `<script>` — builder added focus trap to New Quote modal (pre-dates §8E sweep);
+  acceptable; can be moved to a shared primitive in the a11y sweep.
+
+**Non-blocking cosmetics (see §8F):**
+1. Search hidden input: `name="status"` → should be `name="tab"` for spec compliance
+2. Row padding: `py-3.5` → spec is `py-4`
+3. `emerald-*` chip → align to `green-*` family
+4. Empty state: 2-case logic → spec prefers 3-case
+5. New Quote modal inline `x-transition:*` → should use motion macros (rule introduced 2026-05-29)
+
+---
+
+#### Sales Orders List — As-Built Record — 🟡 ONE BLOCKER (governance 2026-05-29)
+
+**Governance pass: SEND BACK — one functional blocker. Everything else passes. No full re-review needed after fix.**
+
+**Blocker — preview dock commented out (Builder fix required, 2 lines):**
+- `app/templates/sales_orders/list.html` line 19-25 — add this import after line 24:
+  `{% from "macros/preview_dock.html" import preview_dock_shell %}`
+- Lines 345-349 — replace the entire comment block with:
+  `{{ preview_dock_shell('Sales Order Preview', 'so-preview-body') }}`
+
+**Why this matters:** Without the dock, `togglePreview()` calls `document.getElementById('so-preview-body').innerHTML = ...` on a null element — runtime `TypeError` on every row click. The template already has `operationalListData('so-preview-body', '/sales-orders/preview/', [...])` wired correctly. The backend route `GET /sales-orders/preview/{so_id}` is registered and returns `sales_orders/_preview_panel.html`. The builder commented it out assuming the route wasn't live yet; it is.
+
+**What passes:**
+- `pb-52` wrapper ✅ · `divide-y divide-gray-100` tbody ✅ · `overflow-x-auto` + `min-w-[1100px]` ✅
+- `border-l-4` on first `<td>` (checkbox cell) ✅ · stripe semantics: red=cancelled, amber=hold, blue=open/partial, transparent=fulfilled/invoiced ✅
+- `filter_tabs` macro (7 tabs: All/Open/Partial/On Hold/Fulfilled/Invoiced/Cancelled) ✅
+- **Tab counts from full unfiltered dataset** ✅ (group_by before any filter applied)
+- **Search hidden input: `name="tab"` `value="{{ active_tab }}"`** ✅ (spec-clean, unlike Quotes)
+- `bulk_toolbar` macro ✅ · `status_chip` macro ✅ · `operationalListData` factory ✅
+- `@click.stop` on checkbox + action `<td>` ✅ · `cursor-pointer hover:bg-gray-50/80 transition-colors group` ✅
+- `empty_state` macro with 3-case logic (passes `q` + `active_tab` to macro) ✅
+- Preview route `/preview/{so_id}` registered before `/{so_id}` ✅ (lines 184 vs 220 in router)
+- No `tbl-*` classes ✅ · All `<td>` use `px-4 py-4 align-middle` ✅ (correct `py-4`, not `py-3.5`)
+
+**§2B fields all present:** SO # + line count + B/O flag · Customer + terms chip · PO # / ESN ·
+Fulfillment status + qty filled/ordered progress · Payment mode + deposit amount · Invoice status ·
+Total. Ship/tracking column absent — no tracking data in model yet (non-blocking, flag for later).
+
+**Non-blocking cosmetics:**
+- `emerald-*` chip for Invoiced status — same as Quotes; should align to `green-*` family (§4)
+- `sky-*` chip for Deposit payment mode — not in §4 permitted families; replace with `blue-*`
+- Ship/tracking column absent — add when `SalesOrder.tracking_number` or equivalent exists in model
+
+**Accepted:** Backend-contract guard at lines 31-37 (stub `_counts` if route doesn't pass `counts`) — pragmatic template resilience; accepted.
+
+---
+
+#### Vendors List — As-Built Record — ✅ L2 (governance 2026-05-29)
+
+**Governance pass: FULL PASS.**
+
+All 11 §2 structural elements verified:
+- `pb-52` wrapper · `divide-y divide-gray-100` tbody · `overflow-x-auto` + `min-w-[1020px]` ·
+  `border-l-4` on first `<td>` (checkbox cell) · `filter_tabs` macro (3 tabs: All/Active POs/Open Credits) ·
+  `bulk_toolbar` macro · `status_chip` macro · `operationalListData` factory ·
+  `preview_dock_shell` macro (import line 21 + call line 333) · `empty_state` macro ·
+  `px-4 py-4 align-middle` on all `<td>` ✅
+
+§2B fields verified: Open POs count (chip) · Open Bills count (billed-status POs) · Credits pending
+(chip + total dollar amount) · Last PO date (relative + PO# in monospace) · Primary contact
+(name + phone). Lead time deferred — no `lead_time` field on Vendor model; explicitly deferred
+per §2B "if stored" qualifier ✅
+
+**Stripe semantics accepted:** amber=open credits (vendor owes us money), blue=active open POs,
+transparent=no active relationship. Colour semantics are correct per §4 (amber=attention,
+blue=informational).
+
+**Backend-contract guard accepted** (lines 27-33): `active_tab` and `_counts` degrade gracefully
+when backend hasn't yet passed the `open_pos`/`credits` keys. Tabs show stub zeros; no error.
+Non-blocking. Backend update needed to pass real counts keyed by `open_pos`/`credits`.
+
+**Non-blocking cosmetics (none filed — screen is clean).**
+
+---
+
+#### Vendors List — Builder Brief (#7) — now superseded by as-built above
+
+**Backend is done.** Do not wait for backend — everything needed is live.
+
+**Two fixes needed before submitting for governance:**
+
+**Fix 1 — Preview dock (import + uncomment).**
+At the bottom of `app/templates/vendors/list.html` there is a comment block (lines 332-337).
+Replace the entire comment block with these two items — the import goes at the TOP with the other
+imports (after `empty_state`), the macro call stays at the bottom:
+
+```jinja2
+{# Add to imports block (after empty_state import): #}
+{% from "macros/preview_dock.html" import preview_dock_shell %}
+
+{# Replace the comment block with: #}
+{{ preview_dock_shell('Vendor Preview', 'vendor-preview-body') }}
+```
+
+The backend route `GET /vendors/preview/{vendor_id}` is already registered before `GET /vendors/{vendor_id}`
+and returns `vendors/_preview_panel.html`. No backend changes needed.
+
+**Fix 2 — Tab slug mismatch.**
+The template defines tabs with slugs `open_pos` and `credits`:
+```python
+vendor_tabs = [('', 'All', ...), ('open_pos', 'Active POs', ...), ('credits', 'Open Credits', ...)]
+```
+But the router (`app/routers/vendors.py`) only handles `active`/`inactive`/`all` as `active_tab` values,
+and the `counts` dict uses keys `""`, `"active"`, `"inactive"` — not `"open_pos"` or `"credits"`.
+
+**✅ RESOLVED 2026-05-31 (template-side, the plan's preferred option).** Tabs now match what the
+router computes:
+```python
+vendor_tabs = [
+  ('active',   'Active',   _counts.get('active',   0)),
+  ('inactive', 'Inactive', _counts.get('inactive', 0)),
+  ('all',      'All',      _counts.get('all',      0)),
+]
+```
+**Correction to the original snippet:** the All tab uses slug **`all`**, not `''`. The router
+defaults any unrecognized slug to the `active` filter (`active_tab = tab if tab in
+("active","inactive","all") else "active"`), so an All tab keyed `''` would have shown active-only
+rows with the active count — a silent lie. Default view stays `active` (deactivated vendors hidden,
+matching the deactivate copy "they will no longer appear in vendor lists"); the **Inactive** tab
+surfaces them and **All** shows both. Footer "· filtered" is now suppressed on the All tab (matches
+the products reference convention `{% if tab != 'all' or q %}`).
+
+**Paired fix — `vendors/detail.html` Reactivate button.** The `/vendors/{id}/reactivate` route
+existed but had no UI, so a deactivated vendor was a dead end. Added a **Reactivate vendor** button
+(form-outside-form, mirroring the deactivate pattern) shown when `not vendor.is_active`.
+
+Both locked by `tests/test_vendor_list_tabs.py` (7 tests, green). The `open_pos`/`credits` "richer
+tabs" idea is dropped; if wanted later it is a separate backend-lane change.
+
+---
+
+#### Customers List — Inactive-tab + Reactivate Fix — ✅ (2026-05-31)
+
+Same "deactivated records unreachable" gap the Vendors List had, fixed the same day the same way.
+`customer_list` hard-filtered `is_active == True` on every tab and shipped no `/reactivate` route,
+so a customer deactivated via `POST /customers/{id}/deactivate` was unreachable from the UI and
+could never be turned back on.
+
+**Decision (owner-confirmed):** unlike Vendors — whose `all` tab is a true active+inactive union —
+the Customer List is the busy counter screen, so its four operational tabs (**including `all`**)
+stay scoped to **active** customers (`all` = all *active*). A dedicated **`inactive`** lifecycle tab
+(`is_active == False` only) surfaces deactivated accounts; the default view is unchanged.
+
+- **Backend (`app/routers/customers.py`):** added the `inactive` tab branch (dedicated query — it
+  lives outside `all_active` and its activity maps); an `inactive` count in `counts` from the full
+  dataset; per-row invoice/quote count lookups for inactive rows (so a deactivated account with
+  lingering open items still reads true); and `POST /customers/{id}/reactivate` (mirrors
+  `/vendors/{id}/reactivate`; 303 → detail). Factored shared `_OPEN_INVOICE_STATUSES` /
+  `_CLOSED_QUOTE_STATUSES` constants and dropped the dead `tab_ids` assignments.
+- **Template (`customers/list.html`):** added the **Inactive** filter tab (5th pill, count-badged).
+- **Template (`customers/detail.html`):** state-aware status forms (deactivate-form when active /
+  reactivate-form when inactive — form-outside-form, no nesting); a gray **Inactive** banner with a
+  one-click **Reactivate** button (visible in view *and* edit mode); the edit-footer Deactivate
+  button is now active-only. An inactive customer's page carries no deactivate path, and vice-versa.
+- **Locked by `tests/test_customer_list_tabs.py`** (12 tests, green — part of the 513-passed
+  functional suite). The only red in the full run is the known run-to-run-unstable
+  `test_visual_regression` baseline set (diffs vs the live mutable `jaks.db`); it now includes an
+  *expected* `customers_list` diff from the new tab — do **not** re-baseline. Verified live on
+  :8000: deactivate → row appears only under Inactive (count 1, hidden from default) → detail shows
+  the Reactivate banner → reactivate → back in the active list (count 0).
+
+---
+
+#### Returns List — As-Built Record — ✅ L2 (governance 2026-05-29)
+
+**Governance pass: FULL PASS.**
+
+All 11 §2 structural elements verified in template + router:
+- `pb-52` wrapper · `divide-y divide-gray-100` tbody · `overflow-x-auto` + `min-w-[1000px]` ·
+  `border-l-4` on first `<td>` (checkbox, line 190) · `filter_tabs` macro (5 tabs: All Open /
+  Draft / Authorized / Received / Closed) · `bulk_toolbar` macro · `status_chip` macro ·
+  `operationalListData` factory · `preview_dock_shell` wired (import line 22, call line 339) ·
+  `empty_state` macro (3-case, `q` + `active_tab` passed) · `px-4 py-4 align-middle` ✅
+
+Router verified: tab counts from `group_by` over full dataset — **no stub guard needed** (router
+provides real counts immediately). "All Open" tab correctly excludes CLOSED records
+(`sum(v for k, v in _raw.items() if k != RAStatus.CLOSED)`). Preview route `/preview/{ra_id}`
+at line 279 registered before `/{ra_id}` at line 338 ✅
+
+**Stripe semantics accepted:** amber=received (goods in, needs processing — §4 attention),
+blue=open/authorized (waiting for goods — §4 informational), transparent=draft/closed. ✅
+
+**§2B fields verified:** RA # (monospace) · Customer + reason snippet · Status chip ·
+Disposition chips (return_to_stock/quarantine/vendor_return) · Linked invoice # + credit memo # ·
+Total credit + restocking fee · Requested date · Line count ✅
+
+**Domain note:** §2B brief listed "Vendor" — this is a customer-facing RA screen, so Customer
+is the correct entity (not vendor). Accepted; no fix needed. Received date not shown as column —
+covered by Received status chip; acceptable.
+
+**Non-blocking:** none filed — screen is clean.
+
+---
+
+#### Payments List — As-Built Record — 🟡 SEND BACK (governance 2026-05-29)
+
+**Governance pass: SEND BACK — one blocker (dock), two advisory color violations.**
+
+**Blocker — preview dock commented out (same fix as SO List ×2, Payments is the third):**
+
+`app/templates/payments/list.html` lines 312-317 contain the dock in a Jinja2 comment block.
+The `preview_dock_shell` import is also inside the comment. Fix (2 lines, builder must do):
+
+1. Add to imports block (after line 15, with the other macros):
+   `{% from "macros/preview_dock.html" import preview_dock_shell %}`
+2. Replace lines 312-317 (the entire comment block) with:
+   `{{ preview_dock_shell('Payment Preview', 'payment-preview-body') }}`
+
+Backend route `GET /payments/preview/{payment_id}` is at line 234, registered before
+`GET /payments/{payment_id}` at line 296 — **backend is done**. Template fix only.
+
+**Advisory color violations (warn, do not block — §0 ruling 2026-05-29):**
+- `'ach': ('bg-indigo-50 text-indigo-700', 'bg-indigo-500', 'ACH')` — `indigo-*` not in §4.
+  Replace with `bg-blue-50 text-blue-700` / `bg-blue-500` (ACH = financial activity = blue ✅).
+- `'wire': ('bg-cyan-50 text-cyan-700', 'bg-cyan-500', 'Wire')` — `cyan-*` not in §4.
+  Replace with `bg-blue-50 text-blue-700` / `bg-blue-500` (Wire = financial activity = blue ✅).
+
+File: `app/templates/payments/list.html` lines 40-43 (`method_chip` dict).
+
+**Everything else passes:**
+- `pb-52` · `divide-y` · `border-l-4` on first `<td>` (line 171) · `overflow-x-auto` +
+  `min-w-[980px]` · no `tbl-*` · `px-4 py-4 align-middle` ✅
+- Router: real counts (group_by, no stub guard) · `active_tab` ✅ ·
+  preview route line 234 before `/{payment_id}` line 296 ✅
+- Stripe: red=reversed/NSF (§4 problem ✅), amber=unapplied balance (§4 attention ✅),
+  transparent=fully applied ✅
+- §2B: Payment # (monospace) · Customer · Amount + applied/unapplied · Method + check# ·
+  Related invoices (up to 3 shown + overflow count) · Status chip + reversal reason ·
+  NSF fee · Footer total-received + total-unapplied ✅
+- `name="tab"` hidden input ✅ · 3-case empty state ✅ · `@click.stop` on both cells ✅
+
+**Self-certify after dock fix + optional color cleanup.** No re-review needed.
 
 ---
 
@@ -684,6 +1190,17 @@ These patterns exist as near-identical copy-paste HTML across Products List and 
 
 **Do not build these yet. Define them here so the extraction decision is intentional, not reactive.**
 
+**↪ Line-item builder primitive (§8H) — 3-SCREEN GATE MET (2026-05-31).** The shared
+`line_items/_line_adder.html` include now runs in **4** workspaces (Quote/SO/Invoice/PO) identically, so
+the §7 "3 real implementations" gate is satisfied. Promoting the include to a `macros/line_adder.html`
+macro is therefore **PERMITTED but optional** — the include is already single-source DRY. **5th-consumer
+ruling:** `products/detail.html:663` is a product *picker* (selects a SKU into a hidden field for a
+suggested-sell relationship), **not** a line-adder — when migrated off the now-dead PO search route it will
+consume the `/line-items/product-search` **JSON** endpoint via a small Alpine dropdown (**NOT** a naive
+`hx-get` repoint — that endpoint returns JSON, not an HTML partial), so it does **not** consume
+`_line_adder.html` and does **not** change the macro calculus. Promote only if a genuine 4th+ *line-adder*
+consumer or a config-signature need arises.
+
 #### Primitive 1 — `filter_tabs` macro
 **File:** `app/templates/macros/filter_tabs.html`
 **Signature:** `{% macro filter_tabs(tabs, active_tab, q, preserve_q=true) %}`
@@ -787,6 +1304,26 @@ pending a running server.
 
 ---
 
+#### Phase-2 Primitives — added to the backlog (2026-06-02)
+
+The P1–P6 set above was the original list-screen extraction. Three further primitives have since been
+ratified as net-new shared infrastructure — authored by the Architect **ahead of** the 3-screen gate
+(gate-waiver rationale in §8M / §8K: the gate guards premature extraction of *existing* duplication;
+for a net-new cross-cutting feature the risk is the inverse — N divergent per-screen builds).
+
+- **Primitive 7 — `linked_strip(links)`** — `macros/linked_docs.html`. Workspace cross-doc nav. Ratified §8K (gate met: 4 workspaces).
+- **Primitive 8 — `customer_flags(flags, compact=False)`** — `macros/customer_flags.html`. Customer flag chips (P2-D2). Ratified §8M.
+- **Primitive 9 — `intelligence_panel(metrics, cols=4)`** — `macros/intelligence.html`. Metric-grid layout + `customer_intelligence_panel` / `invoice_intelligence_panel` wrappers (P2-Q1 / §5.8). Ratified §8M.
+- **Primitive 10 — `credit_badge(cs)` / `credit_warn(cs)`** — `macros/credit_status.html`. Credit posture badge + non-blocking warn banner from `CustomerService.credit_status` (P2-D4/D5 / §4.5). Ratified §8M.
+- **Primitive 11 — `metric_strip(tiles, cols=4)`** — `macros/metric_strip.html`. List-header KPI-tile strip (icon + big number + label), extracted from the cores/warranty list headers (§2B / §5.1 SO dashboard). Ratified §8M.
+- **Primitive 12 — `so_po_status_chip(rollup)`** — `macros/so_status.html`. Backorder / on-order / ETA chip off the §5.10 SO↔PO rollup (`SalesOrderMetricsService.po_link_status`). Ratified §8M.
+- **Primitive 13 — `sortable_th(label, key, sort, direction, qs)`** — `macros/sortable.html`. Clickable sort column header (▲/▼ arrow; toggles `?sort=&direction=`; preserves other query params). Route reads `sort`+`direction` via `app.utils.apply_sort` (@3cb1a86). Pairs with `.sticky-thead`. Ratified §8Q.
+- **Primitive 14 — `qbo_status_chip(status, invoice_id, compact)`** — `macros/chips.html`. QBO sync state chip (synced ✓ green / pending ⟳ blue / error ✗ red / not-sent — gray). Replaces the broken draft (which used invoice_id for synced detection). Ratified @fa34746.
+- **Primitive 15 — `status_stack(invoice)`** — `macros/chips.html`. Stacked Posted/Paid/QBO badges replacing the lone "Locked" badge in the invoice list; lock-reason tooltip from InvoiceLockReason. Calls qbo_status_chip compact. Ratified @fa34746.
+- **Primitive 16 — `actions_dropdown(invoice, editable)`** — `macros/invoice.html`. Governed "Actions ▾" menu for the invoice workspace header. Void lives HERE (not a loose btn-danger). Slots: Print/PDF, Take Payment, Warranty/RA, Push/Re-Sync QBO, Void (guarded). Uses ctx-item/dropdown_scale. Ratified @fa34746.
+
+---
+
 ### Build — Tailwind Compiled CSS
 
 **Status: ✅ Infra complete (2026-05-29) — Phase 2 (CDN removal) pending one `npm install` + build run.**
@@ -815,6 +1352,8 @@ npm run build:css
 # Development watch mode (rebuilds on every template/JS change)
 npm run watch:css
 ```
+
+**⚠️ Rule: any new Tailwind utility class added to a template requires `npm run build:css` + commit of `app/static/css/app.css`. The compiled file is the sole CSS source — the CDN is gone. A class that exists only in a template but not in app.css will be invisible in the browser.**
 
 **Alternative — Tailwind standalone CLI (no Node.js needed):**
 Download the self-contained binary from https://github.com/tailwindlabs/tailwindcss/releases
@@ -871,6 +1410,106 @@ Items confirmed as real, scoped, and worth doing — but explicitly deferred. Do
 an Architect instruction. Each item includes the file targets and enough context to act without
 this conversation.
 
+---
+
+#### 8-STANDING. Permanent By-Design Decisions — do NOT re-open in any QA pass
+
+These have been ruled multiple times (Suite-C W-3, e2e Bug4, D-5e, full-audit Bug4) and are final.
+**Any future QA flag on these items is a false positive — close it without action.**
+
+**CC convenience fee is informational only — NEVER a math bug (R1, multi-audit ruling).**
+The card-processing surcharge is an *estimate* displayed below the invoice total for the customer's
+awareness ("~$X.XX if the full balance is paid by card"). It is **never** added to `invoice.total` or
+`balance_due`. The actual charge is applied by the card processor at the moment the card is swiped —
+JAKS does not charge it in-system. Source code anchor: `app/invoice_totals.py:117-120` (comment reads
+"R1 — CC surcharge is applied AT PAYMENT TIME on the card portion only; this is an INFORMATIONAL
+estimate … and is NOT added to the total.").
+Correct QA behaviour:
+- Any test asserting `invoice.total` or `balance_due` *includes* the surcharge → **wrong test; close it.**
+- Display of the estimate, the `cc_surcharge_estimate` key, the helper copy → all correct.
+- Relabelling the estimate copy (e.g. "convenience fee" vs "surcharge") is UI polish, not a math fix.
+- Changing the math to add the fee to the total would violate R1 and break real money-path tests.
+
+**D-6 quick-create `coreFlag` inline validation — ✅ GOVERNANCE PASS 2026-06-01.**
+UI-Builder added `x-model.number="vendorCore"` and `x-model.number="customerCore"` to the core-charge
+inputs in `app/templates/products/_quick_create.html` (the inputs previously lacked these bindings, so
+`coreFlag` was a dead getter — it could never evaluate true). The D-6 diff also adds the warning banner
+and `:disabled="coreFlag"` on the submit button.
+Governance verdict: **PASS.**
+- Warning banner tokens (`bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700`) — **identical
+  to `new.html`**. Same warning-triangle SVG. `mt-2` is correct for the quick-create layout context.
+- Copy is intentionally shorter than `new.html` (appropriate for the constrained slide-over space).
+- `:disabled="coreFlag"` on submit is *stronger* than `new.html` (client-side guard prevents submission).
+- No `{% if error %}` block for server-side validation errors — **pre-existing gap, not introduced by D-6.**
+  Client-side guard prevents the core-charge-specific server error; other server errors re-render the form
+  via HTMX OOB. Non-blocking; worth adding in a future slide-over robustness pass.
+- No `window.confirm`, no `tbl-*`, no §3 violations.
+
+---
+
+#### 8-PRICING. Customer Pricing & Deals (Phase 1 — in progress)
+
+Per-customer cost-plus pricing rules surfaced on the customer detail page and on
+quote / SO / invoice lines. Spec: `CUSTOMER_PRICING_DESIGN.md` (§5 UI surfaces).
+This is a NEW screen/area being built lane-parallel (Backend + UI-Architect +
+UI-Builder + QA). Tracked here so the governance pass has a home.
+
+**Lane split (Phase 1):**
+- **Backend:** `customer_price_rule` model/migration; `PricingService.resolve_customer_price` + `last_price_for`; wire into `add_line`; rule CRUD routes; tests.
+- **UI-Architect (this section):** presentation macros + Alpine factory + governance. **Status: macros + factory landed.**
+- **UI-Builder:** wire `pricing_deals_panel` onto `customers/detail.html`; wire `price_rule_chip` + `last_price_hint` onto `quotes/_line_row.html` (and SO/invoice lines).
+- **QA:** precedence matrix (SKU > brand/category > customer), qty breaks, date windows, below-target / below-cost / cost=0, override-of-`price_override`.
+
+**Macros shipped — `app/templates/macros/pricing.html` (pure presentation, empty-safe, §4-compliant):**
+- `margin_badge(margin_pct, below_target=False, below_cost=False, compact=False)` — the reusable margin-at-cost pill (§6 "Margin / score badge" look); RED when `below_target`/`below_cost`, gray "—" when cost unknown.
+- `customer_price_rule_row(rule)` — one row in the deals list: scope micro-tag + label, human method ("cost + 12%" / "30% margin"), `qty_min` "10+" chip, effective-date range, inactive state, margin badge. Reads `rule.{scope_type,scope_label,price_method,price_value,qty_min,effective_from,effective_to,is_active,margin_pct,below_target,below_cost,note}`.
+- `price_rule_chip(ctx)` — line-level "Deal: cost+12% · PAI" chip + "overrides &lt;runner-up&gt;" note. Reads `ctx.{source_rule,overridden_rule,below_target,below_cost}`. Empty when no `source_rule`.
+- `last_price_hint(ctx)` — click-to-apply "Last: $418 · 27% · Inv #1043 · Apr 12" pill (`data-apply-price`); never auto-fills. Reads `ctx.last_price.{unit_price,margin_pct,doc_ref,date}`. Empty when falsy.
+- `pricing_deals_panel(rules, customer_id, target_label)` — customer-detail panel scaffold (header + Add deal + rule list + empty-state). "Add deal" dispatches `open-quick-deal { customerId }`.
+- `quick_deal_modal(customer_id, categories, brands, post_url)` — §3-compliant modal shell (scope picker, markup⇄margin toggle, value, qty_min, dates, note). Mounted ONCE globally in `base.html`.
+
+**Alpine factory — `window.customerPriceDeal(defaultCustomerId)` in `base.html`** (registered with the `customerPicker` / `aiSuggestionPanel` factories so it's on `window` before HTMX-swap init): exposes `isOpen, customerId, scopeType, scopeRef, productQuery, method, value, qtyMin, effectiveFrom, effectiveTo, note, scopeOptions` + `open(detail) / close() / setScope(v) / methodHint / canSubmit / onSubmit(e)`. Open convention: dispatch `open-quick-deal` with `{ customerId }`.
+
+---
+
+##### Phase 2 — bulk entry + edit-an-existing-rule (UI-Architect: **macros + factories landed**)
+
+Two follow-ons to Phase 1, same lane split (Architect ships the primitives, UI-Builder wires the routes, Backend adds the bulk + PATCH endpoints, QA covers precedence + edit round-trip).
+
+**A — Bulk deal grid (`bulk_deal_form` + `window.bulkDeal`):**
+- `bulk_deal_form(customer_id=None, categories=None, brands=None, post_url=None)` in `macros/pricing.html` — a repeatable-row grid for entering many **CATEGORY/BRAND** deals for one customer with a single Submit. Each row: scope segment (Cat⇄Brand) → matching category/brand `<select>`, markup⇄margin segment, value %, optional `qty_min`, optional effective from/to, and a per-row remove. Header "Add row"; footer shows "N of M rows ready" + "Save deals". Scope is **CATEGORY/BRAND only** (no whole-account / per-SKU in bulk — those stay in the Quick Deal modal). Empty-safe; §15 segmented tokens, §6 micro-badge, no `window.confirm`.
+- `window.bulkDeal(defaultCustomerId)` in `base.html` (registered with the other factories) — state `customerId, rows[]` where each row = `{uid, scopeType, scopeRef, method, value, qtyMin, effectiveFrom, effectiveTo}`; methods `init()` (seeds one blank row), `addRow()`, `removeRow(idx)` (never drops below one row), getters `completeCount` / `canSubmit` (≥1 complete row — a row is complete with a `scopeRef` + `value>0`), `serialize()` → the bulk payload, and `onSubmit(e)` guard.
+- **`bulkDeal.serialize()` JSON shape** (UI-Builder POSTs this; Backend owns the endpoint):
+  ```json
+  { "customer_id": 42,
+    "rules": [
+      { "scope_type": "category", "scope_ref": "turbos", "price_method": "margin",
+        "price_value": 30, "qty_min": null, "effective_from": null, "effective_to": null }
+    ] }
+  ```
+  Incomplete rows are dropped silently. `qty_min` / dates are `null` when blank.
+
+**B — Edit an existing rule (reuses the Quick Deal modal):**
+- `customer_price_rule_row(rule)` gained an **Edit** icon-button (next to the margin badge) shown when the rule carries `rule_id` (or `id`). It dispatches `open-quick-deal` seeded with the rule's CURRENT values **and** its `ruleId`:
+  `{ customerId, ruleId, scopeType, scopeRef, method, value, qtyMin, effectiveFrom, effectiveTo, note }` (dates serialized ISO `YYYY-MM-DD`). Needs from the rule context: `rule.rule_id`/`rule.id`, `rule.customer_id`, `rule.scope_ref` (alongside the existing display fields).
+- `window.customerPriceDeal.open(detail)` now detects `detail.ruleId` → **EDIT mode**: pre-fills method/value/qtyMin/dates/note/scope from the seed and flips the submit target. New getters: `isEdit`, `title` ("Edit deal" vs "Quick Deal"), `submitMethod` (`PATCH` vs `POST`), `submitUrl` (`/customers/{id}/price-rules/{ruleId}` vs `/customers/{id}/price-rules`), and `payload` (the JSON field bag). The modal title (`x-text="title"`), submit label ("Save changes" vs "Save deal"), and a guarded hidden `rule_id` field bind these. `close()` clears `ruleId` so a later "Add deal" opens blank. UI-Builder reads `submitMethod` + `submitUrl` (+ `payload`) to fire the request.
+
+**Governance Checklist (Customer Pricing & Deals — §0 pass):**
+- [x] Macros are pure presentation + empty-safe (render harmlessly before Backend wiring)
+- [x] Only §4-permitted color families (brand/red/amber/green/blue/purple/gray); margin RED = below target/cost only
+- [x] Margin badge matches §6 "Margin / score badge" token (`px-2 py-0.5 rounded-full text-xs font-semibold border`)
+- [x] Scope micro-tag uses §6 manufacturer/micro-badge token; `qty_min` chip uses §4 blue informational
+- [x] Quick Deal modal is §11/§14 compliant: `role="dialog"`, `z-[60]` backdrop + panel, `rounded-2xl shadow-2xl`, `max-w-lg`, `@keydown.escape` closes, focus trap
+- [x] NO `window.confirm` / `hx-confirm` — modal is Alpine-driven; opened via `open-quick-deal` event
+- [x] Modal transitions via `motion.html` macros (`modal_scale` / `backdrop_fade`) — no inline `x-transition`
+- [x] Alpine factory registered in `base.html` (HTMX-swap-safe), not in the swapped fragment
+- [x] Filter-pill scope picker follows §15 active/inactive tab tokens (`bg-brand-700 text-white` / `text-gray-600 hover:bg-gray-200/70`)
+- [x] **Phase 2 — bulk grid + edit:** `bulk_deal_form` segmented rows use §15 tokens; Edit button uses §6 icon-affordance tokens; no `window.confirm`; `bulkDeal` factory registered in `base.html` (HTMX-swap-safe); edit reuses the existing §11/§14 modal (no new dialog)
+- [ ] **UI-Builder:** panel wired onto `customers/detail.html`; chip + hint wired onto line rows; **Phase 2** — `bulk_deal_form` placed + `serialize()` POSTed; Edit `submitMethod`/`submitUrl` wired (PATCH) — pending
+- [ ] **Functional gate (§9):** resolved price + chip + margin warn verified end-to-end against live Backend; bulk create + edit round-trip verified — pending Backend
+
+---
+
 #### 8A. Post-Extraction Cosmetic Cleanup (low priority)
 
 1. **Macro adoption — fold Products/PO inline chips onto `status_chip`.**
@@ -894,27 +1533,224 @@ this conversation.
    Activity pills use `rounded-full`; system standard is `rounded-lg`. Cosmetic only.
    `app/templates/customers/list.html:286,294,303,312`.
 
-#### 8B. Global Workspace Action Header Review (medium priority — do not start without Architect sign-off)
+5. **PO List — `rose-*` row tint (QA Rule-5 advisory).**
+   `app/templates/purchase_orders/list.html:165` uses `bg-rose-50/30` for cancelled row tint.
+   `rose-*` is not in §4 permitted families; §4 only permits `red-*` for the red/problem semantic.
+   Fix: `bg-rose-50/30` → `bg-red-50/30`. One-character change.
+   **Ruling (Architect, 2026-05-29):** `rose-*` remains outside §4. This is a valid QA lint
+   advisory (not a block). The screen is ✅ L2 — this is a cosmetic fix only.
+   **QA note:** Keep the `rose-*` lint advisory as-is. Do not add `rose-*` to the allowlist.
 
-**Scope:** The action button strip and back-link area that appears in the `header_actions` block
-across Customer, Quote, Invoice, Sales Order, and PO workspaces.
+   *(The other 3 QA-flagged violations — `sky-*` in Drop Ship badge on PO list, preview panel, and
+   receiving queue — are **not violations**. §4 explicitly permits `blue-* / sky-*` together.
+   Update the lint pattern to accept `sky-*` wherever `blue-*` is accepted.)*
 
-**Problem observed:** Owner testing surfaced inconsistency in visibility, ordering, and behavior
-of New Quote / New Invoice / Statement / Back link across workspace screens. The area needs a
-cross-workspace audit and a consistent standard before further workspace screens are built.
+#### 8D. Compiled CSS Cut-over — ✅ COMPLETE (2026-05-29)
 
-**Do not redesign the dashboard or any list screen as part of this work.**
-**Do not start until explicitly instructed by the Architect.**
+**Node v24.16.0 + npm 11.13.0. Build ran 2026-05-29. CDN removed. FOUC eliminated.**
 
-Screens in scope:
-- `app/templates/customers/*.html` (customer workspace header)
-- `app/templates/quotes/workspace.html`
-- `app/templates/invoices/workspace.html`
-- `app/templates/sales_orders/workspace.html`
-- `app/templates/purchase_orders/workspace.html`
+- `app.css` 77.7 KB compiled output, serving 200 OK, no `cdn.tailwindcss.com` request confirmed.
+- Two `@apply` violations fixed during build: `@apply group` and `@apply group-hover:opacity-100`
+  are not permitted by the CLI. Fixed by removing `group` from `.tbl-row @apply` (add in HTML)
+  and replacing `group-hover:opacity-100` with `.group:hover .row-actions { opacity: 1; }`.
+- `app.css` committed for dev parity (other lanes without Node can still run the app).
+  **Gitignore app.css in CI/CD pipelines** — rebuild from source on deploy.
+- To rebuild: `npm run build:css` (or `npm run watch:css` during active template work).
+- Node is at `C:\Program Files\nodejs\` — add to system PATH to use `npm` without full path.
 
-Deliverable: a punched list of specific inconsistencies + a proposed standard for the header strip,
-submitted to the Architect for approval before any template changes.
+---
+
+#### 8E. A11y Sweep — Invoice Workspace Modals (low priority, track separately)
+
+**Not blocking L3.** The three Alpine modals in `app/templates/invoices/workspace.html`
+(payment, void, change-customer) are §3-compliant for visual behavior but are missing
+ARIA accessibility attributes. Track as part of a future cross-workspace a11y pass (#4).
+
+**Files:** `app/templates/invoices/workspace.html`
+
+**Required on each modal panel element:**
+- `role="dialog"`
+- `aria-modal="true"`
+- `aria-labelledby="<heading-id>"` pointing to the modal's `<h2>` or `<h3>`
+
+**Focus trap:** Alpine does not provide a built-in focus trap. Options when this sweep
+is scheduled: (a) add a small focus-trap directive (30 lines of JS), or (b) adopt the
+`@alpinejs/focus` plugin (`$focus.trap()` magic). Confirm approach with Architect before
+implementing — it affects all modals app-wide.
+
+**Do not start this sweep without an explicit Architect instruction.** It is non-blocking
+and should not interrupt the list-port rollout.
+
+---
+
+#### 8B. Workspace Action-Header Standard — ✅ DRAFTED 2026-05-29
+
+**Audit complete. Standard defined below. Apply to new workspace screens (SO, Warranty, Returns).
+Existing screens get conformance fixes as a low-priority sweep — non-blocking for their current maturity level.**
+
+---
+
+##### As-audited state (5 workspaces, verified in templates)
+
+| Screen | Status chip | Back link | Button order (L→R) |
+|---|---|---|---|
+| **Customer detail** | None (not a workflow record) | `← Customers` always ✅ | New Quote (primary) · New Invoice (secondary) · Statement (secondary) |
+| **Quote workspace** | `badge-*` first ✅ | `← All quotes` — `hidden lg:inline` ❌ | chip · customer name · primary-CTA · More▾ · back-link |
+| **Invoice workspace** | **None in header** ❌ | **None** ❌ | (DRAFT) Save Draft · Finalize · (OPEN) Print · PDF · Take Payment · Void |
+| **SO workspace** | `badge-*` first ✅ | **None** ❌ | chip · Print · PDF · $ Deposit · Hold · Cancel |
+| **PO workspace** | `badge-*` first ✅ | `← Purchase Orders` always ✅ | chip · Print · PDF · primary-CTA · Cancel PO · back-link |
+
+**Deviations punched:**
+1. **Invoice** — no status chip in header (status visible only in page body)
+2. **Invoice** — no back link to `← Invoices`
+3. **SO** — no back link to `← Sales Orders`
+4. **Quote** — back link hidden on mobile (`hidden lg:inline`); should always be visible
+5. **Back link classes split:** PO/Customer use `text-sm text-gray-500 hover:text-gray-700`; Quote uses `text-sm link-subtle` — unify to former
+6. **Quote** — convert-to-invoice form uses `return confirm()` in `onsubmit` — §3 requires Alpine modal
+
+---
+
+##### The Standard — workspace header zones (left → right)
+
+```
+[status chip]  [back link]  ···  [secondary…]  [destructive]  [primary]
+```
+
+**Zone 1 — Status chip** (always present on workflow-record workspaces; absent on Customer detail which has no workflow state). Use the screen's `status_pill` dict defined above the block:
+```html
+<span class="{{ status_pill[record.status][0] }}">{{ status_pill[record.status][1] }}</span>
+```
+
+**Zone 2 — Back link** (always present, always visible — no `hidden lg:*`). Points to the list screen, same tab (no `target="_blank"` — navigating away is intentional). Placed second so the user can escape quickly.
+```html
+<a href="/{list}/" class="text-sm text-gray-500 hover:text-gray-700 transition-colors">← {List name}</a>
+```
+Exception: Customer detail keeps back link last because New Quote is the dominant CTA.
+
+**Zone 3 — Secondary utilities** (Print, PDF, Statement — things that don't change state). Class: `btn-secondary btn-sm`. Print before PDF when both present.
+
+**Zone 4 — Destructive action** (Cancel, Void — when the record isn't already terminal). Class: `btn-ghost btn-sm text-red-500` — not `btn-danger`, which is too visually heavy for a header. Must dispatch to an Alpine confirm modal per §3; never `window.confirm()` or `return confirm()`.
+
+**Zone 5 — Primary action** (the next workflow step: Finalize, Send, Take Payment, → SO). Class: `btn-primary btn-sm`. Rightmost. Only one primary at a time. Empty when the record is terminal (PAID, CANCELLED, CONVERTED, etc.).
+
+**Button cap:** max 4 buttons (excluding chip and back link). If more actions are needed for a given status, use a `More ▾` secondary dropdown (see Quote workspace `_header_actions.html` pattern).
+
+---
+
+##### Shell template for new workspace screens
+
+```html
+{% block header_actions %}
+  {# Zone 1 — status chip #}
+  <span class="{{ status_pill[record.status][0] }}">{{ status_pill[record.status][1] }}</span>
+
+  {# Zone 2 — back link (always visible) #}
+  <a href="/{list}/" class="text-sm text-gray-500 hover:text-gray-700 transition-colors">← {List name}</a>
+
+  {# Zone 3 — secondary utilities #}
+  <a href="/{record}/{{ record.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
+  <a href="/{record}/{{ record.id }}/pdf"                   class="btn-secondary btn-sm">PDF</a>
+
+  {# Zone 4 — destructive (when not terminal) #}
+  {% if record.status not in terminal_statuses %}
+  <form id="cancel-form" method="post" action="/{record}/{{ record.id }}/cancel" class="hidden"></form>
+  <button type="button" class="btn-ghost btn-sm text-red-500"
+          @click="$dispatch('confirm', {formId:'cancel-form', title:'Cancel?', body:'...', cta:'Cancel', danger:true})">
+    Cancel
+  </button>
+  {% endif %}
+
+  {# Zone 5 — primary action (next workflow step; absent when terminal) #}
+  {% if record.status == 'open' %}
+  <button type="submit" form="submit-form" class="btn-primary btn-sm">Next Step →</button>
+  {% endif %}
+{% endblock %}
+```
+
+---
+
+##### Conformance fixes for existing screens (low-priority sweep — do not start without instruction)
+
+| Screen | File | Fix |
+|---|---|---|
+| Invoice workspace | `app/templates/invoices/workspace.html` | Add `badge-{status}` chip as first element; add `← Invoices` back link |
+| SO workspace | `app/templates/sales_orders/workspace.html` | Add `← Sales Orders` back link |
+| Quote workspace | `app/templates/quotes/_header_actions.html` | Remove `hidden lg:inline` from back link; replace `return confirm()` in convert form with Alpine modal dispatch |
+
+#### 8F. Quotes List — Post-Governance Cosmetic Cleanup (low priority)
+
+Non-blocking items from the 2026-05-29 governance pass. Do not start without an Architect instruction.
+All five can be done in one small PR after the AR chip lands.
+
+1. **Search hidden input** — `app/templates/quotes/list.html:245`. Change `name="status"` →
+   `name="tab"`, `value="{{ status_filter }}"` → `value="{{ active_tab }}"`. The router back-compat
+   still works during the transition; this just makes the form consistent with the L2 standard.
+
+2. **Row padding** — `app/templates/quotes/list.html` — all `<td>` use `py-3.5`; spec is `py-4`.
+   One-pass find-replace.
+
+3. **`emerald-*` chip color** — `app/templates/quotes/list.html:272`. `bg-emerald-100 text-emerald-800`
+   / `bg-emerald-500` for Converted. Replace with `bg-green-50 text-green-700` / `bg-green-500`.
+   Aligns to §4 `green-*` = complete/success.
+
+4. **Empty state** — `app/templates/quotes/list.html:525-541`. Add third case: when both `q` and
+   `status_filter` are set, emit "No results for '{q}' in this filter" with separate clear-search
+   and clear-filter CTAs.
+
+5. **New Quote modal inline `x-transition`** — `app/templates/quotes/list.html:86-89, 98-101`.
+   Replace the six `x-transition:*` attributes on backdrop and panel with `{{ backdrop_fade() }}`
+   and `{{ modal_scale() }}` from `macros/motion.html`.
+
+---
+
+#### 8G. Owner-Test Triage — Functional-Test Phase (2026-05-29)
+
+**Context:** Owner entered functional-test mode after list rollout. The following fixes landed
+during triage. Recorded here as the authoritative change log; not pending further action unless
+re-test surfaces new defects.
+
+**FIX 1-4 + commit `bcda974` — landed:**
+Details of the specific fixes are tracked in the backend/feature commit log. The Architect's
+record is that FIX 1-4 were verified by the backend/builder lane and committed at `bcda974`.
+No UI macro or base.html changes were involved in this set.
+
+**"Can't receive" cluster — ❌ RETRACTED 2026-05-30: this WAS a code defect.**
+The earlier conclusion ("the receiving flow was reviewed… no code defect was identified… believed to
+be a workflow/UX discoverability issue") is **withdrawn.** Ground-truth of the receive path found a
+hard crash: `app/services/po_service.py` raised **`NameError` at line 448** — `SOLineStatus` was
+referenced but never imported from `constants`. Receiving 500'd before any "discoverability" question
+could apply; the code review that cleared it read past a missing import. **Fixed at commit `3a700fd`**
+(B2: "add `SOLineStatus` to constants import (NameError at line 448)"). Status: **automated-green @9d0ced2** — `tests/test_e2e_flows.py::test_e2e_a_po_receive_updates_inventory_and_cost`
+runs PO → Receive and asserts on-hand 0→10 + moving-avg cost 10→12 (re-verified passing 2026-05-31),
+so the §9 P1 re-test gate is **cleared** (owner spot-check optional, non-blocking). The §9 functional
+gate exists precisely because of this: "no defect" is not a valid finding until the flow has been *run*,
+not just read.
+
+**Post-b514196 re-test gate — Quotes / Quote Workspace / Returns (RULED 2026-05-30):**
+The L2/L3 "complete" marks for **Quotes List (#5), Quote Workspace, and Returns List (#8)** were
+recorded while the app was returning **HTTP 500** — pre-`b514196`, the deprecated Starlette
+`TemplateResponse(name, {"request": …})` signature broke template rendering app-wide. **Proof:** the
+committed visual baseline `tests/visual/baselines/pixels/quotes_list@1280px.png` is a screenshot of the
+**"Internal Server Error"** page, not the Quotes list. `b514196` (TemplateResponse migration) has since
+landed, with 9 commits on top of it. **Ruling:** these three statuses are **not re-affirmed on the
+Architect's word.** They stay gated until the **owner re-tests a post-`b514196` pull** and the §9
+functional gate passes end-to-end. The poisoned baseline must be re-captured by QA after that re-test.
+Until then §6 #5 / #8 read "L2 — pending re-test," not "FULL PASS."
+
+**Change-customer (TESTING_FEEDBACK §1.8.b) — ✅ close-out RULED 2026-05-30 (re-test, not rework):**
+`bcda974`'s **pencil-badge** is the **correct fix** and is **in-tree** at
+`app/templates/invoices/workspace.html:173` — edit-pencil icon + "Change" label, `type="button"`,
+`@click="changeCustomerOpen = true"`, DRAFT-gated via `{% if editable %}`. No rework needed; this is
+**closed pending owner re-test only.** Optional defensive hardening (low priority, not a blocker): add
+`@click.stop` to the button at `workspace.html:173` so the open-overlay click can never bubble to a
+future parent click handler.
+
+**#10 Product Detail / #11 PO Workspace — on HOLD:**
+Both screens are explicitly deferred during functional-test phase. Do not start either until the
+owner lifts the hold. The Save-button ruling (§3) and §8B workspace header standard are the
+pre-work that will apply when these screens resume.
+
+---
 
 **Quote Workspace partial pass — Architect-approved & implemented 2026-05-29.** Owner testing of
 `quotes/workspace.html` surfaced three issues; fixes 2 & 3 approved and applied (verified live):
@@ -922,13 +1758,413 @@ submitted to the Architect for approval before any template changes.
    Root cause is a hidden two-step "staging" flow: clicking a search result only stages the part
    (`selectProduct()`), and **+ Add Line** sits greyed-out/`disabled` until then, so it reads as
    broken. **Left as-is pending Architect decision** between one-click-add vs. a prominent-staged-
-   button + "↵ Enter to add" hint. Still an open discoverability gap.
+   button + "↵ Enter to add" hint. **RULED 2026-05-31 (§8H): one-click immediate-add adopted** (ratifies Contract §3.2); the staging step is
+retired. This discoverability gap is **closed by design — pending UI-Builder implementation** of the
+generalized shared line-adder.
 2. *Account link lost work* — the Account / customer-name / "← All quotes" links navigated away
    in-tab, discarding staged (uncommitted) search input. Now `target="_blank" rel="noopener"`.
 3. *No visible Save* — the grey **Save** button was **redundant** (its `POST /quotes/{id}` updates
    the same 4 fields as the 2.5s autosave). Removed it, added `onsubmit="return false"` to block
    accidental Enter-submit, and made the autosave indicator always-visible ("✓ Saved automatically").
 This is a targeted fix, **not** the full cross-workspace header standard — §8B proper is still open.
+
+#### 8H. Line-Item Builder — Shared-Primitive Governance Ruling (Architect, 2026-05-31)
+
+Backend shipped the data contract (`LINE_ITEM_BUILDER_CONTRACT.md`: one `GET /line-items/product-search`
++ one unified add-line POST per doc). This ruling sets the **UI** pattern **before** UI-Builder
+generalizes the quote `lineAdder` into a shared component — per Contract §4 ("Style passes are the
+Architect lane's call") and the standing rule that design deviations are the Architect's call.
+
+**1. Interaction model — RULED: one-click immediate add-on-select.** Ratifies Contract §3.2.
+Click a result → immediately `POST {product_id, qty}` (qty from a small stepper, default 1) → swap the
+returned partial → reset the search box. This **retires the 2-step staging flow** (`selectProduct()` →
+disabled **+ Add Line**) currently in `quotes/workspace.html:435-478`, and **resolves the §8G #1 "can't
+add a part" discoverability gap** (the greyed-out + Add Line button that read as broken) **by design**.
+Reversibility requirement: one-click inline line-delete must stay (an accidental add is trivially undone).
+Fallback if accidental-adds surface in test: Enter-to-add on the keyboard-highlighted result — **not** a
+return to the disabled staging button.
+
+**2. Where it lives — RULED: ONE shared `{% include %}` partial now, NOT a `macros/` macro yet.**
+Governance §7 forbids macro extraction until **three** screens use the pattern identically (premature
+abstraction = wrong interface). Today only Quote has a proven adder; SO/Invoice/PO diverge (Contract §2:
+different qty/money fields, returned partials, status guards; PO is cost-only + core). A frozen macro
+signature now would be premature.
+- **Location:** new shared `app/templates/line_items/_line_adder.html` (+ co-located JS), namespaced to
+  the backend `/line-items` route prefix. Each workspace `{% include %}`s it with a per-doc config (below)
+  — single source of truth (satisfies Contract §4) **without** a frozen macro interface.
+- **Promotion gate:** convert include → `app/templates/macros/line_adder.html` **only after 3 of the 4
+  workspaces run it identically** (the §7 three-screen gate). PO is the expected permanent config-variant
+  (cost-mode + core), so Quote/SO/Invoice are the three that will prove the interface.
+
+**3. Config surface — RATIFIED (Contract §3).** The include's **only** divergence surface; everything
+visual stays identical across all four:
+
+    { docType, searchUrl:"/line-items/product-search", postUrl:"/<doc>/{id}/lines",
+      mode:"sell"|"cost", showDiscount:bool, target:"<lines region>", swap:"beforeend"|...,
+      childMode:{parentLineId,lineRole}|null  /* Quote only */ }
+
+Extraction map from `quotes/workspace.html`: hardcoded `/quotes/product-search` (L423) → `searchUrl`;
+`/quotes/{id}/lines` (L471) → `postUrl`; the child-vs-top-level target/swap branch (L468-478) →
+`target`/`swap` + `childMode`. Keep the legacy result aliases (`part_number`/`current_cost`/
+`suggested_sell`/`description`) working at first; prefer canonical (`sku`/`title`/`unit_cost`) in new code.
+
+**4. Visual contract — SET (Architect's call). Existing tokens only — no new colors/classes.**
+All four adders look identical; `mode`/`showDiscount` only toggle field visibility.
+- Search input: icon-prefixed (list-search convention), `rounded-xl border-gray-200`.
+- Results dropdown: `bg-white border border-gray-200 rounded-xl shadow-lg`; rows `divide-y
+  divide-gray-100`, hover `hover:bg-gray-50/80 transition-colors`, keyboard focus `focus:bg-brand-50/40
+  ring-inset ring-1 ring-brand-300`.
+- `match_type` chip per result (existing chip tokens): part_number → gray, cross_ref → blue (`badge-blue` — RULED, see §8H PASS),
+  vendor_sku → purple, description → gray.
+- Core indicator (`has_core`) → **orange** (palette: orange = core charge). `qty_available` → red at 0
+  (out-of-stock), gray otherwise. `last_sold` → gray metadata, `text-[11px]`.
+- Qty stepper: small inline numeric, default 1.
+This dropdown is a **new workspace visual primitive — defined here = approved**; UI-Builder copies it
+verbatim, no improvisation. It is independent of **§8B** (workspace-header standard, still OPEN); §8B,
+when it lands, governs the header above the adder, not the adder itself.
+
+**5. Rollout — incremental, core-money-path first (NOT big-bang).** The Contract keeps the old per-doc
+endpoints alive for one-at-a-time migration. Order anchored to the Re-sequencing Rule:
+1. Extract the include from Quote's working `lineAdder` (Quote → immediate-add; closes §8G #1).
+2. Wire **SO** — clears Re-sequence **P0** "Can't add parts to Sales Order."
+3. Wire **Invoice** — clears Re-sequence **P0** "Can't add parts to Invoice."
+4. **§7 gate** → promote include to `macros/line_adder.html`.
+5. Wire **PO** (cost-mode + core) last (P1).
+Each step deletes that screen's old search partial + endpoint per Contract §4, and verifies line-add
+(plus, for SO/Invoice, the core money path) before moving to the next.
+
+**Lane ownership:** the data contract is Backend's (`LINE_ITEM_BUILDER_CONTRACT.md`); this UI pattern +
+visual contract is the Architect's, recorded here. UI-Builder implements per the §6 rollout; QA gates
+each screen's line-add against the functional suite.
+
+**✅ MIGRATION COMPLETE + GOVERNANCE PASS — 2026-05-31 (Architect).** All four workspaces now run the
+shared `line_items/_line_adder.html` include; verified **in-tree**, not on report:
+- **Commits (branch backend/workflow-series-3):** Quote + partial `797a407`; SO `2d76b83` (clears Re-seq
+  P0 "can't add parts to SO"); Invoice `5bb0bc0` (clears Re-seq P0); PO cost+core `1fb562c`.
+- **Immediate-add (§8H.1): PASS** — `selectProduct()` → `_post({product_id, qty})`; no staging, no disabled
+  +Add Line (`_line_adder.html:240-242`). Enter fast-path adds the top result / a misc line.
+- **Placement (the "gotcha"): PASS** — SO/Invoice/PO adders are preceding **siblings ABOVE** their
+  `outerHTML`-swapped sections (`#so-lines-section` L353<359 · `#lines-and-totals` L429<435 ·
+  `#po-lines-section` L254<258), so the adder survives re-render and keeps focus; Quote is `beforeend`
+  into `#quote-lines-tbody` (adder above the tbody). Configs verified: SO/Invoice `mode=sell` +
+  `show_discount=true`; **PO `mode=cost` + `show_discount=false`** (cost + core, orange); `child_mode=true`
+  Quote-only.
+- **Visual contract (§8H.4): PASS** — dropdown, hover/focus tokens, core=orange, qty_avail red-at-0 all
+  verbatim. `new_product` slide-over host is global in `base.html` (L300/L898) → + New Product wired on all four.
+- **§3/§4: clean** — no `window.confirm`; safe single-quoted `x-data` injection (cf. alpine injection rule).
+- **§7 three-screen gate: SATISFIED** (4/4 run it identically). Macro promotion to `macros/line_adder.html`
+  is therefore **PERMITTED but DEFERRED as optional** — the shared include is already single-source DRY;
+  promote only if a 5th consumer or a config-signature need arises. **Do not treat the gate as still pending.**
+
+*Non-blocking punch list (cosmetic — do NOT hold the migration):*
+1. `cross_ref` chip uses `badge-blue` not a literal "sky" token (`_line_adder.html:116`) — compliant
+   **RULED 2026-05-31 — `badge-blue` ACCEPTED.** No `badge-sky` token exists; blue/sky are one §4
+   informational bucket (cf. Payments "Wire=sky co-listed with blue"). §8H.4 wording updated "sky" →
+   `badge-blue`; **no `badge-sky` token will be added.** Item closed.
+2. Core chip uses inline `bg-orange-100 text-orange-700` (`_line_adder.html:140`) not a tokenized
+   `badge-orange` — add the token to `class-tokens.md` if the core chip recurs.
+3. + New Product create→add-back: confirm in-browser the quick-create slide-over dispatches
+   `record-created {type:'product', id}` so the new product auto-adds (search→click→add core path already
+   in-browser verified). QA item.
+
+**Do NOT re-flag the §8H migration as open** — it is in-tree and PASSED. Remaining follow-ups are QA's
+(stale smoke add-part selectors) and Backend's (delete the now-dead per-doc search routes/partials per
+Contract §4).
+
+**§8H.4 amendment — results row is now TWO LINES (owner request, 2026-06-06).** The original single-line
+row pinned the SKU to a fixed `w-24` (~13 chars) with `truncate`; real PAI SKUs average ~16 chars and run
+to 29 (`JAKS-PAI-MAK6635-PFT2AWHT1000`), so the dropdown clipped nearly every SKU (`JAKS-PAI-3400…`). Owner
+asked for the full SKU + room for more info. The row in `line_items/_line_adder.html` now stacks:
+- **Line 1:** match chip · **full SKU** (`font-mono text-blue-700`, `whitespace-nowrap`, never truncated) ·
+  title (`truncate`). Right rail top: **price**.
+- **Line 2 (metadata, `text-[11px]`):** **vendor_name** (`text-purple-600` — vendor=purple per §4; newly
+  surfaced, the JSON already returned it) · OEM/cross-ref (gray) · last-sold (gray). Right rail bottom:
+  qty_available (red-at-0 / gray) + core chip (orange).
+**No new colors/classes/tokens** — every token is pre-existing §8H.4/§4; only the flex layout changed from
+one row to two. Applies to all four workspaces (Quote/SO/Invoice/PO) via the shared include. Keyboard-nav
+contract preserved (`#la-result-{idx}` ids, `selectProduct(r)` on click/Enter, arrow handlers) so the
+§9 smoke add-part step is unaffected. Verified in-browser on `/quotes/9`: `JAKS-PAI-DRS-4312G-010` renders
+in full (not clipped) with vendor "PAI Industries" on line 2.
+
+---
+
+#### 8I. Phase-1A O-UI Visual Contracts — SET (Architect, 2026-05-31)
+
+Set **before** UI-Builder reaches them (pairs with Backend's O4/O5/O6 route contracts) so there is no
+rework. **Copy the referenced existing pattern — do not invent.** Grounded in `settings/index.html` and
+`vendors/detail.html`.
+
+**O4 — Vendor Contacts card** (`vendor_contacts` CRUD + `is_primary`). A `card` on `vendors/detail.html`:
+- Container: existing `card` + `card-header`/`card-title` ("Contacts"); header-right **`+ Add contact`**.
+- Table: **explicit Tailwind padding + `divide-y divide-gray-100`** — **NOT `tbl-*`** (banned; the legacy
+  `tbl` table at `vendors/detail.html:138` is the anti-pattern, do not copy it). Columns: Name · Role ·
+  Phone · Email · Primary · row-actions.
+- **`is_primary` chip:** a `badge-green` **"Primary"** pill on the primary row; backend guarantees **at most one
+  primary** per vendor. **"Make primary" is a dedicated per-row action** (`POST …/contacts/{cid}/make-primary`) —
+  the per-row **Edit** route deliberately ignores `is_primary` (no checkbox ambiguity), so the `is_primary`
+  checkbox appears **only on the Add form**.
+- **Per-row actions:** Edit (→ update route), Make primary (only when not primary), Delete (soft). Optional: a
+  small chip per function flag (`is_sales/warranty/returns/accounting_contact`) beside `role`.
+- **Submit mechanism — ✅ VERIFIED against shipped `VENDOR_CONTACTS_CONTRACT.md` @c17f2b6 (2026-05-31):** the
+  routes are **plain form-POSTs that 303-redirect** to `/vendors/{id}?saved=1#contacts` (or `?error=…#contacts`)
+  — **NOT** HTMX-partial swaps (there is no Backend-owned partial). Build the Add form + per-row forms as standard
+  POSTs; show the `saved`/`error` flash near the card; the `#contacts` anchor returns focus. Iterate
+  `vendor.contacts if c.is_active`; primary via `vendor.primary_contact`. Inline, no modal. **UI-Builder is
+  cleared to build the card to this — the O4 seam is consistent.**
+
+**O5 — Markup rules in Settings** (replace the hardcoded 30% at `product.py:202`). Copy the
+`settings/index.html` **percent-field** verbatim (`settings/index.html:28-35`): `label` +
+`flex items-center gap-2` + `<input type="number" step="0.1" min="0" class="w-32 rounded-lg border
+border-gray-200 …">` + `<span class="text-sm text-gray-400">%</span>`.
+- **Global default markup %** already IS this field (`default_markup_pct`) — keep as-is.
+- **Per-category override:** a "Pricing Defaults" card sub-table, one row per category (name + the same
+  percent-field + clear-to-inherit). Empty = inherit the global default.
+
+**O6 — Card surcharge** (replace the read-only banner at `invoices/workspace.html:566`). Two surfaces, same
+percent-field token as O5:
+- **Per-customer default %:** a percent-field on the customer create/edit form, labeled "Card surcharge
+  default %".
+- **Per-invoice override:** a small editable percent-field by the invoice totals, **DRAFT-gated**
+  (`{% if editable %}`), seeded from the customer default; blank = fall back to customer default → global
+  `cc_surcharge_pct`. The existing fee-estimate text stays as helper copy.
+- **Two-way** (can be cleared to 0) — fixes owner-test 1.9.e (the one-way 3% toggle). Writes the same field
+  the totals math already reads (`invoice.cc_surcharge_pct`).
+
+**Shared tokens (all three):** field = `rounded-lg border border-gray-200 px-3 py-2 text-sm focus:ring-2
+focus:ring-brand-400`; section card = `rounded-xl bg-white border border-gray-100 shadow-sm p-6`; save =
+`bg-brand-700 … hover:bg-brand-600`. **No new colors/classes.** §3/§4 apply; any modal/slide-over follows §3.
+
+---
+
+#### 8O. Chart.js Init Pattern — RATIFIED 2026-06-01
+<!-- (renumbered from a duplicate "8M" 2026-06-03; the canonical §8M is Phase-2 Shared Components below) -->
+
+**The rule: `defer` the lib at `base.html`; guard every `new Chart(...)` call with `DOMContentLoaded`.**
+
+`base.html` loads Chart.js with `defer` (L18). A deferred script executes after HTML parsing completes but
+before `DOMContentLoaded` fires — so any inline `<script>` that calls `new Chart(...)` at parse time will
+reference an undefined `Chart` constructor and silently no-op (or throw). The correct guard:
+
+```html
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    var ctx = document.getElementById('my-chart').getContext('2d');
+    new Chart(ctx, { /* config */ });
+  });
+</script>
+```
+
+Reference: `app/templates/dashboard.html:152` — "B-3: defer chart init until DOMContentLoaded — Chart.js
+loads with `defer`". This is the only approved Chart.js init pattern; any bare `new Chart(...)` outside a
+`DOMContentLoaded` listener is a bug.
+
+**Offline / CDN risk gate.** Alpine, HTMX, and Chart.js all load from CDN (`cdn.jsdelivr.net` /
+`unpkg.com`). A network outage or CDN failure renders the app non-functional. This is an acceptable risk for
+a local-network ERP (owner's laptop + local WiFi), but must be resolved before any cloud/SaaS deployment:
+self-host the three scripts under `/static/js/` and update the three `<script>` tags in `base.html`. Tag as
+a Phase 1B go-live prerequisite for cloud hosting; for local 1A use, CDN remains acceptable.
+
+**Print / totals parity (follow-up, NOT this round).** Ideally `quotes/print.html` and invoice print
+templates render from the same `totals` engine dict (`app/invoice_totals.compute_invoice_totals(...)`) that
+the workspace already uses — this guarantees identical subtotal / discount / tax / total across the screen,
+print, and PDF, and means cores/fees parity is automatic rather than duplicated logic. Current state: print
+templates recompute totals via Jinja2 arithmetic (e.g. `line.unit_price * line.qty`), which can drift from
+the service layer when edge-cases (cores, NSF lines, restocking fees) are involved. Flag for the next print
+pass — do not address in the current round.
+
+---
+
+#### 8N. D-10 — `product.cost` Semantic Decision (owner ruling required)
+
+**The collision.** Two features write `product.cost` with incompatible intent, and they run back-to-back
+on every PO receipt:
+
+| Write site | When | Intent | Source |
+|---|---|---|---|
+| `inv_svc._apply_moving_average_cost(product, qty, unit_cost)` | PO receipt, R11 | **Moving weighted-average cost** (COGS for existing inventory) | `po_service.py:359-361` |
+| `product_svc.compare_and_record_cost_change(…, new_cost=po_line.unit_cost)` → `_sync_cost_from_preferred()` → `product.cost = new_cost` | Same receipt, when PO cost ≠ stored vendor_source.vendor_cost | **Vendor quote price mirror** | `product_service.py:504-505`, `318-319` |
+
+When these differ, the vendor-sync fires second and **overwrites the moving average**. The product model's own comments are contradictory: L71-72 says "mirrors preferred vendor source cost for quick access"; L73 says "R11 — moving weighted average cost; updated on every PO receipt." The D-10 test case that prompted R11 fails because of this overwrite.
+
+**Options (owner must choose one):**
+
+**Option A — `product.cost` = moving-average COGS (RECOMMENDED).** The receipt path writes the moving
+average and owns `product.cost`. `_sync_cost_from_preferred` is narrowed to write only
+`ProductVendorSource.vendor_cost` — it stops touching `product.cost`. When a user updates a vendor source
+price manually (not from a receipt), the cached `product.cost` is deliberately NOT updated — the on-hand
+inventory was bought at the old price. `selling_price` and margin displays continue reading `product.cost`
+(they already do; behavior unchanged). Margin = `(sell_price - product.cost) / sell_price` = **COGS-based
+margin on current inventory** — the financially correct number for a diesel parts shop. When stock = 0,
+`product.cost` is the last receipt cost (standard moving-average convention).
+*Fix scope:* remove the `product.cost = new_cost` write from `_sync_cost_from_preferred` and
+`compare_and_record_cost_change` (keep `ProductVendorSource.vendor_cost` writes and cost-history rows).
+Zero migration needed — the column is unchanged.
+
+**Option A′ — add `product.avg_cost`, keep `product.cost` = vendor mirror.**
+Add a dedicated column (`avg_cost`) for the moving average; leave `product.cost` as the vendor-price mirror
+(the old intent from L71-72). Repoint margin display, `invoice_service.py:597`, and
+`search_service.py:118/247` to read `avg_cost`. *Cost:* small migration + repoint all ~5 read-sites.
+Cleanest long-term semantics (two distinct columns, unambiguous names).
+
+**Option B — reject R11; `product.cost` = vendor mirror only.**
+Remove `_apply_moving_average_cost` from the receipt path entirely. No moving average is maintained.
+`product.cost` is always the vendor quote price. *Only valid if the owner explicitly overrides the D-10
+design decision* ("product cost should update on receipt to reflect what we actually paid") — if D-10 was
+intentional, Option B directly contradicts it.
+
+**Architect recommendation: Option A.** Rationale: (1) D-10 was an explicit owner-tested behaviour —
+respecting it rules out Option B. (2) Option A′ is cleaner but costs 5 read-site rewrites + a migration for
+a net-zero behaviour change from the owner's perspective. (3) Option A is a two-line fix in
+`_sync_cost_from_preferred` / `compare_and_record_cost_change`. (4) Vendor quote prices belong on
+`ProductVendorSource.vendor_cost` — that column already exists and is the right home for them.
+
+**Ruling: OPTION A — owner confirmed 2026-06-01. Implemented + regression-guarded.**
+
+- `product_service.compare_and_record_cost_change`: removed the `if source.is_preferred: product.cost = …`
+  write (L316-319). Keeps the `ProductVendorSource.vendor_cost` update and cost-history row.
+- `product_service._sync_cost_from_preferred`: removed `product.cost = new_cost; cost_source = "vendor"`.
+  Keeps the cost-history row (notes updated to "vendor source cost updated — product.cost moving-avg
+  unchanged"). Docstring updated.
+- `inventory_service._apply_moving_average_cost`: adds `product.cost_source = "receipt"` so the field
+  unambiguously marks the moving-avg write.
+- `product.py:71-73`: model comment updated — `product.cost` is COGS moving-avg only; vendor quote lives
+  on `ProductVendorSource.vendor_cost`.
+- **Test:** `tests/test_product_cost_semantic.py` (3 passing) — guards the receipt case (PO cost ≠ stored
+  vendor cost), the weighted-average formula, and the `_sync_cost_from_preferred` no-op.
+- **Allowed reads of `product.cost`:** margin calculation, `selling_price`, invoice default unit_cost,
+  search `current_cost` — all are COGS-based margin, which is the correct semantic under Option A.
+
+---
+
+#### 8J. Activity Timeline — New UI Primitive (Timeline/Feed archetype) — RATIFIED 2026-05-31
+
+Governs the customer **Activity** timeline per `ACTIVITY_LOG_CONTRACT.md` §4 (Backend owns the data + merge;
+this is the UI pattern, ratified **before** UI-Builder builds it). The Timeline/Feed is a **third read
+archetype** — **not** a §2 Operational List, **not** a §2A Queue Board.
+
+**Archetype rules (what it is NOT):** no filter tabs, no bulk toolbar, no preview dock, no per-item queue
+actions. It is a **chronological, newest-first, read-only feed** merging manual activities + system-sent
+comms (`get_timeline`). The only write affordance is the shared **"+ Log Activity" modal** (Contract §4.1);
+the feed never edits in place (both stores are append-only).
+
+**Row format (one entry):** a left **rail** (type dot + vertical connector) then the body —
+- **Timestamp** — relative ("2h ago"), absolute on hover; optional **date sub-headers** (Today / Yesterday /
+  Mon DD) between days.
+- **Type chip** — `activity_type` as icon + label: call · text · email (informational → `badge-blue`),
+  counter_visit (in-person → `badge-gray` + store icon), note (`badge-gray`). The **icon** carries the type;
+  the chip color stays in the §4 informational/neutral family so it never competes with the outcome.
+- **Outcome chip** *(optional; activities only)* — `reached` → `badge-green`, `voicemail` → `badge-amber`,
+  `no_answer` → `badge-gray`. A NOTE has no outcome.
+- **Note** — the free text (`text-sm text-gray-700`).
+- **Linked-doc chip** *(when `related_entity_type` set)* — `font-mono` doc number in a chip linking to the
+  doc, e.g. `→ Q2026-0001` (`text-brand-700`), via the doc-identifier token.
+- **Logged-by** — the signed-in user who logged it (`text-[11px] text-gray-400`).
+- **System-sent comms** (`kind='comm'`) render in the SAME feed but **muted** (lighter rail dot + a small
+  "sent" tag) to mark them read-only audit, distinct from manual activity.
+
+**Empty state:** centered `.card` empty state — "No activity yet" + an explicit **"+ Log Activity"** CTA
+(unlike a queue, logging IS the action here, so a CTA is correct).
+
+**Reuse:** the doc-side activity panel (Contract §4.4, `activities_for_entity`) uses a **compact** variant of
+this same row (no rail / no date headers) — same chips, same linked-doc + logged-by. Build the row as one
+`{% include %}`-able partial so the Activity tab and the doc panel share it (don't fork two row layouts).
+
+**Tokens:** existing `badge-*` chips, `divide-y divide-gray-100` between entries, `.card` container. **No new
+colors/classes** — type stays informational/neutral, outcome carries green/amber. §3/§4 apply; the
+"+ Log Activity" modal follows §3 (role=dialog, z-[60], rounded-2xl, @keydown.escape).
+
+**This replaces** the old "Call Log" tab and the `/customers/{id}/communications` page (Contract §4). Ratified
+**before** the build — UI-Builder copies this; no improvisation.
+
+---
+
+#### 8K. Linked-Documents Strip — New UI Primitive (workspace cross-doc nav) — BUILT 2026-06-01
+
+A compact **"Linked"** chip strip rendered at the top of every Line-Item Workspace (Quote / SO / Invoice /
+PO), directly under the §8B action bar. It surfaces the document graph — source quote, sales order, related
+invoices, the PO sourcing a backorder — as clickable, status-toned chips so a user hops between linked
+records without leaving the workspace. Owner-requested 2026-06-01 ("link these together… the PO should show
+it's linked up; bills / invoices / quotes linked").
+
+**Why a primitive (not per-screen):** the same need recurred on all four workspaces, and three prior one-off
+treatments already existed (SO "Source Quote" field, SO "Related Invoices" card, Invoice "Sales Order" row).
+The strip unifies them. The legacy field/card were left in place (additive); the strip is the glance layer.
+
+- **Resolver (single source of truth):** `app/services/document_links.py` →
+  `related_documents(db, entity) -> list[DocLink]`. Reads only relationships/columns that already exist —
+  **no new schema**. The one link never stored on the PO side (PO → the SO it sources) is recovered by
+  walking `SOLine.linked_po_line_id` backwards. `DocLink` carries `(relation, kind, number, url, tone,
+  status_label, group)`; the resolver returns a coarse semantic **tone**, never CSS — colour stays in the
+  template per §5.
+- **Macro:** `app/templates/macros/linked_docs.html` → `linked_strip(links)`. Chip uses the §5 format
+  (`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold` + dot). The tone→class map
+  lives in the macro (one place → identical on every workspace). **All colours are §4-permitted families**
+  (gray/blue/amber/green/red) — no new colour. Renders nothing when `links` is empty.
+- **Wiring:** each workspace route sets `ctx["linked_documents"] = related_documents(db, entity)`; each
+  `workspace.html` calls `{{ linked_strip(linked_documents|default([])) }}` at the top of `content`.
+- **Tests:** `tests/test_document_links.py` (every direction + the PO→SO reverse + re-order-after-cancel).
+
+**Companion (SO line lifecycle).** The backordered-line chip in `sales_orders/_lines_section.html` now tracks
+the sourcing PO's progress — Backorder → **Ordering** (draft PO) → **On order · ETA** (sent) → **Receiving**
+(partial) → **Ready** (reserved_stock) — and falls back to **Backorder + Re-order** if that PO is cancelled.
+Owner ruling 2026-06-01: a line reads "On order" only once the PO is actually **sent** (a draft still reads
+"Ordering"). `SalesOrderService.create_po_for_line` now treats a cancelled linked PO as re-orderable (drops
+the stale link) so Re-order doesn't hit the "already linked" guard.
+
+**Status:** BUILT 2026-06-01 (owner-directed). **✅ Architect governance PASS 2026-06-01.** Ruling:
+- **Pattern:** PASS. A clickable navigation chip distinct from the read-only §5 `status_chip` span — correct
+  to define as a new primitive rather than overloading the status chip.
+- **Condition (previously noted):** `related_documents()` must be defensively safe (never raise; return `[]`
+  on any error). The template's `|default([])` is a guard against `None` only — the service itself must
+  be wrapped. Confirm before committing the full §8K router/service diff.
+- **§7 list:** Add `linked_strip(links)` to the §7 primitives backlog as Primitive 7. Three-screen gate
+  satisfied once Quote/SO/Invoice/PO all call it (currently 4 workspaces via the wired workspace diffs).
+- **Do NOT re-pass or rebuild.**
+
+---
+
+#### 8L. After-Sale Service Section — start cores / warranty / RA from an invoice — BUILT 2026-06-01
+
+Owner-requested 2026-06-01 ("start the core return process from the invoice screen as well start a warranty or
+return from this screen"). The natural counterpart to §8K: where the Linked strip *navigates* to documents
+already tied to the invoice, this *creates* the downstream service documents from it.
+
+A new **"After-Sale Service" card** renders on the Invoice workspace for **finalized** invoices
+(OPEN / PARTIAL / PAID; hidden on DRAFT/VOID), placed after the Payments panel. Two parts:
+- **Core Returns** — one row per open `CoreCharge` on this invoice (resolved in `invoices.py`
+  `_workspace_context` by joining `CoreCharge.invoice_line_id → InvoiceLine.invoice_id`), each with the inline
+  qty/inspection/condition form copied from `cores/list.html` (the `awaiting_return` block) posting to the
+  unchanged `POST /cores/{id}/return`. Copied, not extracted — §7 needs 3 identical users (this is the 2nd).
+- **Warranty & Returns** — two buttons that open the existing global create slide-over (`createSlideOpen` /
+  `#create-slide-content` in base.html) loading `/warranty/new?invoice_id=` and `/returns/new?invoice_id=`.
+
+The picker GET routes now seed from the invoice: customer pre-selected, invoice number carried (warranty got a
+hidden field — it had none before, so the POST's invoice link was previously unreachable from the UI), and the
+invoice's PRODUCT lines pre-loaded as editable lines (seeded via a `<script type="application/json">` block +
+`x-init` JSON.parse — never tojson-in-attribute, per the product-new footgun). Seeded products are unioned into
+the `<select>` options so an inactive part still resolves. The create/money paths
+(`WarrantyService.create_claim`, `RAService.create_ra`, `CoreService.record_customer_return`) are **unchanged** —
+the POST handlers already accepted `invoice_number` + line arrays.
+
+- **Files:** `app/routers/invoices.py` (`_workspace_context` → `invoice_cores`), `app/routers/warranty.py` +
+  `app/routers/returns.py` (GET `…/new` invoice seeding), `app/templates/invoices/workspace.html` (the card),
+  `app/templates/warranty/_new_picker.html` + `app/templates/returns/_new_picker.html` (seed + invoice field).
+- **Tests:** `tests/test_invoice_after_sale_actions.py` (9 — GET seeding, `invoice_cores` join, card visibility
+  by status, POST invoice-link).
+- **Governance:** composes existing primitives only — no new CSS class, no new colour (orange = core is
+  §4-permitted). The `bg-orange-50/30` opacity variant was added → `npm run build:css` re-run.
+
+**Status:** BUILT 2026-06-01 (owner-directed). **✅ Architect governance PASS 2026-06-01.** Ruling:
+- **Pattern:** PASS. Composes existing primitives only: the global create slide-over (already in base.html),
+  the §5 status chip, the cores inline form (copied from `cores/list.html` — copying is correct at this
+  stage; §7 extraction gate fires when a 3rd consumer appears, not before). No new CSS class; no new colour.
+- **Placement:** After the Payments panel, finalized-only — correct. The card is invisible on DRAFT/VOID,
+  preventing action on documents that aren't settled.
+- **`bg-orange-50/30` opacity variant:** Permitted under §4 `orange-*` (core-charge semantic); opacity
+  modifier does not change the colour family. `npm run build:css` re-run required before shipping.
+- **Do NOT re-pass or rebuild.**
+
+---
 
 #### 8C. Customer Profile UX Fixes — IMPLEMENTED (UI Builder, 2026-05-29)
 
@@ -961,3 +2197,1204 @@ pass — **pending Architect governance sign-off** (Builder does not self-mark c
    owner asked to defer cosmetic/UX polish. Do not redesign without an Architect instruction.
    Targets: `app/templates/customers/statement_form.html`, `.../statement_print.html`,
    and `customer_statement_*` routes in `app/routers/customers.py`.
+
+---
+
+#### 8M. Phase-2 Shared Components — flags · margin toggle · intelligence panel · credit status — BUILT + RATIFIED 2026-06-02
+
+The first wave of Phase 2 (`PHASE_2_PLAN.md` §8 build order) needs three cross-cutting UI primitives
+that recur on many screens. Per the §8J/§8K precedent, the Architect authors these as the canonical
+contract **up front** — ahead of the §7 "3 identical screens" extraction gate. That gate guards against
+premature extraction of *existing duplication*; here the risk is the inverse — if UI-Builder hand-rolls
+flags / metrics / margin-gating per screen we get N divergent versions of a net-new feature. Defining
+the interface once is the governance-correct move. **These three UNBLOCK the UI-Builder lane.**
+
+All three are **pure presentation**: they render against data Backend has **not built yet** (the flag
+schema + `CustomerMetricsService`) without erroring — render today, light up when the data lands, zero
+template rework. No caller introduces new schema (§2B).
+
+**Component 1 — Customer Flags (Primitive 8 · P2-D2 / §4.3).**
+- **File / macros:** `app/templates/macros/customer_flags.html` → `customer_flags(flags, compact=False)`,
+  `customer_flag(key, compact=False)`.
+- **Contract:** `flags` is a list of flag KEY strings. The macro NEVER reads customer columns — it maps
+  keys → chip via the taxonomy registry (single source of truth in the file). Unknown keys render a
+  neutral gray chip with the raw key in the `title` (never a 500, never silently dropped).
+- **Taxonomy — KEYS are canonical in `app/constants.py::CustomerFlag` (Backend); the macro mirrors them.**
+  6 keys → §4 colour: `requires_po` (amber), `credit_hold` (red), `tax_exempt` (blue), `call_first` (blue),
+  `text_preferred` (blue), `warranty_escalation` (purple). Labels match `constants.CUSTOMER_FLAG_LABELS`
+  (reconciled 2026-06-02: macro fixed `Warranty Watch`→`Warranty Escalation` and dropped the speculative
+  `do_not_contact` — it is in neither §4.3 nor the enum). Chip colour/icon/label is canonical IN the macro.
+  Add a flag = add to `CustomerFlag` (Backend) + the macro registry + this section; new colour → Architect.
+- **Compact mode** = icon-only (label → `aria-label` + `title`) for dense list rows.
+- **Backend contract — SHIPPED @ca58c81 (foundations @d28eaa3):** `Customer.flag_keys -> list[str]`
+  (delegated by `CustomerService.flags_for`) is the single derivation point. `customer_flags(...)` is the
+  ONLY sanctioned chip renderer — the router also passes a `customer_flag_labels` dict, but do **not**
+  hand-roll label-only pills from it (no colour/icon = divergence). Pass `customer.flag_keys | default([])`.
+
+**Component 2 — Margin Show/Hide Toggle (P2-D3).**
+- **Where:** `base.html`. Root `<body>` x-data gains `showMargin` (persisted to `localStorage`, **OFF by
+  default**) + `toggleMargin()`, mirroring the existing `sidebarCollapsed` pattern. A header control
+  (between the Live indicator and the notifications bell) flips it; brand-tinted when ON.
+- **Consumption (app-wide, no per-screen wiring):** wrap margin/profit figures in
+  `x-show="showMargin" x-cloak`. `showMargin` is inherited from the root scope. No role gate (P2-D3).
+- **Mechanism choice:** body-x-data + localStorage (the established pattern) — **NOT** a new
+  `Alpine.store`. Consistency over novelty.
+
+**Component 3 — Intelligence Panel (Primitive 9 · P2-Q1 / §5.8 / §2B).**
+- **File / macros:** `app/templates/macros/intelligence.html` → `intelligence_panel(metrics, cols=4)`
+  (generic layout primitive) + `customer_intelligence_panel(m, cols=4)` (§4.4) +
+  `invoice_intelligence_panel(m, cols=4)` (§5.8).
+- **Generic contract:** `metrics` = list of descriptors `{label, value (pre-formatted str), tone?, hint?,
+  margin?}`. A descriptor with `margin: true` is auto-wrapped in `x-show="showMargin"` (ties Component 2
+  to the data). Grid uses only compiled classes (`grid-cols-2 md:grid-cols-4|3|2`); section labels use
+  the preview-dock micro-label token. Renders nothing when empty.
+- **Backend contract — `CustomerMetricsService` (P2-Q1), `m` keys:** money — `lifetime_sales`,
+  `ytd_sales`, `avg_order_value`, `open_ar_balance`, `credit_limit`, `available_credit`,
+  `outstanding_core_credits`; dates — `last_quote_date`, `last_invoice_date`, `last_payment_date`; bool —
+  `credit_hold`. Invoice panel (§5.8) keys: `profit`, `margin_pct`, `core_liability`, `warranty_exposure`,
+  `customer_lifetime_sales`. One definition per P2-Q1 so list / preview / detail / panel all agree.
+  **SHIPPED:** `CustomerMetricsService` @ca58c81 (METRIC_KEYS include the UI aliases `avg_order_value` /
+  `open_ar_balance` / `credit_hold`) + `InvoiceMetricsService` @c2487d9 (wired in `invoices.py
+  _workspace_context`). Both built to this contract — **do not rename keys.**
+
+**Component 4 — Credit Status (Primitive 10 · P2-D4/D5 / §4.5).**
+- **File / macros:** `app/templates/macros/credit_status.html` → `credit_badge(cs, compact=False)` (glance
+  posture for list / preview / header) + `credit_warn(cs)` (non-blocking warn banner for Quote/SO/Invoice).
+- **Contract:** both consume `CustomerService.credit_status(customer, prospective_amount=0.0)` — keys
+  `on_hold` · `over_limit` · `available_credit` (None = no limit) · `warn` · `message`. WARN-ONLY, never
+  blocks (P2-D4). `credit_warn` renders nothing unless `warn`; both empty-safe (`cs=None`). Colours: red
+  (hold), amber (over/warn), green (available), gray (no limit) — all §4-permitted.
+- **Backend contract — SHIPPED @d28eaa3:** `CustomerService.credit_status` / `would_exceed_credit`. On a
+  workspace pass the doc total as `prospective_amount` so the message reads "exceeds available credit by $X".
+
+**Component 5 — Metric Strip (Primitive 11 · §2B / §5.1, built 2026-06-03).**
+- **File / macros:** `app/templates/macros/metric_strip.html` → `metric_strip(tiles, cols=4)` (list-header
+  KPI-tile strip) + `metric_tile(t)`.
+- **Contract:** `tiles` = list of `{value, label, icon?, tone?, sub?, href?, alert?}`. Big-number KPI tiles
+  (icon box + `text-2xl` value + uppercase label) in a responsive grid. `href` → tile becomes a filter link;
+  `alert` → red ring; a numeric-0 value auto-mutes. Empty-safe. §4-permitted tones only (verified compiled).
+- **Why a new primitive (not `intelligence_panel`):** distinct visual — `intelligence_panel` is a compact
+  label/value grid for a record panel; this is the icon + big-number dashboard strip. Extracted at the §7
+  3-screen gate from the EXISTING `cores/list.html` + `warranty/list.html` strips (the §5.1 SO dashboard is
+  the 3rd). Those two should port to the macro when convenient (UI-Builder); new dashboards use it directly.
+
+**Component 6 — SO↔PO Status Chip (Primitive 12 · §5.2 / §5.10, built 2026-06-03).**
+- **File / macros:** `app/templates/macros/so_status.html` → `so_po_status_chip(rollup, href=None, show_detail=True)`.
+- **Contract:** consumes Backend's `SalesOrderMetricsService.po_link_status(line)` / `po_link_map(so)` rollup
+  dict `{status, label, po_id, po_number, eta_date}` (status ∈ draft·ordered·partial·received·cancelled,
+  §5.10 @aceae25) PLUS synthetic `{'status':'backorder'}` / `{'status':'ready', …}` for the non-linked /
+  reserved-stock cases. Macro owns COLOUR per status (amber=waiting, blue=in-flight, green=here, gray=void);
+  LABEL comes from `rollup.label` (Backend; "UI may relabel") with a macro default. ETA shown for waiting
+  states; links to the PO. `show_detail=False` → label-only (dense list rows). Empty-safe.
+- **Why a new primitive:** the backorder/ETA lifecycle is already copied across `sales_orders/_lines_section`
+  (rich, PO.status-keyed) + `detail.html` (bare "Backorder"); the §5 SO wave (list status column / dashboard /
+  ready-to-ship) needs it again — one chip off the §5.10 rollup. Those two copies should port to it
+  (UI-Builder); new §5 surfaces use it directly. (Vendor-catalog integration is OUT of scope @1afd51a — no macro.)
+
+**Rollout order (UI-Builder) — tracks `PHASE_2_PLAN.md` §8 build order:**
+1. **Customer Flags** — ✅ WIRED @406d322 + governance PASS 2026-06-03 (customer list compact / preview /
+   detail + Quote/SO/Invoice workspace headers; correct `flagmacro.customer_flags(… | default([]))`).
+2. **Customer Intelligence Panel** — ✅ WIRED @406d322 (customer `detail` Account header + `_preview_panel`).
+3. **Credit Status** — 🟡 PARTIAL. ✅ `credit_badge` + `credit_warn` on customer `detail` + `_preview_panel`
+   @505fc4b (governance PASS 2026-06-03). ⏳ Pending: `credit_warn` on Quote/SO/Invoice workspaces (route must
+   pass `credit_status(customer, doc_total)` — Backend seam).
+4. **SO §5 wave** — ✅ WIRED @f32c41a + governance PASS 2026-06-03. `metric_strip(so_tiles, cols=4)` on
+   `sales_orders/list.html` (8 tiles from `dashboard_metrics()` → `SO_DASHBOARD_KEYS`, §4 tones, On-Hold `href`
+   filter) + per-row `so_po_status_chip` (backorder synthetic + earliest ETA, gated on `so.has_backorder`).
+5. **Invoice Intelligence Panel** (§5.8) — ✅ WIRED @b17abd8 + governance PASS 2026-06-03
+   (`invoices/workspace.html`; Profit/Margin gated by the live `showMargin` toggle).
+6. **Margin consumers** — wrap each margin figure in `x-show="showMargin"` (the toggle is already live).
+7. **§7.2 Enrich-from-CSV** — ✅ WIRED @b2093cd + governance PASS 2026-06-03 (`products/list.html` Alpine
+   `fetch` → `POST /products/enrich-sync` JSON summary; correct JSON-endpoint pattern, §4 colors, no footgun).
+8. **§5.12 PDF branding** — 🟡 IN PROGRESS (this turn): shared `documents/_company_header.html` (logo + text
+   fallback) + `_footer.html` (configurable `footer_text`) + `.co-logo` print CSS, consuming the LIVE
+   `get_company_dict()`. invoices/ + quotes/ print migrated onto the shared partials → all 6 print docs now
+   share ONE branded definition. Next: Settings UI for logo upload / footer text is Backend/Admin's.
+
+**Governance ruling (Architect, 2026-06-02): ✅ PASS.**
+- **Pattern:** PASS. Net-new cross-cutting primitives authored as the contract before the 3-screen gate,
+  per the §8J/§8K precedent. No new CSS class; no new colour family (all §4-permitted, verified compiled
+  in `app/static/css/app.css`).
+- **Safety condition (MET):** all FOUR macro families render against empty/missing data without erroring —
+  verified by `tests/test_phase2_ui_macros.py` (14 tests: known/compact/empty/unknown flags; the
+  canonical-`CustomerFlag` drift guard; StrEnum-member input; money/date/credit-hold/empty metrics; the
+  margin-gating count; credit badge states + warn-only banner; `base.html` toggle through the real app stack).
+- **Schema:** none added (§2B). Backend owns the data contracts (all SHIPPED: `Customer.flag_keys` @ca58c81,
+  `CustomerMetricsService` @ca58c81, `InvoiceMetricsService` @c2487d9, `CustomerService.credit_status`
+  @d28eaa3); the view layer holds no business logic.
+- **Renderer discipline (the check applied to each render as it lands):** `customer_flags()` /
+  `credit_badge()` / `credit_warn()` / the `*_intelligence_panel` wrappers are the ONLY sanctioned renderers
+  for their data. UI-Builder must CALL them — not hand-roll chips from `customer_flag_labels`, not rebuild a
+  metric grid inline. Verify correct usage (call site + `| default([])` seam), not rebuilds.
+- **Do NOT re-pass or rebuild the macros.** Backend contracts are live, so each surface populates the moment
+  UI-Builder wires the call site — no further macro changes required.
+
+**Governance pass — 406d322 + b17abd8 rollout (Architect, 2026-06-03).** Reviewed the wired flag chips +
+customer/invoice intelligence panels across the customer/quote/SO/invoice surfaces (jaks-ui-governance:
+review usage, punch, don't rebuild).
+- **Flag chips (P2-D2): ✅ PASS.** All 6 surfaces call `flagmacro.customer_flags(… | default([]))` via the
+  namespaced import (avoids the `customer_flags` context-var ↔ macro-name collision) — compact on the list,
+  full elsewhere. `customers/list.html` correctly DROPPED its old tax-exempt pill in favour of the chip.
+- **Customer Intelligence Panel (P2-Q1): ✅ PASS.** `intel.customer_intelligence_panel(…)` on detail + preview.
+- **Invoice Intelligence Panel (§5.8 / P2-D3): ✅ PASS** (wired @b17abd8).
+  `intel.invoice_intelligence_panel(invoice_intelligence | default({}))` on `invoices/workspace.html`;
+  Profit/Margin correctly gated by `showMargin`. Minor (non-blocking): the wrapper uses raw
+  `bg-white rounded-xl border…` utilities rather than the `.card` class — cosmetic only.
+- **Punch list (handed to UI-Builder — screen files, not Architect-owned):**
+  1. `customers/detail.html` ~L80-87 — **hand-rolled credit badge** (`On Credit Hold` / `Over Credit Limit`)
+     built inline from `_m`: a renderer-discipline violation AND redundant with the `credit_hold` flag chip +
+     the panel's Available-Credit tone. Fix: remove it (redundant), or replace with
+     `credit.credit_badge(credit_status)` (router must pass a `credit_status` dict).
+  2. `quotes/workspace.html` ~L73-77 — **redundant "Tax Exempt" pill** duplicates the flag chip at L30
+     (tax_exempt is in `flag_keys`). Remove for parity with `customers/list.html`; surface the cert # in a
+     non-duplicative spot if still wanted. (Quote-workspace only — SO/Invoice headers are clean.)
+  3. **Credit-status not delivered.** Despite 406d322's message ("…credit warn"), `credit_badge`/`credit_warn`
+     are called nowhere; no file imports `credit_status.html`. The §4.5 credit-warn on Quote/SO/Invoice
+     workspaces is still TODO (rollout step 3).
+- **Verdict:** flag-chip + intelligence-panel rollout **PASS** (usage correct — no rebuilds). Credit-status
+  rollout **INCOMPLETE** + 1 divergence to reconcile. Punches 1-2 are non-blocking; do not hold the passed work.
+
+**Governance pass — 505fc4b (2026-06-03, later): ✅ PASS.** The punch-clears + surcharge landed:
+- ✅ **Punch #1 CLEARED** — `customers/detail.html:86` now renders `creditmacro.credit_badge(credit_status |
+  default({}))` (hand-roll gone) + a `credit_warn` banner (L77, gated on `.warn`); `_preview_panel.html:109`
+  uses `credit_badge` too. Both `{% import "macros/credit_status.html" as creditmacro %}`; the route passes
+  `credit_status` (`customers.py` :468 preview/list, :1215 detail). Correct macro usage — no rebuild.
+- ✅ **Punch #2 CLEARED** — the redundant quote-workspace "Tax Exempt" pill is removed (flag chip is canonical).
+- ✅ **Surcharge** — `new.html` gained the Card Surcharge % (default) field + type-default pre-fill, consistent
+  with the `detail.html` D-7 field (same helper copy). PASS.
+- ⏳ **STILL OPEN (punch #3 remainder):** `credit_warn` on the SO / Invoice / quote WORKSPACES (§4.5) — needs
+  the route to pass `credit_status(customer, doc_total)` (prospective_amount = the doc total); Backend seam.
+- §5 SO UI not yet wired — `metric_strip` (P11) + `so_po_status_chip` (P12) are READY; `sales_orders/list.html`
+  is now UNBLOCKED (@9467046, below), left to UI-Builder. Vendor-catalog OUT of scope @1afd51a — no macros.
+
+**Governance pass — 9467046 + 9e7a364 (2026-06-03, cont.).**
+- ✅ **SO list badge @9467046: PASS** — the Invoiced/Partial column now derives from `so.status` (==
+  `SOStatus.INVOICED` / `PARTIAL`) via the canonical `status_chip` macro (green / amber, §4), matching the
+  tabs + counts so the column can't contradict the "Invoiced" tab (fixes the stale-`qty_invoiced`-after-void
+  bug). Correct macro usage; unblocks the §5.1 strip wiring.
+- 🟡 **D-6 @9e7a364: ROUTE HALF only — TEMPLATE HALF still TODO.** `products.py` quick-create now re-renders
+  `_quick_create.html` at 200 with `error` + `form_data` (HTMX swaps the panel instead of the generic 422
+  fallback). The template does **not** yet consume them, so a validation error currently swaps in an EMPTY
+  panel with no message (user input lost). UI-Builder must add an `{% if error %}` banner (standard
+  `bg-red-50 border-red-200 text-red-700` alert) + repopulate inputs from `form_data`. Govern that half on landing.
+
+**Governance pass — f32c41a + b2093cd + §5.12 (2026-06-03, cont. 3): ✅ PASS.** Synced to @370820b. Build-order
+items 1–6 done; §7.2 enrichment landed; PDF branding in progress.
+- ✅ **SO §5 strip + chip @f32c41a** — `metric_strip(so_tiles, cols=4)` (8 `SO_DASHBOARD_KEYS` tiles, §4 tones,
+  On-Hold `href` filter) + per-row `so_po_status_chip` (backorder + earliest ETA, gated on `so.has_backorder`).
+  Both imported via `{% from … %}`; correct macro usage.
+- ✅ **D-6 template half @f32c41a** — `_quick_create.html` now renders the `{% if error %}` banner (the standard
+  `bg-red-50 border-red-200 text-red-700` alert) + `fd.get(...)` field repopulation. Completes D-6 (route half
+  @9e7a364) — the earlier "empty panel" gap is closed.
+- ✅ **Scraper UI removed @f32c41a** — `_enrich_panel.html` deleted; `products/detail.html` trigger gone (now a
+  §8P comment); grep-clean (no live `enrich-panel` / `product-cost-synced` / `ScraperSource` refs). Matches §8P.
+- ✅ **§7.2 Enrich-from-CSV UI @b2093cd** — `products/list.html` Alpine `fetch` → `POST /products/enrich-sync`
+  (JSON) with error / success / busy states. Correct JSON-endpoint pattern (not a naive hx-get), §4 colors, no
+  tojson-in-attr footgun, "matches by SKU — never creates" guard. PASS.
+- 🟡 **Core Dashboard strip (§5.4): NOT landed** — only the Backend metrics service @03b167b; no UI strip yet.
+  When built it should use `metric_strip` (Primitive 11). Nothing to confirm this turn.
+- ⏳ **credit_warn on SO/Invoice workspaces:** Backend `credit_status` seam SHIPPED @fb05e08 → UI wiring now
+  UNBLOCKED (still pending UI-Builder; `credit_warn` currently only on customer detail/preview).
+- ✅ **§5.12 PDF branding (Architect, this turn):** the shared print branding partials now own the §5.12 logo +
+  footer — `documents/_company_header.html` (logo `<img class="co-logo">` when `logo_url` + `show_logo`, else the
+  text company name) + `_footer.html` (configurable `footer_text`, `white-space:pre-line`, default fallback) +
+  `.co-logo` in `documents/_styles.html`. Consumes the LIVE `get_company_dict()` (logo_url / show_logo /
+  footer_text — empty-safe). **invoices/ + quotes/ print migrated** off their inline header/footer onto the
+  shared includes (the 4 other print docs already included them) → ALL 6 print templates share one definition.
+  Verified: `tests/test_phase2_ui_macros.py` (logo / suppressed / no-logo fallback / footer_text + the migrated
+  templates compile) + the B-1 invoice-print render guards stay green. **OPEN (Backend/Admin):** the Settings
+  UI to upload the logo + edit footer text (`company_logo_path` / `document_footer_text` settings already exist).
+
+---
+
+#### 8P. Product Scraper / Enrichment Panel — REMOVED (out of scope, P2-D9 @1afd51a)
+
+The vendor-catalog integration (PAI / SAMPA / Interstate McBee scrape → enrich) is OUT of Phase-2 scope
+(P2-D9, removed @1afd51a). Its UI — the **product enrichment / scraper panel** — is removed with it. No
+macro, no governance pattern for it; this is a pure deletion.
+
+**Removal checklist (UI-Builder executes; Architect governs the diff as it lands — 2026-06-03 dispatch):**
+- Delete `app/templates/products/_enrich_panel.html` (the Phase-2 placeholder panel — "when the scraper is
+  live this panel will pull pricing / catalog data").
+- `products/detail.html`: remove the **"Enrich from {source}"** trigger (~L10-12, `hx-get …/enrich-panel`)
+  and the now-dead **`@product-cost-synced.window`** listener (~L87). Per §8N the moving-avg `product.cost`
+  no longer mirrors the vendor source, so that event is already stale — see [[vendor-source-cost-sync]].
+- Backend (separate lane): drop the `GET /products/{id}/enrich-panel` route + the `ScraperSource` context.
+
+**Governance criteria (apply at landing):** the removal must leave **no dangling reference** — grep clean for
+`enrich-panel`, `product-cost-synced`, and any orphaned `ScraperSource` / `src_code` / `src_name` template
+var. Pure deletion → no new primitive, no colour, nothing to re-pass once the greps are clean.
+
+---
+
+#### 8Q. List Standards Wave — Save standard · sortable_th · sticky-thead · row-stripe LOCK (2026-06-03)
+
+Targeted standards pass on the operational lists + forms (Architect-owned: macros / CSS / plan).
+
+**(1) Save standard — DECIDED (records the rule so it stops drifting).** Two patterns, chosen by surface type:
+- **Autosave line-item workspaces (Quote / SO / Invoice / PO)** → **Save Standard v2**: silent debounced
+  autosave + a **sticky bottom dirty-state save bar** (honest clean/dirty/saving/error pill + manual Save).
+  Quote has it (`quotes/workspace.html`); Invoice/SO/PO autosave but currently surface NO honest save feedback.
+  **Recommendation: roll the Save Standard v2 sticky bar out to SO/Invoice/PO** — same component, driven by each
+  workspace's autosave events. Quote is **not** special; the bar is the standard for autosave docs.
+- **Submit forms (create / edit: customers, products, vendors, …)** → the **bottom button bar** (explicit
+  Save Changes / Create). Not autosave → the dirty-state sticky bar doesn't apply; keep the bottom button
+  (per §8C the customer-detail edit footer already follows this).
+- **Rule:** autosave surface → sticky dirty-state bar; submit surface → bottom button. No third pattern.
+
+**(2) `sortable_th(label, key, sort, direction, qs, align)` — Primitive 13** (`macros/sortable.html`). Clickable
+column header: links `?sort={key}&direction={asc|desc}` (toggles direction on the active column), preserves other
+query params via `qs`, shows ▲/▼ on the active column + a faint ↕ otherwise. **Route contract (aligned to the
+shipped Backend seam `app.utils.apply_sort` @3cb1a86):** the list route reads `sort` + **`direction`** (param
+name is `direction`, NOT `dir` — invoices/quotes/payments/customers all use it), calls `apply_sort(query,
+allowed, sort, direction, default=…)`, and echoes the normalized `sort`/`direction` back. Reuse across the four
+operational lists for identical sort UX. The href is built as one expression so autoescape renders separators as
+`&amp;` uniformly (injection-safe — `qs` is never `|safe`). Tests in `tests/test_phase2_ui_macros.py`.
+**Note:** the macro originally emitted `dir`; reconciled to `direction` @ (this commit) when Backend's
+apply_sort landed @3cb1a86 — macro was unadopted, so it conformed to the shipped routes.
+**2026-07-07: Products List adopted it** (Part#/Cost/Avail headers) — NOT via `apply_sort` (Products' sort
+already has bespoke SQL: search-relevance ordering, vendor/category scalar subqueries with NULLS-last
+tiebreakers that a generic whitelist-dict helper would regress) — added `cost`/`avail` as new `elif` branches
+alongside the existing ones, all direction-aware. List/Margin are NOT sortable yet — they're PricingService-
+computed (markup tiers, price_override, zero-cost vendor fallback), not a stored column, and Products is
+30k+ rows (the Special Order tab alone is 30k+), so the invoices-style "Python-sort a capped ~2000 rows" approach
+would silently misorder most of a large filtered set. Needs an explicit approach decision (SQL-approximated via
+a markup CASE expression, vs. a capped Python sort with a clearly-communicated limit) before it's added — flagged
+to the owner, not yet decided. Still open on Quotes/Invoices/PO/SO lists too (UI-Builder: add
+`{{ sortable_th(...) }}` to their theads).
+
+**(3) Sticky-thead — define-once CSS** (`.sticky-thead` in `app/static/css/input.css`, @layer components):
+apply `.sticky-thead` to a `<thead>` and all its `<th>` stick to the top while the body scrolls (opaque gray-50
+bg so rows pass cleanly underneath). Pairs with `sortable_th`. **Activates on the next `npm run build:css`** —
+`app.css` was dirty (another lane mid-build) so it was NOT hand-edited; the rule lives in the `input.css` source
+and compiles on the next build (§8L precedent).
+
+**(4) 🔒 Row-stripe CONSTRAINT — LOCKED.** The colored left-edge row stripes (`border-l-4` on the first `<td>`,
+§2/§2A/§2C/§4 color semantics) are a **locked operational feature** — they encode at-a-glance urgency
+(red=critical/overdue · amber=warning · blue=info · transparent=normal) that counter staff rely on. **No future
+redesign, "modernization", or density pass may remove them or their color semantics.** Any restyle must preserve
+the stripe. (Carried from the prior wave's directive; also marked inline at §2.)
+
+**Scope of this wave:** Architect delivered the macro + CSS + the recorded decisions/constraint. **UI-Builder
+implements:** adopt `sortable_th` + `.sticky-thead` on the four lists (routes add `sort`/`dir`), and roll the
+Save Standard v2 sticky bar onto SO/Invoice/PO. Govern each as it lands.
+
+---
+
+#### 8R. Settings — Tabbed Layout + Editable Pricing Grid (Architect ruling, 2026-06-03)
+
+**Context.** `app/templates/settings/index.html` is currently a flat, scrolling single-column form (Company /
+Pricing Defaults / QBO / Documents / Shopify / TaxJar cards). As the Settings page grows (pricing-tier
+defaults, logo upload, document branding, future integrations) the flat layout becomes unworkable. The
+Architect rules here on the tab pattern and the pricing-grid component so UI-Builder implements them
+correctly without re-work.
+
+**Decision 1 — Tab pattern for Settings.**
+Use the **`.tab-bar` / `.tab-active` / `.tab-inactive` Alpine-toggle pattern** (the same as
+`app/templates/customers/detail.html` lines 20-55) — **not** the `filter_tabs` macro (Primitive 1).
+
+Rationale:
+- `filter_tabs` is for **list filtering** (product/invoice/quote/SO tabs): it links `?tab=…` server-side
+  query params and expects a route to handle them. Settings is a **form-navigation** screen with no
+  per-tab route changes needed — pure client-side section switching.
+- The `.tab-bar` / `.tab-active` / `.tab-inactive` CSS classes (already in `input.css`, defined under "Legacy
+  underline-style tabs — permitted for screens not yet on the pill-tab") are exactly this: section toggles
+  driven by Alpine `x-data` with a `tab` variable and `@click="tab = 'company'"` switches.
+- A Settings page is a workspace, not a list — the workspace tab pattern is correct.
+
+**Implementation (UI-Builder):**
+```
+<div x-data="{ tab: 'company' }">
+  <div class="tab-bar">
+    <button class="tab" :class="tab === 'company'      ? 'tab-active' : 'tab-inactive'" @click="tab = 'company'">Company</button>
+    <button class="tab" :class="tab === 'pricing'      ? 'tab-active' : 'tab-inactive'" @click="tab = 'pricing'">Pricing</button>
+    <button class="tab" :class="tab === 'documents'    ? 'tab-active' : 'tab-inactive'" @click="tab = 'documents'">Documents</button>
+    <button class="tab" :class="tab === 'integrations' ? 'tab-active' : 'tab-inactive'" @click="tab = 'integrations'">Integrations</button>
+  </div>
+  <div x-show="tab === 'company'" x-cloak> … </div>
+  <div x-show="tab === 'pricing'" x-cloak> … </div>
+  …
+</div>
+```
+
+**Tab contents (minimum slot assignment):**
+| Tab | Contents |
+|---|---|
+| **Company** | company_name, company_address, company_phone, company_email, invoice_notes |
+| **Pricing** | default_markup_pct, cc_surcharge_pct · Customer Type Defaults grid (see Decision 2) |
+| **Documents** | document_footer_text, document_terms_text, document_show_logo · logo upload |
+| **Integrations** | QBO credentials (client_id, secret, env, redirect_uri, push_tax) + Connect card · TaxJar · Shopify |
+
+The save button belongs at the **bottom of each tab panel** (not a single bottom-of-page button for all tabs
+— the user shouldn't have to see unrelated fields to understand what they're saving). The QBO Connect card
+stays outside the form (as currently — POST /qbo/connect is a separate action).
+
+**Decision 2 — Pricing tiers are an editable grid, not code.**
+The customer type defaults (P2-D1 / §4.1) currently live in the `customer_type_defaults` table
+(`CustomerTypeDefault` model) read by `CustomerService.resolve_defaults()`. Previously these were only
+settable via the admin or initial seed. The Settings → Pricing tab must expose them as an **editable HTML
+grid** so the owner can maintain them without touching code.
+
+**Grid shape** (1 row per `CustomerType`, 1 column per editable default):
+
+| Type | Terms | Pricing Tier | Disc % | Credit Limit | Tax Exempt | Surcharge % |
+|---|---|---|---|---|---|---|
+| Fleet | `<select>` | `<select>` | `<input number>` | `<input number>` | `<checkbox>` | `<input number>` |
+| Owner-Operator | … | … | … | … | … | … |
+| Repair Shop | … | … | … | … | … | … |
+| Dealer | … | … | … | … | … | … |
+| Municipality | … | … | … | … | … | … |
+| Internal | … | … | … | … | … | … |
+| Other *(global fallback)* | … | … | … | … | … | … |
+
+Route contract: `GET /settings/` passes `type_defaults` (list of `CustomerTypeDefault` rows, one per type,
+keyed by `customer_type`); `POST /settings/` saves them alongside the other settings. The route must ensure
+a row exists for every `CustomerType` (create missing rows on save — `CustomerService.resolve_defaults()`
+already falls back to in-code defaults when a row is absent, so missing rows are safe before save).
+
+**🔒 DARK constraint — pricing grid stays read-only until the owner activates it.**
+The type-driven defaults are a non-trivial feature: they pre-fill the new-customer form for every future
+customer. An owner who hasn't reviewed the grid values yet shouldn't accidentally activate defaults that
+don't match their business. Therefore:
+
+- The grid renders in a **visually dimmed, `disabled` / `pointer-events-none` state** by default.
+- A clear header toggle/switch ("Enable type-driven defaults") activates the inputs and enables the save
+  path. The toggle persists as a setting (`customer_type_defaults_enabled` — add to DEFAULTS in
+  `settings.py`).
+- When DARK: the grid is visible (so the owner can preview the defaults), but all inputs are `disabled`
+  and the form section's save button is also disabled. A notice explains: *"Review and adjust defaults
+  above, then enable to make them active."*
+- When ACTIVE: inputs are live, the save button is active, and new-customer form auto-fill is ON.
+
+**Alpine implementation sketch:**
+```html
+<div x-data="{ active: {{ 'true' if type_defaults_enabled else 'false' }} }">
+  <label class="flex items-center gap-2">
+    <input type="checkbox" name="customer_type_defaults_enabled" x-model="active" …>
+    Enable type-driven customer defaults
+  </label>
+  <div :class="active ? '' : 'opacity-50 pointer-events-none select-none'">
+    <!-- the grid table -->
+  </div>
+  <button type="submit" :disabled="!active">Save Pricing Defaults</button>
+</div>
+```
+
+**Governance pass — @845d92f (2026-06-03): ✅ PARTIAL PASS (tab pattern PASS; pricing grid PENDING).**
+
+Tabbed Settings page landed in `845d92f` (`settings/index.html`, 235 insertions). Governance result:
+
+- ✅ **Tab pattern: PASS.** Uses `.tab-bar`/`.tab-active`/`.tab-inactive` with Alpine `x-data="{tab:'company'}`
+  and `@click="tab = 'X'"` — exactly the pattern specified. Six tabs: Company / Pricing / QuickBooks /
+  Shopify / Tax / System. Template comment explicitly cites "reuses the customers/detail.html tab-bar
+  pattern." `filter_tabs` macro NOT used. No custom tab markup.
+- ✅ **Shared form + single Save: CORRECT.** All tab panels use `x-show` (inputs stay in DOM), so a single
+  `<button type="submit">Save Settings</button>` outside all tab panels correctly posts every field. A per-tab
+  save button would cause incomplete submits. My §8R spec said "each tab has its own Save" — that was wrong
+  for a shared-form layout; the builder's single-save approach is the right call. `filter_tabs` routing would
+  have required per-tab routes; the shared-form avoids that complexity. **Ruling updated: single save button
+  is the approved pattern for the shared-form settings layout.**
+- ✅ **Documents in Company tab (not Documents tab): non-blocking.** The builder grouped footer/terms/logo
+  into the Company tab (they are company-identity fields). §8R proposed a separate "Documents" tab — that
+  grouping was a suggestion, not a constraint. Staying under Company is fine.
+- ✅ **Logo upload as a separate `<form enctype="multipart/form-data">` outside the main form: CORRECT.**
+  (File inputs can't be nested in the main form without `enctype` change; the builder correctly isolated it.)
+- ⏳ **Pricing grid: PENDING — Backend seam not yet provided.** The Pricing tab currently shows only
+  `default_markup_pct` / `cc_surcharge_pct` with a comment: *"Cost-bracket markup grid + Preview impact +
+  Activate toggle are pending the Backend seams (route must pass markup_tiers rows…)"*. This is the
+  right approach — placeholder now, grid when the route passes `type_defaults`. The DARK-constraint spec
+  (§8R Decision 2) still applies when that grid lands:
+  - Grid must use existing `.form-input` / `.form-select` / `.form-checkbox` — no new CSS.
+  - `customer_type_defaults_enabled` toggle → `opacity-50 pointer-events-none` on the grid when inactive.
+  - A `<table>` with one `<tr>` per `CustomerType`, not a code-only list.
+
+**Governance checklist (updated — ✅ = passed; ⏳ = pending):**
+- ✅ Tab uses `.tab-bar`/`.tab-active`/`.tab-inactive` with Alpine `x-data` — no custom tab markup.
+- ✅ `filter_tabs` macro is NOT used for Settings tabs.
+- ✅ Single Save button (outside all tab panels) — the approved pattern for the shared-form layout.
+- ✅ Logo upload isolated in its own `<form enctype="multipart/form-data">`.
+- ⏳ Pricing grid is an HTML `<table>` with `<select>`/`<input>` cells — pending Backend `type_defaults` seam.
+- ⏳ DARK state: grid + inputs disabled until `customer_type_defaults_enabled` toggle is on.
+- ⏳ Grid uses existing form CSS classes (`.form-input`, `.form-select`, `.form-checkbox`), no new classes.
+
+---
+
+#### 8S. Dashboard widget layout · F2 shortcut · customer_status_chip · Quote §8B header (2026-06-03)
+
+##### 8S-1. `customer_status_chip(status, compact=False)` — Primitive 17
+
+Added to `macros/chips.html`. Self-coloring chip for the 4 customer lifecycle states — callers pass a string
+key, the macro owns all colour + label. All §4-permitted colours.
+
+| status | colour | label |
+|---|---|---|
+| `active` | green | Active |
+| `inactive` | gray | Inactive |
+| `on_hold` | amber | On Hold (temporary business hold) |
+| `credit_hold` | red | Credit Hold (P2-D5 — manual CREDIT_HOLD flag) |
+| unknown | gray | humanised raw value (defensive, never a 500) |
+
+`compact=True` → dot only (no text label) for dense list rows; `title` tooltip still carries the full label.
+Derive status in the route or template: credit_hold if `CustomerFlag.CREDIT_HOLD in c.flag_keys`; inactive if
+`not c.is_active`; active otherwise. **Not yet wired on the customer list/detail/preview** — UI-Builder adopts.
+
+**Primitive 17** — added to the §7 backlog alongside 8–16. Tests in `tests/test_phase2_ui_macros.py`
+(4 tests: all states, compact, unknown defensive).
+
+##### 8S-2. F2 = "Quick-Add Product" — global counter shortcut in `base.html`
+
+**Decision:** the F2 keyboard shortcut is a **`<body>` keydown handler in `base.html`** (counter-wide) —
+NOT a per-screen binding added to each list or workspace. Rationale: the product quick-create is the single
+most frequent mid-flow action at the counter (adding a part while on a quote/SO/invoice without losing context).
+A global binding works everywhere without per-screen wiring.
+
+**Implementation (already live in `base.html`):**
+```js
+@keydown.f2.window="
+  if (!$event.target.matches('input,textarea,select,[contenteditable]')
+      && !$event.ctrlKey && !$event.metaKey && !$event.altKey) {
+    $event.preventDefault();
+    htmx.ajax('GET', '/products/quick-create-form', {target: '#create-slide-content', swap: 'innerHTML'});
+    $dispatch('open-create-slide', {title: 'Quick-Add Product'});
+  }
+"
+```
+
+The input-field guard (`!$event.target.matches(...)`) prevents F2 firing when the user is typing in a search
+box or form. No hidden trigger button needed — `htmx.ajax()` + `$dispatch('open-create-slide')` loads the
+form into the global slide-over directly. `$dispatch` triggers the `@open-create-slide.window` listener on
+`<body>` (same pattern as all other slide-over opens). **Existing shortcuts**: Ctrl+K = global search (unchanged).
+
+##### 8S-3. Dashboard widget layout — governance pass
+
+**Dashboard (`app/templates/dashboard.html`) — ✅ PASS with one noted gap.**
+
+- ✅ **Chart shrink (height=90):** `<canvas height="90">` with `maintainAspectRatio: true` produces a compact
+  bar chart (~half height of a full panel). Appropriate for a dashboard summary card — users click "Full report →"
+  for detail. Correct per §2B ("Do not add new schema / analytics — use existing data cheaply").
+- ✅ **KPI strip (7 tiles):** `grid-cols-2 sm:grid-cols-4 xl:grid-cols-7` with `.stat-card-*` inset-border
+  variants (green/brand/red/amber/blue). §4 color semantics correct (green=cash, red=overdue, amber=pending,
+  blue=active orders). All tiles link to relevant reports.
+- ✅ **Side panel (1/3 col):** Follow-Ups Due + Inventory Alerts + Recent Activity — correct `.card`,
+  `.card-header`, `.card-title`, `.divide-y`, `hover:bg-stone-50/70` hover states. Follow-Ups uses days-late
+  urgency colouring (red ≥2d, amber 1d, gray=today) — good §2B information density.
+- ✅ **Main panel (2/3 col):** Recent Invoices uses `.tbl`/`.tbl-row` classes — permitted for a dashboard
+  widget (not an L2 operational list screen, so the tbl-* ban does not apply here).
+- ⚠️ **Top Customers widget NOT YET LANDED.** The dispatch describes "graph shrunk ~50% + Top Customers +
+  Open Follow-Ups side panel" — Follow-Ups and the shrunk graph are present, but there is no Top Customers
+  widget. When built, it should live in the right sidebar (follow the existing card pattern: `.card`,
+  `.card-header`, list of customers ranked by YTD revenue via `CustomerMetricsService`). Non-blocking — the
+  gap is a missing widget, not a governance issue.
+- ✅ **Row stripes constraint respected:** no `border-l-4` stripes are present on the dashboard widget tables
+  (stripes belong only on operational list screens, not dashboard cards). Correct.
+
+##### 8S-4. Quote workspace §8B action header — ✅ PASS (2 non-blocking punches)
+
+**Quote workspace (`quotes/_header_actions.html`) — ✅ PASS overall; two non-blocking punches.**
+
+The quote workspace action header was extracted into `quotes/_header_actions.html` (included in `{% block
+header_actions %}`) — good pattern, keeps workspace.html clean. The §8B Workspace Action-Header Standard:
+
+- ✅ **Always visible:** rendered inside base.html's `sticky top-0` header — never hidden by scroll.
+- ✅ **Status badge:** `badge-*` chip shown on every status.
+- ✅ **Primary CTA per status:** Send (DRAFT) / → Sales Order ▾ (DRAFT+SENT) / Reactivate (DECLINED/EXPIRED).
+- ✅ **Overflow "More ▾"** for secondary actions (→ Invoice, Mark Lost) — correct disclosure pattern.
+- ✅ **Print/PDF first-class** (promoted from overflow per the 2026-06-02 "Quote Print/PDF→first-class"
+  ruling in memory).
+- ✅ **Mark Lost popover** — uses a custom overlay (not `window.confirm()`). ✅
+- ✅ **Convert to SO** uses a disclosure dropdown — not a native confirm. ✅
+
+**Punches (non-blocking — UI-Builder):**
+1. **`target="_blank"` on `← All quotes`** (`line 150`): the back link opens a new tab. Back links navigate in
+   the SAME tab — remove `target="_blank" rel="noopener"` from that `<a>`.
+2. **`← All quotes` is LAST in the flex row** (rightmost). §8B Zone 1 (back link) should be the leftmost
+   action. Move the `<a>` to the beginning of the outer `<div>`. As the only `hidden lg:inline` element it won't
+   crowd small screens but will read correctly on desktop.
+3. **`window.confirm()` on "→ Invoice" convert** (`onsubmit="return confirm(...)"`): native browser dialog.
+   The `confirm_modal` macro (`macros/confirm_modal.html`) is the project standard (§3). Replace with the
+   macro's `jakConfirm({…})` pattern.
+*Note:* As of rebase `9f50216` the quote workspace context now also carries `cust_outstanding_cores`,
+`cust_last_purchase`, `cust_lifetime_sales` (Seam 3) and `prepared_by`. These feed the workspace sidebar
+and the print template respectively — they do NOT go in the header actions strip (too verbose for the sticky
+header). Punches 1-3 above are still OPEN (the header file is unchanged at `9f50216`).
+
+---
+
+#### 8T. Dashboard rLayout · Quote §8B update · Prepared-by placement (2026-06-03)
+
+##### 8T-1. Dashboard widget rLayout — Forward spec (backend seams LIVE @9f50216)
+
+The backend now passes `top_customers` (list of `{customer, lifetime_sales}`, top-5 by non-void invoice total)
+and `open_followups` (dict `{status: count}`) + `open_followups_total` to the dashboard template context.
+
+**New two-column chart row replacing the current full-width chart (UI-Builder builds):**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  [KPI tiles strip — unchanged, full width]                                  │
+├────────────────────────────────────────┬────────────────────────────────────┤
+│  Revenue chart (lg:col-span-2)         │  Right panel (lg:col-span-1)        │
+│  canvas height=90, full-width on       │  ┌─────────────────────────────┐   │
+│  mobile (lg: 2/3 width)                │  │ Top Customers (card)        │   │
+│  Chart card unchanged.                 │  │ — rank 1..5, name + $$ YTD  │   │
+│                                        │  │ each row → customer detail  │   │
+│                                        │  ├─────────────────────────────┤   │
+│                                        │  │ Open Follow-Ups (card)      │   │
+│                                        │  │ — total count + status chips│   │
+│                                        │  │ → /quotes/?follow_up=due    │   │
+│                                        │  └─────────────────────────────┘   │
+├────────────────────────────────────────────────────────────────────────────-┤
+│  [Existing lg:grid-cols-3 row: Recent Invoices (2/3) + sidebar (1/3)]      │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Top Customers card spec** — `top_customers` context var:
+- A `<ul>` with `divide-y divide-gray-100` inside a `.card`, header "Top Customers" with "All →" link to
+  `/customers/` sorted by lifetime sales.
+- Each `<li class="px-5 py-3 flex items-center gap-3 hover:bg-stone-50/70 cursor-pointer">`
+  → row shows: rank pill (1-5, tiny gray badge), customer name (truncated), lifetime sales (`$X,XXX` right-aligned).
+  Click navigates to `/customers/{id}`.
+- Use `'%.0f'|format(tc.lifetime_sales)` with `$` prefix — no decimals needed at dashboard level.
+- Empty state: "No invoice data yet" (use the standard `empty_state` pattern).
+- **No new CSS class.** `.card`, `.card-header`, `.card-title`, `divide-y`, standard list.
+
+**Open Follow-Ups card spec** — `open_followups` (dict `{status: count}`) + `open_followups_total`:
+- A compact `.card` below Top Customers in the same right column.
+- Header "Follow-Ups" + `open_followups_total` count + "View →" → `/quotes/?follow_up=due`.
+- Show each status as a badge + count: `badge-amber "Follow Up: N"`, `badge-gray "Pending: N"`, etc.
+  Use the existing `fu_badges` / `fu_labels` map pattern from the dashboard's existing Follow-Ups card.
+- If `open_followups_total == 0`: green "All caught up ✓" state.
+
+**Layout implementation:**
+```html
+{# Replace the standalone full-width chart card with this 2-col row #}
+<div class="grid grid-cols-1 gap-4 lg:grid-cols-3 mb-5">
+  <div class="lg:col-span-2">
+    {# ── existing Revenue chart card (move here, no change to its content) ── #}
+  </div>
+  <div class="flex flex-col gap-4">
+    {# ── Top Customers card ── #}
+    {# ── Open Follow-Ups card ── #}
+  </div>
+</div>
+{# ── THEN the existing lg:grid-cols-3 row (Recent Invoices / sidebar) below ── #}
+```
+
+**Governance criteria (apply when UI-Builder lands this):**
+- [ ] Chart card is MOVED into the 2/3 left column — no markup change inside it.
+- [ ] Top Customers uses `top_customers` context var (not a new query); row click → `/customers/{id}`.
+- [ ] Follow-Ups uses `open_followups` + `open_followups_total` (not re-querying quotes).
+- [ ] No new CSS classes. Existing `div.card`, `ul.divide-y`, `hover:bg-stone-50/70`, standard badge palette.
+- [ ] Border-l-4 row stripes only if overdue-context applies — the dashboard widget lists do NOT use them
+  (the stripe lock applies to operational list screens, not dashboard cards). Correct existing behavior.
+
+##### 8T-2. Quote workspace §8B — customer context strip update
+
+The §8S-4 governance pass (PASS with 3 punches) still stands. Additionally, Seam 3 (`@9f50216`) now
+provides the workspace with `cust_outstanding_cores`, `cust_last_purchase`, `cust_lifetime_sales`. These
+belong in the workspace's **existing customer context strip** (the info row at lines ~74-103 that shows
+`cust_open_balance`, `cust_overdue_balance`, `cust_credit_balance`, `cust_last_payment_date`).
+
+**Where to add the new chips (in the same row, after the existing balance chips):**
+```html
+{% if cust_outstanding_cores %}
+<span class="text-xs text-orange-600 font-medium">
+  Cores: {{ cust_outstanding_cores }} open
+</span>
+{% endif %}
+{% if cust_last_purchase %}
+<span class="text-xs text-gray-400">
+  Last sale: {{ cust_last_purchase.strftime('%b %d') }}
+</span>
+{% endif %}
+```
+`cust_lifetime_sales` is available but optional at this surface — only surface it if screen width allows
+(hidden on sm, visible lg+). This is a §2B intelligence-density addition, not the full intelligence panel
+(that lives on customers/detail.html). **No new CSS classes.**
+
+The 3 punches from §8S-4 remain OPEN for UI-Builder:
+1. Remove `target="_blank"` from `← All quotes`.
+2. Move `← All quotes` to leftmost position (§8B Zone 1).
+3. Replace `window.confirm()` with `jakConfirm()`.
+
+##### 8T-3. Prepared-by placement — DECIDED: under the doc number in `doc-right`
+
+**Decision: "Prepared by" goes in the `doc-right` block (print header, right side), below the doc date/terms
+line — NOT in the document footer.**
+
+Rationale:
+- The doc-right block (`<div class="doc-right">`) already carries the document's metadata:
+  `doc-label` (Invoice / Proposal), `doc-number` (INV-2026-xxxx / Q-2026-xxxx), and `doc-dates`.
+  "Prepared by" is metadata about THIS document's creation — it belongs with the other doc-identity fields,
+  not buried in the footer alongside terms/thank-you copy.
+- Customers read the right side of the header first (that's where they look for the doc number/date).
+  Seeing the preparer's name there associates the document with a specific person immediately.
+- A footer placement competes with footer_text (terms/return policy) and would be easy to overlook. It's
+  also less professional than a header placement.
+- The footer is for legal/commercial terms and thank-you copy. The preparer is operational identity.
+
+**Implementation (UI-Builder adds to `invoices/print.html` + `quotes/print.html` in `doc-right`):**
+```html
+<div class="doc-right">
+  <div class="doc-label">Invoice</div>          {# or "Proposal / Quotation" #}
+  <div class="doc-number">{{ inv.invoice_number }}</div>
+  <div class="doc-dates">
+    <strong>Date:</strong> …<br>
+    <strong>Due:</strong> …<br>
+    <strong>Terms:</strong> …
+  </div>
+  {% if prepared_by %}
+  <div class="doc-dates" style="margin-top:6px;border-top:1px solid #eee;padding-top:4px;">
+    <strong>Prepared by:</strong> {{ prepared_by }}
+  </div>
+  {% endif %}
+</div>
+```
+The `doc-dates` class re-use (small font, right-aligned, muted color) is intentional — it keeps the preparer
+typographically consistent with the other doc-right metadata without a new class. The divider (`border-top`)
+visually separates it from the date block. `prepared_by` is provided by `get_prepared_by(db, user_id)`
+(added to all document routes in `@9f50216`); it falls back to `"JAKS"` when user is unknown.
+
+**Sales Orders + POs + Returns + Warranty print templates** should receive the same treatment consistently —
+add `prepared_by` to their route contexts (it may already be added; verify each) and include the same
+`{% if prepared_by %}` block in their `doc-right`.
+
+---
+
+#### §8U. Governance Wave — `acf3c34` quick-wins + `customer_status_chip` adoption punches
+
+**Commits reviewed:** `acf3c34` (Backend/QA go-live hardening + UX quick-wins) and `301e976` (QA xfail
+seam tests). No UI-Builder renders of the §8T pending items have landed yet.
+
+##### 8U-1. PASS — `acf3c34` Dashboard security banner
+
+Backend added a `{% if admin_pw_default %}` warning banner above the KPI strip in `dashboard.html`.
+Correct placement, standard Tailwind classes (`bg-red-50 border-red-200 text-red-800`), inline SVG icon
+(no icon component available). The banner does not conflict with the pending §8T-1 rLayout.
+**GOVERNANCE PASS.** Dashboard rLayout (§8T-1) still OPEN — chart is still full-width.
+
+##### 8U-2. PASS — `acf3c34` Quote workspace column-header terminology rename
+
+Backend changed `QOH` → `On Hand` and `Sell $` → `Unit Price` in `quotes/workspace.html` table header.
+Terminology now matches the other workspace screens. Cosmetic fix only; no Alpine, no route change.
+**GOVERNANCE PASS.**
+
+##### 8U-3. PUNCH — `customer_status_chip` not adopted in 3 customer templates
+
+`customer_status_chip` (Primitive 17, `macros/chips.html`, §8S-1) is the ONLY sanctioned renderer for
+customer lifecycle status (active/inactive/on_hold/credit_hold). Three files hand-roll the chip instead,
+causing style divergence (`rounded-full` on detail vs `rounded-lg` on list via `status_chip`).
+
+**`customers/detail.html`** — hand-rolled 3-way `{% if %}` at lines ~157-163:
+```html
+{# BEFORE — delete these 7 lines: #}
+{% if customer.customer_status == 'on_hold' %}
+<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-700">On Hold</span>
+{% elif customer.customer_status == 'credit_hold' %}
+<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-700">Credit Hold</span>
+{% elif customer.customer_status == 'inactive' %}
+<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">Inactive</span>
+{% endif %}
+
+{# AFTER — chips.html import already absent; add to import block at top: #}
+{% from "macros/chips.html" import customer_status_chip %}
+{# replace the hand-roll with: #}
+{% if customer.customer_status and customer.customer_status != 'active' %}
+{{ customer_status_chip(customer.customer_status) }}
+{% endif %}
+```
+
+**`customers/list.html`** — hand-rolled `_scmap` dict passed to generic `status_chip()` at lines ~245-250:
+```html
+{# BEFORE — delete the _scmap block and status_chip call: #}
+{% if c.customer_status and c.customer_status != 'active' %}
+{% set _scmap = {'on_hold':(...), 'credit_hold':(...), 'inactive':(...)} %}
+{% set _sc = _scmap.get(c.customer_status) %}
+{% if _sc %}<div class="mt-1">{{ status_chip(_sc[0], _sc[1], _sc[2]) }}</div>{% endif %}
+{% endif %}
+
+{# AFTER — add customer_status_chip to the existing chips import at line ~32: #}
+{% from "macros/chips.html" import status_chip, customer_status_chip %}
+{# replace the hand-roll with: #}
+{% if c.customer_status and c.customer_status != 'active' %}
+<div class="mt-1">{{ customer_status_chip(c.customer_status) }}</div>
+{% endif %}
+```
+
+**`customers/_preview_panel.html`** — no `customer_status` rendered at all; payment terms chip rendered
+instead. Add a customer status row to the Account section (after the Terms row):
+```html
+{# AFTER the terms row in the Account section: #}
+{# Add customer_status_chip to the existing chips import at line ~10: #}
+{% from "macros/chips.html" import status_chip, customer_status_chip %}
+{# Add this row after the Terms row: #}
+{% if c.customer_status and c.customer_status != 'active' %}
+<div class="flex items-center justify-between">
+  <span class="text-xs text-gray-500">Status</span>
+  {{ customer_status_chip(c.customer_status, compact=False) }}
+</div>
+{% endif %}
+```
+
+**Governance criteria (apply when UI-Builder submits the fix):**
+- [ ] All 3 files use `customer_status_chip(...)` — zero hand-rolled status badge spans remain.
+- [ ] `customers/detail.html` and `customers/list.html` both guard `!= 'active'` (active = no chip shown).
+- [ ] `customers/_preview_panel.html` adds the Status row only for non-active customers.
+- [ ] No style divergence: all rendered chips match the `customer_status_chip` MAP (rounded-lg, not rounded-full).
+
+##### 8U-4. QA xfail flags — Backend fixes required before UI can complete these items
+
+QA commit `301e976` found 3 xfails in `tests/test_phase2_seams.py` that block pending UI work:
+
+1. **`cust_outstanding_cores` / `cust_last_purchase` wrong keys** — The quote workspace seam
+   (`@9f50216`) reads these from `CustomerMetricsService.metrics_for()`, whose canonical keys are
+   `outstanding_core_credits` and `last_invoice_date`, not the expected `outstanding_cores`/`last_purchase`.
+   The context values are always 0/None. Fix: use `InvoiceMetricsService._outstanding_cores(cid)` and
+   `InvoiceMetricsService._last_purchase(cid)` (or expose via a dedicated seam method). **UI-Builder
+   should NOT wire the `cust_outstanding_cores`/`cust_last_purchase` chips (§8T-2) until this xfail flips.**
+
+2. **`get_prepared_by(db, unknown_id)` raises AttributeError** — The function guards `user_id is None`
+   but not a user_id that doesn't match any row. The JAKS-fallback docstring says it should return `"JAKS"`
+   for unknown users, but the guard is incomplete. A missing user_id would 500 the print route.
+   *(Updated: UI-Builder wired it with a `{% if prepared_by %}` guard — safe; Backend still needs to
+   fix the AttributeError so `get_prepared_by` always returns a string.)*
+
+3. **No print template wires `prepared_by` yet** — confirmed OPEN. *(Updated: DONE @f73cc2f; see §8V.)*
+
+**Status of all §8T pending items (updated after §8V governance pass @f73cc2f):**
+| Item | Status |
+|------|--------|
+| §8T-1 Dashboard rLayout (chart + Top Customers + Follow-Ups) | ✅ **PASS** @f73cc2f |
+| §8T-2 Quote §8B punches 1-3 (target, position, confirm) | ✅ **PASS** @f73cc2f |
+| §8T-2 Quote context strip cores/last-purchase chips | ✅ **WIRED** @f73cc2f (guard; data live when Backend xfail #1 flips) |
+| §8T-3 Prepared-by in print templates (invoices + quotes) | ✅ **WIRED** @f73cc2f (guard; shows when Backend xfail #2 flips) |
+| §8T-3 Prepared-by in SO/PO/Returns/Warranty print | **OPEN** — 4 remaining print templates |
+| §8U-3 `customer_status_chip` adoption (3 files) | **OPEN** — punches still outstanding |
+
+---
+
+#### §8V. Governance Pass — `f73cc2f` §8B/§8T render wave
+
+**Commit reviewed:** `f73cc2f` — UI-Builder, 5 template files, no routes/macros/base.html touched.
+
+##### 8V-1. PASS — `quotes/_header_actions.html` (all 3 §8B/§8S-4 punches cleared)
+
+| Punch | Fix | Verdict |
+|-------|-----|---------|
+| Remove `target="_blank"` from "← All quotes" | Removed; new link has no `target` | ✅ CLEARED |
+| Move "← All quotes" to Zone 1 (leftmost) | Added at top of flex div with `mr-auto`; pushes all other controls right | ✅ CLEARED |
+| Replace `window.confirm()` with `jakConfirm()` | Form gets `id="quote-convert-invoice-form"`; button is `type="button"` with `@click="jakConfirm({formId:...})"` | ✅ CLEARED |
+
+`jakConfirm` `formId` mode is canonically supported by `macros/confirm_modal.html` (line 31: `askConfirm(formId)
+→ jakConfirm({ formId, title, body })`). Pattern is correct. **GOVERNANCE PASS.**
+
+##### 8V-2. PASS — `quotes/workspace.html` (§8T-2 intel chips)
+
+- `cust_last_purchase` wired as "Last sale: {{ date }}" — `text-xs text-gray-400`, empty-safe (`{% if %}`). ✅
+- `cust_lifetime_sales` wired as "Lifetime: $X" — `hidden lg:inline` respects the width constraint in spec. ✅
+- `cust_cores_owed_qty` correctly NOT duplicated (already present in the strip). ✅
+- Data correctness gap (`cust_last_purchase` always `None` due to xfail #1) is defensive: guard hides it silently
+  until Backend fixes the seam. **No display error; no 500.** The wiring is correct — Backend owns the fix.
+
+**GOVERNANCE PASS.**
+
+##### 8V-3. PASS — `dashboard.html` (§8T-1 rLayout)
+
+Verified against governance criteria from §8T-1:
+
+| Criterion | Result |
+|-----------|--------|
+| Chart card in `lg:col-span-2` left column; canvas `id="revenue-chart"` unchanged | ✅ |
+| `<script>` untouched (binds by canvas id; no JS changes needed) | ✅ |
+| Top Customers wired from `top_customers` ctx (not a new query) | ✅ |
+| Row click → `/customers/{tc.customer.id}` via `onclick` on `<li>` + `<a>` | ✅ |
+| `"No invoice data yet"` empty state when `top_customers` is falsy | ✅ |
+| Follow-Ups from `open_followups` dict + `open_followups_total` (not re-querying) | ✅ |
+| `"All caught up" + checkmark svg` empty state | ✅ |
+| Link → `/quotes/?follow_up=due` | ✅ |
+| No new CSS classes — `div.card`, `ul.divide-y`, `hover:bg-stone-50/70`, `badge-*` all existing | ✅ |
+| No `border-l-4` row stripes on widget lists (stripe lock is for operational lists only) | ✅ |
+| Right column: `flex flex-col gap-4` to stack two cards | ✅ |
+
+**Minor observation (non-blocking):** Row click on Top Customers uses raw `onclick="location.href=..."` on
+`<li>`. Acceptable for a non-operational dashboard widget — the `<li>` is not in an Alpine context and a
+simple navigation doesn't need HTMX. `<a>` with `event.stopPropagation()` correctly handles Ctrl+click
+separately. Not a governance block.
+
+**GOVERNANCE PASS.**
+
+##### 8V-4. PASS — `invoices/print.html` + `quotes/print.html` (§8T-3 prepared-by)
+
+Both files: `{% if prepared_by %}` guard + `<div class="doc-dates">` with `border-top` separator, placed in
+the `doc-right` block under the date/terms line — exactly matching the spec's `{% if prepared_by %}` block.
+Placement is correct (doc-right, not footer). `doc-dates` class reuse preserves consistent typography.
+
+The AttributeError xfail (unknown user_id) is Backend's responsibility. The `{% if prepared_by %}` guard
+ensures the template never 500s — it simply hides the block if the route passes `None`. Safe to ship.
+
+**Open gap:** SO / PO / Returns / Warranty print templates have not received `prepared_by` yet (4 remaining).
+UI-Builder should apply the same `{% if prepared_by %}` block to their `doc-right` sections in a follow-up.
+
+**GOVERNANCE PASS (invoices + quotes).**
+
+---
+
+##### §8V Summary
+
+All 4 items in `f73cc2f` PASS. No blocking punches.
+
+| Item | Verdict |
+|------|---------|
+| `quotes/_header_actions.html` — 3 §8B punches | ✅ PASS — all cleared |
+| `quotes/workspace.html` — §8T-2 intel chips | ✅ PASS — wired + guard |
+| `dashboard.html` — §8T-1 rLayout | ✅ PASS — chart + widgets correct |
+| `invoices/print.html` + `quotes/print.html` — §8T-3 prepared-by | ✅ PASS (invoices+quotes; SO/PO/returns/warranty OPEN) |
+
+**Remaining open work:**
+1. §8U-3 `customer_status_chip` adoption — `customers/detail.html`, `list.html`, `_preview_panel.html`
+2. Prepared-by in SO / PO / Returns / Warranty print templates (4 files)
+3. Backend xfail #1: fix `cust_last_purchase`/`cust_outstanding_cores` seam keys
+4. Backend xfail #2: fix `get_prepared_by(db, unknown_id)` AttributeError
+
+---
+
+#### §8X. Workspace action-bar overflow — root cause + Quote fix (2026-06-07)
+
+**Owner report (Quote screen, Critical):** at standard monitor widths the workspace action
+buttons ("Send to Customer", "→ Sales Order") run off the right edge of the sticky header.
+
+**Root cause — SHARED SHELL, affects ALL four workspace headers (Quote/Invoice/SO/PO), not just
+Quote.** `base.html`'s top bar (`<header class="sticky top-0 ... flex h-16 items-center gap-3">`,
+~line 415) is a single **fixed-height, non-wrapping** flex row that holds the global chrome
+(search, Live, Margin, notifications, Log Call, avatar) **and** the per-page
+`{% block header_actions %}` group on one line. Every child is `shrink-0` except an empty
+`flex-1` spacer and the global search — and the search already collapses to a ~26px icon under
+pressure. So when a workspace's action group is wide there is nowhere left to give and it
+overflows off the right. Measured on a DRAFT quote at 1366px: **123px overflow, search already at
+its 26px floor** → the deficit is in the action group, not reclaimable from chrome. `flex-wrap`
+on the inner action `<div>` is inert because the parent is fixed-height `h-16` (a wrapped second
+row would be clipped).
+
+**Fix applied (surgical, Quote only) — `quotes/_header_actions.html`:** removed the redundant
+customer-name span. Per §8S-4/§8T-2 customer context belongs in the workspace customer strip
+(rendered directly below in `workspace.html`), **not** the sticky header. Reclaimed ~134px →
+action group 710px→569px. **Verified live** (admin, `/quotes/12`, DRAFT): **0px overflow at
+1366px**, all of `← All quotes · Draft · Send · → Sales Order ▾ · Print / PDF · More ▾` visible;
+no console errors. `test_ui_lint` 155 pass, quote tests green. List/dashboard headers unaffected
+(small action groups never overflowed).
+
+**Residual / Architect follow-up (NOT done here, to keep the Critical fix surgical):** below
+~1300px the lowest-priority "More ▾" still clips (68px over at 1280) — the four §8B buttons + chip
++ back link are inherently wide for the shared bar. The durable fix is a **responsive-chrome pass
+on the shared header** (collapse Live/Margin/search at narrower widths, or a two-tier bar) which
+would also fix the Invoice/SO/PO workspace headers. Treat the §8B "max 4 buttons + More ▾" cap as
+binding for every workspace header until that lands.
+
+---
+
+#### §8Y. Quote screen quick-wins batch (2026-06-07)
+
+Owner Quote-screen review follow-ups — the buildable, no-decision items. All verified live on
+`/quotes/12` + `/quotes/?sort=margin`; `test_ui_lint` (155) + `test_template_renders` green
+(only the pre-existing W-4 narrative fail remains).
+
+1. **On-Hand → rich ATP hover card** (`quotes/_line_row.html`). The inline dot/number keep the
+   availability-aware color; hovering shows a card with On hand / Committed / **Available to
+   promise**. **Pattern note (reusable):** the line grid is inside `overflow-x-auto`, which clips
+   an absolute popover, so the card renders in a `<template x-teleport="body">` (Alpine 3) and is
+   positioned `fixed` from the cell's `getBoundingClientRect`. Use this teleport approach for any
+   hover card that must escape a scroll/clip container. Replaced the old native `title` tooltip.
+2. **Unit of measure** (`_line_row.html` + `print.html`). Shows the product UoM on the workspace
+   line + all 3 print line sections **only when ≠ EA** (all 13k seeded products are EA today, so
+   it's invisible by design; ft/qt/kit/set/etc. render explicitly). Negative case verified live;
+   positive path is a trivial conditional covered by the render test.
+3. **Autosave timestamp** (`quotes/workspace.html`). The Save-Standard-v2 pill now reads
+   "Saved h:mm AM" after a confirmed save (sets `savedAt` only on the `clean` 2xx transition —
+   still green ONLY when truly saved). No backend change.
+4. **Margin + expiry sort** (`quotes/list.html`, `routers/quotes.py`, `macros/sortable.html`).
+   `valid_until` was already a SQL sort key but had no clickable header; `margin` is computed, so
+   it sorts in **Python after `.all()`** (per the §2 non-column-sort rule) — zero-subtotal quotes
+   sort last. Both headers are now `sortable_th`. **Primitive change (Architect-approved here):**
+   `sortable_th` gained an optional `th_class=''` param (backward-compatible; default no-op) so a
+   responsive-hidden column (`hidden lg:table-cell`) can still be a sort header. Margin ordering
+   verified live (desc 43/29/29…, asc −22/−20/−18…).
+
+**Descoped — NOT a quick win (needs a decision/schema):** "salesperson contact on print." The
+`User` model has no phone/email columns, and the **company** phone/email already print via
+`documents/_company_header.html`. Showing the individual preparer's direct line needs
+`User.phone`/`User.email` + a profile/settings input — a small feature, flagged for the owner.
+
+---
+
+#### §8Z. Go-live hardening — self-hosted JS, dock left-bind, hx-confirm sweep, Export CSV disable (2026-06-07)
+
+Three go-live blockers resolved in one Architect commit.
+
+##### §8Z-1. Self-hosted vendor JS (go-live blocker)
+
+**Problem:** `base.html` loaded Alpine, HTMX, and Chart.js from external CDNs. A single shop-internet
+hiccup or CDN outage kills *all* interactivity (Alpine) and HTMX navigation — not just visual polish.
+Additionally Alpine was pinned to the *floating* `@3.x.x` tag, meaning an upstream minor release could
+silently break the app overnight.
+
+**Fix:** Vendored all three into `app/static/vendor/` (served by FastAPI's static mount at `/static/`),
+exact-pinned each:
+
+| Library  | Version | File |
+|----------|---------|------|
+| Alpine.js | **3.14.9** (exact) | `alpine.3.14.9.min.js` — 44 KB |
+| HTMX | 1.9.12 | `htmx.1.9.12.min.js` — 48 KB |
+| Chart.js | 4.4.3 | `chart.4.4.3.umd.min.js` — 205 KB |
+
+`base.html` CDN `<script>` tags replaced with `/static/vendor/…` local paths. A comment documents the
+upgrade path: download new min.js → update `src=` here.
+
+**Rule:** CDN references are now forbidden in `base.html`. Any JS library needed at runtime must be
+vendored first.
+
+##### §8Z-2. Preview dock left-offset tracks sidebar state
+
+**Problem:** `macros/preview_dock.html` hardcoded `left-64` on the fixed dock panel. When the sidebar
+collapses to `w-20`, the dock stays at `left-64` — misaligned by 44px over the sidebar.
+
+**Fix:** The body `x-data` already exposes `sidebarCollapsed` (localStorage-persisted boolean). The
+dock now binds `:class="sidebarCollapsed ? 'left-20' : 'left-64'"` and keeps `left-*` out of the
+static class string. No extra Alpine scope needed — the dock renders inside the `<body x-data>` root.
+
+##### §8Z-3. hx-confirm → jakConfirm sweep (products/ subcomponents)
+
+**Problem:** 6 destructive Remove buttons across `products/` subcomponents still used the native
+`hx-confirm="…"` attribute. Managed-Chrome can suppress the browser native dialog → silent
+destructive deletes with no user confirmation at all.
+
+**Files fixed:**
+- `products/detail.html` (vendor source inline table)
+- `products/_cross_ref_row.html`
+- `products/_image_card.html`
+- `products/_suggested_sell_row.html`
+- `products/_vendor_sources_table.html`
+- `products/_vendor_source_row.html`
+
+**Pattern used:** All 6 are `hx-delete` with relative `hx-target="closest tr"` — the HTMX relative
+target can't be reproduced via `htmx.ajax()` with an absolute selector, so the `hxDelete` path in
+jakConfirm is not suitable here. Instead:
+
+```html
+hx-trigger="confirmed"          ← HTMX only fires on this custom event, not click
+@click.prevent="jakConfirm({ ..., confirmEvent: 'jak-del-vsrc-{{ source.id }}' })"
+@jak-del-vsrc-{{ source.id }}.window="htmx.trigger($el, 'confirmed')"
+```
+
+Flow: click → jakConfirm modal → user confirms → window event dispatched → HTMX `confirmed`
+trigger fires → delete request with `closest tr` targeting intact.
+
+**Also added:** `hxDelete` path to `jakConfirmModal.confirm()` in `macros/confirm_modal.html` for
+future callers that *do* have absolute targets. Migration guide comment updated.
+
+Remaining `hx-confirm` instances in the repo (not this dispatch):
+- `sales_orders/_lines_section.html:220` — Cancel line (out of scope for this sweep)
+
+##### §8Z-4. Dead Export CSV buttons disabled (8 list screens)
+
+**Problem:** 8 `<button>` elements with text "Export CSV" existed in the bulk action bars of list
+screens with no backend export route. They were active/clickable (styling: `text-gray-600
+hover:text-gray-900 transition-colors`) but had no `@click` handler and no `hx-*` attributes —
+completely inert, creating false UI affordance.
+
+**Screens fixed (all non-reports list screens without a working export):**
+`customers/list.html`, `invoices/list.html`, `payments/list.html`, `purchase_orders/list.html`,
+`quotes/list.html`, `sales_orders/list.html`, `vendors/list.html`, `vendor_returns/list.html`
+
+**Fix:** `disabled` attribute + `title="CSV export — coming soon"` + class changed to
+`text-gray-400 cursor-not-allowed` (removes hover). Buttons remain visible inside the bulk toolbar
+so Backend/QA know where to wire the export when ready.
+
+**Excluded:** `products/list.html` — its Export CSV is an `<a href="/products/export.csv?…">` that
+points to a real route and is left as-is.
+
+##### §8Z Summary
+
+| Item | Files | Status |
+|------|-------|--------|
+| Self-host JS (Alpine 3.14.9 / HTMX 1.9.12 / Chart.js 4.4.3) | `base.html`, `app/static/vendor/` (3 files) | ✅ DONE |
+| Preview dock left-bind | `macros/preview_dock.html` | ✅ DONE |
+| hx-confirm → jakConfirm (6 products/ subcomponents) | 6 template files + `confirm_modal.html` | ✅ DONE |
+| Dead Export CSV → disabled (8 list screens) | 8 template files | ✅ DONE |
+
+Lint: 157 passed, 1 xfailed (pre-existing tbl-classes xfail). No regressions.
+
+---
+
+#### §8AA. Settings → System: Backups & Restore panel (C1 data-safety fix, 2026-07-04)
+
+FULL_ERP_REVIEW_2026-07-04 C1 exposed that Settings pointed users at a nonexistent "Admin
+tools" page for backups. Shipped alongside the backend fix (two retention pools in
+`backup_service.py` + offsite copies):
+
+- **New card** in the System tab (OUTSIDE the main settings `<form>`, same placement pattern
+  as the Company-logo / QBO panels): fetch-driven over the existing `/admin/backup` JSON
+  router. "Back Up Now", dated-backup list with per-row **Restore** (confirm dialog, server
+  takes a pre-restore safety copy), and a `<details>` list of `jaks-pre*` snapshots as
+  additional restore points. All tokens copied from the settings idiom in the same file
+  (card `rounded-xl bg-white border border-gray-100 shadow-sm p-6`, green/red flash rows,
+  `bg-brand-700` primary button, `divide-y divide-gray-100` lists). No new primitives.
+- **New editable field** `backup_offsite_dir` in the System tab (added to `VISIBLE_KEYS`) —
+  cloud-synced folder for the automatic offsite copy of the newest backup + Fernet keyfile.
+- Create/restore POSTs stay ADMIN-gated server-side; a bookkeeper's 403 surfaces in the
+  panel's error row. Owner runbook: `docs/BACKUP_RESTORE_RUNBOOK.md`.
+
+---
+
+#### §8AA. Products List — manufacturer canonicalization fix + shared filter-persistence primitive (2026-07-07)
+
+Two owner-reported Products List bugs traced to the same root cause, plus a new cross-list primitive.
+
+##### §8AA-1. Manufacturer badge color drift + broken manufacturer filter
+
+**Problem:** the same manufacturer badge rendered two different colors depending on which product it was
+on (e.g. "CAT" yellow on one row, grey on another), and filtering by Category + Manufacturer + In Stock
+could return zero results even when matching products existed and were visibly on-screen. Root cause:
+`Product.engine_manufacturer` and the older free-text `Product.manufacturer` column disagree on **11,787**
+active products (7,661 with `engine_manufacturer` blank entirely — abbreviations like `'CAT'` vs the
+canonical `'CAT / Caterpillar'`, case variants, `'Detroit Diesel'` vs `'Detroit'`, etc.). The badge color
+picked whichever field was non-blank and did a raw substring check (`'caterpillar' in value`); the filter
+did an exact-equality check on `engine_manufacturer` ONLY. Two independent, fragile readings of the same
+messy data, so they disagreed with each other and with reality.
+
+**Fix (code-only, no data backfill — owner-decided):** `classification_service.py` gained two small public
+helpers built on the existing `normalize_make()` alias table (`_MAKE_NORMALIZE`) — no new vocabulary:
+- `canonical_make_for_product(engine_manufacturer, manufacturer)` — the one canonical Engine-Make for a
+  product (engine_manufacturer wins when it resolves, else manufacturer), used by the route to build a
+  page-scoped `mfr_map` (mirrors the existing `sell_price_map` pattern) that the badge now reads via an
+  **exact-match dict lookup**, not a substring guess.
+- `raw_tokens_for_canonical_make(canonical)` — reverse-looks-up every raw alias token for a canonical name
+  (e.g. `'CAT / Caterpillar'` → `['caterpillar', 'cat']`), used by the manufacturer filter to `ilike` match
+  BOTH `engine_manufacturer` and `manufacturer` instead of exact-equality on one column. Unmapped custom
+  manufacturers (owner-added via Category Maintenance, not yet in the alias table) fall back to the old
+  exact-match-on-either-column behavior — never a regression, only additive coverage.
+
+**Rule:** any future "which manufacturer is this product" logic reads `canonical_make_for_product` /
+`raw_tokens_for_canonical_make` — do not add a third independent reading of `engine_manufacturer` /
+`manufacturer`.
+
+##### §8AA-2. Shared filter/tab/sort persistence — new Primitive, folded into `operational_list_script()`
+
+**Problem:** every operational list forgot its filters/tab/sort the moment you navigated away and back
+(e.g. via the sidebar link) — no screen had a "remember where I was" behavior.
+
+**Fix:** `macros/list_behavior.html`'s `operational_list_script()` (§7 Primitive 2, already included by
+all 11 list screens — Products/Quotes/PO/Invoices/Payments/SO/Vendors/Customers/Vendor Returns/Import
+Review) now also emits a small IIFE: on a filtered/sorted/searched load (non-empty `location.search`) it
+saves the query string (minus `page`) to `localStorage` keyed by `location.pathname`; on a bare load (empty
+`location.search` — e.g. clicking the screen's sidebar link) it restores the saved query string via
+`location.replace()`. Zero per-screen wiring — every screen calling the macro got this automatically.
+"Clear filters" / "Clear search" links need no special-casing: they navigate to a narrower (but still
+non-empty, unless truly default) query string, which naturally overwrites the saved state.
+
+**Rule:** this is now standing behavior for every operational list, not just Products. A screen that
+genuinely needs a query param to NOT persist (a one-shot flash/highlight param, say) must strip it
+client-side before the macro's script block runs, or via a route-level redirect — flag it to the Architect
+before adding such a param to a list screen's querystring.
+
+**Deferred (owner-flagged, not yet decided):** List-price and Margin sortable columns on Products — see
+§8Q's note on this same date for the SQL-approximate vs. capped-Python-sort tradeoff at 30k+ row scale.
+
+---
+
+### 9. Functional Gate — Definition of Done
+
+**Ratified 2026-05-30.**
+
+**Problem this addresses:** The maturity table (§1) uses visual checklist conformance as the
+definition of L2/L3 complete. The 2026-05-30 owner test pass showed that screens marked
+"✅ L2/L3 complete" had broken core workflows (quotes not opening, can't add parts to SO/Invoice,
+PO receiving failing). Visual conformance and functional correctness drifted apart because the
+governance pass never required end-to-end proof.
+
+**New rule:** A screen is not L2/L3 complete until it passes **both** the visual governance
+checklist (§0) **and** the functional gate below. The governance pass confirms the checklist.
+The functional gate confirms the work.
+
+---
+
+#### Functional Gate Checklist
+
+Every screen must be verified by actually running the app and completing the real user job, not
+just rendering the template. These tests must be run against a live server with real or realistic
+data — not mocked, not inferred from code review.
+
+**For all List screens (L2 gate):**
+- [ ] Clicking every filter tab changes the list and shows the correct count in the tab
+- [ ] Search returns correct results with partial input, dashes, mixed case (e.g., "ok1" finds "OK-1")
+- [ ] Clicking a row opens the preview dock and loads correct data for that record
+- [ ] Preview dock closes on X or second row click; does not interfere with tab/search
+- [ ] Empty state renders correctly for: no records, filtered-tab-miss, and search-miss
+- [ ] Bulk select: selecting rows shows toolbar; bulk action executes without error
+
+**For Workspace screens (L3 gate):**
+- [ ] **Add a line:** search for a real product (by SKU, partial name, and a variant with dashes/spaces), select it, confirm it appears in the line grid with correct price, qty, and line total
+- [ ] **Edit inline:** change qty and price on an existing line; confirm line total and document total both update
+- [ ] **Remove a line:** delete a line via the confirm modal; confirm it disappears and totals update
+- [ ] **Save/autosave:** edit a header field, leave the screen, return; confirm the change persisted
+- [ ] **Primary workflow action:** for Quote → Convert to Invoice or SO; for SO → Fulfill; for Invoice → Finalize; for PO → Receive items; confirm the action completes without error and status updates
+- [ ] **No window.confirm():** all destructive actions use the Alpine modal — no browser native dialogs appear anywhere in the workflow
+
+**For Queue Board screens (QB2 gate):**
+- [ ] Metrics strip shows real numbers matching actual database state
+- [ ] Group headers and item rows display for all active groups
+- [ ] Each inline action (Receive, Match, Open, Print) navigates to the correct target
+- [ ] Page-level empty state renders correctly when queue is empty
+
+---
+
+#### Smoke Test Reference
+
+The owner has an end-to-end smoke test document that covers the full cross-workflow lifecycle
+(TESTING_FEEDBACK.md in the repo root). The eight flows in Section 8 of that document are the
+definitive proof:
+
+| Flow | Screens touched |
+|---|---|
+| a | Vendor → Product → PO → Receive → inventory updated |
+| b | Quote (in stock) → Invoice → Finalize → inventory decremented → payment recorded |
+| c | Quote (out of stock) → SO → deposit → linked PO receive → fulfill → invoice |
+| d | Invoice with core item → core charge → customer return → vendor return → credit |
+| e | Overdue invoice → statement shows correct aging bucket |
+
+A screen that participates in one of these flows is not L2/L3 complete until that flow runs
+end-to-end without error.
+
+---
+
+#### Who Runs the Gate
+
+The **owner** runs the functional gate against a live server. The **UI Architect** runs the
+visual governance checklist. Both must pass before the Rollout Order entry is marked complete.
+If the owner's test reveals a functional defect after a governance pass, the screen reverts to
+"in progress" until re-tested — the governance check-mark does not survive a failing functional test.
+
+---
+
+#### Re-sequencing Rule (added 2026-05-30)
+
+The core money path — **Quote → SO/Invoice → PO receive → Payment** — takes priority over
+cosmetic L2 re-passes, §8 backlog items, and new screen rollouts. If any screen in that path
+fails the functional gate, it becomes the highest-priority ticket for all lanes. No new screen
+enters L2 work while the core path is broken.
+
+**Current status (as of 2026-05-30 test pass):**
+
+| Issue | Screen | Priority | Functional gate item |
+|---|---|---|---|
+| Quotes nav/workspace not opening | Quote List + Workspace | **P0** | b: Quote → Invoice flow |
+| Can't add parts to Sales Order | SO Workspace | **P0** | b/c: SO line add |
+| Can't add parts to Invoice | Invoice Workspace | **P0** | b: Invoice finalize flow |
+| PO "can't receive" — ✅ automated-green @9d0ced2 | PO Workspace + Receiving Queue | ~~P1~~ resolved | a: PO → receive flow |
+| Ctrl+K: "q2026" doesn't find quote | Global search | **P1** | Search normalization |
+| New Quote from Customer detail empty | Customer Detail → Quote | **P1** | b: Quote creation |
+| Card surcharge can't be unselected | Invoice Workspace | **P2** | d: payment edge case |
+| Vendor: only one contact visible | Vendor Detail | **P2** | UX gap, not blocking |
+| Product search: exact-SKU required | All workspaces | **P1** | §2C search normalization |
+
+P0 items must be resolved and owner-re-tested before any §8 backlog work or new screen rollout.
+P1 items are resolved in parallel with the P0 fix lane. P2 items are deferred until P0/P1 clear.

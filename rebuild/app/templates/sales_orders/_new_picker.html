@@ -2,8 +2,9 @@
    On submit, POST /sales-orders/new creates the SO and 303-redirects to
    /sales-orders/{id} which renders the workspace. #}
 <form method="post" action="/sales-orders/new" class="flex flex-col h-full"
-      x-data="{ customerId: '', displayName: '' }"
-      @customer-selected.window="customerId = $event.detail.id; displayName = $event.detail.name">
+      x-data="customerPicker('new-so-customer-results')"
+      x-init="_wireResults()"
+      @customer-selected.window="onCustomerSelected($event.detail)">
 
   <div class="flex-1 overflow-y-auto px-5 py-4 space-y-4">
     <div class="rounded-lg bg-stone-50 border border-stone-200 px-3 py-2 text-xs text-gray-500">
@@ -16,14 +17,18 @@
         <input type="text" autocomplete="off" name="q"
                placeholder="Type customer name or phone…"
                :value="displayName"
-               @input="displayName = $el.value; customerId = ''"
+               @input="pickInput($el.value)"
+               @keydown.down.prevent="pickMove(1)"
+               @keydown.up.prevent="pickMove(-1)"
+               @keydown.enter.prevent="pickChoose()"
+               @keydown.escape.prevent="pickClose()"
                class="form-input"
                hx-get="/customers/search-json"
                hx-trigger="input changed delay:200ms"
                hx-target="#new-so-customer-results"/>
         <div id="new-so-customer-results"
              class="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-10 max-h-56 overflow-y-auto text-sm"
-             x-show="displayName.length >= 2 && !customerId"
+             x-show="displayName.length >= 2 && !customerId && !_dismissed"
              x-cloak></div>
       </div>
       <input type="hidden" name="customer_id" :value="customerId"/>

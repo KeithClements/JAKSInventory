@@ -47,14 +47,24 @@ class CustomerStatement(Base):
     total_interest_accrued: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
     # ── Aging Buckets ─────────────────────────────────────────────────────────
+    # Keys mirror ar_aging_utils.AGING_BUCKETS:
+    #   current → current_due, 1_30 → due_30, 31_60 → due_60,
+    #   61_90 → due_90, over_90 → over_90.
     current_due: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     due_30: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     due_60: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     due_90: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # DEAD legacy column — the Phase-A schema guessed a due_120 terminal bucket,
+    # but the runtime aging (ar_aging_utils) ends at over_90. SQLite can't drop
+    # columns via the inline-migration system, so due_120 stays in place but is
+    # never read or written by new code. Use over_90 below instead.
     due_120: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # R3 — terminal bucket aligned with ar_aging_utils ("over_90").
+    over_90: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
     # ── Storage ───────────────────────────────────────────────────────────────
     pdf_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    # Full JSON snapshot of all line-by-line data — immutable record of what was sent
-    snapshot_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Full JSON snapshot of all line-by-line data — immutable record of what was
+    # sent (R3). Dates stored as ISO strings; see StatementService.persist_statement.
+    snapshot_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")

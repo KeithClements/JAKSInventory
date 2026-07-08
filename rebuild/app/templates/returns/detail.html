@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ ra.ra_number }} — JAKS Inventory{% endblock %}
+{% block title %}{{ ra.ra_number }} — Axle{% endblock %}
 {% block heading %}{{ ra.ra_number }}{% endblock %}
 
 {% block header_actions %}
@@ -76,7 +76,7 @@
           {% if ra.invoice_id %}
           <div class="flex gap-3">
             <span class="text-gray-400 w-28 shrink-0 text-xs">Invoice</span>
-            <a href="/invoices/{{ ra.invoice_id }}" class="text-xs link">View Invoice</a>
+            <a href="/invoices/{{ ra.invoice_id }}" class="text-xs link">{{ invoice.invoice_number if invoice else 'View Invoice' }}</a>
           </div>
           {% endif %}
           <div class="flex items-center gap-3">

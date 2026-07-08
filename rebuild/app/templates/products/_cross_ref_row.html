@@ -1,3 +1,4 @@
+{% import "macros/motion.html" as motion %}
 <tr id="xref-{{ xref.id }}" class="border-b border-gray-100">
 
   {# Type badge #}
@@ -42,9 +43,7 @@
       <div x-show="open"
            @click.outside="open = false"
            x-cloak
-           x-transition:enter="transition ease-out duration-100"
-           x-transition:enter-start="opacity-0 scale-95"
-           x-transition:enter-end="opacity-100 scale-100"
+           {{ motion.dropdown_scale() }}
            class="absolute left-0 top-full mt-1 z-20 min-w-[170px] rounded-lg border border-gray-200 bg-white shadow-lg py-1">
         {% for s_val, s_label, s_color in [
           ('researching',      'Researching',      'text-gray-600'),
@@ -80,7 +79,9 @@
             hx-delete="/products/{{ xref.product_id }}/cross-refs/{{ xref.id }}"
             hx-target="closest tr"
             hx-swap="outerHTML swap:200ms"
-            hx-confirm="Remove this cross reference?"
+            hx-trigger="confirmed"
+            @click.prevent="jakConfirm({ title: 'Remove Cross Reference', body: 'This cross reference will be permanently removed.', cta: 'Remove', danger: true, confirmEvent: 'jak-del-xref-{{ xref.id }}' })"
+            @jak-del-xref-{{ xref.id }}.window="htmx.trigger($el, 'confirmed')"
             class="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors">
       Remove
     </button>

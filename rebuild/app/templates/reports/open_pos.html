@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Open POs — JAKS Inventory{% endblock %}
+{% block title %}Open POs — Axle{% endblock %}
 {% block heading %}Open Purchase Orders{% endblock %}
 
 {% block content %}
@@ -9,9 +9,7 @@
 
   <div class="flex items-center justify-between">
     <p class="text-xs text-gray-400">As of {{ today.strftime('%B %d, %Y') }}</p>
-    <button type="button" class="btn-secondary btn-sm" disabled title="Coming soon">
-      Export CSV
-    </button>
+    <a href="/reports/open-pos/export.csv" class="btn-secondary btn-sm">Export CSV</a>
   </div>
 
   {# ── Summary tiles ─────────────────────────────────────────────────────── #}

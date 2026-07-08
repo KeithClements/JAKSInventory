@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ vendor.name }} — JAKS Inventory{% endblock %}
+{% block title %}{{ vendor.name }} — Axle{% endblock %}
 {% block heading %}{{ vendor.name }}{% endblock %}
 
 {% block header_actions %}
@@ -18,11 +18,20 @@
   </div>
   {% endif %}
 
-  {# Deactivate form lives outside the main edit form to prevent nesting #}
+  {# Error flash — e.g. SKU # digit clash on save (nothing was written) #}
+  {% if request.query_params.get('error') %}
+  <div class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+    ⚠ {{ request.query_params.get('error') }}
+  </div>
+  {% endif %}
+
+  {# Status-change forms live outside the main edit form to prevent nesting #}
   {% if vendor.is_active %}
   <form id="deactivate-form" method="post" action="/vendors/{{ vendor.id }}/deactivate"
         onsubmit="return confirm('Deactivate {{ vendor.name }}? They will no longer appear in vendor lists.')">
   </form>
+  {% else %}
+  <form id="reactivate-form" method="post" action="/vendors/{{ vendor.id }}/reactivate"></form>
   {% endif %}
 
   {# ── Info card ── #}
@@ -44,12 +53,46 @@
 
           <div>
             <label class="form-label">
-              Vendor Code
-              <span class="font-normal text-gray-400 normal-case">(max 4 chars)</span>
+              Feed SKU Code
+              <span class="font-normal text-gray-400 normal-case">(matches JAKS-[CODE]- feed SKUs, e.g. PAI / IMB)</span>
             </label>
             <input name="vendor_code" value="{{ vendor.vendor_code }}" maxlength="4"
                    oninput="this.value=this.value.toUpperCase()"
                    class="form-input font-mono uppercase" />
+          </div>
+
+          <div>
+            <label class="form-label">
+              SKU #
+              <span class="font-normal text-gray-400 normal-case">(opaque digit baked into JAKS SKUs — PAI = 9, IMB = 3)</span>
+            </label>
+            {% if digit_locked %}
+            <input value="{{ vendor.vendor_number }}" disabled
+                   class="form-input font-mono bg-gray-50 text-gray-500 cursor-not-allowed" />
+            <p class="mt-1 text-xs text-amber-600">Frozen — SKUs have been minted under this digit; changing it would split this vendor's SKU namespace.</p>
+            {% else %}
+            <input name="vendor_number" value="{{ vendor.vendor_number }}" maxlength="1"
+                   inputmode="numeric" pattern="[0-9]*" placeholder="auto"
+                   class="form-input font-mono" />
+            <p class="mt-1 text-xs text-gray-400">Blank = auto-assign the next free digit. Changeable until this vendor's first SKU is minted, frozen after.</p>
+            {% endif %}
+          </div>
+
+          <div class="col-span-2">
+            <label class="inline-flex items-start gap-2 cursor-pointer">
+              <input type="checkbox" name="private_label" value="1"
+                     {% if vendor.private_label %}checked{% endif %}
+                     class="mt-0.5 rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+              <span class="text-sm">
+                <span class="font-medium text-gray-700">Private label (sell as house brand)</span>
+                <span class="block text-xs text-gray-400 normal-case">
+                  Hide this vendor's code in SKUs — use the house prefix instead
+                  (e.g. <span class="font-mono">JAKS-JAKS-10R1273</span> instead of
+                  <span class="font-mono">JAKS-{{ vendor.vendor_code or 'XXX' }}-10R1273</span>).
+                  New products under this vendor are flagged house brand.
+                </span>
+              </span>
+            </label>
           </div>
 
           <div>
@@ -112,10 +155,284 @@
                   class="text-xs text-gray-400 hover:text-red-500 transition-colors">
             Deactivate vendor
           </button>
+          {% else %}
+          <button type="submit" form="reactivate-form"
+                  class="text-xs font-medium text-brand-700 hover:text-brand-600 transition-colors">
+            Reactivate vendor
+          </button>
           {% endif %}
         </div>
       </form>
     </div>
+  </div>
+
+  {# ── Contacts card (O4 / §8I) — full contact list + primary + inline add/edit.
+     Plain form-POSTs that 303-redirect to ?saved/?error#contacts (no HTMX partial).
+     Explicit Tailwind padding + divide-y (NOT the banned tbl-* at :138). ── #}
+  {% set contact_roles = ['general', 'sales', 'warranty', 'returns', 'accounting'] %}
+  <div id="contacts" class="card scroll-mt-20" x-data="{ showAdd: false, editId: null }">
+    <div class="card-header">
+      <h2 class="card-title">Contacts</h2>
+      <button type="button" @click="showAdd = !showAdd; editId = null" class="btn-primary btn-sm">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+        <span x-text="showAdd ? 'Close' : 'Add contact'"></span>
+      </button>
+    </div>
+
+    {# Error flash (e.g. blank name) — shown near the card per §8I #}
+    {% if request.query_params.get('error') %}
+    <div class="mx-5 mt-3 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">
+      {{ request.query_params.get('error') }}
+    </div>
+    {% endif %}
+
+    {# ── Add contact form (inline, toggled; only place the is_primary checkbox lives) ── #}
+    <div x-show="showAdd" x-cloak class="border-b border-gray-100 bg-gray-50/50 px-5 py-4">
+      <form method="post" action="/vendors/{{ vendor.id }}/contacts" class="space-y-3">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="form-label">Name <span class="text-red-500">*</span></label>
+            <input name="name" required placeholder="Contact name" class="form-input" />
+          </div>
+          <div>
+            <label class="form-label">Role</label>
+            <select name="role" class="form-select">
+              {% for r in contact_roles %}<option value="{{ r }}">{{ r | title }}</option>{% endfor %}
+            </select>
+          </div>
+          <div>
+            <label class="form-label">Phone</label>
+            <input name="phone" type="tel" placeholder="—" class="form-input" />
+          </div>
+          <div>
+            <label class="form-label">Email</label>
+            <input name="email" type="email" placeholder="—" class="form-input" />
+          </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <span class="text-xs font-medium text-gray-400 uppercase tracking-wide">Handles</span>
+          <label class="inline-flex items-center gap-1.5 text-xs text-gray-600"><input type="checkbox" name="is_sales_contact" class="rounded border-gray-300"/> Sales</label>
+          <label class="inline-flex items-center gap-1.5 text-xs text-gray-600"><input type="checkbox" name="is_warranty_contact" class="rounded border-gray-300"/> Warranty</label>
+          <label class="inline-flex items-center gap-1.5 text-xs text-gray-600"><input type="checkbox" name="is_returns_contact" class="rounded border-gray-300"/> Returns</label>
+          <label class="inline-flex items-center gap-1.5 text-xs text-gray-600"><input type="checkbox" name="is_accounting_contact" class="rounded border-gray-300"/> Accounting</label>
+        </div>
+        <div class="flex items-center justify-between pt-1">
+          <label class="inline-flex items-center gap-1.5 text-xs font-medium text-gray-700"><input type="checkbox" name="is_primary" class="rounded border-gray-300"/> Make primary contact</label>
+          <button type="submit" class="btn-primary btn-sm">Add Contact</button>
+        </div>
+      </form>
+    </div>
+
+    {# ── Contact list ── #}
+    {% set active_contacts = vendor.contacts | selectattr('is_active') | list %}
+    {% if active_contacts %}
+    <div class="overflow-x-auto">
+      <table class="w-full min-w-[640px]">
+        <thead>
+          <tr class="border-b border-gray-200 bg-gray-50">
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Name</th>
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Role</th>
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Phone</th>
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Email</th>
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Primary</th>
+            <th class="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for c in active_contacts %}
+          <tr class="hover:bg-gray-50/60 transition-colors">
+            <td class="px-4 py-3 text-sm font-medium text-gray-800">{{ c.name }}</td>
+            <td class="px-4 py-3 text-sm text-gray-600">
+              <span class="capitalize">{{ c.role }}</span>
+              {% if c.is_sales_contact %}<span class="badge-gray ml-1">Sales</span>{% endif %}
+              {% if c.is_warranty_contact %}<span class="badge-gray ml-1">Warranty</span>{% endif %}
+              {% if c.is_returns_contact %}<span class="badge-gray ml-1">Returns</span>{% endif %}
+              {% if c.is_accounting_contact %}<span class="badge-gray ml-1">Acct</span>{% endif %}
+            </td>
+            <td class="px-4 py-3 text-sm text-gray-600">{{ c.phone or '—' }}</td>
+            <td class="px-4 py-3 text-sm text-gray-600">{{ c.email or '—' }}</td>
+            <td class="px-4 py-3">
+              {% if c.is_primary %}<span class="badge-green">Primary</span>{% else %}<span class="text-gray-300 text-xs">—</span>{% endif %}
+            </td>
+            <td class="px-4 py-3">
+              <div class="flex items-center justify-end gap-2.5 text-xs">
+                <button type="button" @click="editId = (editId === {{ c.id }} ? null : {{ c.id }}); showAdd = false"
+                        class="font-medium text-brand-700 hover:text-brand-800">
+                  <span x-text="editId === {{ c.id }} ? 'Cancel' : 'Edit'"></span>
+                </button>
+                {% if not c.is_primary %}
+                <form method="post" action="/vendors/{{ vendor.id }}/contacts/{{ c.id }}/make-primary" class="inline">
+                  <button type="submit" class="font-medium text-gray-500 hover:text-brand-700">Make primary</button>
+                </form>
+                {% endif %}
+                <form method="post" action="/vendors/{{ vendor.id }}/contacts/{{ c.id }}/delete" class="inline"
+                      onsubmit="return confirm('Remove contact {{ c.name }}?')">
+                  <button type="submit" class="font-medium text-gray-400 hover:text-red-600">Delete</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {# Inline edit form — update route, which deliberately ignores is_primary #}
+          <tr x-show="editId === {{ c.id }}" x-cloak>
+            <td colspan="6" class="px-5 py-4 bg-gray-50/60 border-b border-gray-100">
+              <form method="post" action="/vendors/{{ vendor.id }}/contacts/{{ c.id }}" class="space-y-3">
+                <div class="grid grid-cols-2 gap-3">
+                  <div><label class="form-label">Name <span class="text-red-500">*</span></label><input name="name" required value="{{ c.name }}" class="form-input" /></div>
+                  <div><label class="form-label">Role</label><select name="role" class="form-select">{% for r in contact_roles %}<option value="{{ r }}" {% if c.role == r %}selected{% endif %}>{{ r | title }}</option>{% endfor %}</select></div>
+                  <div><label class="form-label">Phone</label><input name="phone" type="tel" value="{{ c.phone or '' }}" class="form-input" /></div>
+                  <div><label class="form-label">Email</label><input name="email" type="email" value="{{ c.email or '' }}" class="form-input" /></div>
+                </div>
+                <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+                  <span class="text-xs font-medium text-gray-400 uppercase tracking-wide">Handles</span>
+                  <label class="inline-flex items-center gap-1.5 text-xs text-gray-600"><input type="checkbox" name="is_sales_contact" {% if c.is_sales_contact %}checked{% endif %} class="rounded border-gray-300"/> Sales</label>
+                  <label class="inline-flex items-center gap-1.5 text-xs text-gray-600"><input type="checkbox" name="is_warranty_contact" {% if c.is_warranty_contact %}checked{% endif %} class="rounded border-gray-300"/> Warranty</label>
+                  <label class="inline-flex items-center gap-1.5 text-xs text-gray-600"><input type="checkbox" name="is_returns_contact" {% if c.is_returns_contact %}checked{% endif %} class="rounded border-gray-300"/> Returns</label>
+                  <label class="inline-flex items-center gap-1.5 text-xs text-gray-600"><input type="checkbox" name="is_accounting_contact" {% if c.is_accounting_contact %}checked{% endif %} class="rounded border-gray-300"/> Accounting</label>
+                </div>
+                <div class="flex items-center justify-end gap-3">
+                  <button type="button" @click="editId = null" class="btn-secondary btn-sm">Cancel</button>
+                  <button type="submit" class="btn-primary btn-sm">Save Contact</button>
+                </div>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="card-body">
+      <p class="text-sm text-gray-400">No contacts yet. Add the vendor's reps for sales, warranty, returns, and accounting.</p>
+    </div>
+    {% endif %}
+  </div>
+
+  {# ── Discount Programs card — volume/tier discounts the PO workspace applies.
+     A program with a Threshold + Discount % becomes the "Apply X% discount"
+     button on any PO over the threshold (e.g. PAI: 5% over $5,000). Mirrors the
+     Contacts card idiom: plain form-POSTs → ?saved#programs, no HTMX partial. ── #}
+  {% set vendor_programs = vendor.programs | list %}
+  <div id="programs" class="card scroll-mt-20" x-data="{ showAdd: false, editId: null }">
+    <div class="card-header">
+      <h2 class="card-title">Discount Programs</h2>
+      <button type="button" @click="showAdd = !showAdd; editId = null" class="btn-primary btn-sm">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+        <span x-text="showAdd ? 'Close' : 'Add program'"></span>
+      </button>
+    </div>
+
+    <div class="px-5 pt-3 -mb-1 text-xs text-gray-400">
+      A program with a threshold and a discount % shows an <span class="font-medium text-gray-500">Apply&nbsp;discount</span>
+      button on purchase orders that exceed the threshold. Discount applies to parts only — core charges and freight are excluded.
+    </div>
+
+    {# ── Add program form (inline, toggled) ── #}
+    <div x-show="showAdd" x-cloak class="border-b border-gray-100 bg-gray-50/50 px-5 py-4 mt-3">
+      <form method="post" action="/vendors/{{ vendor.id }}/programs" class="space-y-3">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="form-label">Program Name <span class="text-red-500">*</span></label>
+            <input name="program_name" required placeholder="e.g. Volume discount (5% over $5k)" class="form-input" />
+          </div>
+          <div>
+            <label class="form-label">Type</label>
+            <select name="program_type" class="form-select">
+              {% for t in program_types %}<option value="{{ t }}">{{ t.replace('_', ' ') | title }}</option>{% endfor %}
+            </select>
+          </div>
+          <div>
+            <label class="form-label">Threshold ($)</label>
+            <input name="threshold_amount" type="number" step="0.01" min="0" placeholder="5000" class="form-input text-right font-mono" />
+          </div>
+          <div>
+            <label class="form-label">Discount (%)</label>
+            <input name="discount_percent" type="number" step="0.01" min="0" max="100" placeholder="5" class="form-input text-right font-mono" />
+          </div>
+          <div class="col-span-2">
+            <label class="form-label">Notes</label>
+            <input name="notes" placeholder="Optional — e.g. per-PO, parts only" class="form-input" />
+          </div>
+        </div>
+        <div class="flex items-center justify-end pt-1">
+          <button type="submit" class="btn-primary btn-sm">Add Program</button>
+        </div>
+      </form>
+    </div>
+
+    {# ── Program list ── #}
+    {% if vendor_programs %}
+    <div class="overflow-x-auto">
+      <table class="w-full min-w-[640px]">
+        <thead>
+          <tr class="border-b border-gray-200 bg-gray-50">
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Program</th>
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Type</th>
+            <th class="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Threshold</th>
+            <th class="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Discount</th>
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+            <th class="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for p in vendor_programs %}
+          <tr class="hover:bg-gray-50/60 transition-colors">
+            <td class="px-4 py-3 text-sm font-medium text-gray-800">
+              {{ p.program_name }}
+              {% if p.notes %}<span class="block text-xs text-gray-400 font-normal">{{ p.notes }}</span>{% endif %}
+            </td>
+            <td class="px-4 py-3 text-sm text-gray-600 capitalize">{{ p.program_type.replace('_', ' ') }}</td>
+            <td class="px-4 py-3 text-sm text-gray-700 text-right tabular-nums font-mono">
+              {{ '${:,.2f}'.format(p.threshold_amount) if p.threshold_amount is not none else '—' }}
+            </td>
+            <td class="px-4 py-3 text-sm text-gray-700 text-right tabular-nums font-mono">
+              {{ '%g'|format(p.discount_percent) ~ '%' if p.discount_percent is not none else '—' }}
+            </td>
+            <td class="px-4 py-3">
+              {% if p.is_active %}<span class="badge-green">Active</span>{% else %}<span class="badge-gray">Inactive</span>{% endif %}
+            </td>
+            <td class="px-4 py-3">
+              <div class="flex items-center justify-end gap-2.5 text-xs">
+                <button type="button" @click="editId = (editId === {{ p.id }} ? null : {{ p.id }}); showAdd = false"
+                        class="font-medium text-brand-700 hover:text-brand-800">
+                  <span x-text="editId === {{ p.id }} ? 'Cancel' : 'Edit'"></span>
+                </button>
+                <form method="post" action="/vendors/{{ vendor.id }}/programs/{{ p.id }}/delete" class="inline"
+                      onsubmit="return confirm('Delete program {{ p.program_name }}?')">
+                  <button type="submit" class="font-medium text-gray-400 hover:text-red-600">Delete</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {# Inline edit form #}
+          <tr x-show="editId === {{ p.id }}" x-cloak>
+            <td colspan="6" class="px-5 py-4 bg-gray-50/60 border-b border-gray-100">
+              <form method="post" action="/vendors/{{ vendor.id }}/programs/{{ p.id }}" class="space-y-3">
+                <div class="grid grid-cols-2 gap-3">
+                  <div><label class="form-label">Program Name <span class="text-red-500">*</span></label><input name="program_name" required value="{{ p.program_name }}" class="form-input" /></div>
+                  <div><label class="form-label">Type</label><select name="program_type" class="form-select">{% for t in program_types %}<option value="{{ t }}" {% if p.program_type == t %}selected{% endif %}>{{ t.replace('_', ' ') | title }}</option>{% endfor %}</select></div>
+                  <div><label class="form-label">Threshold ($)</label><input name="threshold_amount" type="number" step="0.01" min="0" value="{{ '%.2f'|format(p.threshold_amount) if p.threshold_amount is not none else '' }}" class="form-input text-right font-mono" /></div>
+                  <div><label class="form-label">Discount (%)</label><input name="discount_percent" type="number" step="0.01" min="0" max="100" value="{{ '%g'|format(p.discount_percent) if p.discount_percent is not none else '' }}" class="form-input text-right font-mono" /></div>
+                  <div class="col-span-2"><label class="form-label">Notes</label><input name="notes" value="{{ p.notes }}" class="form-input" /></div>
+                </div>
+                <div class="flex items-center justify-between pt-1">
+                  <label class="inline-flex items-center gap-1.5 text-xs font-medium text-gray-700"><input type="checkbox" name="is_active" value="true" {% if p.is_active %}checked{% endif %} class="rounded border-gray-300"/> Active</label>
+                  <div class="flex items-center gap-3">
+                    <button type="button" @click="editId = null" class="btn-secondary btn-sm">Cancel</button>
+                    <button type="submit" class="btn-primary btn-sm">Save Program</button>
+                  </div>
+                </div>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="card-body">
+      <p class="text-sm text-gray-400">No discount programs yet. Add one to enable an "Apply discount" button on this vendor's purchase orders.</p>
+    </div>
+    {% endif %}
   </div>
 
   {# ── Recent Purchase Orders ── #}

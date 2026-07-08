@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Purchase Orders — JAKS Inventory{% endblock %}
+{% block title %}Purchase Orders — Axle{% endblock %}
 {% block heading %}Purchase Orders{% endblock %}
 
 {% block header_actions %}
@@ -17,7 +17,6 @@
 {% block content %}
 {# Shared operational-list primitives — §7 macro library #}
 {% from "macros/list_behavior.html" import operational_list_script %}
-{% from "macros/filter_tabs.html" import filter_tabs %}
 {% from "macros/bulk_toolbar.html" import bulk_toolbar %}
 {% from "macros/preview_dock.html" import preview_dock_shell %}
 {{ operational_list_script() }}
@@ -28,39 +27,37 @@
 >
 
 {# ══════════════════════════════════════════════════════════════════════════════
-   TOOLBAR
+   TOOLBAR — Axle §4: search (flex 1) + .fchip filter pills
 ══════════════════════════════════════════════════════════════════════════════ #}
-<div class="flex flex-wrap items-center gap-3">
+<div class="flex flex-wrap items-center gap-2">
 
-  {# Status tabs — §7 Primitive 1 (route gives pairs + counts dict → build triples) #}
-  {% set po_tabs = [] %}
-  {% for slug, label in tabs %}{% set _ = po_tabs.append((slug, label, counts.get(slug, 0))) %}{% endfor %}
-  {{ filter_tabs(po_tabs, tab, q) }}
-
-  {# Search #}
-  <form method="get" class="flex items-center gap-2 ml-auto">
+  {# Search — flex 1 per Axle spec #}
+  <form method="get" class="flex items-center gap-2 flex-1 min-w-[260px]">
     <input type="hidden" name="tab" value="{{ tab }}" />
-    <div class="relative">
+    <div class="relative flex-1">
       <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
            fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
       </svg>
       <input name="q" value="{{ q }}" placeholder="PO #, vendor, conf #…"
-             class="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white w-64
+             class="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-md bg-white
                     focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400
                     placeholder:text-gray-400" />
     </div>
-    <button type="submit"
-            class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200
-                   rounded-lg hover:bg-gray-50 transition-colors">
-      Search
-    </button>
     {% if q %}
     <a href="?tab={{ tab }}"
        class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</a>
     {% endif %}
   </form>
+
+  {# Axle filter chips — bordered radius-14 pills, active = solid steel-900 #}
+  {% for slug, label in tabs %}
+  <a href="?tab={{ slug }}{% if q %}&q={{ q|urlencode }}{% endif %}"
+     class="fchip {% if tab == slug %}on{% endif %}">
+    {{ label }}<span class="ml-1.5 tabular-nums opacity-70">{{ counts.get(slug, 0) }}</span>
+  </a>
+  {% endfor %}
 
 </div>
 
@@ -68,50 +65,48 @@
    BULK ACTION BAR — §7 Primitive 4
 ══════════════════════════════════════════════════════════════════════════════ #}
 {% call bulk_toolbar() %}
-  <button class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">
+  {# "Export what I see" — carries the active tab/q filters (mirrors customers/products) #}
+  <a href="/purchase-orders/export.csv?tab={{ tab }}&q={{ q | urlencode }}"
+     class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">
     Export CSV
-  </button>
+  </a>
 {% endcall %}
 
 {# ══════════════════════════════════════════════════════════════════════════════
    PO TABLE
 ══════════════════════════════════════════════════════════════════════════════ #}
+{# Status chip map — Axle .chip-axle variants (draft|ok|low|out|invoice) #}
+{% set po_chip = {
+  'draft':        'chip-draft',
+  'verbal_order': 'chip-ok',
+  'sent':         'chip-ok',
+  'partial':      'chip-low',
+  'received':     'chip-ok',
+  'billed':       'chip-ok',
+  'cancelled':    'chip-out',
+} %}
 {% if pos %}
 <div class="card overflow-hidden">
   <div class="overflow-x-auto">
     <table class="w-full min-w-[960px]">
 
-      {# ── Table head ── #}
+      {# ── Table head ── Axle: th 10px Oswald uppercase steel-400 on #fafbfa #}
       <thead>
-        <tr class="bg-gray-50 border-b border-gray-200">
-          <th class="w-10 px-4 py-3 text-center">
+        <tr class="border-b border-gray-200" style="background:#fafbfa;">
+          <th class="w-10 px-4 py-3 text-center" style="background:#fafbfa;">
             <input type="checkbox"
                    :checked="allSelected"
                    @change="toggleAll()"
                    aria-label="Select all purchase orders"
                    class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
           </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            PO #
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Vendor
-          </th>
-          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Lines
-          </th>
-          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Total
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Ordered
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Expected
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Status
-          </th>
+          <th class="px-4 py-3 text-left label-mini">PO #</th>
+          <th class="px-4 py-3 text-left label-mini">Vendor</th>
+          <th class="px-4 py-3 text-right label-mini">Lines</th>
+          <th class="px-4 py-3 text-right label-mini">Total</th>
+          <th class="px-4 py-3 text-left label-mini">Ordered</th>
+          <th class="px-4 py-3 text-left label-mini">Expected</th>
+          <th class="px-4 py-3 text-left label-mini">Status</th>
           <th class="px-4 py-3 w-12"></th>
         </tr>
       </thead>
@@ -138,24 +133,8 @@
           {% set health = 'normal' %}
         {% endif %}
 
-        {# Status chip styling (matches preview panel) #}
-        {% if po.status == 'draft' %}
-          {% set status_cls = 'bg-gray-100 text-gray-600' %}{% set status_dot = 'bg-gray-400' %}
-        {% elif po.status == 'verbal_order' %}
-          {% set status_cls = 'bg-blue-50 text-blue-700' %}{% set status_dot = 'bg-blue-500' %}
-        {% elif po.status == 'sent' %}
-          {% set status_cls = 'bg-blue-50 text-blue-700' %}{% set status_dot = 'bg-blue-500' %}
-        {% elif po.status == 'partial' %}
-          {% set status_cls = 'bg-amber-100 text-amber-700' %}{% set status_dot = 'bg-amber-500' %}
-        {% elif po.status == 'received' %}
-          {% set status_cls = 'bg-green-50 text-green-700' %}{% set status_dot = 'bg-green-500' %}
-        {% elif po.status == 'billed' %}
-          {% set status_cls = 'bg-green-50 text-green-700' %}{% set status_dot = 'bg-green-500' %}
-        {% elif po.status == 'cancelled' %}
-          {% set status_cls = 'bg-red-100 text-red-700' %}{% set status_dot = 'bg-red-500' %}
-        {% else %}
-          {% set status_cls = 'bg-gray-100 text-gray-600' %}{% set status_dot = 'bg-gray-400' %}
-        {% endif %}
+        {# Status chip class — Axle .chip-axle variant from the po_chip map #}
+        {% set status_cls = po_chip.get(po.status, 'chip-draft') %}
 
         {# ── Row ── #}
         <tr
@@ -183,10 +162,10 @@
                    class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
           </td>
 
-          {# PO # #}
+          {# PO # — .pn mono 12px bold ink #}
           <td class="px-4 py-4 align-middle">
             <a href="/purchase-orders/{{ po.id }}"
-               class="font-mono text-sm font-bold text-brand-700 hover:text-brand-900 hover:underline leading-none"
+               class="font-mono pn hover:underline"
                @click.stop>{{ po.po_number }}</a>
             {% if po.is_drop_ship %}
             <div class="mt-1">
@@ -194,7 +173,7 @@
             </div>
             {% endif %}
             {% if po.vendor_confirmation_number %}
-            <div class="mt-0.5 text-[10px] text-gray-400 font-mono">
+            <div class="mt-0.5 text-[10px] font-mono pn" style="color:#a9afb6;">
               Conf: {{ po.vendor_confirmation_number }}
             </div>
             {% endif %}
@@ -214,19 +193,19 @@
 
           {# Lines / received counts #}
           <td class="px-4 py-4 align-middle text-right">
-            <span class="text-sm font-bold text-gray-900 tabular-nums">{{ po.lines | length }}</span>
+            <span class="money" style="font-weight:700; color:#0b0c0d;">{{ po.lines | length }}</span>
             {% if qty_ord %}
-            <div class="text-[10px] text-gray-400 mt-0.5 tabular-nums">
+            <div class="money mt-0.5" style="font-size:10px; color:#a9afb6;">
               {{ qty_recv }}/{{ qty_ord }} units
             </div>
             {% endif %}
           </td>
 
-          {# Total #}
+          {# Total — .money.ext mono 700 ink (primary total) #}
           <td class="px-4 py-4 align-middle text-right">
-            <span class="text-sm font-bold text-gray-900 tabular-nums">${{ "%.2f"|format(po.total) }}</span>
+            <span class="money ext">${{ "%.2f"|format(po.total) }}</span>
             {% if po.freight_in_cost and po.freight_in_cost > 0 %}
-            <div class="text-[10px] text-gray-400 mt-0.5 tabular-nums">+${{ "%.2f"|format(po.freight_in_cost) }} frt</div>
+            <div class="money mt-0.5" style="font-size:10px; color:#a9afb6;">+${{ "%.2f"|format(po.freight_in_cost) }} frt</div>
             {% endif %}
           </td>
 
@@ -255,12 +234,9 @@
             {% endif %}
           </td>
 
-          {# Status chip #}
+          {# Status chip — Axle .chip-axle dot + label #}
           <td class="px-4 py-4 align-middle">
-            <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold {{ status_cls }}">
-              <span class="w-1.5 h-1.5 rounded-full {{ status_dot }} shrink-0"></span>
-              {{ po.status.replace('_', ' ').title() }}
-            </span>
+            <span class="chip-axle {{ status_cls }}"><span class="dot"></span>{{ po.status.replace('_', ' ').title() }}</span>
           </td>
 
           {# Quick actions #}
@@ -285,13 +261,14 @@
     </table>
   </div>
 
-  {# ── Table footer count ── #}
-  <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
-    <span class="text-xs text-gray-400">
+  {# ── Table footer — Axle .pgr: mono 11px on #fafbfa ── #}
+  <div class="px-5 py-3 border-t border-gray-100 flex items-center justify-between"
+       style="background:#fafbfa; font-family:'IBM Plex Mono',monospace; font-size:11px; color:#7c838b;">
+    <span>
       {{ pos | length }} purchase order{{ 's' if pos | length != 1 else '' }}
       {% if tab != 'all' or q %} · filtered{% endif %}
     </span>
-    <span x-show="selectedCount > 0" x-cloak class="text-xs text-brand-700 font-medium">
+    <span x-show="selectedCount > 0" x-cloak class="text-brand-700 font-medium">
       <span x-text="selectedCount"></span> selected
     </span>
   </div>

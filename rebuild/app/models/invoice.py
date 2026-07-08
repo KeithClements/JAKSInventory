@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 from app.models.mixins import QBOSyncMixin
 from app.utils import calc_line_total, calc_margin_pct
+from app.invoice_totals import compute_invoice_totals
 from app.constants import (
     InvoiceStatus, InvoiceLockReason, LineType,
     PaymentMethod, PaymentStatus, PaymentReversalReason, PaymentDirection,
@@ -102,15 +103,29 @@ class Invoice(QBOSyncMixin, Base):
     )
 
     # ── Computed ──────────────────────────────────────────────────────────────
+    # These money properties — read by the List "Total" column, the row Preview
+    # panel, and the print/PDF — delegate to the ONE totals engine
+    # (app.invoice_totals.compute_invoice_totals), the very same function
+    # InvoiceService.calculate_totals feeds the workspace totals panel. Routing
+    # both through one pure function is the structural guarantee that the
+    # customer-facing surfaces and the workspace can never disagree. See that
+    # module for the full policy (cores never taxed; every line — fees & credits
+    # included — counts toward total; invoice-level discount hits parts only).
+    #   • subtotal        — pre-discount sum of every line_total
+    #   • discount_amount — invoice.discount_pct applied ONCE to the PARTS subtotal
+    #   • tax_amount      — cores/freight/fees excluded from the taxable base
+    #   • total           — subtotal − discount_amount + tax_amount
     @property
     def subtotal(self) -> float:
-        return round(sum(ln.line_total for ln in self.lines), 2)
+        return compute_invoice_totals(self)["subtotal"]
+
+    @property
+    def discount_amount(self) -> float:
+        return compute_invoice_totals(self)["discount_amount"]
 
     @property
     def tax_amount(self) -> float:
-        if not self.is_taxable:
-            return 0.0
-        return round(self.subtotal * (self.tax_rate / 100), 2)
+        return compute_invoice_totals(self)["tax_amount"]
 
     @property
     def surcharge_amount(self) -> float:
@@ -119,12 +134,12 @@ class Invoice(QBOSyncMixin, Base):
         # would be if the whole balance is paid by card" — and is NOT added to total.
         if not self.apply_cc_surcharge:
             return 0.0
-        return round((self.subtotal + self.tax_amount) * (self.cc_surcharge_pct / 100), 2)
+        return round(self.total * (self.cc_surcharge_pct / 100), 2)
 
     @property
     def total(self) -> float:
         # R1 — surcharge NOT included in total. See surcharge_amount note above.
-        return round(self.subtotal + self.tax_amount, 2)
+        return compute_invoice_totals(self)["total"]
 
     @property
     def amount_paid(self) -> float:
@@ -134,7 +149,7 @@ class Invoice(QBOSyncMixin, Base):
 
     @property
     def balance_due(self) -> float:
-        return round(self.total - self.amount_paid, 2)
+        return compute_invoice_totals(self)["balance_due"]
 
     @property
     def is_locked(self) -> bool:
@@ -267,6 +282,9 @@ class Payment(QBOSyncMixin, Base):
     # qbo_sync_status, qbo_last_synced_at, qbo_sync_error, qbo_sync_retry_count
     # are inherited from QBOSyncMixin.
     qbo_payment_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Surcharge SalesReceipt id (DocNumber JAKS-SC-{id}) — persisted so a repush
+    # checks locally before the query-then-create window (double-click guard).
+    qbo_surcharge_receipt_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -278,7 +296,10 @@ class Payment(QBOSyncMixin, Base):
 
     @property
     def amount_allocated(self) -> float:
-        return round(sum(a.amount_applied for a in self.allocations), 2)
+        # Mirror Invoice.amount_paid — exclude reversed allocations so an NSF /
+        # stop-payment reversal releases the funds back to amount_unallocated
+        # instead of stranding them (allocated-but-not-counted-as-paid).
+        return round(sum(a.amount_applied for a in self.allocations if not a.is_reversed), 2)
 
     @property
     def amount_unallocated(self) -> float:

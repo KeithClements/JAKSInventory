@@ -1,0 +1,139 @@
+{# ── Companion Core Return Slip ───────────────────────────────────────────────
+   Printed after the invoice (invoices/print.html) whenever the invoice carries
+   core charges. Intentionally reuses the invoice's own classes so it MIMICS the
+   invoice — do not pull in documents/_styles.html here (different class system).
+   Rendered ad-hoc from the invoice's open cores; no CoreSlip row is created.
+   Context (set in invoices.py _invoice_core_slip_context):
+     invoice_cores, core_slip_total_qty, core_slip_total_credit,
+     core_slip_deadline, core_slip_grace_days  (+ invoice / company / prepared_by)
+─────────────────────────────────────────────────────────────────────────────── #}
+<div class="page-shell core-slip-page">
+
+  {# ── Header: company LEFT | "Core Return Slip" RIGHT ── #}
+  <div class="doc-header">
+    {% include "documents/_company_header.html" %}
+    <div class="doc-right">
+      <div class="doc-title">Core Return Slip</div>
+      <div class="doc-meta">
+        <strong>Re: Invoice</strong> {{ invoice.invoice_number }}<br>
+        Issued {{ invoice.created_at.strftime('%B %d, %Y') }}
+        {% if core_slip_deadline %}
+          <br><strong>Return by</strong> {{ core_slip_deadline.strftime('%m/%d/%Y') }}
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# ── From / Returned by / Reference ── #}
+  <div class="meta-row">
+    <div>
+      <div class="meta-lab">From</div>
+      <div class="meta-val">
+        {% if company.name %}<b>{{ company.name }}</b><br>{% endif %}
+        {% if company.address %}{{ company.address }}<br>{% endif %}
+        {% if company.phone %}<span class="meta-mono">{{ company.phone }}</span>{% endif %}
+      </div>
+    </div>
+    <div>
+      <div class="meta-lab">Returned by</div>
+      <div class="meta-val">
+        <b>{{ invoice.customer.company_name }}</b>
+        {% if customer_addr_lines %}
+          <br>{% for ln in customer_addr_lines %}{{ ln }}{% if not loop.last %}<br>{% endif %}{% endfor %}
+        {% endif %}
+      </div>
+    </div>
+    <div>
+      <div class="meta-lab">Reference</div>
+      <div class="meta-val">
+        <span class="ref-key">Invoice</span><span class="meta-mono">{{ invoice.invoice_number }}</span><br>
+        {% if prepared_by %}Prepared by {{ prepared_by }}<br>{% endif %}
+        <span class="ref-key">Cores</span>{{ invoice_cores | length }}
+      </div>
+    </div>
+  </div>
+
+  <div class="slip-note">
+    <b>Please return the cores listed below.</b> Bring this slip with your cores so we can
+    credit your account quickly. Cores are credited only after inspection{% if core_slip_grace_days %},
+    within {{ core_slip_grace_days }} days of the invoice date{% endif %}.
+  </div>
+
+  {# ── Core list ── #}
+  <table class="lines">
+    <thead>
+      <tr>
+        <th class="c" style="width:26px">#</th>
+        <th>Part / Description</th>
+        <th class="r" style="width:48px">Qty</th>
+        <th class="r" style="width:96px">Credit / ea</th>
+        <th class="r" style="width:96px">Credit Due</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for core in invoice_cores %}
+        <tr>
+          <td class="td-num">{{ loop.index }}</td>
+          <td>
+            <span class="role-badge">Core</span>
+            {% if core.product and core.product.sku %}
+              <div class="pn">{{ core.product.sku }}</div>
+            {% endif %}
+            <div class="ds">{{ core.product.title if core.product else "Core part" }}</div>
+          </td>
+          <td class="r money">{{ core.qty_outstanding }}</td>
+          <td class="r money">${{ "%.2f"|format(core.customer_unit_charge) }}</td>
+          <td class="td-total"><b>${{ "%.2f"|format(core.customer_unit_charge * core.qty_outstanding) }}</b></td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {# ── Totals ── #}
+  <div class="tot-wrap">
+    <div class="tots">
+      <div class="row">
+        <span class="lbl">Cores Outstanding</span>
+        <span class="val">{{ core_slip_total_qty }}</span>
+      </div>
+      <div class="grand">
+        <span class="l">Potential Credit</span>
+        <span class="v">${{ "%.2f"|format(core_slip_total_credit) }}</span>
+      </div>
+    </div>
+  </div>
+
+  {# ── Return instructions ── #}
+  <div class="notes-section">
+    <div class="sec-label">Return Instructions</div>
+    <div class="notes-body">1. Drain fluids and seal openings before returning.
+2. Pack cores in original packaging when possible.
+3. Bring this slip — it is your proof of return.
+4. Cores must be the same part number listed above.
+5. Credit is issued after inspection (typically 3–5 business days).</div>
+  </div>
+
+  {# ── Sign-off ── #}
+  <div class="sig-row">
+    <div class="sig-cell">
+      <div class="sig-cap">Customer Signature</div>
+      <div class="sig-line">Signature &amp; Date</div>
+    </div>
+    <div class="sig-cell">
+      <div class="sig-cap">Received By (JAKS)</div>
+      <div class="sig-line">Signature &amp; Date</div>
+    </div>
+  </div>
+
+  {% set disclaimer = "Account credit is final once issued. Cash refunds for cores are at JAKS' discretion." %}
+  {% set footer_message = "Keep this slip for your records" %}
+  {% include "documents/_footer.html" %}
+
+  {# ── Mono footer (mirrors the invoice) ── #}
+  <div class="doc-foot">
+    <span>Axle &middot; Core Return Slip</span>
+    <span class="mid">{{ invoice.invoice_number }} &middot; {{ invoice.created_at.strftime('%m/%d/%Y') }}</span>
+    <span class="rt">{% if company.phone %}{{ company.phone }}{% elif company.email %}{{ company.email }}{% endif %}</span>
+  </div>
+
+</div>{# /core-slip-page #}

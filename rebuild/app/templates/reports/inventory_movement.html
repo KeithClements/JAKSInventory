@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Inventory Movement — Axle{% endblock %}
+{% block heading %}Inventory Movement{% endblock %}
+
+{% block content %}
+{% set active_report = 'inventory-movement' %}
+<div class="max-w-6xl space-y-4">
+  {% include "reports/_nav.html" %}
+
+  {# ── Filter row ───────────────────────────────────────────────────────── #}
+  <form method="get" action="/reports/inventory-movement"
+        class="flex flex-wrap items-end gap-3 bg-white border border-gray-200 rounded-xl p-3">
+    <div>
+      <label class="block text-xs font-medium text-gray-500 mb-1">SKU contains</label>
+      <input name="q" value="{{ q }}" placeholder="e.g. JAKS-CUM"
+             class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-48 focus:outline-none focus:ring-2 focus:ring-brand-400" />
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-gray-500 mb-1">From</label>
+      <input name="start" type="date" value="{{ start }}"
+             class="rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-gray-500 mb-1">To</label>
+      <input name="end" type="date" value="{{ end }}"
+             class="rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
+    </div>
+    <button type="submit" class="btn-primary btn-sm">Apply</button>
+    <div class="flex-1"></div>
+    <p class="text-xs text-gray-400 self-center">
+      Every stock movement (receipt, sale, return, void, adjust) — trace why on-hand changed.
+    </p>
+  </form>
+
+  {% if totals.truncated %}
+  <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-700">
+    Showing the most recent {{ totals.row_count }} of {{ totals.total_matched }} matching movements —
+    narrow the date range or SKU filter to see the rest.
+  </div>
+  {% endif %}
+
+  {# ── Movements table ──────────────────────────────────────────────────── #}
+  {% if rows %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Movements</h2>
+      <span class="text-xs text-gray-400">{{ totals.total_matched }} in range</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">Date</th>
+            <th class="tbl-th">SKU</th>
+            <th class="tbl-th">Part</th>
+            <th class="tbl-th">Type</th>
+            <th class="tbl-th-r">Qty Change</th>
+            <th class="tbl-th-r">On Hand After</th>
+            <th class="tbl-th">Reference</th>
+            <th class="tbl-th">Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr class="tbl-row">
+            <td class="tbl-td text-gray-500 whitespace-nowrap">{{ row.created_at.strftime('%Y-%m-%d %H:%M') if row.created_at else '—' }}</td>
+            <td class="tbl-td font-medium">
+              <a href="/products/{{ row.product_id }}" class="tbl-link text-sm font-mono">{{ row.sku }}</a>
+            </td>
+            <td class="tbl-td text-gray-700 truncate max-w-xs">{{ row.title }}</td>
+            <td class="tbl-td text-gray-600">{{ row.transaction_type | replace('_', ' ') | title }}</td>
+            <td class="tbl-td-r font-semibold {% if row.qty_change > 0 %}text-green-700{% elif row.qty_change < 0 %}text-red-700{% else %}text-gray-400{% endif %}">
+              {{ '+' if row.qty_change > 0 }}{{ row.qty_change }}
+            </td>
+            <td class="tbl-td-r text-gray-700">{{ row.qty_after }}</td>
+            <td class="tbl-td text-gray-500">
+              {% if row.reference_type %}{{ row.reference_type | replace('_', ' ') | title }}{% if row.reference_id %} #{{ row.reference_id }}{% endif %}{% else %}—{% endif %}
+            </td>
+            <td class="tbl-td text-gray-400 truncate max-w-xs">{{ row.notes or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="card flex flex-col items-center justify-center py-16">
+    <svg class="w-12 h-12 text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 7h16M4 12h16M4 17h10"/>
+    </svg>
+    <p class="text-gray-500 font-medium">No movements in this range</p>
+    <p class="text-gray-400 text-sm mt-1">Widen the date range or clear the SKU filter.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

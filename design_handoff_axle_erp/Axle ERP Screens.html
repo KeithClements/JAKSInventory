@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Axle — ERP Screens</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Barlow:ital,wght@0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="axle-erp.css" />
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="erp-shared.jsx"></script>
+<script type="text/babel" src="erp-quote.jsx"></script>
+<script type="text/babel" src="erp-catalog.jsx"></script>
+<script type="text/babel" src="erp-dashboard.jsx"></script>
+<script type="text/babel" src="erp-responsive.jsx"></script>
+
+<script type="text/babel">
+function Board() {
+  return (
+    <DesignCanvas>
+      <DCSection id="chrome" title="01 · Quote Builder — Dark chrome (chosen)" subtitle="Counter-usable pass: bolder part numbers, hover + selected states, core chips, premium total. Light shell kept for reference.">
+        <DCArtboard id="quote-dark" label="Quote builder · dark chrome · 1280 ✓" width={1280} height={800}>
+          <QuoteScreen chrome="dark" />
+        </DCArtboard>
+        <DCArtboard id="quote-light" label="Quote builder · light chrome · 1280 (not chosen)" width={1280} height={800}>
+          <QuoteScreen chrome="light" />
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="dash" title="02 · Dashboard" subtitle="Morning read: open quote value, cores due, stock alerts, QuickBooks status.">
+        <DCArtboard id="dash-1280" label="Dashboard · 1280" width={1280} height={800}>
+          <DashScreen />
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="catalog" title="03 · Parts Catalog" subtitle="Dense inventory table with status, cores, and a detail drawer (dark chrome shown).">
+        <DCArtboard id="catalog-1280" label="Parts catalog · 1280" width={1280} height={800}>
+          <CatalogScreen chrome="dark" />
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="responsive" title="04 · Tablet & Phone" subtitle="768 collapses to an icon rail; 390 is read-and-act-light: lookup and quote actions.">
+        <DCArtboard id="catalog-768" label="Catalog · 768 tablet" width={768} height={1024}>
+          <TabletCatalog />
+        </DCArtboard>
+        <DCArtboard id="lookup-390" label="Part lookup · 390" width={390} height={844}>
+          <MobileLookup />
+        </DCArtboard>
+        <DCArtboard id="quote-390" label="Quote · 390" width={390} height={844}>
+          <MobileQuote />
+        </DCArtboard>
+      </DCSection>
+    </DesignCanvas>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<Board />);
+</script>
+</body>
+</html>

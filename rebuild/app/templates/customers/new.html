@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}New Customer — JAKS Inventory{% endblock %}
+{% block title %}New Customer — Axle{% endblock %}
 {% block heading %}New Customer{% endblock %}
 {% block header_actions %}
   <a href="/customers/" class="text-sm text-gray-500 hover:text-gray-700">← Back to Customers</a>
@@ -8,6 +8,40 @@
 {% block content %}
 {% set prefill = prefill | default({}) %}
 {% set dup_matches = dup_matches | default([]) %}
+{% set email_conflict = email_conflict | default(none) %}
+{% set phone_conflict = phone_conflict | default(none) %}
+{% set email_error = email_error | default(none) %}
+
+{# ── Invalid email (server-side validation) — the browser only enforces
+     type=email; a scripted/old-browser POST otherwise saves a bad address. #}
+{% if email_error %}
+<div class="rounded-xl bg-red-50 border border-red-200 px-4 py-3 max-w-2xl mb-6">
+  <p class="text-sm font-semibold text-red-800">{{ email_error }}</p>
+</div>
+{% endif %}
+
+{# ── Hard email conflict (C10) — a customer with this email already exists.
+     Unlike the soft company-name warning this CANNOT be overridden (the email
+     is a unique key), so there is no "Create Anyway" — point the user to the
+     existing record instead. #}
+{% if email_conflict %}
+<div class="rounded-xl bg-red-50 border border-red-200 px-4 py-3 max-w-2xl mb-6">
+  <p class="text-sm font-semibold text-red-800">A customer with this email already exists.</p>
+  <p class="text-xs text-red-700 mt-0.5">
+    Use the existing record so billing and credit stay on one account:
+  </p>
+  <div class="mt-2 flex items-center justify-between gap-2 rounded bg-white/70 border border-red-100 px-3 py-2">
+    <span class="min-w-0 truncate text-sm font-medium text-gray-800">
+      {{ email_conflict.company_name }}
+      <span class="text-xs text-gray-400">· {{ email_conflict.email }}</span>
+    </span>
+    <a href="/customers/{{ email_conflict.id }}"
+       class="shrink-0 text-xs font-semibold text-brand-700 hover:underline">View Existing →</a>
+  </div>
+  <p class="text-xs text-red-600 mt-2">…or change the email below to create a separate customer.</p>
+</div>
+{% endif %}
+
 <form method="post" action="/customers/new" class="max-w-2xl space-y-6"
       x-data="{ confirmDup: false }">
   <input type="hidden" name="confirm_duplicate" :value="confirmDup ? '1' : ''">
@@ -46,20 +80,82 @@
   </div>
   {% endif %}
 
-  <!-- Contact info -->
+  {# ── Possible-duplicate warning (PHONE) ───────────────────────────────────────
+       A customer with this phone already exists. Counter staff look people up by
+       phone, so a shared phone fragments AR just like a duplicate name. Phone is
+       not a unique key, so this WARNS (override-able via the same confirm_duplicate
+       flag), with a "View Existing →" affordance like the email-conflict banner. #}
+  {% if phone_conflict %}
+  <div class="rounded-xl bg-amber-50 border border-amber-200 px-4 py-3">
+    <div class="flex items-start gap-2">
+      <svg class="w-5 h-5 shrink-0 mt-0.5 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
+        <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+      </svg>
+      <div class="min-w-0 flex-1">
+        <p class="text-sm font-semibold text-amber-800">A customer with this phone already exists.</p>
+        <p class="text-xs text-amber-700 mt-0.5">Counter lookups go by phone — use the existing record so it stays on one account:</p>
+        <div class="mt-2 flex items-center justify-between gap-2 rounded bg-white/70 border border-amber-100 px-3 py-2">
+          <span class="min-w-0 truncate text-sm font-medium text-gray-800">
+            {{ phone_conflict.company_name }}
+            {% if phone_conflict.phone %}<span class="text-xs text-gray-400">· {{ phone_conflict.phone }}</span>{% endif %}
+          </span>
+          <a href="/customers/{{ phone_conflict.id }}"
+             class="shrink-0 text-xs font-semibold text-brand-700 hover:underline">View Existing →</a>
+        </div>
+        <div class="mt-3 flex items-center gap-2">
+          <button type="submit" @click="confirmDup = true"
+                  class="px-4 py-2 text-sm font-semibold rounded-lg bg-amber-600 text-white hover:bg-amber-700 transition-colors">
+            Create Anyway
+          </button>
+          <span class="text-xs text-amber-600">or change the phone below.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Customer ────────────────────────────────────────────────────────────────
+       Field order per PHASE_2_PLAN.md §4.10 (real-usage entry order):
+       Company → [Type] → Contact → Phone → Email → Payment Terms → Credit Limit
+       → Discount % → Tax Exempt → Notes.  Address moved below the
+       fold (most quotes start before the full address is known). #}
   <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
-    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider border-b border-gray-100 pb-3">Contact Info</h2>
+    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider border-b border-gray-100 pb-3">Customer</h2>
+
+    {# Identity — Company → [Type] → Contact → Phone → Email #}
+    <div>
+      <label class="block text-xs font-medium text-gray-500 mb-1">Company Name <span class="text-red-500">*</span></label>
+      <input name="company_name" required autofocus value="{{ prefill.get('company_name', '') }}"
+        class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+    </div>
+
+    {# Account # (#5) — internal customer/account number #}
+    <div>
+      <label class="block text-xs font-medium text-gray-500 mb-1">Account #</label>
+      <input name="account_number" value="{{ prefill.get('account_number', '') }}"
+        placeholder="Optional — your internal account number"
+        class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+    </div>
+
+    {# ── Customer Type (§3 / P2-D1) — pre-fills the fields below from type_defaults ── #}
+    <div>
+      <label class="block text-xs font-medium text-gray-500 mb-1">Customer Type</label>
+      <select name="customer_type" @change="applyCustomerTypeDefaults($event.target)"
+        class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">
+        {% set _seltype = prefill.get('customer_type', 'other') %}
+        {% for t in customer_types | default([]) %}
+        <option value="{{ t.value }}" {% if _seltype == t.value %}selected{% endif %}>{{ customer_type_labels.get(t, t.value | replace('_', ' ') | title) }}</option>
+        {% endfor %}
+      </select>
+      <p class="text-xs text-gray-400 mt-0.5">Pre-fills payment terms, pricing tier, credit limit, discount &amp; tax-exempt below. Every field stays overridable.</p>
+    </div>
+
+    <div>
+      <label class="block text-xs font-medium text-gray-500 mb-1">Contact Name</label>
+      <input name="contact_name" value="{{ prefill.get('contact_name', '') }}"
+        class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+    </div>
     <div class="grid grid-cols-2 gap-4">
-      <div>
-        <label class="block text-xs font-medium text-gray-500 mb-1">Company Name <span class="text-red-500">*</span></label>
-        <input name="company_name" required autofocus value="{{ prefill.get('company_name', '') }}"
-          class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
-      </div>
-      <div>
-        <label class="block text-xs font-medium text-gray-500 mb-1">Contact Name</label>
-        <input name="contact_name" value="{{ prefill.get('contact_name', '') }}"
-          class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
-      </div>
       <div>
         <label class="block text-xs font-medium text-gray-500 mb-1">Phone</label>
         <input name="phone" type="tel" value="{{ prefill.get('phone', '') }}"
@@ -70,6 +166,93 @@
         <input name="email" type="email" value="{{ prefill.get('email', '') }}"
           class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
       </div>
+    </div>
+
+    {# Terms & Pricing — Payment Terms → Credit Limit → Discount % → Interest #}
+    <div class="pt-2">
+      <h3 class="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-3">Terms &amp; Pricing</h3>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">Payment Terms</label>
+          <select name="payment_terms"
+            class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">
+            {% for term in payment_terms %}
+            <option value="{{ term }}" {% if prefill.get('payment_terms') == term %}selected{% endif %}>{{ term.replace('_', ' ').upper() }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">Credit Limit</label>
+          <div class="relative">
+            <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
+            <input name="credit_limit" type="number" step="100" min="0" value="{{ prefill.get('credit_limit', '0') }}"
+              class="rounded-lg border border-gray-200 pl-6 pr-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+          </div>
+          <p class="text-xs text-gray-400 mt-0.5">0 = no limit enforced.</p>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">Standing Discount %</label>
+          <input name="discount_pct" type="number" step="0.5" min="0" max="100" value="{{ prefill.get('discount_pct', '0') }}"
+            class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+          <p class="text-xs text-gray-400 mt-0.5">Auto-applied to quotes &amp; invoices. Always overridable.</p>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">Interest Rate % <span class="text-gray-400 font-normal">(annual, on overdue balance)</span></label>
+          <input name="interest_rate" type="number" step="0.1" min="0" max="100" value="{{ prefill.get('interest_rate', '0') }}"
+            class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+          <p class="text-xs text-gray-400 mt-0.5">Leave 0 if no interest charged.</p>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">Card Surcharge % <span class="text-gray-400 font-normal">(default)</span></label>
+          <input name="card_surcharge_pct" type="number" step="0.1" min="0" max="100" value="{{ prefill.get('card_surcharge_pct', '') }}"
+            placeholder="system default"
+            class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+          <p class="text-xs text-gray-400 mt-0.5">Blank = system default · 0 = no surcharge for this customer.</p>
+        </div>
+      </div>
+    </div>
+
+    {# Tax Exempt #}
+    <div
+      class="flex flex-col gap-2 pt-1"
+      x-data="{ exempt: {{ 'true' if prefill.get('is_tax_exempt') else 'false' }} }"
+    >
+      <label class="flex items-center gap-2 cursor-pointer select-none">
+        <input type="checkbox" name="is_tax_exempt" x-model="exempt"
+          class="rounded border-gray-300 text-green-600 focus:ring-brand-400" />
+        <span class="text-sm text-gray-700">Tax exempt (has resale / exemption certificate)</span>
+      </label>
+      <div x-show="exempt" x-cloak class="pl-6">
+        <label class="block text-xs font-medium text-gray-500 mb-1">Certificate Number</label>
+        <input name="tax_exempt_cert_number" value="{{ prefill.get('tax_exempt_cert_number', '') }}"
+          class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
+      </div>
+    </div>
+  </div>
+
+  {# ── Notes ───────────────────────────────────────────────────────────────── #}
+  <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-3">
+    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider border-b border-gray-100 pb-3">Notes</h2>
+    <div>
+      <label class="block text-xs font-medium text-gray-500 mb-1">Customer Notes</label>
+      <textarea name="notes" rows="2"
+        class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">{{ prefill.get('notes', '') }}</textarea>
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-gray-500 mb-1">Internal Notes <span class="text-gray-400">(not printed on documents)</span></label>
+      <textarea name="internal_notes" rows="2"
+        class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">{{ prefill.get('internal_notes', '') }}</textarea>
+    </div>
+  </div>
+
+  {# ── Billing Address — below the fold ─────────────────────────────────────────
+       Demoted per §4.10: most quotes start before the full address is known.
+       Secondary contacts + extra ship-to addresses are managed from the customer
+       detail page after creation. #}
+  <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
+    <div class="flex items-center justify-between border-b border-gray-100 pb-3">
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Billing Address</h2>
+      <span class="text-xs text-gray-400">Optional — add later if not known yet</span>
     </div>
     <div>
       <label class="block text-xs font-medium text-gray-500 mb-1">Address Line 1</label>
@@ -100,66 +283,6 @@
     </div>
   </div>
 
-  <!-- Terms & tax -->
-  <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-4">
-    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider border-b border-gray-100 pb-3">Terms &amp; Tax</h2>
-    <div class="grid grid-cols-2 gap-4">
-      <div>
-        <label class="block text-xs font-medium text-gray-500 mb-1">Payment Terms</label>
-        <select name="payment_terms"
-          class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">
-          {% for term in payment_terms %}
-          <option value="{{ term }}" {% if prefill.get('payment_terms') == term %}selected{% endif %}>{{ term.replace('_', ' ').upper() }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div>
-        <label class="block text-xs font-medium text-gray-500 mb-1">Standing Discount %</label>
-        <input name="discount_pct" type="number" step="0.5" min="0" max="100" value="{{ prefill.get('discount_pct', '0') }}"
-          class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
-        <p class="text-xs text-gray-400 mt-0.5">Auto-applied to all quotes and invoices. Always overridable.</p>
-      </div>
-    </div>
-    <div class="grid grid-cols-2 gap-4">
-      <div>
-        <label class="block text-xs font-medium text-gray-500 mb-1">Interest Rate % <span class="text-gray-400 font-normal">(annual, on overdue balance)</span></label>
-        <input name="interest_rate" type="number" step="0.1" min="0" max="100" value="{{ prefill.get('interest_rate', '0') }}"
-          class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
-        <p class="text-xs text-gray-400 mt-0.5">Leave 0 if no interest charged.</p>
-      </div>
-    </div>
-    <div
-      class="flex flex-col gap-2"
-      x-data="{ exempt: {{ 'true' if prefill.get('is_tax_exempt') else 'false' }} }"
-    >
-      <label class="flex items-center gap-2 cursor-pointer select-none">
-        <input type="checkbox" name="is_tax_exempt" x-model="exempt"
-          class="rounded border-gray-300 text-green-600 focus:ring-brand-400" />
-        <span class="text-sm text-gray-700">Tax exempt (has resale / exemption certificate)</span>
-      </label>
-      <div x-show="exempt" x-cloak class="pl-6">
-        <label class="block text-xs font-medium text-gray-500 mb-1">Certificate Number</label>
-        <input name="tax_exempt_cert_number" value="{{ prefill.get('tax_exempt_cert_number', '') }}"
-          class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400" />
-      </div>
-    </div>
-  </div>
-
-  <!-- Notes -->
-  <div class="rounded-xl bg-white border border-gray-100 shadow-sm p-6 space-y-3">
-    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider border-b border-gray-100 pb-3">Notes</h2>
-    <div>
-      <label class="block text-xs font-medium text-gray-500 mb-1">Customer Notes</label>
-      <textarea name="notes" rows="2"
-        class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">{{ prefill.get('notes', '') }}</textarea>
-    </div>
-    <div>
-      <label class="block text-xs font-medium text-gray-500 mb-1">Internal Notes <span class="text-gray-400">(not printed on documents)</span></label>
-      <textarea name="internal_notes" rows="2"
-        class="rounded-lg border border-gray-200 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-brand-400">{{ prefill.get('internal_notes', '') }}</textarea>
-    </div>
-  </div>
-
   <div class="flex gap-3">
     <button type="submit"
       class="rounded-lg bg-brand-700 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-600 transition-colors">
@@ -172,4 +295,37 @@
   </div>
 
 </form>
+
+{# ── Customer Type defaults (§3 / P2-D1) ───────────────────────────────────────
+   Server map embedded as JSON (the safe house pattern — avoids the tojson-in-
+   x-data-attr footgun). On type change we pre-fill the form fields client-side;
+   the user can override any field, and the form posts the resulting values.
+   `type_defaults` keys are CustomerType values → resolved-profile dicts. #}
+<script type="application/json" id="cust-type-defaults">{{ (type_defaults | default({})) | tojson }}</script>
+<script>
+  function applyCustomerTypeDefaults(sel) {
+    var map = {};
+    try { map = JSON.parse(document.getElementById('cust-type-defaults').textContent || '{}'); }
+    catch (e) { return; }
+    var d = map[sel.value];
+    if (!d) return;
+    var form = sel.form;
+    function set(name, val) {
+      if (val === undefined || val === null) return;
+      var el = form.querySelector('[name=' + name + ']');
+      if (!el) return;
+      el.value = val;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    set('payment_terms', d.payment_terms);
+    set('credit_limit', d.credit_limit);
+    set('discount_pct', d.discount_pct);
+    set('card_surcharge_pct', d.card_surcharge_pct);   // null/blank → system default
+    var tx = form.querySelector('[name=is_tax_exempt]');
+    if (tx) {
+      tx.checked = !!d.is_tax_exempt;            // notify Alpine x-model (cert-# reveal)
+      tx.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }
+</script>
 {% endblock %}

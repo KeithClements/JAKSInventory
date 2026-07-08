@@ -1,16 +1,18 @@
 {% extends "base.html" %}
-{% block title %}New Quote — JAKS Inventory{% endblock %}
+{% block title %}New Quote — Axle{% endblock %}
 {% block heading %}New Quote{% endblock %}
 
 {% block content %}
 <div class="max-w-lg mx-auto">
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden"
+       data-cust-id="{{ selected_customer_id or '' }}"
+       data-cust-name="{{ selected_customer.company_name | default('', true) | e }}"
        x-data="{
-         customerId: '',
-         displayName: '',
+         ...customerPicker('nqp-results'),
          hasCustomers: {{ 'true' if customers else 'false' }}
        }"
-       @customer-selected.window="customerId = String($event.detail.id); displayName = $event.detail.name"
+       x-init="customerId = $el.dataset.custId; displayName = $el.dataset.custName; _wireResults()"
+       @customer-selected.window="onCustomerSelected($event.detail)"
        @record-created.window="
          if ($event.detail.type === 'customer') {
            customerId = String($event.detail.id);
@@ -66,15 +68,18 @@
                      autocomplete="off"
                      placeholder="Type customer name or phone…"
                      :value="displayName"
-                     @input="displayName = $el.value; customerId = ''"
-                     @keydown.enter.prevent
+                     @input="pickInput($el.value)"
+                     @keydown.down.prevent="pickMove(1)"
+                     @keydown.up.prevent="pickMove(-1)"
+                     @keydown.enter.prevent="pickChoose()"
+                     @keydown.escape.prevent="pickClose()"
                      class="form-input"
                      hx-get="/customers/search-json"
                      hx-trigger="input changed delay:200ms"
                      hx-target="#nqp-results" />
               <div id="nqp-results"
                    class="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-30 max-h-52 overflow-y-auto"
-                   x-show="displayName.length >= 2 && !customerId"
+                   x-show="displayName.length >= 2 && !customerId && !_dismissed"
                    x-cloak></div>
             </div>
             <input type="hidden" name="customer_id" :value="customerId" />

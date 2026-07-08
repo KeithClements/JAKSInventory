@@ -1,9 +1,24 @@
+{# seed_lines (set when launched from an invoice) injected as JSON in a script tag,
+   then parsed in x-init — never tojson-in-attribute (breaks on quotes). #}
+<script type="application/json" id="wty-seed-lines">{{ seed_lines | default([]) | tojson }}</script>
 <div x-data="{
   customerId: '{{ selected_customer.id if selected_customer else '' }}',
   lines: [{ productId: '', qty: 1, credit: '' }],
   addLine() { this.lines.push({ productId: '', qty: 1, credit: '' }); },
-}">
+}"
+x-init="lines = JSON.parse(document.getElementById('wty-seed-lines').textContent || '[]'); if (!lines.length) lines = [{ productId: '', qty: 1, credit: '' }]">
   <form method="post" action="/warranty/new" class="space-y-4">
+
+    {% if selected_invoice %}
+    <div class="flex items-center gap-2 rounded-lg bg-brand-50 border border-brand-100 px-3 py-2 text-xs text-brand-800">
+      <svg class="w-4 h-4 shrink-0 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101"/>
+        <path stroke-linecap="round" stroke-linejoin="round" d="M10.172 13.828a4 4 0 005.656 0l4-4a4 4 0 10-5.656-5.656l-1.1 1.1"/>
+      </svg>
+      <span>Claim from invoice <span class="font-mono font-semibold">{{ selected_invoice.invoice_number }}</span></span>
+      <input type="hidden" name="invoice_number" value="{{ selected_invoice.invoice_number }}">
+    </div>
+    {% endif %}
 
     <div>
       <label class="form-label">Customer <span class="text-red-500">*</span></label>
@@ -25,6 +40,24 @@
         <option value="{{ v.id }}">{{ v.name }}</option>
         {% endfor %}
       </select>
+    </div>
+
+    <div class="grid grid-cols-2 gap-3">
+      <div>
+        <label class="form-label">Warranty Type</label>
+        <select name="warranty_type" class="form-select">
+          <option value="{{ WarrantyType.VENDOR }}">Vendor (vendor reimburses)</option>
+          <option value="{{ WarrantyType.JAKS_EXTENDED }}">JAKS Extended (JAKS absorbs)</option>
+        </select>
+      </div>
+      <div>
+        <label class="form-label">Engine Serial # (ESN)</label>
+        <input type="text" name="esn" maxlength="100"
+               placeholder="Required by PAI / vendor"
+               class="form-input" />
+        {# §23.3 Phase 3 — the submit gate defaults ON for vendor claims #}
+        <p class="mt-1 text-[11px] text-amber-600">Vendor claims can't be submitted without an ESN (can be added later on the claim).</p>
+      </div>
     </div>
 
     <div>

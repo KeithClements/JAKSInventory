@@ -1,0 +1,168 @@
+{# ═══════════════════════════════════════════════════════════════════════════════
+   SHARED CONFIRM MODAL — §3-compliant (role="dialog", z-[60], rounded-2xl,
+   @keydown.escape, NO window.confirm / native hx-confirm)
+   (JAKS_UI_Change_Plan.md §8L — shared confirm primitive)
+
+   USAGE — call {{ confirm_modal() }} ONCE globally (done in base.html).
+   No per-workspace markup needed.
+
+   TRIGGER from anywhere — including HTMX-swapped content outside Alpine scope:
+
+       window.jakConfirm({
+         title:        'string',          // modal heading      (required)
+         body:         'string',          // body copy          (required)
+         cta:          'Confirm',         // confirm-button label (default 'Confirm')
+         danger:       true,              // true = red CTA, false = brand-primary
+         // Pick exactly ONE action:
+         hxPost:       '/url',            // fires htmx.ajax('POST', ...)
+         hxTarget:     '#selector',       //   └─ HTMX target (default 'body')
+         hxSwap:       'outerHTML',       //   └─ HTMX swap   (default 'outerHTML')
+         formId:       'form-id',         // calls document.getElementById(id).submit()
+         confirmEvent: 'event-name',      // dispatches window CustomEvent(name, {detail:opts})
+       });
+
+   MIGRATION GUIDE (replace legacy patterns):
+
+     window.confirm('…')              →  jakConfirm({ …, confirmEvent: 'my-event' })
+                                          + @my-event.window listener in x-data
+     hx-confirm="…"  on hx-post/hx-get  →  remove hx-confirm; add @click.prevent +
+                                          jakConfirm({ hxPost: …, hxTarget: … })
+     hx-confirm="…"  on hx-delete w/   →  keep hx-delete/hx-target/hx-swap; ADD
+       relative hx-target (closest tr)     hx-trigger="confirmed"; then @click.prevent
+                                          jakConfirm({ …, confirmEvent: 'jak-del-ID' })
+                                          + @jak-del-ID.window="htmx.trigger($el,'confirmed')"
+     per-workspace askConfirmHx(…)    →  jakConfirm({ hxPost, hxTarget, title, body })
+     per-workspace askConfirm(formId) →  jakConfirm({ formId, title, body })
+
+   Vendors QA BUG-003: Close & Credit + other destructive actions on the Returns
+   workspace MUST use this macro instead of native confirm dialogs.
+═══════════════════════════════════════════════════════════════════════════════ #}
+{% from "macros/motion.html" import modal_scale, backdrop_fade %}
+
+{% macro confirm_modal() %}
+<div x-data="window.jakConfirmModal()"
+     @confirm-request.window="show($event.detail)"
+     @keydown.escape.window="if (open) dismiss()">
+
+  {# Backdrop — z-[60] per §14 z-index ladder #}
+  <div x-show="open" x-cloak
+       @click="dismiss()"
+       aria-hidden="true"
+       class="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm"
+       {{ backdrop_fade() }}></div>
+
+  {# Panel — §3: role="dialog", max-w-lg, rounded-2xl, shadow-2xl #}
+  <div x-show="open" x-cloak
+       role="dialog" aria-modal="true"
+       :aria-labelledby="'jak-confirm-title-' + _uid"
+       class="fixed inset-0 z-[60] flex items-center justify-center p-4 pointer-events-none"
+       {{ modal_scale() }}>
+    <div @click.stop
+         class="w-full max-w-lg rounded-2xl bg-white shadow-2xl overflow-hidden pointer-events-auto">
+
+      {# Header — §11 modal header: px-6 py-4 border-b, font-semibold text-sm #}
+      <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+        <h2 :id="'jak-confirm-title-' + _uid"
+            class="font-semibold text-sm text-gray-900"
+            x-text="title"></h2>
+        <button type="button" @click="dismiss()"
+                aria-label="Close"
+                class="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      {# Body — §11 modal body: px-6 py-6 #}
+      <div class="px-6 py-6">
+        <p class="text-sm text-gray-700" x-text="body"></p>
+      </div>
+
+      {# Footer — §11 modal footer: px-6 py-4 border-t bg-gray-50/60 #}
+      <div class="px-6 py-4 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
+        <button type="button" @click="dismiss()"
+                class="btn-secondary btn-sm">Cancel</button>
+        <button type="button" @click="confirm()"
+                :class="danger
+                  ? 'px-3 py-1.5 text-xs font-semibold rounded-lg bg-red-600 text-white hover:bg-red-500 transition-colors'
+                  : 'btn-primary btn-sm'"
+                x-text="cta"></button>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+/* ── jakConfirmModal — Alpine x-data factory for the shared confirm primitive ── */
+window.jakConfirmModal = window.jakConfirmModal || function () {
+  return {
+    open:   false,
+    title:  '',
+    body:   '',
+    cta:    'Confirm',
+    danger: true,
+    /* unique-per-mount id so aria-labelledby never collides if mounted twice */
+    _uid:   (Math.random().toString(36) + '0000').slice(2, 8),
+    _opts:  null,
+
+    show(opts) {
+      this.title  = opts.title  || 'Confirm';
+      this.body   = opts.body   || '';
+      this.cta    = opts.cta    || 'Confirm';
+      this.danger = opts.danger !== false;
+      this._opts  = opts;
+      this.open   = true;
+    },
+
+    dismiss() {
+      this.open  = false;
+      this._opts = null;
+    },
+
+    confirm() {
+      this.open = false;
+      const o = this._opts;
+      this._opts = null;
+      if (!o) return;
+
+      if (o.formId) {
+        /* form-submit mode */
+        const f = document.getElementById(o.formId);
+        /* requestSubmit() (not submit()) fires the native `submit` event so the
+           global CSRF listener stamps the hidden _csrf field before the POST.
+           A bare .submit() skips the event → "CSRF token missing or invalid". */
+        if (f) f.requestSubmit();
+      } else if (o.hxDelete) {
+        /* htmx-ajax DELETE mode — use when hx-target is an absolute selector */
+        htmx.ajax('DELETE', o.hxDelete, {
+          target: o.hxTarget || 'body',
+          swap:   o.hxSwap   || 'outerHTML',
+        });
+      } else if (o.hxPost) {
+        /* htmx-ajax POST mode */
+        htmx.ajax('POST', o.hxPost, {
+          target: o.hxTarget || 'body',
+          swap:   o.hxSwap   || 'outerHTML',
+        });
+      } else if (o.confirmEvent) {
+        /* event-dispatch mode — caller listens with @event-name.window */
+        window.dispatchEvent(new CustomEvent(o.confirmEvent, { detail: o }));
+      }
+    },
+  };
+};
+
+/**
+ * jakConfirm(opts) — trigger the shared confirm modal from anywhere
+ * (safe from HTMX-swapped content outside any Alpine x-data scope).
+ *
+ * This is the ONLY confirm/alert primitive allowed in JAKS.
+ * Replace every window.confirm(), hx-confirm, and askConfirmHx() with this.
+ */
+window.jakConfirm = window.jakConfirm || function (opts) {
+  window.dispatchEvent(new CustomEvent('confirm-request', { detail: opts || {} }));
+};
+</script>
+{% endmacro %}

@@ -1,0 +1,146 @@
+{# ── Payment bottom preview panel — loaded via htmx.ajax() on row click ───────
+   §2B context (GET /payments/preview/{id}):
+     payment         : Payment (with .customer, .allocations pre-loaded)
+     invoice_entries : list[(invoice_number, invoice_id, amount_applied)]
+     PaymentStatus   : enum
+     PaymentMethod   : enum
+     PaymentDirection: enum
+─────────────────────────────────────────────────────────────────────────── #}
+{% from "macros/chips.html" import status_chip %}
+
+{% set status_chip_map = {
+  'applied':  ('bg-green-50 text-green-700',  'bg-green-500',  'Applied'),
+  'reversed': ('bg-red-100 text-red-700',     'bg-red-500',    'Reversed'),
+  'nsf':      ('bg-amber-100 text-amber-700', 'bg-amber-500',  'NSF'),
+} %}
+{% set method_label = {
+  'cash':           'Cash',
+  'check':          'Check',
+  'credit_card':    'Credit Card',
+  'ach':            'ACH',
+  'wire':           'Wire',
+  'account_credit': 'Account Credit',
+} %}
+{% set chip_cls, chip_dot, chip_label = status_chip_map.get(payment.status, ('bg-gray-100 text-gray-600', 'bg-gray-400', payment.status | title)) %}
+{% set is_refund = payment.direction in [PaymentDirection.REFUND_TO_CUSTOMER, PaymentDirection.REFUND_TO_VENDOR] %}
+
+<div class="px-6 py-4">
+  <div class="grid grid-cols-4 gap-6">
+
+    {# ── Identity ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Identity</p>
+      <div class="space-y-1.5">
+        <div class="flex items-center gap-2 flex-wrap">
+          <a href="/payments/{{ payment.id }}"
+             class="font-mono text-base font-bold text-brand-700 hover:text-brand-900 hover:underline leading-none">
+            PMT-{{ '%04d' | format(payment.id) }}
+          </a>
+          <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold {{ chip_cls }}">
+            <span class="w-1.5 h-1.5 rounded-full {{ chip_dot }} shrink-0"></span>
+            {{ chip_label }}
+          </span>
+        </div>
+        <p class="text-sm font-medium text-gray-800 leading-snug">{{ payment.customer.company_name }}</p>
+        <p class="text-[11px] text-gray-400">
+          {{ payment.payment_date.strftime('%b %d, %Y') if payment.payment_date else '—' }}
+        </p>
+        {% if is_refund %}
+        <div>{{ status_chip('bg-purple-50 text-purple-700', 'bg-purple-500', 'Refund') }}</div>
+        {% endif %}
+        {% if payment.status == PaymentStatus.REVERSED and payment.reversal_reason %}
+        <p class="text-[11px] text-red-600 mt-0.5">Reason: {{ payment.reversal_reason }}</p>
+        {% endif %}
+        {% if payment.status == PaymentStatus.NSF %}
+        <div>{{ status_chip('bg-amber-100 text-amber-800', 'bg-amber-500', 'NSF Fee $' ~ ('%.2f' | format(payment.nsf_fee))) }}</div>
+        {% endif %}
+      </div>
+    </div>
+
+    {# ── Amounts ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Amounts</p>
+      <div class="space-y-1.5">
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Received</span>
+          <span class="text-sm font-bold text-gray-900 tabular-nums">${{ "%.2f"|format(payment.amount_received) }}</span>
+        </div>
+        {% set amt_alloc = payment.allocations | selectattr('is_reversed', 'equalto', false) | map(attribute='amount_applied') | sum %}
+        {% if amt_alloc > 0 %}
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Applied</span>
+          <span class="text-sm text-gray-700 tabular-nums">${{ "%.2f"|format(amt_alloc) }}</span>
+        </div>
+        {% endif %}
+        {% set unalloc = payment.amount_received - amt_alloc %}
+        {% if unalloc > 0.005 %}
+        <div class="flex items-center justify-between pt-1 border-t border-gray-100">
+          <span class="text-xs text-gray-500">Unapplied</span>
+          <span class="text-sm font-semibold text-amber-600 tabular-nums">${{ "%.2f"|format(unalloc) }}</span>
+        </div>
+        {% endif %}
+        {% if payment.surcharge_amount and payment.surcharge_amount > 0 %}
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Surcharge</span>
+          <span class="text-xs text-gray-500 tabular-nums">${{ "%.2f"|format(payment.surcharge_amount) }}</span>
+        </div>
+        {% endif %}
+        <div class="flex items-center justify-between pt-1 border-t border-gray-100">
+          <span class="text-xs text-gray-500">Method</span>
+          <span class="text-xs font-semibold text-gray-700">
+            {{ method_label.get(payment.payment_method, payment.payment_method | replace('_', ' ') | title) }}
+            {% if payment.check_number %}
+            <span class="font-mono text-gray-400 ml-1">#{{ payment.check_number }}</span>
+            {% endif %}
+          </span>
+        </div>
+      </div>
+    </div>
+
+    {# ── Applied to ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Applied To</p>
+      <div class="space-y-1.5">
+        {% if invoice_entries %}
+          {% for inv_num, inv_id, amt in invoice_entries %}
+          <div class="flex items-center justify-between">
+            <a href="/invoices/{{ inv_id }}"
+               class="font-mono text-xs text-brand-700 hover:underline">{{ inv_num }}</a>
+            <span class="text-xs text-gray-600 tabular-nums">${{ "%.2f"|format(amt) }}</span>
+          </div>
+          {% endfor %}
+        {% else %}
+          <div>{{ status_chip('bg-amber-50 text-amber-700', 'bg-amber-400', 'Unapplied') }}</div>
+          <p class="text-[11px] text-gray-400 mt-0.5">Sitting as customer credit</p>
+        {% endif %}
+      </div>
+    </div>
+
+    {# ── Actions ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Actions</p>
+      <div class="flex flex-col gap-1.5">
+        <a href="/payments/{{ payment.id }}"
+           class="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold
+                  bg-brand-700 text-white hover:bg-brand-600 transition-colors">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+          </svg>
+          Open Payment
+        </a>
+        {% if payment.status == PaymentStatus.APPLIED %}
+        <a href="/payments/new?customer_id={{ payment.customer_id }}"
+           class="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold
+                  bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 transition-colors">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+          </svg>
+          New Payment
+        </a>
+        {% endif %}
+      </div>
+    </div>
+
+  </div>{# end grid #}
+</div>

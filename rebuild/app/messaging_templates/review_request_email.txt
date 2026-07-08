@@ -1,0 +1,16 @@
+How did your {sample_product} work out, {customer_name}?
+
+Hi {customer_name},
+
+Thanks again for your order with JAK's Diesel. Now that you've had a chance to put the {sample_product} to work, would you take 60 seconds to tell other diesel folks how it went?
+
+Honest reviews from techs and owner-operators like you are the #1 thing that helps the next buyer order the right part with confidence — and they help us keep doing right by you.
+
+Leave a quick review here: {review_link}
+
+If anything wasn't perfect, just reply to this email or call us at {company_phone} and we'll make it right, no hassle.
+
+Appreciate your business,
+{salesperson_name}
+JAK's Diesel — The Parts Behind The Power
+{company_phone}

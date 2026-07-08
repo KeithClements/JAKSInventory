@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from sqlalchemy import String, Text, Float, Integer, Boolean, ForeignKey, DateTime, Index, func
+from sqlalchemy import String, Text, Float, Integer, Boolean, ForeignKey, DateTime, Index, func, text, event
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 from app.constants import (
@@ -21,6 +21,16 @@ class ProductCategory(Base):
     )
     level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # ── §18 Category Maintenance — display order, optional per-category default
+    #    markup (wired later, O5), and importer classification keywords. ──
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    default_markup_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    import_keywords: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # JAKS SKU scheme: short code for this node (FP, INJ, GSK, ENG, …). The SKU's
+    # [CATEGORY] segment uses the code of the DEEPEST category a product is tagged to.
+    # Owner-maintained on the Category Maintenance screen; auto-derived from the name
+    # when left blank (see SkuService.code_for_category).
+    code: Mapped[str] = mapped_column(String(16), nullable=False, default="")
 
     # Self-referential — children share same parent_id FK
     children: Mapped[list[ProductCategory]] = relationship(
@@ -38,6 +48,33 @@ class ProductCategory(Base):
         return self.name
 
 
+class Brand(Base):
+    """Owner-maintained parts-brand list (PAI, Interstate-McBee, SAMPA, JAK'S).
+    §18.2 — Brand is DISTINCT from Vendor (who we buy from) and from
+    Manufacturer / Engine Make (the engine platform). Maintained on the
+    Inventory → Category Maintenance screen; seeded from constants.BRANDS."""
+    __tablename__ = "brands"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_house_brand: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class Manufacturer(Base):
+    """Owner-maintained Manufacturer / Engine-Make list (Cummins, CAT, Detroit,
+    Mack, Volvo, International, Paccar, Mercedes). §18 A1 — the SAME concept as
+    Product.engine_manufacturer (one field). DISTINCT from Brand and Vendor.
+    Maintained on Category Maintenance; seeded from constants.ENGINE_MAKES."""
+    __tablename__ = "manufacturers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
 class Product(Base):
     __tablename__ = "products"
 
@@ -48,6 +85,11 @@ class Product(Base):
     # For single-sourced products this mirrors the vendor source SKU. For multi-sourced
     # products the preferred vendor source SKU is used here by convention.
     sku: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    # §21 — precomputed normalized SKU (lower + separators stripped) for indexed
+    # SKU search, mirroring vendor_part_number_norm/ref_number_norm. Kept in sync
+    # by the before_insert/before_update listener below; backfilled by
+    # search_index.ensure_search_norm_columns on startup.
+    sku_norm: Mapped[str | None] = mapped_column(String(100), nullable=True)
     title: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     brand: Mapped[str] = mapped_column(String(200), nullable=False, default="")
@@ -59,6 +101,18 @@ class Product(Base):
         ForeignKey("product_categories.id"), nullable=True
     )
 
+    # ── JAKS SKU components (frozen at mint; owner-locked scheme 2026-06-06) ──────
+    # The customer-facing `sku` is assembled as
+    #   JAKS-[engine_code]-[category_code]-[vendor digit][part_seq:04d]
+    # These columns store the FROZEN pieces so the assembled sku never drifts if a
+    # category is later renamed/re-coded, and so a 2nd vendor's version of the SAME
+    # physical part can reuse part_seq with a different vendor digit (readable
+    # equivalence: 90001 ↔ 30001). engine_code is '' for multi-fit / engine-agnostic
+    # parts — the [ENGINE] segment is then omitted (JAKS-[CATEGORY]-[V][NNNN]).
+    engine_code: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    category_code: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    part_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # ── Status ────────────────────────────────────────────────────────────────
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=ProductStatus.ACTIVE
@@ -68,23 +122,44 @@ class Product(Base):
     )
 
     # ── Pricing ───────────────────────────────────────────────────────────────
-    # cost mirrors the preferred vendor source cost for quick access.
-    # Source of truth for per-vendor cost is product_vendor_sources.vendor_cost.
-    # R11 — moving weighted average cost; updated on every PO receipt.
+    # R11 — MOVING WEIGHTED-AVERAGE COGS cost (Option A, owner-ruled 2026-06-01).
+    # Written ONLY by InventoryService._apply_moving_average_cost on PO receipt.
+    # DO NOT write product.cost from vendor-source sync — vendor quote price
+    # belongs on ProductVendorSource.vendor_cost (per-source, source of truth).
+    # See JAKS_UI_Change_Plan.md §8N for the ruling.
     cost: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    # R11 — most recent receipt unit cost (vs. avg cost above)
+    # R11 — most recent receipt unit cost (vs. weighted avg above)
     last_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # "receipt" = set by moving-avg path; "manual" = user-set; "vendor" = legacy (do not set)
     cost_source: Mapped[str] = mapped_column(String(50), nullable=False, default="manual")
     markup_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     price_override: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Operator price lock (scraper-audit bug #11, Alembic 0009): set automatically
+    # when an operator CHANGES price_override via the UI; cleared when they clear
+    # the override (or via the product screen's "unlock" control, which keeps the
+    # price). The nightly scraper feed (pricing_update_sell) skips the sell-price
+    # write on locked products — cost/availability still update.
+    price_override_locked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     unit_of_measure: Mapped[str] = mapped_column(
         String(10), nullable=False, default=UnitOfMeasure.EA
     )
+    # Vendor sell pack (PAI "SELL PACK: 5 PIECE" → 5). The ERP stores UNIT
+    # cost/price/weight; pack_qty is applied at the STOREFRONT boundary
+    # (ShopifyService.build_listing lists the pack: price/cost/weight × pack_qty,
+    # stock in whole packs) so a web order can never be smaller than the vendor's
+    # minimum buy. In-house sales (counter/quote/SO) remain per-piece.
+    pack_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
     # ── Core Charges (separate vendor cost vs customer charge — cores are marked up) ──
     has_core: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     vendor_core_charge: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     customer_core_charge: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # is_reman: part is remanufactured (carries a core). Set by importer when
+    # scraper reports core_charge > 0 or description says "reman/remanufactured".
+    # Does NOT duplicate has_core (has_core = business intent; is_reman = sourcing fact).
+    is_reman: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # ── Inventory (CACHED values — InventoryTransaction ledger is source of truth) ──
     # These are updated by InventoryService whenever a transaction is written.
@@ -99,6 +174,9 @@ class Product(Base):
     reorder_point: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_stock_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
     weight_lbs: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # §24 — walkable storage location (e.g. "A-03-B"). Single-location shop: this is
+    # an organizing label for count sheets / picking, NOT a per-bin quantity split.
+    bin_location: Mapped[str] = mapped_column(String(50), nullable=False, default="", index=True)
 
     # ── Serial / Kit ──────────────────────────────────────────────────────────
     has_serial_number: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -116,6 +194,10 @@ class Product(Base):
     # ── External IDs ─────────────────────────────────────────────────────────
     shopify_product_id: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     shopify_variant_id: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    # Shopify InventoryItem GID (quantities attach to the inventory item, not the
+    # variant). Captured during match_and_link so the stock sync doesn't re-resolve
+    # it every run. Empty until linked.
+    shopify_inventory_item_id: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     ebay_listing_id: Mapped[str] = mapped_column(String(100), nullable=False, default="")
 
     # ── ESN / Engine Info ─────────────────────────────────────────────────────
@@ -139,6 +221,49 @@ class Product(Base):
     )
     jaks_warranty_months: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     warranty_percentage: Mapped[float] = mapped_column(Float, nullable=False, default=10.0)
+
+    # ── Phase 2 — extended classification (PAI scraper import / enrichment) ─────
+    manufacturer_part_number: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    product_family: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    engine_family: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    truck_make: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    application_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    country_of_origin: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    is_imported: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_house_brand: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_performance_part: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    dimensions: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+
+    # ── Phase 2 — market pricing references ─────────────────────────────────────
+    # price_override (above) = OUR sell price; cost/last_cost = moving-avg COGS;
+    # vendor_cost lives on ProductVendorSource. These are market-facing refs only:
+    list_price: Mapped[float | None] = mapped_column(Float, nullable=True)         # MSRP / catalog list
+    map_price: Mapped[float | None] = mapped_column(Float, nullable=True)          # minimum advertised price
+    compare_at_price: Mapped[float | None] = mapped_column(Float, nullable=True)   # Shopify display "was" price
+    price_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    price_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # ── Phase 2 — channel / SEO / enrichment provenance ─────────────────────────
+    shopify_status: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    seo_title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    seo_description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    search_keywords: Mapped[str] = mapped_column(Text, nullable=False, default="")  # scraper Tags
+    last_enriched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    enrichment_source: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    needs_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Denormalized effective vendor availability (worst-case roll-up across this
+    # product's active vendor sources — see ProductImportService). '' = unknown.
+    # Cached here (like qty_on_hand) so the product list badge + the Shopify
+    # bulk-push exclusion filter are one indexed read, not a per-row source join.
+    # Source of truth is ProductVendorSource.availability_status; the importer is
+    # the only writer and keeps the two in sync.
+    vendor_availability: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    # True when the ERP ITSELF hid this listing on Shopify (flipped it to DRAFT)
+    # because the vendor went out_of_stock/discontinued. Gates the SAFE direction
+    # of the availability reconcile: only a listing WE auto-hid is auto-re-listed
+    # when the part comes back in stock — a listing a human drafted for any other
+    # reason is never auto-resurrected. See ShopifyService.reconcile_availability.
+    shopify_hidden_by_erp: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -166,6 +291,9 @@ class Product(Base):
         back_populates="product",
         cascade="all, delete-orphan",
     )
+    applications: Mapped[list[ProductApplication]] = relationship(
+        "ProductApplication", back_populates="product", cascade="all, delete-orphan"
+    )
     cost_history: Mapped[list[ProductCostHistory]] = relationship(
         "ProductCostHistory", back_populates="product"
     )
@@ -191,23 +319,65 @@ class Product(Base):
         cascade="all, delete-orphan",
         order_by="SuggestedSell.sort_order",
     )
+    # Phase 2 — competitor market prices (NEVER cost; pure market intelligence)
+    competitor_prices: Mapped[list["CompetitorPrice"]] = relationship(
+        "CompetitorPrice", back_populates="product", cascade="all, delete-orphan",
+    )
 
     # ── Computed properties ───────────────────────────────────────────────────
+    @property
+    def effective_cost(self) -> float:
+        """Pricing-basis cost.
+
+        Normally the moving-average COGS (``cost``), which is written only on the
+        first PO receipt. For a part that has not yet been received (COGS still 0)
+        this falls back to the preferred — else any active — vendor source's quoted
+        cost so quotes and document lines price off the known purchase cost instead
+        of $0. Once stock is received, ``cost`` becomes the real moving average and
+        this returns it unchanged (no vendor-source access in that common path).
+        """
+        if self.cost and self.cost > 0:
+            return self.cost
+        src = self.preferred_vendor_source
+        if src and src.vendor_cost and src.vendor_cost > 0:
+            return src.vendor_cost
+        for s in self.vendor_sources:
+            if s.is_active and s.vendor_cost and s.vendor_cost > 0:
+                return s.vendor_cost
+        return self.cost or 0.0
+
     @property
     def selling_price(self) -> float:
         """
         Quick estimated sell price using the product's own markup_pct.
-        Falls back to 30 % when markup_pct is not set on the product.
 
-        IMPORTANT: This property uses a hardcoded fallback, NOT the
-        default_markup_pct setting from the database.  For prices that
-        respect the current setting value, call:
-            PricingService(db).calculate_sell_price(product)
+        IMPORTANT: a model property has no DB session, so when markup_pct is unset
+        this uses a hardcoded 30 % estimate — NOT the default_markup_pct setting.
+        For a price that respects the current setting (the O5 path), call:
+            PricingService(db).sell_price_for(product)
+        which the search results, product CSV export, and pickers now use.
+        A 0 % markup is honored as a real value (sell at cost); only an unset
+        (NULL) markup falls back to the estimate here.
+
+        Prices off ``effective_cost`` so an un-received special-order part quotes at
+        vendor-cost × markup rather than $0 (was QA HIGH #3).
         """
         if self.price_override and self.price_override > 0:
             return self.price_override
         markup = self.markup_pct if self.markup_pct is not None else 30.0
-        return round(self.cost * (1 + markup / 100), 2)
+        return round(self.effective_cost * (1 + markup / 100), 2)
+
+    @property
+    def margin_percent(self) -> float | None:
+        """Computed gross margin % on the current sell price vs moving-avg cost.
+        NOT stored (ruling: margin changes whenever cost or price changes; freeze
+        only on quote/invoice lines). Returns None when there is no sell price.
+        Reads ~100% for freshly-imported parts until the first PO receipt sets a
+        real moving-avg cost — expected, not a defect."""
+        sell = self.selling_price
+        if not sell or sell <= 0:
+            return None
+        return round((sell - self.cost) / sell * 100, 1)
 
     @property
     def qty_available(self) -> int:
@@ -215,7 +385,9 @@ class Product(Base):
 
     @property
     def preferred_vendor_source(self) -> ProductVendorSource | None:
-        return next((s for s in self.vendor_sources if s.is_preferred), None)
+        # Only active sources count — mirrors ProductService._has_preferred_vendor
+        # (soft-deleted sources must never surface as the preferred vendor).
+        return next((s for s in self.vendor_sources if s.is_preferred and s.is_active), None)
 
     @property
     def primary_image(self) -> ProductImage | None:
@@ -245,6 +417,14 @@ class ProductVendorSource(Base):
         Index("ix_pvs_product_id", "product_id"),
         Index("ix_pvs_product_id_preferred", "product_id", "is_preferred"),
         Index("ix_pvs_vendor_id", "vendor_id"),
+        # R3 — DB backstop: at most ONE active source per (product, vendor).
+        # Partial: deactivated history rows may legitimately repeat the pair.
+        # Name must match _PENDING_UNIQUE_INDEXES in app/database.py (live-DB
+        # creation path is defensive there; create_all() handles fresh DBs).
+        Index(
+            "uq_pvs_product_vendor_active", "product_id", "vendor_id",
+            unique=True, sqlite_where=text("is_active = 1"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -254,9 +434,20 @@ class ProductVendorSource(Base):
     vendor_part_number: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     # Assembled JAKS SKU for this vendor: JAKS-[VENDOR_CODE]-[PART_NUMBER]
     vendor_sku: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    # Precomputed normalized part#/sku for fast search (DB-trigger maintained —
+    # see search_index.ensure_search_norm_columns).
+    vendor_part_number_norm: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    vendor_sku_norm: Mapped[str | None] = mapped_column(String(100), nullable=True)
     vendor_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     is_preferred: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     lead_time_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Per-vendor supply status from the scraper feed (constants.VendorAvailability:
+    # in_stock / out_of_stock / discontinued). NULL = unknown / never reported —
+    # the importer never zeroes a known value from a blank cell. This is the vendor's
+    # availability, NOT our own stock (qty_on_hand, ledger-owned). The product-level
+    # denormalized roll-up lives on Product.vendor_availability.
+    availability_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    availability_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_cost_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -278,6 +469,14 @@ class ProductImage(Base):
 
     product: Mapped[Product] = relationship("Product", back_populates="images")
 
+    @property
+    def url(self) -> str:
+        """Render-ready <img src>. Imported images store a full external URL
+        (e.g. the PAI CDN) and pass through as-is; locally-uploaded files are
+        served from /static/. Fixes the '/static/https://…' broken-src bug."""
+        fp = self.file_path or ""
+        return fp if fp.startswith(("http://", "https://")) else "/static/" + fp
+
 
 class CrossReference(Base):
     """OEM numbers, competitor part numbers, and vendor alternative numbers."""
@@ -286,6 +485,13 @@ class CrossReference(Base):
         # ref_number is the quote-screen hot-path search — indexed first
         Index("ix_cross_references_ref_number", "ref_number"),
         Index("ix_cross_references_product_id", "product_id"),
+        # R3 — DB backstop: the same reference number may not repeat for one
+        # product+type. Name must match _PENDING_UNIQUE_INDEXES in app/database.py.
+        Index(
+            "uq_cross_references_product_type_number",
+            "product_id", "ref_type", "ref_number",
+            unique=True,
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -294,6 +500,11 @@ class CrossReference(Base):
         String(20), nullable=False, default=CrossRefType.OEM
     )
     ref_number: Mapped[str] = mapped_column(String(100), nullable=False)
+    # Precomputed normalized ref_number (separators stripped, lowercased) — kept
+    # in sync by a DB trigger (see search_index.ensure_search_norm_columns). Lets
+    # part-number search read a plain column instead of normalizing 216k+ rows
+    # per keystroke. Nullable: populated by trigger/backfill, not the app.
+    ref_number_norm: Mapped[str | None] = mapped_column(String(100), nullable=True)
     brand: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="proven")
@@ -313,6 +524,34 @@ class CrossReference(Base):
     replacement_product: Mapped[Product | None] = relationship(
         "Product", foreign_keys=[replacement_product_id]
     )
+
+
+class ProductApplication(Base):
+    """§7.2 — engine application: which engine make/model (+ CPL, optional ESN
+    range) a product fits. ENRICHED from the owner's external catalog CSV; never
+    authored in the ERP. Dedup grain = (product_id, engine_make, engine_model,
+    cpl) — the locked 'make/model + CPL' level. esn_range is nullable (CPL-level
+    apps often have no specific ESN window)."""
+    __tablename__ = "product_applications"
+    __table_args__ = (
+        Index("ix_product_applications_product_id", "product_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    engine_make: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    engine_model: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    cpl: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    # ESN nullable — many CPL-level applications have no specific serial window.
+    esn_range: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    source: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    product: Mapped[Product] = relationship("Product", back_populates="applications")
 
 
 class ProductCostHistory(Base):
@@ -425,6 +664,39 @@ class SuggestedSell(Base):
     suggested_product: Mapped[Product] = relationship(
         "Product", foreign_keys=[suggested_product_id]
     )
+
+
+# ── Search-normalization sync ───────────────────────────────────────────────────
+# Keep the precomputed *_norm columns (fast part-number search) in step with the
+# source columns on every ORM insert/update. Must match search_index._NORM_SEPARATORS
+# and search_service._norm_col exactly so stored values equal the in-query form.
+_SEARCH_NORM_SEPS = ("-", " ", ".", "/", "_", "(", ")", "+", "#", "%")
+
+
+def _norm_part_value(s: str | None) -> str:
+    out = (s or "").lower()
+    for sep in _SEARCH_NORM_SEPS:
+        out = out.replace(sep, "")
+    return out
+
+
+@event.listens_for(CrossReference, "before_insert")
+@event.listens_for(CrossReference, "before_update")
+def _xref_set_norm(_mapper, _conn, target):  # noqa: ANN001
+    target.ref_number_norm = _norm_part_value(target.ref_number)
+
+
+@event.listens_for(ProductVendorSource, "before_insert")
+@event.listens_for(ProductVendorSource, "before_update")
+def _pvs_set_norm(_mapper, _conn, target):  # noqa: ANN001
+    target.vendor_part_number_norm = _norm_part_value(target.vendor_part_number)
+    target.vendor_sku_norm = _norm_part_value(target.vendor_sku)
+
+
+@event.listens_for(Product, "before_insert")
+@event.listens_for(Product, "before_update")
+def _product_set_sku_norm(_mapper, _conn, target):  # noqa: ANN001
+    target.sku_norm = _norm_part_value(target.sku)
 
 
 # ── Late imports ───────────────────────────────────────────────────────────────

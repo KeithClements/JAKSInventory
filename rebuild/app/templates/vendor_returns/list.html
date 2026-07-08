@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Vendor Returns — JAKS Inventory{% endblock %}
+{% block title %}Vendor Returns — Axle{% endblock %}
 {% block heading %}Vendor Returns{% endblock %}
 
 {% block header_actions %}
@@ -12,8 +12,53 @@
 {% endblock %}
 
 {% block content %}
+{# ── §7 macro library ──────────────────────────────────────────────────────── #}
+{% from "macros/list_behavior.html" import operational_list_script %}
+{% from "macros/bulk_toolbar.html"  import bulk_toolbar %}
+{% from "macros/chips.html"         import status_chip %}
+{% from "macros/empty_state.html"   import empty_state %}
+{{ operational_list_script() }}
 
-{# ── Flash messages ── #}
+{# ══════════════════════════════════════════════════════════════════════════════
+   BACKEND-CONTRACT GUARD (interim — same pattern as Payments / SO List)
+   vr_list (app/routers/vendor_returns.py) currently passes only `vendor_returns`
+   + `vendors_map`. Until Backend adds ?tab/?q filtering, authoritative tab counts,
+   and a GET /vendor-returns/preview/{id} route, this template degrades gracefully:
+     • tabs render with counts tallied from the loaded list (route's ctx `counts`
+       is preferred when it lands); server-side filtering shows ALL rows until the
+       route honors ?tab=
+     • search submits ?q= (no-op until the route honors it)
+     • the bottom preview dock is DEFERRED — row-click navigates to detail instead
+       of opening a dock (see the dock note at the foot of this file)
+────────────────────────────────────────────────────────────────────────────── #}
+{% set active_tab = active_tab if active_tab is defined else request.query_params.get('tab', '') %}
+{% set q = q if q is defined else request.query_params.get('q', '') %}
+{% if counts is defined and counts %}
+  {% set _counts = counts %}
+{% else %}
+  {% set _counts = {
+    '':         vendor_returns | length,
+    'draft':    vendor_returns | selectattr('status', 'equalto', 'draft')    | list | length,
+    'shipped':  vendor_returns | selectattr('status', 'equalto', 'shipped')  | list | length,
+    'accepted': vendor_returns | selectattr('status', 'equalto', 'accepted') | list | length,
+    'partial':  vendor_returns | selectattr('status', 'equalto', 'partial')  | list | length,
+    'rejected': vendor_returns | selectattr('status', 'equalto', 'rejected') | list | length,
+    'closed':   vendor_returns | selectattr('status', 'equalto', 'closed')   | list | length,
+  } %}
+{% endif %}
+
+{# ── Status chip map — Axle .chip-axle variants (draft|ok|low|out|invoice) ── #}
+{% set vr_chip = {
+  'draft':    ('chip-draft', 'Draft'),
+  'shipped':  ('chip-ok',    'Shipped'),
+  'accepted': ('chip-ok',    'Accepted'),
+  'partial':  ('chip-low',   'Partial'),
+  'rejected': ('chip-out',   'Rejected'),
+  'closed':   ('chip-draft', 'Closed'),
+  'voided':   ('chip-out',   'Voided'),
+} %}
+
+{# ── Flash messages (create / ship / decision / close redirects) ── #}
 {% if request.query_params.get('ok') %}
 <div class="rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800 flex items-center gap-2 mb-4">
   <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
@@ -27,86 +72,254 @@
 </div>
 {% endif %}
 
-{# ── Status badge map ── #}
-{% set vr_badges = {
-  'draft':    'badge-gray',
-  'shipped':  'badge-blue',
-  'accepted': 'badge-green',
-  'partial':  'badge-amber',
-  'rejected': 'badge-red',
-  'closed':   'badge-gray',
-} %}
+{# ══════════════════════════════════════════════════════════════════════════════
+   OPERATIONAL LIST WRAPPER
+   Preview dock deferred → no pb-52 yet; operationalListData still drives the
+   bulk-select state. togglePreview is intentionally NOT wired (no preview route),
+   so the row @click navigates to the detail page instead.
+══════════════════════════════════════════════════════════════════════════════ #}
+<div
+  class="space-y-4"
+  x-data="operationalListData('vr-preview-body', '/vendor-returns/preview/', [{% for vr in vendor_returns %}{{ vr.id }}{% if not loop.last %},{% endif %}{% endfor %}])"
+>
 
+{# ══════════════════════════════════════════════════════════════════════════════
+   TOOLBAR — Axle §4: search (flex 1) + .fchip filter pills (inline, no macro)
+══════════════════════════════════════════════════════════════════════════════ #}
+{% set vr_tabs = [
+  ('',         'All',      _counts.get('',         0)),
+  ('draft',    'Draft',    _counts.get('draft',    0)),
+  ('shipped',  'Shipped',  _counts.get('shipped',  0)),
+  ('accepted', 'Accepted', _counts.get('accepted', 0)),
+  ('partial',  'Partial',  _counts.get('partial',  0)),
+  ('rejected', 'Rejected', _counts.get('rejected', 0)),
+  ('closed',   'Closed',   _counts.get('closed',   0)),
+] %}
+
+<div class="flex flex-wrap items-center gap-2">
+
+  {# Search — flex 1 per Axle spec #}
+  <form method="get" class="flex items-center gap-2 flex-1 min-w-[260px]">
+    <input type="hidden" name="tab" value="{{ active_tab }}" />
+    <div class="relative flex-1">
+      <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+           fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
+      </svg>
+      <input name="q" value="{{ q }}" placeholder="VR #, vendor, RMA…"
+             class="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-md bg-white
+                    focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400
+                    placeholder:text-gray-400" />
+    </div>
+    {% if q %}
+    <a href="?tab={{ active_tab }}"
+       class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</a>
+    {% endif %}
+  </form>
+
+  {# Axle filter chips (.fchip / .fchip.on) — bordered radius-14 pills, active = solid steel-900 #}
+  {% for slug, label, count in vr_tabs %}
+  <a href="?tab={{ slug }}{% if q %}&q={{ q|urlencode }}{% endif %}"
+     class="fchip {% if active_tab == slug %}on{% endif %}">
+    {{ label }}<span class="ml-1.5 tabular-nums opacity-70">{{ count }}</span>
+  </a>
+  {% endfor %}
+
+</div>
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   BULK ACTION BAR — §7 Primitive 4
+══════════════════════════════════════════════════════════════════════════════ #}
+{% call bulk_toolbar() %}
+  <button disabled title="CSV export — coming soon" class="text-xs font-medium text-gray-400 cursor-not-allowed">
+    Export CSV
+  </button>
+{% endcall %}
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   VENDOR RETURNS TABLE
+══════════════════════════════════════════════════════════════════════════════ #}
 {% if vendor_returns %}
-<div class="card">
+<div class="card overflow-hidden">
   <div class="overflow-x-auto">
-    <table class="tbl">
-      <thead class="tbl-head">
-        <tr>
-          <th class="tbl-th">VR #</th>
-          <th class="tbl-th">Vendor</th>
-          <th class="tbl-th">Status</th>
-          <th class="tbl-th-r">Expected Credit</th>
-          <th class="tbl-th-r">Actual Credit</th>
-          <th class="tbl-th-r">Difference</th>
-          <th class="tbl-th">Shipped At</th>
-          <th class="tbl-th">Created</th>
+    <table class="w-full min-w-[920px]">
+
+      {# ── Table head ── Axle: th 10px Oswald uppercase steel-400 on #fafbfa #}
+      <thead class="sticky top-0 z-20 [&_th]:bg-[#fafbfa]">
+        <tr class="border-b border-gray-200" style="background:#fafbfa;">
+          <th class="w-10 px-4 py-3 text-center" style="background:#fafbfa;">
+            <input type="checkbox"
+                   :checked="allSelected"
+                   @change="toggleAll()"
+                   aria-label="Select all vendor returns"
+                   class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
+          </th>
+          <th class="px-4 py-3 text-left label-mini">VR # / Created</th>
+          <th class="px-4 py-3 text-left label-mini">Vendor</th>
+          <th class="px-4 py-3 text-left label-mini">Status</th>
+          <th class="px-4 py-3 text-right label-mini hidden md:table-cell">Expected</th>
+          <th class="px-4 py-3 text-right label-mini">Credited</th>
+          <th class="px-4 py-3 w-12"></th>
         </tr>
       </thead>
-      <tbody>
+
+      {# ── Table body ── #}
+      <tbody class="divide-y divide-gray-100">
         {% for vr in vendor_returns %}
+
+        {# ── Per-row computed values ── #}
         {% set vnd = vendors_map.get(vr.vendor_id) %}
-        <tr class="tbl-row">
-          <td class="tbl-td">
-            <a href="/vendor-returns/{{ vr.id }}" class="tbl-link font-mono text-xs">{{ vr.vr_number }}</a>
+        {% set is_problem = vr.status == 'rejected' %}
+        {% set is_partial = vr.status == 'partial' %}
+        {% set shortfall  = vr.credit_difference > 0.005 %}   {# got LESS than expected #}
+
+        {# Left-edge stripe (§4 semantics):
+           red  = rejected (vendor refused the return — problem)
+           amber = partial (partial credit — attention)
+           blue = shipped (in transit / awaiting vendor decision — informational)
+           transparent = draft / accepted / closed (normal) #}
+        {% if is_problem %}{% set stripe = 'border-l-red-400' %}
+        {% elif is_partial %}{% set stripe = 'border-l-amber-400' %}
+        {% elif vr.status == 'shipped' %}{% set stripe = 'border-l-blue-300' %}
+        {% else %}{% set stripe = 'border-l-transparent' %}{% endif %}
+
+        {# ── Row (navigates to detail — preview dock deferred) ── #}
+        <tr
+          @click="window.location.href='/vendor-returns/{{ vr.id }}'"
+          :class="{ 'ring-inset ring-1 ring-brand-300 bg-brand-50/40': previewId === {{ vr.id }} }"
+          class="cursor-pointer hover:bg-gray-50/80 transition-colors group
+                 {% if is_problem %}bg-red-50/20{% elif is_partial %}bg-amber-50/20{% endif %}">
+
+          {# Checkbox — first <td> carries the left-edge stripe #}
+          <td class="w-10 px-4 py-4 align-middle text-center border-l-4 {{ stripe }}" @click.stop>
+            <input type="checkbox"
+                   :checked="isSelected({{ vr.id }})"
+                   @change="toggleSelect({{ vr.id }})"
+                   aria-label="Select {{ vr.vr_number }}"
+                   class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
           </td>
-          <td class="tbl-td font-medium text-gray-900">
-            {% if vnd %}{{ vnd.name }}{% else %}<span class="text-gray-400">—</span>{% endif %}
+
+          {# VR # / Created date — .pn mono 12px bold ink #}
+          <td class="px-4 py-4 align-middle">
+            <a href="/vendor-returns/{{ vr.id }}" @click.stop
+               class="font-mono pn hover:underline">
+              {{ vr.vr_number }}
+            </a>
+            <div class="text-xs text-gray-400 mt-0.5">{{ vr.created_at.strftime('%m/%d/%y') }}</div>
           </td>
-          <td class="tbl-td">
-            <span class="{{ vr_badges.get(vr.status, 'badge-gray') }}">
-              {{ vr.status | title }}
-            </span>
-          </td>
-          <td class="tbl-td-r text-gray-700">
-            {% if vr.expected_credit > 0 %}${{ '%.2f' % vr.expected_credit }}{% else %}<span class="text-gray-400">—</span>{% endif %}
-          </td>
-          <td class="tbl-td-r text-gray-700">
-            {% if vr.actual_credit > 0 %}${{ '%.2f' % vr.actual_credit }}{% else %}<span class="text-gray-400">—</span>{% endif %}
-          </td>
-          <td class="tbl-td-r">
-            {% if vr.credit_difference != 0 %}
-              {# Positive difference means we got less than expected (bad) #}
-              <span class="{% if vr.credit_difference > 0 %}text-red-600 font-semibold{% else %}text-green-700 font-semibold{% endif %}">
-                {% if vr.credit_difference > 0 %}−{% endif %}${{ '%.2f' % vr.credit_difference | abs }}
-              </span>
-            {% else %}
-              <span class="text-gray-400">—</span>
+
+          {# Vendor (+ RMA #) #}
+          <td class="px-4 py-4 align-middle">
+            {% if vnd %}<span class="text-sm font-medium text-gray-900">{{ vnd.name }}</span>
+            {% else %}<span class="text-sm text-gray-400">—</span>{% endif %}
+            {% if vr.rma_number %}
+            <div class="font-mono pn mt-0.5" style="color:#a9afb6;">RMA {{ vr.rma_number }}</div>
             {% endif %}
           </td>
-          <td class="tbl-td text-gray-400 text-xs">
-            {% if vr.shipped_at %}{{ vr.shipped_at.strftime('%m/%d/%Y') }}{% else %}—{% endif %}
+
+          {# Status chip — Axle .chip-axle dot + label — + shipped date #}
+          <td class="px-4 py-4 align-middle">
+            {% set c = vr_chip.get(vr.status, ('chip-draft', vr.status | title)) %}
+            <span class="chip-axle {{ c[0] }}"><span class="dot"></span>{{ c[1] }}</span>
+            {% if vr.shipped_at %}
+            <div class="text-xs text-gray-400 mt-0.5">Shipped {{ vr.shipped_at.strftime('%m/%d/%y') }}</div>
+            {% endif %}
           </td>
-          <td class="tbl-td text-gray-400 text-xs">
-            {{ vr.created_at.strftime('%m/%d/%Y') }}
+
+          {# Expected credit — .money mono right-aligned #}
+          <td class="px-4 py-4 align-middle text-right hidden md:table-cell">
+            {% if vr.expected_credit > 0 %}
+            <span class="money" style="color:#7c838b;">${{ '%.2f' % vr.expected_credit }}</span>
+            {% else %}<span class="text-gray-300">—</span>{% endif %}
           </td>
+
+          {# Credited (actual) — .money.ext — + difference / restock sub-lines #}
+          <td class="px-4 py-4 align-middle text-right">
+            {% if vr.actual_credit > 0 or vr.status in ['accepted', 'partial', 'closed'] %}
+            <span class="money ext">${{ '%.2f' % vr.actual_credit }}</span>
+            {% else %}<span class="text-gray-300">—</span>{% endif %}
+            {% if shortfall %}
+            <div class="money mt-0.5" style="color:#c0392b;">−${{ '%.2f' % vr.credit_difference }} short</div>
+            {% elif vr.credit_difference < -0.005 %}
+            <div class="money mt-0.5" style="color:#5a9a3c;">+${{ '%.2f' % (vr.credit_difference | abs) }} over</div>
+            {% endif %}
+            {% if vr.restocking_fee > 0 %}
+            <div class="money mt-0.5" style="color:#b06511;">−${{ '%.2f' % vr.restocking_fee }} restock</div>
+            {% endif %}
+          </td>
+
+          {# Quick action — open #}
+          <td class="px-4 py-4 align-middle" @click.stop>
+            <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+              <a href="/vendor-returns/{{ vr.id }}"
+                 title="Open vendor return"
+                 aria-label="Open {{ vr.vr_number }}"
+                 class="p-1.5 rounded-lg text-gray-400 hover:text-brand-700 hover:bg-brand-50 transition-colors
+                        focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-1">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+                </svg>
+              </a>
+            </div>
+          </td>
+
         </tr>
         {% endfor %}
       </tbody>
+
     </table>
+  </div>
+
+  {# ── Footer: record count + credit summary + selected count ── #}
+  {% set total_expected = vendor_returns | map(attribute='expected_credit') | sum %}
+  {% set total_credited = vendor_returns | map(attribute='actual_credit')   | sum %}
+  {# ── Table footer — Axle .pgr: mono 11px on #fafbfa ── #}
+  <div class="px-5 py-3 border-t border-gray-100 flex items-center justify-between flex-wrap gap-3"
+       style="background:#fafbfa; font-family:'IBM Plex Mono',monospace; font-size:11px; color:#7c838b;">
+    <div class="flex items-center gap-4 flex-wrap">
+      <span>{{ vendor_returns | length }} return{{ 's' if vendor_returns | length != 1 else '' }}
+      {% if active_tab or q %} · filtered{% endif %}</span>
+      {% if total_expected > 0 %}
+      <span>Expected: <strong style="color:#0b0c0d;">${{ '%.2f' % total_expected }}</strong></span>
+      {% endif %}
+      {% if total_credited > 0 %}
+      <span>Credited: <strong style="color:#5a9a3c;">${{ '%.2f' % total_credited }}</strong></span>
+      {% endif %}
+    </div>
+    <span x-show="selectedCount > 0" x-cloak class="text-brand-700 font-medium">
+      <span x-text="selectedCount"></span> selected
+    </span>
   </div>
 </div>
 
 {% else %}
-<div class="card flex flex-col items-center justify-center py-16">
-  <svg class="w-12 h-12 text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-          d="M20 7H4a2 2 0 00-2 2v6a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2zM4 7V5a2 2 0 012-2h12a2 2 0 012 2v2"/>
-  </svg>
-  <p class="text-gray-500 font-medium">No vendor returns yet</p>
-  <p class="text-gray-400 text-sm mt-1">Create a return when merchandise needs to go back to a vendor.</p>
-  <a href="/vendor-returns/new" class="mt-3 text-sm link">New Vendor Return →</a>
-</div>
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   EMPTY STATE — §7 Primitive 6
+══════════════════════════════════════════════════════════════════════════════ #}
+{{ empty_state(
+  'M20 7H4a2 2 0 00-2 2v6a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2zM4 7V5a2 2 0 012-2h12a2 2 0 012 2v2',
+  q, active_tab, 'No vendor returns yet',
+  'Create a return when merchandise needs to go back to a vendor.',
+  '<a href="/vendor-returns/new" class="btn-primary btn-sm">+ New Vendor Return</a>'
+) }}
+
 {% endif %}
 
+{# ══════════════════════════════════════════════════════════════════════════════
+   PREVIEW DOCK — DEFERRED (Backend seam pending)
+   The §7 dock needs GET /vendor-returns/preview/{vr_id} — register it BEFORE
+   GET /vendor-returns/{vr_id} in app/routers/vendor_returns.py — returning
+   vendor_returns/_preview_panel.html. When that route + authoritative tab counts
+   land, finish the dock in three steps:
+     1. add `pb-52` back onto the wrapper div above (dock-clearance padding)
+     2. import preview_dock_shell from macros/preview_dock.html and render it here
+        with body id 'vr-preview-body'
+     3. switch the row @click from window.location to togglePreview(vr.id)
+   Until then the dock is intentionally omitted and rows navigate to detail.
+══════════════════════════════════════════════════════════════════════════════ #}
+
+</div>{# end operationalListData wrapper #}
 {% endblock %}

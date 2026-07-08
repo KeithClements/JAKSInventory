@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+{% block title %}{{ cm.cm_number }} — Axle{% endblock %}
+{% block heading %}{{ cm.cm_number }}{% endblock %}
+
+{% set status_pill_map = {
+  'open':     ('badge-blue',  'OPEN'),
+  'partial':  ('badge-amber', 'PARTIAL'),
+  'applied':  ('badge-green', 'APPLIED'),
+  'reversed': ('badge-red',   'REVERSED'),
+} %}
+
+{% block header_actions %}
+  {# ── R3 — QuickBooks credit-memo push (mirrors the payment-detail idiom):
+     synced → green chip; REVERSED → never pushable; otherwise a fail-soft push
+     button (the route just flashes the error — it never touches money). #}
+  {% if cm.qbo_id %}
+    <span class="inline-flex items-center gap-1 rounded-md bg-green-50 border border-green-200 text-green-700 px-2.5 py-1 text-xs font-medium"
+          title="Synced to QuickBooks (id {{ cm.qbo_id }})">
+      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+      </svg>
+      QBO Synced
+    </span>
+  {% elif cm.status != CreditMemoStatus.REVERSED %}
+    <form method="post" action="/qbo/push-credit-memo/{{ cm.id }}" class="inline">
+      <button type="submit" class="btn-secondary btn-sm"
+        {% if cm.qbo_sync_status == 'error' and cm.qbo_sync_error %}title="Last error: {{ cm.qbo_sync_error }}"{% endif %}>
+        {% if cm.qbo_sync_status == 'error' %}Retry QBO push{% else %}Push to QBO{% endif %}
+      </button>
+    </form>
+  {% endif %}
+
+  {% if cm.original_invoice %}
+  <a href="/invoices/{{ cm.original_invoice_id }}" class="btn-secondary btn-sm">View Invoice</a>
+  {% endif %}
+  <a href="/credit-memos/" class="text-sm text-gray-500 hover:text-gray-700">← Credit Memos</a>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl space-y-3">
+
+  {# ── Flash messages (apply/close redirect with ?error/?saved; QBO push with
+     ?ok/?error — mirrors payments/detail.html) ── #}
+  {% set error_msg = request.query_params.get('error', '') %}
+  {% set ok_msg = request.query_params.get('ok', '') %}
+  {% set saved = request.query_params.get('saved', '') %}
+  {% if error_msg %}
+  <div class="px-4 py-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+    ⚠ {{ error_msg }}
+  </div>
+  {% endif %}
+  {% if ok_msg %}
+  <div class="px-4 py-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">
+    ✓ {{ ok_msg }}
+  </div>
+  {% endif %}
+  {% if saved %}
+  <div class="px-4 py-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">
+    ✓ Credit memo updated.
+  </div>
+  {% endif %}
+
+  {# ── Header strip ─────────────────────────────────────────────────────────── #}
+  <div class="card">
+    <div class="card-body py-3">
+      <div class="flex items-center gap-x-5 gap-y-2 flex-wrap text-sm">
+        {% set pill = status_pill_map.get(cm.status, ('badge-gray', cm.status|upper)) %}
+        <span class="{{ pill[0] }} text-xs font-bold tracking-wider">{{ pill[1] }}</span>
+
+        <div class="flex items-center gap-2 shrink-0">
+          <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Customer</span>
+          <a href="/customers/{{ cm.customer_id }}" class="font-semibold text-gray-800 link">
+            {{ cm.customer.company_name if cm.customer else '—' }}
+          </a>
+        </div>
+
+        <div class="flex items-center gap-1.5 shrink-0 text-gray-500">
+          <span class="text-xs text-gray-400">Issued</span>
+          <span class="text-gray-700 text-xs">{{ cm.created_at.strftime('%b %d, %Y') if cm.created_at else '—' }}</span>
+        </div>
+
+        <div class="flex items-center gap-1.5 shrink-0">
+          <span class="text-xs text-gray-400">Source</span>
+          <span class="text-xs text-gray-700">{{ cm.trigger_type | replace('_', ' ') | title }}</span>
+        </div>
+
+        {% if cm.original_invoice %}
+        <div class="flex items-center gap-1.5 shrink-0">
+          <span class="text-xs text-gray-400">Invoice</span>
+          <a href="/invoices/{{ cm.original_invoice_id }}" class="text-xs link font-medium">{{ cm.original_invoice.invoice_number }}</a>
+        </div>
+        {% endif %}
+
+        {# ── Amount chips ── #}
+        <div class="ml-auto flex items-center gap-2 flex-wrap">
+          <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-gray-100 rounded text-gray-600">
+            Total: <span class="font-bold text-gray-800 tabular-nums">${{ '%.2f' % cm.total_amount }}</span>
+          </span>
+          <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-green-50 rounded text-green-700 font-semibold border border-green-100">
+            Applied: <span class="tabular-nums">${{ '%.2f' % cm.applied_amount }}</span>
+          </span>
+          {% if cm.unapplied_amount > 0 %}
+          <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-amber-50 rounded text-amber-700 font-semibold border border-amber-100">
+            Unapplied: <span class="tabular-nums">${{ '%.2f' % cm.unapplied_amount }}</span>
+          </span>
+          {% endif %}
+        </div>
+      </div>
+
+      {# Reason / notes #}
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3 pt-3 border-t border-gray-100">
+        <div>
+          <label class="form-label">Reason</label>
+          <p class="text-sm text-gray-700 whitespace-pre-wrap">{{ cm.reason or '—' }}</p>
+        </div>
+        <div>
+          <label class="form-label">Notes</label>
+          <p class="text-sm text-gray-500 whitespace-pre-wrap italic">{{ cm.notes or '—' }}</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# ── Apply / Close (OPEN + PARTIAL only — credit still to give) ───────────── #}
+  {% if cm.status in (CreditMemoStatus.OPEN, CreditMemoStatus.PARTIAL) %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Use This Credit</h2>
+      <span class="text-xs text-gray-400">${{ '%.2f' % cm.unapplied_amount }} unapplied</span>
+    </div>
+    <div class="card-body py-3">
+      <div class="flex flex-wrap items-end gap-3">
+
+        {% if open_invoices %}
+        <form method="post" action="/credit-memos/{{ cm.id }}/apply"
+              class="flex flex-wrap items-end gap-3">
+          <div>
+            <label class="form-label" for="cm-apply-invoice">Apply to Invoice</label>
+            <select name="invoice_id" id="cm-apply-invoice" class="form-select min-w-[16rem]" required>
+              {% for inv in open_invoices %}
+              <option value="{{ inv.id }}">{{ inv.invoice_number }} — ${{ '%.2f' % inv.balance_due }} due</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label class="form-label" for="cm-apply-amount">Amount</label>
+            <input type="number" name="amount" id="cm-apply-amount" class="form-input w-32"
+                   step="0.01" min="0.01" max="{{ '%.2f' % cm.unapplied_amount }}"
+                   placeholder="auto">
+          </div>
+          <button type="submit" class="btn-primary btn-sm">Apply Credit</button>
+        </form>
+        {% else %}
+        <p class="text-sm text-gray-400">No open invoices for this customer.</p>
+        {% endif %}
+
+        {# Close — push the remainder to the customer's account credit #}
+        <div class="ml-auto">
+          <form id="cm-close-form" method="post" action="/credit-memos/{{ cm.id }}/close">
+            <button type="button" class="btn-secondary btn-sm"
+                    {# No server strings in the JS literal (Alpine injection footgun) — amount is %.2f-formatted, safe #}
+                    @click="jakConfirm({ title: 'Close credit memo?', body: 'The remaining ${{ '%.2f' % cm.unapplied_amount }} moves to the customer account credit and this credit memo is marked applied.', cta: 'Close Credit Memo', danger: false, formId: 'cm-close-form' })">
+              Close to Account Credit
+            </button>
+          </form>
+        </div>
+
+      </div>
+      <p class="text-xs text-gray-400 mt-2">
+        Leave Amount blank to apply as much as fits (the smaller of the unapplied credit and the invoice balance).
+      </p>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Lines ────────────────────────────────────────────────────────────────── #}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Lines</h2>
+      <span class="text-xs text-gray-400">{{ cm.lines | length }} line{{ 's' if cm.lines | length != 1 }}</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full divide-y divide-gray-100 text-sm">
+        <thead class="bg-gray-50">
+          <tr>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Description</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Qty</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Unit Price</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Disc %</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Line Total</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for ln in cm.lines %}
+          {% set line_total = ln.qty * ln.unit_price * (1 - (ln.discount_pct or 0) / 100) %}
+          <tr>
+            <td class="px-4 py-3 text-gray-700">{{ ln.description or '—' }}</td>
+            <td class="px-4 py-3 text-right tabular-nums text-gray-600">{{ ln.qty }}</td>
+            <td class="px-4 py-3 text-right tabular-nums text-gray-600">${{ '%.2f' % ln.unit_price }}</td>
+            <td class="px-4 py-3 text-right tabular-nums text-gray-500">{{ '%g' % (ln.discount_pct or 0) }}%</td>
+            <td class="px-4 py-3 text-right tabular-nums font-semibold text-gray-800">${{ '%.2f' % line_total }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="px-4 py-6 text-center text-sm text-gray-400">No lines.</td></tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="border-t-2 border-gray-200">
+          <tr class="bg-gray-50">
+            <td colspan="4" class="px-4 py-2 text-right text-xs font-semibold text-gray-500">Total</td>
+            <td class="px-4 py-2 text-right text-sm font-bold text-gray-800 tabular-nums">${{ '%.2f' % cm.total_amount }}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+
+  {# ── Allocations (when applied to invoices) ───────────────────────────────── #}
+  {% if active_allocations %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Applied To</h2>
+      <span class="text-xs text-gray-400">{{ active_allocations | length }} allocation{{ 's' if active_allocations | length != 1 }}</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full divide-y divide-gray-100 text-sm">
+        <thead class="bg-gray-50">
+          <tr>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Invoice</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Date</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Amount Applied</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for a in active_allocations %}
+          <tr class="hover:bg-gray-50/80 transition-colors">
+            <td class="px-4 py-3">
+              {% if a.invoice %}
+              <a href="/invoices/{{ a.invoice_id }}" class="link font-medium">{{ a.invoice.invoice_number }}</a>
+              {% else %}#{{ a.invoice_id }}{% endif %}
+            </td>
+            <td class="px-4 py-3 text-xs text-gray-500">{{ a.applied_at.strftime('%b %d, %Y') if a.applied_at else '—' }}</td>
+            <td class="px-4 py-3 text-right tabular-nums font-semibold text-green-700">${{ '%.2f' % a.amount_applied }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

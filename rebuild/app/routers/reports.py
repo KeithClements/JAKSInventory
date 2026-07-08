@@ -15,27 +15,42 @@ Canonical routes (Series 1):
   GET /reports/open-pos              — POs not fully received
   GET /reports/outstanding-cores     — customer-owed cores still out
   GET /reports/lost-sales            — lost-sale log entries with competitor data
+  GET /reports/low-stock             — reorder worklist (at/below reorder point)
+  POST /reports/low-stock/create-pos — bulk-create draft POs from checked rows (§23.3 Phase 2)
+  GET /reports/dead-stock            — stock on hand with no recent sale (§23.3 Phase 2)
 
 Back-compat redirects from the previous URL shape are at the bottom of the file
 so existing sidebar/bookmark links keep working.
 """
 from __future__ import annotations
 
+import csv
+import io
 import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote as url_quote
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
-from app.deps import get_db
+from app.deps import get_current_user_id, get_db, require_reports_access
 from app.services.report_service import ReportService
+from app.services import pricing_reports_service
 
 log = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/reports", tags=["reports"])
+# Risk #1 — every report (and CSV export and legacy redirect) exposes cost basis,
+# margins, AR/AP aging, sales tax, and captured competitor pricing. Gate the WHOLE
+# router to ADMIN/BOOKKEEPING via a router-level dependency so no individual route
+# can be added later without the gate. SALES/READ_ONLY users get HTTP 403.
+router = APIRouter(
+    prefix="/reports",
+    tags=["reports"],
+    dependencies=[Depends(require_reports_access)],
+)
 templates = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent.parent / "templates")
 )
@@ -72,6 +87,20 @@ def _resolve_range(start: str | None, end: str | None) -> tuple[date, date]:
     return s, e
 
 
+def _csv_response(header: list[str], data_rows: list[list], filename: str) -> StreamingResponse:
+    """Render rows as a text/csv attachment (same pattern as /products/export.csv)."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(header)
+    writer.writerows(data_rows)
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
 # ── Landing ───────────────────────────────────────────────────────────────────
 
 @router.get("", response_class=HTMLResponse)
@@ -86,48 +115,63 @@ def reports_index(request: Request, db: Session = Depends(get_db)):
     today = date.today()
     month_start = today.replace(day=1)
 
-    error_message = None
-    ar_total = ar_over_90 = inv_value = inv_skus = 0.0
-    po_count = core_overdue = 0
-    po_value = core_amount = mtd_revenue = mtd_margin = 0.0
-    mtd_margin_pct = None
-    overdue_total = 0.0
-    overdue_count = 0
-    mtd_tax_collected = 0.0
-    lost_count = 0
+    # Per-metric isolation: one poisoned report must not 500 the whole landing
+    # page (it used to — a single try around all ten fetches). Each fetch logs
+    # its own failure and falls back to `{}` so the extraction below yields
+    # None, which the template renders as an em-dash.
+    failed: list[str] = []
 
-    try:
-        ar = svc.get_ar_aging()
-        inv = svc.get_inventory_valuation()
-        pos = svc.get_open_pos()
-        cores = svc.get_core_charges_outstanding()
-        sales_mtd = svc.get_sales_by_customer(month_start, today)
-        ar_total     = ar["totals"]["total"]
-        ar_over_90   = ar["totals"]["over_90"]
-        inv_value    = inv["totals"]["total_value"]
-        inv_skus     = inv["totals"]["in_stock_skus"]
-        po_count     = pos["totals"]["po_count"]
-        po_value     = pos["totals"]["outstanding_value"]
-        core_amount  = cores["totals"]["amount"]
-        core_overdue = cores["totals"]["overdue_count"]
-        mtd_revenue  = sales_mtd["totals"]["gross_sales"]
-        mtd_margin   = sales_mtd["totals"]["margin"]
-        mtd_margin_pct = sales_mtd["totals"].get("margin_pct")
-        overdue_data = svc.get_overdue_invoices()
-        overdue_total = overdue_data["totals"]["total_owed"]
-        overdue_count = overdue_data["totals"]["invoice_count"]
-        tax_data = svc.get_sales_tax_collected(month_start, today)
-        mtd_tax_collected = tax_data["totals"]["tax_collected"]
-        lost_mtd = svc.get_lost_sales(month_start, today)
-        lost_count = lost_mtd["totals"]["count"]
-    except Exception:
-        log.exception("reports_index: ReportService failed")
-        error_message = "Could not load report snapshot. Check server logs for details."
+    def _totals(label: str, fn) -> dict:
+        try:
+            return fn()["totals"]
+        except Exception:
+            log.exception("reports_index: %s failed", label)
+            failed.append(label)
+            return {}
+
+    _ar    = _totals("ar_aging", svc.get_ar_aging)
+    _inv   = _totals("inventory_valuation", svc.get_inventory_valuation)
+    _pos   = _totals("open_pos", svc.get_open_pos)
+    _cores = _totals("outstanding_cores", svc.get_core_charges_outstanding)
+    _sales = _totals("sales_by_customer", lambda: svc.get_sales_by_customer(month_start, today))
+    _over  = _totals("overdue_invoices", svc.get_overdue_invoices)
+    _tax   = _totals("sales_tax", lambda: svc.get_sales_tax_collected(month_start, today))
+    _lost  = _totals("lost_sales", lambda: svc.get_lost_sales(month_start, today))
+    _low   = _totals("low_stock", svc.get_low_stock)
+    _dead  = _totals("dead_stock", svc.get_dead_stock)
+
+    ar_total             = _ar.get("total")
+    ar_over_90           = _ar.get("over_90")
+    inv_value            = _inv.get("total_value")
+    inv_skus             = _inv.get("in_stock_skus")
+    po_count             = _pos.get("po_count")
+    po_value             = _pos.get("outstanding_value")
+    core_amount          = _cores.get("amount")
+    core_overdue         = _cores.get("overdue_count")
+    mtd_revenue          = _sales.get("gross_sales")
+    mtd_margin           = _sales.get("margin")
+    mtd_margin_pct       = _sales.get("margin_pct")
+    overdue_total        = _over.get("total_owed")
+    overdue_count        = _over.get("invoice_count")
+    mtd_tax_collected    = _tax.get("tax_collected")
+    lost_count           = _lost.get("count")
+    low_stock_count      = _low.get("item_count")
+    low_stock_order_cost = _low.get("total_order_cost")
+    dead_stock_count     = _dead.get("item_count")
+    dead_stock_value     = _dead.get("total_tied_up_value")
+
+    error_message = None
+    if failed:
+        error_message = (
+            "Some snapshot figures could not be loaded ("
+            + ", ".join(failed)
+            + "). Check server logs for details."
+        )
 
     return templates.TemplateResponse(
+        request,
         "reports/index.html",
         {
-            "request": request,
             "today": today,
             "error_message": error_message,
             "ar_total":      ar_total,
@@ -146,6 +190,10 @@ def reports_index(request: Request, db: Session = Depends(get_db)):
             "overdue_count":      overdue_count,
             "mtd_tax_collected":  mtd_tax_collected,
             "lost_count":         lost_count,
+            "low_stock_count":      low_stock_count,
+            "low_stock_order_cost": low_stock_order_cost,
+            "dead_stock_count":     dead_stock_count,
+            "dead_stock_value":     dead_stock_value,
         },
     )
 
@@ -171,9 +219,9 @@ def reports_ar_aging(
         error_message = "Could not load AR aging data. Check server logs for details."
 
     return templates.TemplateResponse(
+        request,
         "reports/ar_aging.html",
         {
-            "request": request,
             "today": as_of_date,
             "as_of": as_of_date,
             "aging_rows": rows,   # legacy template variable
@@ -181,6 +229,132 @@ def reports_ar_aging(
             "totals": totals,
             "error_message": error_message,
         },
+    )
+
+
+@router.get("/ar-aging/export.csv")
+def reports_ar_aging_export(
+    as_of: str | None = None,
+    db: Session = Depends(get_db),
+):
+    as_of_date = _parse_date(as_of) or date.today()
+    data = ReportService(db).get_ar_aging(as_of_date)
+    return _csv_response(
+        ["customer", "invoice_count", "current", "1_30", "31_60", "61_90", "over_90", "total"],
+        [
+            [
+                r["customer"].company_name if r["customer"] else "",
+                r["invoice_count"],
+                f"{r['current']:.2f}",
+                f"{r['1_30']:.2f}",
+                f"{r['31_60']:.2f}",
+                f"{r['61_90']:.2f}",
+                f"{r['over_90']:.2f}",
+                f"{r['total']:.2f}",
+            ]
+            for r in data["rows"]
+        ],
+        f"ar_aging_{as_of_date.isoformat()}.csv",
+    )
+
+
+# ── AP Aging (payables) — §21 ─────────────────────────────────────────────────
+
+@router.get("/ap-aging", response_class=HTMLResponse)
+def reports_ap_aging(request: Request, as_of: str | None = None, db: Session = Depends(get_db)):
+    as_of_date = _parse_date(as_of) or date.today()
+    error_message = None
+    rows: list = []
+    totals = {b: 0.0 for b in ("current", "1_30", "31_60", "61_90", "over_90", "total")}
+    try:
+        data = ReportService(db).get_ap_aging(as_of_date)
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_ap_aging failed (as_of=%s)", as_of_date)
+        error_message = "Could not load AP aging data. Check server logs for details."
+    return templates.TemplateResponse(
+        request, "reports/ap_aging.html",
+        {"as_of": as_of_date, "rows": rows, "totals": totals, "error_message": error_message},
+    )
+
+
+@router.get("/ap-aging/export.csv")
+def reports_ap_aging_export(as_of: str | None = None, db: Session = Depends(get_db)):
+    as_of_date = _parse_date(as_of) or date.today()
+    data = ReportService(db).get_ap_aging(as_of_date)
+    return _csv_response(
+        ["vendor", "bill_count", "current", "1_30", "31_60", "61_90", "over_90", "total"],
+        [
+            [
+                r["vendor"].name if r["vendor"] else "",
+                r["bill_count"], f"{r['current']:.2f}", f"{r['1_30']:.2f}",
+                f"{r['31_60']:.2f}", f"{r['61_90']:.2f}", f"{r['over_90']:.2f}",
+                f"{r['total']:.2f}",
+            ]
+            for r in data["rows"]
+        ],
+        f"ap_aging_{as_of_date.isoformat()}.csv",
+    )
+
+
+# ── Quote conversion + Vendor performance (§21.10) ────────────────────────────
+
+@router.get("/quote-conversion", response_class=HTMLResponse)
+def reports_quote_conversion(request: Request, start: str | None = None,
+                             end: str | None = None, db: Session = Depends(get_db)):
+    start_date, end_date = _resolve_range(start, end)
+    error_message = None
+    data = {"total": 0, "won": 0, "lost": 0, "pending": 0, "no_decision": 0,
+            "conversion_rate": None, "won_value": 0.0, "total_value": 0.0}
+    try:
+        data = ReportService(db).get_quote_conversion(start_date, end_date)
+    except Exception:
+        log.exception("reports_quote_conversion failed (%s–%s)", start_date, end_date)
+        error_message = "Could not load quote conversion data."
+    return templates.TemplateResponse(
+        request, "reports/quote_conversion.html",
+        {"start_date": start_date, "end_date": end_date, "data": data,
+         "error_message": error_message},
+    )
+
+
+@router.get("/vendor-performance", response_class=HTMLResponse)
+def reports_vendor_performance(request: Request, start: str | None = None,
+                               end: str | None = None, db: Session = Depends(get_db)):
+    start_date, end_date = _resolve_range(start, end)
+    error_message = None
+    rows: list = []
+    try:
+        rows = ReportService(db).get_vendor_performance(start_date, end_date)["rows"]
+    except Exception:
+        log.exception("reports_vendor_performance failed (%s–%s)", start_date, end_date)
+        error_message = "Could not load vendor performance data."
+    return templates.TemplateResponse(
+        request, "reports/vendor_performance.html",
+        {"start_date": start_date, "end_date": end_date, "rows": rows,
+         "error_message": error_message},
+    )
+
+
+@router.get("/vendor-performance/export.csv")
+def reports_vendor_performance_export(start: str | None = None, end: str | None = None,
+                                      db: Session = Depends(get_db)):
+    start_date, end_date = _resolve_range(start, end)
+    data = ReportService(db).get_vendor_performance(start_date, end_date)
+    return _csv_response(
+        ["vendor", "po_count", "po_value", "qty_ordered", "qty_received",
+         "fill_rate_pct", "bills", "discrepancy_bills"],
+        [
+            [
+                r["vendor"].name if r["vendor"] else "", r["po_count"],
+                f"{r['po_value']:.2f}", r["qty_ordered"], r["qty_received"],
+                f"{r['fill_rate']:.1f}" if r["fill_rate"] is not None else "",
+                r["bills"], r["discrepancy_bills"],
+            ]
+            for r in data["rows"]
+        ],
+        f"vendor_performance_{start_date.isoformat()}_{end_date.isoformat()}.csv",
     )
 
 
@@ -198,22 +372,27 @@ def reports_sales_by_customer(
     rows: list = []
     totals = {"invoice_count": 0, "gross_sales": 0.0, "payments_received": 0.0,
               "balance_due": 0.0, "cost": 0.0, "margin": 0.0, "margin_pct": None}
+    cost_estimated_lines = zero_cost_lines = 0
     try:
         data = ReportService(db).get_sales_by_customer(start_date, end_date)
         rows = data["rows"]
         totals = data["totals"]
+        cost_estimated_lines = data["cost_estimated_lines"]
+        zero_cost_lines = data["zero_cost_lines"]
     except Exception:
         log.exception("reports_sales_by_customer failed (%s–%s)", start_date, end_date)
         error_message = "Could not load sales data. Check server logs for details."
 
     return templates.TemplateResponse(
+        request,
         "reports/sales_by_customer.html",
         {
-            "request": request,
             "start_date": start_date,
             "end_date": end_date,
             "rows": rows,
             "totals": totals,
+            "cost_estimated_lines": cost_estimated_lines,
+            "zero_cost_lines": zero_cost_lines,
             "error_message": error_message,
         },
     )
@@ -232,22 +411,27 @@ def reports_sales_by_product(
     error_message = None
     rows: list = []
     totals = {"qty_sold": 0, "revenue": 0.0, "cost": 0.0, "margin": 0.0, "margin_pct": None}
+    cost_estimated_lines = zero_cost_lines = 0
     try:
         data = ReportService(db).get_sales_by_product(start_date, end_date)
         rows = data["rows"]
         totals = data["totals"]
+        cost_estimated_lines = data["cost_estimated_lines"]
+        zero_cost_lines = data["zero_cost_lines"]
     except Exception:
         log.exception("reports_sales_by_product failed (%s–%s)", start_date, end_date)
         error_message = "Could not load product sales data. Check server logs for details."
 
     return templates.TemplateResponse(
+        request,
         "reports/sales_by_product.html",
         {
-            "request": request,
             "start_date": start_date,
             "end_date": end_date,
             "rows": rows,
             "totals": totals,
+            "cost_estimated_lines": cost_estimated_lines,
+            "zero_cost_lines": zero_cost_lines,
             "error_message": error_message,
         },
     )
@@ -255,27 +439,78 @@ def reports_sales_by_product(
 
 # ── Inventory Valuation ───────────────────────────────────────────────────────
 
+_INV_VAL_PAGE_SIZE = 100
+
+
 @router.get("/inventory-valuation", response_class=HTMLResponse)
-def reports_inventory_valuation(request: Request, db: Session = Depends(get_db)):
+def reports_inventory_valuation(
+    request: Request,
+    db: Session = Depends(get_db),
+    page: int = 1,
+    category_id: int | None = None,
+    uncategorized: bool = False,
+):
+    """Inventory valuation report.
+
+    Loads a fast SQL-aggregated summary (totals + by-category breakdown) and ONE
+    server-side page of detail rows — never the full ~31k-row population. Drill
+    down by passing ``category_id`` (or ``uncategorized=1``); page through detail
+    rows with ``page``.
+    """
     error_message = None
     rows: list = []
+    by_category: list = []
     totals = {"sku_count": 0, "in_stock_skus": 0, "total_units": 0, "total_value": 0.0, "zero_cost_count": 0}
+    page_size = _INV_VAL_PAGE_SIZE
+    total_rows = 0
+    total_pages = 1
+    page = max(1, page)
     try:
-        data = ReportService(db).get_inventory_valuation()
-        rows = data["rows"]
-        totals = data["totals"]
+        svc = ReportService(db)
+        summary = svc.get_inventory_valuation_summary()
+        totals = summary["totals"]
+        by_category = summary["by_category"]
+
+        detail = svc.get_inventory_valuation(
+            page=page,
+            page_size=page_size,
+            category_id=category_id,
+            uncategorized=uncategorized,
+        )
+        rows = detail["rows"]
+        page = detail["page"]
+        total_rows = detail["total_rows"]
+        total_pages = detail["total_pages"]
     except Exception:
         log.exception("reports_inventory_valuation failed")
         error_message = "Could not load inventory data. Check server logs for details."
 
+    # Name of the active drill-down category (for the heading), if any.
+    active_category_name = None
+    if uncategorized:
+        active_category_name = "Uncategorized"
+    elif category_id is not None:
+        active_category_name = next(
+            (c["category"] for c in by_category if c["category_id"] == category_id),
+            "Category",
+        )
+
     return templates.TemplateResponse(
+        request,
         "reports/inventory_valuation.html",
         {
-            "request": request,
             "today": date.today(),
             "rows": rows,
+            "by_category": by_category,
             "totals": totals,
             "error_message": error_message,
+            "page": page,
+            "page_size": page_size,
+            "total_rows": total_rows,
+            "total_pages": total_pages,
+            "category_id": category_id,
+            "uncategorized": uncategorized,
+            "active_category_name": active_category_name,
         },
     )
 
@@ -298,9 +533,9 @@ def reports_open_pos(request: Request, db: Session = Depends(get_db)):
         error_message = "Could not load open PO data. Check server logs for details."
 
     return templates.TemplateResponse(
+        request,
         "reports/open_pos.html",
         {
-            "request": request,
             "today": today,
             "rows": rows,
             "totals": totals,
@@ -327,9 +562,39 @@ def reports_outstanding_cores(request: Request, db: Session = Depends(get_db)):
         error_message = "Could not load core charge data. Check server logs for details."
 
     return templates.TemplateResponse(
+        request,
         "reports/outstanding_cores.html",
         {
-            "request": request,
+            "today": today,
+            "rows": rows,
+            "totals": totals,
+            "error_message": error_message,
+        },
+    )
+
+
+# ── Overdue Cores (§23.3 Phase 3) ─────────────────────────────────────────────
+
+@router.get("/overdue-cores", response_class=HTMLResponse)
+def reports_overdue_cores(request: Request, db: Session = Depends(get_db)):
+    error_message = None
+    today = date.today()
+    rows: list = []
+    totals = {"core_count": 0, "qty_outstanding": 0, "amount": 0.0,
+              "oldest_days_overdue": 0}
+    try:
+        data = ReportService(db).get_overdue_cores()
+        today = data["as_of"]
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_overdue_cores failed")
+        error_message = "Could not load overdue core data. Check server logs for details."
+
+    return templates.TemplateResponse(
+        request,
+        "reports/overdue_cores.html",
+        {
             "today": today,
             "rows": rows,
             "totals": totals,
@@ -359,14 +624,40 @@ def reports_overdue_invoices(
         error_message = "Could not load overdue invoices data. Check server logs for details."
 
     return templates.TemplateResponse(
+        request,
         "reports/overdue_invoices.html",
         {
-            "request": request,
             "as_of": as_of_date,
             "rows": rows,
             "totals": totals,
             "error_message": error_message,
         },
+    )
+
+
+@router.get("/overdue-invoices/export.csv")
+def reports_overdue_invoices_export(
+    as_of: str | None = None,
+    db: Session = Depends(get_db),
+):
+    as_of_date = _parse_date(as_of) or date.today()
+    data = ReportService(db).get_overdue_invoices(as_of_date)
+    return _csv_response(
+        ["invoice_number", "customer", "due_date", "days_overdue",
+         "balance_due", "interest_accrued", "total_owed"],
+        [
+            [
+                r["invoice_number"],
+                r["customer"].company_name if r["customer"] else "",
+                r["due_date"].isoformat(),
+                r["days_overdue"],
+                f"{r['balance_due']:.2f}",
+                f"{r['interest_accrued']:.2f}",
+                f"{r['total_owed']:.2f}",
+            ]
+            for r in data["rows"]
+        ],
+        f"overdue_invoices_{as_of_date.isoformat()}.csv",
     )
 
 
@@ -392,15 +683,41 @@ def reports_sales_tax(
         error_message = "Could not load sales tax data. Check server logs for details."
 
     return templates.TemplateResponse(
+        request,
         "reports/sales_tax.html",
         {
-            "request": request,
             "start_date": start_date,
             "end_date": end_date,
             "rows": rows,
             "totals": totals,
             "error_message": error_message,
         },
+    )
+
+
+@router.get("/sales-tax/export.csv")
+def reports_sales_tax_export(
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+):
+    start_date, end_date = _resolve_range(start, end)
+    data = ReportService(db).get_sales_tax_collected(start_date, end_date)
+    return _csv_response(
+        ["invoice_number", "customer", "invoice_date",
+         "taxable_revenue", "tax_collected", "invoice_total"],
+        [
+            [
+                r["invoice_number"],
+                r["customer"].company_name if r["customer"] else "",
+                r["invoice_date"].isoformat(),
+                f"{r['taxable_revenue']:.2f}",
+                f"{r['tax_collected']:.2f}",
+                f"{r['invoice_total']:.2f}",
+            ]
+            for r in data["rows"]
+        ],
+        f"sales_tax_{start_date.isoformat()}_{end_date.isoformat()}.csv",
     )
 
 
@@ -426,13 +743,400 @@ def reports_lost_sales(
         error_message = "Could not load lost sales data. Check server logs for details."
 
     return templates.TemplateResponse(
+        request,
         "reports/lost_sales.html",
         {
-            "request": request,
             "start_date": start_date,
             "end_date": end_date,
             "rows": rows,
             "totals": totals,
+            "error_message": error_message,
+        },
+    )
+
+
+# ── Low Stock / Reorder ──────────────────────────────────────────────────────
+
+@router.get("/low-stock", response_class=HTMLResponse)
+def reports_low_stock(request: Request, db: Session = Depends(get_db)):
+    error_message = None
+    today = date.today()
+    rows: list = []
+    totals = {"item_count": 0, "stockout_count": 0, "total_suggested_qty": 0,
+              "total_order_cost": 0.0, "no_vendor_count": 0}
+    try:
+        data = ReportService(db).get_low_stock()
+        today = data["as_of"]
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_low_stock failed")
+        error_message = "Could not load low stock data. Check server logs for details."
+
+    return templates.TemplateResponse(
+        request,
+        "reports/low_stock.html",
+        {
+            "today": today,
+            "rows": rows,
+            "totals": totals,
+            "error_message": error_message,
+        },
+    )
+
+
+@router.get("/low-stock/export.csv")
+def reports_low_stock_export(db: Session = Depends(get_db)):
+    data = ReportService(db).get_low_stock()
+    return _csv_response(
+        ["sku", "title", "category", "qty_on_hand", "qty_committed",
+         "qty_available", "qty_on_order", "reorder_point", "max_stock_level",
+         "suggested_order_qty", "vendor", "vendor_part_number", "vendor_cost",
+         "est_order_cost"],
+        [
+            [
+                r["sku"],
+                r["title"],
+                r["category"],
+                r["qty_on_hand"],
+                r["qty_committed"],
+                r["qty_available"],
+                r["qty_on_order"],
+                r["reorder_point"],
+                r["max_stock_level"] if r["max_stock_level"] is not None else "",
+                r["suggested_qty"],
+                r["vendor_name"] or "",
+                r["vendor_part_number"] or "",
+                f"{r['vendor_cost']:.2f}" if r["vendor_cost"] is not None else "",
+                f"{r['est_order_cost']:.2f}",
+            ]
+            for r in data["rows"]
+        ],
+        f"low_stock_{data['as_of'].isoformat()}.csv",
+    )
+
+
+@router.post("/low-stock/create-pos", response_class=RedirectResponse)
+async def reports_low_stock_create_pos(
+    request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """§23.3 Phase 2 — bulk-create draft POs from the Low Stock report's
+    checked rows. Groups by preferred vendor into one PO per vendor;
+    POService owns that logic — this route only resolves the checked
+    product_ids -> suggested_qty from the SAME get_low_stock() data the page
+    rendered, so a stale/tampered qty in the submitted form can never
+    override the report's own numbers. Requires an explicit selection — the
+    "Create POs" button is disabled client-side until at least one row is
+    checked, so an empty submission here is always treated as "nothing
+    selected", never silently expanded to "every row" (that would let a
+    stray/duplicate POST reorder the whole catalog with no user intent
+    behind it)."""
+    from app.services.po_service import POService
+
+    form = await request.form()
+    checked_ids = {int(v) for v in form.getlist("product_ids") if str(v).strip().isdigit()}
+
+    data = ReportService(db).get_low_stock()
+    items = {
+        r["product"].id: r["suggested_qty"]
+        for r in data["rows"]
+        if r["suggested_qty"] > 0 and r["product"].id in checked_ids
+    }
+
+    if not items:
+        return RedirectResponse(
+            f"/reports/low-stock?error={url_quote('Nothing selected to reorder.')}",
+            status_code=303,
+        )
+
+    result = POService(db, current_user_id=user_id).create_pos_from_reorder(items)
+    po_count = len(result["created"])
+    line_count = sum(c["line_count"] for c in result["created"])
+    msg = f"Created {po_count} PO(s) covering {line_count} line(s)."
+    if result["skipped_no_vendor"]:
+        skus = ", ".join(s["sku"] for s in result["skipped_no_vendor"][:5])
+        msg += f" Skipped {len(result['skipped_no_vendor'])} with no preferred vendor: {skus}."
+
+    return RedirectResponse(f"/reports/low-stock?ok={url_quote(msg)}", status_code=303)
+
+
+@router.get("/dead-stock", response_class=HTMLResponse)
+def reports_dead_stock(request: Request, days: int = 90, db: Session = Depends(get_db)):
+    error_message = None
+    today = date.today()
+    rows: list = []
+    totals = {"item_count": 0, "total_units": 0, "total_tied_up_value": 0.0,
+              "never_sold_count": 0}
+    try:
+        # A non-positive window would degenerate to "everything is dead" —
+        # guard rather than surface a nonsensical report.
+        days = max(1, days)
+        data = ReportService(db).get_dead_stock(days=days)
+        today = data["as_of"]
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_dead_stock failed")
+        error_message = "Could not load dead stock data. Check server logs for details."
+
+    return templates.TemplateResponse(
+        request,
+        "reports/dead_stock.html",
+        {
+            "today": today,
+            "days": days,
+            "rows": rows,
+            "totals": totals,
+            "error_message": error_message,
+        },
+    )
+
+
+@router.get("/dead-stock/export.csv")
+def reports_dead_stock_export(days: int = 90, db: Session = Depends(get_db)):
+    days = max(1, days)
+    data = ReportService(db).get_dead_stock(days=days)
+    return _csv_response(
+        ["sku", "title", "category", "qty_on_hand", "cost", "tied_up_value",
+         "last_sold_at", "days_since_sale"],
+        [
+            [
+                r["sku"], r["title"], r["category"], r["qty_on_hand"],
+                f"{r['cost']:.2f}", f"{r['tied_up_value']:.2f}",
+                r["last_sold_at"].date().isoformat() if r["last_sold_at"] else "never",
+                r["days_since_sale"] if r["days_since_sale"] is not None else "",
+            ]
+            for r in data["rows"]
+        ],
+        f"dead_stock_{data['as_of'].isoformat()}.csv",
+    )
+
+
+# ── §21 — the 6 previously-missing CSV exports (mirror the ar-aging pattern) ──
+
+@router.get("/sales-by-customer/export.csv")
+def reports_sales_by_customer_export(
+    start: str | None = None, end: str | None = None, db: Session = Depends(get_db),
+):
+    start_date, end_date = _resolve_range(start, end)
+    data = ReportService(db).get_sales_by_customer(start_date, end_date)
+    return _csv_response(
+        ["customer", "invoice_count", "gross_sales", "payments_received",
+         "balance_due", "cost", "margin", "margin_pct"],
+        [
+            [
+                r["customer"].company_name if r["customer"] else "",
+                r["invoice_count"], f"{r['gross_sales']:.2f}",
+                f"{r['payments_received']:.2f}", f"{r['balance_due']:.2f}",
+                f"{r['cost']:.2f}", f"{r['margin']:.2f}",
+                f"{r['margin_pct']:.1f}" if r["margin_pct"] is not None else "",
+            ]
+            for r in data["rows"]
+        ],
+        f"sales_by_customer_{start_date.isoformat()}_{end_date.isoformat()}.csv",
+    )
+
+
+@router.get("/sales-by-product/export.csv")
+def reports_sales_by_product_export(
+    start: str | None = None, end: str | None = None, db: Session = Depends(get_db),
+):
+    start_date, end_date = _resolve_range(start, end)
+    data = ReportService(db).get_sales_by_product(start_date, end_date)
+    return _csv_response(
+        ["sku", "description", "qty_sold", "revenue", "cost", "margin", "margin_pct"],
+        [
+            [
+                r["sku"], r["description"], r["qty_sold"], f"{r['revenue']:.2f}",
+                f"{r['cost']:.2f}", f"{r['margin']:.2f}",
+                f"{r['margin_pct']:.1f}" if r["margin_pct"] is not None else "",
+            ]
+            for r in data["rows"]
+        ],
+        f"sales_by_product_{start_date.isoformat()}_{end_date.isoformat()}.csv",
+    )
+
+
+@router.get("/inventory-valuation/export.csv")
+def reports_inventory_valuation_export(db: Session = Depends(get_db)):
+    data = ReportService(db).get_inventory_valuation()
+    return _csv_response(
+        ["sku", "title", "qty_on_hand", "qty_committed", "qty_available",
+         "avg_cost", "last_cost", "total_value", "warning", "cost_source",
+         "recoverable_cost"],
+        [
+            [
+                r["sku"], r["title"], r["qty_on_hand"], r["qty_committed"],
+                r["qty_available"], f"{r['avg_cost']:.2f}", f"{r['last_cost']:.2f}",
+                f"{r['total_value']:.2f}", r.get("warning") or "",
+                r.get("cost_source") or "",
+                f"{r['recoverable_cost']:.2f}" if r.get("recoverable_cost") else "",
+            ]
+            for r in data["rows"]
+        ],
+        f"inventory_valuation_{date.today().isoformat()}.csv",
+    )
+
+
+@router.get("/open-pos/export.csv")
+def reports_open_pos_export(db: Session = Depends(get_db)):
+    data = ReportService(db).get_open_pos()
+    return _csv_response(
+        ["po_number", "vendor", "status", "ordered_at", "expected_at", "overdue",
+         "qty_ordered", "qty_received", "qty_remaining", "outstanding_value"],
+        [
+            [
+                r["po_number"], r["vendor"].name if r["vendor"] else "",
+                r["status"],
+                r["ordered_at"].date().isoformat() if r["ordered_at"] else "",
+                r["expected_at"].date().isoformat() if r["expected_at"] else "",
+                "yes" if r["overdue"] else "",
+                r["qty_ordered"], r["qty_received"], r["qty_remaining"],
+                f"{r['outstanding_value']:.2f}",
+            ]
+            for r in data["rows"]
+        ],
+        f"open_pos_{data['as_of'].isoformat()}.csv",
+    )
+
+
+@router.get("/outstanding-cores/export.csv")
+def reports_outstanding_cores_export(db: Session = Depends(get_db)):
+    data = ReportService(db).get_core_charges_outstanding()
+    return _csv_response(
+        ["sku", "description", "customer", "invoice_number", "core_slip_number",
+         "qty_outstanding", "amount", "age_days", "return_deadline", "overdue"],
+        [
+            [
+                r["sku"], r["description"],
+                r["customer"].company_name if r["customer"] else "",
+                r["invoice_number"] or "", r["core_slip_number"] or "",
+                r["qty_outstanding"], f"{r['amount']:.2f}", r["age_days"],
+                r["return_deadline"].date().isoformat() if r["return_deadline"] else "",
+                "yes" if r["overdue"] else "",
+            ]
+            for r in data["rows"]
+        ],
+        f"outstanding_cores_{data['as_of'].isoformat()}.csv",
+    )
+
+
+@router.get("/overdue-cores/export.csv")
+def reports_overdue_cores_export(db: Session = Depends(get_db)):
+    data = ReportService(db).get_overdue_cores()
+    return _csv_response(
+        ["sku", "description", "customer", "phone", "invoice_number",
+         "core_slip_number", "qty_outstanding", "amount", "return_deadline",
+         "days_overdue"],
+        [
+            [
+                r["sku"], r["description"],
+                r["customer"].company_name if r["customer"] else "",
+                r["customer_phone"] or "",
+                r["invoice_number"] or "", r["core_slip_number"] or "",
+                r["qty_outstanding"], f"{r['amount']:.2f}",
+                r["return_deadline"].date().isoformat() if r["return_deadline"] else "",
+                r["days_overdue"],
+            ]
+            for r in data["rows"]
+        ],
+        f"overdue_cores_{data['as_of'].isoformat()}.csv",
+    )
+
+
+@router.get("/lost-sales/export.csv")
+def reports_lost_sales_export(
+    start: str | None = None, end: str | None = None, db: Session = Depends(get_db),
+):
+    start_date, end_date = _resolve_range(start, end)
+    data = ReportService(db).get_lost_sales(start_date, end_date)
+    return _csv_response(
+        ["logged_at", "customer", "product_sku", "product_title", "reason",
+         "competitor_name", "competitor_price", "quote_number"],
+        [
+            [
+                r["logged_at"].date().isoformat() if r["logged_at"] else "",
+                r["customer_name"], r["product_sku"], r["product_title"],
+                r["reason"], r["competitor_name"],
+                f"{r['competitor_price']:.2f}" if r["competitor_price"] is not None else "",
+                r["quote_number"] or "",
+            ]
+            for r in data["rows"]
+        ],
+        f"lost_sales_{start_date.isoformat()}_{end_date.isoformat()}.csv",
+    )
+
+
+# ── Customer Deals (Customer-Specific Pricing — Phase 3 §7) ──────────────────
+
+@router.get("/customer-deals", response_class=HTMLResponse)
+def reports_customer_deals(
+    request: Request,
+    customer_id: int | None = None,
+    expiring_within_days: int = 30,
+    db: Session = Depends(get_db),
+):
+    """Every active customer price rule, with margin-at-current-cost and an
+    expiring-soon flag. Filters: ?customer_id=, ?expiring_within_days=."""
+    today = date.today()
+    error_message = None
+    rows: list = []
+    try:
+        rows = pricing_reports_service.customer_deals(
+            db,
+            customer_id=customer_id,
+            expiring_within_days=expiring_within_days,
+            today=today,
+        )
+    except Exception:
+        log.exception("reports_customer_deals failed (customer_id=%s)", customer_id)
+        error_message = "Could not load customer deals data. Check server logs for details."
+
+    expiring_count = sum(1 for r in rows if r.get("expiring_soon"))
+    below_target_count = sum(1 for r in rows if r.get("below_target"))
+
+    return templates.TemplateResponse(
+        request,
+        "reports/customer_deals.html",
+        {
+            "today": today,
+            "rows": rows,
+            "customer_id": customer_id,
+            "expiring_within_days": expiring_within_days,
+            "expiring_count": expiring_count,
+            "below_target_count": below_target_count,
+            "error_message": error_message,
+        },
+    )
+
+
+# ── Margin Leakage (Customer-Specific Pricing — Phase 3 §7) ──────────────────
+
+@router.get("/margin-leakage", response_class=HTMLResponse)
+def reports_margin_leakage(
+    request: Request,
+    since: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Finalized invoice product-lines that sold below their cost-bracket target
+    margin, worst gap first. Filter: ?since=YYYY-MM-DD."""
+    since_date = _parse_date(since)
+    error_message = None
+    rows: list = []
+    try:
+        rows = pricing_reports_service.margin_leakage(db, since=since_date)
+    except Exception:
+        log.exception("reports_margin_leakage failed (since=%s)", since_date)
+        error_message = "Could not load margin leakage data. Check server logs for details."
+
+    return templates.TemplateResponse(
+        request,
+        "reports/margin_leakage.html",
+        {
+            "today": date.today(),
+            "rows": rows,
+            "since": since_date,
             "error_message": error_message,
         },
     )
@@ -463,3 +1167,66 @@ def _legacy_inventory(request: Request):
 @router.get("/open-pos/", include_in_schema=False)
 def _legacy_open_pos_slash():
     return RedirectResponse("/reports/open-pos", status_code=308)
+
+
+# ── Inventory Movement History (audit follow-up) ──────────────────────────────
+
+@router.get("/inventory-movement", response_class=HTMLResponse)
+def reports_inventory_movement(
+    request: Request,
+    q: str = "",
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Trace why a SKU's on-hand changed — the InventoryTransaction ledger, with
+    an optional SKU filter and a date window (defaults to the last 90 days)."""
+    today = date.today()
+    end_date = _parse_date(end) or today
+    start_date = _parse_date(start) or (today - timedelta(days=90))
+    error_message = None
+    rows: list = []
+    totals = {"row_count": 0, "total_matched": 0, "truncated": False}
+    try:
+        data = ReportService(db).get_inventory_movement(
+            sku_query=q or None, start=start_date, end=end_date
+        )
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_inventory_movement failed")
+        error_message = "Could not load inventory movement data. Check server logs for details."
+
+    return templates.TemplateResponse(
+        request,
+        "reports/inventory_movement.html",
+        {
+            "rows": rows, "totals": totals, "q": q,
+            "start": start_date.isoformat(), "end": end_date.isoformat(),
+            "error_message": error_message,
+        },
+    )
+
+
+# ── QBO Unsynced Transactions (audit follow-up) ───────────────────────────────
+
+@router.get("/qbo-unsynced", response_class=HTMLResponse)
+def reports_qbo_unsynced(request: Request, db: Session = Depends(get_db)):
+    """The list behind the dashboard QBO chip: finalized invoices stuck PENDING
+    or in ERROR, so the owner can see exactly what has not reached QuickBooks."""
+    error_message = None
+    rows: list = []
+    totals = {"count": 0, "error_count": 0, "pending_count": 0, "amount": 0.0}
+    try:
+        data = ReportService(db).get_qbo_unsynced()
+        rows = data["rows"]
+        totals = data["totals"]
+    except Exception:
+        log.exception("reports_qbo_unsynced failed")
+        error_message = "Could not load QBO sync data. Check server logs for details."
+
+    return templates.TemplateResponse(
+        request,
+        "reports/qbo_unsynced.html",
+        {"rows": rows, "totals": totals, "error_message": error_message},
+    )

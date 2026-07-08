@@ -71,6 +71,25 @@ class Quote(Base):
     # Group names are configurable in settings (package_name_economy, etc.).
     selected_option_group: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
+    # ── Customer-Facing Reference Fields ──────────────────────────────────────
+    # Engine/job identifiers captured at the quote stage and carried forward into
+    # the SO and invoice (which already have matching columns). Diesel customers
+    # quote against a specific engine serial (ESN), so this must persist from the
+    # very first document in the chain.
+    customer_po_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    customer_job_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    esn: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    engine_manufacturer: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    engine_model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    # ── §21 Tax (decision 6.16) ───────────────────────────────────────────────
+    # Quotes carry tax so taxable customers are not systematically under-quoted.
+    # is_taxable defaults from the customer's is_tax_exempt at create; the clerk
+    # may toggle it per quote. tax_rate_snapshot freezes the rate at quote time
+    # and carries forward to the SO/invoice on convert.
+    is_taxable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    tax_rate_snapshot: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     internal_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -90,6 +109,31 @@ class Quote(Base):
     def subtotal(self) -> float:
         """Sum of line totals for included lines only (is_included=True)."""
         return round(sum(ln.line_total for ln in self.lines if ln.is_included), 2)
+
+    @property
+    def taxable_base(self) -> float:
+        """§21 — included, taxable line totals (excludes cores/freight/fees per
+        NON_TAXABLE_LINE_TYPES). Zero when the quote is marked non-taxable."""
+        if not self.is_taxable:
+            return 0.0
+        from app.constants import NON_TAXABLE_LINE_TYPES
+        return round(
+            sum(
+                ln.line_total for ln in self.lines
+                if ln.is_included and ln.line_type not in NON_TAXABLE_LINE_TYPES
+            ),
+            2,
+        )
+
+    @property
+    def tax_amount(self) -> float:
+        """§21 — estimated sales tax on the quote (taxable_base × snapshot rate)."""
+        return round(self.taxable_base * (self.tax_rate_snapshot or 0.0) / 100, 2)
+
+    @property
+    def total(self) -> float:
+        """§21 — Quote Total now includes estimated tax (was subtotal-only)."""
+        return round(self.subtotal + self.tax_amount, 2)
 
     @property
     def is_expired(self) -> bool:
@@ -221,6 +265,18 @@ class SalesOrder(QBOSyncMixin, Base):
         ForeignKey("customer_addresses.id"), nullable=True
     )
 
+    # ── Tax (C1) ──────────────────────────────────────────────────────────────
+    # Mirror Quote.is_taxable / tax_rate_snapshot so the SO carries the tax
+    # intent agreed at quote/SO time. Without this, fulfill_and_invoice
+    # re-derived tax from the LIVE customer record at fulfillment, so a taxable
+    # customer's invoice could silently exceed the SO total they agreed to.
+    # Seeded at create, forwarded into the invoice. tax_rate_snapshot is a
+    # percent (e.g. 8.25); 0.0 when the order is not taxable.
+    # Default False: an SO is taxable only when create_sales_order captures a real
+    # rate (a directly-built SO with no rate must not read as "taxable").
+    is_taxable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    tax_rate_snapshot: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     internal_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -245,8 +301,44 @@ class SalesOrder(QBOSyncMixin, Base):
         return round(sum(ln.line_total for ln in self.lines), 2)
 
     @property
+    def taxable_base(self) -> float:
+        """C1 — taxable line totals (excludes cores/freight/fees per
+        NON_TAXABLE_LINE_TYPES). Zero when the SO is marked non-taxable.
+        Mirrors Quote.taxable_base so the SO total reflects the tax intent
+        agreed at SO time rather than re-deriving it at fulfillment."""
+        if not self.is_taxable:
+            return 0.0
+        from app.constants import NON_TAXABLE_LINE_TYPES
+        return round(
+            sum(
+                ln.line_total for ln in self.lines
+                if ln.line_type not in NON_TAXABLE_LINE_TYPES
+            ),
+            2,
+        )
+
+    @property
+    def tax_amount(self) -> float:
+        """C1 — estimated sales tax on the SO (taxable_base × snapshot rate)."""
+        return round(self.taxable_base * (self.tax_rate_snapshot or 0.0) / 100, 2)
+
+    @property
+    def total(self) -> float:
+        """C1 — SO Total includes estimated tax (was subtotal-only). The
+        Pay-in-Full deposit gate measures against this tax-inclusive figure."""
+        return round(self.subtotal + self.tax_amount, 2)
+
+    @property
     def is_fully_invoiced(self) -> bool:
-        return all(ln.qty_invoiced >= ln.qty_ordered for ln in self.lines)
+        # C6 — exclude fully-cancelled, never-invoiced lines. cancel_line sets
+        # qty_ordered = qty_invoiced, so a cancelled-before-invoicing line is
+        # (0 >= 0) = True and would flip the whole SO to INVOICED with no invoice
+        # attached. Only count lines that were actually ordered or invoiced, and
+        # require at least one such line so an all-cancelled SO is not "invoiced".
+        relevant = [ln for ln in self.lines if ln.qty_ordered > 0 or ln.qty_invoiced > 0]
+        return bool(relevant) and all(
+            ln.qty_invoiced >= ln.qty_ordered for ln in relevant
+        )
 
     @property
     def has_backorder(self) -> bool:
@@ -289,6 +381,9 @@ class SOLine(Base):
     linked_po_line_id: Mapped[int | None] = mapped_column(
         ForeignKey("po_lines.id"), nullable=True
     )
+    # §5.2 — customer-facing arrival estimate for a backordered / on-PO line.
+    # Feeds the SO↔PO rollup + backorder management; nullable (unknown ETA).
+    eta_date: Mapped[datetime | None] = mapped_column(Date, nullable=True)
     # R6 — line-level cancellation tracking
     qty_cancelled: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cancel_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -320,6 +415,12 @@ class SOLine(Base):
     children: Mapped[list[SOLine]] = relationship(
         "SOLine", back_populates="parent",
         foreign_keys="SOLine.parent_line_id",
+    )
+    # Read-only nav to the PO line that sources this SO line (set by the "Order"
+    # action on a backordered line). The linked_po_line_id FK column already exists.
+    linked_po_line = relationship(
+        "POLine", foreign_keys="SOLine.linked_po_line_id",
+        uselist=False, viewonly=True,
     )
 
     @property

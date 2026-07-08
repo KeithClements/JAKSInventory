@@ -1,0 +1,186 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   invoice.html — Invoice-specific macros (workspace + list)
+   JAKS_UI_Change_Plan.md §8M / §2C (Line-Item Workspace Standard)
+
+   Macros:
+     actions_dropdown(invoice, editable=False)
+
+   Import: {% from "macros/invoice.html" import actions_dropdown %}
+═════════════════════════════════════════════════════════════════════════════ #}
+
+
+{# ═══════════════════════════════════════════════════════════════════════════
+   actions_dropdown(invoice, editable=False)
+
+   A single "Actions ▾" disclosure menu for the invoice workspace header. It
+   replaces the prior pattern of scattered individual buttons (Print / PDF /
+   Take Payment / Void as a loose red btn-danger). Void now lives INSIDE the
+   menu — it is never a loose red button in the header.
+
+   Renders nothing when editable=True (DRAFT state: Save Draft + Finalize are
+   the right primary actions and belong outside the dropdown).
+
+   Menu slots (shown conditionally by invoice state):
+     Print ↗            — always (non-DRAFT)
+     Download PDF       — always (non-DRAFT)
+     ─────────────────
+     Take Payment       — OPEN / PARTIAL only
+     ─────────────────
+     Start Warranty     — non-VOID, non-DRAFT
+     Start Return (RA)  — non-VOID, non-DRAFT
+     ─────────────────
+     Push to QBO /      — non-VOID, non-DRAFT
+     Re-Sync QBO
+     ─────────────────
+     Void               — OPEN / PARTIAL / PAID (danger; guarded when payments exist)
+
+   `invoice` must expose:
+     .id                int
+     .status            str          (InvoiceStatus value)
+     .amount_paid       float
+     .qbo_invoice_id    str | None   (set → already pushed)
+     .qbo_sync_status   str | None   (QBOSyncStatus value)
+     .qbo_sync_error    str | None   (error message for tooltip)
+
+   Alpine context notes:
+     • $dispatch('open-payment')  — caught by @open-payment.window on workspace div
+     • $dispatch('open-void')     — caught by @open-void.window on workspace div
+     • $dispatch('open-create-slide', {title:…}) — caught by @open-create-slide.window
+       on base.html <body> (the canonical way to open the global create slide-over)
+     • HTMX hx-get on Warranty/RA buttons loads into #create-slide-content
+       (independently of the Alpine dispatch — both fire on click)
+     • The dropdown's own x-data="{open:false}" is a child scope; Alpine v3 scope
+       chain lets it read parent createSlideOpen (via $dispatch pattern only —
+       dispatching events is the safe pattern across scope boundaries).
+═════════════════════════════════════════════════════════════════════════════ #}
+{% macro actions_dropdown(invoice, editable=False) %}
+{% from "macros/motion.html" import dropdown_scale %}
+{%- if editable %}{% endif %}{# DRAFT: caller renders Save Draft + Finalize; this macro is silent #}
+{%- if not editable %}
+{%- set inv_id        = invoice.id -%}
+{%- set s             = invoice.status -%}
+{%- set has_payments  = (invoice.amount_paid or 0) > 0 -%}
+{%- set is_open_par   = s in ('open', 'partial') -%}
+{%- set is_paid       = s == 'paid' -%}
+{%- set is_void       = s == 'void' -%}
+{%- set qbo_pushed    = invoice.qbo_invoice_id -%}
+{%- set qbo_error     = invoice.qbo_sync_status == 'error' -%}
+{%- set qbo_btn_label = 'Re-Sync QBO' if (qbo_pushed or qbo_error) else 'Push to QBO' -%}
+<div class="relative" x-data="{open: false}" @click.outside="open = false">
+  <button type="button"
+          @click="open = !open"
+          class="btn-secondary btn-sm gap-1">
+    Actions
+    <svg class="w-3.5 h-3.5 transition-transform duration-150"
+         :class="open ? 'rotate-180' : ''"
+         fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+    </svg>
+  </button>
+
+  <div x-show="open" x-cloak
+       {{ dropdown_scale() }}
+       class="absolute right-0 top-full mt-1.5 z-50 min-w-[200px] bg-white border border-gray-200/80 rounded-xl shadow-xl overflow-hidden py-1.5">
+
+    {# ── Print / PDF ──────────────────────────────────────────────────── #}
+    <a href="/invoices/{{ inv_id }}/print" target="_blank"
+       @click="open = false"
+       class="ctx-item">
+      <svg class="w-4 h-4 shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.75">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/>
+      </svg>
+      Print
+    </a>
+    <a href="/invoices/{{ inv_id }}/pdf"
+       @click="open = false"
+       class="ctx-item">
+      <svg class="w-4 h-4 shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.75">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+      </svg>
+      Download PDF
+    </a>
+
+    {# ── Take Payment (OPEN / PARTIAL only) ──────────────────────────── #}
+    {% if is_open_par %}
+    <div class="ctx-sep"></div>
+    <button type="button"
+            @click="open = false; $dispatch('open-payment')"
+            class="ctx-item">
+      <svg class="w-4 h-4 shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.75">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"/>
+      </svg>
+      Take Payment
+    </button>
+    {% endif %}
+
+    {# ── After-Sale Service (non-VOID, non-DRAFT) ─────────────────────── #}
+    {% if not is_void %}
+    <div class="ctx-sep"></div>
+    <button type="button"
+            hx-get="/warranty/new?invoice_id={{ inv_id }}"
+            hx-target="#create-slide-content"
+            @click="open = false; $dispatch('open-create-slide', {title: 'New Warranty Claim'})"
+            class="ctx-item">
+      <svg class="w-4 h-4 shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.75">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+      </svg>
+      Start Warranty Claim
+    </button>
+    <button type="button"
+            hx-get="/returns/new?invoice_id={{ inv_id }}"
+            hx-target="#create-slide-content"
+            @click="open = false; $dispatch('open-create-slide', {title: 'New Return (RA)'})"
+            class="ctx-item">
+      <svg class="w-4 h-4 shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.75">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"/>
+      </svg>
+      Start Return (RA)
+    </button>
+    {% endif %}
+
+    {# ── QBO push / re-sync (non-VOID) ───────────────────────────────── #}
+    {% if not is_void %}
+    <div class="ctx-sep"></div>
+    <form method="post" action="/qbo/invoices/{{ inv_id }}/push" @click.stop>
+      <button type="submit"
+              @click="open = false"
+              class="ctx-item w-full"
+              {% if qbo_error and invoice.qbo_sync_error %}title="Last error: {{ invoice.qbo_sync_error }}"{% endif %}>
+        <svg class="w-4 h-4 shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.75">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+        {{ qbo_btn_label }}
+      </button>
+    </form>
+    {% endif %}
+
+    {# ── Void (OPEN / PARTIAL / PAID; guarded) ────────────────────────── #}
+    {% if is_open_par or is_paid %}
+    <div class="ctx-sep"></div>
+    {%- if has_payments or is_paid %}
+    {# Void blocked: payments exist (open/partial) or invoice is paid #}
+    {%- set _void_tip = ('Reverse the $' ~ '%.2f'|format(invoice.amount_paid) ~ ' in applied payments first, then void.') if (has_payments and is_open_par) else 'This invoice is paid. Reverse its payments first, then void.' -%}
+    <span class="ctx-item opacity-50 cursor-not-allowed select-none"
+          title="{{ _void_tip }}">
+      <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.75">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
+      </svg>
+      Void
+    </span>
+    {%- else %}
+    {# Void enabled: OPEN/PARTIAL with no applied payments #}
+    <button type="button"
+            @click="open = false; $dispatch('open-void')"
+            class="ctx-item-danger">
+      <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.75">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
+      </svg>
+      Void
+    </button>
+    {%- endif %}
+    {% endif %}
+
+  </div>{# /dropdown panel #}
+</div>{# /relative wrapper #}
+{%- endif %}{# /not editable #}
+{% endmacro %}

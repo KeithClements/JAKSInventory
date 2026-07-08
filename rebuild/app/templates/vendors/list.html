@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Vendors — JAKS Inventory{% endblock %}
+{% block title %}Vendors — Axle{% endblock %}
 {% block heading %}Vendors{% endblock %}
 
 {% block header_actions %}
@@ -12,53 +12,315 @@
 {% endblock %}
 
 {% block content %}
-<div class="card">
-  {% if vendors %}
+{# ── §7 macro library ──────────────────────────────────────────────────────── #}
+{% from "macros/list_behavior.html" import operational_list_script %}
+{% from "macros/bulk_toolbar.html"  import bulk_toolbar %}
+{% from "macros/chips.html"         import status_chip %}
+{% from "macros/empty_state.html"   import empty_state %}
+{% from "macros/preview_dock.html"  import preview_dock_shell %}
+{{ operational_list_script() }}
+
+{# ── Backend-contract guard: tab + q + counts arrive when backend adds them ──
+   Until then the template reads from query params and degrades to show-all.
+────────────────────────────────────────────────────────────────────────────── #}
+{% set active_tab = active_tab if active_tab is defined else request.query_params.get('tab', '') %}
+{% set q          = q          if q          is defined else request.query_params.get('q',   '') %}
+{% if counts is defined and counts %}
+  {% set _counts = counts %}
+{% else %}
+  {% set _counts = {'active': 0, 'inactive': 0, 'all': 0} %}
+{% endif %}
+
+{# ── §2B Payment-terms chip map (§4 color semantics) ─────────────────────── #}
+{% set terms_map = {
+  'cod':     ('bg-gray-100 text-gray-700',    'bg-gray-500',   'COD'),
+  'net_15':  ('bg-blue-50 text-blue-700',     'bg-blue-500',   'Net 15'),
+  'net_30':  ('bg-blue-50 text-blue-700',     'bg-blue-500',   'Net 30'),
+  'net_60':  ('bg-purple-50 text-purple-700', 'bg-purple-500', 'Net 60'),
+  'prepaid': ('bg-green-50 text-green-700',   'bg-green-500',  'Prepaid'),
+  'due_on_receipt': ('bg-gray-100 text-gray-700', 'bg-gray-500', 'DOR'),
+} %}
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   OPERATIONAL LIST WRAPPER — pb-52 reserves dock clearance
+   (preview dock deferred until Backend lands /vendors/preview/{id})
+══════════════════════════════════════════════════════════════════════════════ #}
+<div
+  class="space-y-4 pb-52"
+  x-data="operationalListData('vendor-preview-body', '/vendors/preview/', [{% for v in vendors %}{{ v.id }}{% if not loop.last %},{% endif %}{% endfor %}])"
+>
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   TOOLBAR — Axle §4: search (flex 1) + .fchip filter pills
+══════════════════════════════════════════════════════════════════════════════ #}
+{% set vendor_tabs = [
+  ('active',   'Active',   _counts.get('active',   0)),
+  ('inactive', 'Inactive', _counts.get('inactive', 0)),
+  ('all',      'All',      _counts.get('all',      0)),
+] %}
+
+<div class="flex flex-wrap items-center gap-2">
+
+  {# Search — flex 1 per Axle spec #}
+  <form method="get" class="flex items-center gap-2 flex-1 min-w-[260px]">
+    <input type="hidden" name="tab" value="{{ active_tab }}" />
+    <div class="relative flex-1">
+      <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+           fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
+      </svg>
+      <input name="q" value="{{ q }}" placeholder="Vendor name or code…"
+             class="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-md bg-white
+                    focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400
+                    placeholder:text-gray-400" />
+    </div>
+    {% if q %}
+    <a href="?tab={{ active_tab }}"
+       class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</a>
+    {% endif %}
+  </form>
+
+  {# Axle filter chips — bordered radius-14 pills, active = solid steel-900 #}
+  {% for slug, label, count in vendor_tabs %}
+  <a href="?tab={{ slug }}{% if q %}&q={{ q|urlencode }}{% endif %}"
+     class="fchip {% if active_tab == slug %}on{% endif %}">
+    {{ label }}<span class="ml-1.5 tabular-nums opacity-70">{{ count }}</span>
+  </a>
+  {% endfor %}
+
+</div>
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   BULK ACTION BAR — §7 Primitive 4
+══════════════════════════════════════════════════════════════════════════════ #}
+{% call bulk_toolbar() %}
+  <a href="/vendors/export.csv?tab={{ active_tab }}&q={{ q | urlencode }}"
+     class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">
+    Export CSV
+  </a>
+{% endcall %}
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   VENDOR TABLE
+══════════════════════════════════════════════════════════════════════════════ #}
+{% if vendors %}
+<div class="card overflow-hidden">
   <div class="overflow-x-auto">
-    <table class="tbl">
-      <thead class="tbl-head">
-        <tr>
-          <th class="tbl-th">Name</th>
-          <th class="tbl-th">Code</th>
-          <th class="tbl-th">Contact</th>
-          <th class="tbl-th">Phone</th>
-          <th class="tbl-th">Terms</th>
-          <th class="tbl-th-r">Active POs</th>
-          <th class="tbl-th"></th>
+    <table class="w-full min-w-[1020px]">
+
+      {# ── Table head ── Axle: th 10px Oswald uppercase steel-400 on #fafbfa #}
+      <thead>
+        <tr class="border-b border-gray-200" style="background:#fafbfa;">
+          {# Checkbox — also carries the health stripe #}
+          <th class="w-10 px-4 py-3 text-center" style="background:#fafbfa;">
+            <input type="checkbox"
+                   :checked="allSelected"
+                   @change="toggleAll()"
+                   aria-label="Select all vendors"
+                   class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
+          </th>
+          <th class="px-4 py-3 text-left label-mini">Vendor / Code</th>
+          <th class="px-4 py-3 text-left label-mini">Contact</th>
+          <th class="px-4 py-3 text-left label-mini hidden md:table-cell">Terms</th>
+          <th class="px-4 py-3 text-left label-mini">Open POs · Bills</th>
+          <th class="px-4 py-3 text-left label-mini hidden lg:table-cell">Credits</th>
+          <th class="px-4 py-3 text-left label-mini hidden lg:table-cell">Last PO</th>
+          <th class="px-4 py-3 text-right label-mini">Actions</th>
         </tr>
       </thead>
-      <tbody>
+
+      {# ── Table body ── #}
+      <tbody class="divide-y divide-gray-100">
         {% for v in vendors %}
-        {% set active_po_count = v.purchase_orders | selectattr('status', 'in', ['draft', 'verbal_order', 'sent', 'partial']) | list | length %}
-        <tr class="tbl-row">
-          <td class="tbl-td">
-            <a href="/vendors/{{ v.id }}" class="tbl-link text-sm text-gray-900">{{ v.name }}</a>
+
+        {# ── §2B Per-row values — read the router's aggregate maps, NEVER
+              v.purchase_orders / v.credits (each traversal lazy-loads the
+              vendor's full PO/credit history → N+1) ── #}
+        {% set open_po_count   = open_po_map.get(v.id, 0) %}
+        {% set open_bill_count = open_bill_map.get(v.id, 0) %}
+        {% set _credit         = credit_map.get(v.id) %}
+        {% set credit_count    = _credit['count'] if _credit else 0 %}
+        {% set credit_total    = _credit['amount'] if _credit else 0.0 %}
+        {% set last_po_date    = last_po_map.get(v.id) %}
+        {% set lead_days       = lead_time_map.get(v.id) %}
+
+        {# Left-edge health stripe (§4 semantics):
+           amber = open credits (money vendor owes us — attention needed)
+           blue  = active open POs (normal business activity)
+           transparent = no active relationship #}
+        {% if credit_count %}
+          {% set stripe = 'border-l-amber-400' %}
+        {% elif open_po_count %}
+          {% set stripe = 'border-l-blue-300' %}
+        {% else %}
+          {% set stripe = 'border-l-transparent' %}
+        {% endif %}
+
+        {# ── Row ── #}
+        <tr
+          @click="togglePreview({{ v.id }})"
+          :class="{
+            'ring-inset ring-1 ring-brand-300 bg-brand-50/40': previewId === {{ v.id }},
+            'bg-amber-50/20': {{ 'true' if credit_count else 'false' }} && previewId !== {{ v.id }},
+          }"
+          class="cursor-pointer hover:bg-gray-50/80 transition-colors group">
+
+          {# ── Checkbox — first <td> carries the left-edge health stripe ── #}
+          <td class="w-10 px-4 py-4 align-middle text-center border-l-4 {{ stripe }}"
+              @click.stop>
+            <input type="checkbox"
+                   :checked="isSelected({{ v.id }})"
+                   @change="toggleSelect({{ v.id }})"
+                   aria-label="Select {{ v.name }}"
+                   class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
           </td>
-          <td class="tbl-td font-mono text-xs text-gray-500">{{ v.vendor_code or '—' }}</td>
-          <td class="tbl-td text-gray-500">{{ v.contact_name or '—' }}</td>
-          <td class="tbl-td text-gray-500">{{ v.phone or '—' }}</td>
-          <td class="tbl-td text-xs text-gray-500">{{ v.payment_terms.replace('_', ' ').upper() if v.payment_terms else '—' }}</td>
-          <td class="tbl-td-r">
-            {% if active_po_count > 0 %}
-            <span class="badge-blue">{{ active_po_count }}</span>
-            {% else %}
-            <span class="text-gray-300">0</span>
+
+          {# ── §2B Vendor name + code ────────────────────────────────────── #}
+          <td class="px-4 py-4 align-middle">
+            <a href="/vendors/{{ v.id }}" @click.stop
+               class="text-sm font-semibold text-gray-900 hover:text-brand-700 hover:underline transition-colors leading-tight block">
+              {{ v.name }}
+            </a>
+            {% if v.vendor_code %}
+            <span class="font-mono pn mt-0.5 block" style="color:#7c838b;">{{ v.vendor_code }}</span>
+            {% endif %}
+            {% if v.account_number %}
+            <span class="text-xs text-gray-300">Acct: {{ v.account_number }}</span>
             {% endif %}
           </td>
-          <td class="tbl-td text-right" onclick="event.stopPropagation()">
-            <a href="/vendors/{{ v.id }}" class="text-xs link mr-3">Edit</a>
-            <a href="/purchase-orders/new?vendor_id={{ v.id }}" class="text-xs link">New PO</a>
+
+          {# ── §2B Primary contact — name + phone ───────────────────────── #}
+          <td class="px-4 py-4 align-middle">
+            {% if v.contact_name %}
+            <span class="text-sm text-gray-700">{{ v.contact_name }}</span>
+            {% endif %}
+            {% if v.phone %}
+            <div class="text-xs text-gray-400 mt-0.5">{{ v.phone }}</div>
+            {% endif %}
+            {% if not v.contact_name and not v.phone %}
+            <span class="text-gray-300 text-xs">—</span>
+            {% endif %}
           </td>
+
+          {# ── §2B Payment terms chip ────────────────────────────────────── #}
+          <td class="px-4 py-4 align-middle hidden md:table-cell">
+            {% if v.payment_terms %}
+              {% set tc = terms_map.get(v.payment_terms) %}
+              {% if tc %}{{ status_chip(tc[0], tc[1], tc[2]) }}
+              {% else %}
+              <span class="text-xs text-gray-500">{{ v.payment_terms.replace('_', ' ').title() }}</span>
+              {% endif %}
+            {% else %}
+            <span class="text-gray-300 text-xs">—</span>
+            {% endif %}
+          </td>
+
+          {# ── §2B Open POs · Open Bills ─────────────────────────────────── #}
+          <td class="px-4 py-4 align-middle">
+            <div class="flex items-center gap-2 flex-wrap">
+              {# Open POs #}
+              {% if open_po_count %}
+              <span class="chip-axle chip-ok"><span class="dot"></span>{{ open_po_count }} PO{{ 's' if open_po_count != 1 }}</span>
+              {% else %}
+              <span class="text-xs text-gray-300">0 POs</span>
+              {% endif %}
+              {# Open Bills (PENDING/DISCREPANCY vendor bills — awaiting match/approval) #}
+              {% if open_bill_count %}
+              <span class="chip-axle chip-low"><span class="dot"></span>{{ open_bill_count }} Bill{{ 's' if open_bill_count != 1 }}</span>
+              {% endif %}
+            </div>
+          </td>
+
+          {# ── §2B Credits pending ───────────────────────────────────────── #}
+          <td class="px-4 py-4 align-middle hidden lg:table-cell">
+            {% if credit_count %}
+            <span class="chip-axle chip-low"><span class="dot"></span>{{ credit_count }} credit{{ 's' if credit_count != 1 }}</span>
+            <div class="money mt-0.5" style="color:#b06511;">${{ '%.2f' % credit_total }}</div>
+            {% else %}
+            <span class="text-gray-300 text-xs">—</span>
+            {% endif %}
+          </td>
+
+          {# ── §2B Last PO date (max created_at from last_po_map) ───────── #}
+          <td class="px-4 py-4 align-middle hidden lg:table-cell">
+            {% if last_po_date %}
+              {% set days_ago = (today - last_po_date.date()).days if today is defined else none %}
+              {% if days_ago is not none %}
+                {% if days_ago == 0 %}
+                <span class="text-xs text-gray-600">Today</span>
+                {% elif days_ago == 1 %}
+                <span class="text-xs text-gray-600">Yesterday</span>
+                {% elif days_ago < 30 %}
+                <span class="text-xs text-gray-600">{{ days_ago }}d ago</span>
+                {% else %}
+                <span class="text-xs text-gray-600">{{ last_po_date.strftime('%m/%d/%y') }}</span>
+                {% endif %}
+              {% else %}
+              <span class="text-xs text-gray-600">{{ last_po_date.strftime('%m/%d/%y') }}</span>
+              {% endif %}
+            {% else %}
+            <span class="text-gray-300 text-xs">—</span>
+            {% endif %}
+            {% if lead_days is not none %}
+            <div class="text-[10px] mt-0.5" style="color:#a9afb6;" title="Avg vendor lead time">~{{ lead_days }}d lead</div>
+            {% endif %}
+          </td>
+
+          {# ── Always-visible actions — Edit + New PO ────────────────────── #}
+          <td class="px-4 py-4 align-middle text-right" @click.stop>
+            <div class="flex items-center justify-end gap-1.5">
+              <a href="/vendors/{{ v.id }}"
+                 class="px-2.5 py-1.5 text-xs font-medium text-gray-600 bg-white hover:bg-gray-50 border border-gray-200 rounded-lg transition-colors whitespace-nowrap
+                        focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-1"
+                 aria-label="Edit {{ v.name }}">
+                Edit
+              </a>
+              <a href="/purchase-orders/new?vendor_id={{ v.id }}"
+                 class="px-2.5 py-1.5 text-xs font-semibold text-white bg-brand-700 hover:bg-brand-600 rounded-lg transition-colors whitespace-nowrap
+                        focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-1"
+                 aria-label="New PO for {{ v.name }}">
+                New PO
+              </a>
+            </div>
+          </td>
+
         </tr>
         {% endfor %}
       </tbody>
+
     </table>
   </div>
-  {% else %}
-  <div class="tbl-empty">
-    No vendors yet.
-    <a href="/vendors/new" class="block mt-2 link">Add your first vendor →</a>
+
+  {# ── Table footer — Axle .pgr: mono 11px on #fafbfa ── #}
+  <div class="px-5 py-3 border-t border-gray-100 flex items-center justify-between"
+       style="background:#fafbfa; font-family:'IBM Plex Mono',monospace; font-size:11px; color:#7c838b;">
+    <span>
+      {{ vendors | length }} vendor{{ 's' if vendors | length != 1 else '' }}
+      {% if active_tab != 'all' or q %} · filtered{% endif %}
+    </span>
+    <span x-show="selectedCount > 0" x-cloak class="text-brand-700 font-medium">
+      <span x-text="selectedCount"></span> selected
+    </span>
   </div>
-  {% endif %}
 </div>
+
+{% else %}
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   EMPTY STATE — §7 Primitive 6
+══════════════════════════════════════════════════════════════════════════════ #}
+{{ empty_state(
+  'M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4',
+  q, active_tab, 'No vendors yet',
+  'Add your first vendor to start creating purchase orders.',
+  '<a href="/vendors/new" class="btn-primary btn-sm">Add Vendor →</a>'
+) }}
+
+{% endif %}
+
+{# ── Preview dock — §7 Primitive 5 ───────────────────────────────────────── #}
+{{ preview_dock_shell('Vendor Preview', 'vendor-preview-body') }}
+
+</div>{# end operationalListData wrapper #}
 {% endblock %}

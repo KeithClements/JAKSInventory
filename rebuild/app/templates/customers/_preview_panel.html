@@ -4,10 +4,14 @@
      open_invoice_count : int   (open/draft/partial invoices for this customer)
      open_quote_count   : int   (active quotes for this customer)
      last_sale          : str | None   (formatted "Mon DD" or None)
+     last_contact       : datetime | None   (#5 — CustomerService.last_contacted; formatted in-template)
    All aggregates are read with |default(0) so the panel still renders if the
    route passes only `c`.
 ─────────────────────────────────────────────────────────────────────────── #}
 {% from "macros/chips.html" import status_chip %}
+{% import "macros/customer_flags.html" as flagmacro %}
+{% import "macros/intelligence.html" as intel %}
+{% import "macros/credit_status.html" as creditmacro %}
 
 {# Payment-terms chip color map (mirrors list.html / §4 semantics) #}
 {% set terms_chip = {
@@ -24,6 +28,9 @@
 {% set q_count = open_quote_count | default(0) %}
 
 <div class="px-6 py-4">
+  {# P2-D2 flag chips — full-width warning row (operational flags + tax-exempt) #}
+  {% set _pflags = flags | default([]) %}
+  {% if _pflags %}<div class="mb-3">{{ flagmacro.customer_flags(_pflags) }}</div>{% endif %}
   <div class="grid grid-cols-4 gap-6">
 
     {# ── Identity ── #}
@@ -97,6 +104,11 @@
           <span class="text-sm font-bold text-brand-700 tabular-nums">${{ "%.2f"|format(c.credit_balance) }}</span>
           {% else %}<span class="text-sm text-gray-400">—</span>{% endif %}
         </div>
+        {# Credit posture (§4.5) — available credit / over-limit / hold #}
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Credit</span>
+          {{ creditmacro.credit_badge(credit_status | default({})) }}
+        </div>
       </div>
     </div>
 
@@ -142,6 +154,13 @@
           <span class="text-xs text-gray-500">Last Sale</span>
           <span class="text-sm text-gray-700 tabular-nums">{{ last_sale if last_sale else '—' }}</span>
         </div>
+        {# #5 — last contacted (ctx key `last_contact` = CustomerService.last_contacted → datetime|None) #}
+        {% if last_contact %}
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Last Contacted</span>
+          <span class="text-sm text-gray-700 tabular-nums">{{ last_contact.strftime('%b %d, %Y') }}</span>
+        </div>
+        {% endif %}
       </div>
     </div>
 
@@ -196,4 +215,10 @@
     </div>
 
   </div>{# end grid #}
+
+  {# Customer Intelligence — condensed relationship metrics (§4.4 / P2-Q1) #}
+  <div class="mt-4 pt-4 border-t border-gray-100">
+    <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Relationship</p>
+    {{ intel.customer_intelligence_panel(metrics | default({}), cols=4) }}
+  </div>
 </div>

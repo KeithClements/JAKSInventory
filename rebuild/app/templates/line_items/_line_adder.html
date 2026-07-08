@@ -1,0 +1,388 @@
+{#
+  line_items/_line_adder.html
+  ===========================
+  Shared ONE-CLICK line-item builder — the single source of truth for adding a
+  part across Quote / SO / Invoice / PO.  Architect ruling §8H (JAKS_UI_Change_Plan.md)
+  + Backend data contract (LINE_ITEM_BUILDER_CONTRACT.md §3).
+
+  Interaction (RULED, §8H): debounced search → CLICK a result → immediately
+  POST {product_id, qty} (qty from the stepper, default 1) → swap the returned
+  lines partial → reset the box.  No staging step.  Money/qty/discount are edited
+  INLINE on the row afterward; the backend auto-fills description/price/cost from
+  the product (Contract §2), so an immediate add sends only product_id + qty.
+
+  This is an {% include %} partial, NOT a macros/ macro — §7 forbids macro
+  extraction until 3 screens run it identically (Quote/SO/Invoice will prove it;
+  PO is the cost+core config-variant).  Promote to macros/line_adder.html only
+  after the three-screen gate.
+
+  Visual contract is fixed by §8H — copied verbatim across all four docs; `mode`
+  and `show_discount` only toggle field visibility, never layout.
+
+  ── Required config: set a dict named `la` before the include ──────────────────
+    {% set la = {
+         'doc_type':      'quote',                     # labels/aria only
+         'doc_id':        quote.id,                     # int (child-mode scoping)
+         'search_url':    '/line-items/product-search', # canonical search (Contract §1)
+         'post_url':      '/quotes/' ~ quote.id ~ '/lines',
+         'mode':          'sell',                       # 'sell' (Quote/SO/Invoice) | 'cost' (PO)
+         'show_discount': true,                         # reserved; rows edit discount inline
+         'target':        '#quote-lines-tbody',         # CSS selector of the lines region
+         'swap':          'beforeend',                  # htmx swap for `target`
+         'child_mode':    true,                         # Quote only — sub-line insertion
+         'new_product':   true,                         # show the + New Product shortcut
+         'freight':       true,                         # show the + Freight shortcut (sell docs only — NOT PO)
+       } %}
+    {% include "line_items/_line_adder.html" %}
+#}
+
+<div x-data='lineAdder({
+       docType: "{{ la.doc_type }}",
+       docId: {{ la.doc_id }},
+       searchUrl: "{{ la.search_url }}",
+       postUrl: "{{ la.post_url }}",
+       mode: "{{ la.mode }}",
+       showDiscount: {{ "true" if la.show_discount else "false" }},
+       target: "{{ la.target }}",
+       swap: "{{ la.swap }}",
+       childMode: {{ "true" if la.child_mode else "false" }}
+     })'
+     @click.away="results = []"
+     {% if la.child_mode %}@start-child-add.window="setChildMode($event.detail)"{% endif %}
+     @record-created.window="if ($event.detail.type === 'product') addCreatedProduct($event.detail)"
+     class="bg-white rounded-xl border border-gray-200 shadow-sm mb-3 px-3 py-3">
+
+  {% if la.child_mode %}
+  {# ── Child-mode banner (Quote) — adding an upgrade/optional/warranty sub-line ── #}
+  <div x-show="inChildMode" x-cloak
+       class="flex items-center gap-2 mb-2 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700">
+    <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 9l3 3-3 3M6 12h10"/>
+    </svg>
+    <span>Adding <span class="font-semibold" x-text="childModeLabel"></span> to line <span class="font-mono" x-text="'#' + parentLineId"></span></span>
+    <button type="button" @click="clearChildMode()" class="ml-auto text-amber-400 hover:text-amber-600" aria-label="Cancel sub-line">✕</button>
+  </div>
+  {% endif %}
+
+  {# ── Search row: icon-prefixed input + qty stepper (+ New Product) ─────────── #}
+  <div class="flex items-center gap-2">
+    <div class="relative flex-1">
+      <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+           fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
+      </svg>
+      <input
+        type="text"
+        id="line-search-input"
+        x-ref="searchInput"
+        x-model="q"
+        @input.debounce.250ms="doSearch()"
+        @keydown.escape="reset()"
+        @keydown.arrow-down.prevent="focusResult(0)"
+        @keydown.enter.prevent="onEnter()"
+        placeholder="Search parts — Part #, OEM #, cross-ref, description (or type free text for a misc line)"
+        autocomplete="off"
+        class="w-full pl-10 pr-10 py-2.5 text-sm rounded-xl border border-gray-200
+               focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400 bg-white" />
+      {# Spinner #}
+      <div x-show="loading" x-cloak class="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
+        <svg class="w-3.5 h-3.5 animate-spin text-gray-400" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+        </svg>
+      </div>
+
+      {# ── Results dropdown (§8H visual contract — verbatim) ──────────────────── #}
+      <div x-show="results.length > 0" x-cloak
+           class="absolute left-0 top-full z-40 mt-1 w-full bg-white border border-gray-200 rounded-xl shadow-lg
+                  max-h-72 overflow-y-auto divide-y divide-gray-100">
+        <template x-for="(r, idx) in results" :key="r.product_id">
+          <button
+            type="button"
+            :id="'la-result-' + idx"
+            @click="selectProduct(r)"
+            @keydown.enter.prevent="selectProduct(r)"
+            @keydown.arrow-down.prevent="focusResult(idx + 1)"
+            @keydown.arrow-up.prevent="idx > 0 ? focusResult(idx - 1) : $refs.searchInput.focus()"
+            class="flex w-full items-start gap-3 px-3 py-2.5 text-left
+                   hover:bg-gray-50/80 transition-colors
+                   focus:bg-brand-50/40 focus:outline-none ring-inset focus:ring-1 focus:ring-brand-300">
+
+            {# match_type chip — §8H: part_number→gray, cross_ref→blue, vendor_sku→purple,
+               competitor→amber, description→gray; §21: barcode(SCAN)→green, engine_app(ENGINE)→blue #}
+            <span class="shrink-0 badge mt-0.5"
+                  :class="{
+                    'badge-gray':   r.match_type === 'part_number' || r.match_type === 'description',
+                    'badge-blue':   r.match_type === 'cross_ref' || r.match_type === 'engine_app',
+                    'badge-purple': r.match_type === 'vendor_sku',
+                    'badge-amber':  r.match_type === 'competitor',
+                    'badge-green':  r.match_type === 'barcode'
+                  }"
+                  x-text="matchLabel(r)"></span>
+
+            {# ── Two-row result so the FULL SKU always shows (parts run to ~29 chars —
+               the old fixed-width single line truncated nearly every SKU) and the
+               dropdown's width carries the metadata the JSON already returns. ── #}
+            <div class="flex-1 min-w-0">
+              {# line 1 — full SKU (never truncated) + title #}
+              <div class="flex items-baseline gap-2">
+                <span class="font-mono text-xs font-bold text-blue-700 shrink-0 whitespace-nowrap"
+                      x-text="r.sku || r.part_number"></span>
+                <span class="flex-1 min-w-0 truncate text-sm text-gray-800"
+                      x-text="r.title || r.description"></span>
+              </div>
+              {# line 2 — metadata (existing tokens): vendor=purple, OEM/cross-ref + last-sold=gray #}
+              <div class="mt-0.5 flex items-center gap-2 text-[11px] leading-tight">
+                <span x-show="r.vendor_name" x-cloak
+                      class="max-w-[14rem] truncate font-medium text-purple-600"
+                      x-text="r.vendor_name"></span>
+                <span x-show="r.cross_ref_number" x-cloak class="text-gray-400"
+                      x-text="(r.match_type === 'competitor' ? 'COMP ' : 'OEM ') + (r.cross_ref_number || '')"></span>
+                <span x-show="r.last_sold_price" x-cloak class="tabular-nums text-gray-400"
+                      x-text="r.last_sold_price ? ('last sold $' + r.last_sold_price.toFixed(2)) : ''"></span>
+              </div>
+            </div>
+
+            {# ── Right rail — price over availability/core, mirroring the two lines. ── #}
+            <div class="shrink-0 flex flex-col items-end gap-1 pl-2">
+              {# price — sell (Quote/SO/Invoice) or cost (PO) per mode #}
+              <span class="text-xs tabular-nums font-semibold text-gray-700" x-text="priceLabel(r)"></span>
+              <div class="flex items-center gap-1.5">
+                {# qty_available — red at 0 (out of stock), gray otherwise #}
+                <span class="text-xs tabular-nums font-medium"
+                      :class="avail(r) <= 0 ? 'text-red-500' : 'text-gray-400'"
+                      x-text="avail(r) <= 0 ? 'Out' : avail(r) + ' ea'"></span>
+                {# core charge → orange (palette: orange = core) #}
+                <span x-show="r.has_core" x-cloak
+                      class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap bg-orange-100 text-orange-700"
+                      x-text="coreLabel(r)"></span>
+              </div>
+            </div>
+          </button>
+        </template>
+
+        {# 'Showing N of M' — the server caps the list (LIMIT); when more
+           products match (X-Total-Matches header), say so instead of letting
+           the counter assume the dropdown is the complete match set. #}
+        <div x-show="total > results.length" x-cloak
+             class="px-3 py-1.5 text-[11px] text-gray-400 bg-gray-50">
+          Showing <span x-text="results.length"></span> of <span x-text="total"></span> matches — keep typing to narrow
+        </div>
+      </div>
+    </div>
+
+    {# Qty stepper — small inline numeric, default 1 #}
+    <div class="flex items-center gap-1 shrink-0">
+      <label class="text-xs text-gray-500 font-medium">Qty</label>
+      <input
+        type="number"
+        x-ref="qtyInput"
+        x-model.number="qty"
+        min="1"
+        @keydown.enter.prevent="$refs.searchInput.focus()"
+        class="w-14 text-right rounded-lg border border-gray-200 px-2 py-1.5 text-sm
+               focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400" />
+    </div>
+
+    {% if la.freight %}
+    {# + Freight — one-click freight/delivery line (line_type='freight'): non-taxable +
+       never discounted (constants.FREIGHT_LINE_TYPES). Amount is typed inline on the
+       row afterward (§8H: add immediately, edit money inline). Neutral/gray ghost so it
+       stays secondary to + New Product. Carries forward through quote→SO→invoice. #}
+    <button
+      type="button"
+      @click="addFreight()"
+      class="shrink-0 px-3 py-2 text-xs font-medium text-gray-600 border border-gray-200
+             rounded-lg bg-white hover:bg-gray-50 transition-colors whitespace-nowrap"
+      title="Add a freight / delivery charge — type the amount on the row">
+      + Freight
+    </button>
+    {% endif %}
+
+    {% if la.new_product %}
+    {# + New Product — quick-create slide-over; created product is added immediately #}
+    <button
+      type="button"
+      hx-get="/products/quick-create-form{% if la.vendor_id %}?vendor_id={{ la.vendor_id }}&doc_type={{ la.doc_type }}{% endif %}"
+      hx-target="#create-slide-content"
+      hx-swap="innerHTML"
+      @click="$dispatch('open-create-slide', { title: 'New Product' })"
+      class="shrink-0 px-3 py-2 text-xs font-medium text-brand-700 border border-brand-200
+             rounded-lg bg-brand-50 hover:bg-brand-100 transition-colors whitespace-nowrap"
+      title="Create a new product record and add it to this document">
+      + New Product
+    </button>
+    {% endif %}
+  </div>
+
+  {# Misc-line affordance — free text with no product match becomes a misc line #}
+  <div x-show="q.trim().length >= 2 && results.length === 0 && !loading" x-cloak class="mt-2 pl-1">
+    <button type="button" @click="addMisc()"
+            class="inline-flex items-center gap-1 text-xs font-medium text-brand-700 hover:text-brand-800">
+      <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+      </svg>
+      Add “<span x-text="q.trim()"></span>” as a misc line
+    </button>
+  </div>
+</div>
+
+{# ── Co-located JS: shared lineAdder(config) Alpine factory (§8H). ──────────────
+   Idempotent (`|| function`): only one workspace renders per page, so it is
+   defined exactly once; the guard just protects against an accidental double
+   include on a single page. #}
+<script>
+window.lineAdder = window.lineAdder || function (config) {
+  return {
+    cfg: config,
+    q: '',
+    results: [],
+    total: 0,          // X-Total-Matches — DISTINCT products matching, may exceed results.length
+    loading: false,
+    qty: 1,
+
+    // ── Child-mode (Quote only): insert a sub-line under a parent line ──────────
+    inChildMode: false,
+    parentLineId: null,
+    childLineRole: 'primary',
+    childModeLabel: '',
+
+    // Debounced canonical search → JSON results.
+    async doSearch() {
+      const term = this.q.trim();
+      if (term.length < 2) { this.results = []; this.total = 0; return; }
+      this.loading = true;
+      try {
+        const resp = await fetch(this.cfg.searchUrl + '?q=' + encodeURIComponent(term));
+        this.results = resp.ok ? await resp.json() : [];
+        // Total DISTINCT matches (may exceed the LIMIT-capped list) → the
+        // "showing N of M" hint. Falls back to the list length when absent.
+        this.total = resp.ok
+          ? (parseInt(resp.headers.get('X-Total-Matches') || '', 10) || this.results.length)
+          : 0;
+      } catch (e) {
+        this.results = [];
+        this.total = 0;
+      } finally {
+        this.loading = false;
+      }
+      // §21 — scan→auto-add: a complete barcode/UPC scan resolves to exactly ONE
+      // product by an exact barcode match (the search's barcode step is == not
+      // LIKE), so add it straight away — no click. Guarded to the SOLE-result
+      // case so a short barcode that collides with SKUs still shows the list.
+      if (this.results.length === 1 && this.results[0].match_type === 'barcode') {
+        this.selectProduct(this.results[0]);   // adds the line + reset() for the next scan
+      }
+    },
+
+    focusResult(idx) {
+      const el = document.getElementById('la-result-' + idx);
+      if (el) el.focus();
+    },
+
+    // Enter fast-path (§8H fallback): add the top result, or a misc line if none.
+    onEnter() {
+      if (this.results.length > 0) { this.selectProduct(this.results[0]); }
+      else if (this.q.trim().length >= 2) { this.addMisc(); }
+    },
+
+    // ONE-CLICK immediate add (§8H / Contract §3.2): POST product_id + qty only;
+    // the service auto-fills description/price/cost from the product.
+    selectProduct(r) {
+      this._post({ product_id: r.product_id, qty: this.qty || 1 });
+    },
+
+    // Free-text / misc line (Contract §2: product_id omitted → send description).
+    addMisc() {
+      const desc = this.q.trim();
+      if (desc.length < 2) return;
+      this._post({ description: desc, qty: this.qty || 1, line_type: 'misc' });
+    },
+
+    // Freight / delivery line (line_type='freight'): the service forces discount=0 and
+    // defaults it non-taxable; it lands in the "Freight / Delivery" totals bucket. Amount
+    // is left at $0 and typed inline on the row (§8H). Always top-level — clear any active
+    // child-mode first so freight never nests under a parent line.
+    addFreight() {
+      this.clearChildMode();
+      this._post({ description: 'Freight', qty: 1, line_type: 'freight' });
+    },
+
+    // After the quick-create slide-over saves a product → add it immediately.
+    addCreatedProduct(detail) {
+      this._post({ product_id: detail.id, qty: this.qty || 1 });
+    },
+
+    // Shared POST + swap. Child-mode reroutes to the parent's chips row (Quote).
+    _post(values) {
+      let target = this.cfg.target;
+      let swap = this.cfg.swap;
+      if (this.inChildMode && this.parentLineId) {
+        values.parent_line_id = this.parentLineId;
+        values.line_role = this.childLineRole;
+        target = '#chips-' + this.parentLineId;
+        swap = 'beforebegin';
+      }
+      this._removeEmptyState();
+      // Server may override target/swap via HX-Retarget/HX-Reswap (e.g. Quote core
+      // child auto-add returns the whole tbody) — response headers win.
+      htmx.ajax('POST', this.cfg.postUrl, { values: values, target: target, swap: swap });
+      this.reset();
+    },
+
+    // ── Child-mode controls (driven by the row context menu's start-child-add) ──
+    setChildMode(detail) {
+      this.inChildMode = true;
+      this.parentLineId = detail.parentLineId;
+      this.childLineRole = detail.lineRole || 'upgrade_option';
+      this.childModeLabel = detail.label || 'sub-line';
+      this.$nextTick(() => { this.$refs.searchInput.focus(); this.$refs.searchInput.select(); });
+    },
+    clearChildMode() {
+      this.inChildMode = false;
+      this.parentLineId = null;
+      this.childLineRole = 'primary';
+      this.childModeLabel = '';
+    },
+
+    _removeEmptyState() {
+      const empty = document.getElementById('empty-state-row');
+      if (empty) empty.remove();
+    },
+
+    reset() {
+      this.q = '';
+      this.results = [];
+      this.total = 0;
+      this.qty = 1;
+      this.clearChildMode();
+      this.$nextTick(() => { if (this.$refs.searchInput) this.$refs.searchInput.focus(); });
+    },
+
+    // ── Display helpers ─────────────────────────────────────────────────────────
+    avail(r) {
+      const v = (r.qty_available != null) ? r.qty_available : r.qty_on_hand;
+      return Number(v) || 0;
+    },
+    matchLabel(r) {
+      // Server-emitted label wins (line_items.MATCH_TYPE_LABELS); map kept as
+      // a fallback for any caller not using the unified serializer.
+      return r.match_label
+        || ({ part_number: 'PART', barcode: 'SCAN', cross_ref: 'OEM', vendor_sku: 'VEND',
+              competitor: 'COMP', engine_app: 'ENGINE', description: 'DESC' })[r.match_type]
+        || 'PART';
+    },
+    priceLabel(r) {
+      const v = this.cfg.mode === 'cost'
+        ? ((r.unit_cost != null) ? r.unit_cost : r.current_cost)
+        : ((r.suggested_sell != null) ? r.suggested_sell : 0);
+      return '$' + (Number(v) || 0).toFixed(2);
+    },
+    coreLabel(r) {
+      const c = this.cfg.mode === 'cost' ? r.vendor_core_charge : r.customer_core_charge;
+      return 'core $' + (Number(c) || 0).toFixed(2);
+    },
+  };
+};
+</script>

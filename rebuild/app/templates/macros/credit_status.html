@@ -1,0 +1,54 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   Credit Status — Phase-2 Primitive 10  (PHASE_2_PLAN.md §4.5 · P2-D4/D5)
+   Governance: JAKS_UI_Change_Plan.md §8M
+
+   credit_badge(cs, compact=False) → glance credit posture (list / preview / header)
+   credit_warn(cs)                 → non-blocking warn banner (Quote / SO / Invoice)
+
+   Both consume the dict returned by Backend's
+   `CustomerService.credit_status(customer, prospective_amount=0.0)` (P2-D4) — the
+   single credit contract. WARN-ONLY: nothing here ever blocks (P2-D4). Keys read:
+     on_hold (bool) · over_limit (bool) · available_credit (float|None) · warn (bool)
+     · message (str)
+   Pure presentation + empty-safe: `cs=None` (or {}) renders harmlessly, so a screen
+   can drop these in before the credit context is wired. All colours §4-permitted.
+
+   Use credit_warn() on a workspace where a prospective_amount is known (the doc
+   total) so the message reads "this order exceeds available credit by $X". Use
+   credit_badge() where only the customer's standing posture is shown.
+═════════════════════════════════════════════════════════════════════════════ #}
+
+{% macro credit_badge(cs=None, compact=False) %}
+{%- set cs = cs or {} -%}
+{%- set avail = cs.get('available_credit') -%}
+{%- if cs.get('on_hold') -%}
+{%-   set cls, label, tip = 'bg-red-100 text-red-700', 'Credit Hold', (cs.get('message') or 'Customer is on credit hold.') -%}
+{%- elif cs.get('over_limit') -%}
+{%-   set cls, label, tip = 'bg-amber-100 text-amber-700', 'Over Limit', (cs.get('message') or 'Exceeds available credit.') -%}
+{%- elif avail is not none -%}
+{%-   set cls, label, tip = 'bg-green-50 text-green-700', ('$' ~ '%.2f'|format(avail) ~ ' credit'), 'Available credit' -%}
+{%- else -%}
+{%-   set cls, label, tip = 'bg-gray-100 text-gray-600', 'No Limit', 'No credit limit set' -%}
+{%- endif -%}
+<span class="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold {{ cls }}"
+      title="{{ tip }}"{% if compact %} aria-label="{{ label }}"{% endif %}>
+  <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+  </svg>
+  {%- if not compact %}<span>{{ label }}</span>{% endif -%}
+</span>
+{% endmacro %}
+
+
+{% macro credit_warn(cs=None) %}
+{%- set cs = cs or {} -%}
+{%- if cs.get('warn') -%}
+{%- set danger = cs.get('on_hold') -%}
+<div class="flex items-start gap-2 rounded-lg px-3 py-2 text-xs {{ 'bg-red-50 border border-red-200 text-red-700' if danger else 'bg-amber-50 border border-amber-200 text-amber-800' }}">
+  <svg class="w-4 h-4 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+  </svg>
+  <span>{{ cs.get('message') or 'Credit warning.' }}</span>
+</div>
+{%- endif -%}
+{% endmacro %}

@@ -21,29 +21,11 @@ from datetime import date, datetime, timedelta
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-# ── Patch BEFORE any app.* imports ──────────────────────────────────────────
 import app.database as _appdb
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
-# StaticPool forces every Session to reuse ONE shared in-memory connection,
-# so that Base.metadata.create_all() and the test + route sessions all see
-# the same tables. Without StaticPool, each new connection would start with
-# a fresh empty database.
-_TEST_ENGINE = create_engine(
-    "sqlite:///:memory:",
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
-_appdb.engine = _TEST_ENGINE
-_appdb.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_TEST_ENGINE)
+from tests.conftest import activate, fresh_engine
 
 # Register all models and create tables
 from app.models import __all_models__  # noqa: F401
-from app.database import Base
-
-Base.metadata.create_all(bind=_TEST_ENGINE)
 
 # ── App imports (safe after patch) ────────────────────────────────────────────
 import pytest
@@ -56,7 +38,6 @@ from app.constants import (
     VendorReturnLineOutcome,
     VendorReturnStatus,
 )
-from app.deps import get_db
 from app.models.customer import Customer
 from app.models.invoice import Invoice, InvoiceLine
 from app.models.product import Product
@@ -67,22 +48,7 @@ from app.models.vendor_return import VendorReturn
 from app.services.report_service import ReportService
 from app.services.vendor_return_service import VendorReturnService
 
-# ── FastAPI app + dependency override ────────────────────────────────────────
-# Import app AFTER patching _appdb so startup uses the test engine.
-# Then override get_db so route handlers also use the test session factory.
 from app.main import app as _fastapi_app
-
-
-def _override_get_db():
-    """Yield a session from the in-memory test engine instead of the real DB."""
-    session = _appdb.SessionLocal()
-    try:
-        yield session
-    finally:
-        session.close()
-
-
-_fastapi_app.dependency_overrides[get_db] = _override_get_db
 
 _client = TestClient(_fastapi_app, raise_server_exceptions=False)
 
@@ -93,39 +59,18 @@ _UID = 1  # stub current_user_id (admin user id=1)
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
-@pytest.fixture(autouse=True, scope="module")
-def _activate_db():
-    """Re-point app DB globals + get_db at THIS module's engine at run time,
-    so the suite is immune to import order. See tests/conftest.py."""
-    from tests.conftest import activate
-    activate(_TEST_ENGINE)
-    yield
-
-
 @pytest.fixture()
-def db(_activate_db):
-    """Session backed by the module-level in-memory engine."""
-    session = _appdb.SessionLocal()
-    yield session
-    session.close()
-
-
-@pytest.fixture(autouse=True, scope="module")
-def _seed_admin_user(_activate_db):
-    """Seed the admin user (id=1) once per module — required for permission checks."""
-    session = _appdb.SessionLocal()
+def db():
+    activate(fresh_engine())
+    s = _appdb.SessionLocal()
+    if not s.query(User).filter(User.id == 1).first():
+        s.add(User(id=1, name="Test Admin", username="admin_s3",
+                   password_hash="[test-no-auth]", role=UserRole.ADMIN))
+        s.commit()
     try:
-        if not session.query(User).filter(User.id == 1).first():
-            session.add(User(
-                id=1,
-                name="Test Admin",
-                username="admin_s3",
-                password_hash="[test-no-auth]",
-                role=UserRole.ADMIN,
-            ))
-            session.commit()
+        yield s
     finally:
-        session.close()
+        s.close()
 
 
 # ── Data builders ─────────────────────────────────────────────────────────────
@@ -1024,3 +969,142 @@ class TestCustomerPreviewRoute:
         db.commit()
         resp = _client.get(f"/customers/preview/{c.id}")
         assert resp.status_code in (200, 404)  # 200 if found, not 422/500
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PO cancel — qty_on_order reversal (SENT vs PARTIAL)
+#   Regression: cancelling a PARTIAL PO must reverse only the *outstanding*
+#   (unreceived) qty, not the full qty_ordered, or phantom on-order inventory
+#   leaks and inflates qty_available / suppresses reorders.
+# ═══════════════════════════════════════════════════════════════════════════════
+from app.constants import POStatus
+
+
+def _make_sent_po(db, *, qty_ordered: int, qty_on_hand: int = 0):
+    """
+    Create → add one product line → send a PO through the real service flow.
+    After send_to_vendor, product.qty_on_order == qty_ordered.
+    Returns (svc, po, po_line, product).
+    """
+    vendor = _make_vendor(db)
+    product = _make_product(db, qty_on_hand=qty_on_hand)
+    db.commit()
+
+    svc = POService(db, current_user_id=1)
+    po = svc.create_po(vendor.id, data={})
+    line = svc.add_line(po.id, product.id, {"qty_ordered": qty_ordered, "unit_cost": 10.0})
+    svc.send_to_vendor(po.id)
+    db.expire_all()
+
+    product = db.query(Product).filter(Product.id == product.id).first()
+    assert product.qty_on_order == qty_ordered  # baseline established
+    return svc, po, db.query(POLine).filter(POLine.id == line.id).first(), product
+
+
+class TestPOCancelOnOrderReversal:
+    """cancel() must reverse the correct on-order qty for SENT and PARTIAL POs."""
+
+    def test_cancel_sent_reverses_full_ordered(self, db):
+        """A SENT PO (nothing received) reverses the full qty_ordered."""
+        svc, po, line, product = _make_sent_po(db, qty_ordered=10)
+
+        svc.cancel(po.id)
+        db.expire_all()
+
+        product = db.query(Product).filter(Product.id == product.id).first()
+        assert product.qty_on_order == 0
+        assert db.query(PurchaseOrder).filter(PurchaseOrder.id == po.id).first().status == POStatus.CANCELLED
+
+    def test_cancel_partial_reverses_only_outstanding(self, db):
+        """
+        REGRESSION: a PARTIAL PO (some goods received) must reverse only the
+        unreceived remainder, not the full qty_ordered.
+
+        Order 10, receive 4 → PARTIAL, qty_on_order should be 6 (10 - 4 received).
+        Cancelling must drop on-order by the 6 outstanding → 0, NOT by 10.
+        """
+        svc, po, line, product = _make_sent_po(db, qty_ordered=10)
+
+        # Receive 4 of the 10 → PO goes PARTIAL; receipt already dropped on-order by 4.
+        svc.create_receipt(po.vendor_id, {line.id: 4}, data={})
+        db.expire_all()
+        po = db.query(PurchaseOrder).filter(PurchaseOrder.id == po.id).first()
+        product = db.query(Product).filter(Product.id == product.id).first()
+        assert po.status == POStatus.PARTIAL
+        outstanding = 10 - 4
+        assert product.qty_on_order == outstanding  # 6 still on order
+
+        on_order_before = product.qty_on_order
+        svc.cancel(po.id)
+        db.expire_all()
+
+        product = db.query(Product).filter(Product.id == product.id).first()
+        # The fix: subtract only the 6 outstanding, flooring at 0 → 0.
+        # The bug would subtract the full 10 (no-op past floor here, but the
+        # invariant we assert is "original - outstanding", not "original - ordered").
+        assert product.qty_on_order == on_order_before - outstanding == 0
+        assert db.query(PurchaseOrder).filter(PurchaseOrder.id == po.id).first().status == POStatus.CANCELLED
+
+    def test_cancel_partial_does_not_underflow_other_stock(self, db):
+        """
+        With unrelated on-order stock present, a PARTIAL cancel removes exactly
+        the outstanding qty — proving it isn't reversing the full qty_ordered.
+
+        Two POs for the same product: PO-A orders 10, PO-B orders 5 (both sent →
+        on_order = 15). Receive 4 on PO-A (on_order = 11, PO-A PARTIAL). Cancelling
+        PO-A must leave on_order = 11 - 6 = 5 (PO-B's untouched order), not 11 - 10 = 1.
+        """
+        vendor = _make_vendor(db)
+        product = _make_product(db, qty_on_hand=0)
+        db.commit()
+
+        svc = POService(db, current_user_id=1)
+        po_a = svc.create_po(vendor.id, data={})
+        line_a = svc.add_line(po_a.id, product.id, {"qty_ordered": 10, "unit_cost": 10.0})
+        svc.send_to_vendor(po_a.id)
+
+        po_b = svc.create_po(vendor.id, data={})
+        svc.add_line(po_b.id, product.id, {"qty_ordered": 5, "unit_cost": 10.0})
+        svc.send_to_vendor(po_b.id)
+        db.expire_all()
+
+        product = db.query(Product).filter(Product.id == product.id).first()
+        assert product.qty_on_order == 15  # 10 + 5
+
+        # Receive 4 on PO-A → on_order 15 - 4 = 11, PO-A PARTIAL
+        svc.create_receipt(po_a.vendor_id, {line_a.id: 4}, data={})
+        db.expire_all()
+        product = db.query(Product).filter(Product.id == product.id).first()
+        assert product.qty_on_order == 11
+
+        # Cancel PO-A: reverse the 6 outstanding only → 11 - 6 = 5 (PO-B intact).
+        svc.cancel(po_a.id)
+        db.expire_all()
+        product = db.query(Product).filter(Product.id == product.id).first()
+        assert product.qty_on_order == 5, (
+            "PARTIAL cancel must reverse only the unreceived remainder (6), "
+            "leaving PO-B's 5 on order — the bug would reverse the full 10 → 1."
+        )
+
+    def test_cancel_billed_raises(self, db):
+        """A BILLED PO cannot be cancelled (3-way match already reconciled)."""
+        svc, po, line, product = _make_sent_po(db, qty_ordered=3)
+        po = db.query(PurchaseOrder).filter(PurchaseOrder.id == po.id).first()
+        po.status = POStatus.BILLED
+        db.commit()
+        with pytest.raises(ValueError, match="billed"):
+            svc.cancel(po.id)
+
+    def test_cancel_idempotent(self, db):
+        """Cancelling an already-CANCELLED PO is a no-op and doesn't double-reverse."""
+        svc, po, line, product = _make_sent_po(db, qty_ordered=8)
+        svc.cancel(po.id)
+        db.expire_all()
+        product = db.query(Product).filter(Product.id == product.id).first()
+        assert product.qty_on_order == 0
+
+        # Second cancel must not touch on-order again.
+        svc.cancel(po.id)
+        db.expire_all()
+        product = db.query(Product).filter(Product.id == product.id).first()
+        assert product.qty_on_order == 0

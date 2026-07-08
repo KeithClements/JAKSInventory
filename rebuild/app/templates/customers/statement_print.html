@@ -130,6 +130,7 @@
 
     .type-invoice { font-weight: 600; color: #111; }
     .type-payment { color: #15803d; }
+    .type-credit { color: #0f766e; }   /* teal — warranty/core/return credit */
 
     /* Opening/closing rows */
     tr.opening-row td, tr.closing-row td {
@@ -219,6 +220,19 @@
       color: #bbb;
     }
 
+    /* ── Archived-copy banner (R3 dispute-resolution view) ── */
+    .archived-banner {
+      background: #fef3c7;
+      border: 1px solid #f59e0b;
+      border-radius: 6px;
+      color: #92400e;
+      font-size: 8.5pt;
+      font-weight: 600;
+      padding: 8px 12px;
+      margin-bottom: 16px;
+      text-align: center;
+    }
+
     /* ── Print overrides ── */
     @media print {
       @page { size: letter portrait; margin: 0.55in 0.65in 0.75in 0.65in; }
@@ -237,6 +251,15 @@
 
 <div class="page-shell">
 
+  {# ── Archived-copy banner (R3) — rendered only by the archive route ── #}
+  {% if archived %}
+  <div class="archived-banner">
+    ARCHIVED COPY — Statement {{ statement_number }} as generated on
+    {{ archived_generated_at.strftime('%B %d, %Y at %I:%M %p') if archived_generated_at else 'record date unavailable' }}.
+    This is the stored record of what was sent to the customer; it does not reflect account activity since.
+  </div>
+  {% endif %}
+
   {# ── Header ── #}
   <div class="doc-header">
     <div>
@@ -250,6 +273,7 @@
     <div class="doc-right">
       <div class="doc-type">Account Statement</div>
       <div class="doc-meta">
+        {% if statement_number %}<strong>Statement #:</strong> {{ statement_number }}<br>{% endif %}
         <strong>Period:</strong>
         {{ stmt.period_start.strftime('%B %d, %Y') }} – {{ stmt.period_end.strftime('%B %d, %Y') }}<br>
         <strong>Statement Date:</strong> {{ stmt.as_of.strftime('%B %d, %Y') }}
@@ -280,21 +304,21 @@
     <div class="summary-cell">
       <span class="lbl">Opening Balance</span>
       <span class="val {% if stmt.opening_balance > 0 %}val-brand{% endif %}">
-        ${{ '%.2f' % stmt.opening_balance }}
+        ${{ '{:,.2f}'.format(stmt.opening_balance) }}
       </span>
     </div>
     <div class="summary-cell">
       <span class="lbl">Charges</span>
-      <span class="val">${{ '%.2f' % stmt.total_charges }}</span>
+      <span class="val">${{ '{:,.2f}'.format(stmt.total_charges) }}</span>
     </div>
     <div class="summary-cell">
       <span class="lbl">Credits / Payments</span>
-      <span class="val val-green">${{ '%.2f' % stmt.total_credits }}</span>
+      <span class="val val-green">${{ '{:,.2f}'.format(stmt.total_credits) }}</span>
     </div>
     <div class="summary-cell">
       <span class="lbl">Balance Due</span>
       <span class="val {% if stmt.closing_balance > 0 %}val-red{% elif stmt.closing_balance < 0 %}val-green{% endif %}">
-        ${{ '%.2f' % stmt.closing_balance }}
+        ${{ '{:,.2f}'.format(stmt.closing_balance) }}
       </span>
     </div>
   </div>
@@ -320,7 +344,7 @@
         <td class="td-rgt">—</td>
         <td class="td-rgt">—</td>
         <td class="td-balance {% if stmt.opening_balance < 0 %}negative{% endif %}">
-          ${{ '%.2f' % stmt.opening_balance }}
+          ${{ '{:,.2f}'.format(stmt.opening_balance) }}
         </td>
       </tr>
 
@@ -333,19 +357,21 @@
           <span class="type-invoice">Invoice</span>
           {% elif line.txn_type == 'payment' %}
           <span class="type-payment">Payment</span>
+          {% elif line.txn_type == 'credit_memo' %}
+          <span class="type-credit">Credit Memo</span>
           {% else %}
           <span>{{ line.txn_type | title }}</span>
           {% endif %}
         </td>
         <td style="font-size:8.5pt; color:#555">{{ line.reference }}</td>
         <td class="td-charge">
-          {% if line.charges > 0 %}${{ '%.2f' % line.charges }}{% else %}—{% endif %}
+          {% if line.charges > 0 %}${{ '{:,.2f}'.format(line.charges) }}{% else %}—{% endif %}
         </td>
         <td class="td-credit">
-          {% if line.credits > 0 %}${{ '%.2f' % line.credits }}{% else %}—{% endif %}
+          {% if line.credits > 0 %}${{ '{:,.2f}'.format(line.credits) }}{% else %}—{% endif %}
         </td>
         <td class="td-balance {% if line.running_balance < 0 %}negative{% endif %}">
-          ${{ '%.2f' % line.running_balance }}
+          ${{ '{:,.2f}'.format(line.running_balance) }}
         </td>
       </tr>
       {% else %}
@@ -361,14 +387,14 @@
         <td>{{ stmt.period_end.strftime('%m/%d/%y') }}</td>
         <td colspan="2" style="color:#4b5320">Closing Balance</td>
         <td class="td-rgt" style="font-size:8.5pt; color:#6b7280">
-          +${{ '%.2f' % stmt.total_charges }}
+          +${{ '{:,.2f}'.format(stmt.total_charges) }}
         </td>
         <td class="td-rgt" style="font-size:8.5pt; color:#15803d">
-          –${{ '%.2f' % stmt.total_credits }}
+          –${{ '{:,.2f}'.format(stmt.total_credits) }}
         </td>
         <td class="td-balance {% if stmt.closing_balance < 0 %}negative{% endif %}"
             style="font-size:11pt; color:#4b5320">
-          ${{ '%.2f' % stmt.closing_balance }}
+          ${{ '{:,.2f}'.format(stmt.closing_balance) }}
         </td>
       </tr>
 
@@ -381,23 +407,23 @@
     <div class="aging-grid">
       <div class="aging-cell">
         <span class="a-lbl">Current</span>
-        <span class="a-val">${{ '%.2f' % stmt.aging.current }}</span>
+        <span class="a-val">${{ '{:,.2f}'.format(stmt.aging.current) }}</span>
       </div>
       <div class="aging-cell">
         <span class="a-lbl">1–30 Days</span>
-        <span class="a-val {% if stmt.aging['1_30'] > 0 %}a-warn{% endif %}">${{ '%.2f' % stmt.aging['1_30'] }}</span>
+        <span class="a-val {% if stmt.aging['1_30'] > 0 %}a-warn{% endif %}">${{ '{:,.2f}'.format(stmt.aging['1_30']) }}</span>
       </div>
       <div class="aging-cell">
         <span class="a-lbl">31–60 Days</span>
-        <span class="a-val {% if stmt.aging['31_60'] > 0 %}a-overdue{% endif %}">${{ '%.2f' % stmt.aging['31_60'] }}</span>
+        <span class="a-val {% if stmt.aging['31_60'] > 0 %}a-overdue{% endif %}">${{ '{:,.2f}'.format(stmt.aging['31_60']) }}</span>
       </div>
       <div class="aging-cell">
         <span class="a-lbl">61–90 Days</span>
-        <span class="a-val {% if stmt.aging['61_90'] > 0 %}a-overdue{% endif %}">${{ '%.2f' % stmt.aging['61_90'] }}</span>
+        <span class="a-val {% if stmt.aging['61_90'] > 0 %}a-overdue{% endif %}">${{ '{:,.2f}'.format(stmt.aging['61_90']) }}</span>
       </div>
       <div class="aging-cell">
         <span class="a-lbl">90+ Days</span>
-        <span class="a-val {% if stmt.aging.over_90 > 0 %}a-overdue{% endif %}">${{ '%.2f' % stmt.aging.over_90 }}</span>
+        <span class="a-val {% if stmt.aging.over_90 > 0 %}a-overdue{% endif %}">${{ '{:,.2f}'.format(stmt.aging.over_90) }}</span>
       </div>
     </div>
   </div>
@@ -417,7 +443,7 @@
       </div>
       <div class="remit-right">
         <div class="rl">Amount Due</div>
-        <div class="rv">${{ '%.2f' % stmt.closing_balance }}</div>
+        <div class="rv">${{ '{:,.2f}'.format(stmt.closing_balance) }}</div>
         <div class="amount-line" style="margin-top:14px">
           <span class="lbl">Amount Enclosed $</span>
           <span class="blank" style="border-bottom:1px solid #d1d5db; flex:1; margin-left:4px; display:inline-block; height:1px; min-width:60px"></span>

@@ -1,0 +1,67 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   Metric Strip — Phase-2 Primitive 11  (list-header KPI tiles · §2B / §5.1)
+   Governance: JAKS_UI_Change_Plan.md §8M
+
+   metric_strip(tiles, cols=4) → the horizontal KPI-tile strip above a list table
+   metric_tile(t)              → one KPI tile (icon box + big number + label)
+
+   This is the EXISTING list-header pattern from `cores/list.html` /
+   `warranty/list.html` (icon box + `text-2xl` number + uppercase label in a
+   `card`), extracted at the §7 3-screen gate (cores + warranty + the §5.1 SO
+   dashboard) so every dashboard strip is identical. It is DISTINCT from
+   `intelligence.html` (a compact label/value grid for detail/preview) — use this
+   for a list header, that for a record panel.
+
+   tile descriptor (dict):
+     { 'value': 12 | '$4,320.00',   # required — big KPI number (pre-formatted)
+       'label': 'Open SO Value',     # required — uppercase micro-label
+       'icon':  '<svg path d>',      # optional — defaults to a chart glyph
+       'tone':  'amber'|'red'|'green'|'blue'|'purple'|'orange'|'brand'|'gray',
+       'sub':   '3 overdue',         # optional — red alert sub-count after the label
+       'href':  '/sales-orders/?tab=backordered',  # optional — makes the tile a filter link
+       'alert': true }               # optional — red ring around the tile
+
+   §2B: feed from cheap aggregates / a metrics dict the route already computes —
+   no new schema. Renders nothing when `tiles` is empty. A numeric 0 / None value
+   auto-mutes to gray (matches the cores pattern); money zeros pass `tone='gray'`.
+   All colours are §4-permitted families (verified compiled).
+═════════════════════════════════════════════════════════════════════════════ #}
+
+{% macro metric_tile(t) %}
+{%- set TONE = {
+  'amber':  ('bg-amber-50','text-amber-500','text-amber-600'),
+  'red':    ('bg-red-50','text-red-500','text-red-600'),
+  'green':  ('bg-green-50','text-green-500','text-green-600'),
+  'blue':   ('bg-blue-50','text-blue-500','text-blue-600'),
+  'purple': ('bg-purple-50','text-purple-500','text-purple-600'),
+  'orange': ('bg-orange-50','text-orange-500','text-orange-600'),
+  'brand':  ('bg-brand-50','text-brand-600','text-brand-700'),
+  'gray':   ('bg-gray-100','text-gray-400','text-gray-600'),
+} -%}
+{%- set tc = TONE.get(t.get('tone'), TONE['gray']) -%}
+{%- set v = t.get('value') -%}
+{%- set vcls = 'text-gray-400' if (v is none or v == 0 or v == '') else tc[2] -%}
+{%- set ring = ' ring-1 ring-red-100' if t.get('alert') else '' -%}
+{% if t.get('href') %}<a href="{{ t.get('href') }}" class="card card-body flex items-center gap-3 hover:bg-gray-50/70 transition-colors{{ ring }}">{% else %}<div class="card card-body flex items-center gap-3{{ ring }}">{% endif %}
+  <div class="w-9 h-9 rounded-lg {{ tc[0] }} flex items-center justify-center shrink-0">
+    <svg class="w-5 h-5 {{ tc[1] }}" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="{{ t.get('icon') or 'M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z' }}"/>
+    </svg>
+  </div>
+  <div class="min-w-0">
+    <p class="text-2xl font-bold leading-none tabular-nums {{ vcls }}">{{ '0' if v is none else v }}</p>
+    <p class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mt-1 truncate">{{ t.get('label') }}{% if t.get('sub') %} <span class="text-red-500 font-bold normal-case">· {{ t.get('sub') }}</span>{% endif %}</p>
+  </div>
+{% if t.get('href') %}</a>{% else %}</div>{% endif %}
+{% endmacro %}
+
+
+{% macro metric_strip(tiles=None, cols=4) %}
+{%- set tiles = tiles or [] -%}
+{%- if tiles | length -%}
+{%- set grid = 'grid-cols-2 md:grid-cols-3' if cols == 3 else ('grid-cols-2 md:grid-cols-5' if cols == 5 else 'grid-cols-2 md:grid-cols-4') -%}
+<div class="grid {{ grid }} gap-3">
+{%- for t in tiles -%}{{ metric_tile(t) }}{%- endfor -%}
+</div>
+{%- endif -%}
+{% endmacro %}

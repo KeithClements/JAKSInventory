@@ -226,6 +226,13 @@ class RAService(BaseService):
         becomes the audit document for the credit (replaces direct CRMService
         write). User can later choose to apply it to a specific invoice if needed
         (Phase 2 — for now it goes straight to credit balance).
+
+        R2 over-credit fix — the credited amount follows the EXPECTED-vs-ACTUAL
+        rule on ReturnAuthorization.total_credit: once goods were received
+        (ra.goods_received), each line is credited only for what physically came
+        back (qty_returned_to_stock) — a customer returning 2 of 5 items is
+        credited for 2. Closing straight from OPEN (no receive step) credits the
+        full authorized quantities (expected).
         """
         from app.constants import CreditMemoTrigger
         from app.services.credit_memo_service import CreditMemoService
@@ -241,33 +248,48 @@ class RAService(BaseService):
         old_status = ra.status
         cm_id: int | None = None
 
+        # Idempotency guard — if a credit memo already exists for this RA (a prior
+        # close_ra committed the CM but may have crashed before flipping status to
+        # CLOSED), reuse it instead of issuing a second. Prevents double-credit.
+        from app.models.credit_memo import CreditMemo as _CMGuard
+        _existing_cm = self.db.query(_CMGuard).filter(_CMGuard.ra_id == ra.id).first()
+
         # R8 — issue credit memo for the accepted return value.
         # auto_close_to_credit=True moves the unapplied balance to credit_balance
         # via CreditMemoService.close_credit_memo → CRMService.add_credit.
         if credit > 0:
-            cm_lines = [
-                {
+            # Expected vs actual quantities (must mirror total_credit): once a
+            # receive was recorded, credit ONLY qty_returned_to_stock — never
+            # fall back to the full authorized qty (the old `or ln.qty` here was
+            # the over-credit bug). Building qty + fee in one pass also keeps
+            # each restocking fee paired with its own line (the previous
+            # enumerate() indexed the unfiltered ra.lines list).
+            goods_received = ra.goods_received
+            cm_lines = []
+            for ln in ra.lines:
+                qty = (
+                    max(ln.qty_returned_to_stock or 0, 0)
+                    if goods_received
+                    else ln.qty
+                )
+                if qty <= 0 or ln.unit_price <= 0:
+                    continue
+                unit_price = ln.unit_price
+                if ln.restocking_fee:
+                    # Restocking fee reduces the credit total — bake it in by
+                    # reducing unit_price proportionally (never below zero).
+                    fee_per_unit = ln.restocking_fee / qty
+                    unit_price = max(0.0, unit_price - fee_per_unit)
+                cm_lines.append({
                     "description": ln.description or "Returned item",
-                    "qty": ln.qty_returned_to_stock or ln.qty,
-                    "unit_price": ln.unit_price,
+                    "qty": qty,
+                    "unit_price": unit_price,
                     "product_id": ln.product_id,
-                }
-                for ln in ra.lines
-                if ((ln.qty_returned_to_stock or ln.qty) > 0 and ln.unit_price > 0)
-            ]
-            # Restocking fee reduces the credit total. Apply as a negative-priced
-            # line OR just subtract from the customer line. Cleanest: subtract
-            # restocking fee inline by reducing the line subtotal.
-            for i, ln_data in enumerate(cm_lines):
-                ra_line = ra.lines[i]
-                if ra_line.restocking_fee:
-                    # bake fee in by reducing unit_price proportionally
-                    qty = ln_data["qty"]
-                    if qty > 0:
-                        fee_per_unit = ra_line.restocking_fee / qty
-                        ln_data["unit_price"] = max(0.0, ln_data["unit_price"] - fee_per_unit)
+                })
 
-            if cm_lines:
+            if _existing_cm is not None:
+                cm_id = _existing_cm.id  # already credited on a prior attempt — do not duplicate
+            elif cm_lines:
                 cm = CreditMemoService(self.db, self.current_user_id).create_credit_memo(
                     customer_id=ra.customer_id,
                     trigger_type=CreditMemoTrigger.ACCEPTED_RA,
@@ -315,24 +337,20 @@ class RAService(BaseService):
             return
 
         from app.models.product import Product
-        from app.models.inventory import InventoryTransaction
+        from app.services.inventory_service import InventoryService
 
         product = self.db.query(Product).filter(Product.id == line.product_id).first()
         if not product:
             return
 
-        old_qty = product.qty_on_hand
-        product.qty_on_hand = (product.qty_on_hand or 0) + qty
-
-        txn = InventoryTransaction(
-            product_id=line.product_id,
-            transaction_type=InventoryTxnType.RETURN_TO_STOCK,
-            qty_change=qty,
-            qty_after=product.qty_on_hand,
-            reference_type=EntityType.RETURN_AUTHORIZATION,
-            reference_id=line.ra_id,
+        # Cache + RETURN_TO_STOCK ledger row via the single qty_on_hand writer
+        # (audit risk #9).
+        InventoryService(self.db, self.current_user_id).apply_stock_delta(
+            product,
+            qty,
+            InventoryTxnType.RETURN_TO_STOCK,
+            EntityType.RETURN_AUTHORIZATION,
+            line.ra_id,
             notes=f"Customer return — {ra_number}",
-            performed_by_id=self.current_user_id,
         )
-        self.db.add(txn)
         self.db.flush()

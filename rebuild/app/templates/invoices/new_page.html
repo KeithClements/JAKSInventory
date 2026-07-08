@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{# Standalone wrapper for the invoice customer-picker. When /invoices/new is
+   opened directly (a typed URL, a bookmark, or any non-HTMX GET) it renders
+   inside the full app shell instead of as a chrome-less fragment. The HTMX
+   slide-over path still gets the bare _new_picker.html partial.
+
+   NOTE: deliberately NOT named new.html — that filename is a retired full-form
+   editing page and is guarded as dead code (test_catalog_vendor_polish.py).
+   This is only a thin shell around the picker doorway. #}
+{% block title %}New Invoice — Axle{% endblock %}
+{% block heading %}New Invoice{% endblock %}
+
+{% block content %}
+  <div class="max-w-xl bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+    {% include "invoices/_new_picker.html" %}
+  </div>
+{% endblock %}

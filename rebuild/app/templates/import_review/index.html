@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}Review Queue — Axle{% endblock %}
+{% block heading %}Review Queue{% endblock %}
+
+{% block content %}
+{% include "_import_tabs.html" %}
+<div class="space-y-4">
+
+  {# ── Upload ─────────────────────────────────────────────────────────────── #}
+  <div class="card p-5">
+    <h2 class="text-sm font-semibold text-gray-800 mb-1">Import a product feed</h2>
+    <p class="text-xs text-gray-400 mb-3">
+      Upload a scraper export (Shopify-format CSV). Every row is staged for review —
+      nothing touches the catalog until you approve it.
+    </p>
+    <form method="post" action="/import-review/upload" enctype="multipart/form-data"
+          class="flex flex-wrap items-center gap-3">
+      <input type="file" name="file" accept=".csv,text/csv" required
+             class="text-sm text-gray-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0
+                    file:text-sm file:font-medium file:bg-brand-50 file:text-brand-700
+                    hover:file:bg-brand-100 file:cursor-pointer" />
+      <input type="text" name="source_app" placeholder="source (e.g. pai-info)"
+             class="px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white w-48
+                    focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400" />
+      <label class="flex items-center gap-2 text-xs text-gray-500">
+        <input type="checkbox" name="use_mapping" value="1"
+               class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+        Custom column mapping
+      </label>
+      <label class="flex items-center gap-2 text-xs text-gray-500"
+             title="Existing products whose incoming values match the catalog exactly are tallied and not staged — the queue only holds real changes.">
+        <input type="checkbox" name="skip_unchanged" value="1" checked
+               class="rounded border-gray-300 text-brand-600 focus:ring-brand-400" />
+        Skip unchanged products
+      </label>
+      <button type="submit" class="btn-primary btn-sm">Analyze &amp; Stage</button>
+    </form>
+    <p class="text-xs text-gray-400 mt-2">
+      Unrecognized formats (e.g. a vendor price file with a "Part Number" column)
+      open a column-mapping screen automatically — or check "Custom column mapping"
+      to map any file by hand.
+    </p>
+  </div>
+
+  {# ── Uploads awaiting a column mapping (R3 needs-mapping state) ──────────── #}
+  {% if pending_uploads %}
+  <div class="card overflow-hidden border-amber-200">
+    <div class="px-4 py-3 border-b border-amber-200 bg-amber-50">
+      <h2 class="text-xs font-semibold text-amber-700 uppercase tracking-wide">Needs Column Mapping</h2>
+      <p class="text-xs text-amber-600 mt-0.5">These uploads weren't recognized — map their columns to stage them, or discard.</p>
+    </div>
+    <table class="w-full" aria-label="Uploads needing mapping">
+      <tbody class="divide-y divide-gray-100">
+        {% for u in pending_uploads %}
+        <tr>
+          <td class="px-4 py-2.5 text-sm font-medium text-gray-900">{{ u.filename or 'uploaded file' }}</td>
+          <td class="px-4 py-2.5 text-sm text-gray-600">{{ u.source_app or '—' }}</td>
+          <td class="px-4 py-2.5 text-xs text-gray-400">{{ u.created_at.strftime('%Y-%m-%d %H:%M') if u.created_at }}</td>
+          <td class="px-4 py-2.5 text-right">
+            <a href="/import-review/mapping/{{ u.id }}" class="text-sm font-medium text-brand-600 hover:underline">Map columns →</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {# ── Saved mapping templates ─────────────────────────────────────────────── #}
+  {% if mapping_templates %}
+  <div class="card overflow-hidden">
+    <div class="px-4 py-3 border-b border-gray-200 bg-gray-50">
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Saved Mapping Templates</h2>
+    </div>
+    <table class="w-full" aria-label="Mapping templates">
+      <tbody class="divide-y divide-gray-100">
+        {% for t in mapping_templates %}
+        <tr>
+          <td class="px-4 py-2.5 text-sm font-medium text-gray-900">{{ t.name }}</td>
+          <td class="px-4 py-2.5 text-sm text-gray-600">{{ t.source_label or '—' }}</td>
+          <td class="px-4 py-2.5 text-sm tabular-nums text-gray-600">{{ t.mapping | length }} field{{ '' if t.mapping | length == 1 else 's' }}</td>
+          <td class="px-4 py-2.5 text-xs text-gray-400">{{ t.updated_at.strftime('%Y-%m-%d %H:%M') if t.updated_at }}</td>
+          <td class="px-4 py-2.5 text-right">
+            <form method="post" action="/import-review/mapping-template/{{ t.id }}/delete"
+                  onsubmit="return confirm('Delete mapping template {{ t.name | e }}?');">
+              <button type="submit" class="text-xs text-gray-400 hover:text-red-600 hover:underline">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {# ── Recent batches ─────────────────────────────────────────────────────── #}
+  {% if batches %}
+  <div class="card overflow-hidden">
+    <div class="overflow-x-auto">
+      <table class="w-full min-w-[760px]" aria-label="Import batches">
+        <thead>
+          <tr class="bg-gray-50 border-b border-gray-200">
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Batch</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Source</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Total</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Unchanged</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Needs Review</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Approved</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Applied</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+            <th class="px-4 py-3 w-28"></th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for b in batches %}
+          <tr class="cursor-pointer hover:bg-gray-50/80 transition-colors"
+              onclick="window.location.href='/import-review/{{ b.id }}'">
+            <td class="px-4 py-3">
+              <p class="text-sm font-medium text-gray-900">{{ b.label }}</p>
+              <p class="text-xs text-gray-400">{{ b.created_at.strftime('%Y-%m-%d %H:%M') if b.created_at }}</p>
+            </td>
+            <td class="px-4 py-3 text-sm text-gray-600">{{ b.source_app or '—' }}</td>
+            <td class="px-4 py-3 text-right text-sm tabular-nums text-gray-900">{{ b.total }}</td>
+            <td class="px-4 py-3 text-right text-sm tabular-nums text-gray-400" title="UPDATE rows identical to the catalog — never staged">{{ b.unchanged_count or 0 }}</td>
+            <td class="px-4 py-3 text-right text-sm tabular-nums {% if b.needs_review_count %}text-amber-600 font-semibold{% else %}text-gray-400{% endif %}">{{ b.needs_review_count }}</td>
+            <td class="px-4 py-3 text-right text-sm tabular-nums {% if b.approved_count %}text-green-700 font-semibold{% else %}text-gray-400{% endif %}">{{ b.approved_count }}</td>
+            <td class="px-4 py-3 text-right text-sm tabular-nums {% if b.applied_count %}text-green-700 font-semibold{% else %}text-gray-400{% endif %}">{{ b.applied_count }}</td>
+            <td class="px-4 py-3"><span class="inline-flex items-center px-2 py-1 rounded-lg text-xs font-semibold bg-gray-100 text-gray-600">{{ b.status | title }}</span></td>
+            <td class="px-4 py-3 text-right whitespace-nowrap" onclick="event.stopPropagation();">
+              <a href="/import-review/{{ b.id }}" class="text-sm text-brand-600 hover:underline">Review →</a>
+              <form method="post" action="/import-review/batch/{{ b.id }}/delete" class="inline ml-2"
+                    onsubmit="return confirm('Delete this batch and all its staged rows? Applied products are NOT affected.');">
+                <button type="submit" class="text-xs text-gray-400 hover:text-red-600 hover:underline">Delete</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="card flex flex-col items-center justify-center py-16 text-center">
+    <div class="w-14 h-14 rounded-2xl bg-gray-100 flex items-center justify-center mb-4">
+      <svg class="w-7 h-7 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
+      </svg>
+    </div>
+    <p class="text-sm font-semibold text-gray-700">No imports yet</p>
+    <p class="text-xs text-gray-400 mt-1">Upload a feed above to stage your first batch.</p>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

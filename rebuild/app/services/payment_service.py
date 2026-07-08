@@ -12,6 +12,7 @@ Key rules:
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from app.constants import (
@@ -23,6 +24,8 @@ from app.models.customer import Customer
 from app.models.invoice import Invoice, Payment, PaymentAllocation
 from app.services.base import BaseService
 from app.settings_utils import get_setting_value_db
+
+log = logging.getLogger(__name__)
 
 
 class PaymentService(BaseService):
@@ -61,6 +64,12 @@ class PaymentService(BaseService):
 
         Validates: sum of allocations <= amount_received.
         """
+        # §21 — recording money-in is gated. ADMIN + BOOKKEEPING have
+        # RECORD_PAYMENT; SALES/READ_ONLY do not (a counter clerk must not mark
+        # cash received that never arrived). System events (user_id None) pass.
+        from app.constants import Permission
+        self.assert_can(Permission.RECORD_PAYMENT)
+
         if amount_received <= 0:
             raise ValueError("amount_received must be greater than 0")
 
@@ -108,6 +117,7 @@ class PaymentService(BaseService):
                 invoice = self.db.query(Invoice).filter(Invoice.id == inv_id).first()
                 if invoice is None or invoice.customer_id != customer_id:
                     raise ValueError(f"Invoice {inv_id} not found or belongs to different customer")
+                self._assert_invoice_payable(invoice)
                 apply = min(remaining, invoice.balance_due)
                 if apply <= 0:
                     continue
@@ -137,9 +147,16 @@ class PaymentService(BaseService):
         Auto-locks invoice if fully paid after allocation.
         """
         payment = self._get_payment_or_404(payment_id)
+        # Reversed/NSF funds were never collected — amount_unallocated reads as
+        # the full amount after reversal, but it is not allocatable money.
+        if payment.status in (PaymentStatus.REVERSED, PaymentStatus.NSF):
+            raise ValueError(
+                f"Payment {payment_id} is {payment.status} and cannot be allocated"
+            )
         invoice = self.db.query(Invoice).filter(Invoice.id == invoice_id).first()
         if invoice is None:
             raise ValueError(f"Invoice {invoice_id} not found")
+        self._assert_invoice_payable(invoice)
 
         if amount > invoice.balance_due + 0.001:
             raise ValueError(f"Amount {amount} exceeds invoice balance due {invoice.balance_due}")
@@ -220,11 +237,23 @@ class PaymentService(BaseService):
         payment.reversed_at = datetime.utcnow()
         payment.reversal_reason = reason
 
+        # A surcharged payment that already synced also booked a surcharge
+        # SalesReceipt (DocNumber JAKS-SC-{id}) in QBO; there is no automated
+        # reversal, so the audit row must point the bookkeeper at the orphan.
+        _notes = None
+        if (payment.surcharge_amount or 0) > 0 and payment.qbo_payment_id:
+            _notes = (
+                f"QBO surcharge SalesReceipt JAKS-SC-{payment_id} "
+                f"(${payment.surcharge_amount:.2f}) must be voided/credited in "
+                "QuickBooks manually — reversals are not auto-pushed."
+            )
+
         self.audit(
             entity_type=EntityType.PAYMENT,
             entity_id=payment_id,
             action=AuditAction.PAYMENT_REVERSED,
             new_value={"reason": reason, "method": payment.payment_method},
+            notes=_notes,
         )
         self.db.commit()
 
@@ -257,6 +286,21 @@ class PaymentService(BaseService):
                 "unit_cost": 0.0,
             }],
         )
+        # create_invoice leaves the fee invoice in DRAFT (and already committed it,
+        # along with the payment.nsf_fee/status changes above); finalise it so it
+        # becomes a live A/R document the customer actually owes. Fails soft — a
+        # DRAFT fee invoice is recoverable, a crashed NSF workflow is not.
+        # finalise()'s first mutation is now an atomic DRAFT→OPEN status claim, so
+        # a mid-finalise failure must be ROLLED BACK — otherwise the trailing
+        # commit would persist a half-finalized OPEN invoice (no locked_at, no
+        # cost snapshot). Rollback discards only the pending claim; the fee invoice
+        # stays a recoverable DRAFT.
+        try:
+            inv_svc.finalise(nsf_invoice.id)
+        except Exception as exc:
+            self.db.rollback()
+            log.warning("NSF invoice %s could not be auto-finalized: %s", nsf_invoice.id, exc)
+
         self.audit(
             entity_type=EntityType.PAYMENT,
             entity_id=payment_id,
@@ -282,6 +326,7 @@ class PaymentService(BaseService):
         invoice = self.db.query(Invoice).filter(Invoice.id == invoice_id).first()
         if invoice is None:
             raise ValueError(f"Invoice {invoice_id} not found")
+        self._assert_invoice_payable(invoice)
         if amount > invoice.balance_due + 0.001:
             raise ValueError(f"Amount {amount} exceeds balance due {invoice.balance_due}")
 
@@ -292,7 +337,11 @@ class PaymentService(BaseService):
             amount_received=amount,
             status=PaymentStatus.APPLIED,
             notes="Applied from account credit balance",
-            qbo_sync_status=QBOSyncStatus.PENDING,
+            # SKIPPED, never PENDING: drawing down credit_balance moves no cash,
+            # so this must never push to QBO as a Payment (it would book phantom
+            # cash into Undeposited Funds). The credit's source document (credit
+            # memo, core return, etc.) is the QBO-side record.
+            qbo_sync_status=QBOSyncStatus.SKIPPED,
         )
         self.db.add(payment)
         self.db.flush()
@@ -454,6 +503,27 @@ class PaymentService(BaseService):
         if p is None:
             raise ValueError(f"Payment {payment_id} not found")
         return p
+
+    def _assert_invoice_payable(self, invoice: Invoice) -> None:
+        """
+        Money may only be applied to a finalized invoice (C2 gate).
+
+        A DRAFT has never passed finalise() — no tax freeze, no cost snapshot,
+        no inventory decrement, no INVOICE_SALE ledger row — so paying it would
+        flip it straight to PAID/locked with none of that done, and the QBO
+        worker would push a never-finalized invoice. A VOID invoice must never
+        accept money either. refresh_payment_status() re-checks before flipping
+        status, so both layers sit inside the same uncommitted transaction.
+        """
+        if invoice.status == InvoiceStatus.DRAFT:
+            raise ValueError(
+                f"Invoice {invoice.invoice_number} is still a draft — "
+                f"finalize it before recording a payment."
+            )
+        if invoice.status == InvoiceStatus.VOID:
+            raise ValueError(
+                f"Invoice {invoice.invoice_number} is void and cannot accept payments."
+            )
 
     def _create_allocation(self, payment_id: int, invoice_id: int, amount: float) -> PaymentAllocation:
         allocation = PaymentAllocation(

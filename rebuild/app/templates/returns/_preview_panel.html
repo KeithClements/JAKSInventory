@@ -1,0 +1,138 @@
+{# ── RA bottom preview panel — loaded via htmx.ajax() on row click ────────────
+   §2B context (GET /returns/preview/{id}):
+     ra               : ReturnAuthorization (with .customer, .lines pre-loaded)
+     credit_memo_num  : str | None
+     invoice_number   : str | None
+     dispositions     : list[str]  unique disposition values across lines
+     total_restock    : float
+     RAStatus         : enum
+     ReturnDisposition: enum
+─────────────────────────────────────────────────────────────────────────── #}
+{% from "macros/chips.html" import status_chip %}
+
+{% set ra_chip = {
+  'draft':    ('bg-gray-100 text-gray-600',   'bg-gray-400',   'Draft'),
+  'open':     ('bg-blue-50 text-blue-700',    'bg-blue-500',   'Authorized'),
+  'received': ('bg-amber-100 text-amber-700', 'bg-amber-500',  'Received'),
+  'closed':   ('bg-emerald-50 text-emerald-700','bg-emerald-500','Closed'),
+} %}
+{% set disp_chip = {
+  'return_to_stock': ('bg-green-50 text-green-700',   'bg-green-500',   'To Stock'),
+  'quarantine':      ('bg-amber-100 text-amber-700',  'bg-amber-500',   'Quarantine'),
+  'vendor_return':   ('bg-blue-50 text-blue-700',     'bg-blue-400',    'Vendor Return'),
+  'damaged':         ('bg-red-100 text-red-700',      'bg-red-500',     'Damaged'),
+  'warranty_review': ('bg-purple-50 text-purple-700', 'bg-purple-500',  'Warranty Review'),
+  'scrap':           ('bg-gray-100 text-gray-500',    'bg-gray-400',    'Scrap'),
+} %}
+{% set chip_cls, chip_dot, chip_label = ra_chip.get(ra.status, ('bg-gray-100 text-gray-600', 'bg-gray-400', ra.status | title)) %}
+
+<div class="px-6 py-4">
+  <div class="grid grid-cols-4 gap-6">
+
+    {# ── Identity ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Identity</p>
+      <div class="space-y-1.5">
+        <div class="flex items-center gap-2 flex-wrap">
+          <a href="/returns/{{ ra.id }}"
+             class="font-mono text-base font-bold text-brand-700 hover:text-brand-900 hover:underline leading-none">
+            {{ ra.ra_number }}
+          </a>
+          <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold {{ chip_cls }}">
+            <span class="w-1.5 h-1.5 rounded-full {{ chip_dot }} shrink-0"></span>
+            {{ chip_label }}
+          </span>
+        </div>
+        <p class="text-sm font-medium text-gray-800 leading-snug">{{ ra.customer.company_name }}</p>
+        <p class="text-[11px] text-gray-400">
+          Requested {{ ra.requested_at.strftime('%b %d, %Y') if ra.requested_at else '—' }}
+        </p>
+        <p class="text-[11px] text-gray-400">
+          {{ ra.lines | length }} line{{ 's' if ra.lines | length != 1 }}
+        </p>
+        {% if ra.reason %}
+        <p class="text-[11px] text-gray-500 line-clamp-2 mt-0.5">{{ ra.reason }}</p>
+        {% endif %}
+      </div>
+    </div>
+
+    {# ── Financials ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Financials</p>
+      <div class="space-y-1.5">
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Gross Return</span>
+          {% set gross = namespace(val=0.0) %}
+          {% for ln in ra.lines %}{% set gross.val = gross.val + ln.unit_price * ln.qty %}{% endfor %}
+          <span class="text-sm font-bold text-gray-900 tabular-nums">${{ "%.2f"|format(gross.val) }}</span>
+        </div>
+        {% if total_restock > 0 %}
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Restocking Fee</span>
+          <span class="text-sm text-red-600 tabular-nums">−${{ "%.2f"|format(total_restock) }}</span>
+        </div>
+        {% endif %}
+        <div class="flex items-center justify-between pt-1 border-t border-gray-100">
+          <span class="text-xs text-gray-500">Net Credit</span>
+          <span class="text-sm font-bold {% if ra.total_credit > 0 %}text-brand-700{% else %}text-gray-400{% endif %} tabular-nums">
+            {% if ra.total_credit > 0 %}${{ "%.2f"|format(ra.total_credit) }}{% else %}—{% endif %}
+          </span>
+        </div>
+        {% if invoice_number %}
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Invoice</span>
+          <a href="/invoices/{{ ra.invoice_id }}"
+             class="text-xs font-mono text-brand-700 hover:underline">{{ invoice_number }}</a>
+        </div>
+        {% endif %}
+        {% if credit_memo_num %}
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Credit Memo</span>
+          <span class="text-xs font-mono text-emerald-700">{{ credit_memo_num }}</span>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    {# ── Disposition ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Disposition</p>
+      <div class="space-y-1.5">
+        {% if dispositions %}
+          {% for disp in dispositions %}
+            {% set dc = disp_chip.get(disp, ('bg-gray-100 text-gray-500', 'bg-gray-400', disp | replace('_', ' ') | title)) %}
+            <div>{{ status_chip(dc[0], dc[1], dc[2]) }}</div>
+          {% endfor %}
+        {% else %}
+          <p class="text-sm text-gray-400">—</p>
+        {% endif %}
+      </div>
+    </div>
+
+    {# ── Actions ── #}
+    <div class="col-span-1">
+      <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Actions</p>
+      <div class="flex flex-col gap-1.5">
+        <a href="/returns/{{ ra.id }}"
+           class="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold
+                  bg-brand-700 text-white hover:bg-brand-600 transition-colors">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+          </svg>
+          Open RA
+        </a>
+        <a href="/returns/{{ ra.id }}/print" target="_blank"
+           class="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold
+                  bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 transition-colors">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/>
+          </svg>
+          Print
+        </a>
+      </div>
+    </div>
+
+  </div>{# end grid #}
+</div>

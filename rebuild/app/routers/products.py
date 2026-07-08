@@ -2,44 +2,53 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
-from sqlalchemy.orm import Session
+import csv
+import io
 
-from app.constants import CrossRefType, SuggestedSellType
-from app.deps import get_db
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.templating import Jinja2Templates
+from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy.orm import Session, joinedload
+
+from app.constants import CrossRefType, Permission, SuggestedSellType
+from app.deps import get_db, get_current_user_id, require_admin
+from app.models.competitor import CompetitorPrice
 from app.models.product import (
-    CrossReference, Product, ProductImage, ProductVendorSource, SuggestedSell,
+    CrossReference, Product, ProductApplication, ProductCategory, ProductImage,
+    ProductVendorSource, SuggestedSell,
 )
 from app.models.vendor import Vendor
+from app.services.base import PermissionDeniedError
 from app.services.product_service import ProductService
+from app.services.search_service import _norm_col
 from app.services.suggested_sell_service import SuggestedSellService
 from app.settings_utils import get_setting_value_db
+from app.utils import normalize_part
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 router = APIRouter(prefix="/products", tags=["products"])
 templates = Jinja2Templates(directory="app/templates")
 
-CURRENT_USER_ID = 1
-
 MANUFACTURERS = [
     "Cummins", "Caterpillar", "Detroit Diesel", "Mack", "Volvo", "International",
+    "Paccar", "Mercedes",
 ]
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-def _svc(db: Session) -> ProductService:
-    return ProductService(db, current_user_id=CURRENT_USER_ID)
+def _svc(db: Session, user_id: int = 1) -> ProductService:
+    return ProductService(db, current_user_id=user_id)
 
 
-def _ss_svc(db: Session) -> SuggestedSellService:
-    return SuggestedSellService(db, current_user_id=CURRENT_USER_ID)
+def _ss_svc(db: Session, user_id: int = 1) -> SuggestedSellService:
+    return SuggestedSellService(db, current_user_id=user_id)
 
 
 def _vendors(db: Session) -> list[Vendor]:
@@ -48,12 +57,216 @@ def _vendors(db: Session) -> list[Vendor]:
 
 def _categories(db: Session):
     from app.models.product import ProductCategory
-    return (
+    cats = (
         db.query(ProductCategory)
         .filter(ProductCategory.is_active == True)  # noqa: E712
-        .order_by(ProductCategory.name)
+        .options(joinedload(ProductCategory.parent))
         .all()
     )
+    # Sort by full path so each Major Group sits directly above its sub-categories
+    # ("Engine", "Engine → Bearings", …) rather than scattered by bare name.
+    return sorted(cats, key=lambda c: c.full_path.lower())
+
+
+def _descendant_category_ids(db: Session, root_id: int) -> list[int]:
+    """§18 — root category id + every descendant id, so filtering a top-level
+    Category also shows products tagged to its Subcategories / Product Families."""
+    from app.models.product import ProductCategory
+    pairs = db.query(ProductCategory.id, ProductCategory.parent_id).all()
+    children: dict[int, list[int]] = {}
+    for cid, pid in pairs:
+        children.setdefault(pid, []).append(cid)
+    out: list[int] = []
+    stack = [root_id]
+    while stack:
+        cid = stack.pop()
+        out.append(cid)
+        stack.extend(children.get(cid, []))
+    return out
+
+
+def _looks_like_partno(token: str) -> bool:
+    """A word is only worth checking against the 220k+ cross-ref / vendor /
+    competitor part-number surfaces if it actually carries a digit — pure words
+    like "spacer" never live there, so we skip the leading-wildcard scan for
+    them (big win on plain keyword searches)."""
+    return any(ch.isdigit() for ch in token)
+
+
+def _token_partno_filter(db: Session, token: str):
+    """Correlated-EXISTS predicate matching ONE token against the normalized
+    part-number surfaces — the precomputed, indexed ``*_norm`` columns the line
+    adder's SearchService uses (sku / OEM cross-ref / vendor part # / competitor
+    part #). Normalization is SHARED (``utils.normalize_part`` + ``_norm_col``)
+    so "3683512(C)" stored matches a typed "3683512C" and vice versa."""
+    nq = normalize_part(token)
+    if not nq:
+        return None
+    nlike = f"%{nq}%"
+    return (
+        Product.sku_norm.like(nlike)          # de-dashed SKU ("141234" finds "14-1234")
+        | db.query(CrossReference.id).filter(
+            CrossReference.product_id == Product.id,
+            CrossReference.ref_number_norm.like(nlike),
+        ).exists()
+        | db.query(ProductVendorSource.id).filter(
+            ProductVendorSource.product_id == Product.id,
+            ProductVendorSource.is_active == True,  # noqa: E712
+            ProductVendorSource.vendor_part_number_norm.like(nlike)
+            | ProductVendorSource.vendor_sku_norm.like(nlike),
+        ).exists()
+        | db.query(CompetitorPrice.id).filter(
+            CompetitorPrice.product_id == Product.id,
+            CompetitorPrice.is_active == True,  # noqa: E712
+            _norm_col(CompetitorPrice.competitor_part_number).like(nlike),
+        ).exists()
+    )
+
+
+def _token_engine_filter(db: Session, token: str):
+    """Correlated-EXISTS against engine fitment (``product_applications``) for
+    ONE token — so "C15", "ISX", "DD15" surface every part that fits that engine
+    even when the engine lives only in the fitment table, not a product field.
+    This is what the Products list was missing entirely."""
+    tl = token.lower()
+    make_model = func.lower(
+        ProductApplication.engine_make + " " + ProductApplication.engine_model
+    )
+    return (
+        db.query(ProductApplication.id)
+        .filter(
+            ProductApplication.product_id == Product.id,
+            or_(
+                func.lower(ProductApplication.engine_make).like(f"%{tl}%"),
+                func.lower(ProductApplication.engine_model).like(f"%{tl}%"),
+                make_model.like(f"%{tl}%"),
+            ),
+        )
+        .exists()
+    )
+
+
+def _token_filter(db: Session, token: str):
+    """Everything ONE typed word can match: the human-readable product fields
+    (title / description / manufacturer / engine make / brand / SKU / category
+    name), engine fitment, and — when the word carries a digit — the normalized
+    part-number surfaces. Mirrors SearchService's keyword tier so the list and
+    the line adder agree on what "a word matches"."""
+    like = f"%{token}%"
+    f = (
+        Product.title.ilike(like)
+        | Product.description.ilike(like)
+        | Product.manufacturer.ilike(like)
+        | Product.engine_manufacturer.ilike(like)
+        | Product.brand.ilike(like)
+        | Product.sku.ilike(like)
+    )
+    # Category name (correlated EXISTS — a part can be found by its category).
+    f = f | db.query(ProductCategory.id).filter(
+        ProductCategory.id == Product.category_id,
+        ProductCategory.name.ilike(like),
+    ).exists()
+    # Engine fitment.
+    f = f | _token_engine_filter(db, token)
+    # Part-number surfaces — only for tokens that could be a part number.
+    if _looks_like_partno(token):
+        pf = _token_partno_filter(db, token)
+        if pf is not None:
+            f = f | pf
+    return f
+
+
+def _product_search_filter(db: Session, q: str):
+    """Boolean predicate for the products-list search box.
+
+    MULTI-TERM: the query is split on whitespace and EVERY word must match
+    SOMEWHERE — title, description, manufacturer, engine make/model fitment,
+    brand, category, SKU, OEM cross-ref, vendor part #, or competitor part #.
+    Each added word therefore *narrows* the result (AND across words, OR across
+    fields), so a counter person who doesn't know the part number can type
+    "cat spacer" — "cat" hits the Caterpillar manufacturer / fitment and
+    "spacer" hits the title — or "c15 spacer" to narrow to the C15 engine. This
+    brings the list to parity with the Ctrl+K omnibox and the quote/SO line
+    adder (both already backed by SearchService).
+    """
+    tokens = [t for t in q.split() if t]
+    if not tokens:
+        return Product.id.isnot(None)  # no real query → match-all (caller guards q)
+
+    per_token = and_(*[_token_filter(db, t) for t in tokens])
+
+    # A pasted part number can contain spaces/dashes ("368 3512" → "3683512").
+    # When the multi-word query is really ONE part number, normalizing the whole
+    # string (which strips the internal separators) recovers that match — kept
+    # as an OR alongside the per-word AND so it never blocks a real word search.
+    if len(tokens) > 1 and _looks_like_partno(q):
+        whole = _token_partno_filter(db, q)
+        if whole is not None:
+            return or_(per_token, whole)
+    return per_token
+
+
+def _compute_match_hints(db: Session, products: list, q: str) -> dict[int, str]:
+    """A short "why it matched" label per page row, shown ONLY when the match is
+    not already visible in the row's SKU/title — e.g. the part matched because
+    its manufacturer is Caterpillar or because it fits a C15. Computed in Python
+    over the (≤100) page rows with a single engine-fitment preload, so counter
+    staff trust a fuzzy hit instead of reading it as a wrong result."""
+    tokens = [t for t in q.split() if t]
+    if not tokens or not products:
+        return {}
+
+    pids = [p.id for p in products]
+    apps_by_pid: dict[int, list[tuple[str, str]]] = {}
+    for pid, mk, ml in (
+        db.query(
+            ProductApplication.product_id,
+            ProductApplication.engine_make,
+            ProductApplication.engine_model,
+        )
+        .filter(ProductApplication.product_id.in_(pids))
+        .all()
+    ):
+        apps_by_pid.setdefault(pid, []).append((mk or "", ml or ""))
+
+    hints: dict[int, str] = {}
+    for p in products:
+        title_l = (p.title or "").lower()
+        sku_norm = normalize_part(p.sku or "")
+        bits: list[str] = []
+        for tok in tokens:
+            tl = tok.lower()
+            ntok = normalize_part(tok)
+            # Already visible in the row's title or SKU → no explanation needed.
+            if tl in title_l:
+                continue
+            if ntok and ntok in sku_norm:
+                continue
+            label = None
+            # 1) A product field the row doesn't surface (manufacturer/brand).
+            for fld in (p.manufacturer, p.engine_manufacturer, p.brand):
+                if fld and tl in fld.lower():
+                    label = fld.strip()
+                    break
+            # 2) Engine fitment (lives only in the applications table).
+            if label is None:
+                for mk, ml in apps_by_pid.get(p.id, []):
+                    if tl in mk.lower() or tl in ml.lower() or tl in f"{mk} {ml}".lower():
+                        eng = (ml or mk).strip()
+                        label = f"Fits {eng}" if eng else None
+                        break
+            # 3) Category.
+            if label is None and p.category and tl in (p.category.name or "").lower():
+                label = p.category.name.strip()
+            # 4) Description / part-number cross-ref — generic umbrellas.
+            if label is None:
+                label = "in description" if (p.description and tl in p.description.lower()) else "cross-ref"
+            label = label[:28]
+            if label and label not in bits:
+                bits.append(label)
+        if bits:
+            hints[p.id] = " · ".join(bits[:2])  # keep it to two reasons, max
+    return hints
 
 
 # ── List ─────────────────────────────────────────────────────────────────────
@@ -63,8 +276,15 @@ def product_list(
     request: Request,
     q: str = "",
     tab: str = "all",
+    sort: str = "sku",
+    direction: str = "asc",     # sortable_th — 'asc' | 'desc', pairs with `sort`
+    page: int = 1,
+    category_id: int = 0,       # §18 — filter by category (incl. descendants)
+    manufacturer: str = "",     # §18 — filter by Manufacturer / Engine Make
+    brand: str = "",            # §18 — filter by Brand
     db: Session = Depends(get_db),
 ):
+    direction = "desc" if str(direction).lower() == "desc" else "asc"
     base = db.query(Product).filter(Product.is_active == True)  # noqa: E712
 
     # Tab filter
@@ -74,47 +294,238 @@ def product_list(
             Product.qty_on_hand > 0,
             Product.qty_on_hand <= Product.reorder_point,
         )
+    elif tab == "in_stock":
+        query = base.filter(Product.qty_on_hand > 0)
     elif tab == "out_of_stock":
-        query = base.filter(Product.qty_on_hand == 0)
+        # Real stockouts only — special-order parts are qty 0 by design, not "out".
+        query = base.filter(Product.qty_on_hand == 0, Product.special_order_only == False)  # noqa: E712
     elif tab == "special_order":
         query = base.filter(Product.special_order_only == True)  # noqa: E712
+    elif tab == "needs_review":
+        query = base.filter(Product.needs_review == True)  # noqa: E712
+    elif tab == "uncategorized":
+        query = base.filter(Product.category_id.is_(None))
     else:
         query = base
 
-    # Search
+    # Search — R3: sku/title/manufacturer/brand PLUS OEM cross-refs, vendor
+    # part #/SKU, and competitor part numbers (normalized like the line adder).
     if q:
-        like = f"%{q}%"
-        query = query.filter(
-            Product.sku.ilike(like)
-            | Product.title.ilike(like)
-            | Product.manufacturer.ilike(like)
-            | Product.brand.ilike(like)
+        _search = _product_search_filter(db, q)
+        query = query.filter(_search)
+        # Tab counts must reflect the search too — keep them consistent with
+        # the filtered list (base feeds every count query below).
+        base = base.filter(_search)
+
+    # §18 — structured filters (category incl. descendants · manufacturer · brand)
+    if category_id:
+        query = query.filter(Product.category_id.in_(_descendant_category_ids(db, category_id)))
+    if manufacturer:
+        # engine_manufacturer and the older free-text manufacturer column drift
+        # apart (11,787 active products disagree between them — e.g. engine_
+        # manufacturer='CAT' vs manufacturer='CAT / Caterpillar', or one blank).
+        # An exact match on engine_manufacturer alone silently hid real, correctly
+        # -tagged products. Match raw alias tokens (from the same table the badge
+        # canonicalizer uses) against BOTH columns instead.
+        from app.services.classification_service import raw_tokens_for_canonical_make
+        _tokens = raw_tokens_for_canonical_make(manufacturer)
+        if _tokens:
+            query = query.filter(or_(*[
+                col.ilike(f"%{tok}%")
+                for tok in _tokens
+                for col in (Product.engine_manufacturer, Product.manufacturer)
+            ]))
+        else:
+            # Not one of the known aliased makes (e.g. an owner-added custom
+            # Manufacturer row) — fall back to the old exact-match behavior on
+            # either column.
+            query = query.filter(
+                (Product.engine_manufacturer == manufacturer) | (Product.manufacturer == manufacturer)
+            )
+    if brand:
+        query = query.filter(Product.brand == brand)
+
+    from app.models.product import ProductCategory
+
+    # ── Pagination — the catalog can be 10k+ rows; never render the whole set ──
+    PAGE_SIZE = 100
+    total = query.count()
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(1, min(page, total_pages))
+    offset = (page - 1) * PAGE_SIZE
+
+    q_eager = query.options(
+        # Eager-load so the category sub-line and vendor sort don't N+1.
+        joinedload(Product.category).joinedload(ProductCategory.parent),
+        joinedload(Product.vendor_sources).joinedload(ProductVendorSource.vendor),
+    )
+
+    # Best-match-first: when searching, a relevance score orders the matched set
+    # BEFORE the chosen Sort dropdown (which then breaks ties). A contiguous
+    # title/SKU hit ranks highest, then per-word title coverage, then a softer
+    # manufacturer/engine/brand hit — so "cat spacer" floats the parts whose NAME
+    # is closest to the words above parts that merely fit a Caterpillar engine.
+    rel_order: list = []
+    if q:
+        _toks = [t for t in q.split() if t]
+        _nqf = normalize_part(q)
+        _terms = [case((Product.title.ilike(f"%{q}%"), 6), else_=0)]
+        if _nqf:
+            _terms.append(case((Product.sku_norm.like(f"%{_nqf}%"), 6), else_=0))
+        for _t in _toks:
+            _terms.append(case((Product.title.ilike(f"%{_t}%"), 3), else_=0))
+            _terms.append(case((
+                Product.manufacturer.ilike(f"%{_t}%")
+                | Product.engine_manufacturer.ilike(f"%{_t}%")
+                | Product.brand.ilike(f"%{_t}%"), 1), else_=0))
+        _relevance = _terms[0]
+        for _term in _terms[1:]:
+            _relevance = _relevance + _term
+        rel_order = [_relevance.desc()]
+
+    # Sort: SKU (default) · Vendor · Category — ALL paged in SQL (LIMIT/OFFSET).
+    # Previously vendor/category did .all() over the full (13k+) matched set and
+    # sorted/sliced in Python, spiking RAM and stalling the counter. We now sort
+    # in SQL via scalar subqueries: vendor = the preferred source's vendor name;
+    # category = the leaf category name (full_path is a recursive Python property,
+    # so the leaf name is the SQL-sortable, performant approximation). NULLs last.
+    if sort == "vendor":
+        _pref_vendor_name = (
+            select(Vendor.name)
+            .join(ProductVendorSource, ProductVendorSource.vendor_id == Vendor.id)
+            .where(
+                ProductVendorSource.product_id == Product.id,
+                ProductVendorSource.is_preferred.is_(True),
+                ProductVendorSource.is_active.is_(True),
+            )
+            .limit(1)
+            .scalar_subquery()
         )
+        products = (
+            q_eager.order_by(
+                *rel_order, _pref_vendor_name.is_(None), func.lower(_pref_vendor_name), Product.sku
+            )
+            .limit(PAGE_SIZE).offset(offset).all()
+        )
+    elif sort == "category":
+        _cat_name = (
+            select(ProductCategory.name)
+            .where(ProductCategory.id == Product.category_id)
+            .limit(1)
+            .scalar_subquery()
+        )
+        products = (
+            q_eager.order_by(
+                *rel_order, _cat_name.is_(None), func.lower(_cat_name), Product.sku
+            )
+            .limit(PAGE_SIZE).offset(offset).all()
+        )
+    elif sort == "cost":
+        _cost_col = Product.cost.desc() if direction == "desc" else Product.cost.asc()
+        products = (
+            q_eager.order_by(*rel_order, _cost_col, Product.sku)
+            .limit(PAGE_SIZE).offset(offset).all()
+        )
+    elif sort == "avail":
+        _avail_col = Product.qty_on_hand.desc() if direction == "desc" else Product.qty_on_hand.asc()
+        products = (
+            q_eager.order_by(*rel_order, _avail_col, Product.sku)
+            .limit(PAGE_SIZE).offset(offset).all()
+        )
+    else:
+        sort = "sku"  # normalize unknown values back to the default
+        _sku_col = Product.sku.desc() if direction == "desc" else Product.sku.asc()
+        products = q_eager.order_by(*rel_order, _sku_col).limit(PAGE_SIZE).offset(offset).all()
 
-    products = query.order_by(Product.sku).all()
+    page_start = (offset + 1) if total else 0
+    page_end = min(offset + PAGE_SIZE, total)
 
-    # Tab counts (always based on full active set, ignoring current tab/search)
-    counts = {
-        "all": base.count(),
-        "low_stock": base.filter(
+    # Tab counts — full active set ignoring the current tab, but honoring the
+    # search (R3: base is search-filtered above so counts match the list).
+    # ONE conditional-aggregate pass instead of 7 separate COUNT queries: on a
+    # 31k catalog each count re-ran the contains-search full scan, so a search hit
+    # the DB 8× (7 tabs + total) for ~0.8-1.6s/keystroke (live-QA 2026-07-05). This
+    # collapses the 7 tab scans into a single SUM(CASE) pass — identical numbers.
+    _cnt = base.with_entities(
+        func.count().label("all"),
+        func.sum(case((Product.qty_on_hand > 0, 1), else_=0)).label("in_stock"),
+        func.sum(case((and_(
             Product.reorder_point > 0,
             Product.qty_on_hand > 0,
             Product.qty_on_hand <= Product.reorder_point,
-        ).count(),
-        "out_of_stock": db.query(Product).filter(
-            Product.is_active == True, Product.qty_on_hand == 0  # noqa: E712
-        ).count(),
-        "special_order": db.query(Product).filter(
-            Product.is_active == True, Product.special_order_only == True  # noqa: E712
-        ).count(),
+        ), 1), else_=0)).label("low_stock"),
+        func.sum(case((and_(
+            Product.qty_on_hand == 0, Product.special_order_only == False,  # noqa: E712
+        ), 1), else_=0)).label("out_of_stock"),
+        func.sum(case((Product.special_order_only == True, 1), else_=0)).label("special_order"),  # noqa: E712
+        func.sum(case((Product.needs_review == True, 1), else_=0)).label("needs_review"),  # noqa: E712
+        func.sum(case((Product.category_id.is_(None), 1), else_=0)).label("uncategorized"),
+    ).one()
+    counts = {
+        "all": _cnt.all or 0,
+        "in_stock": _cnt.in_stock or 0,
+        "low_stock": _cnt.low_stock or 0,
+        "out_of_stock": _cnt.out_of_stock or 0,
+        "special_order": _cnt.special_order or 0,
+        "needs_review": _cnt.needs_review or 0,
+        "uncategorized": _cnt.uncategorized or 0,
     }
 
-    return templates.TemplateResponse("products/list.html", {
-        "request": request,
+    # §18 — filter dropdown options (active category tree + maintained lists)
+    from app.models.product import Brand as _Brand, Manufacturer as _Manufacturer
+    filter_categories = sorted(
+        db.query(ProductCategory).filter(ProductCategory.is_active == True).all(),  # noqa: E712
+        key=lambda c: c.full_path.lower(),
+    )
+    filter_brands = (
+        db.query(_Brand).filter(_Brand.is_active == True)  # noqa: E712
+        .order_by(_Brand.sort_order, _Brand.name).all()
+    )
+    filter_manufacturers = (
+        db.query(_Manufacturer).filter(_Manufacturer.is_active == True)  # noqa: E712
+        .order_by(_Manufacturer.sort_order, _Manufacturer.name).all()
+    )
+
+    # Build a settings-aware sell-price map so the list template never has to
+    # call the hardcoded 30 % model property.  PricingService reads the stored
+    # default_markup_pct setting, respects price_override, etc.
+    from app.services.pricing_service import PricingService as _PS
+    _pricing_svc = _PS(db)
+    sell_price_map: dict[int, float] = {p.id: _pricing_svc.sell_price_for(p) for p in products}
+
+    # "Why it matched" hints — only computed when there's a query, over the page rows.
+    match_hints = _compute_match_hints(db, products, q) if q else {}
+
+    # Canonical Engine-Make per row (page-scoped, mirrors sell_price_map above) —
+    # single source of truth for the manufacturer badge, replacing the fragile
+    # per-row substring matching that used to disagree with the filter above.
+    from app.services.classification_service import canonical_make_for_product
+    mfr_map: dict[int, str] = {
+        p.id: canonical_make_for_product(p.engine_manufacturer, p.manufacturer) for p in products
+    }
+
+    return templates.TemplateResponse(request, "products/list.html", {
         "products": products,
+        "sell_price_map": sell_price_map,
+        "mfr_map": mfr_map,
+        "match_hints": match_hints,
         "q": q,
         "tab": tab,
+        "sort": sort,
+        "direction": direction,
         "counts": counts,
+        "page": page,
+        "total_pages": total_pages,
+        "total": total,
+        "page_start": page_start,
+        "page_end": page_end,
+        "page_size": PAGE_SIZE,
+        "filter_categories": filter_categories,
+        "filter_brands": filter_brands,
+        "filter_manufacturers": filter_manufacturers,
+        "category_id": category_id,
+        "manufacturer": manufacturer,
+        "brand": brand,
     })
 
 
@@ -129,89 +540,296 @@ def product_preview_panel(
         return HTMLResponse(
             '<p class="px-6 py-4 text-sm text-gray-400">Product not found.</p>'
         )
-    return templates.TemplateResponse("products/_preview_panel.html", {
-        "request": request,
+    from app.services.pricing_service import PricingService as _PS
+    sell_price = _PS(db).sell_price_for(p)
+    return templates.TemplateResponse(request, "products/_preview_panel.html", {
         "p": p,
+        "sell_price": sell_price,
     })
 
 
 # ── New ──────────────────────────────────────────────────────────────────────
 
-@router.get("/new", response_class=HTMLResponse)
-def product_new(request: Request, db: Session = Depends(get_db)):
+def _new_product_ctx(db: Session) -> dict:
+    """Render-context shared by GET /products/new and its 422 re-render."""
+    from app.constants import ENGINE_MODELS_BY_MAKE
+    from app.services.category_service import brand_names, engine_make_names, manufacturer_names
     default_markup = get_setting_value_db(db, "default_markup_pct", "30.0")
-    return templates.TemplateResponse("products/new.html", {
-        "request": request,
+    return {
         "vendors": _vendors(db),
         "categories": _categories(db),
-        "manufacturers": MANUFACTURERS,
+        "category_tree": ProductService(db).category_tree(),  # #7 nested picker
+        "manufacturers": manufacturer_names(db),
+        "brands": brand_names(db),
+        "engine_makes": engine_make_names(db),
+        "engine_models_by_make": ENGINE_MODELS_BY_MAKE,
         "default_markup": default_markup,
-    })
+        "sku_prefix": get_setting_value_db(db, "sku_prefix", "JAKS"),
+        "default_sku_scheme": (get_setting_value_db(db, "sku_scheme", "vendor") or "vendor").strip().lower(),
+    }
+
+
+@router.get("/new", response_class=HTMLResponse)
+def product_new(request: Request, db: Session = Depends(get_db)):
+    return templates.TemplateResponse(request, "products/new.html",
+                                      _new_product_ctx(db))
 
 
 @router.post("/new", response_class=HTMLResponse)
-async def product_create(request: Request, db: Session = Depends(get_db)):
+async def product_create(request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
+    # Pre-validate the auto-SKU fields BEFORE _parse_product_form so we emit the
+    # owner-locked error wording the UI promises (instead of falling through to
+    # ProductService.create_product's manual-SKU branch with "sku is required").
+    vendor_id_raw = str(form.get("vendor_id", "")).strip()
+    vendor_part_number = str(form.get("vendor_part_number", "")).strip()
+
+    def _error(msg: str):
+        ctx = _new_product_ctx(db)
+        ctx.update({"error": msg, "form_data": dict(form)})
+        return templates.TemplateResponse(request, "products/new.html",
+                                          ctx, status_code=422)
+
+    if not vendor_id_raw:
+        return _error("Vendor is required.")
+    if not vendor_part_number:
+        return _error("Vendor part number is required.")
+
     try:
         data = _parse_product_form(form)
-        product = _svc(db).create_product(data)
+        # Owner rule: the new form mints the SKU; never trust a manual sku field.
+        data.pop("sku", None)
+        # Per-product SKU-scheme override (blank → the sku_scheme setting default).
+        data["sku_scheme"] = str(form.get("sku_scheme", "")).strip().lower()
+        product = _svc(db, user_id).create_product(data)
         return RedirectResponse(f"/products/{product.id}", status_code=303)
     except ValueError as exc:
-        default_markup = get_setting_value_db(db, "default_markup_pct", "30.0")
-        return templates.TemplateResponse("products/new.html", {
-            "request": request,
-            "vendors": _vendors(db),
-            "categories": _categories(db),
-            "manufacturers": MANUFACTURERS,
-            "default_markup": default_markup,
-            "error": str(exc),
-            "form_data": dict(form),
-        }, status_code=422)
+        return _error(str(exc))
 
 
-# ── Detail ───────────────────────────────────────────────────────────────────
+# ── Classify-part (auto-fill category + engine + suggested cost) ─────────────
+
+@router.get("/classify-part")
+def product_classify_part(
+    vendor_id: int, part: str, db: Session = Depends(get_db),
+):
+    """Suggestion endpoint for the new-product form — given a typed vendor +
+    part#, return whatever classification + cost the system can already see.
+
+    All keys nullable on miss; never raises. The form may use this to pre-fill
+    the engine picker, category, and Vendor Cost when an existing import row
+    already knows the part.
+    """
+    from app.services.classification_service import ClassificationService
+    part = (part or "").strip()
+    vendor_id = int(vendor_id) if vendor_id else 0
+
+    out: dict = {
+        "category_id": None, "category_path": None,
+        "engine_make": None, "engine_model": None,
+        "suggested_cost": None,
+    }
+    if not part or not vendor_id:
+        return out
+
+    # ── Suggested cost — last cost we paid this vendor for this part# ──────
+    source = (
+        db.query(ProductVendorSource)
+        .filter(
+            ProductVendorSource.vendor_id == vendor_id,
+            ProductVendorSource.vendor_part_number == part,
+            ProductVendorSource.is_active == True,  # noqa: E712
+        )
+        .order_by(ProductVendorSource.id.desc())
+        .first()
+    )
+    if source is not None and source.vendor_cost:
+        out["suggested_cost"] = round(float(source.vendor_cost), 4)
+
+    # ── Category + engine suggestion ───────────────────────────────────────
+    sug = ClassificationService(db).classify(
+        title=part, tags="", extra_text="",
+        app_makes=[], app_models=[],
+    )
+    cat_id = sug.get("category_id")
+    if cat_id:
+        from app.models.product import ProductCategory
+        cat = db.query(ProductCategory).filter(ProductCategory.id == cat_id).first()
+        if cat is not None:
+            out["category_id"] = cat.id
+            out["category_path"] = cat.full_path
+    if sug.get("engine_manufacturer"):
+        out["engine_make"] = sug["engine_manufacturer"]
+    if sug.get("engine_model"):
+        out["engine_model"] = sug["engine_model"]
+    return out
+
+
+# ── AI suggest (Claude) — title + description + meta_description ─────────────
+
+@router.post("/ai-suggest", response_class=HTMLResponse)
+async def product_ai_suggest(request: Request, db: Session = Depends(get_db),
+                              user_id: int = Depends(get_current_user_id)):
+    """Generate AI-suggested copy for the product form.
+
+    Accepts form-encoded or JSON body (HTMX usually posts form data). All
+    fields optional — the service composes the prompt from whatever facts it
+    has. Returns an HTML fragment for HTMX swap into an ai-suggestion target.
+
+    Fail-soft: a missing/invalid API key or any Anthropic API failure renders
+    a friendly hint inside the same panel (200 OK, never 500).
+    """
+    from app.services.ai_description_service import AIDescriptionService
+    from app.models.product import ProductCategory
+
+    # Body parsing — prefer form (what HTMX sends) but accept JSON too.
+    ctype = (request.headers.get("content-type") or "").lower()
+    if ctype.startswith("application/json"):
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+    else:
+        body = dict(await request.form())
+
+    def _get(key: str) -> str | None:
+        v = body.get(key)
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
+
+    # Resolve human-readable names for the prompt (vendor → name, category → path).
+    vendor_name: str | None = None
+    vendor_id_raw = _get("vendor_id")
+    if vendor_id_raw and vendor_id_raw.isdigit():
+        v = db.query(Vendor).filter(Vendor.id == int(vendor_id_raw)).first()
+        if v is not None:
+            vendor_name = v.name
+
+    category_path: str | None = None
+    cat_id_raw = _get("category_id")
+    if cat_id_raw and cat_id_raw.isdigit():
+        cat = (
+            db.query(ProductCategory)
+            .filter(ProductCategory.id == int(cat_id_raw))
+            .first()
+        )
+        if cat is not None:
+            # full_path is the breadcrumb the catalog already uses.
+            category_path = getattr(cat, "full_path", None) or cat.name
+
+    suggestion = AIDescriptionService(db, user_id).suggest_for_product(
+        vendor_name=vendor_name,
+        vendor_part_number=_get("vendor_part_number"),
+        manufacturer=_get("manufacturer"),
+        brand=_get("brand"),
+        category_path=category_path,
+        engine_make=_get("engine_make"),
+        engine_model=_get("engine_model"),
+        current_title=_get("title"),
+        current_description=_get("description"),
+    )
+
+    return templates.TemplateResponse(
+        request,
+        "products/_ai_suggestion_panel.html",
+        {"suggestion": suggestion},
+    )
+
 
 # ── Quick Create (slide-over — called from quote "add non-stocked item") ──────
 
+def _quick_create_vendor_ctx(db: Session, vendor_id: int | None) -> dict:
+    """When the modal is opened from a PO (vendor known), pass the vendor +
+    category list so it renders the auto-SKU variant. No vendor → manual variant."""
+    ctx: dict = {}
+    if vendor_id:
+        v = db.query(Vendor).filter(Vendor.id == vendor_id).first()
+        if v is not None:
+            ctx["vendor"] = v
+            ctx["categories"] = _categories(db)
+    return ctx
+
+
 @router.get("/quick-create-form", response_class=HTMLResponse)
-def product_quick_create_form(request: Request):
-    return templates.TemplateResponse("products/_quick_create.html", {"request": request})
+def product_quick_create_form(
+    request: Request,
+    vendor_id: int | None = None,
+    doc_type: str = "",
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse(
+        request, "products/_quick_create.html", _quick_create_vendor_ctx(db, vendor_id)
+    )
 
 
 @router.post("/quick-create", response_class=HTMLResponse)
-async def product_quick_create(request: Request, db: Session = Depends(get_db)):
+async def product_quick_create(request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
-    sku_suffix = str(form.get("sku_suffix", "")).strip().upper()
     title = str(form.get("title", "")).strip()
-    if not sku_suffix or not title:
-        return HTMLResponse(
-            '<p class="text-sm text-red-600 font-medium px-5 py-3">SKU and title are required.</p>',
-            status_code=422,
-        )
-    sku = f"JAKS-{sku_suffix}"
-    svc = _svc(db)
-    try:
-        product = svc.create_product({
-            "sku": sku,
-            "title": title,
-            "cost": float(form.get("cost") or 0),
-            "markup_pct": float(form.get("markup_pct") or 30),
-            "has_core": bool(form.get("has_core")),
-            "vendor_core_charge": float(form.get("vendor_core_charge") or 0),
-            "customer_core_charge": float(form.get("customer_core_charge") or 0),
+    vendor_id_raw = str(form.get("vendor_id", "")).strip()
+    svc = _svc(db, user_id)
+    # O5 — when the quick-create form leaves markup blank, inherit the configured
+    # default_markup_pct rather than a hardcoded 30.
+    from app.services.pricing_service import PricingService
+    _pricing = PricingService(db)
+    markup_raw = str(form.get("markup_pct", "")).strip()
+    markup_pct = float(markup_raw) if markup_raw else _pricing.default_markup_pct()
+    cost = float(form.get("cost") or 0)
+
+    def _rerender(msg: str):
+        # D-6 — re-render the panel at 200 so HTMX swaps it (a 422 with a bare <p>
+        # isn't swapped → user sees the generic fallback and loses input). Carry
+        # vendor context back so the auto-SKU variant re-renders, not the manual one.
+        vid = int(vendor_id_raw) if vendor_id_raw.isdigit() else None
+        ctx = _quick_create_vendor_ctx(db, vid)
+        ctx.update({"error": msg, "form_data": dict(form)})
+        return templates.TemplateResponse(request, "products/_quick_create.html", ctx)
+
+    # Fields shared by both paths.
+    common = {
+        "title": title,
+        "description": str(form.get("description", "")).strip(),
+        "cost": cost,
+        "markup_pct": markup_pct,
+        "has_core": bool(form.get("has_core")),
+        "vendor_core_charge": float(form.get("vendor_core_charge") or 0),
+        "customer_core_charge": float(form.get("customer_core_charge") or 0),
+    }
+
+    if vendor_id_raw.isdigit():
+        # ── Auto-SKU path (opened from a PO — vendor known). SkuService mints the
+        # JAKS SKU from vendor digit + category (+ engine) and stamps a preferred
+        # ProductVendorSource with the supplier's part #. On a PO the entered unit
+        # cost IS the vendor's cost, so it seeds vendor_cost too. ──
+        vendor_part_number = str(form.get("vendor_part_number", "")).strip()
+        if not title or not vendor_part_number:
+            return _rerender("Title and vendor part # are required.")
+        cat_raw = str(form.get("category_id", "")).strip()
+        data = dict(common)
+        data.update({
+            "vendor_id": int(vendor_id_raw),
+            "vendor_part_number": vendor_part_number,
+            "vendor_cost": cost,
+            "category_id": int(cat_raw) if cat_raw.isdigit() else None,
+            "engine_make": str(form.get("engine_make", "")).strip(),
+            "engine_model": str(form.get("engine_model", "")).strip(),
         })
+    else:
+        # ── Manual-SKU path (quote / SO / invoice / misc — no vendor). ──
+        sku_suffix = str(form.get("sku_suffix", "")).strip().upper()
+        if not sku_suffix or not title:
+            return _rerender("SKU and title are required.")
+        data = dict(common)
+        data["sku"] = f"JAKS-{sku_suffix}"
+
+    try:
+        product = svc.create_product(data)
     except ValueError as exc:
-        return HTMLResponse(
-            f'<p class="text-sm text-red-600 font-medium px-5 py-3">{exc}</p>',
-            status_code=422,
-        )
+        return _rerender(str(exc))
     db.commit()
-    from app.utils import calc_sell_price
-    sell = (
-        product.price_override
-        if (product.price_override and product.price_override > 0)
-        else calc_sell_price(product.cost, product.markup_pct or 30.0)
-    )
+    sell = _pricing.sell_price_for(product)
     _detail = html.escape(json.dumps({
         "type": "product",
         "id": product.id,
@@ -241,6 +859,378 @@ async def product_quick_create(request: Request, db: Session = Depends(get_db)):
     )
 
 
+# ── Bulk Set-Status — MUST be before /{product_id} ───────────────────────────
+
+@router.post("/bulk-status", response_class=RedirectResponse)
+async def product_bulk_status(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Set is_active status on a batch of products.
+    Form fields:
+      product_ids  — repeated int field (one per selected product)
+      action       — "activate" | "deactivate"
+    """
+    form = await request.form()
+    raw_ids = form.getlist("product_ids")
+    action = str(form.get("action", "")).strip()
+
+    product_ids = []
+    for raw in raw_ids:
+        try:
+            product_ids.append(int(raw))
+        except (ValueError, TypeError):
+            pass
+
+    if product_ids and action in ("activate", "deactivate"):
+        new_state = action == "activate"
+        db.query(Product).filter(Product.id.in_(product_ids)).update(
+            {"is_active": new_state}, synchronize_session=False
+        )
+        db.commit()
+
+    return RedirectResponse("/products/", status_code=303)
+
+
+# ── Bulk Assign Category / Manufacturer — MUST be before /{product_id} ────────
+# §18 — the Products-List triage action. Assigns a category and/or a
+# Manufacturer / Engine Make to the selected products. Assigning clears
+# needs_review (the row has now been triaged → leaves the Import Review queue).
+
+@router.post("/bulk-assign", response_class=RedirectResponse)
+async def product_bulk_assign(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    form = await request.form()
+    raw_ids = form.getlist("product_ids")
+    product_ids: list[int] = []
+    for raw in raw_ids:
+        try:
+            product_ids.append(int(raw))
+        except (ValueError, TypeError):
+            pass
+
+    category_id_raw = str(form.get("category_id", "")).strip()
+    manufacturer = str(form.get("manufacturer", "")).strip()
+
+    updates: dict = {}
+    if category_id_raw:
+        try:
+            updates["category_id"] = int(category_id_raw)
+        except (ValueError, TypeError):
+            pass
+    if manufacturer:
+        updates["engine_manufacturer"] = manufacturer
+
+    if product_ids and updates:
+        # Assigning is the triage action → the row leaves "Needs Review".
+        updates["needs_review"] = False
+        db.query(Product).filter(Product.id.in_(product_ids)).update(
+            updates, synchronize_session=False
+        )
+        db.commit()
+
+    return_to = str(form.get("return_to", "/products/")).strip()
+    if not return_to.startswith("/products"):
+        return_to = "/products/"          # guard against open redirect
+    return RedirectResponse(return_to, status_code=303)
+
+
+# ── Bulk Set Reorder Point — MUST be before /{product_id} ─────────────────────
+# The Low-Stock / Reorder tab is inert without reorder points on products.
+# Mirrors /bulk-assign: apply one validated value to the selected rows.
+# A negative or non-integer value writes nothing.
+
+@router.post("/bulk-reorder-point", response_class=RedirectResponse)
+async def product_bulk_reorder_point(
+    request: Request,
+    db: Session = Depends(get_db),
+    _admin=Depends(require_admin),
+):
+    form = await request.form()
+    product_ids: list[int] = []
+    for raw in form.getlist("product_ids"):
+        try:
+            product_ids.append(int(raw))
+        except (ValueError, TypeError):
+            pass
+
+    try:
+        value = int(str(form.get("reorder_point", "")).strip())
+    except (ValueError, TypeError):
+        value = None
+
+    if product_ids and value is not None and value >= 0:
+        db.query(Product).filter(Product.id.in_(product_ids)).update(
+            {"reorder_point": value}, synchronize_session=False
+        )
+        db.commit()
+
+    return_to = str(form.get("return_to", "/products/")).strip()
+    if not return_to.startswith("/products"):
+        return_to = "/products/"          # guard against open redirect
+    return RedirectResponse(return_to, status_code=303)
+
+
+# ── Import Review queue (§18.7) — MUST be before /{product_id} ────────────────
+# Products the importer flagged needs_review (couldn't confidently place into a
+# Subcategory / Product Family). Per-row inline assign posts to /bulk-assign and
+# returns here; assigning clears the flag so the row leaves the queue.
+
+@router.get("/review", response_class=HTMLResponse)
+def product_review_queue(request: Request, db: Session = Depends(get_db)):
+    from app.models.product import Manufacturer as _Manufacturer, ProductCategory as _PC
+    base = db.query(Product).filter(
+        Product.is_active == True, Product.needs_review == True  # noqa: E712
+    )
+    total = base.count()
+    products = (
+        base.options(joinedload(Product.category).joinedload(_PC.parent))
+        .order_by(Product.sku).limit(300).all()
+    )
+    filter_categories = sorted(
+        db.query(_PC).filter(_PC.is_active == True).all(),  # noqa: E712
+        key=lambda c: c.full_path.lower(),
+    )
+    filter_manufacturers = (
+        db.query(_Manufacturer).filter(_Manufacturer.is_active == True)  # noqa: E712
+        .order_by(_Manufacturer.sort_order, _Manufacturer.name).all()
+    )
+    return templates.TemplateResponse(request, "products/review.html", {
+        "products": products, "total": total, "shown": len(products),
+        "filter_categories": filter_categories,
+        "filter_manufacturers": filter_manufacturers,
+    })
+
+
+# ── Export CSV — MUST be before /{product_id} ─────────────────────────────────
+
+@router.get("/export.csv")
+def product_export_csv(
+    request: Request,
+    tab: str = "",
+    q: str = "",
+    db: Session = Depends(get_db),
+):
+    """
+    Stream the current filtered product list as a CSV download.
+    Respects the same tab/q filters as the list view so "export what I see" works.
+    """
+    # Mirror the list view's tab slugs so "export what I see" matches exactly.
+    base = db.query(Product).filter(Product.is_active == True)  # noqa: E712
+    if tab == "low_stock":
+        base = base.filter(
+            Product.reorder_point > 0,
+            Product.qty_on_hand > 0,
+            Product.qty_on_hand <= Product.reorder_point,
+        )
+    elif tab == "in_stock":
+        base = base.filter(Product.qty_on_hand > 0)
+    elif tab == "out_of_stock":
+        base = base.filter(Product.qty_on_hand == 0, Product.special_order_only == False)  # noqa: E712
+    elif tab == "special_order":
+        base = base.filter(Product.special_order_only == True)  # noqa: E712
+
+    if q:
+        from sqlalchemy import or_
+        base = base.filter(
+            or_(
+                Product.sku.ilike(f"%{q}%"),
+                Product.title.ilike(f"%{q}%"),
+                Product.description.ilike(f"%{q}%"),
+            )
+        )
+
+    products = base.order_by(Product.sku).all()
+
+    # O5 — settings-backed sell price (default markup from default_markup_pct).
+    from app.services.pricing_service import PricingService
+    _pricing = PricingService(db)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "sku", "title", "description", "status",
+        "cost", "markup_pct", "price_override", "selling_price",
+        "qty_on_hand", "is_active", "category",
+        # SEO / marketplace columns — consumed by the Shopify / eBay export-sync.
+        "seo_title", "seo_description", "search_keywords",
+    ])
+    for p in products:
+        try:
+            sell = _pricing.sell_price_for(p)
+        except Exception:
+            sell = round(p.cost, 2)
+        writer.writerow([
+            p.sku,
+            p.title,
+            p.description,
+            p.status,
+            f"{p.cost:.4f}",
+            # The product's OWN markup (blank when unset — the selling_price column
+            # already reflects the settings-backed default for unset products).
+            f"{p.markup_pct:.2f}" if p.markup_pct is not None else "",
+            f"{p.price_override:.2f}" if p.price_override else "",
+            f"{sell:.2f}",
+            p.qty_on_hand,
+            "yes" if p.is_active else "no",
+            p.category.name if p.category else "",
+            p.seo_title or "",
+            p.seo_description or "",
+            p.search_keywords or "",
+        ])
+
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=products.csv"},
+    )
+
+
+# ── §7.2 Enrichment sync (external catalog CSV → enrich existing products) ─────
+# Registered BEFORE /{product_id} so the literal path isn't captured by the
+# dynamic int route. Enrich-only: matches jaks_sku→sku, never creates products,
+# never touches cost/sell. Returns a JSON summary.
+
+@router.post("/enrich-sync")
+async def product_enrich_sync(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _admin=Depends(require_admin),   # C11 — was the one import route with no role gate
+):
+    from app.services.enrichment_service import ProductEnrichmentService
+    raw = await file.read()
+    text = raw.decode("utf-8-sig", errors="replace")
+    return ProductEnrichmentService(db).enrich_from_csv_text(text)
+
+
+# ── Product Importer (Full Import + Pricing Update + Applications) — admin-gated
+# Three modes, all dry-run-first. Full creates products from the PAI scraper's
+# Shopify export; Pricing Update only updates PAI vendor_cost (+ cost history) or
+# competitor_prices (+ history); Applications (§23.3 Phase 2 #1) batch-imports
+# engine-fitment rows (sku/make/model/cpl/esn_range) onto EXISTING products only.
+# Registered BEFORE /{product_id}.
+
+@router.get("/import", response_class=HTMLResponse)
+def product_import_page(request: Request, db: Session = Depends(get_db),
+                        _admin=Depends(require_admin)):
+    return templates.TemplateResponse(request, "products/import.html",
+                                      {"categories": _categories(db)})
+
+
+# The direct importer bypasses the Review Queue entirely — a non-dry-run writes
+# the LIVE catalog in one request. The typed phrase (not a yes/no confirm) is the
+# proof the operator understood that.
+_LIVE_IMPORT_CONFIRM = "APPLY TO LIVE CATALOG"
+
+
+@router.post("/import-run")
+async def product_import_run(
+    file: UploadFile = File(...),
+    mode: str = Form("full"),                # full | pricing | applications
+    source_type: str = Form("pai_cost"),     # pricing: sell | pai_cost | competitor
+    dry_run: bool = Form(True),
+    max_change_pct: float | None = Form(None),  # sell mode safety rail (e.g. 50.0)
+    import_images: bool = Form(True),
+    confirm_text: str = Form(""),            # required (exact) for non-dry-run
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+    _admin=Depends(require_admin),
+):
+    from app.services.product_import_service import ProductImportService
+    svc = ProductImportService(db, user_id)
+    # Same permission as the Review-Queue apply (apply_approved): this route
+    # writes the live catalog with zero staging, so it must hold at the service
+    # layer too, not only via the route's require_admin dependency.
+    try:
+        svc.assert_can(Permission.APPLY_IMPORT)
+    except PermissionDeniedError:
+        return JSONResponse(
+            {"error": "Applying an import to the live catalog requires admin access."},
+            status_code=403)
+    if not dry_run and confirm_text.strip() != _LIVE_IMPORT_CONFIRM:
+        return JSONResponse(
+            {"error": f'Nothing was written. This import bypasses the Review Queue '
+                      f'and writes straight to the live catalog — type '
+                      f'"{_LIVE_IMPORT_CONFIRM}" in the confirmation box to run it.'},
+            status_code=400)
+    raw = await file.read()
+    text = raw.decode("utf-8-sig", errors="replace")
+    if mode == "full":
+        return svc.full_import(text, dry_run=dry_run, import_images=import_images)
+    if mode == "applications":
+        return svc.import_applications(text, dry_run=dry_run)
+    if mode == "pricing" and source_type == "competitor":
+        return svc.pricing_update_competitor(text, dry_run=dry_run)
+    if mode == "pricing" and source_type == "sell":
+        return svc.pricing_update_sell(text, dry_run=dry_run,
+                                       max_change_pct=max_change_pct)
+    if mode == "pricing":
+        return svc.pricing_update_pai_cost(text, dry_run=dry_run)
+    return {"error": f"unknown mode {mode!r}"}
+
+
+@router.post("/backfill-manufacturers")
+def product_backfill_manufacturers(
+    dry_run: bool = Form(True),
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+    _admin=Depends(require_admin),
+):
+    """Owner rule applied retroactively: fill BLANK manufacturers from each
+    product's stored OEM-ref brands / applications / title / keywords."""
+    from app.services.product_import_service import ProductImportService
+    return ProductImportService(db, user_id).backfill_manufacturers(dry_run=dry_run)
+
+
+@router.post("/reorder-backfill")
+def product_reorder_backfill(
+    category_id: int = Form(...),
+    reorder_point: int = Form(...),
+    dry_run: bool = Form(True),
+    db: Session = Depends(get_db),
+    _admin=Depends(require_admin),
+):
+    """Seed reorder points by category: sets `reorder_point` on every ACTIVE
+    product under the category (subcategories included) whose reorder point is
+    still 0 — a value someone already set deliberately is never overwritten."""
+    if reorder_point < 1:
+        return {"error": "Reorder point must be a positive whole number."}
+    cat = db.get(ProductCategory, category_id)
+    if cat is None:
+        return {"error": "Category not found."}
+    q = db.query(Product).filter(
+        Product.category_id.in_(_descendant_category_ids(db, category_id)),
+        Product.reorder_point == 0,
+        Product.is_active == True,  # noqa: E712
+    )
+    matched = q.count()
+    if not dry_run and matched:
+        q.update({"reorder_point": reorder_point}, synchronize_session=False)
+        db.commit()
+    return {"dry_run": dry_run, "category": cat.full_path,
+            "reorder_point": reorder_point, "updated": matched}
+
+
+@router.post("/reclassify-all")
+def product_reclassify_all(
+    dry_run: bool = Form(True),
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+    _admin=Depends(require_admin),
+):
+    """§23.3 Phase 1 #5 — re-sweep the catalog with the CURRENT classification
+    rules, filling only blank category/engine make/engine model (never
+    overwrites an already-set value). Dry-run by default."""
+    from app.services.product_import_service import ProductImportService
+    return ProductImportService(db, user_id).reclassify_all(dry_run=dry_run)
+
+
+# ── Detail / Update / Deactivate / Reactivate ─────────────────────────────────
+
 @router.get("/{product_id}", response_class=HTMLResponse)
 def product_detail(
     product_id: int,
@@ -253,60 +1243,203 @@ def product_detail(
     p = db.query(Product).filter(Product.id == product_id).first()
     if not p:
         return RedirectResponse("/products/", status_code=303)
-    return templates.TemplateResponse("products/detail.html", {
-        "request": request,
+    from app.constants import ENGINE_MODELS_BY_MAKE
+    from app.services.category_service import brand_names, engine_make_names, manufacturer_names
+    return templates.TemplateResponse(request, "products/detail.html", {
         "product": p,
         "vendors": _vendors(db),
         "categories": _categories(db),
-        "manufacturers": MANUFACTURERS,
+        "category_tree": ProductService(db).category_tree(),  # #7 nested picker
+        "manufacturers": manufacturer_names(db),
+        "brands": brand_names(db),
         "cross_ref_types": list(CrossRefType),
         "suggested_sell_types": list(SuggestedSellType),
+        "default_markup": float(get_setting_value_db(db, "default_markup_pct", "30.0")),
+        "engine_makes": engine_make_names(db),        # §21 application picker
+        "engine_models_by_make": ENGINE_MODELS_BY_MAKE,
         "ok": ok or (saved and "Saved.") or "",
         "error": error,
     })
 
 
+def _maybe_push_shopify_on_edit(db: Session, background: BackgroundTasks,
+                                product_id: int, user_id: int | None) -> None:
+    """Schedule an instant Shopify push of this product after a full save, when
+    auto-push is enabled (shopify_push_on_edit, default on) AND the product is
+    already linked to a live listing. Runs as a fail-soft BackgroundTask so a slow
+    or unconfigured Shopify never delays the save's redirect. Unlinked products are
+    skipped here (nothing to update) — they reach the store via the normal publish."""
+    if get_setting_value_db(db, "shopify_push_on_edit", "1").strip() != "1":
+        return
+    p = db.query(Product).filter(Product.id == product_id).first()
+    if p and (p.shopify_product_id or "").startswith("gid://"):
+        from app.services.shopify_service import run_single_product_push
+        background.add_task(run_single_product_push, product_id, user_id)
+
+
 @router.post("/{product_id}", response_class=HTMLResponse)
-async def product_update(product_id: int, request: Request, db: Session = Depends(get_db)):
+async def product_update(product_id: int, request: Request, background: BackgroundTasks, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     p = db.query(Product).filter(Product.id == product_id).first()
     if not p:
         return RedirectResponse("/products/", status_code=303)
     form = await request.form()
     try:
         data = _parse_product_form(form)
-        _svc(db).update_product(product_id, data)
+        _svc(db, user_id).update_product(product_id, data)
+        _maybe_push_shopify_on_edit(db, background, product_id, user_id)
         return RedirectResponse(f"/products/{product_id}?saved=1", status_code=303)
     except ValueError as exc:
         # Re-fetch product fresh (may be partially updated in service before error)
         p = db.query(Product).filter(Product.id == product_id).first()
-        return templates.TemplateResponse("products/detail.html", {
-            "request": request,
+        from app.constants import ENGINE_MODELS_BY_MAKE
+        from app.services.category_service import brand_names, engine_make_names, manufacturer_names
+        return templates.TemplateResponse(request, "products/detail.html", {
             "product": p,
             "vendors": _vendors(db),
             "categories": _categories(db),
-            "manufacturers": MANUFACTURERS,
+            "category_tree": ProductService(db).category_tree(),  # #7 nested picker
+            "manufacturers": manufacturer_names(db),
+            "brands": brand_names(db),
+            "engine_makes": engine_make_names(db),
+            "engine_models_by_make": ENGINE_MODELS_BY_MAKE,
             "cross_ref_types": list(CrossRefType),
+            "suggested_sell_types": list(SuggestedSellType),
+            "default_markup": float(get_setting_value_db(db, "default_markup_pct", "30.0")),
             "error": str(exc),
         }, status_code=422)
+
+
+# ── Autosave (Save Standard v2) ───────────────────────────────────────────────
+# Real auto-save for the Info-tab edit form. The detail page POSTs the whole form here
+# (debounced) via fetch and drives the honest save-state pill off the HTTP status —
+# green "All changes saved" appears ONLY after a confirmed commit. Replaces the old
+# cosmetic _dirty flag, which defaulted to "All changes saved" on load even though
+# nothing had been persisted, so edits were silently lost on navigation (owner-reported
+# 2026-06-06). Same field set / validation as product_update; never redirects.
+@router.post("/{product_id}/autosave", response_class=HTMLResponse)
+async def product_autosave(
+    product_id: int, request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    p = db.query(Product).filter(Product.id == product_id).first()
+    if not p:
+        return HTMLResponse(
+            '<span class="text-xs text-red-600">Product not found.</span>',
+            status_code=404,
+        )
+    form = await request.form()
+    try:
+        data = _parse_product_form(form)
+        _svc(db, user_id).update_product(product_id, data)
+        return HTMLResponse('<span class="text-xs text-green-600 font-medium">&#10003; Saved</span>')
+    except ValueError as exc:
+        db.rollback()
+        return HTMLResponse(
+            f'<span class="text-xs text-red-600">{html.escape(str(exc))}</span>',
+            status_code=422,
+        )
+    except Exception:
+        db.rollback()
+        import logging
+        logging.getLogger(__name__).exception("Product autosave failed for %s", product_id)
+        return HTMLResponse(
+            '<span class="text-xs text-red-600">Save failed.</span>',
+            status_code=500,
+        )
+
+
+# ── Unlock price (scraper-audit bug #11) ─────────────────────────────────────
+# Clears ONLY the operator price lock (price_override itself is kept) so the
+# nightly scraper feed may manage the sell price again. The lock is set
+# automatically by ProductService.update_product when an operator changes the
+# exact price via the UI.
+
+@router.post("/{product_id}/unlock-price", response_class=HTMLResponse)
+async def product_unlock_price(product_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    p = db.query(Product).filter(Product.id == product_id).first()
+    if not p:
+        return RedirectResponse("/products/", status_code=303)
+    _svc(db, user_id).unlock_price_override(product_id)
+    return RedirectResponse(
+        f"/products/{product_id}?ok=Price+unlocked.+The+nightly+vendor+feed+may+manage+it+again.",
+        status_code=303,
+    )
+
+
+# ── Push to Shopify now (instant single-product reflection of an ERP edit) ────
+@router.post("/{product_id}/push-shopify", response_class=HTMLResponse)
+async def product_push_shopify(product_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    """Manual one-click: reflect this product's current ERP price/SEO/tags (and
+    availability state, when the sold-out model is on) on its linked Shopify
+    listing right now. Runs synchronously so the owner sees the outcome. Fail-soft:
+    a not-linked / unconfigured product returns a clear message, never a 500."""
+    from urllib.parse import quote
+    from app.services.shopify_service import ShopifyService
+    p = db.query(Product).filter(Product.id == product_id).first()
+    if not p:
+        return RedirectResponse("/products/", status_code=303)
+    try:
+        res = ShopifyService(db, user_id).push_product_now(product_id)
+    except PermissionError:
+        return RedirectResponse(
+            f"/products/{product_id}?error={quote('You do not have permission to publish to Shopify.')}",
+            status_code=303)
+    if res.get("ok"):
+        msg = "Pushed to Shopify." + ("" if res.get("price_synced", True)
+                                      else " (price skipped — variant not linked)")
+        return RedirectResponse(f"/products/{product_id}?ok={quote(msg)}", status_code=303)
+    return RedirectResponse(
+        f"/products/{product_id}?error={quote('Shopify push: ' + str(res.get('error', 'failed'))[:180])}",
+        status_code=303)
 
 
 # ── Deactivate ───────────────────────────────────────────────────────────────
 
 @router.post("/{product_id}/deactivate", response_class=HTMLResponse)
-async def product_deactivate(product_id: int, request: Request, db: Session = Depends(get_db)):
+async def product_deactivate(product_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
     reason = str(form.get("reason", "archived via UI")).strip() or "archived via UI"
     try:
-        _svc(db).deactivate_product(product_id, reason)
+        _svc(db, user_id).deactivate_product(product_id, reason)
     except ValueError:
         pass
     return RedirectResponse("/products/", status_code=303)
 
 
+@router.post("/{product_id}/reactivate", response_class=RedirectResponse)
+async def product_reactivate(product_id: int, db: Session = Depends(get_db)):
+    p = db.query(Product).filter(Product.id == product_id).first()
+    if p:
+        p.is_active = True
+        db.commit()
+    return RedirectResponse(f"/products/{product_id}", status_code=303)
+
+
+# ── Merge duplicate ──────────────────────────────────────────────────────────
+
+@router.post("/{keeper_id}/merge/{duplicate_id}", response_class=RedirectResponse)
+async def product_merge(keeper_id: int, duplicate_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    from urllib.parse import quote
+    form = await request.form()
+    new_sku = str(form.get("new_sku", "")).strip() or None
+    try:
+        result = _svc(db, user_id).merge_products(keeper_id, duplicate_id, new_sku=new_sku)
+    except PermissionDeniedError:
+        return RedirectResponse(
+            f"/products/{keeper_id}?error={quote('Merging products requires admin access.')}",
+            status_code=303,
+        )
+    except ValueError as exc:
+        return RedirectResponse(f"/products/{keeper_id}?error={quote(str(exc))}", status_code=303)
+    msg = (f"Merged {result['duplicate_old_sku']} into {result['keeper_sku']} — "
+           f"{result['qty_absorbed']} unit(s) absorbed. Duplicate retired (not deleted).")
+    return RedirectResponse(f"/products/{keeper_id}?ok={quote(msg)}", status_code=303)
+
+
 # ── Vendor Sources ────────────────────────────────────────────────────────────
 
 @router.post("/{product_id}/vendor-sources", response_class=HTMLResponse)
-async def vendor_source_add(product_id: int, request: Request, db: Session = Depends(get_db)):
+async def vendor_source_add(product_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
     vendor_id_raw = str(form.get("vendor_id", "")).strip()
     if not vendor_id_raw:
@@ -320,13 +1453,20 @@ async def vendor_source_add(product_id: int, request: Request, db: Session = Dep
             "is_preferred": bool(form.get("is_preferred")),
             "notes": str(form.get("notes", "")).strip(),
         }
-        source = _svc(db).add_vendor_source(product_id, vendor_id, data)
+        source = _svc(db, user_id).add_vendor_source(product_id, vendor_id, data)
         db.refresh(source)
-        return templates.TemplateResponse("products/_vendor_source_row.html", {
-            "request": request,
+        resp = templates.TemplateResponse(request, "products/_vendor_source_row.html", {
             "source": source,
             "product_id": product_id,
         })
+        # When this source became the preferred one, product.cost was mirrored
+        # from it. Tell the Info tab to live-update the "Our Cost" field (and the
+        # derived sell price) without a full page reload.
+        if source.is_preferred:
+            resp.headers["HX-Trigger"] = json.dumps(
+                {"product-cost-synced": {"cost": round(source.vendor_cost, 2)}}
+            )
+        return resp
     except ValueError as exc:
         return HTMLResponse(
             f'<tr><td colspan="6" class="px-4 py-2 text-red-600 text-sm">{exc}</td></tr>',
@@ -335,16 +1475,22 @@ async def vendor_source_add(product_id: int, request: Request, db: Session = Dep
 
 
 @router.post("/{product_id}/vendor-sources/{source_id}/prefer", response_class=HTMLResponse)
-def vendor_source_prefer(product_id: int, source_id: int, request: Request, db: Session = Depends(get_db)):
+def vendor_source_prefer(product_id: int, source_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     try:
-        _svc(db).set_preferred_vendor(product_id, source_id)
+        _svc(db, user_id).set_preferred_vendor(product_id, source_id)
         # Return the full updated sources list partial so preferred badges refresh
         p = db.query(Product).filter(Product.id == product_id).first()
-        return templates.TemplateResponse("products/_vendor_sources_table.html", {
-            "request": request,
+        resp = templates.TemplateResponse(request, "products/_vendor_sources_table.html", {
             "product": p,
             "product_id": product_id,
         })
+        # Switching the preferred vendor changes product.cost — live-update the
+        # Info tab's Pricing card to match.
+        if p is not None:
+            resp.headers["HX-Trigger"] = json.dumps(
+                {"product-cost-synced": {"cost": round(p.cost, 2)}}
+            )
+        return resp
     except ValueError as exc:
         return HTMLResponse(f'<span class="text-red-600 text-sm">{exc}</span>', status_code=422)
 
@@ -360,6 +1506,10 @@ def vendor_source_remove(product_id: int, source_id: int, db: Session = Depends(
         .first()
     )
     if source:
+        # Soft-deleted sources must not linger as preferred (ghost vendor in
+        # search results / preview dock / CSV export).
+        if source.is_preferred:
+            source.is_preferred = False
         source.is_active = False
         db.commit()
     response = HTMLResponse("", status_code=200)
@@ -370,7 +1520,7 @@ def vendor_source_remove(product_id: int, source_id: int, db: Session = Depends(
 # ── Cross References ──────────────────────────────────────────────────────────
 
 @router.post("/{product_id}/cross-refs", response_class=HTMLResponse)
-async def cross_ref_add(product_id: int, request: Request, db: Session = Depends(get_db)):
+async def cross_ref_add(product_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
     ref_number = str(form.get("ref_number", "")).strip()
     if not ref_number:
@@ -379,7 +1529,7 @@ async def cross_ref_add(product_id: int, request: Request, db: Session = Depends
     brand = str(form.get("brand", "")).strip()
     status = str(form.get("status", "proven")).strip() or "proven"
     try:
-        _svc(db).add_cross_reference(product_id, ref_type, ref_number, brand or None, status=status)
+        _svc(db, user_id).add_cross_reference(product_id, ref_type, ref_number, brand or None, status=status)
         # Fetch the newly inserted xref (last one for this product+type+number)
         xref = (
             db.query(CrossReference)
@@ -391,8 +1541,7 @@ async def cross_ref_add(product_id: int, request: Request, db: Session = Depends
             .order_by(CrossReference.id.desc())
             .first()
         )
-        return templates.TemplateResponse("products/_cross_ref_row.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "products/_cross_ref_row.html", {
             "xref": xref,
         })
     except ValueError as exc:
@@ -403,26 +1552,67 @@ async def cross_ref_add(product_id: int, request: Request, db: Session = Depends
 
 
 @router.delete("/{product_id}/cross-refs/{xref_id}", response_class=HTMLResponse)
-def cross_ref_remove(product_id: int, xref_id: int, db: Session = Depends(get_db)):
+def cross_ref_remove(product_id: int, xref_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     try:
-        _svc(db).remove_cross_reference(xref_id)
+        _svc(db, user_id).remove_cross_reference(xref_id)
     except ValueError:
         pass
     return HTMLResponse("", status_code=200)
+
+
+# ── Engine Applications (fitment) — §21 ──────────────────────────────────────
+# Add / remove engine applications on product detail. Both return the full
+# re-rendered list (targets #apps-list) so the dedup-refresh case never leaves a
+# duplicate row in the DOM.
+
+def _applications_response(request: Request, db: Session, product_id: int):
+    product = db.query(Product).filter(Product.id == product_id).first()
+    return templates.TemplateResponse(
+        request, "products/_applications_list.html", {"product": product},
+    )
+
+
+@router.post("/{product_id}/applications", response_class=HTMLResponse)
+async def application_add(product_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    form = await request.form()
+    try:
+        _svc(db, user_id).add_application(
+            product_id,
+            engine_make=str(form.get("engine_make", "")).strip(),
+            engine_model=str(form.get("engine_model", "")).strip(),
+            cpl=str(form.get("cpl", "")).strip(),
+            esn_range=str(form.get("esn_range", "")).strip() or None,
+            notes=str(form.get("notes", "")).strip(),
+        )
+    except ValueError as exc:
+        return HTMLResponse(
+            f'<tbody id="apps-list"><tr><td colspan="5" class="px-4 py-2 text-red-600 text-sm">{exc}</td></tr></tbody>',
+            status_code=422,
+        )
+    return _applications_response(request, db, product_id)
+
+
+@router.delete("/{product_id}/applications/{application_id}", response_class=HTMLResponse)
+def application_remove(product_id: int, application_id: int, request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    try:
+        _svc(db, user_id).remove_application(application_id)
+    except ValueError:
+        pass
+    return _applications_response(request, db, product_id)
 
 
 # ── Cross Reference Status ────────────────────────────────────────────────────
 
 @router.patch("/{product_id}/cross-refs/{xref_id}/status", response_class=HTMLResponse)
 async def cross_ref_update_status(
-    product_id: int, xref_id: int, request: Request, db: Session = Depends(get_db)
+    product_id: int, xref_id: int, request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     form = await request.form()
     status = str(form.get("status", "proven")).strip() or "proven"
     try:
-        xref = _svc(db).update_cross_reference_status(xref_id, status)
-        return templates.TemplateResponse("products/_cross_ref_row.html", {
-            "request": request,
+        xref = _svc(db, user_id).update_cross_reference_status(xref_id, status)
+        return templates.TemplateResponse(request, "products/_cross_ref_row.html", {
             "xref": xref,
         })
     except ValueError as exc:
@@ -432,26 +1622,12 @@ async def cross_ref_update_status(
         )
 
 
-# ── Enrichment Panel ──────────────────────────────────────────────────────────
-
-@router.get("/{product_id}/enrich-panel", response_class=HTMLResponse)
-def product_enrich_panel(
-    product_id: int, request: Request, source: str = "", db: Session = Depends(get_db)
-):
-    """Load the enrichment slide-over content for a given vendor source (pai/hhp/atl)."""
-    from app.models.scraper import ScraperSource
-    scraper_source = None
-    if source:
-        scraper_source = (
-            db.query(ScraperSource)
-            .filter(ScraperSource.name.ilike(source))
-            .first()
-        )
-    return templates.TemplateResponse("products/_enrich_panel.html", {
-        "request": request,
-        "product_id": product_id,
-        "source": scraper_source,
-    })
+# ── Enrichment Panel removed ──────────────────────────────────────────────────
+# The per-product vendor-source scrape panel is gone — all scraping/cataloging is
+# external now (PHASE_2_PLAN.md §6 P2-D9). Product enrichment lands via the §7.2
+# CSV enrich-sync (cross_references + product_applications), not a live panel.
+# UI follow-up (UI lane, plan §8P): delete products/_enrich_panel.html + the
+# detail.html enrich trigger.
 
 
 # ── Images ────────────────────────────────────────────────────────────────────
@@ -462,6 +1638,7 @@ async def product_image_upload(
     request: Request,
     db: Session = Depends(get_db),
     file: UploadFile = File(...),
+    user_id: int = Depends(get_current_user_id),
 ):
     p = db.query(Product).filter(Product.id == product_id).first()
     if not p:
@@ -491,20 +1668,19 @@ async def product_image_upload(
         )
     (STATIC_DIR / rel_path).write_bytes(content)
 
-    _svc(db).add_product_image(product_id, rel_path)
+    _svc(db, user_id).add_product_image(product_id, rel_path)
     db.refresh(p)
 
-    return templates.TemplateResponse("products/_images_grid.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "products/_images_grid.html", {
         "images": p.images,
         "product_id": product_id,
     })
 
 
 @router.delete("/{product_id}/images/{image_id}", response_class=HTMLResponse)
-def product_image_remove(product_id: int, image_id: int, db: Session = Depends(get_db)):
+def product_image_remove(product_id: int, image_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     try:
-        _svc(db).remove_product_image(product_id, image_id)
+        _svc(db, user_id).remove_product_image(product_id, image_id)
     except ValueError:
         pass
     return HTMLResponse("", status_code=200)
@@ -512,15 +1688,15 @@ def product_image_remove(product_id: int, image_id: int, db: Session = Depends(g
 
 @router.post("/{product_id}/images/{image_id}/set-primary", response_class=HTMLResponse)
 def product_image_set_primary(
-    product_id: int, image_id: int, request: Request, db: Session = Depends(get_db)
+    product_id: int, image_id: int, request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     try:
-        _svc(db).set_primary_image(product_id, image_id)
+        _svc(db, user_id).set_primary_image(product_id, image_id)
     except ValueError as exc:
         return HTMLResponse(f'<p class="text-sm text-red-600 p-4">{exc}</p>', status_code=422)
     p = db.query(Product).filter(Product.id == product_id).first()
-    return templates.TemplateResponse("products/_images_grid.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "products/_images_grid.html", {
         "images": p.images if p else [],
         "product_id": product_id,
     })
@@ -530,7 +1706,8 @@ def product_image_set_primary(
 
 @router.post("/{product_id}/suggested-sells", response_class=HTMLResponse)
 async def suggested_sell_add(
-    product_id: int, request: Request, db: Session = Depends(get_db)
+    product_id: int, request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     form = await request.form()
     sku = str(form.get("sku", "")).strip().upper()
@@ -549,14 +1726,13 @@ async def suggested_sell_add(
     rel_type = str(form.get("relationship_type", "recommended")).strip()
     notes = str(form.get("notes", "")).strip()
     try:
-        suggestion = _ss_svc(db).add_suggestion(
+        suggestion = _ss_svc(db, user_id).add_suggestion(
             product_id=product_id,
             suggested_product_id=suggested.id,
             relationship_type=rel_type,
             notes=notes,
         )
-        return templates.TemplateResponse("products/_suggested_sell_row.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "products/_suggested_sell_row.html", {
             "suggestion": suggestion,
             "product_id": product_id,
         })
@@ -569,7 +1745,8 @@ async def suggested_sell_add(
 
 @router.patch("/{product_id}/suggested-sells/{suggestion_id}", response_class=HTMLResponse)
 async def suggested_sell_update(
-    product_id: int, suggestion_id: int, request: Request, db: Session = Depends(get_db)
+    product_id: int, suggestion_id: int, request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     form = await request.form()
     data = {}
@@ -578,9 +1755,8 @@ async def suggested_sell_update(
     if "notes" in form:
         data["notes"] = str(form["notes"]).strip()
     try:
-        suggestion = _ss_svc(db).update_suggestion(suggestion_id, data)
-        return templates.TemplateResponse("products/_suggested_sell_row.html", {
-            "request": request,
+        suggestion = _ss_svc(db, user_id).update_suggestion(suggestion_id, data)
+        return templates.TemplateResponse(request, "products/_suggested_sell_row.html", {
             "suggestion": suggestion,
             "product_id": product_id,
         })
@@ -590,10 +1766,11 @@ async def suggested_sell_update(
 
 @router.delete("/{product_id}/suggested-sells/{suggestion_id}", response_class=HTMLResponse)
 def suggested_sell_remove(
-    product_id: int, suggestion_id: int, db: Session = Depends(get_db)
+    product_id: int, suggestion_id: int, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     try:
-        _ss_svc(db).remove_suggestion(suggestion_id)
+        _ss_svc(db, user_id).remove_suggestion(suggestion_id)
     except ValueError:
         pass
     return HTMLResponse("", status_code=200)
@@ -603,7 +1780,8 @@ def suggested_sell_remove(
 
 @router.post("/{product_id}/adjust-inventory", response_class=HTMLResponse)
 async def adjust_inventory_handler(
-    product_id: int, request: Request, db: Session = Depends(get_db)
+    product_id: int, request: Request, db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     from urllib.parse import quote as url_quote
     import logging
@@ -635,7 +1813,7 @@ async def adjust_inventory_handler(
             pass
 
     try:
-        svc = InventoryService(db, current_user_id=CURRENT_USER_ID)
+        svc = InventoryService(db, current_user_id=user_id)
         svc.adjust_inventory(
             product_id=product_id,
             qty_delta=qty_delta,
@@ -711,6 +1889,11 @@ def _parse_product_form(form) -> dict:
 
     category_id = _opt_int("category_id")
 
+    # Auto-SKU-path inputs from the new-product form. Empty/zero on every other
+    # form (legacy update, autosave, quick-create) — the path selector in
+    # ProductService.create_product treats vendor_id as the on-switch.
+    vendor_id = _opt_int("vendor_id")
+
     return {
         "sku": str(form.get("sku", "")).strip().upper(),
         "title": str(form.get("title", "")).strip(),
@@ -727,6 +1910,29 @@ def _parse_product_form(form) -> dict:
         "reorder_point": _int("reorder_point"),
         "notes": str(form.get("notes", "")).strip(),
         "internal_notes": str(form.get("internal_notes", "")).strip(),
+        # Vendor-SKU / new-product fields (ignored by update_product's whitelist).
+        "vendor_id": vendor_id,
+        "vendor_part_number": str(form.get("vendor_part_number", "")).strip(),
+        "vendor_cost": _opt_float("vendor_cost"),
+        "engine_make": str(form.get("engine_make", "")).strip(),
+        "engine_model": str(form.get("engine_model", "")).strip(),
+        # Private-label (MASTER_PLAN §20): mark a part house-brand and the SKU
+        # becomes the owner-typed JAKS Product # instead of the vendor part #.
+        "is_house_brand": bool(form.get("is_house_brand")),
+        "jaks_product_number": str(form.get("jaks_product_number", "")).strip(),
+        # SEO / marketplace fields (Shopify + eBay export-sync) — only included
+        # when the posting form carries them, so forms without the SEO card
+        # (quick-create, new) can never blank stored values on save.
+        **({"seo_title": str(form.get("seo_title", "")).strip()} if "seo_title" in form else {}),
+        **({"seo_description": str(form.get("seo_description", "")).strip()} if "seo_description" in form else {}),
+        # AI "Suggest with AI" emits a meta_description field. On forms that carry
+        # it WITHOUT a dedicated SEO card (the new-product form) persist it to the
+        # seo_description column instead of dropping it. Where both fields exist
+        # (detail.html SEO card) the explicit seo_description above wins — the
+        # conditions are mutually exclusive so there is no key collision.
+        **({"seo_description": str(form.get("meta_description", "")).strip()}
+           if ("meta_description" in form and "seo_description" not in form) else {}),
+        **({"search_keywords": str(form.get("search_keywords", "")).strip()} if "search_keywords" in form else {}),
         # Warranty fields
         "is_warrantable": bool(form.get("is_warrantable")),
         "manufacturer_warranty_months": _int("manufacturer_warranty_months"),

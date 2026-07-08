@@ -1,0 +1,138 @@
+name: Visual regression
+
+# Pixel-accurate screenshot diff against committed PNG baselines.
+# Runs Playwright (headless Chromium) at 1280px and 1920px.
+# Uploads diff images as artifacts on failure so reviewers can inspect.
+#
+# Depends on: compiled CSS being present (same rebuild step as ui-lint.yml).
+# If a screen is missing a baseline PNG the test is skipped (not failed).
+# To add a new baseline: run capture_baselines.py locally and commit the PNG.
+
+on:
+  push:
+    paths:
+      - "app/templates/**"
+      - "app/static/css/input.css"
+      - "app/static/css/app.css"
+      - "app/static/js/**"
+      - "tailwind.config.js"
+      - "tests/test_visual_regression.py"
+      - "tests/visual/**"
+      - ".github/workflows/visual-regression.yml"
+  pull_request:
+    paths:
+      - "app/templates/**"
+      - "app/static/css/input.css"
+      - "app/static/css/app.css"
+      - "app/static/js/**"
+      - "tailwind.config.js"
+      - "tests/test_visual_regression.py"
+      - "tests/visual/**"
+      - ".github/workflows/visual-regression.yml"
+
+jobs:
+  visual:
+    name: "Visual regression (Playwright)"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rebuild
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Rebuild compiled CSS (same as ui-lint) ───────────────────────────
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: rebuild/package.json
+
+      - name: Install Node dependencies
+        run: npm ci --prefer-offline
+
+      - name: Build compiled CSS
+        run: npm run build:css
+
+      - name: Check app.css is up-to-date
+        run: |
+          if ! git diff --quiet -- app/static/css/app.css; then
+            echo "ERROR: app/static/css/app.css is out of date. Run npm run build:css and commit."
+            git diff --stat -- app/static/css/app.css
+            exit 1
+          fi
+
+      # ── Python + Playwright ───────────────────────────────────────────────
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install playwright pillow pytest
+
+      - name: Install Playwright Chromium
+        run: playwright install chromium --with-deps
+
+      # ── Seed database ─────────────────────────────────────────────────────
+      # Visual tests hit the live server; it needs a seeded DB to render real data.
+
+      - name: Seed test database
+        run: |
+          python - <<'EOF'
+          import app.database as db
+          from app.models import __all_models__  # noqa: registers all models
+          db.Base.metadata.create_all(bind=db.engine)
+          print("Tables created")
+          EOF
+
+      # ── Start dev server ──────────────────────────────────────────────────
+
+      - name: Start dev server
+        run: |
+          nohup python run.py &
+          echo "Waiting for server..."
+          for i in $(seq 1 20); do
+            curl -sf http://localhost:8000/ >/dev/null 2>&1 && echo "Server ready" && break
+            sleep 1
+          done
+          curl -sf http://localhost:8000/ || (echo "Server failed to start" && exit 1)
+
+      # ── Run visual regression tests ───────────────────────────────────────
+
+      - name: Run visual regression
+        env:
+          JAKS_DEV_URL: http://localhost:8000
+          VISUAL_DIFF_THRESHOLD: "0.005"
+        run: |
+          python -m pytest tests/test_visual_regression.py \
+            -m visual -v --tb=short -q 2>&1
+
+      # ── Upload diff images on failure ─────────────────────────────────────
+
+      - name: Upload diff images
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-diffs-${{ github.sha }}
+          path: rebuild/tests/visual/diffs/
+          retention-days: 14
+
+      - name: Summarise regressions
+        if: failure()
+        run: |
+          echo "### Visual regressions detected" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Diff images uploaded as artifact \`visual-diffs-${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "To update a baseline after an intentional change:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "python tests/visual/capture_baselines.py --force --only <screen_label>" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

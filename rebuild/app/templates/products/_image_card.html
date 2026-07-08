@@ -7,9 +7,10 @@
      class="relative group rounded-xl border border-gray-100 overflow-hidden bg-gray-50 shadow-sm">
 
   {# Image #}
-  <img src="/static/{{ image.file_path }}"
+  <img src="{{ image.url }}"
        alt="{{ image.alt_text or 'Product image' }}"
-       class="w-full h-40 object-cover" />
+       loading="lazy"
+       class="w-full h-40 object-contain p-2" />
 
   {# Primary badge #}
   {% if image.is_primary %}
@@ -48,7 +49,9 @@
             hx-delete="/products/{{ product_id }}/images/{{ image.id }}"
             hx-target="#img-{{ image.id }}"
             hx-swap="outerHTML swap:200ms"
-            hx-confirm="Remove this image?"
+            hx-trigger="confirmed"
+            @click.prevent="jakConfirm({ title: 'Remove Image', body: 'This image will be permanently removed from the product.', cta: 'Remove', danger: true, confirmEvent: 'jak-del-img-{{ image.id }}' })"
+            @jak-del-img-{{ image.id }}.window="htmx.trigger($el, 'confirmed')"
             class="rounded-md bg-red-600/90 text-xs px-2.5 py-1 font-medium text-white hover:bg-red-600 transition-colors">
       Remove
     </button>

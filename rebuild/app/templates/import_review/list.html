@@ -1,0 +1,545 @@
+{% extends "base.html" %}
+{% block title %}Review Queue — Axle{% endblock %}
+{% block heading %}Import Review Queue{% endblock %}
+
+{% block header_actions %}
+  <a href="/import-review/" class="btn-secondary btn-sm">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+    </svg>
+    All Imports
+  </a>
+{% endblock %}
+
+{% block content %}
+{% from "macros/list_behavior.html" import operational_list_script %}
+{% from "macros/filter_tabs.html" import filter_tabs %}
+{% from "macros/bulk_toolbar.html" import bulk_toolbar %}
+{% from "macros/preview_dock.html" import preview_dock_shell %}
+{{ operational_list_script() }}
+
+{% include "_import_tabs.html" %}
+
+<div
+  class="space-y-4 pb-52"
+  x-data="operationalListData('import-candidate-body', '/import-review/preview/', [{% for c in candidates %}{{ c.id }}{% if not loop.last %},{% endif %}{% endfor %}])"
+>
+
+{# ── Queue state persistence — save tab/page/q so navigating away and back
+     restores position. On load: if URL has no tab param AND saved state exists,
+     redirect to saved state. On every render: save current state. ── #}
+<script>
+(function () {
+  var SK = 'irq_{{ batch.id }}';
+  var url = new URL(window.location.href);
+  var currentTab = url.searchParams.get('tab');
+  if (!currentTab) {
+    var saved = sessionStorage.getItem(SK);
+    if (saved) {
+      try {
+        var s = JSON.parse(saved);
+        if (s.tab && s.tab !== 'all') {
+          url.searchParams.set('tab', s.tab);
+          if (s.q)    url.searchParams.set('q', s.q);
+          if (s.page && s.page > 1) url.searchParams.set('page', s.page);
+          window.location.replace(url.toString());
+          return;
+        }
+      } catch (e) {}
+    }
+  }
+  // Save the current state (runs on every page render)
+  sessionStorage.setItem(SK, JSON.stringify({
+    tab:  '{{ tab }}',
+    q:    '{{ q | e }}',
+    page: {{ page }}
+  }));
+})();
+</script>
+
+{# ── Batch summary strip ──────────────────────────────────────────────────── #}
+<div class="card px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-1">
+  <div>
+    <p class="text-sm font-semibold text-gray-900">{{ batch.label }}</p>
+    <p class="text-xs text-gray-400">
+      {{ batch.source_app or 'upload' }}{% if batch.filename %} · {{ batch.filename }}{% endif %}
+      · staged {{ batch.created_at.strftime('%Y-%m-%d %H:%M') if batch.created_at }}
+    </p>
+  </div>
+  <div class="flex items-center gap-4 ml-auto text-sm flex-wrap">
+    <span class="text-gray-500">New <b class="text-gray-900 tabular-nums">{{ batch.new_count }}</b></span>
+    <span class="text-gray-500">Updates <b class="text-gray-900 tabular-nums">{{ batch.update_count }}</b></span>
+    <span class="text-gray-500">Cross-ref <b class="text-gray-900 tabular-nums">{{ batch.cross_ref_count }}</b></span>
+    <span class="text-gray-500">Needs review <b class="text-amber-600 tabular-nums">{{ batch.needs_review_count }}</b></span>
+    <span class="text-gray-500">Approved <b class="text-green-700 tabular-nums">{{ batch.approved_count }}</b></span>
+    {% if batch.unchanged_count %}
+    <span class="text-gray-400" title="UPDATE rows identical to the catalog — tallied here, never staged">
+      Unchanged skipped <b class="tabular-nums">{{ batch.unchanged_count }}</b></span>
+    {% endif %}
+    {% if batch.applied_count %}
+    <span class="text-gray-500" title="Applied candidates leave the queue — their data lives on the products now">
+      Applied <b class="text-green-700 tabular-nums">{{ batch.applied_count }}</b></span>
+    {% endif %}
+    {# ── Apply Approved button — visible whenever there are accepted-but-not-yet-applied rows.
+         Uses unapplied_count (a live count from the route) not batch.approved_count (a cached
+         tally), so the button survives after a partial apply or batch re-approval. ── #}
+    {% if unapplied_count and batch.status != 'applying' %}
+    <form method="post" action="/import-review/{{ batch.id }}/apply"
+          onsubmit="return confirm('Apply {{ unapplied_count }} approved candidate(s) to the product catalog?')">
+      <button type="submit"
+              class="px-3 py-1.5 text-xs font-semibold text-white bg-brand-600 hover:bg-brand-700
+                     rounded-lg transition-colors whitespace-nowrap shadow-sm">
+        Apply Approved ({{ unapplied_count }})
+      </button>
+    </form>
+    {% elif batch.status == 'applying' %}
+    <span class="inline-flex items-center gap-1.5 text-xs font-medium text-blue-600">
+      <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/>
+      </svg>
+      Applying…
+    </span>
+    {% elif batch.status == 'applied' %}
+    <span class="inline-flex items-center gap-1 text-xs font-semibold text-green-700">
+      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+      </svg>
+      Applied ({{ batch.applied_count }})
+    </span>
+    {% endif %}
+  </div>
+</div>
+
+{# ── Background-staging progress / failure banner ─────────────────────────── #}
+{% if processing %}
+<div class="card px-5 py-4 flex items-center gap-3 border-l-4 border-l-blue-400">
+  <svg class="w-5 h-5 text-blue-500 animate-spin shrink-0" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+  </svg>
+  <div>
+    <p class="text-sm font-semibold text-gray-900">Analyzing import…
+      <span id="stagedCount" class="tabular-nums text-gray-500 ml-1">{{ staged }} / {{ batch.total }}</span> rows</p>
+    <p class="text-xs text-gray-400">Runs in the background — you can leave this page. The queue appears when analysis finishes.</p>
+  </div>
+</div>
+{# Poll a lightweight JSON endpoint for progress; reload ONCE when done. (Previously
+   this reloaded the whole 13k-row table every 2s, which froze the window.) #}
+<script>
+(function () {
+  var el = document.getElementById('stagedCount');
+  function poll() {
+    fetch('/import-review/{{ batch.id }}/progress', { headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (el) { el.textContent = (d.staged || 0).toLocaleString() + ' / ' + (d.total || 0).toLocaleString(); }
+        if (d.done) { window.location.reload(); } else { setTimeout(poll, 1500); }
+      })
+      .catch(function () { setTimeout(poll, 3000); });
+  }
+  setTimeout(poll, 1200);
+})();
+</script>
+{% elif failed %}
+<div class="card px-5 py-4 border-l-4 border-l-red-400">
+  <p class="text-sm font-semibold text-red-700">Import stopped early</p>
+  <p class="text-xs text-gray-500 mt-1">{{ fail_msg or 'An error occurred while analyzing the feed.' }} ({{ staged }} of {{ batch.total }} rows staged before it stopped.)</p>
+</div>
+{% endif %}
+
+{# ── Toolbar: tabs + search ───────────────────────────────────────────────── #}
+<div class="flex flex-wrap items-center gap-3">
+  {% set cand_tabs = [
+    ('all',          'All',          counts.all),
+    ('pending',      'Pending',      counts.pending),
+    ('needs_review', 'Needs Review', counts.needs_review),
+    ('new',          'New',          counts.new),
+    ('update',       'Updates',      counts.update),
+    ('cross_ref',    'Cross-Ref',    counts.cross_ref),
+    ('accepted',     'Accepted',     counts.accepted),
+    ('rejected',     'Rejected',     counts.rejected),
+  ] %}
+  {{ filter_tabs(cand_tabs, tab, q) }}
+
+  <form method="get" class="flex items-center gap-2 ml-auto">
+    <input type="hidden" name="tab" value="{{ tab }}" />
+    <div class="relative">
+      <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+           fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
+      </svg>
+      <input name="q" value="{{ q }}" placeholder="SKU or title…"
+             class="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white w-64
+                    focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400
+                    placeholder:text-gray-400" />
+    </div>
+    <button type="submit"
+            class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200
+                   rounded-lg hover:bg-gray-50 transition-colors">Search</button>
+    {% if q %}<a href="?tab={{ tab }}" class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</a>{% endif %}
+  </form>
+</div>
+
+{# ── One-click bulk review (no checkbox selection — handles all 13k at once) ── #}
+{% if counts.pending or unapplied_count %}
+{% set flagged_pending = counts.pending - counts.confident_pending %}
+<div class="card px-5 py-3 flex flex-wrap items-center gap-2">
+
+  {# ── PRIMARY: confident rows only. Flagged (needs-review / uncertain) rows
+       never ride along on the default click — bulk_set_status enforces the same
+       exclusion server-side, this button is just the honest label for it. ── #}
+  <form method="post" action="/import-review/{{ batch.id }}/approve-and-apply" class="inline"
+        onsubmit="return confirm('Approve {{ counts.confident_pending }} confident item(s) and immediately apply them to the product catalog?{% if flagged_pending %} {{ flagged_pending }} flagged item(s) will stay pending for review.{% endif %}')">
+    <input type="hidden" name="scope" value="confident" />
+    <button type="submit"
+            class="px-4 py-2 text-xs font-bold text-white bg-brand-700 hover:bg-brand-600
+                   rounded-lg transition-colors shadow-sm">
+      ✓ Approve &amp; Apply Confident ({{ counts.confident_pending + unapplied_count }})
+    </button>
+  </form>
+  {% if flagged_pending %}
+  <span class="text-xs text-amber-600 font-medium"
+        title="Rows the analyzer flagged needs-review / uncertain — apply them with the explicit button, or review them on the Needs Review tab">
+    {{ flagged_pending }} flagged stay pending
+  </span>
+  {% endif %}
+
+  <span class="text-gray-200 text-xs">|</span>
+
+  {# ── SECONDARY: explicitly pull the flagged rows in — confirm names the count ── #}
+  {% if flagged_pending %}
+  <form method="post" action="/import-review/{{ batch.id }}/approve-and-apply" class="inline"
+        onsubmit="return confirm('Approve and apply {{ flagged_pending }} FLAGGED (needs-review / uncertain) item(s) to the live catalog? These are the rows the analyzer could not confidently place.')">
+    <input type="hidden" name="scope" value="flagged" />
+    <input type="hidden" name="include_flagged" value="1" />
+    <button type="submit"
+            class="px-3 py-1.5 text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 hover:bg-amber-100 rounded-lg transition-colors">
+      Apply flagged too ({{ flagged_pending }})
+    </button>
+  </form>
+  {% endif %}
+
+  {% if counts.confident_pending %}
+  <form method="post" action="/import-review/{{ batch.id }}/approve-all" class="inline"
+        onsubmit="return confirm('Approve {{ counts.confident_pending }} confident candidate(s)? Click Apply Approved to write them to the catalog.')">
+    <input type="hidden" name="action" value="approve" />
+    <input type="hidden" name="scope" value="confident" />
+    <button type="submit"
+            class="px-3 py-1.5 text-xs font-semibold text-gray-600 bg-white border border-gray-200 hover:bg-gray-50 rounded-lg transition-colors">
+      Approve confident only ({{ counts.confident_pending }})
+    </button>
+  </form>
+  {% endif %}
+
+  {% if counts.needs_review %}
+  <form method="post" action="/import-review/{{ batch.id }}/approve-all" class="inline"
+        onsubmit="return confirm('Reject all flagged (needs-review) candidates?')">
+    <input type="hidden" name="action" value="reject" />
+    <input type="hidden" name="scope" value="flagged" />
+    <button type="submit"
+            class="px-3 py-1.5 text-xs font-semibold text-red-600 bg-white border border-red-200 hover:bg-red-50 rounded-lg transition-colors">
+      Reject flagged
+    </button>
+  </form>
+  {% endif %}
+
+  {% if ai_enabled and counts.ai_pending %}
+  <form method="post" action="/import-review/{{ batch.id }}/ai-categorize" class="inline"
+        onsubmit="return confirm('Ask Claude to suggest a category for {{ counts.ai_pending }} flagged item(s)? This only fills in a suggestion — nothing is approved or written to the catalog.')">
+    <button type="submit"
+            class="px-3 py-1.5 text-xs font-semibold text-white bg-violet-600 hover:bg-violet-700 rounded-lg transition-colors">
+      🤖 AI-categorize flagged ({{ counts.ai_pending }})
+    </button>
+  </form>
+  {% endif %}
+
+</div>
+{% endif %}
+
+{# ── Apply summary flash ──────────────────────────────────────────────────── #}
+{% set ap_created = request.query_params.get('apply_created') %}
+{% set ap_errors  = request.query_params.get('apply_errors') %}
+{% if ap_created is not none %}
+<div class="card px-5 py-3 text-sm {% if ap_errors and ap_errors != '0' %}text-amber-800 bg-amber-50 border border-amber-100{% else %}text-green-800 bg-green-50 border border-green-100{% endif %}">
+  ✓ Applied:
+  <b>{{ request.query_params.get('apply_created','0') }}</b> product(s) created,
+  <b>{{ request.query_params.get('apply_updated','0') }}</b> updated.
+  {% if ap_errors and ap_errors != '0' %}
+  {% set ap_msg = request.query_params.get('apply_msg') %}
+  <span class="text-red-600 ml-1">{{ ap_errors }} error(s){% if ap_msg %}: {{ ap_msg }}{% else %} — see console/logs for details.{% endif %}</span>
+  {% endif %}
+  Find applied products via the <b>→ View in catalog</b> links on each row.
+</div>
+{% endif %}
+
+{# ── AI categorize progress banner (polls while background job is running) ── #}
+{% if request.query_params.get('ai_error') == 'nokey' %}
+<div class="card px-5 py-3 text-sm text-amber-800 bg-amber-50 border border-amber-100">
+  No Anthropic API key is configured. Add one under
+  <a href="/settings/" class="underline font-semibold">Settings → System → Anthropic (Claude) API Key</a>
+  to enable AI categorize.
+</div>
+{% endif %}
+{# AI progress banner — shown when ai_started is fresh OR while there are still
+   unresolved flagged items after a run was triggered this session. Polls
+   /ai-status every 2 s; reloads once when done. #}
+<div id="ai-progress-banner" style="display:none"
+     class="card px-5 py-3 flex items-center gap-3 border-l-4 border-l-purple-400">
+  <svg class="w-5 h-5 text-violet-500 animate-spin shrink-0" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+  </svg>
+  <div class="flex-1">
+    <p class="text-sm font-semibold text-gray-900">🤖 Claude is categorizing flagged items…</p>
+    <div class="flex items-center gap-3 mt-1">
+      <div class="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+        <div id="ai-progress-bar" class="h-full bg-violet-500 transition-all duration-500" style="width:0%"></div>
+      </div>
+      <span id="ai-progress-text" class="text-xs text-gray-500 tabular-nums whitespace-nowrap">checking…</span>
+    </div>
+    <p class="text-xs text-gray-400 mt-0.5">Suggestions appear as a 🤖 AI flag — review then Approve &amp; Apply as usual.</p>
+  </div>
+</div>
+<script>
+(function () {
+  var KEY = 'ai_running_{{ batch.id }}';
+  var aiStarted = {{ 'true' if request.query_params.get('ai_started') else 'false' }};
+  if (aiStarted) { sessionStorage.setItem(KEY, '1'); }
+  if (!aiStarted && !sessionStorage.getItem(KEY)) { return; }
+
+  var banner = document.getElementById('ai-progress-banner');
+  var bar    = document.getElementById('ai-progress-bar');
+  var label  = document.getElementById('ai-progress-text');
+  banner.style.display = '';
+
+  // Stale-run guard: if this poll was resumed from sessionStorage (not a fresh
+  // ai_started redirect) and the processed count doesn't move, there is no run
+  // actually working — stop polling and hide the banner instead of looping forever.
+  var lastProcessed = -1, stalePolls = 0;
+  function poll() {
+    fetch('/import-review/{{ batch.id }}/ai-status', { headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var pct = d.total > 0 ? Math.round(d.processed / d.total * 100) : 0;
+        bar.style.width = pct + '%';
+        label.textContent = d.processed.toLocaleString() + ' / ' + d.total.toLocaleString();
+        if (d.done) {
+          sessionStorage.removeItem(KEY);
+          window.location.reload();
+          return;
+        }
+        if (d.processed === lastProcessed) {
+          stalePolls += 1;
+          if (!aiStarted && stalePolls >= 5) {           // ~10 s with zero progress
+            sessionStorage.removeItem(KEY);
+            banner.style.display = 'none';
+            return;
+          }
+        } else {
+          stalePolls = 0;
+          lastProcessed = d.processed;
+        }
+        setTimeout(poll, 2000);
+      })
+      .catch(function () { setTimeout(poll, 4000); });
+  }
+  setTimeout(poll, aiStarted ? 1500 : 500);
+})();
+</script>
+
+{# ── Bulk review actions (selected rows) ─────────────────────────────────────── #}
+{% call bulk_toolbar() %}
+  <form method="post" action="/import-review/{{ batch.id }}/review" class="flex items-center gap-2">
+    <template x-for="id in Object.keys(selected).filter(k => selected[k])" :key="id">
+      <input type="hidden" name="candidate_ids" :value="id" />
+    </template>
+    <input type="hidden" name="tab" value="{{ tab }}" />
+    {# data-no-pending: the global submit-lock disables the first submit button on
+       submit, which strips a NAMED button's value (action) from the POST -> 422.
+       These carry their action in name/value, so they must opt out of the lock. #}
+    <button type="submit" name="action" value="approve_apply" data-no-pending
+            class="px-3 py-1.5 text-xs font-bold text-white bg-brand-700 hover:bg-brand-600 rounded-lg transition-colors shadow-sm">
+      ✓ Approve &amp; Add <span x-text="selectedCount"></span> to Catalog
+    </button>
+    <button type="submit" name="action" value="approve" data-no-pending
+            class="px-3 py-1.5 text-xs font-semibold text-green-700 bg-green-50 border border-green-200 hover:bg-green-100 rounded-lg transition-colors">
+      Approve only
+    </button>
+    <button type="submit" name="action" value="reject" data-no-pending
+            class="px-3 py-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors">
+      Reject
+    </button>
+    <button type="submit" name="action" value="ignore" data-no-pending
+            class="px-3 py-1.5 text-xs font-semibold text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 rounded-lg transition-colors">
+      Ignore
+    </button>
+  </form>
+{% endcall %}
+
+{# ── Candidate table ──────────────────────────────────────────────────────── #}
+{% if candidates %}
+<div class="card overflow-hidden">
+  <div class="overflow-x-auto">
+    <table class="w-full min-w-[1040px]" aria-label="Import candidates">
+      <thead>
+        <tr class="bg-gray-50 border-b border-gray-200">
+          <th class="w-10 px-4 py-3 text-center">
+            <input type="checkbox" :checked="allSelected" @change="toggleAll()"
+                   aria-label="Select all candidates"
+                   class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
+          </th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">SKU / Disposition</th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Product</th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Flags</th>
+          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Price</th>
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+          <th class="px-4 py-3 w-12"></th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for c in candidates %}
+
+        {# Disposition badge #}
+        {% if c.disposition == 'new' %}{% set disp_cls = 'bg-green-50 text-green-700 border-green-100' %}{% set disp_lbl = 'New' %}
+        {% elif c.disposition == 'update' %}{% set disp_cls = 'bg-slate-100 text-slate-600 border-slate-200' %}{% set disp_lbl = 'Update' %}
+        {% elif c.disposition == 'cross_ref' %}{% set disp_cls = 'bg-purple-50 text-purple-700 border-purple-100' %}{% set disp_lbl = 'Cross-Ref' %}
+        {% else %}{% set disp_cls = 'bg-amber-50 text-amber-700 border-amber-100' %}{% set disp_lbl = 'Duplicate' %}{% endif %}
+
+        {# Left stripe by review state #}
+        {% if c.review_status == 'accepted' %}{% set stripe = 'border-l-green-400' %}
+        {% elif c.review_status == 'rejected' %}{% set stripe = 'border-l-red-400' %}
+        {% elif c.needs_review %}{% set stripe = 'border-l-amber-400' %}
+        {% else %}{% set stripe = 'border-l-transparent' %}{% endif %}
+
+        {# Review-status chip #}
+        {% if c.review_status == 'accepted' %}{% set rs_cls = 'bg-green-50 text-green-700' %}
+        {% elif c.review_status == 'rejected' %}{% set rs_cls = 'bg-red-50 text-red-700' %}
+        {% elif c.review_status == 'ignored' %}{% set rs_cls = 'bg-slate-100 text-slate-500' %}
+        {% else %}{% set rs_cls = 'bg-gray-100 text-gray-600' %}{% endif %}
+
+        <tr
+          @click="togglePreview({{ c.id }})"
+          :class="{ 'ring-inset ring-1 ring-brand-300 bg-brand-50/40': previewId === {{ c.id }} }"
+          class="cursor-pointer hover:bg-gray-50/80 transition-colors group">
+
+          <td class="w-10 px-4 py-4 align-middle text-center border-l-4 {{ stripe }}" @click.stop>
+            <input type="checkbox" :checked="isSelected({{ c.id }})" @change="toggleSelect({{ c.id }})"
+                   aria-label="Select {{ c.sku }}"
+                   class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
+          </td>
+
+          {# SKU + disposition #}
+          <td class="px-4 py-4 align-middle">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="font-mono text-sm font-bold text-gray-900 leading-none">{{ c.sku or '—' }}</span>
+              <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border {{ disp_cls }}">{{ disp_lbl }}</span>
+            </div>
+            {% if c.applied_product_id %}
+            <a href="/products/{{ c.applied_product_id }}" @click.stop
+               class="text-xs text-green-600 hover:underline mt-1 inline-block font-semibold">→ View in catalog</a>
+            {% elif c.matched_product_id %}
+            <a href="/products/{{ c.matched_product_id }}" @click.stop
+               class="text-xs text-brand-600 hover:underline mt-1 inline-block">→ matched product</a>
+            {% endif %}
+          </td>
+
+          {# Title + category #}
+          <td class="px-4 py-4 align-middle max-w-sm">
+            <p class="text-sm font-medium text-gray-900 truncate leading-snug">{{ c.title or '—' }}</p>
+            {% if c.category_issue %}
+            <p class="text-xs text-amber-600 mt-0.5">{{ c.category_name or 'no category' }} · needs mapping</p>
+            {% else %}
+            <p class="text-xs text-gray-400 mt-0.5 truncate">{{ c.category_name or '—' }}{% if c.engine_manufacturer %} · {{ c.engine_manufacturer }}{% endif %}</p>
+            {% endif %}
+          </td>
+
+          {# Flags — always visible chips #}
+          <td class="px-4 py-4 align-middle">
+            <div class="flex items-center gap-1 flex-wrap">
+              {% if c.needs_review and not c.resolved_category_id %}<span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-100">Review</span>{% endif %}
+              {% if c.needs_review and c.resolved_category_id %}<span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-50 text-green-700 border border-green-100">🤖 Categorized</span>{% endif %}
+              {% if c.has_new_images %}<span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-50 text-sky-700 border border-sky-100">+{{ c.incoming_image_count }} img</span>{% endif %}
+              {% if c.price_changed %}<span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold bg-gray-100 text-gray-500 border border-gray-200" title="Price will be updated on Apply">Price ✓</span>{% endif %}
+              {% if c.category_issue and not c.resolved_category_id %}<span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-50 text-red-600 border border-red-100">Category</span>{% endif %}
+            </div>
+          </td>
+
+          {# Price #}
+          <td class="px-4 py-4 align-middle text-right tabular-nums">
+            {% if c.price_changed and c.old_price is not none %}
+            <span class="text-xs text-gray-400 line-through">${{ "%.2f"|format(c.old_price) }}</span>
+            <span class="text-sm font-bold text-gray-900 ml-1">${{ "%.2f"|format(c.new_price or 0) }}</span>
+            {% elif c.new_price is not none %}
+            <span class="text-sm font-medium text-gray-700">${{ "%.2f"|format(c.new_price) }}</span>
+            {% else %}<span class="text-sm text-gray-300">—</span>{% endif %}
+          </td>
+
+          {# Review status #}
+          <td class="px-4 py-4 align-middle">
+            <span class="inline-flex items-center px-2 py-1 rounded-lg text-xs font-semibold {{ rs_cls }}">{{ c.review_status | title }}</span>
+          </td>
+
+          {# Quick action #}
+          <td class="px-4 py-4 align-middle" @click.stop>
+            <div class="opacity-0 group-hover:opacity-100 transition-opacity">
+              <button type="button" @click="togglePreview({{ c.id }})"
+                      title="Preview" aria-label="Preview {{ c.sku }}"
+                      class="p-1.5 rounded-lg text-gray-400 hover:text-brand-700 hover:bg-brand-50 transition-colors">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+                </svg>
+              </button>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between gap-3">
+    <span class="text-xs text-gray-400">
+      Showing {{ showing_from }}–{{ showing_to }} of {{ total_matching }}{% if tab != 'all' or q %} · filtered{% endif %}
+      <span x-show="selectedCount > 0" x-cloak class="ml-2 text-brand-700 font-medium"><span x-text="selectedCount"></span> selected</span>
+    </span>
+  </div>
+</div>
+
+{% if total_pages > 1 %}
+<nav class="card px-5 py-3 flex items-center justify-between gap-3">
+  <span class="text-xs text-gray-500">Page {{ page }} of {{ total_pages }} · {{ total_matching }} total</span>
+  <div class="flex items-center gap-2">
+    {% if page > 1 %}<a href="?tab={{ tab }}&q={{ q }}&page={{ page - 1 }}" class="btn-secondary btn-sm">← Prev</a>{% endif %}
+    {% if page < total_pages %}<a href="?tab={{ tab }}&q={{ q }}&page={{ page + 1 }}" class="btn-secondary btn-sm">Next →</a>{% endif %}
+  </div>
+</nav>
+{% endif %}
+
+{% elif not processing %}
+{# ── Empty state (suppressed while a background import is still staging) ─────── #}
+<div class="card flex flex-col items-center justify-center py-16 text-center">
+  <div class="w-14 h-14 rounded-2xl bg-gray-100 flex items-center justify-center mb-4">
+    <svg class="w-7 h-7 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    </svg>
+  </div>
+  {% if q %}
+  <p class="text-sm font-semibold text-gray-700">No candidates match "{{ q }}"</p>
+  <a href="?tab={{ tab }}" class="btn-secondary btn-sm mt-3">Clear search</a>
+  {% elif tab != 'all' %}
+  <p class="text-sm font-semibold text-gray-700">Nothing in "{{ tab|replace('_',' ')|title }}"</p>
+  <a href="/import-review/{{ batch.id }}" class="btn-secondary btn-sm mt-3">Show all</a>
+  {% else %}
+  <p class="text-sm font-semibold text-gray-700">This batch is empty</p>
+  <a href="/import-review/" class="btn-secondary btn-sm mt-3">Back to imports</a>
+  {% endif %}
+</div>
+{% endif %}
+
+{{ preview_dock_shell('Candidate Preview', 'import-candidate-body') }}
+
+</div>{# end x-data wrapper #}
+{% endblock %}

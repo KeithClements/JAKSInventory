@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Credit Memos — Axle{% endblock %}
+{% block heading %}Credit Memos{% endblock %}
+
+{% set status_pill_map = {
+  'open':     ('badge-blue',  'OPEN'),
+  'partial':  ('badge-amber', 'PARTIAL'),
+  'applied':  ('badge-green', 'APPLIED'),
+  'reversed': ('badge-red',   'REVERSED'),
+} %}
+
+{% block content %}
+<div class="space-y-4">
+
+  {# ── Status filter tabs ─────────────────────────────────────────────────── #}
+  <div class="flex items-center gap-1 flex-wrap border-b border-gray-200">
+    {% for slug, label in tabs %}
+    <a href="/credit-memos/?status={{ slug }}"
+       class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors
+              {% if status == slug %}border-brand-600 text-brand-700{% else %}border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300{% endif %}">
+      {{ label }}
+      <span class="text-xs tabular-nums px-1.5 py-0.5 rounded-full
+                   {% if status == slug %}bg-brand-100 text-brand-700{% else %}bg-gray-100 text-gray-500{% endif %}">
+        {{ counts.get(slug, 0) }}
+      </span>
+    </a>
+    {% endfor %}
+  </div>
+
+  {# ── List ───────────────────────────────────────────────────────────────── #}
+  {% if credit_memos %}
+  <div class="card overflow-hidden">
+    <div class="overflow-x-auto">
+      <table class="w-full min-w-[820px]" aria-label="Credit memos">
+        <thead>
+          <tr class="bg-gray-50 border-b border-gray-200">
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Credit Memo</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Customer</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Source</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Total</th>
+            <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Unapplied</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for cm in credit_memos %}
+          {% set pill = status_pill_map.get(cm.status, ('badge-gray', cm.status|upper)) %}
+          <tr class="cursor-pointer hover:bg-gray-50/80 transition-colors"
+              onclick="window.location.href='/credit-memos/{{ cm.id }}'">
+            <td class="px-4 py-3">
+              <p class="text-sm font-semibold text-brand-700 font-mono">{{ cm.cm_number }}</p>
+              <p class="text-xs text-gray-400">{{ cm.created_at.strftime('%b %d, %Y') if cm.created_at }}</p>
+            </td>
+            <td class="px-4 py-3 text-sm text-gray-700">{{ cm.customer.company_name if cm.customer else '—' }}</td>
+            <td class="px-4 py-3 text-xs text-gray-500">{{ cm.trigger_type | replace('_', ' ') | title }}</td>
+            <td class="px-4 py-3 text-right text-sm tabular-nums text-gray-900">${{ '%.2f' % cm.total_amount }}</td>
+            <td class="px-4 py-3 text-right text-sm tabular-nums {% if cm.unapplied_amount > 0 %}text-amber-600 font-semibold{% else %}text-gray-400{% endif %}">${{ '%.2f' % cm.unapplied_amount }}</td>
+            <td class="px-4 py-3"><span class="{{ pill[0] }} text-xs font-bold tracking-wider">{{ pill[1] }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="card flex flex-col items-center justify-center py-16 text-center">
+    <div class="w-14 h-14 rounded-2xl bg-gray-100 flex items-center justify-center mb-4">
+      <svg class="w-7 h-7 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+              d="M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h14a2 2 0 012 2v14a2 2 0 01-2 2z"/>
+      </svg>
+    </div>
+    <p class="text-sm font-semibold text-gray-700">No credit memos{% if status != 'all' %} in this status{% endif %}</p>
+    <p class="text-xs text-gray-400 mt-1">Issue one from a finalized invoice's workspace.</p>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

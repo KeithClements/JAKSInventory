@@ -31,13 +31,14 @@ from datetime import datetime, timedelta
 
 from app.constants import (
     AuditAction, EntityType, FulfillmentSource, InventoryTxnType,
-    LineType, PaymentTerms, Permission, SOLineSource, SOLineStatus, SOPaymentMode, SOStatus,
+    LineType, PaymentMethod, PaymentTerms, Permission, POStatus, SOLineSource, SOLineStatus, SOPaymentMode, SOStatus,
 )
 from app.models.inventory import InventoryTransaction
 from app.models.product import Product
 from app.models.quote import SalesOrder, SOLine
 from app.settings_utils import bump_counter
-from app.services.base import BaseService
+from app.services.base import BaseService, apply_product_line_defaults
+from app.utils import validate_line_qty
 
 
 class SalesOrderService(BaseService):
@@ -55,9 +56,41 @@ class SalesOrderService(BaseService):
         Create a new sales order. Generates SO-YEAR-NNNN.
         Writes SO_COMMITTED inventory transactions for each product line.
         Links to originating quote if quote_id supplied.
+
+        Bug 1 fix: core-bearing PRODUCT lines automatically get a discrete
+        CORE_CHARGE child line so the SO subtotal includes the core (mirrors
+        QuoteService.add_line and InvoiceService._add_line_internal behaviour).
         """
         year = datetime.utcnow().year
         so_number = bump_counter(self.db, "next_so_number", "SO", year)
+
+        # C1 — capture the tax intent agreed at SO time so fulfill_and_invoice
+        # does NOT silently re-derive tax from the live customer at fulfillment
+        # (which could make a taxable customer's invoice exceed the SO total they
+        # agreed to). Prefer the originating quote's frozen tax; else the
+        # customer's current tax status. An explicit data override wins (imports).
+        from app.models.customer import Customer as _Customer
+        from app.models.quote import Quote as _Quote
+        _src_quote = (
+            self.db.query(_Quote).filter(_Quote.id == quote_id).first()
+            if quote_id else None
+        )
+        # The SO's taxable flag follows the source's taxable INTENT, not whether a
+        # rate happens to be set: a taxable (non-exempt) customer / quote ⇒ the SO
+        # defaults taxable even at a 0 rate ("0% (no rate set)" downstream, never the
+        # misleading "Exempt"). fulfill_and_invoice only forwards the SO tax to the
+        # invoice when a positive rate was captured, so a 0-rate taxable SO falls
+        # back to the live-customer derivation at invoice time (no contradiction).
+        if _src_quote is not None:
+            _q_rate = float(_src_quote.tax_rate_snapshot or 0.0)
+            _so_is_taxable = bool(_src_quote.is_taxable)
+            _so_tax_rate = _q_rate if _so_is_taxable else 0.0
+        else:
+            _cust = self.db.query(_Customer).filter(_Customer.id == customer_id).first()
+            _cust_exempt = bool(getattr(_cust, "is_tax_exempt", False)) if _cust else False
+            _cust_rate = float(getattr(_cust, "tax_rate", 0.0) or 0.0) if _cust else 0.0
+            _so_is_taxable = not _cust_exempt
+            _so_tax_rate = _cust_rate if _so_is_taxable else 0.0
 
         so = SalesOrder(
             so_number=so_number,
@@ -71,6 +104,8 @@ class SalesOrderService(BaseService):
             esn=data.get("esn"),
             engine_manufacturer=data.get("engine_manufacturer", ""),
             engine_model=data.get("engine_model", ""),
+            is_taxable=bool(data.get("is_taxable", _so_is_taxable)),
+            tax_rate_snapshot=float(data.get("tax_rate_snapshot", _so_tax_rate)),
             notes=data.get("notes", ""),
             internal_notes=data.get("internal_notes", ""),
         )
@@ -79,8 +114,10 @@ class SalesOrderService(BaseService):
 
         sort_order = 0
         for line_data in data.get("lines", []):
-            self._add_line_internal(so.id, line_data, sort_order)
+            line = self._add_line_internal(so.id, line_data, sort_order)
             sort_order += 1
+            if self._maybe_add_core_line(so.id, line, sort_order):
+                sort_order += 1
 
         self.audit(
             entity_type=EntityType.SALES_ORDER,
@@ -117,25 +154,74 @@ class SalesOrderService(BaseService):
         requested qty exceeds qty_available, this raises unless caller has
         NEGATIVE_INVENTORY_OVERRIDE permission AND passes allow_negative_inventory=True.
         Writes SO_COMMITTED inventory transaction for committed product lines.
+
+        Bug 1 fix: if the product has a core charge, a discrete CORE_CHARGE child
+        line is auto-derived (matching the quote and invoice behaviour so the SO
+        subtotal includes the core deposit).
         """
         so = self._get_so_or_404(so_id)
         if so.status in (SOStatus.CANCELLED, SOStatus.INVOICED):
             raise ValueError(f"Cannot add lines to a {so.status} sales order")
 
         sort_order = max((ln.sort_order for ln in so.lines), default=-1) + 1
+        merged = {**data, "product_id": product_id}
+        # Render-context dict the line carries to the template (chip/badge/last-price);
+        # presentation-only, never touches totals/tax. See apply_product_line_defaults.
+        _render_ctx: dict = {}
+        # Backfill description / cost / price from the product so an immediate-add
+        # POST of just product_id + qty yields a complete line.
+        if product_id is not None:
+            _product = self.db.query(Product).filter(Product.id == product_id).first()
+            # Tier-adjusted price: wholesale/fleet/dealer customers get a configured
+            # discount off the normal sell price; standard customers get None (no-op).
+            _tier_price = None
+            _ps = None
+            _cust = None
+            if _product:
+                from app.models.customer import Customer
+                _cust = self.db.query(Customer).filter(Customer.id == so.customer_id).first()
+                if _cust:
+                    from app.services.pricing_service import PricingService as _PS
+                    _ps = _PS(self.db, self.current_user_id)
+                    _tier_price = _ps.sell_price_for_tier(_product, _cust.pricing_tier)
+            # SO lines carry qty under "qty_ordered" (quotes/invoices use "qty"),
+            # so the volume-break qty must be passed explicitly or every
+            # CustomerPriceRule qty_min match would see qty=1.
+            try:
+                _qty = float(merged.get("qty_ordered", 1) or 1)
+            except (TypeError, ValueError):
+                _qty = 1
+            apply_product_line_defaults(
+                _product, merged, include_price=True, tier_price=_tier_price,
+                customer=_cust, pricing_service=_ps, qty=_qty, render_ctx=_render_ctx,
+            )
         line = self._add_line_internal(
             so.id,
-            {**data, "product_id": product_id},
+            merged,
             sort_order,
             allow_negative_inventory=allow_negative_inventory,
         )
+        # Attach the transient pricing render-context for templates (chip/badge/
+        # last-price). Not a DB column — lives only on the in-memory instance.
+        line.pricing_ctx = _render_ctx
+        self._maybe_add_core_line(so.id, line, sort_order + 1)
         self.db.commit()
         return line
 
-    def update_line(self, line_id: int, data: dict) -> SOLine:
+    def update_line(
+        self,
+        line_id: int,
+        data: dict,
+        allow_negative_inventory: bool = False,
+    ) -> SOLine:
         """
         Update line qty or price. Adjusts SO_COMMITTED / SO_RELEASED inventory
         delta when qty_ordered changes.
+
+        R6 — same negative-inventory hard block as _add_line_internal: a qty
+        increase on a STOCK line commits `delta` more units, so it raises when
+        delta exceeds qty_available unless the caller has
+        NEGATIVE_INVENTORY_OVERRIDE permission AND passes allow_negative_inventory=True.
         """
         line = self.db.query(SOLine).filter(SOLine.id == line_id).first()
         if line is None:
@@ -144,6 +230,14 @@ class SalesOrderService(BaseService):
         if so.status in (SOStatus.CANCELLED, SOStatus.INVOICED):
             raise ValueError(f"Cannot edit lines on a {so.status} sales order")
 
+        if "discount_pct" in data:
+            data["discount_pct"] = self._validated_discount_pct(data["discount_pct"])
+
+        # Floor+ceiling qty_ordered before it drives the stock-commitment delta or
+        # gets written — shared guard with quote/invoice line editing.
+        if "qty_ordered" in data:
+            data = {**data, "qty_ordered": validate_line_qty(data["qty_ordered"])}
+
         if "qty_ordered" in data and line.line_type == LineType.PRODUCT and line.product_id:
             new_qty_ordered = int(data["qty_ordered"])
             delta = new_qty_ordered - line.qty_ordered
@@ -151,6 +245,31 @@ class SalesOrderService(BaseService):
                 product = self.db.query(Product).filter(Product.id == line.product_id).first()
                 if product:
                     if delta > 0:
+                        # ── R6 — negative inventory hard block (mirror of
+                        # _add_line_internal): only STOCK lines commit stock here.
+                        if (
+                            line.fulfillment_source == FulfillmentSource.STOCK
+                            and delta > product.qty_available
+                        ):
+                            if not allow_negative_inventory:
+                                raise ValueError(
+                                    f"Cannot commit {delta} more of {product.sku}: only "
+                                    f"{product.qty_available} available. Override requires "
+                                    f"NEGATIVE_INVENTORY_OVERRIDE permission, or add as backorder."
+                                )
+                            self.assert_can(Permission.NEGATIVE_INVENTORY_OVERRIDE)
+                            self.audit(
+                                entity_type=EntityType.SALES_ORDER,
+                                entity_id=so.id,
+                                action=AuditAction.INVENTORY_ADJUSTED,
+                                new_value={
+                                    "override": "allow_negative_inventory",
+                                    "product_id": product.id,
+                                    "qty_requested": delta,
+                                    "qty_available": product.qty_available,
+                                },
+                                notes="Negative inventory override at SO line qty increase",
+                            )
                         # Committing additional qty
                         product.qty_committed += delta
                         line.qty_committed += delta
@@ -180,9 +299,20 @@ class SalesOrderService(BaseService):
             "qty_ordered", "unit_price", "unit_cost",
             "discount_pct", "sort_order", "description",
         ]
+        qty_changed = (
+            "qty_ordered" in data and int(data["qty_ordered"]) != line.qty_ordered
+        )
         for field in updatable:
             if field in data:
                 setattr(line, field, data[field])
+
+        # Cascade qty_ordered to locked auto-core children — mirror invoice/quote
+        # update_line so the CORE_CHARGE row tracks its parent product line.
+        if qty_changed and line.parent_line_id is None:
+            for child in line.children:
+                if child.is_locked_to_parent or child.line_type == LineType.CORE_CHARGE:
+                    child.qty_ordered = line.qty_ordered
+
         self.db.commit()
         return line
 
@@ -199,9 +329,152 @@ class SalesOrderService(BaseService):
             raise ValueError(f"Sales order {so.so_number} is already cancelled")
 
         self._release_line_commitment(line, so.so_number)
+        # C6 — record the cancelled portion BEFORE freezing qty_ordered, so the
+        # print view can skip fully-cancelled lines and tag partially-invoiced
+        # ones with "N cancelled". Once qty_ordered is frozen to qty_invoiced the
+        # difference is lost, so qty_cancelled must be captured here first.
+        line.qty_cancelled = max(0, line.qty_ordered - line.qty_invoiced)
         # Freeze at what's already invoiced — remaining qty is gone
         line.qty_ordered = line.qty_invoiced
+
+        # R1-10 — cascade to auto-generated children (the CORE_CHARGE child line
+        # derived by _maybe_add_core_line). Without this the child survives with
+        # qty_ordered > 0, leaving a phantom core deposit in the SO subtotal for
+        # a part that is no longer being sold. Same freeze semantics as the parent.
+        for child in line.children:
+            if not (child.is_auto_generated and child.is_locked_to_parent):
+                continue
+            self._release_line_commitment(child, so.so_number)
+            # C6 — same as the parent: capture cancelled qty before freezing.
+            child.qty_cancelled = max(0, child.qty_ordered - child.qty_invoiced)
+            child.qty_ordered = child.qty_invoiced
+
+        # Recompute SO status. Cancelling the backordered remainder of an order
+        # whose other lines are already invoiced must not leave the SO stranded in
+        # OPEN/PARTIAL forever (it would otherwise linger in the Open tab and the
+        # workspace would still offer fulfil/invoice actions on a closed order).
+        # Only advance from the active fulfilling states, and never flip an order
+        # with zero invoiced qty to INVOICED. Mirrors fulfill_and_invoice's recompute.
+        if so.status in (SOStatus.OPEN, SOStatus.PARTIAL) and any(
+            ln.qty_invoiced > 0 for ln in so.lines
+        ):
+            old_status = so.status
+            so.status = SOStatus.INVOICED if so.is_fully_invoiced else SOStatus.PARTIAL
+            if so.status != old_status:
+                self.audit(
+                    entity_type=EntityType.SALES_ORDER,
+                    entity_id=so.id,
+                    action=AuditAction.STATUS_CHANGED,
+                    old_value=old_status,
+                    new_value=so.status,
+                    notes=f"line #{line.id} cancelled",
+                )
         self.db.commit()
+
+    def set_line_eta(self, line_id: int, eta_date) -> SOLine:
+        """§5.2 — set/clear a SO line's customer-facing ETA (backorder / on-PO
+        arrival estimate). Accepts a date, an ISO 'YYYY-MM-DD' string, or ''/None
+        to clear. Mutates + commits."""
+        line = self.db.query(SOLine).filter(SOLine.id == line_id).first()
+        if line is None:
+            raise ValueError(f"SOLine {line_id} not found")
+        line.eta_date = self._parse_eta(eta_date)
+        self.db.commit()
+        return line
+
+    @staticmethod
+    def _parse_eta(value):
+        from datetime import date as _date
+        if value in (None, ""):
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, _date):
+            return value
+        try:
+            return _date.fromisoformat(str(value).strip())
+        except ValueError:
+            return None
+
+    def create_po_for_line(self, so_id: int, line_id: int):
+        """Order a backordered SO line on a new draft PO and link the two.
+
+        Per-line "Order" action on the SO workspace (TESTING_FEEDBACK 2026-06-01).
+        Pre-fills a draft PO with the part, the still-unsourced qty, and the
+        product's PREFERRED vendor (POService.add_line pulls that vendor's cost),
+        then links the SO line to the new PO line via linked_po_line_id and
+        advances it to fulfillment_source=LINKED_PO / line_status=AWAITING_PO_RECEIPT.
+
+        Receiving the linked PO commits the goods back to this SO line and flips
+        it AWAITING_PO_RECEIPT → RESERVED_STOCK (POService.create_receipt). The
+        PO→SO direction is recovered for display by walking linked_po_line_id
+        backwards (app.services.document_links). Re-running after the linked PO
+        was cancelled drops the stale link and orders onto a fresh PO. Returns
+        the created PurchaseOrder.
+        """
+        from app.services.po_service import POService
+        from app.models.purchase_order import POLine
+
+        so = self._get_so_or_404(so_id)
+        if so.status in (SOStatus.CANCELLED, SOStatus.INVOICED):
+            raise ValueError(f"Cannot order parts for a {so.status} sales order")
+
+        line = (
+            self.db.query(SOLine)
+            .filter(SOLine.id == line_id, SOLine.so_id == so_id)
+            .first()
+        )
+        if line is None:
+            raise ValueError(f"SOLine {line_id} not found on {so.so_number}")
+        if line.line_type != LineType.PRODUCT or not line.product_id:
+            raise ValueError("Only stocked product lines can be ordered on a PO")
+        if line.linked_po_line_id:
+            existing = self.db.get(POLine, line.linked_po_line_id)
+            if existing and existing.po and existing.po.status != POStatus.CANCELLED:
+                raise ValueError("This line is already linked to a purchase order")
+            # The previously linked PO was cancelled (or no longer exists): fall
+            # through and re-link onto a fresh PO. The assignment below overwrites
+            # the stale linked_po_line_id, so the "Re-order" action can succeed.
+
+        short_qty = line.qty_ordered - line.qty_fulfilled
+        if short_qty <= 0:
+            raise ValueError("This line has no outstanding quantity to order")
+
+        product = self.db.query(Product).filter(Product.id == line.product_id).first()
+        source = product.preferred_vendor_source if product else None
+        if source is None:
+            sku = product.sku if product else "this part"
+            raise ValueError(
+                f"No preferred vendor is set for {sku}. Set one on the product, "
+                "then order again."
+            )
+
+        po_svc = POService(self.db, self.current_user_id)
+        po = po_svc.create_po(
+            vendor_id=source.vendor_id,
+            data={"notes": f"Auto-created from {so.so_number} to source a backordered line."},
+        )
+        po_line = po_svc.add_line(
+            po.id,
+            line.product_id,
+            {"qty_ordered": short_qty, "description": line.description},
+        )
+
+        old_status = line.line_status
+        line.linked_po_line_id = po_line.id
+        line.fulfillment_source = FulfillmentSource.LINKED_PO
+        line.line_status = SOLineStatus.AWAITING_PO_RECEIPT
+
+        self.audit(
+            entity_type=EntityType.SALES_ORDER,
+            entity_id=so_id,
+            action=AuditAction.STATUS_CHANGED,
+            old_value=old_status,
+            new_value=line.line_status,
+            notes=f"line {line_id} ordered on {po.po_number} (qty {short_qty})",
+        )
+        self.db.commit()
+        return po
 
     # ── Fulfillment ───────────────────────────────────────────────────────────
 
@@ -237,6 +510,22 @@ class SalesOrderService(BaseService):
             raise ValueError(f"Sales order {so.so_number} is already fully invoiced")
         if so.status == SOStatus.HOLD:
             raise ValueError(f"Sales order {so.so_number} is on hold — release hold before invoicing")
+
+        # §21 — FULL payment mode = customer pays 100% up front (special orders).
+        # Block fulfill/invoice while the balance is uncollected, otherwise a
+        # "Pay in Full" $4,000 special order can ship with $0 actually received.
+        # DEPOSIT / NONE modes are net-terms and intentionally skip this gate.
+        if so.payment_mode == SOPaymentMode.FULL:
+            # C1 — gate on the tax-inclusive total, not subtotal. A taxable
+            # "Pay in Full" order whose deposit only covers the pre-tax subtotal
+            # must not ship: the customer still owes the sales tax.
+            so_value = so.total
+            if (so.deposit_amount or 0.0) + 0.01 < so_value:
+                raise ValueError(
+                    f"Sales order {so.so_number} is set to Pay in Full but only "
+                    f"${so.deposit_amount:.2f} of ${so_value:.2f} has been collected. "
+                    f"Record the remaining payment before invoicing."
+                )
 
         # Snapshot SO subtotal BEFORE fulfillment for proportional deposit allocation
         so_total_before = sum(
@@ -282,16 +571,28 @@ class SalesOrderService(BaseService):
                             notes=f"Fulfill SO {so.so_number} → invoice",
                         )
 
-            inv_lines.append({
-                "product_id": line.product_id,
-                "so_line_id": line.id,
-                "line_type": line.line_type,
-                "description": line.description,
-                "qty": qty,
-                "unit_price": line.unit_price,
-                "unit_cost": line.unit_cost,
-                "discount_pct": line.discount_pct,
-            })
+            # R3 E2E bug: do NOT forward the SO's auto-generated CORE_CHARGE
+            # child — InvoiceService.create_invoice re-derives a core child for
+            # the core-bearing PRODUCT line (same exclusion rule as the quote
+            # converters), so forwarding it double-bills the deposit. Its
+            # fulfillment bookkeeping below still advances so the SO reaches
+            # INVOICED instead of stranding at PARTIAL. Standalone manual
+            # CORE_CHARGE lines (no parent) still carry — nothing re-derives those.
+            is_derived_core = (
+                line.line_type == LineType.CORE_CHARGE
+                and (line.is_auto_generated or line.parent_line_id)
+            )
+            if not is_derived_core:
+                inv_lines.append({
+                    "product_id": line.product_id,
+                    "so_line_id": line.id,
+                    "line_type": line.line_type,
+                    "description": line.description,
+                    "qty": qty,
+                    "unit_price": line.unit_price,
+                    "unit_cost": line.unit_cost,
+                    "discount_pct": line.discount_pct,
+                })
 
             line.qty_fulfilled += qty
             line.qty_invoiced += qty
@@ -327,18 +628,30 @@ class SalesOrderService(BaseService):
         # Delegate invoice creation — create_invoice() commits (includes SO_RELEASED
         # txns and SOLine qty updates that were flushed above).
         inv_svc = InvoiceService(self.db, self.current_user_id)
+        _inv_data = {
+            "customer_po_number": so.customer_po_number,
+            "customer_job_number": so.customer_job_number,
+            "esn": so.esn,
+            "engine_manufacturer": so.engine_manufacturer or "",
+            "engine_model": so.engine_model or "",
+            "notes": so.notes,
+            "internal_notes": so.internal_notes,
+            "due_date": due_date,
+        }
+        # C1 — carry the SO-agreed tax forward so the invoice (and its finalize
+        # freeze) use the rate the customer agreed to on the SO, not whatever the
+        # live customer record says at fulfillment time. Only do this when the SO
+        # actually captured a positive tax rate; otherwise (no rate captured, or
+        # a legacy/direct-built SO) fall back to create_invoice deriving tax from
+        # the live customer — which both preserves pre-C1 behavior and avoids a
+        # contradictory "taxable but no rate" invoice that fails finalize.
+        if (so.tax_rate_snapshot or 0) > 0:
+            _inv_data["is_taxable"] = so.is_taxable
+            _inv_data["tax_rate"] = so.tax_rate_snapshot
+            _inv_data["tax_rate_snapshot"] = so.tax_rate_snapshot
         invoice = inv_svc.create_invoice(
             customer_id=so.customer_id,
-            data={
-                "customer_po_number": so.customer_po_number,
-                "customer_job_number": so.customer_job_number,
-                "esn": so.esn,
-                "engine_manufacturer": so.engine_manufacturer or "",
-                "engine_model": so.engine_model or "",
-                "notes": so.notes,
-                "internal_notes": so.internal_notes,
-                "due_date": due_date,
-            },
+            data=_inv_data,
             so_id=so_id,
             lines=inv_lines,
         )
@@ -651,6 +964,17 @@ class SalesOrderService(BaseService):
             raise ValueError(f"Cannot collect deposit on a cancelled sales order")
 
         pay_svc = PaymentService(self.db, self.current_user_id)
+        # R2 — card deposits collect the CC surcharge exactly like invoice
+        # payments do (R1-3: card method + flagged). The SO has no
+        # apply_cc_surcharge column, so the flag derives from the customer the
+        # same way invoice creation seeds it (O6 — customer.card_surcharge_pct):
+        # a customer-level pct > 0 means "surcharge this customer's card
+        # payments" at that pct; NULL (no override — invoices likewise default
+        # apply_cc_surcharge=False) or 0.0 (explicitly disabled) → no surcharge.
+        _cust_pct = so.customer.card_surcharge_pct if so.customer else None
+        apply_surcharge = (
+            payment_method == PaymentMethod.CREDIT_CARD and (_cust_pct or 0.0) > 0
+        )
         payment = pay_svc.record_payment(
             customer_id=so.customer_id,
             amount_received=amount,
@@ -658,6 +982,8 @@ class SalesOrderService(BaseService):
             data={"notes": f"Deposit for SO {so.so_number}"},
             invoice_ids=None,  # unapplied — will be applied when invoice is generated
             sales_order_id=so.id,  # R3 — link payment to SO for fulfill-time allocation
+            apply_surcharge=apply_surcharge,
+            surcharge_pct=_cust_pct if apply_surcharge else None,
         )
         # PaymentService committed above; now update SO and commit separately.
         so.deposit_amount += amount
@@ -669,6 +995,7 @@ class SalesOrderService(BaseService):
                 "deposit_amount": amount,
                 "payment_method": payment_method,
                 "payment_id": payment.id,
+                "surcharge_amount": payment.surcharge_amount,
                 "running_deposit_total": so.deposit_amount,
             },
             notes=f"Deposit collected for SO {so.so_number}",
@@ -695,11 +1022,71 @@ class SalesOrderService(BaseService):
         self.db.commit()
         return so
 
+    def _maybe_add_core_line(
+        self,
+        so_id: int,
+        parent_line: SOLine,
+        sort_order: int,
+    ) -> SOLine | None:
+        """
+        Bug 1 fix — auto-derive a discrete CORE_CHARGE child SOLine whenever
+        a top-level PRODUCT line is added whose product has a core charge.
+
+        Mirrors QuoteService.add_line (quote_service.py:127-149) and
+        InvoiceService's core-line derivation so all three document types
+        agree: the core deposit is its own line whose line_total is included
+        in the document subtotal via SOLine.line_total (and therefore
+        SalesOrder.subtotal) rather than being silently buried in the legacy
+        core_charge float which line_total ignores.
+
+        Skips if:
+          - line is not a top-level PRODUCT (already has a parent or is itself a core)
+          - product has no core (product.has_core is False)
+          - customer_core_charge == 0 (no charge to collect)
+        """
+        if (
+            parent_line.line_type != LineType.PRODUCT
+            or parent_line.parent_line_id is not None  # skip child lines
+            or parent_line.is_core_line                # skip re-processing a core line
+            or not parent_line.product_id
+        ):
+            return None
+
+        product = self.db.query(Product).filter(Product.id == parent_line.product_id).first()
+        if not product or not product.has_core or product.customer_core_charge <= 0:
+            return None
+
+        return self._add_line_internal(so_id, {
+            "product_id": parent_line.product_id,
+            "description": f"Core — {product.title or product.sku}",
+            "qty_ordered": parent_line.qty_ordered,
+            "unit_price": product.customer_core_charge,
+            "unit_cost": product.vendor_core_charge,
+            "line_type": LineType.CORE_CHARGE,
+            "is_core_line": True,
+            "is_auto_generated": True,
+            "is_locked_to_parent": True,
+            "parent_line_id": parent_line.id,
+            "discount_pct": 0.0,
+        }, sort_order)
+
     def _get_so_or_404(self, so_id: int) -> SalesOrder:
         so = self.db.query(SalesOrder).filter(SalesOrder.id == so_id).first()
         if so is None:
             raise ValueError(f"SalesOrder {so_id} not found")
         return so
+
+    @staticmethod
+    def _validated_discount_pct(raw) -> float:
+        """discount_pct is a percentage — outside 0–100 it silently inflates or
+        inverts the line total, so reject rather than write it."""
+        try:
+            pct = float(raw or 0.0)
+        except (TypeError, ValueError):
+            raise ValueError(f"discount_pct must be a number, got {raw!r}")
+        if not 0.0 <= pct <= 100.0:
+            raise ValueError(f"discount_pct must be between 0 and 100, got {pct}")
+        return pct
 
     def _add_line_internal(
         self,
@@ -709,6 +1096,7 @@ class SalesOrderService(BaseService):
         allow_negative_inventory: bool = False,
     ) -> SOLine:
         qty_ordered = int(data.get("qty_ordered", 1))
+        discount_pct = self._validated_discount_pct(data.get("discount_pct", 0.0))
 
         # ── R7 — determine fulfillment source ────────────────────────────────
         # Caller may explicitly set; otherwise auto-derive from stock availability.
@@ -773,13 +1161,19 @@ class SalesOrderService(BaseService):
             qty_invoiced=0,
             unit_price=float(data.get("unit_price", 0.0)),
             unit_cost=float(data.get("unit_cost", 0.0)),
-            discount_pct=float(data.get("discount_pct", 0.0)),
+            discount_pct=discount_pct,
             core_charge=float(data.get("core_charge", 0.0)),
             source=legacy_source,
             fulfillment_source=fulfillment_source,
             line_status=initial_status,
             linked_po_line_id=linked_po_line_id,
             sort_order=sort_order,
+            # Parent/child linkage — forwarded from the caller so auto-generated
+            # CORE_CHARGE children carry the right metadata.
+            parent_line_id=data.get("parent_line_id"),
+            is_core_line=bool(data.get("is_core_line", False)),
+            is_auto_generated=bool(data.get("is_auto_generated", False)),
+            is_locked_to_parent=bool(data.get("is_locked_to_parent", False)),
         )
         self.db.add(line)
         self.db.flush()
@@ -824,21 +1218,40 @@ class SalesOrderService(BaseService):
         return mapping.get(fulfillment_source, SOLineStatus.STOCK)
 
     def _release_line_commitment(self, line: SOLine, so_number: str) -> None:
-        """Release the committed inventory for a single line (cancel or cancel_order)."""
-        if line.line_type == LineType.PRODUCT and line.product_id and line.qty_committed > 0:
-            product = self.db.query(Product).filter(Product.id == line.product_id).first()
-            if product:
-                released = line.qty_committed
-                product.qty_committed = max(0, product.qty_committed - released)
-                self._write_so_txn(
-                    product_id=product.id,
-                    txn_type=InventoryTxnType.SO_RELEASED,
-                    qty_change=released,   # positive = back to available
-                    qty_after=product.qty_on_hand,
-                    so_id=line.so_id,
-                    notes=f"SO {so_number} cancelled",
-                )
-                line.qty_committed = 0
+        """Release the committed inventory for a single line (cancel or cancel_order).
+
+        R1-10 — also releases backorder demand: a BACKORDER-source line bumped
+        product.qty_backordered at add time and the only other decrement is the
+        PO-receipt allocation path, so cancellation must give back the
+        un-fulfilled remainder or the product's backorder count stays inflated
+        forever.
+        """
+        if line.line_type != LineType.PRODUCT or not line.product_id:
+            return
+        product = self.db.query(Product).filter(Product.id == line.product_id).first()
+        if product is None:
+            return
+
+        # Backorder release — must compute BEFORE qty_committed is zeroed below:
+        # any committed portion was already decremented from qty_backordered at
+        # PO-receipt allocation time, and fulfilled qty is no longer demand.
+        if line.fulfillment_source == FulfillmentSource.BACKORDER:
+            remainder = line.qty_ordered - line.qty_fulfilled - line.qty_committed
+            if remainder > 0:
+                product.qty_backordered = max(0, product.qty_backordered - remainder)
+
+        if line.qty_committed > 0:
+            released = line.qty_committed
+            product.qty_committed = max(0, product.qty_committed - released)
+            self._write_so_txn(
+                product_id=product.id,
+                txn_type=InventoryTxnType.SO_RELEASED,
+                qty_change=released,   # positive = back to available
+                qty_after=product.qty_on_hand,
+                so_id=line.so_id,
+                notes=f"SO {so_number} cancelled",
+            )
+            line.qty_committed = 0
 
     def _write_so_txn(
         self,

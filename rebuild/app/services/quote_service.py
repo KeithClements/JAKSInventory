@@ -22,13 +22,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from app.constants import (
-    AuditAction, EntityType, LineRole, LineType,
+    AuditAction, EntityType, LineRole, LineType, LostReason,
     NON_DISCOUNTABLE_LINE_TYPES,
     QuoteOutcome, QuoteStatus, SOPaymentMode,
 )
 from app.models.quote import LostSaleLog, Quote, QuoteLine
-from app.services.base import BaseService
+from app.services.base import BaseService, apply_product_line_defaults
 from app.settings_utils import bump_counter
+from app.utils import validate_line_qty
 
 
 class QuoteService(BaseService):
@@ -44,17 +45,35 @@ class QuoteService(BaseService):
         quote_number = bump_counter(self.db, "next_quote_number", "Q", year)
         validity_days = int(data.get("validity_days", 30))
 
+        # §21 (6.16) — default quote tax from the customer (mirrors invoice draft):
+        # a taxable (non-exempt) customer ⇒ the quote DEFAULTS taxable; a tax-exempt
+        # customer ⇒ exempt. The taxable flag follows is_tax_exempt ALONE — it does
+        # NOT depend on the configured rate, so a taxable customer whose rate is 0
+        # (no jurisdiction rate set yet) still shows "Taxable" (the totals template
+        # renders "0% (no rate set)" rather than the misleading "Exempt"). The clerk
+        # can still toggle per quote afterward. Snapshot the rate at quote time.
+        # A caller may force the flag explicitly (imports / data migration).
+        from app.models.customer import Customer
+        customer = self.db.query(Customer).filter(Customer.id == customer_id).first()
+        if "is_taxable" in data:
+            is_taxable = bool(data["is_taxable"])
+        else:
+            is_taxable = bool(customer) and (not customer.is_tax_exempt)
+        tax_rate = customer.tax_rate if (customer and not customer.is_tax_exempt) else 0.0
+
         quote = Quote(
             quote_number=quote_number,
             customer_id=customer_id,
             status=QuoteStatus.DRAFT,
             outcome=QuoteOutcome.PENDING,
-            discount_pct=float(data.get("discount_pct", 0.0)),
+            discount_pct=self._validate_discount_pct(data.get("discount_pct")),
             validity_days=validity_days,
             valid_until=datetime.utcnow() + timedelta(days=validity_days),
             follow_up_date=data.get("follow_up_date"),
             notes=data.get("notes", ""),
             internal_notes=data.get("internal_notes", ""),
+            is_taxable=is_taxable,
+            tax_rate_snapshot=tax_rate,
         )
         self.db.add(quote)
         self.db.flush()
@@ -94,13 +113,38 @@ class QuoteService(BaseService):
         quote = self._get_or_404(quote_id)
         sort_order = max((ln.sort_order for ln in quote.lines), default=-1) + 1
 
+        # Fetch customer once — used for both tier pricing and discount default below.
+        customer = self.db.query(Customer).filter(Customer.id == quote.customer_id).first()
+
         unit_cost = float(data.get("unit_cost", 0.0))
         if product_id is not None and unit_cost == 0.0:
             unit_cost = self._preferred_vendor_cost(product_id)
 
         # upgrade_option lines default to excluded unless caller explicitly set is_included
         merged = {**data, "product_id": product_id, "unit_cost": unit_cost}
-        if merged.get("line_role") == LineRole.UPGRADE_OPTION and "is_included" not in data:
+        # Render-context dict the line carries to the template (chip/badge/last-price);
+        # presentation-only, never touches totals/tax. See apply_product_line_defaults.
+        _render_ctx: dict = {}
+        # Backfill description / price from the product so an immediate-add POST of
+        # just product_id + qty yields a complete line (unit_cost resolved above).
+        if product_id is not None:
+            _product = self.db.query(Product).filter(Product.id == product_id).first()
+            # Tier-adjusted price: wholesale/fleet/dealer customers get a configured
+            # discount off the normal sell price; standard customers get None (no-op).
+            _tier_price = None
+            _ps = None
+            if _product and customer:
+                from app.services.pricing_service import PricingService as _PS
+                _ps = _PS(self.db, self.current_user_id)
+                _tier_price = _ps.sell_price_for_tier(_product, customer.pricing_tier)
+            apply_product_line_defaults(
+                _product, merged, include_price=True, tier_price=_tier_price,
+                customer=customer, pricing_service=_ps, render_ctx=_render_ctx,
+            )
+        # Optionals AND upgrade-options default to EXCLUDED from the quote total — the
+        # customer opts in. (Owner decision 2026-05-31 "A": optional add-ons are quoted
+        # separately, not baked into the base total.)
+        if merged.get("line_role") in (LineRole.UPGRADE_OPTION, LineRole.OPTIONAL) and "is_included" not in data:
             merged["is_included"] = False
 
         # Auto-apply customer discount / enforce non-discountable rules
@@ -109,11 +153,28 @@ class QuoteService(BaseService):
             # Force zero regardless of what the caller passed
             merged["discount_pct"] = 0.0
         elif "discount_pct" not in data:
-            # Auto-apply customer default when caller didn't specify
-            customer = self.db.query(Customer).filter(Customer.id == quote.customer_id).first()
-            merged["discount_pct"] = float(customer.discount_pct) if customer else 0.0
+            # Inherit the quote's blanket header discount when one is set, so a
+            # line added AFTER the clerk set Disc% joins the blanket instead of
+            # coming in at full price. Fall back to the customer's standing
+            # discount otherwise. A legacy out-of-range stored default is treated
+            # as UNSET (0) — raising here would brick add-line for that customer,
+            # and clamping 150→100 would give the parts away.
+            from app.services.invoice_service import _safe_customer_discount
+            blanket = _safe_customer_discount(quote.discount_pct)
+            if blanket > 0:
+                merged["discount_pct"] = blanket
+            else:
+                merged["discount_pct"] = _safe_customer_discount(customer.discount_pct) if customer else 0.0
+
+        # Floor+ceiling the qty on add too (the search-row stepper can set it before
+        # the line exists), mirroring update_line's _validate_qty.
+        if "qty" in merged:
+            merged["qty"] = validate_line_qty(merged["qty"])
 
         line = self._add_line_internal(quote_id, merged, sort_order)
+        # Attach the transient pricing render-context for templates (chip/badge/
+        # last-price). Not a DB column — lives only on the in-memory instance.
+        line.pricing_ctx = _render_ctx
         added: list[QuoteLine] = [line]
 
         # Auto-add core charge child line for top-level PRODUCT lines whose product
@@ -137,22 +198,45 @@ class QuoteService(BaseService):
                     "parent_line_id": line.id,
                     "is_included": True,
                     "discount_pct": 0.0,
+                    "is_auto_generated": True,
+                    "is_locked_to_parent": True,
                 }, sort_order + 1)
                 added.append(core_line)
 
         self.db.commit()
         return added
 
-    def update_line(self, line_id: int, data: dict) -> QuoteLine:
+    def update_line(self, line_id: int, data: dict) -> tuple[QuoteLine, bool]:
+        """Update a line. Returns (line, cascaded) where cascaded is True if a
+        qty change propagated to locked child lines (caller should refresh the
+        full tbody so the child rows update in the DOM)."""
         line = self.db.query(QuoteLine).filter(QuoteLine.id == line_id).first()
         if line is None:
             raise ValueError(f"QuoteLine {line_id} not found")
         updatable = ["description", "qty", "unit_price", "unit_cost", "discount_pct", "sort_order"]
+        # Validate qty up front so a bad value is rejected before any field is set.
+        if "qty" in data:
+            data = {**data, "qty": self._validate_qty(data["qty"])}
+        qty_changed = "qty" in data and data["qty"] != line.qty
         for field in updatable:
             if field in data:
-                setattr(line, field, data[field])
+                value = data[field]
+                if field == "discount_pct":
+                    value = self._validate_discount_pct(value)
+                setattr(line, field, value)
+
+        cascaded = False
+        if qty_changed and line.parent_line_id is None:
+            for child in line.children:
+                # Sync qty on auto-cores still locked to the parent. Fall back
+                # to the legacy CORE_CHARGE+parent shape so quotes created
+                # before is_locked_to_parent was set on auto-cores still cascade.
+                if child.is_locked_to_parent or child.line_type == LineType.CORE_CHARGE:
+                    child.qty = line.qty
+                    cascaded = True
+
         self.db.commit()
-        return line
+        return line, cascaded
 
     def remove_line(self, line_id: int) -> bool:
         """
@@ -206,22 +290,71 @@ class QuoteService(BaseService):
         quote.outcome = QuoteOutcome.WON
         self.db.flush()  # caller (conversion) commits
 
-    def mark_lost(self, quote_id: int, lost_reason: str) -> None:
-        """Mark quote lost. Writes LostSaleLog row for pipeline reporting."""
+    @staticmethod
+    def _normalize_lost_reason(value: str) -> tuple[str, str]:
+        """Map a submitted reason to (LostReason value, leftover free-text).
+
+        A recognised LostReason returns (reason, ""). Anything else maps to OTHER
+        and returns the raw text as leftover so it can be preserved in the note —
+        this also keeps legacy callers that passed a free string lossless."""
+        raw = str(value or "").strip()
+        try:
+            return LostReason(raw.lower()), ""
+        except ValueError:
+            return LostReason.OTHER, raw
+
+    def mark_lost(
+        self,
+        quote_id: int,
+        lost_reason: str,
+        *,
+        note: str = "",
+        competitor_name: str | None = None,
+        competitor_price: float | None = None,
+    ) -> None:
+        """Mark a quote lost with a structured reason (P2-D7).
+
+        ``lost_reason`` is a LostReason value; an unrecognised string maps to
+        OTHER and is preserved in the note (legacy callers stay lossless). Writes
+        one LostSaleLog row per product line (for product-level lost analysis),
+        and a single quote-level row when the quote has no product lines, so a
+        lost sale is ALWAYS captured. For COMPETITOR, the optional competitor
+        name/price ride along on the log rows."""
         quote = self._get_or_404(quote_id)
         quote.status = QuoteStatus.DECLINED
         quote.outcome = QuoteOutcome.LOST
-        quote.lost_reason = lost_reason
 
+        reason, leftover = self._normalize_lost_reason(lost_reason)
+        note = (note or "").strip() or leftover
+        # Human-readable reason on the quote record: code + optional note.
+        quote.lost_reason = f"{reason} — {note}" if note else reason
+
+        # Competitor fields only meaningful for the COMPETITOR reason.
+        comp_name = (competitor_name or "").strip() or None
+        if reason != LostReason.COMPETITOR:
+            comp_name = None
+            competitor_price = None
+
+        row_notes = note or f"Quote {quote.quote_number} lost"
+
+        def _log(product_id: int | None) -> None:
+            self.db.add(LostSaleLog(
+                quote_id=quote_id,
+                customer_id=quote.customer_id,
+                product_id=product_id,
+                reason=reason,
+                competitor_name=comp_name,
+                competitor_price=competitor_price,
+                notes=row_notes,
+            ))
+
+        logged_any = False
         for line in quote.lines:
             if line.line_type == LineType.PRODUCT and line.product_id:
-                self.db.add(LostSaleLog(
-                    quote_id=quote_id,
-                    customer_id=quote.customer_id,
-                    product_id=line.product_id,
-                    reason=lost_reason,
-                    notes=f"Quote {quote.quote_number} lost",
-                ))
+                _log(line.product_id)
+                logged_any = True
+        if not logged_any:
+            _log(None)  # no product lines — still capture the lost sale
 
         self.audit(
             entity_type=EntityType.QUOTE,
@@ -229,7 +362,7 @@ class QuoteService(BaseService):
             action=AuditAction.STATUS_CHANGED,
             old_value=QuoteStatus.SENT,
             new_value=QuoteStatus.DECLINED,
-            notes=lost_reason,
+            notes=quote.lost_reason,
         )
         self.db.commit()
 
@@ -295,7 +428,16 @@ class QuoteService(BaseService):
         from app.services.sales_order_service import SalesOrderService
         quote = self._get_or_404(quote_id)
 
-        # Build SO line data — only included product lines convert
+        # Build SO line data — every included line EXCEPT core charges, mirroring
+        # convert_to_invoice (R1-1 fix: the old PRODUCT-only filter silently
+        # dropped MISC/WARRANTY/freight/note revenue on the quote→SO path).
+        # Exclusions:
+        #   - CORE_CHARGE (Bug 1 fix): SalesOrderService.create_sales_order
+        #     re-derives discrete CORE_CHARGE child SOLines from the product's
+        #     has_core / customer_core_charge fields — carrying the quote's core
+        #     line would double-count the deposit.
+        #   - is_included=False: optional / upgrade-option lines the customer
+        #     did not opt into stay off the order.
         so_lines = [
             {
                 "product_id": ln.product_id,
@@ -305,10 +447,9 @@ class QuoteService(BaseService):
                 "unit_price": ln.unit_price,
                 "unit_cost": ln.unit_cost,
                 "discount_pct": ln.discount_pct,
-                "core_charge": 0.0,
             }
             for ln in sorted(quote.lines, key=lambda l: l.sort_order)
-            if ln.line_type == LineType.PRODUCT and ln.is_included
+            if ln.is_included and ln.line_type != LineType.CORE_CHARGE
         ]
 
         so_svc = SalesOrderService(self.db, self.current_user_id)
@@ -316,7 +457,13 @@ class QuoteService(BaseService):
             customer_id=quote.customer_id,
             payment_mode=payment_mode,
             data={
-                "customer_po_number": None,
+                # Carry the engine/job reference fields forward (SO already
+                # supports them; create_sales_order reads these keys).
+                "customer_po_number": quote.customer_po_number,
+                "customer_job_number": quote.customer_job_number,
+                "esn": quote.esn,
+                "engine_manufacturer": quote.engine_manufacturer or "",
+                "engine_model": quote.engine_model or "",
                 "notes": quote.notes,
                 "internal_notes": quote.internal_notes,
                 "lines": so_lines,
@@ -361,7 +508,22 @@ class QuoteService(BaseService):
         inv_svc = InvoiceService(self.db, self.current_user_id)
         invoice = inv_svc.create_invoice(
             customer_id=quote.customer_id,
-            data={"quote_id": quote_id, "notes": quote.notes},
+            data={
+                "quote_id": quote_id,
+                "notes": quote.notes,
+                # Direct quote→invoice (no SO) must still carry the engine/job refs;
+                # create_invoice reads these keys (see invoice_service.py:144-148).
+                "customer_po_number": quote.customer_po_number,
+                "customer_job_number": quote.customer_job_number,
+                "esn": quote.esn,
+                "engine_manufacturer": quote.engine_manufacturer or "",
+                "engine_model": quote.engine_model or "",
+                # §21 — carry the quote's (possibly clerk-overridden) tax decision
+                # forward so the quoted total matches the invoice. create_invoice
+                # honors these data overrides instead of re-deriving from customer.
+                "is_taxable": quote.is_taxable,
+                "tax_rate": quote.tax_rate_snapshot,
+            },
             lines=inv_lines,
         )
 
@@ -396,19 +558,39 @@ class QuoteService(BaseService):
             (c.sort_order for c in parent.children), default=parent.sort_order
         ) + 1
 
-        line = self._add_line_internal(
-            parent.quote_id,
-            {
-                **data,
-                "product_id": product_id,
-                "unit_cost": unit_cost,
-                "line_role": LineRole.UPGRADE_OPTION,
-                "is_included": False,
-                "parent_line_id": parent_line_id,
-                "line_type": LineType.PRODUCT,
-            },
-            sibling_sort,
-        )
+        merged = {
+            **data,
+            "product_id": product_id,
+            "unit_cost": unit_cost,
+            "line_role": LineRole.UPGRADE_OPTION,
+            "is_included": False,
+            "parent_line_id": parent_line_id,
+            "line_type": LineType.PRODUCT,
+        }
+        # Bug 7 — child lines get the same product backfill as main lines: an
+        # immediate-add of just product_id yields description + price from the
+        # product (apply_product_line_defaults only fills blanks, so an explicit
+        # description/price from the caller still wins).
+        if product_id is not None:
+            from app.models.product import Product
+            from app.models.customer import Customer
+            _product = self.db.query(Product).filter(Product.id == product_id).first()
+            # Tier pricing: derive customer from parent's quote, same as main add_line.
+            _tier_price = None
+            if _product:
+                _parent_quote = self.db.query(Quote).filter(Quote.id == parent.quote_id).first()
+                _cust = (
+                    self.db.query(Customer).filter(Customer.id == _parent_quote.customer_id).first()
+                    if _parent_quote else None
+                )
+                if _cust:
+                    from app.services.pricing_service import PricingService as _PS
+                    _tier_price = _PS(self.db, self.current_user_id).sell_price_for_tier(
+                        _product, _cust.pricing_tier
+                    )
+            apply_product_line_defaults(_product, merged, include_price=True, tier_price=_tier_price)
+
+        line = self._add_line_internal(parent.quote_id, merged, sibling_sort)
         self.db.commit()
         return line
 
@@ -439,8 +621,8 @@ class QuoteService(BaseService):
     ) -> QuoteLine:
         """
         Add an optional add-on (bolts, install kit, freight, etc.) under a parent
-        line.  Optional lines are included in the total by default — the customer
-        may ask to remove them.
+        line.  Optional lines are EXCLUDED from the total by default (owner decision
+        2026-05-31 "A") — the customer opts in; they are quoted separately as add-ons.
 
         data keys: description, qty, unit_price, unit_cost, discount_pct
         """
@@ -455,19 +637,37 @@ class QuoteService(BaseService):
             (c.sort_order for c in parent.children), default=parent.sort_order
         ) + 1
 
-        line = self._add_line_internal(
-            parent.quote_id,
-            {
-                **data,
-                "product_id": product_id,
-                "unit_cost": unit_cost,
-                "line_role": LineRole.OPTIONAL,
-                "is_included": True,
-                "parent_line_id": parent_line_id,
-                "line_type": LineType.PRODUCT,
-            },
-            sibling_sort,
-        )
+        merged = {
+            **data,
+            "product_id": product_id,
+            "unit_cost": unit_cost,
+            "line_role": LineRole.OPTIONAL,
+            "is_included": False,  # (A) optionals excluded from total — customer opts in
+            "parent_line_id": parent_line_id,
+            "line_type": LineType.PRODUCT,
+        }
+        # Bug 7 — same product backfill as main lines (description + price from the
+        # product when the caller didn't supply them; explicit values still win).
+        if product_id is not None:
+            from app.models.product import Product
+            from app.models.customer import Customer
+            _product = self.db.query(Product).filter(Product.id == product_id).first()
+            # Tier pricing: derive customer from parent's quote.
+            _tier_price = None
+            if _product:
+                _parent_quote = self.db.query(Quote).filter(Quote.id == parent.quote_id).first()
+                _cust = (
+                    self.db.query(Customer).filter(Customer.id == _parent_quote.customer_id).first()
+                    if _parent_quote else None
+                )
+                if _cust:
+                    from app.services.pricing_service import PricingService as _PS
+                    _tier_price = _PS(self.db, self.current_user_id).sell_price_for_tier(
+                        _product, _cust.pricing_tier
+                    )
+            apply_product_line_defaults(_product, merged, include_price=True, tier_price=_tier_price)
+
+        line = self._add_line_internal(parent.quote_id, merged, sibling_sort)
         self.db.commit()
         return line
 
@@ -604,6 +804,8 @@ class QuoteService(BaseService):
                 f"Line type '{line.line_type}' is non-discountable — discount cannot be set"
             )
 
+        new_pct = self._validate_discount_pct(new_pct)
+
         # Load customer discount for override detection
         quote = self._get_or_404(line.quote_id)
         from app.models.customer import Customer
@@ -633,17 +835,85 @@ class QuoteService(BaseService):
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
+    @staticmethod
+    def _validate_discount_pct(value) -> float:
+        """Normalize a discount percent to a float in [0, 100].
+
+        None/blank means "no discount" (0.0). Values outside [0, 100] are
+        rejected: calc_line_total is pure math, so a negative discount
+        INFLATES the line total while >100 flips it negative — and a bad
+        value here carries through conversion to the SO/invoice money path.
+        Mirrors InvoiceService._validate_discount_pct.
+        """
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return 0.0
+        try:
+            pct = float(value)
+        except (TypeError, ValueError):
+            raise ValueError("Discount must be between 0 and 100")
+        if not (0 <= pct <= 100):
+            raise ValueError("Discount must be between 0 and 100")
+        return pct
+
+    @staticmethod
+    def _validate_qty(value) -> int:
+        """Normalize a line quantity to an int in [1, MAX_LINE_QTY].
+
+        Delegates to the shared validate_line_qty so quotes, invoices, and SOs
+        enforce the identical floor AND ceiling — a fat-fingered '-3'/'0' (which
+        cascaded a negative/zero into the quote total) or an absurd '999999999'
+        (a multi-trillion-dollar line) both carry into the money path on convert,
+        so neither can be accepted here. (C-review + live-QA 2026-07-05.)
+        """
+        return validate_line_qty(value)
+
     def update_header(self, quote_id: int, data: dict, submitted_updated_at: str | None = None) -> Quote:
-        """Update quote-level notes and settings. Active (non-converted) quotes only."""
+        """Update quote-level notes and settings. Active (non-converted) quotes only.
+
+        The header Disc% is a BLANKET discount: when it changes it cascades onto
+        every discountable line the clerk hasn't individually overridden, so the
+        Quote Total actually moves (and the discount carries forward to the SO/
+        invoice via each line's discount_pct). Before this, the field saved to an
+        inert column no total property read — it flashed "Saved" and did nothing
+        (live-QA 2026-07-05). Overridden lines keep their manual value.
+        """
         quote = self._get_or_404(quote_id)
         self.check_version(quote, submitted_updated_at)
         if quote.status in (QuoteStatus.CONVERTED, QuoteStatus.DECLINED):
             raise ValueError("Cannot edit a converted or declined quote")
-        for field in ("notes", "internal_notes", "discount_pct", "validity_days"):
+        # Transient (non-column) flag — the autosave route reads it to tell the
+        # browser to refresh the totals + line rows when a cascade actually ran.
+        quote._discount_cascaded = False
+        # Whitelist of quote header fields the workspace can write. ESN/engine and
+        # the customer reference fields mirror InvoiceService.update_header so the
+        # same data the user enters on a quote persists (and later carries to SO).
+        for field in (
+            "notes", "internal_notes", "discount_pct", "validity_days",
+            "customer_po_number", "customer_job_number", "esn",
+            "engine_manufacturer", "engine_model",
+        ):
             if field in data:
-                setattr(quote, field, data[field])
+                value = data[field]
+                if field == "discount_pct":
+                    value = self._validate_discount_pct(value)
+                    if abs(value - float(quote.discount_pct or 0.0)) > 1e-9:
+                        self._cascade_blanket_discount(quote, value)
+                        quote._discount_cascaded = True
+                setattr(quote, field, value)
         self.db.commit()
         return quote
+
+    def _cascade_blanket_discount(self, quote: Quote, new_pct: float) -> None:
+        """Apply the quote-level blanket discount to every discountable line the
+        clerk hasn't individually overridden. Non-discountable line types (cores,
+        freight, fees) and lines flagged discount_overridden are left untouched,
+        so a manual per-line discount always wins over the blanket."""
+        for ln in quote.lines:
+            if ln.line_type in NON_DISCOUNTABLE_LINE_TYPES:
+                continue
+            if ln.discount_overridden:
+                continue
+            ln.discount_pct = round(float(new_pct), 4)
 
     def _get_or_404(self, quote_id: int) -> Quote:
         q = self.db.query(Quote).filter(Quote.id == quote_id).first()
@@ -683,9 +953,11 @@ class QuoteService(BaseService):
             qty=int(data.get("qty", 1)),
             unit_price=float(data.get("unit_price", 0.0)),
             unit_cost=float(data.get("unit_cost", 0.0)),
-            discount_pct=float(data.get("discount_pct", 0.0)),
+            discount_pct=self._validate_discount_pct(data.get("discount_pct")),
             is_core_line=bool(data.get("is_core_line", False)),
             parent_line_id=data.get("parent_line_id"),
+            is_auto_generated=bool(data.get("is_auto_generated", False)),
+            is_locked_to_parent=bool(data.get("is_locked_to_parent", False)),
             sort_order=sort_order,
         )
         self.db.add(line)

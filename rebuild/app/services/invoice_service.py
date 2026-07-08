@@ -15,27 +15,45 @@ Phase A — Transaction Workspace rules:
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
+from sqlalchemy import update as sa_update
+
 from app.constants import (
-    AuditAction, EntityType, InventoryTxnType,
+    AuditAction, EntityType, FREIGHT_LINE_TYPES, InventoryTxnType,
     InvoiceLockReason, InvoiceStatus, LineType, NON_TAXABLE_LINE_TYPES,
     PaymentTerms, Permission, QBOSyncStatus,
 )
+from app.invoice_totals import compute_invoice_totals
 from app.models.customer import Customer
 from app.models.inventory import InventoryTransaction
 from app.models.invoice import Invoice, InvoiceLine
 from app.models.product import Product
 from app.settings_utils import bump_counter, get_setting_value_db
-from app.services.base import BaseService
+from app.services.base import BaseService, apply_product_line_defaults
+from app.utils import validate_line_qty
+
+log = logging.getLogger(__name__)
 
 
-# Line types treated as billable parts (count toward Parts Subtotal, taxable).
-_PARTS_LINE_TYPES = {LineType.PRODUCT, LineType.MISC, LineType.WARRANTY}
-# Line types treated as freight/delivery (separate totals bucket).
-_FREIGHT_LINE_TYPES = {
-    LineType.SHIPPING, LineType.FREIGHT, LineType.LOCAL_DELIVERY, LineType.FUEL_SERVICE_CHARGE,
-}
+# Line types treated as freight/delivery. Aliases the canonical
+# app/constants.FREIGHT_LINE_TYPES (also used by the totals engine) so
+# validate_for_finalise buckets freight identically. All the totals bucketing
+# (parts/core/freight/other) now lives in app.invoice_totals.
+_FREIGHT_LINE_TYPES = FREIGHT_LINE_TYPES
+
+
+def _safe_customer_discount(raw) -> float:
+    """Copy-from-customer sanitizer for LEGACY data: an out-of-range stored
+    standing discount is treated as UNSET (0 = full price, clerk re-applies)
+    rather than raised — raising would brick document creation for that
+    customer, and clamping 150→100 would silently give the parts away."""
+    try:
+        pct = float(raw or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return pct if 0 <= pct <= 100 else 0.0
 
 
 class InvoiceService(BaseService):
@@ -61,9 +79,16 @@ class InvoiceService(BaseService):
         year = datetime.utcnow().year
         inv_number = bump_counter(self.db, "next_invoice_number", "INV", year)
 
-        # Tax defaults — tax_exempt customers force is_taxable=False regardless of rate
-        is_taxable = (not customer.is_tax_exempt) and (customer.tax_rate > 0)
-        tax_rate = customer.tax_rate if is_taxable else 0.0
+        # Tax defaults — the taxable flag follows the customer's is_tax_exempt ALONE:
+        # a taxable (non-exempt) customer ⇒ the draft DEFAULTS taxable; an exempt
+        # customer ⇒ exempt. It does NOT depend on the configured rate, so a taxable
+        # customer whose rate is 0 (no jurisdiction rate set yet) still shows
+        # "Taxable" at 0% (the totals template renders "0% (no rate set)" instead of
+        # the misleading "Exempt"). The clerk can still uncheck "Taxable" (D-1 — the
+        # invoice-level flag stays authoritative once set). The rate snapshot is the
+        # customer's rate (0 when exempt).
+        is_taxable = not customer.is_tax_exempt
+        tax_rate = customer.tax_rate if not customer.is_tax_exempt else 0.0
 
         # Due date from payment terms
         due_date = None
@@ -74,17 +99,27 @@ class InvoiceService(BaseService):
             due_date = now + timedelta(days=60)
         # COD: due_date = None (paid at pickup)
 
-        cc_raw = get_setting_value_db(self.db, "cc_surcharge_pct", "3.0") or "3.0"
-        try:
-            cc_surcharge_pct = float(cc_raw)
-        except (TypeError, ValueError):
-            cc_surcharge_pct = 3.0
+        # O6 — customer.card_surcharge_pct overrides the system default when set.
+        # NULL means "use the system cc_surcharge_pct setting"; a customer-level
+        # value (including 0.0, which disables surcharge for this customer)
+        # pre-fills the invoice so AP doesn't have to adjust every time.
+        if customer.card_surcharge_pct is not None:
+            cc_surcharge_pct = customer.card_surcharge_pct
+        else:
+            cc_raw = get_setting_value_db(self.db, "cc_surcharge_pct", "3.0") or "3.0"
+            try:
+                cc_surcharge_pct = float(cc_raw)
+            except (TypeError, ValueError):
+                cc_surcharge_pct = 3.0
 
         invoice = Invoice(
             invoice_number=inv_number,
             customer_id=customer_id,
             status=InvoiceStatus.DRAFT,
-            discount_pct=customer.discount_pct or 0.0,
+            # A legacy out-of-range stored default is treated as UNSET (0 = full
+            # price, clerk re-applies) — clamping 150→100 would mean free parts,
+            # and raising here would brick drafting for that customer entirely.
+            discount_pct=_safe_customer_discount(customer.discount_pct),
             apply_cc_surcharge=False,
             cc_surcharge_pct=cc_surcharge_pct,
             is_taxable=is_taxable,
@@ -132,8 +167,23 @@ class InvoiceService(BaseService):
         cust_tax_rate = (
             0.0 if cust_tax_exempt else (customer.tax_rate or 0.0)
         )
-        is_taxable_legacy = data.get("is_taxable", not cust_tax_exempt and cust_tax_rate > 0)
+        # The taxable flag follows the customer's is_tax_exempt ALONE (a non-exempt
+        # customer ⇒ taxable, even at a 0 rate — "0% (no rate set)", not "Exempt").
+        # A caller (quote→invoice / SO fulfillment / import) may override is_taxable
+        # and tax_rate explicitly, which wins so the quoted/agreed tax carries forward.
+        is_taxable_legacy = data.get("is_taxable", not cust_tax_exempt)
         tax_rate_legacy = data.get("tax_rate", cust_tax_rate)
+
+        # O6 — customer.card_surcharge_pct overrides the system default when set.
+        # (Same resolution as create_draft above.)
+        if customer.card_surcharge_pct is not None:
+            cc_surcharge_pct = customer.card_surcharge_pct
+        else:
+            cc_raw = get_setting_value_db(self.db, "cc_surcharge_pct", "3.0") or "3.0"
+            try:
+                cc_surcharge_pct = float(cc_raw)
+            except (TypeError, ValueError):
+                cc_surcharge_pct = 3.0
 
         invoice = Invoice(
             invoice_number=inv_number,
@@ -146,14 +196,19 @@ class InvoiceService(BaseService):
             esn=data.get("esn"),
             engine_manufacturer=data.get("engine_manufacturer", ""),
             engine_model=data.get("engine_model", ""),
-            discount_pct=float(data.get("discount_pct", 0.0)),
+            discount_pct=self._validate_discount_pct(data.get("discount_pct")),
             apply_cc_surcharge=bool(data.get("apply_cc_surcharge", False)),
-            cc_surcharge_pct=float(data.get("cc_surcharge_pct", 3.0)),
+            # O6: use caller-supplied override if present, else the resolved
+            # customer/system default (cc_surcharge_pct computed above).
+            cc_surcharge_pct=float(data.get("cc_surcharge_pct", cc_surcharge_pct)),
             is_taxable=bool(is_taxable_legacy),
             tax_rate=float(tax_rate_legacy),
-            # R1 — snapshot at creation
-            tax_rate_snapshot=float(cust_tax_rate),
-            tax_exempt_snapshot=cust_tax_exempt,
+            # R1 — snapshot at creation. C1 — a caller (SO fulfillment) may pass
+            # the tax intent agreed at SO time so the finalize freeze uses THAT
+            # rate, not the live customer's current rate. Defaults to the live
+            # customer when no override is supplied (unchanged for create_draft).
+            tax_rate_snapshot=float(data.get("tax_rate_snapshot", cust_tax_rate)),
+            tax_exempt_snapshot=bool(data.get("tax_exempt_snapshot", cust_tax_exempt)),
             due_date=data.get("due_date"),
             notes=data.get("notes", ""),
             internal_notes=data.get("internal_notes", ""),
@@ -223,7 +278,10 @@ class InvoiceService(BaseService):
             "notes", "internal_notes",
         ):
             if field in data:
-                setattr(invoice, field, data[field])
+                value = data[field]
+                if field == "discount_pct":
+                    value = self._validate_discount_pct(value)
+                setattr(invoice, field, value)
         self.db.commit()
         return invoice
 
@@ -244,9 +302,11 @@ class InvoiceService(BaseService):
         old_customer_id = invoice.customer_id
         invoice.customer_id = new_customer_id
 
-        # Always update terms / tax defaults / due date — these reflect the account
-        invoice.is_taxable = (not new_customer.is_tax_exempt) and (new_customer.tax_rate > 0)
-        invoice.tax_rate = new_customer.tax_rate if invoice.is_taxable else 0.0
+        # Always update terms / tax defaults / due date — these reflect the account.
+        # Taxable flag follows the new customer's is_tax_exempt ALONE (taxable even
+        # at a 0 rate); the rate snapshot is the new customer's rate (0 when exempt).
+        invoice.is_taxable = not new_customer.is_tax_exempt
+        invoice.tax_rate = new_customer.tax_rate if not new_customer.is_tax_exempt else 0.0
         if new_customer.payment_terms == PaymentTerms.NET_30:
             invoice.due_date = datetime.utcnow() + timedelta(days=30)
         elif new_customer.payment_terms == PaymentTerms.NET_60:
@@ -255,10 +315,13 @@ class InvoiceService(BaseService):
             invoice.due_date = None
 
         if recalc_pricing:
-            # Apply new customer discount across lines, re-snap unit_cost from product
-            invoice.discount_pct = new_customer.discount_pct or 0.0
+            # Apply the new customer's invoice-level discount and re-snap unit prices.
+            # The discount lives at the invoice level (applied once in
+            # Invoice.discount_amount / calculate_totals) — it must NOT be pushed onto
+            # the lines, which would double-count it. Per-line discounts are an
+            # independent layer and are left untouched here.
+            invoice.discount_pct = _safe_customer_discount(new_customer.discount_pct)
             for ln in invoice.lines:
-                ln.discount_pct = invoice.discount_pct
                 if ln.product_id and ln.line_type == LineType.PRODUCT:
                     product = self.db.query(Product).filter(Product.id == ln.product_id).first()
                     if product and product.selling_price > 0:
@@ -287,15 +350,43 @@ class InvoiceService(BaseService):
         sort_order = max((ln.sort_order for ln in invoice.lines), default=-1) + 1
 
         merged = {**data, "product_id": product_id}
-        # Apply invoice-level default discount for new product lines
-        if (
-            merged.get("line_type", LineType.PRODUCT) == LineType.PRODUCT
-            and "discount_pct" not in data
-            and invoice.discount_pct
-        ):
-            merged["discount_pct"] = invoice.discount_pct
+        # Guard the qty on add too (mirrors update_line) so a huge/zero value can't
+        # enter a directly-built walk-in invoice line.
+        if "qty" in merged:
+            merged["qty"] = validate_line_qty(merged["qty"])
+        # Render-context dict the line carries to the template (chip/badge/last-price);
+        # presentation-only, never touches totals/tax. See apply_product_line_defaults.
+        _render_ctx: dict = {}
+        # Backfill description / cost / price from the product so an immediate-add
+        # POST of just product_id + qty yields a complete line.
+        if product_id is not None:
+            _product = self.db.query(Product).filter(Product.id == product_id).first()
+            # Tier-adjusted price: wholesale/fleet/dealer customers get a configured
+            # discount off the normal sell price; standard customers get None (no-op).
+            _tier_price = None
+            _ps = None
+            _cust = None
+            if _product:
+                _cust = self.db.query(Customer).filter(Customer.id == invoice.customer_id).first()
+                if _cust:
+                    from app.services.pricing_service import PricingService as _PS
+                    _ps = _PS(self.db, self.current_user_id)
+                    _tier_price = _ps.sell_price_for_tier(_product, _cust.pricing_tier)
+            apply_product_line_defaults(
+                _product, merged, include_price=True, tier_price=_tier_price,
+                customer=_cust, pricing_service=_ps, render_ctx=_render_ctx,
+            )
+        # NOTE: the invoice-level discount (invoice.discount_pct) is applied exactly
+        # ONCE at the invoice level (see Invoice.discount_amount / calculate_totals).
+        # It must NOT be copied onto the new line here — doing so double-counted the
+        # discount (line_total discounted, then the invoice discount applied again on
+        # top, e.g. a 10% customer discount became ~19% off). The per-line discount_pct
+        # is an independent per-line markdown the user sets explicitly.
 
         line = self._add_line_internal(invoice_id, merged, sort_order)
+        # Attach the transient pricing render-context for templates (chip/badge/
+        # last-price). Not a DB column — lives only on the in-memory instance.
+        line.pricing_ctx = _render_ctx
 
         # Auto-add core child line for top-level PRODUCT lines whose product has core
         if (
@@ -332,14 +423,22 @@ class InvoiceService(BaseService):
             raise ValueError(f"InvoiceLine {line_id} not found")
         self._assert_editable(line.invoice)
 
+        # Floor+ceiling the qty before any field is set — a fat-fingered negative,
+        # zero, or absurd value (999999999 → trillion-dollar line) must not reach a
+        # draft line and slip through finalize. Shared with quote/SO editing.
+        if "qty" in data:
+            data = {**data, "qty": validate_line_qty(data["qty"])}
         updatable = ("description", "qty", "unit_price", "unit_cost",
                      "discount_pct", "sort_order", "line_type")
         qty_changed = False
         for field in updatable:
             if field in data:
-                if field == "qty" and int(data[field]) != line.qty:
+                value = data[field]
+                if field == "discount_pct":
+                    value = self._validate_discount_pct(value)
+                if field == "qty" and int(value) != line.qty:
                     qty_changed = True
-                setattr(line, field, data[field])
+                setattr(line, field, value)
 
         # Cascade qty change to locked children (auto-cores typically)
         if qty_changed and line.parent_line_id is None:
@@ -407,6 +506,16 @@ class InvoiceService(BaseService):
         for i, ln in enumerate(invoice.lines, start=1):
             label = f"Line {i} ({ln.description[:40] or ln.line_type})"
 
+            # HARD BLOCK on any stored discount outside [0, 100] — a negative
+            # discount inflates the line total and over-taxes; >100 flips it
+            # negative. The write paths validate, but a bad value written
+            # around the service must never lock into an OPEN invoice.
+            if ln.discount_pct is not None and not (0 <= ln.discount_pct <= 100):
+                errors.append(
+                    f"{label}: discount must be between 0 and 100 "
+                    f"(got {ln.discount_pct:g})."
+                )
+
             # Product lines need qty > 0
             if ln.line_type == LineType.PRODUCT:
                 if ln.qty <= 0:
@@ -430,13 +539,40 @@ class InvoiceService(BaseService):
                 if ln.unit_price is None or ln.unit_price < 0:
                     errors.append(f"{label}: amount is missing or negative.")
 
-        # Tax sanity: if taxable, rate must be > 0
-        if invoice.is_taxable and (invoice.tax_rate is None or invoice.tax_rate <= 0):
-            errors.append("Invoice is marked taxable but no tax rate is set.")
+        # Tax sanity: a taxable invoice with NO rate configured (rate 0 / None) is
+        # NOT a hard error — a non-exempt customer defaults taxable even before a
+        # jurisdiction rate is entered, and finalizing simply collects $0 tax
+        # ("0% (no rate set)"). Only a negative rate is nonsensical. (Previously a
+        # 0 rate blocked finalize, which — now that the taxable flag follows
+        # is_tax_exempt alone — would wedge every taxable customer whose rate is
+        # still 0. The customer can enter a rate later or the clerk can uncheck
+        # "Taxable"; neither should be forced just to post the sale.)
+        if invoice.is_taxable and invoice.tax_rate is not None and invoice.tax_rate < 0:
+            errors.append("Invoice tax rate cannot be negative.")
+
+        # Invoice-level discount gets the same [0, 100] hard block as lines.
+        if invoice.discount_pct is not None and not (0 <= invoice.discount_pct <= 100):
+            errors.append("Invoice discount must be between 0 and 100.")
 
         # Total sanity
         if invoice.total < 0:
             errors.append("Invoice total cannot be negative.")
+
+        # UX5: block finalizing a genuinely empty invoice (no billable value).
+        # Cores-only or freight-only invoices are valid (total > 0 catches them).
+        # A $0.00 total almost always means lines were cleared / product prices
+        # not set — surface this as a hard error rather than silently creating
+        # a zero-dollar OPEN invoice that confuses A/R.
+        if invoice.total == 0.0 and invoice.lines:
+            billable = [
+                ln for ln in invoice.lines
+                if ln.unit_price != 0.0 or ln.line_type == LineType.CORE_CHARGE
+            ]
+            if not billable:
+                errors.append(
+                    "Invoice total is $0.00. Add at least one line with a price, "
+                    "or remove all lines to keep as draft."
+                )
 
         return errors
 
@@ -484,6 +620,12 @@ class InvoiceService(BaseService):
           5. Create CoreCharge records for core child lines
           6. Set status = OPEN, mark for QBO sync
         """
+        # RBAC — finalizing snapshots cost, decrements inventory, and locks the
+        # invoice into AR. Gate it (ADMIN/BOOKKEEPING) so a SALES clerk cannot
+        # commit cost/inventory. (Grant SALES Permission.FINALIZE_INVOICE in
+        # base.py if a shop wants counter clerks to finalize their own sales.)
+        self.assert_can(Permission.FINALIZE_INVOICE)
+
         errors = self.validate_for_finalise(invoice_id)
         if errors:
             raise ValueError("; ".join(errors))
@@ -515,6 +657,25 @@ class InvoiceService(BaseService):
 
         invoice = self._get_or_404(invoice_id)
 
+        # Atomic status claim (audit risk #10) — one conditional UPDATE closes
+        # the double-submit window: two concurrent finalize calls can BOTH pass
+        # the DRAFT validation above and each would decrement inventory and
+        # post AR. SQLite applies the UPDATE atomically, so exactly one caller
+        # sees rowcount 1 and proceeds; the loser raises before any mutation.
+        # synchronize_session=False: the ORM object's status is set explicitly
+        # at the end of this method, keeping the winner's flow unchanged.
+        claimed = self.db.execute(
+            sa_update(Invoice)
+            .where(Invoice.id == invoice_id, Invoice.status == InvoiceStatus.DRAFT)
+            .values(status=InvoiceStatus.OPEN)
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount != 1:
+            raise ValueError(
+                f"Invoice {invoice.invoice_number} is already finalized or is "
+                f"being finalized by another user."
+            )
+
         from app.models.quote import SOLine  # local import to avoid cycle
 
         # R1 — ensure tax snapshot is set (in case caller passed a draft with
@@ -528,14 +689,39 @@ class InvoiceService(BaseService):
 
         # R1 — freeze per-line tax_amount based on snapshot at finalize time.
         # After this, line.tax_amount is the source of truth (calculate_totals reads it).
+        # D-1: gate the per-line freeze on the invoice-level is_taxable header flag.
+        # When the user unchecks "Taxable", invoice.is_taxable is False but the
+        # per-line is_taxable flags are left untouched — so without this gate the
+        # lines would freeze a non-zero tax_amount and resurrect tax after finalize.
+        # The header flag is authoritative: if it's off, no line is taxed.
         tax_rate = 0.0 if invoice.tax_exempt_snapshot else invoice.tax_rate_snapshot
         for ln in invoice.lines:
-            if ln.is_taxable and tax_rate > 0:
+            if invoice.is_taxable and ln.is_taxable and tax_rate > 0:
                 # Discount-adjusted line subtotal
                 discounted = ln.unit_price * ln.qty * (1 - (ln.discount_pct or 0) / 100)
                 ln.tax_amount = round(discounted * tax_rate / 100, 2)
             else:
                 ln.tax_amount = 0.0
+
+        # Reconcile the invoice-level is_taxable flag with the frozen per-line
+        # taxation so the raw column can never contradict the lines for any future
+        # consumer (print view, finalized label, reports/exports). The totals
+        # engine already derives display flags from tax_amount, but this closes
+        # the divergence at the source.
+        #
+        # D-1: AND with the existing header flag instead of overwriting it. The
+        # eac2ed8 hardening set this to `any(ln.is_taxable ...)`, which resurrected
+        # a user-cleared header whenever a line still carried is_taxable=True. The
+        # header is authoritative — it may only NARROW (a taxable header with no
+        # taxable line becomes non-taxable), never re-enable a cleared one.
+        # tax_rate_snapshot is left intact so re-checking "Taxable" restores the rate.
+        invoice.is_taxable = invoice.is_taxable and any(ln.is_taxable for ln in invoice.lines)
+
+        # Single qty_on_hand writer (audit risk #9) — cache mutation + ledger row
+        # go through InventoryService.apply_stock_delta. Lazy import mirrors
+        # po_service (module-load cycle guard).
+        from app.services.inventory_service import InventoryService
+        inv_stock = InventoryService(self.db, self.current_user_id)
 
         for ln in invoice.lines:
             if ln.line_type != LineType.PRODUCT:
@@ -544,12 +730,18 @@ class InvoiceService(BaseService):
             # Snapshot cost (immutable after this point)
             if product and ln.unit_cost == 0.0:
                 ln.unit_cost = product.cost
-            # Decrement inventory (allow going negative only when explicitly overridden)
+            # Decrement inventory + INVOICE_SALE ledger row (cache floors at 0
+            # unless the negative-inventory override was granted above)
             if product:
-                if allow_negative_inventory:
-                    product.qty_on_hand = product.qty_on_hand - ln.qty
-                else:
-                    product.qty_on_hand = max(0, product.qty_on_hand - ln.qty)
+                inv_stock.apply_stock_delta(
+                    product,
+                    -ln.qty,
+                    InventoryTxnType.INVOICE_SALE,
+                    EntityType.INVOICE,
+                    invoice_id,
+                    notes=f"Invoice {invoice.invoice_number}",
+                    clamp_floor_zero=not allow_negative_inventory,
+                )
 
                 # R6 — release qty_committed only if fulfill_and_invoice didn't already
                 # do so. After fulfill_and_invoice runs, so_line.qty_committed holds
@@ -561,18 +753,6 @@ class InvoiceService(BaseService):
                     if so_line and so_line.qty_committed >= ln.qty:
                         so_line.qty_committed = max(0, so_line.qty_committed - ln.qty)
                         product.qty_committed = max(0, product.qty_committed - ln.qty)
-
-                txn = InventoryTransaction(
-                    product_id=product.id,
-                    transaction_type=InventoryTxnType.INVOICE_SALE,
-                    qty_change=-ln.qty,
-                    qty_after=product.qty_on_hand,
-                    reference_type=EntityType.INVOICE,
-                    reference_id=invoice_id,
-                    performed_by_id=self.current_user_id,
-                    notes=f"Invoice {invoice.invoice_number}",
-                )
-                self.db.add(txn)
 
                 # Low-stock notification when post-decrement qty is at or below reorder point
                 if (
@@ -601,6 +781,21 @@ class InvoiceService(BaseService):
                     customer_unit_charge=core_ln.unit_price,
                     vendor_unit_charge=core_ln.unit_cost,
                 )
+
+        # R3 — serial-number auto-assignment for serialized product lines
+        # (warranty/liability traceability). FIFO-assigns available IN_STOCK
+        # serials to each has_serial_number product line; tolerant when fewer
+        # serials exist than qty (assigns what's there). FAIL-SAFE BY DESIGN:
+        # a serial problem must NEVER block finalize — the money/inventory work
+        # above is already staged in this transaction; log and continue.
+        try:
+            from app.services.serial_service import SerialService
+            SerialService(self.db, self.current_user_id).assign_serials_for_invoice(invoice)
+        except Exception:
+            log.exception(
+                "Serial auto-assignment failed for invoice %s — finalize continues",
+                invoice_id,
+            )
 
         invoice.status = InvoiceStatus.OPEN
         invoice.qbo_sync_status = QBOSyncStatus.PENDING
@@ -840,9 +1035,22 @@ class InvoiceService(BaseService):
         """
         Recalculate and persist invoice.status from current allocations.
         Sole owner of invoice.status mutations after finalize.
+
+        Only meaningful for finalized invoices (OPEN/PARTIAL/PAID). A DRAFT
+        here means an allocation slipped past the payable gate — fail loudly
+        rather than flip a never-finalized invoice to PAID (C2 backstop).
+        A VOID invoice keeps its status; payment math must never resurrect it.
         """
         invoice = self._get_or_404(invoice_id)
         self.db.expire(invoice)
+
+        if invoice.status == InvoiceStatus.DRAFT:
+            raise ValueError(
+                f"Invoice {invoice.invoice_number} is still a draft — "
+                f"finalize it before applying payments."
+            )
+        if invoice.status == InvoiceStatus.VOID:
+            return
 
         balance = invoice.balance_due
         if balance <= 0.001:
@@ -872,25 +1080,34 @@ class InvoiceService(BaseService):
         if invoice.status == InvoiceStatus.VOID:
             raise ValueError(f"Invoice {invoice.invoice_number} is already void")
 
-        # R4 — QBO-pushed invoices must be corrected via credit memo
+        # C8 — a fully-PAID invoice must not be voided. (Reaching here with
+        # PAID status would otherwise destroy a settled revenue record via a
+        # crafted/replayed POST; the UI already hides the button for PAID.)
+        # Real correction path for a paid invoice is a credit memo.
+        if invoice.status == InvoiceStatus.PAID:
+            raise ValueError(
+                f"Invoice {invoice.invoice_number} is fully paid. Reverse the "
+                f"payment(s) or issue a credit memo — a paid invoice cannot be voided."
+            )
+
+        # §21 — ALL voids require VOID_LOCKED_INVOICE (any invoice reaching this
+        # route is finalised, therefore locked). Previously the gate fired only
+        # inside the qbo_invoice_id branch, so a SALES clerk could void any
+        # non-QBO posted invoice with no permission check. Enforce unconditionally.
+        self.assert_can(Permission.VOID_LOCKED_INVOICE)
+
+        # C2 — QBO-pushed invoices must be corrected with a credit memo, never a
+        # local void. Voiding locally leaves the QBO record OPEN in AR forever
+        # (permanent ledger divergence). This is a HARD block by design (owner
+        # decision): the credit-memo path has its own QBO sync. The previous
+        # "admin override" branch re-checked the SAME permission already asserted
+        # above, so it was dead code that let anyone with void rights bypass it.
         if invoice.qbo_invoice_id:
-            # Allow admin override via permission
-            try:
-                self.assert_can(Permission.VOID_LOCKED_INVOICE)
-            except Exception:
-                raise ValueError(
-                    f"Invoice {invoice.invoice_number} has been pushed to QBO "
-                    f"(qbo_id={invoice.qbo_invoice_id}). Issue a credit memo to "
-                    f"correct it instead of voiding."
-                )
-            # Override granted — audit it before mutation
-            self.audit(
-                entity_type=EntityType.INVOICE,
-                entity_id=invoice_id,
-                action=AuditAction.VOIDED,
-                old_value={"qbo_invoice_id": invoice.qbo_invoice_id},
-                new_value={"override": "void_qbo_pushed", "reason": reason},
-                notes="Admin override voided QBO-pushed invoice",
+            raise ValueError(
+                f"Invoice {invoice.invoice_number} has been pushed to QuickBooks "
+                f"(qbo_id={invoice.qbo_invoice_id}) and cannot be voided — voiding "
+                f"would leave the QBO invoice open in AR. Issue a credit memo to "
+                f"correct it instead."
             )
 
         # R4 — invoices with applied payments must reverse payments first
@@ -900,6 +1117,29 @@ class InvoiceService(BaseService):
             raise ValueError(
                 f"Invoice {invoice.invoice_number} has ${total_applied:.2f} in "
                 f"applied payments. Reverse payments first, then void."
+            )
+
+        # Atomic status claim (audit risk #10) — mirror of finalise(): closes
+        # the double-void window where two concurrent calls both pass the
+        # status checks above and each restores inventory (double-increment).
+        # Claimable set = every status the guards above allow through (not
+        # VOID, not PAID). Exactly one caller flips the row to VOID; the loser
+        # raises before any mutation.
+        claimed = self.db.execute(
+            sa_update(Invoice)
+            .where(
+                Invoice.id == invoice_id,
+                Invoice.status.in_(
+                    [InvoiceStatus.DRAFT, InvoiceStatus.OPEN, InvoiceStatus.PARTIAL]
+                ),
+            )
+            .values(status=InvoiceStatus.VOID)
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount != 1:
+            raise ValueError(
+                f"Invoice {invoice.invoice_number} is already void or is being "
+                f"voided by another user."
             )
 
         # Use original sale transactions to know exactly how much to put back
@@ -920,6 +1160,11 @@ class InvoiceService(BaseService):
                 if ln.line_type == LineType.PRODUCT and ln.product_id and ln.qty > 0:
                     sale_txns[ln.product_id] = sale_txns.get(ln.product_id, 0) + ln.qty
 
+        # Single qty_on_hand writer (audit risk #9) — restore the cache + write
+        # the CORRECTION ledger row through InventoryService.apply_stock_delta.
+        from app.services.inventory_service import InventoryService
+        inv_stock = InventoryService(self.db, self.current_user_id)
+
         already_reversed: set[int] = set()
         for ln in invoice.lines:
             if ln.line_type != LineType.PRODUCT or not ln.product_id:
@@ -933,21 +1178,82 @@ class InvoiceService(BaseService):
                 continue
             product = self.db.query(Product).filter(Product.id == pid).first()
             if product:
-                product.qty_on_hand += actual_qty
-                txn = InventoryTransaction(
-                    product_id=product.id,
-                    transaction_type=InventoryTxnType.CORRECTION,
-                    qty_change=actual_qty,
-                    qty_after=product.qty_on_hand,
-                    reference_type=EntityType.INVOICE,
-                    reference_id=invoice_id,
-                    performed_by_id=self.current_user_id,
+                inv_stock.apply_stock_delta(
+                    product,
+                    actual_qty,
+                    InventoryTxnType.CORRECTION,
+                    EntityType.INVOICE,
+                    invoice_id,
                     notes=f"Void: {invoice.invoice_number} — {reason}",
                 )
-                self.db.add(txn)
 
         for allocation in invoice.allocations:
             allocation.is_reversed = True
+
+        # R3 — release serial numbers sold on this invoice (mirror of the
+        # inventory restore above): status back to IN_STOCK, invoice-line link
+        # cleared. Fail-safe: a serial problem must never block the void.
+        try:
+            from app.services.serial_service import SerialService
+            SerialService(self.db, self.current_user_id).release_for_invoice(invoice)
+        except Exception:
+            log.exception(
+                "Serial release failed while voiding invoice %s — void continues",
+                invoice_id,
+            )
+
+        # Close any open core charges this invoice created. Voiding means the
+        # sale "never happened", so the customer no longer owes those cores
+        # back — leaving them OPEN strands phantom core liability on the
+        # customer's account, the Cores Queue, the After-Sale panel, and the
+        # statement. Only OPEN/PARTIAL, not-yet-credited cores are closed:
+        # a core already RETURNED/CREDITED/SHIPPED reflects a real physical
+        # event, so a void must never silently erase an issued core credit
+        # (those are left untouched and logged for manual handling).
+        from app.models.core import CoreCharge
+        from app.constants import CoreStatus
+        core_line_ids = [
+            ln.id for ln in invoice.lines if ln.line_type == LineType.CORE_CHARGE
+        ]
+        if core_line_ids:
+            for core in (
+                self.db.query(CoreCharge)
+                .filter(CoreCharge.invoice_line_id.in_(core_line_ids))
+                .all()
+            ):
+                if (
+                    core.status in (CoreStatus.OPEN, CoreStatus.PARTIAL)
+                    and core.credit_issued_at is None
+                    and core.qty_returned == 0
+                ):
+                    old_status = core.status
+                    core.status = CoreStatus.CLOSED
+                    core.notes = (
+                        f"{core.notes}\nClosed: invoice {invoice.invoice_number} "
+                        f"voided — {reason}"
+                    ).strip()
+                    self.audit(
+                        entity_type=EntityType.CORE_CHARGE,
+                        entity_id=core.id,
+                        action=AuditAction.STATUS_CHANGED,
+                        old_value=old_status,
+                        new_value=CoreStatus.CLOSED,
+                        notes=f"Core closed: invoice {invoice.invoice_number} voided",
+                    )
+                else:
+                    log.warning(
+                        "Void of invoice %s left core_charge %s in status=%s "
+                        "(returned/credited) untouched — manual review",
+                        invoice.invoice_number, core.id, core.status,
+                    )
+
+        # Roll the linked sales order back to un-invoiced. Voiding means "this
+        # invoice never happened", so the qty it fulfilled/invoiced must return
+        # to the SO — otherwise the SO is stuck looking fully invoiced (its
+        # qty_remaining stays 0, blocking re-invoice) and the SO list shows a
+        # stale "Invoiced" badge that contradicts the status tabs.
+        if invoice.sales_order_id:
+            self._rollback_sales_order_after_void(invoice)
 
         invoice.status = InvoiceStatus.VOID
         invoice.locked_at = datetime.utcnow()
@@ -961,107 +1267,87 @@ class InvoiceService(BaseService):
         )
         self.db.commit()
 
+    def _rollback_sales_order_after_void(self, invoice) -> None:
+        """Reverse the SO-line fulfillment a now-voided invoice represented.
+
+        Mirrors ``SalesOrderService.fulfill_and_invoice`` in reverse: decrements
+        ``qty_invoiced`` / ``qty_fulfilled`` on each linked SO line, recomputes
+        the line state machine, and recomputes the SO status from the rolled-back
+        quantities so it agrees with the SO list tabs.
+
+        Inventory (``qty_on_hand``) is restored by ``void_invoice`` itself; SO
+        line *commitments* were released at fulfillment time and are intentionally
+        NOT re-reserved here — a fresh fulfill re-checks live availability.
+        """
+        from app.constants import SOLineStatus, SOStatus
+        from app.models.quote import SalesOrder, SOLine
+
+        touched = False
+        for ln in invoice.lines:
+            if not ln.so_line_id or not ln.qty:
+                continue
+            so_line = self.db.query(SOLine).filter(SOLine.id == ln.so_line_id).first()
+            if so_line is None:
+                continue
+            so_line.qty_invoiced = max(0, so_line.qty_invoiced - ln.qty)
+            so_line.qty_fulfilled = max(0, so_line.qty_fulfilled - ln.qty)
+
+            # Recompute the line state from the rolled-back quantities.
+            if so_line.qty_ordered > 0 and so_line.qty_invoiced >= so_line.qty_ordered:
+                so_line.line_status = SOLineStatus.INVOICED
+            elif so_line.qty_invoiced > 0 or so_line.qty_fulfilled > 0:
+                so_line.line_status = SOLineStatus.FULFILLED
+            else:
+                # Fully un-invoiced — return to the line's source baseline.
+                # FulfillmentSource and SOLineStatus share string values for the
+                # initial states (stock/backorder/linked_po/...), so this maps 1:1.
+                try:
+                    so_line.line_status = SOLineStatus(so_line.fulfillment_source)
+                except ValueError:
+                    so_line.line_status = SOLineStatus.STOCK
+            touched = True
+
+        if not touched:
+            return
+
+        self.db.flush()  # so the SalesOrder relationship sees the updated qtys
+        so = (
+            self.db.query(SalesOrder)
+            .filter(SalesOrder.id == invoice.sales_order_id)
+            .first()
+        )
+        if so is None or so.status == SOStatus.CANCELLED:
+            return
+        self.db.expire(so)
+        if so.is_fully_invoiced:
+            so.status = SOStatus.INVOICED
+        elif any(line.qty_invoiced > 0 for line in so.lines):
+            so.status = SOStatus.PARTIAL
+        else:
+            so.status = SOStatus.OPEN
+
     # ── Totals (full breakdown for workspace totals panel) ────────────────────
 
     def calculate_totals(self, invoice_id: int) -> dict:
         """
-        Full totals breakdown per Phase A spec — cores are ALWAYS surfaced as
-        a separate subtotal (refundable liability, never silently rolled into parts).
+        Full totals breakdown for the workspace totals panel.
 
-        Returns:
-          parts_subtotal   — sum of product / misc / warranty lines (pre-discount)
-          core_subtotal    — sum of all CORE_CHARGE lines (separately tracked)
-          freight_subtotal — sum of shipping/freight/delivery/fuel service
-          discount_amount  — invoice-level % discount applied to parts only
-          taxable_amount   — what tax is calculated on (after discount, taxable lines only)
-          tax_amount       — taxable_amount × tax_rate
-          cc_fee_amount    — CC surcharge on (subtotal + tax) if enabled
-          total            — grand total
-          amount_paid, balance_due
+        Delegates to the ONE totals engine
+        (``app.invoice_totals.compute_invoice_totals``) that also backs the
+        Invoice model's money properties (``subtotal`` / ``discount_amount`` /
+        ``tax_amount`` / ``total`` / ``balance_due`` — read by the List, Preview
+        and print/PDF), so the workspace and the customer-facing surfaces can
+        never disagree. See that module for the policy (cores are ALWAYS a
+        separate subtotal and never taxed; fees & credits count toward total;
+        the invoice-level discount applies to parts only).
+
+        Returns: subtotal, parts_subtotal, core_subtotal, freight_subtotal,
+        other_subtotal, discount_amount, taxable_amount, tax_rate_display,
+        is_taxable_display, tax_amount, cc_fee_amount, cc_surcharge_estimate,
+        total, amount_paid, balance_due.
         """
         invoice = self._get_or_404(invoice_id)
-
-        parts_subtotal = 0.0
-        core_subtotal = 0.0
-        freight_subtotal = 0.0
-        for ln in invoice.lines:
-            if ln.line_type in _PARTS_LINE_TYPES:
-                parts_subtotal += ln.line_total
-            elif ln.line_type == LineType.CORE_CHARGE:
-                core_subtotal += ln.line_total
-            elif ln.line_type in _FREIGHT_LINE_TYPES:
-                freight_subtotal += ln.line_total
-
-        parts_subtotal = round(parts_subtotal, 2)
-        core_subtotal = round(core_subtotal, 2)
-        freight_subtotal = round(freight_subtotal, 2)
-
-        # Invoice-level discount applies to parts only (cores are pass-through)
-        discount_amount = round(parts_subtotal * (invoice.discount_pct / 100), 2) if invoice.discount_pct else 0.0
-        parts_after_discount = round(parts_subtotal - discount_amount, 2)
-
-        # R1 — Tax computation: prefer frozen per-line tax_amount (set at finalize),
-        # fall back to legacy invoice-level rate for drafts that haven't been finalized.
-        sum_line_tax = round(sum((ln.tax_amount or 0.0) for ln in invoice.lines), 2)
-        if sum_line_tax > 0:
-            # Frozen path: use snapshotted per-line tax_amounts
-            tax_rate_display = invoice.tax_rate_snapshot or invoice.tax_rate
-            is_taxable_display = not invoice.tax_exempt_snapshot
-            taxable_amount = round(
-                sum(
-                    ln.unit_price * ln.qty * (1 - (ln.discount_pct or 0) / 100)
-                    for ln in invoice.lines
-                    if ln.is_taxable
-                ),
-                2,
-            )
-            tax_amount = sum_line_tax
-        else:
-            # Draft / legacy fallback: live calc from invoice-level rate
-            tax_rate_display = invoice.tax_rate_snapshot or invoice.tax_rate
-            is_taxable_display = (
-                not invoice.tax_exempt_snapshot
-                and (invoice.is_taxable or tax_rate_display > 0)
-            )
-            taxable_amount = (
-                round(parts_after_discount + freight_subtotal, 2)
-                if is_taxable_display
-                else 0.0
-            )
-            tax_amount = (
-                round(taxable_amount * (tax_rate_display / 100), 2)
-                if is_taxable_display
-                else 0.0
-            )
-
-        # R1 — Invoice total does NOT include CC surcharge anymore.
-        # Surcharge is computed AT PAYMENT TIME on the card portion only.
-        # `cc_fee_amount` is now an INFORMATIONAL estimate ("if customer pays
-        # the full balance by card, this is what the surcharge would be") and
-        # is NOT added to the invoice total or balance_due.
-        total = round(parts_after_discount + core_subtotal + freight_subtotal + tax_amount, 2)
-
-        cc_surcharge_estimate = (
-            round(total * (invoice.cc_surcharge_pct / 100), 2)
-            if invoice.apply_cc_surcharge or (invoice.cc_surcharge_pct or 0) > 0
-            else 0.0
-        )
-
-        return {
-            "parts_subtotal":   parts_subtotal,
-            "core_subtotal":    core_subtotal,
-            "freight_subtotal": freight_subtotal,
-            "discount_amount":  discount_amount,
-            "taxable_amount":   taxable_amount,
-            "tax_amount":       tax_amount,
-            # Informational only — surcharge isn't added to total. Templates can
-            # show "If paid by card: total + estimated surcharge = $X.XX".
-            "cc_fee_amount":    cc_surcharge_estimate,
-            "cc_surcharge_estimate": cc_surcharge_estimate,
-            "total":            total,
-            "amount_paid":      invoice.amount_paid,
-            "balance_due":      round(total - invoice.amount_paid, 2),
-        }
+        return compute_invoice_totals(invoice)
 
     # ── QBO Sync ──────────────────────────────────────────────────────────────
 
@@ -1106,6 +1392,25 @@ class InvoiceService(BaseService):
             f"Create a credit memo or void/reissue to correct it."
         )
 
+    @staticmethod
+    def _validate_discount_pct(value) -> float:
+        """Normalize a discount percent to a float in [0, 100].
+
+        None/blank means "no discount" (0.0). Values outside [0, 100] are
+        rejected: calc_line_total is pure math, so a negative discount
+        INFLATES the line total (and over-collects tax) while >100 flips it
+        negative — and once finalized the invoice locks with the bad total.
+        """
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return 0.0
+        try:
+            pct = float(value)
+        except (TypeError, ValueError):
+            raise ValueError("Discount must be between 0 and 100")
+        if not (0 <= pct <= 100):
+            raise ValueError("Discount must be between 0 and 100")
+        return pct
+
     def _add_line_internal(self, invoice_id: int, data: dict, sort_order: int) -> InvoiceLine:
         line_type = data.get("line_type", LineType.PRODUCT)
         # R1 — per-line tax default: non-taxable for fee/credit line types, else
@@ -1134,7 +1439,7 @@ class InvoiceService(BaseService):
             qty=int(data.get("qty", 1)),
             unit_price=float(data.get("unit_price", 0.0)),
             unit_cost=float(data.get("unit_cost", 0.0)),
-            discount_pct=float(data.get("discount_pct", 0.0)),
+            discount_pct=self._validate_discount_pct(data.get("discount_pct")),
             is_taxable=is_taxable,
             tax_amount=0.0,  # frozen at finalize time
             is_core_line=bool(data.get("is_core_line", False)),

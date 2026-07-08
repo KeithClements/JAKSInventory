@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}Inventory Counts — Axle{% endblock %}
+{% block heading %}Inventory Counts{% endblock %}
+
+{% block header_actions %}
+  <a href="/counts/new" class="btn-primary btn-sm">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+    </svg>
+    New Count
+  </a>
+{% endblock %}
+
+{% block content %}
+{# ── type + status chip metadata (inline; §7 says don't extract a macro prematurely) ── #}
+{% set type_meta = {
+  'audit':   ('Audit',   'bg-sky-50 text-sky-700 border-sky-100'),
+  'cycle':   ('Cycle',   'bg-blue-50 text-blue-700 border-blue-100'),
+  'full':    ('Full',    'bg-purple-50 text-purple-700 border-purple-100'),
+  'opening': ('Opening', 'bg-orange-50 text-orange-700 border-orange-100'),
+} %}
+{% set status_meta = {
+  'draft':     ('Draft',     'bg-gray-100 text-gray-600',  'bg-gray-400',  'border-l-transparent'),
+  'open':      ('Counting',  'bg-blue-50 text-blue-700',   'bg-blue-500',  'border-l-blue-300'),
+  'review':    ('Review',    'bg-amber-100 text-amber-700','bg-amber-500', 'border-l-amber-400'),
+  'posted':    ('Posted',    'bg-green-50 text-green-700', 'bg-green-500', 'border-l-transparent'),
+  'cancelled': ('Cancelled', 'bg-red-100 text-red-700',    'bg-red-400',   'border-l-transparent'),
+} %}
+
+<div class="space-y-4">
+
+  {% if request.query_params.get('ok') %}
+  <div class="flex items-start gap-3 rounded-lg border border-green-200 bg-green-50 px-4 py-3">
+    <svg class="mt-0.5 w-5 h-5 shrink-0 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+    </svg>
+    <p class="text-sm text-green-800">{{ request.query_params.get('ok') }}</p>
+  </div>
+  {% endif %}
+
+  {# ── Status filter chips — counts from the full unfiltered dataset ── #}
+  {% set status_tabs = [
+    ('',          'All',       total),
+    ('draft',     'Draft',     by_status.get('draft', 0)),
+    ('open',      'Counting',  by_status.get('open', 0)),
+    ('review',    'Review',    by_status.get('review', 0)),
+    ('posted',    'Posted',    by_status.get('posted', 0)),
+    ('cancelled', 'Cancelled', by_status.get('cancelled', 0)),
+  ] %}
+  <div class="flex flex-wrap items-center gap-2">
+    {% for slug, label, count in status_tabs %}
+    <a href="/counts/{% if slug %}?status={{ slug }}{% endif %}{% if type %}{% if slug %}&{% else %}?{% endif %}type={{ type }}{% endif %}"
+       class="fchip {% if status == slug %}on{% endif %}">
+      {{ label }}<span class="ml-1.5 tabular-nums opacity-70">{{ count }}</span>
+    </a>
+    {% endfor %}
+  </div>
+
+  {% if sessions %}
+  <div class="card overflow-hidden">
+    <div class="overflow-x-auto">
+      <table class="w-full min-w-[880px]" aria-label="Inventory count sessions">
+        <thead>
+          <tr class="border-b border-gray-200" style="background:#fafbfa;">
+            <th class="px-4 py-3 text-left label-mini">Count #</th>
+            <th class="px-4 py-3 text-left label-mini">Type</th>
+            <th class="px-4 py-3 text-left label-mini">Name / Scope</th>
+            <th class="px-4 py-3 text-left label-mini">Status</th>
+            <th class="px-4 py-3 text-left label-mini w-48">Progress</th>
+            <th class="px-4 py-3 text-right label-mini">Variance</th>
+            <th class="px-4 py-3 text-right label-mini">Created</th>
+            <th class="px-4 py-3 w-12"></th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for s in sessions %}
+          {% set tm = type_meta.get(s.count_type, (s.count_type, 'bg-gray-50 text-gray-600 border-gray-100')) %}
+          {% set sm = status_meta.get(s.status, (s.status, 'bg-gray-100 text-gray-600', 'bg-gray-400', 'border-l-transparent')) %}
+          <tr onclick="window.location.href='/counts/{{ s.id }}'"
+              class="cursor-pointer hover:bg-gray-50/80 transition-colors group">
+
+            <td class="px-4 py-4 align-middle border-l-4 {{ sm[3] }}">
+              <a href="/counts/{{ s.id }}" onclick="event.stopPropagation()"
+                 class="font-mono text-sm font-bold text-brand-700 hover:underline">{{ s.session_number }}</a>
+            </td>
+
+            <td class="px-4 py-4 align-middle">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold uppercase tracking-wider border {{ tm[1] }}">
+                {{ tm[0] }}
+              </span>
+            </td>
+
+            <td class="px-4 py-4 align-middle max-w-xs">
+              <p class="text-sm font-medium text-gray-900 truncate leading-snug">{{ s.name or '—' }}</p>
+              {% if s.blind %}<span class="text-[10px] text-gray-400">blind count</span>{% endif %}
+            </td>
+
+            <td class="px-4 py-4 align-middle">
+              <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold {{ sm[1] }}">
+                <span class="w-1.5 h-1.5 rounded-full {{ sm[2] }} shrink-0"></span>{{ sm[0] }}
+              </span>
+            </td>
+
+            <td class="px-4 py-4 align-middle">
+              {% if s.status in ('open', 'review', 'posted') and s.line_count %}
+              <div class="flex items-center gap-2">
+                <div class="flex-1 h-1.5 rounded-full bg-gray-100 overflow-hidden min-w-[80px]">
+                  <div class="h-full rounded-full {% if s.progress_pct == 100 %}bg-green-500{% else %}bg-blue-500{% endif %}"
+                       style="width: {{ s.progress_pct }}%"></div>
+                </div>
+                <span class="text-xs text-gray-500 tabular-nums whitespace-nowrap">{{ s.counted_count }}/{{ s.line_count }}</span>
+              </div>
+              {% else %}
+              <span class="text-xs text-gray-300">—</span>
+              {% endif %}
+            </td>
+
+            <td class="px-4 py-4 align-middle text-right">
+              {% if s.status in ('review', 'posted') and s.variance_value_total %}
+              <span class="money text-sm {% if s.variance_value_total < 0 %}text-red-600{% else %}text-green-600{% endif %}">
+                {% if s.variance_value_total > 0 %}+{% endif %}${{ "%.2f"|format(s.variance_value_total) }}
+              </span>
+              {% else %}
+              <span class="text-xs text-gray-300">—</span>
+              {% endif %}
+            </td>
+
+            <td class="px-4 py-4 align-middle text-right">
+              <span class="text-xs text-gray-500 whitespace-nowrap">{{ s.created_at.strftime('%b %d, %Y') if s.created_at else '—' }}</span>
+            </td>
+
+            <td class="px-4 py-4 align-middle" onclick="event.stopPropagation()">
+              <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                <a href="/counts/{{ s.id }}" title="Open count"
+                   class="p-1.5 rounded-lg text-gray-400 hover:text-brand-700 hover:bg-brand-50 transition-colors">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+                  </svg>
+                </a>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  {% else %}
+  <div class="card flex flex-col items-center justify-center py-16 text-center">
+    <div class="w-14 h-14 rounded-2xl bg-gray-100 flex items-center justify-center mb-4">
+      <svg class="w-7 h-7 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+              d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+      </svg>
+    </div>
+    {% if status %}
+    <p class="text-sm font-semibold text-gray-700">No {{ status }} counts</p>
+    <p class="text-xs text-gray-400 mt-1 mb-4">Nothing in this status yet.</p>
+    <a href="/counts/" class="btn-secondary btn-sm">Show all counts</a>
+    {% else %}
+    <p class="text-sm font-semibold text-gray-700">No inventory counts yet</p>
+    <p class="text-xs text-gray-400 mt-1 mb-4 max-w-sm">Start a physical count to reconcile on-hand quantities — audit a few parts, cycle-count a section, run a full wall-to-wall, or load opening on-hand at go-live.</p>
+    <a href="/counts/new" class="btn-primary btn-sm">Start your first count →</a>
+    {% endif %}
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

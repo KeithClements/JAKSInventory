@@ -1,9 +1,36 @@
 {% extends "base.html" %}
-{% block title %}Core Charges — JAKS Inventory{% endblock %}
-{% block heading %}Core Charges{% endblock %}
+{% block title %}Cores Queue — Axle{% endblock %}
+{% block heading %}Cores Queue{% endblock %}
 
 {% block content %}
-<div class="max-w-5xl space-y-6">
+{% from "macros/empty_state.html" import empty_state %}
+{# QB2 Queue Board (§2A) for the core-charge lifecycle. Owner ruling 2026-05-31:
+   one stage-grouped board, keep the existing inline action forms (cores have no
+   per-item workspace to link to). stage → (left stripe, row tint, Axle chip class,
+   label). Stage identity stays on the stripe color; chips carry §4 semantics. #}
+{% set stage_meta = {
+  'awaiting_return':    ('border-l-amber-400',  'bg-amber-50/20',  'chip-low', 'Awaiting Return'),
+  'pending_inspection': ('border-l-amber-400',  'bg-amber-50/20',  'chip-low', 'Pending Inspection'),
+  'ready_to_ship':      ('border-l-blue-400',   '',                'chip-ok',  'Ready to Ship'),
+  'awaiting_vendor':    ('border-l-purple-400', 'bg-purple-50/20', 'chip-low', 'Awaiting Vendor'),
+} %}
+{% set stage_labels = {
+  'awaiting_return':    'Awaiting Customer Return',
+  'pending_inspection': 'Pending Inspection',
+  'ready_to_ship':      'Ready to Ship to Vendor',
+  'awaiting_vendor':    'Awaiting Vendor Decision',
+} %}
+{% set action_labels = {
+  'awaiting_return':    'Record Return',
+  'pending_inspection': 'Record Decision',
+  'ready_to_ship':      'Mark Shipped',
+} %}
+
+{# One Alpine scope for the whole board: openId = expanded row (return/inspect/ship);
+   vdId + vdType = the vendor-decision row + which form (accepted|denied);
+   vcrSel = checked ready-to-ship core ids for "Batch to VCR" (checkboxes submit
+   via form="vcr-create-form"); vcrOpen = which Open-VCR card form is expanded. #}
+<div class="space-y-4" x-data="{ openId: null, vdId: null, vdType: null, vcrSel: [], vcrOpen: null }">
 
   {# ── Flash messages ── #}
   {% if request.query_params.get('error') %}
@@ -19,83 +46,278 @@
   </div>
   {% endif %}
 
-  {# ══════════════════════════════════════════════════════════════════════════
-     STAGE 1 — Awaiting Customer Return
-     ══════════════════════════════════════════════════════════════════════════ #}
-  <div class="card">
-    <div class="card-header">
-      <div>
-        <h2 class="card-title">Awaiting Customer Return</h2>
-        <p class="text-xs text-gray-400 mt-0.5">Customers who owe a core back</p>
+  {# ══════════════════════════════ METRICS STRIP ══════════════════════════════ #}
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+    {# Awaiting Customer Return (amber) — overdue sub-count #}
+    <div class="card card-body flex items-center gap-3 {% if metrics.overdue %}ring-1 ring-red-100{% endif %}">
+      <div class="w-9 h-9 rounded-lg bg-amber-50 flex items-center justify-center shrink-0">
+        <svg class="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3 10h11a4 4 0 010 8h-1m-10-8l4-4m-4 4l4 4"/>
+        </svg>
       </div>
-      {% if awaiting_return %}
-      <span class="text-xs font-semibold text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-2.5 py-0.5">
-        {{ awaiting_return | length }} open
-      </span>
-      {% endif %}
+      <div>
+        <p class="text-2xl font-bold leading-none tabular-nums {% if metrics.awaiting_return %}text-amber-600{% else %}text-gray-400{% endif %}">{{ metrics.awaiting_return }}</p>
+        <p class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mt-1">
+          Awaiting Return{% if metrics.overdue %} <span class="text-red-500 font-bold normal-case">· {{ metrics.overdue }} overdue</span>{% endif %}
+        </p>
+      </div>
     </div>
+    {# Pending Inspection (amber) #}
+    <div class="card card-body flex items-center gap-3">
+      <div class="w-9 h-9 rounded-lg bg-amber-50 flex items-center justify-center shrink-0">
+        <svg class="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h3m6.062-9.243A2 2 0 0019 6h-2V4a1 1 0 00-1-1h-3.172a2 2 0 00-1.414.586L9.586 5.414A2 2 0 008.172 6H6a2 2 0 00-2 2v11a2 2 0 002 2h12a2 2 0 002-2V7.757a2 2 0 00-.938-1z"/>
+        </svg>
+      </div>
+      <div>
+        <p class="text-2xl font-bold leading-none tabular-nums {% if metrics.pending_inspection %}text-amber-600{% else %}text-gray-400{% endif %}">{{ metrics.pending_inspection }}</p>
+        <p class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mt-1">Pending Inspection</p>
+      </div>
+    </div>
+    {# Ready to Ship (blue) #}
+    <div class="card card-body flex items-center gap-3">
+      <div class="w-9 h-9 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
+        <svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"/>
+        </svg>
+      </div>
+      <div>
+        <p class="text-2xl font-bold leading-none tabular-nums {% if metrics.ready_to_ship %}text-blue-600{% else %}text-gray-400{% endif %}">{{ metrics.ready_to_ship }}</p>
+        <p class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mt-1">Ready to Ship</p>
+      </div>
+    </div>
+    {# Awaiting Vendor (purple) #}
+    <div class="card card-body flex items-center gap-3 {% if metrics.awaiting_vendor %}ring-1 ring-purple-100{% endif %}">
+      <div class="w-9 h-9 rounded-lg bg-purple-50 flex items-center justify-center shrink-0">
+        <svg class="w-5 h-5 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+      </div>
+      <div>
+        <p class="text-2xl font-bold leading-none tabular-nums {% if metrics.awaiting_vendor %}text-purple-600{% else %}text-gray-400{% endif %}">{{ metrics.awaiting_vendor }}</p>
+        <p class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mt-1">Awaiting Vendor</p>
+      </div>
+    </div>
+  </div>
 
-    {% if awaiting_return %}
+  {# ── §5.4 dollar tiles (CoreMetricsService) — second metric row ── #}
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+    {# Outstanding core liability — customer charges still on the books (orange) #}
+    <div class="card card-body flex items-center gap-3">
+      <div class="w-9 h-9 rounded-lg bg-orange-50 flex items-center justify-center shrink-0">
+        <svg class="w-5 h-5 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+      </div>
+      <div>
+        <p class="text-2xl font-bold leading-none tabular-nums {% if metrics.outstanding_core_liability %}text-orange-600{% else %}text-gray-400{% endif %}">${{ '%.2f' | format(metrics.outstanding_core_liability) }}</p>
+        <p class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mt-1">Outstanding Core Liability</p>
+      </div>
+    </div>
+    {# Core credits issued to customers — gross, all-time (green) #}
+    <div class="card card-body flex items-center gap-3">
+      <div class="w-9 h-9 rounded-lg bg-green-50 flex items-center justify-center shrink-0">
+        <svg class="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+        </svg>
+      </div>
+      <div>
+        <p class="text-2xl font-bold leading-none tabular-nums {% if metrics.core_credits_issued %}text-green-700{% else %}text-gray-400{% endif %}">${{ '%.2f' | format(metrics.core_credits_issued) }}</p>
+        <p class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mt-1">Core Credits Issued</p>
+      </div>
+    </div>
+    {# Vendor recoveries — expected credit still outstanding on open VCRs (blue) #}
+    <div class="card card-body flex items-center gap-3">
+      <div class="w-9 h-9 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
+        <svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M16 15v-1a4 4 0 00-4-4H8m0 0l3 3m-3-3l3-3m9 14V5a2 2 0 00-2-2H6a2 2 0 00-2 2v14a2 2 0 002 2h12a2 2 0 002-2z"/>
+        </svg>
+      </div>
+      <div>
+        <p class="text-2xl font-bold leading-none tabular-nums {% if metrics.vendor_recoveries %}text-blue-600{% else %}text-gray-400{% endif %}">${{ '%.2f' | format(metrics.vendor_recoveries) }}</p>
+        <p class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mt-1">
+          Vendor Recoveries{% if metrics.vendor_recovery_count %} <span class="text-blue-500 font-bold normal-case">· {{ metrics.vendor_recovery_count }} open VCR{{ 's' if metrics.vendor_recovery_count != 1 }}</span>{% endif %}
+        </p>
+      </div>
+    </div>
+    {# Aging value — liability sitting on overdue customer returns (red) #}
+    <div class="card card-body flex items-center gap-3 {% if metrics.aging_value %}ring-1 ring-red-100{% endif %}">
+      <div class="w-9 h-9 rounded-lg bg-red-50 flex items-center justify-center shrink-0">
+        <svg class="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+        </svg>
+      </div>
+      <div>
+        <p class="text-2xl font-bold leading-none tabular-nums {% if metrics.aging_value %}text-red-600{% else %}text-gray-400{% endif %}">${{ '%.2f' | format(metrics.aging_value) }}</p>
+        <p class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mt-1">Overdue Return Value</p>
+      </div>
+    </div>
+  </div>
+
+  {# ══════════════════════════════ SEARCH ══════════════════════════════ #}
+  <form method="get" class="flex items-center gap-2">
+    <div class="relative">
+      <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+           fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
+      </svg>
+      <input name="q" value="{{ q }}" placeholder="Customer, SKU…"
+             class="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white w-64
+                    focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400
+                    placeholder:text-gray-400" />
+    </div>
+    <button type="submit"
+            class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200
+                   rounded-lg hover:bg-gray-50 transition-colors">Search</button>
+    {% if q %}
+    <a href="/cores/" class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</a>
+    {% endif %}
+  </form>
+
+  {# ══════════════════════════════ QUEUE (grouped by stage) ══════════════════════════════ #}
+  {% if rows %}
+  <div class="card overflow-hidden">
     <div class="overflow-x-auto">
-      <table class="tbl">
-        <thead class="tbl-head">
-          <tr>
-            <th class="tbl-th">Customer</th>
-            <th class="tbl-th">SKU</th>
-            <th class="tbl-th">Description</th>
-            <th class="tbl-th-r">Owed</th>
-            <th class="tbl-th-r">Charge/ea</th>
-            <th class="tbl-th">Deadline</th>
-            <th class="tbl-th">Action</th>
+      <table class="w-full min-w-[980px]">
+        <thead>
+          <tr class="border-b border-gray-200" style="background:#fafbfa;">
+            <th class="px-4 py-3 text-left label-mini">Core</th>
+            <th class="px-4 py-3 text-left label-mini">Customer</th>
+            <th class="px-4 py-3 text-right label-mini">Qty</th>
+            <th class="px-4 py-3 text-right label-mini">Value</th>
+            <th class="px-4 py-3 text-left label-mini">Detail</th>
+            <th class="px-4 py-3 text-left label-mini">Status</th>
+            <th class="px-4 py-3 text-right label-mini">Action</th>
           </tr>
         </thead>
-        <tbody>
-          {% for core in awaiting_return %}
-          <tr class="tbl-row" x-data="{ open: false }">
-            <td class="tbl-td font-medium text-gray-900">
-              {% if core.customer %}
-              <a href="/customers/{{ core.customer.id }}" class="link">{{ core.customer.company_name }}</a>
-              {% else %}—{% endif %}
-            </td>
-            <td class="tbl-td font-mono text-xs text-brand-700">
-              {{ core.product.sku if core.product else '—' }}
-            </td>
-            <td class="tbl-td text-gray-600 text-sm">
-              {{ core.product.title if core.product else '—' }}
-            </td>
-            <td class="tbl-td-r font-semibold text-amber-600">{{ core.qty_outstanding }}</td>
-            <td class="tbl-td-r">${{ '%.2f' | format(core.customer_unit_charge) }}</td>
-            <td class="tbl-td text-sm {% if core.is_overdue %}text-red-600 font-semibold{% else %}text-gray-500{% endif %}">
-              {% if core.return_deadline %}
-                {{ core.return_deadline.strftime('%m/%d/%Y') }}
-                {% if core.is_overdue %}<span class="badge-red ml-1">Overdue</span>{% endif %}
-              {% else %}—{% endif %}
-            </td>
-            <td class="tbl-td">
-              <button type="button" @click="open = !open"
-                      class="text-xs font-medium text-brand-700 hover:text-brand-600 underline underline-offset-2">
-                <span x-text="open ? 'Cancel' : 'Record Return'"></span>
-              </button>
+        <tbody class="divide-y divide-gray-100">
+          {% set ns = namespace(stage=None) %}
+          {% for row in rows %}
+          {% set core = row.core %}
+          {% set stage = row.stage %}
+          {% set meta = stage_meta[stage] %}
+
+          {# ── Stage group divider ── #}
+          {% if stage != ns.stage %}
+          {% set ns.stage = stage %}
+          <tr class="bg-gray-50/70">
+            <td colspan="7" class="px-4 py-2 text-xs font-bold text-gray-600 tracking-wide">
+              {% if stage == 'ready_to_ship' %}
+              {# R2 — batch the checked cores into one VCR. Checkboxes live on the
+                 rows below and submit here via form="vcr-create-form". #}
+              <div class="flex items-center justify-between gap-3 flex-wrap">
+                <span>{{ stage_labels[stage] }} <span class="font-normal normal-case text-gray-400">— check the core(s), pick the vendor, then create the return slip (it appears below to print &amp; ship)</span></span>
+                <form id="vcr-create-form" method="post" action="/cores/vcr/create" class="flex items-center gap-2">
+                  <select name="vendor_id" required
+                          class="text-xs font-medium text-gray-700 border border-gray-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400">
+                    <option value="">Vendor…</option>
+                    {% for v in vendors %}<option value="{{ v.id }}">{{ v.name }}</option>{% endfor %}
+                  </select>
+                  <button type="submit" :disabled="!vcrSel.length"
+                          class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 text-white hover:bg-blue-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          title="Creates the vendor return slip for the checked core(s) — print it and mark it shipped from the list below">
+                    Create return slip (<span x-text="vcrSel.length"></span>)
+                  </button>
+                </form>
+              </div>
+              {% else %}
+              {{ stage_labels[stage] }}
+              {% endif %}
             </td>
           </tr>
-          <tr x-show="open" x-data="{ outcome: 'accepted' }" style="display:none">
-            <td colspan="7" class="px-5 pb-4 pt-1 bg-gray-50 border-b border-gray-100">
-              <form method="post" action="/cores/{{ core.id }}/return"
-                    class="space-y-3">
+          {% endif %}
+
+          {# ── Core row ── #}
+          <tr class="hover:bg-gray-50/80 transition-colors group {{ meta[1] }}">
+            {# Core SKU + title (stripe; overdue returns get a red stripe).
+               Ready-to-ship rows get a VCR batch checkbox (form="vcr-create-form"). #}
+            <td class="px-4 py-4 align-middle border-l-4 {{ 'border-l-red-400' if row.overdue else meta[0] }}">
+              <div class="flex items-start gap-2.5">
+                {% if stage == 'ready_to_ship' %}
+                <input type="checkbox" name="core_ids" value="{{ core.id }}" form="vcr-create-form"
+                       x-model="vcrSel" aria-label="Select core for VCR batch"
+                       class="mt-0.5 w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-400 shrink-0 cursor-pointer" />
+                {% endif %}
+                <div class="min-w-0">
+                  <span class="font-mono pn">{{ core.product.sku if core.product else '—' }}</span>
+                  <div class="text-xs text-gray-500 truncate max-w-[220px]">{{ core.product.title if core.product else '—' }}</div>
+                </div>
+              </div>
+            </td>
+            {# Customer #}
+            <td class="px-4 py-4 align-middle">
+              {% if core.customer %}
+              <a href="/customers/{{ core.customer.id }}" class="text-sm font-medium text-gray-800 hover:text-brand-700 hover:underline">{{ core.customer.company_name }}</a>
+              {% else %}<span class="text-gray-300">—</span>{% endif %}
+            </td>
+            {# Qty — outstanding (awaiting return) vs returned (later stages) #}
+            <td class="px-4 py-4 align-middle text-right">
+              <span class="money" style="font-weight:600; color:#2f343a;">{{ core.qty_outstanding if stage == 'awaiting_return' else core.qty_returned }}</span>
+            </td>
+            {# Value — customer charge (return) or expected vendor/customer credit (.money) #}
+            <td class="px-4 py-4 align-middle text-right">
+              {% if stage == 'awaiting_return' %}
+              <span class="money" style="font-weight:600; color:#b06511;">${{ '%.2f' | format(core.customer_unit_charge) }}<span class="text-[10px] text-gray-400 font-normal">/ea</span></span>
+              {% elif stage == 'pending_inspection' %}
+              <span class="money ext" style="color:#3c4520;">${{ '%.2f' | format(core.customer_unit_charge * core.qty_returned) }}</span>
+              {% else %}
+              <span class="money ext" style="color:#3c4520;">${{ '%.2f' | format(core.vendor_unit_charge * core.qty_returned) }}</span>
+              {% endif %}
+            </td>
+            {# Detail — return deadline / vendor tracking #}
+            <td class="px-4 py-4 align-middle text-xs">
+              {% if stage == 'awaiting_return' %}
+                {% if core.return_deadline %}
+                <span class="{% if row.overdue %}text-red-600 font-semibold{% else %}text-gray-500{% endif %}">{{ core.return_deadline.strftime('%b %d, %Y') }}</span>
+                {% if row.overdue %}<span class="badge-red ml-1">Overdue</span>{% endif %}
+                {% else %}<span class="text-gray-300">—</span>{% endif %}
+              {% elif stage == 'awaiting_vendor' %}
+                <span class="font-mono pn" style="color:#7c838b;">{{ core.core_tracking_number or '—' }}</span>
+              {% else %}<span class="text-gray-300">—</span>{% endif %}
+            </td>
+            {# Status chip — Axle .chip-axle dot + label #}
+            <td class="px-4 py-4 align-middle">
+              {% if row.overdue %}
+              <span class="chip-axle chip-out"><span class="dot"></span>Overdue Return</span>
+              {% else %}
+              <span class="chip-axle {{ meta[2] }}"><span class="dot"></span>{{ meta[3] }}</span>
+              {% endif %}
+            </td>
+            {# Action — expands the stage-specific inline form below #}
+            <td class="px-4 py-4 align-middle text-right">
+              {% if stage == 'awaiting_vendor' %}
+              <div class="flex items-center justify-end gap-1.5" x-show="vdId !== {{ core.id }}">
+                <button type="button" @click="vdId = {{ core.id }}; vdType = 'accepted'"
+                        class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-green-700 text-white hover:bg-green-600 transition-colors">Accepted</button>
+                <button type="button" @click="vdId = {{ core.id }}; vdType = 'denied'"
+                        class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-red-600 text-white hover:bg-red-500 transition-colors">Denied</button>
+              </div>
+              <button type="button" x-show="vdId === {{ core.id }}" x-cloak @click="vdId = null; vdType = null"
+                      class="text-xs text-gray-400 hover:text-gray-600 underline underline-offset-2">Cancel</button>
+              {% else %}
+              <button type="button" @click="openId = (openId === {{ core.id }} ? null : {{ core.id }})"
+                      class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-brand-700 text-white hover:bg-brand-600 transition-colors">
+                <span x-text="openId === {{ core.id }} ? 'Cancel' : '{{ action_labels[stage] }}'"></span>
+              </button>
+              {% endif %}
+            </td>
+          </tr>
+
+          {# ── Inline action form rows (stage-specific) ── #}
+          {% if stage == 'awaiting_return' %}
+          <tr x-show="openId === {{ core.id }}" x-cloak x-data="{ outcome: 'accepted' }">
+            <td colspan="7" class="px-5 pb-4 pt-1 bg-amber-50/40 border-b border-gray-100">
+              <form method="post" action="/cores/{{ core.id }}/return" class="space-y-3">
                 <div class="flex items-end gap-3 flex-wrap">
                   <div>
                     <label class="form-label">Qty Returned</label>
-                    <input type="number" name="qty_returned"
-                           min="1" max="{{ core.qty_outstanding }}"
-                           value="{{ core.qty_outstanding }}"
-                           class="w-24 border border-gray-300 rounded-lg px-3 py-1.5 text-sm
-                                  focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+                    <input type="number" name="qty_returned" min="1" max="{{ core.qty_outstanding }}" value="{{ core.qty_outstanding }}"
+                           class="w-24 form-input" />
                   </div>
                   <div>
                     <label class="form-label">Inspection</label>
-                    <select name="inspection_outcome" x-model="outcome"
-                            class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm bg-white
-                                   focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400">
+                    <select name="inspection_outcome" x-model="outcome" class="form-select">
                       <option value="accepted">✓ Accept — issue credit now</option>
                       <option value="hold">⏸ Hold — inspect later, defer credit</option>
                       <option value="rejected">✗ Reject — bad core, no credit</option>
@@ -103,313 +325,89 @@
                   </div>
                   <div class="flex-1 min-w-44">
                     <label class="form-label">Condition Notes</label>
-                    <input type="text" name="condition"
-                           placeholder="Good condition, clean, no damage…"
-                           class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm
-                                  focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+                    <input type="text" name="condition" placeholder="Good condition, clean, no damage…" class="form-input" />
                   </div>
                 </div>
                 <div class="flex items-center gap-3">
                   <button type="submit"
-                          :class="outcome === 'rejected' ? 'btn-danger' : (outcome === 'hold' ? 'btn-secondary' : 'btn-primary')"
-                          class="btn-primary">
+                          :class="outcome === 'rejected' ? 'btn-danger' : (outcome === 'hold' ? 'btn-secondary' : 'btn-primary')">
                     <span x-show="outcome === 'accepted'">Record Return &amp; Credit Account</span>
-                    <span x-show="outcome === 'hold'">Record Return — Hold for Inspection</span>
-                    <span x-show="outcome === 'rejected'">Refuse Core — Close Charge</span>
+                    <span x-show="outcome === 'hold'" x-cloak>Record Return — Hold for Inspection</span>
+                    <span x-show="outcome === 'rejected'" x-cloak>Refuse Core — Close Charge</span>
                   </button>
                   <p class="text-xs text-gray-400">
-                    <span x-show="outcome === 'accepted'">
-                      Credit ${{ '%.2f' | format(core.customer_unit_charge) }}/ea applied immediately.
-                    </span>
-                    <span x-show="outcome === 'hold'">
-                      Core logged; credit deferred until inspection complete.
-                    </span>
-                    <span x-show="outcome === 'rejected'">
-                      No credit issued; charge will be closed.
-                    </span>
+                    <span x-show="outcome === 'accepted'">Credit ${{ '%.2f' | format(core.customer_unit_charge) }}/ea applied immediately.</span>
+                    <span x-show="outcome === 'hold'" x-cloak>Core logged; credit deferred until inspection complete.</span>
+                    <span x-show="outcome === 'rejected'" x-cloak>No credit issued; charge will be closed.</span>
                   </p>
                 </div>
               </form>
             </td>
           </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% else %}
-    <div class="card-body">
-      <p class="text-sm text-gray-400">No cores awaiting return — all clear.</p>
-    </div>
-    {% endif %}
-  </div>
 
-
-  {# ══════════════════════════════════════════════════════════════════════════
-     STAGE 1.5 — Pending Inspection (cores received, on hold)
-     ══════════════════════════════════════════════════════════════════════════ #}
-  {% if pending_inspection %}
-  <div class="card border-amber-200">
-    <div class="card-header">
-      <div>
-        <h2 class="card-title text-amber-700">Pending Inspection</h2>
-        <p class="text-xs text-gray-400 mt-0.5">Cores received — credit deferred until inspected</p>
-      </div>
-      <span class="text-xs font-semibold text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-2.5 py-0.5">
-        {{ pending_inspection | length }} on hold
-      </span>
-    </div>
-    <div class="overflow-x-auto">
-      <table class="tbl">
-        <thead class="tbl-head">
-          <tr>
-            <th class="tbl-th">Customer</th>
-            <th class="tbl-th">SKU</th>
-            <th class="tbl-th">Description</th>
-            <th class="tbl-th-r">Qty</th>
-            <th class="tbl-th-r">Credit if Accepted</th>
-            <th class="tbl-th">Decision</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for core in pending_inspection %}
-          <tr class="tbl-row" x-data="{ open: false }">
-            <td class="tbl-td font-medium text-gray-900">
-              {% if core.customer %}
-              <a href="/customers/{{ core.customer.id }}" class="link">{{ core.customer.company_name }}</a>
-              {% else %}—{% endif %}
-            </td>
-            <td class="tbl-td font-mono text-xs text-brand-700">
-              {{ core.product.sku if core.product else '—' }}
-            </td>
-            <td class="tbl-td text-gray-600 text-sm">
-              {{ core.product.title if core.product else '—' }}
-            </td>
-            <td class="tbl-td-r font-medium">{{ core.qty_returned }}</td>
-            <td class="tbl-td-r font-semibold text-green-700">
-              ${{ '%.2f' | format(core.customer_unit_charge * core.qty_returned) }}
-            </td>
-            <td class="tbl-td">
-              <button type="button" @click="open = !open"
-                      class="text-xs font-medium text-amber-700 hover:text-amber-600 underline underline-offset-2">
-                <span x-text="open ? 'Cancel' : 'Record Decision'"></span>
-              </button>
-            </td>
-          </tr>
-          <tr x-show="open" style="display:none">
-            <td colspan="6" class="px-5 pb-4 pt-1 bg-amber-50 border-b border-gray-100">
-              <form method="post" action="/cores/{{ core.id }}/complete-inspection"
-                    class="flex items-end gap-3 flex-wrap">
+          {% elif stage == 'pending_inspection' %}
+          <tr x-show="openId === {{ core.id }}" x-cloak>
+            <td colspan="7" class="px-5 pb-4 pt-1 bg-amber-50/40 border-b border-gray-100">
+              <form method="post" action="/cores/{{ core.id }}/complete-inspection" class="flex items-end gap-3 flex-wrap">
                 <div>
                   <label class="form-label">Inspection Decision</label>
-                  <select name="final_outcome"
-                          class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm bg-white
-                                 focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400">
+                  <select name="final_outcome" class="form-select">
                     <option value="accepted">✓ Accept — issue credit ${{ '%.2f' | format(core.customer_unit_charge * core.qty_returned) }}</option>
                     <option value="rejected">✗ Reject — close charge, no credit</option>
                   </select>
                 </div>
                 <div class="flex-1 min-w-52">
                   <label class="form-label">Notes (optional)</label>
-                  <input type="text" name="notes"
-                         placeholder="Inspection notes…"
-                         class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm
-                                focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+                  <input type="text" name="notes" placeholder="Inspection notes…" class="form-input" />
                 </div>
                 <button type="submit" class="btn-primary">Submit Decision</button>
               </form>
             </td>
           </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </div>
-  {% endif %}
 
-  {# ══════════════════════════════════════════════════════════════════════════
-     STAGE 2 — Ready to Ship to Vendor
-     ══════════════════════════════════════════════════════════════════════════ #}
-  <div class="card">
-    <div class="card-header">
-      <div>
-        <h2 class="card-title">Ready to Ship to Vendor</h2>
-        <p class="text-xs text-gray-400 mt-0.5">Cores received from customers — awaiting vendor return shipment</p>
-      </div>
-      {% if pending_vendor_ship %}
-      <span class="text-xs font-semibold text-blue-600 bg-blue-50 border border-blue-200 rounded-full px-2.5 py-0.5">
-        {{ pending_vendor_ship | length }} ready
-      </span>
-      {% endif %}
-    </div>
-
-    {% if pending_vendor_ship %}
-    <div class="overflow-x-auto">
-      <table class="tbl">
-        <thead class="tbl-head">
-          <tr>
-            <th class="tbl-th">SKU</th>
-            <th class="tbl-th">Description</th>
-            <th class="tbl-th">From Customer</th>
-            <th class="tbl-th-r">Qty</th>
-            <th class="tbl-th-r">Expected Credit</th>
-            <th class="tbl-th">Action</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for core in pending_vendor_ship %}
-          <tr class="tbl-row" x-data="{ open: false }">
-            <td class="tbl-td font-mono text-xs text-brand-700">
-              {{ core.product.sku if core.product else '—' }}
-            </td>
-            <td class="tbl-td text-gray-600 text-sm">
-              {{ core.product.title if core.product else '—' }}
-            </td>
-            <td class="tbl-td text-sm text-gray-600">
-              {% if core.customer %}{{ core.customer.company_name }}{% else %}—{% endif %}
-            </td>
-            <td class="tbl-td-r font-medium">{{ core.qty_returned }}</td>
-            <td class="tbl-td-r font-medium text-green-700">
-              ${{ '%.2f' | format(core.vendor_unit_charge * core.qty_returned) }}
-            </td>
-            <td class="tbl-td">
-              <button type="button" @click="open = !open"
-                      class="text-xs font-medium text-brand-700 hover:text-brand-600 underline underline-offset-2">
-                <span x-text="open ? 'Cancel' : 'Mark Shipped'"></span>
-              </button>
-            </td>
-          </tr>
-          <tr x-show="open" style="display:none">
-            <td colspan="6" class="px-5 pb-4 pt-1 bg-gray-50 border-b border-gray-100">
-              <form method="post" action="/cores/{{ core.id }}/submit-to-vendor"
-                    class="flex items-end gap-3 flex-wrap">
+          {% elif stage == 'ready_to_ship' %}
+          <tr x-show="openId === {{ core.id }}" x-cloak>
+            <td colspan="7" class="px-5 pb-4 pt-1 bg-gray-50 border-b border-gray-100">
+              {# §23.3 Phase 3 — single-core ship creates + ships a one-core VCR so it
+                 lands on the same vendor-return ledger as batches. #}
+              <form method="post" action="/cores/{{ core.id }}/submit-to-vendor" class="flex items-end gap-3 flex-wrap">
                 <div class="flex-1 min-w-52">
                   <label class="form-label">Tracking Number</label>
-                  <input type="text" name="tracking_number"
-                         placeholder="UPS / FedEx tracking number…"
-                         class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm
-                                focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+                  <input type="text" name="tracking_number" placeholder="UPS / FedEx tracking number…" class="form-input" />
                 </div>
-                <button type="submit" class="btn-primary">Mark as Shipped to Vendor</button>
+                <button type="submit" class="btn-primary">Ship to Vendor (creates return doc)</button>
+                <p class="basis-full text-[11px] text-gray-400 -mt-1">Creates a one-core vendor return (VCR) and opens its box document — same ledger as a batch.</p>
               </form>
             </td>
           </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% else %}
-    <div class="card-body">
-      <p class="text-sm text-gray-400">No cores waiting to ship to vendor.</p>
-    </div>
-    {% endif %}
-  </div>
 
-
-  {# ══════════════════════════════════════════════════════════════════════════
-     STAGE 3 — Awaiting Vendor Decision
-     ══════════════════════════════════════════════════════════════════════════ #}
-  <div class="card">
-    <div class="card-header">
-      <div>
-        <h2 class="card-title">Awaiting Vendor Decision</h2>
-        <p class="text-xs text-gray-400 mt-0.5">Shipped to vendor — waiting for credit or denial</p>
-      </div>
-      {% if awaiting_vendor %}
-      <span class="text-xs font-semibold text-purple-600 bg-purple-50 border border-purple-200 rounded-full px-2.5 py-0.5">
-        {{ awaiting_vendor | length }} pending
-      </span>
-      {% endif %}
-    </div>
-
-    {% if awaiting_vendor %}
-    <div class="overflow-x-auto">
-      <table class="tbl">
-        <thead class="tbl-head">
-          <tr>
-            <th class="tbl-th">SKU</th>
-            <th class="tbl-th">Description</th>
-            <th class="tbl-th">Tracking</th>
-            <th class="tbl-th-r">Qty</th>
-            <th class="tbl-th-r">Expected Credit</th>
-            <th class="tbl-th">Record Decision</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for core in awaiting_vendor %}
-          <tr class="tbl-row" x-data="{ decision: null }">
-            <td class="tbl-td font-mono text-xs text-brand-700">
-              {{ core.product.sku if core.product else '—' }}
-            </td>
-            <td class="tbl-td text-gray-600 text-sm">
-              {{ core.product.title if core.product else '—' }}
-            </td>
-            <td class="tbl-td font-mono text-xs text-gray-500">
-              {{ core.core_tracking_number or '—' }}
-            </td>
-            <td class="tbl-td-r font-medium">{{ core.qty_returned }}</td>
-            <td class="tbl-td-r font-semibold text-green-700">
-              ${{ '%.2f' | format(core.vendor_unit_charge * core.qty_returned) }}
-            </td>
-            <td class="tbl-td">
-              <div class="flex items-center gap-2" x-show="decision === null">
-                <button type="button" @click="decision = 'accepted'"
-                        class="text-xs font-medium text-green-700 hover:text-green-600 underline underline-offset-2">
-                  Accepted
-                </button>
-                <span class="text-gray-300">|</span>
-                <button type="button" @click="decision = 'denied'"
-                        class="text-xs font-medium text-red-600 hover:text-red-500 underline underline-offset-2">
-                  Denied
-                </button>
-              </div>
-              <button type="button" x-show="decision !== null" @click="decision = null"
-                      class="text-xs text-gray-400 hover:text-gray-600 underline underline-offset-2">
-                Cancel
-              </button>
-            </td>
-          </tr>
-
-          {# Vendor accepted — enter actual credit received #}
-          <tr x-show="decision === 'accepted'" style="display:none">
-            <td colspan="6" class="px-5 pb-4 pt-1 bg-green-50 border-b border-gray-100">
-              <form method="post" action="/cores/{{ core.id }}/vendor-accepted"
-                    class="flex items-end gap-3 flex-wrap">
+          {% elif stage == 'awaiting_vendor' %}
+          {# Vendor accepted — actual credit received #}
+          <tr x-show="vdId === {{ core.id }} && vdType === 'accepted'" x-cloak>
+            <td colspan="7" class="px-5 pb-4 pt-1 bg-green-50 border-b border-gray-100">
+              <form method="post" action="/cores/{{ core.id }}/vendor-accepted" class="flex items-end gap-3 flex-wrap">
                 <div>
                   <label class="form-label">Credit Amount Received ($)</label>
                   <input type="number" name="credit_amount" step="0.01" min="0"
-                         value="{{ '%.2f' | format(core.vendor_unit_charge * core.qty_returned) }}"
-                         class="w-32 border border-gray-300 rounded-lg px-3 py-1.5 text-sm
-                                focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+                         value="{{ '%.2f' | format(core.vendor_unit_charge * core.qty_returned) }}" class="w-32 form-input" />
                 </div>
-                <button type="submit"
-                        class="px-4 py-2 bg-green-700 text-white text-sm font-medium rounded-lg hover:bg-green-600 transition-colors">
-                  Confirm Credit
-                </button>
-                <p class="w-full text-xs text-gray-500">
-                  Pre-filled with expected amount. Adjust if vendor issued a different credit.
-                </p>
+                <button type="submit" class="px-4 py-2 bg-green-700 text-white text-sm font-medium rounded-lg hover:bg-green-600 transition-colors">Confirm Credit</button>
+                <p class="w-full text-xs text-gray-500">Pre-filled with the expected amount. Adjust if the vendor issued a different credit.</p>
               </form>
             </td>
           </tr>
-
-          {# Vendor denied — record reason and resolution #}
-          <tr x-show="decision === 'denied'" style="display:none">
-            <td colspan="6" class="px-5 pb-4 pt-1 bg-red-50 border-b border-gray-100">
-              <form method="post" action="/cores/{{ core.id }}/vendor-denied"
-                    class="space-y-3">
+          {# Vendor denied — reason + resolution #}
+          <tr x-show="vdId === {{ core.id }} && vdType === 'denied'" x-cloak>
+            <td colspan="7" class="px-5 pb-4 pt-1 bg-red-50 border-b border-gray-100">
+              <form method="post" action="/cores/{{ core.id }}/vendor-denied" class="space-y-3">
                 <div class="flex items-end gap-3 flex-wrap">
                   <div class="flex-1 min-w-52">
                     <label class="form-label">Denial Reason <span class="text-red-500">*</span></label>
-                    <input type="text" name="denial_reason" required
-                           placeholder="Wrong core, damaged, missing tag…"
-                           class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm
-                                  focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+                    <input type="text" name="denial_reason" required placeholder="Wrong core, damaged, missing tag…" class="form-input" />
                   </div>
                   <div>
                     <label class="form-label">Resolution</label>
-                    <select name="resolution"
-                            class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm bg-white
-                                   focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400">
+                    <select name="resolution" class="form-select">
                       <option value="{{ CoreDenialResolution.ABSORBED_BY_JAKS }}">JAKS absorbs loss</option>
                       <option value="{{ CoreDenialResolution.CHARGED_TO_CUSTOMER }}">Charge back to customer</option>
                       <option value="{{ CoreDenialResolution.DISPUTED }}">Dispute with vendor</option>
@@ -419,39 +417,147 @@
                 <div class="flex items-end gap-3">
                   <div class="flex-1">
                     <label class="form-label">Notes (optional)</label>
-                    <input type="text" name="notes"
-                           placeholder="Internal notes on how this was handled…"
-                           class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm
-                                  focus:outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400" />
+                    <input type="text" name="notes" placeholder="Internal notes on how this was handled…" class="form-input" />
                   </div>
-                  <button type="submit"
-                          class="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-500 transition-colors">
-                    Record Denial
-                  </button>
+                  <button type="submit" class="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-500 transition-colors">Record Denial</button>
                 </div>
               </form>
             </td>
           </tr>
+          {% endif %}
+
           {% endfor %}
         </tbody>
       </table>
     </div>
-    {% else %}
-    <div class="card-body">
-      <p class="text-sm text-gray-400">No cores awaiting vendor decision.</p>
+    <div class="px-5 py-3 border-t border-gray-100"
+         style="background:#fafbfa; font-family:'IBM Plex Mono',monospace; font-size:11px; color:#7c838b;">
+      <span>{{ total }} open core charge{{ 's' if total != 1 }} in the lifecycle{% if q %} · filtered{% endif %}</span>
     </div>
-    {% endif %}
   </div>
 
-  {# ── All clear ── #}
-  {% if not awaiting_return and not pending_vendor_ship and not awaiting_vendor %}
-  <div class="card flex flex-col items-center justify-center py-16">
-    <svg class="w-12 h-12 text-green-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-            d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-    </svg>
-    <p class="text-gray-500 font-medium">All cores settled</p>
-    <p class="text-gray-400 text-sm mt-1">No open core charges at this time.</p>
+  {% else %}
+  {# ══════════════════════════════ EMPTY STATE — §7 Primitive 6 ══════════════ #}
+  {# active_tab='' — queue boards have no tabs, only search-miss or all-clear #}
+  {{ empty_state(
+    'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z',
+    q,
+    '',
+    'All cores settled',
+    'No open core charges need attention right now.',
+    ''
+  ) }}
+  {% endif %}
+
+  {# ══════════════════════ OPEN VENDOR CORE RETURNS (R2) ══════════════════════ #}
+  {# One card per in-flight VCR batch: Draft → ship form; Shipped/Review/Disputed
+     → vendor-decision form (unchecked cores accepted, checked cores denied). #}
+  {% if vcr_rows %}
+  {% set vcr_status_meta = {
+    'draft':         ('chip-draft', 'Draft'),
+    'shipped':       ('chip-ok',    'Shipped'),
+    'vendor_review': ('chip-low',   'Vendor Review'),
+    'disputed':      ('chip-out',   'Disputed'),
+  } %}
+  <div class="card overflow-hidden">
+    <div class="px-5 py-3 border-b border-gray-100 bg-gray-50/60 flex items-center justify-between">
+      <h2 class="text-xs font-bold text-gray-600 uppercase tracking-wide">Open Vendor Core Returns</h2>
+      <span class="text-xs text-gray-400">{{ vcr_rows|length }} open batch{{ 'es' if vcr_rows|length != 1 }}</span>
+    </div>
+    <div class="divide-y divide-gray-100">
+      {% for vrow in vcr_rows %}
+      {% set vcr = vrow.vcr %}
+      {% set vmeta = vcr_status_meta.get(vcr.status, vcr_status_meta['draft']) %}
+      <div class="px-5 py-4">
+        <div class="flex items-center justify-between gap-3 flex-wrap">
+          <div class="flex items-center gap-3 flex-wrap min-w-0">
+            <span class="font-mono pn">{{ vcr.vcr_number }}</span>
+            <span class="chip-axle {{ vmeta[0] }}"><span class="dot"></span>{{ vmeta[1] }}</span>
+            <span class="text-sm font-medium text-gray-800">{{ vrow.vendor.name if vrow.vendor else '—' }}</span>
+            <span class="text-xs text-gray-500">{{ vrow.cores|length }} core{{ 's' if vrow.cores|length != 1 }}</span>
+            <span class="text-xs text-gray-500">Expected <span class="money" style="color:#3c4520;">${{ '%.2f' | format(vcr.expected_credit) }}</span></span>
+            {% if vcr.tracking_number %}<span class="font-mono pn" style="color:#a9afb6;">{{ vcr.tracking_number }}</span>{% endif %}
+          </div>
+          <div class="flex items-center gap-1.5">
+            <a href="/cores/vcr/{{ vcr.id }}/print?copies=both" target="_blank" rel="noopener"
+               class="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 transition-colors">Print ↗</a>
+            {% if vcr.status == VCRStatus.DRAFT %}
+            <button type="button" @click="vcrOpen = (vcrOpen === {{ vcr.id }} ? null : {{ vcr.id }})"
+                    class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-brand-700 text-white hover:bg-brand-600 transition-colors">
+              <span x-text="vcrOpen === {{ vcr.id }} ? 'Cancel' : 'Mark Shipped'"></span>
+            </button>
+            {% else %}
+            <button type="button" @click="vcrOpen = (vcrOpen === {{ vcr.id }} ? null : {{ vcr.id }})"
+                    class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-purple-700 text-white hover:bg-purple-600 transition-colors">
+              <span x-text="vcrOpen === {{ vcr.id }} ? 'Cancel' : 'Vendor Decision'"></span>
+            </button>
+            {% endif %}
+          </div>
+        </div>
+
+        {% if vcr.status == VCRStatus.DRAFT %}
+        {# ── Ship the batch ── #}
+        <div x-show="vcrOpen === {{ vcr.id }}" x-cloak class="mt-3 rounded-lg bg-gray-50 border border-gray-100 px-4 py-3">
+          <form method="post" action="/cores/vcr/{{ vcr.id }}/ship" class="flex items-end gap-3 flex-wrap">
+            <div class="flex-1 min-w-52">
+              <label class="form-label">Tracking Number</label>
+              <input type="text" name="tracking_number" placeholder="UPS / FedEx tracking number…" class="form-input" />
+            </div>
+            <div>
+              <label class="form-label">Vendor RMA # (optional)</label>
+              <input type="text" name="rma_number" class="form-input w-40" />
+            </div>
+            <button type="submit" class="btn-primary">Mark Batch Shipped</button>
+            <p class="w-full text-xs text-gray-400">Marks every core in the batch shipped and opens the VCR document for the box.</p>
+          </form>
+        </div>
+        {% else %}
+        {# ── Vendor decision — unchecked cores accepted, checked cores denied ── #}
+        <div x-show="vcrOpen === {{ vcr.id }}" x-cloak class="mt-3 rounded-lg bg-purple-50/50 border border-purple-100 px-4 py-3">
+          <form method="post" action="/cores/vcr/{{ vcr.id }}/vendor-decision" class="space-y-3">
+            <div class="flex items-end gap-3 flex-wrap">
+              <div>
+                <label class="form-label">Credit Received ($)</label>
+                <input type="number" name="actual_credit" step="0.01" min="0"
+                       value="{{ '%.2f' | format(vcr.expected_credit) }}" class="w-32 form-input" />
+              </div>
+              <p class="text-xs text-gray-400 pb-2">Pre-filled with the expected amount. Leave cores unchecked to accept them; check any the vendor denied.</p>
+            </div>
+            <div class="flex flex-wrap gap-x-5 gap-y-1.5">
+              {% for c in vrow.cores if c.vendor_status == CoreVendorStatus.PENDING %}
+              <label class="inline-flex items-center gap-1.5 text-xs text-gray-700 cursor-pointer">
+                <input type="checkbox" name="denied_core_ids" value="{{ c.id }}"
+                       class="w-3.5 h-3.5 rounded border-gray-300 text-red-600 focus:ring-red-400" />
+                <span class="font-mono font-semibold">{{ c.product.sku if c.product else ('#' ~ c.id) }}</span>
+                <span class="text-gray-400">${{ '%.2f' | format(c.vendor_unit_charge * c.qty_returned) }}</span>
+              </label>
+              {% endfor %}
+            </div>
+            <div class="flex items-end gap-3 flex-wrap">
+              <div class="flex-1 min-w-44">
+                <label class="form-label">Denial Reason (if any denied)</label>
+                <input type="text" name="denial_reason" placeholder="Wrong core, damaged, missing tag…" class="form-input" />
+              </div>
+              <div>
+                <label class="form-label">Denied-Core Resolution</label>
+                <select name="resolution" class="form-select">
+                  <option value="{{ CoreDenialResolution.ABSORBED_BY_JAKS }}">JAKS absorbs loss</option>
+                  <option value="{{ CoreDenialResolution.CHARGED_TO_CUSTOMER }}">Charge back to customer</option>
+                  <option value="{{ CoreDenialResolution.DISPUTED }}">Dispute with vendor</option>
+                </select>
+              </div>
+              <div class="flex-1 min-w-44">
+                <label class="form-label">Notes (optional)</label>
+                <input type="text" name="notes" class="form-input" />
+              </div>
+              <button type="submit" class="px-4 py-2 bg-purple-700 text-white text-sm font-medium rounded-lg hover:bg-purple-600 transition-colors">Record Decision</button>
+            </div>
+          </form>
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
   </div>
   {% endif %}
 

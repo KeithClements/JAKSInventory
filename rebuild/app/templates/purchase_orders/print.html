@@ -4,183 +4,354 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{{ po.po_number }} — {{ po.vendor.name if po.vendor else "Purchase Order" }}</title>
-  {% include "documents/_styles.html" %}
+  {# Axle print spec §7 — vendor-facing. Self-host preferred in prod. #}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Barlow:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root{
+      --ink:#0b0c0d;
+      --amber:#e7891d;
+      --s700:#2f343a; --s500:#565d65; --s400:#7c838b; --s300:#a9afb6;
+      --s200:#cdd1d5; --s100:#e7e9eb;
+      --disp:"Oswald",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      --body:"Barlow",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+      --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html{ -webkit-font-smoothing:antialiased; }
+    body{
+      font-family: var(--body); color: var(--ink); background: #cfd2d6;
+      font-size: 12.5px; line-height: 1.45;
+      -webkit-print-color-adjust: exact; print-color-adjust: exact;
+    }
+
+    .page-shell{
+      width: 8.5in; min-height: 11in; margin: 24px auto;
+      background: #fff; box-shadow: 0 8px 30px rgba(0,0,0,.18);
+      padding: 0.7in 0.75in 0.65in;
+      display: flex; flex-direction: column;
+    }
+
+    .controls{ position: fixed; top: 14px; right: 16px; display: flex; gap: 8px; z-index: 9999; }
+    .btn{
+      font-family: var(--disp); font-weight: 600;
+      text-transform: uppercase; letter-spacing: .06em;
+      font-size: 12px; padding: 9px 14px; border-radius: 6px;
+      cursor: pointer; border: none; line-height: 1.4;
+    }
+    .btn-primary  { background: var(--ink); color: #fff; }
+    .btn-secondary{ background: #e5e7eb; color: #374151; }
+
+    .void-banner{ text-align:center; padding: 6px 0 10px; margin-bottom: 10px; }
+    .void-badge{
+      display: inline-block; font-family: var(--disp); font-weight: 700;
+      font-size: 14px; letter-spacing: .25em; text-transform: uppercase;
+      padding: 5px 26px; border-radius: 4px;
+      border: 2px solid var(--ink); color: var(--ink); background: #fff;
+    }
+
+    .doc-header{
+      display: flex; justify-content: space-between; align-items: flex-start;
+      border-bottom: 2.5px solid var(--ink); padding-bottom: 16px;
+    }
+    .co-name{
+      font-family: var(--disp); font-weight: 700;
+      text-transform: uppercase; font-size: 28px;
+      line-height: .9; letter-spacing: .01em; color: var(--ink);
+    }
+    .co-logo{ max-height: 56px; max-width: 360px; width: auto; display: block; margin-bottom: 4px; }
+    .co-info{ font-family: var(--body); font-size: 11px; color: var(--s500); line-height: 1.7; margin-top: 6px; }
+
+    .doc-right{ text-align: right; }
+    .doc-title{
+      font-family: var(--disp); font-weight: 700;
+      text-transform: uppercase; font-size: 26px; line-height: .9; color: var(--ink);
+    }
+    .doc-meta{
+      font-family: var(--mono); font-size: 11px;
+      color: var(--s500); margin-top: 7px; line-height: 1.7;
+    }
+    .doc-meta strong{ color: var(--ink); font-weight: 600; }
+    .doc-meta .po-no{
+      font-family: var(--mono); font-weight: 600; font-size: 16px;
+      color: var(--ink); display: block; margin-top: 2px;
+    }
+
+    .meta-row{
+      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px;
+      padding: 16px 0 18px; border-bottom: 1px solid var(--s200);
+    }
+    .meta-lab{
+      font-family: var(--disp); font-weight: 600;
+      text-transform: uppercase; letter-spacing: .07em;
+      font-size: 10px; color: var(--s400); margin-bottom: 5px;
+    }
+    .meta-val{ font-size: 12.5px; color: var(--s700); line-height: 1.55; }
+    .meta-val b{ color: var(--ink); font-weight: 600; font-size: 13.5px; }
+    .meta-mono{ font-family: var(--mono); font-size: 11.5px; color: var(--s700); }
+    .ref-key{
+      color: var(--s400); font-family: var(--disp);
+      font-weight: 600; text-transform: uppercase;
+      letter-spacing: .05em; font-size: 10px; margin-right: 4px;
+    }
+
+    table.lines{ width: 100%; border-collapse: collapse; margin-top: 18px; }
+    table.lines thead th{
+      font-family: var(--disp); font-weight: 600;
+      text-transform: uppercase; letter-spacing: .07em;
+      font-size: 9.5px; color: var(--s400);
+      text-align: left; padding: 7px 8px;
+      border-bottom: 1.5px solid var(--ink);
+    }
+    table.lines thead th.r{ text-align: right; }
+    table.lines thead th.c{ text-align: center; }
+
+    table.lines tbody td{
+      padding: 9px 8px; border-bottom: 1px solid var(--s100);
+      vertical-align: top; font-size: 12.5px; page-break-inside: avoid;
+    }
+    table.lines tbody tr:last-child td{ border-bottom: 1px solid var(--s200); }
+
+    td.td-num   { color: var(--s300); font-family: var(--mono); font-size: 11.5px; text-align: center; }
+    td.r        { text-align: right; }
+    td.td-total { text-align: right; font-family: var(--mono); font-size: 12px; }
+    td.td-total b{ font-weight: 600; }
+
+    .pn{ font-family: var(--mono); font-weight: 600; font-size: 11.5px; color: var(--ink); white-space: nowrap; }
+    .ds{ font-family: var(--body); color: var(--s500); font-size: 11.5px; margin-top: 1px; line-height: 1.4; }
+    .alt-pn{
+      display: block; font-family: var(--mono);
+      font-size: 10.5px; color: var(--s500); margin-top: 1px;
+    }
+    .alt-pn .lbl{ color: var(--s400); margin-right: 3px; }
+    .money{ font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+    .cancel-tag{ display:inline-block; font-family: var(--mono); font-size: 10px; color: var(--s500); margin-top: 2px; }
+
+    .tot-wrap{ display: flex; justify-content: flex-end; margin-top: 14px; }
+    .tots{ width: 3.1in; }
+    .tots .row{
+      display: flex; justify-content: space-between;
+      padding: 5px 10px; font-size: 12.5px; color: var(--s700);
+    }
+    .tots .row .lbl{ font-family: var(--body); }
+    .tots .row .val{ font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+    .tots .grand{
+      display: flex; justify-content: space-between; align-items: center;
+      margin-top: 6px; border-top: 2.5px solid var(--ink);
+      padding: 10px 10px 0;
+    }
+    .tots .grand .l{
+      font-family: var(--disp); font-weight: 700;
+      text-transform: uppercase; letter-spacing: .08em;
+      font-size: 12px; color: var(--ink);
+    }
+    .tots .grand .v{
+      font-family: var(--mono); font-weight: 600;
+      font-size: 19px; color: var(--ink);
+    }
+
+    .notes-section{ margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--s100); }
+    .sec-label{
+      font-family: var(--disp); font-size: 10px;
+      font-weight: 600; text-transform: uppercase;
+      letter-spacing: .08em; color: var(--s400); margin-bottom: 5px;
+    }
+    .notes-body{ font-size: 11.5px; color: var(--s500); line-height: 1.65; white-space: pre-wrap; }
+
+    .terms{ margin-top: 22px; padding-top: 4px; }
+    .terms .box{
+      border: 1px solid var(--s200);
+      border-left: 3px solid var(--amber);
+      padding: 10px 14px;
+      font-size: 11px; color: var(--s500); line-height: 1.6;
+    }
+    .terms .box b{ color: var(--ink); font-weight: 600; }
+
+    .doc-foot{
+      display: flex; justify-content: space-between; align-items: center;
+      margin-top: 18px; padding-top: 12px;
+      border-top: 1px solid var(--s200);
+      font-family: var(--mono); font-size: 9.5px;
+      color: var(--s400); letter-spacing: .04em; text-transform: uppercase;
+    }
+    .doc-foot .mid{ text-align: center; }
+    .doc-foot .rt { text-align: right; }
+    .page-shell .doc-footer{ display: none; }
+
+    @page { size: letter portrait; margin: 0; }
+    @media print{
+      body{ background: #fff; }
+      .page-shell{ width: auto; min-height: auto; margin: 0; box-shadow: none; padding: 0.7in 0.75in 0.65in; }
+      .controls{ display: none !important; }
+    }
+  </style>
 </head>
 <body>
 
-{% include "documents/_controls.html" %}
+<div class="controls">
+  <button class="btn btn-primary" onclick="window.print()">&#128438; Print / Save PDF</button>
+  <button class="btn btn-secondary" onclick="window.close()">&#x2715; Close</button>
+</div>
 
 <div class="page-shell">
 
-  {# ── Watermark: DRAFT or CANCELLED ────────────────────────────────────── #}
   {% if po.status == 'draft' %}
-  <div class="doc-watermark"><span class="watermark-badge wm-draft">Draft</span></div>
+  <div class="void-banner"><span class="void-badge">Draft</span></div>
   {% elif po.status == 'cancelled' %}
-  <div class="doc-watermark"><span class="watermark-badge wm-void">Cancelled</span></div>
+  <div class="void-banner"><span class="void-badge">Cancelled</span></div>
   {% endif %}
 
-  {# ── Header ──────────────────────────────────────────────────────────── #}
+  {# ── Header ────────────────────────────────────────────────────────────── #}
   <div class="doc-header">
     {% include "documents/_company_header.html" %}
     <div class="doc-right">
-      <div class="doc-label">Purchase Order</div>
-      <div class="doc-number">{{ po.po_number }}</div>
-      <div class="doc-dates">
-        {% if po.ordered_at %}
-          <strong>Ordered:</strong> {{ po.ordered_at.strftime('%B %d, %Y') }}<br>
+      <div class="doc-title">Purchase Order</div>
+      <div class="doc-meta">
+        <span class="po-no">{{ po.po_number }}</span>
+        {% if po.ordered_at %}<strong>Ordered:</strong> {{ po.ordered_at.strftime('%m/%d/%Y') }}{% else %}<strong>Date:</strong> {{ po.created_at.strftime('%m/%d/%Y') }}{% endif %}<br>
+        {% if po.expected_at %}<strong>Expected:</strong> {{ po.expected_at.strftime('%m/%d/%Y') }}<br>{% endif %}
+        {% if po.vendor and po.vendor.payment_terms %}<strong>Terms:</strong> {{ po.vendor.payment_terms | upper }}{% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# ── Three-column meta row: From / Vendor / Terms-Reference ───────────── #}
+  <div class="meta-row">
+
+    <div>
+      <div class="meta-lab">Bill To</div>
+      <div class="meta-val">
+        <b>{{ (bill_to.name if bill_to and bill_to.name else company.name) or 'JAKS Parts' }}</b><br>
+        {% for l in (bill_to.lines if bill_to else []) %}{{ l }}<br>{% endfor %}
+        {% if company.phone %}<span class="meta-mono">{{ company.phone }}</span>{% if company.email %}<br>{% endif %}{% endif %}
+        {% if company.email %}<span class="meta-mono">{{ company.email }}</span>{% endif %}
+      </div>
+    </div>
+
+    <div>
+      <div class="meta-lab">Vendor</div>
+      <div class="meta-val">
+        <b>{{ po.vendor.name if po.vendor else '—' }}</b>
+        {% if vendor_addr_lines %}
+          <br>{% for ln in vendor_addr_lines %}{{ ln }}{% if not loop.last %}<br>{% endif %}{% endfor %}
+        {% endif %}
+        {# phone is already the trailing line in vendor_addr_lines above — see
+           FULL_ERP_REVIEW_2026-07-04 (printed docs showed it twice). #}
+        {% if po.vendor and po.vendor.account_number %}<br><span class="ref-key">Acct</span><span class="meta-mono">{{ po.vendor.account_number }}</span>{% endif %}
+      </div>
+    </div>
+
+    <div>
+      <div class="meta-lab">{% if ship_to and ship_to.is_drop_ship %}Drop Ship To{% else %}Ship To{% endif %}</div>
+      <div class="meta-val">
+        {% if po.vendor_confirmation_number %}<span class="ref-key">Confirm</span><span class="meta-mono">{{ po.vendor_confirmation_number }}</span><br>{% endif %}
+        {% if ship_to %}
+          <b>{{ ship_to.name or '—' }}</b>
+          {% for ln in ship_to.lines %}<br>{{ ln }}{% endfor %}
         {% else %}
-          <strong>Date:</strong> {{ po.created_at.strftime('%B %d, %Y') }}<br>
+          <b>{{ company.name or "JAKS Parts" }}</b>
         {% endif %}
-        {% if po.expected_at %}
-          <strong>Expected:</strong> {{ po.expected_at.strftime('%B %d, %Y') }}<br>
-        {% endif %}
-        {% if po.vendor and po.vendor.payment_terms %}
-          <strong>Terms:</strong> {{ po.vendor.payment_terms | upper }}<br>
-        {% endif %}
-        {% with status_class=po.status, status_label=(po.status|upper|replace('_', ' ')) %}
-          {% include "documents/_status_pill.html" %}
-        {% endwith %}
       </div>
     </div>
-  </div>
-
-  {# ── Vendor + Ship-To (or drop-ship) + Reference fields ───────────────── #}
-  <div class="party-row">
-
-    {# Vendor #}
-    {% with party_label="Vendor",
-            party_name=(po.vendor.name if po.vendor else "—"),
-            party_lines=vendor_addr_lines,
-            party_contact=None,
-            party_anonymous=False %}
-      {% include "documents/_party_block.html" %}
-    {% endwith %}
-
-    {# Ship To (drop-ship target or JAKS warehouse) #}
-    {% if po.is_drop_ship and dropship_addr_lines %}
-      {% with party_label="Ship To (Drop Ship)",
-              party_name=(dropship_customer.company_name if dropship_customer else "Drop Ship"),
-              party_lines=dropship_addr_lines,
-              party_contact=None,
-              party_anonymous=False %}
-        {% include "documents/_party_block.html" %}
-      {% endwith %}
-    {% else %}
-      {% with party_label="Ship To",
-              party_name=(company.name or "JAKS Parts"),
-              party_lines=company_addr_lines,
-              party_contact=None,
-              party_anonymous=False %}
-        {% include "documents/_party_block.html" %}
-      {% endwith %}
-    {% endif %}
 
   </div>
 
-  {# ── Reference Block ─────────────────────────────────────────────────── #}
-  {% if po.vendor_confirmation_number or po.is_drop_ship %}
-  <div style="margin-bottom:18px;">
-    <div class="party-label">Reference</div>
-    <div class="ref-block">
-      {% if po.vendor_confirmation_number %}
-      <div class="ref-row">
-        <span class="ref-label">Vendor Confirm #</span>
-        <span class="ref-val">{{ po.vendor_confirmation_number }}</span>
-      </div>
-      {% endif %}
-      {% if po.is_drop_ship %}
-      <div class="ref-row">
-        <span class="ref-label">Order Type</span>
-        <span class="ref-val">Drop Ship</span>
-      </div>
-      {% endif %}
-      {% if po.vendor and po.vendor.account_number %}
-      <div class="ref-row">
-        <span class="ref-label">Account #</span>
-        <span class="ref-val">{{ po.vendor.account_number }}</span>
-      </div>
-      {% endif %}
-    </div>
-  </div>
-  {% endif %}
-
-  {# ── Line items ──────────────────────────────────────────────────────── #}
+  {# ── Line items — vendor part # prominent ─────────────────────────────── #}
   <table class="lines">
     <thead>
       <tr>
-        <th class="ctr" style="width:28px">#</th>
-        <th class="lft" style="width:120px">Part #</th>
-        <th class="lft">Description</th>
-        <th class="rgt" style="width:48px">Qty</th>
-        <th class="rgt" style="width:90px">Unit Cost</th>
-        <th class="rgt" style="width:90px">Extended</th>
+        <th class="c" style="width:26px">#</th>
+        <th style="width:140px">Vendor Part</th>
+        <th>Description</th>
+        <th class="r" style="width:48px">Qty</th>
+        <th class="r" style="width:80px">Unit</th>
+        <th class="r" style="width:88px">Ext</th>
       </tr>
     </thead>
     <tbody>
       {%- set ns = namespace(row=0) -%}
       {% for line in po.lines %}
         {%- if line.qty_cancelled and line.qty_cancelled >= line.qty_ordered -%}
-          {# skip fully cancelled lines on the customer-facing print #}
+          {# skip fully cancelled lines #}
         {%- else -%}
           {%- set ns.row = ns.row + 1 -%}
-          <tr{% if ns.row % 2 == 0 %} class="even-row"{% endif %}>
+          {%- set vendor_pn = (line.vendor_part_number if line.vendor_part_number is defined and line.vendor_part_number else None) -%}
+          {%- if not vendor_pn and line.product and line.product.preferred_vendor_source -%}
+            {%- set vendor_pn = line.product.preferred_vendor_source.vendor_part_number -%}
+          {%- endif -%}
+          <tr>
             <td class="td-num">{{ ns.row }}</td>
             <td>
-              <span style="font-family:monospace;font-size:9pt;color:#374151;">
-                {{ (line.product.sku if line.product and line.product.sku else "—") }}
-              </span>
+              <div class="pn">{{ vendor_pn or (line.product.sku if line.product and line.product.sku else "—") }}</div>
+              {% if line.product and line.product.sku and vendor_pn %}
+                <span class="alt-pn"><span class="lbl">Our SKU</span>{{ line.product.sku }}</span>
+              {% endif %}
             </td>
             <td>
-              {{ line.description or (line.product.title if line.product else "—") }}
+              <div class="ds" style="color:var(--s700)">{{ line.description or (line.product.title if line.product else "—") }}</div>
               {% if line.notes %}
-              <span style="display:block;font-size:8pt;color:#666;margin-top:2px;">
-                {{ line.notes }}
-              </span>
+                <div class="ds">{{ line.notes }}</div>
               {% endif %}
               {% if line.qty_cancelled %}
-              <span class="badge badge-bo" style="margin-top:2px;">
-                {{ line.qty_cancelled }} cancelled
-              </span>
+                <div class="cancel-tag">{{ line.qty_cancelled }} cancelled</div>
               {% endif %}
             </td>
-            <td class="td-rgt">{{ line.qty_ordered }}</td>
-            <td class="td-rgt">${{ "%.2f"|format(line.unit_cost) }}</td>
-            <td class="td-total">${{ "%.2f"|format(line.line_total) }}</td>
+            <td class="r money">{{ line.qty_ordered }}</td>
+            <td class="r money">${{ "{:,.2f}".format(line.unit_cost) }}</td>
+            <td class="td-total"><b>${{ "{:,.2f}".format(line.line_total) }}</b></td>
           </tr>
         {%- endif -%}
       {% else %}
-        <tr><td colspan="6" class="td-empty">No line items.</td></tr>
+        <tr>
+          <td colspan="6" style="text-align:center;padding:18px;color:var(--s300);font-style:italic">
+            No line items.
+          </td>
+        </tr>
       {% endfor %}
     </tbody>
   </table>
 
-  {# ── Totals ─────────────────────────────────────────────────────────── #}
-  <div class="totals-wrap">
-    <div class="totals-inner">
-      <div class="t-row">
+  {# ── Totals ───────────────────────────────────────────────────────────── #}
+  <div class="tot-wrap">
+    <div class="tots">
+      {% if vol_applied %}
+      {# Volume-discount waterfall — po.subtotal already nets the discount, so the
+         Subtotal line below is the discounted figure. #}
+      <div class="row">
+        <span class="lbl">List Subtotal</span>
+        <span class="val">${{ "{:,.2f}".format(vol_list_subtotal) }}</span>
+      </div>
+      <div class="row">
+        <span class="lbl">Volume Discount ({{ '%g'|format(po.volume_discount_pct) }}%)</span>
+        <span class="val">−${{ "{:,.2f}".format(vol_savings) }}</span>
+      </div>
+      {% endif %}
+      <div class="row">
         <span class="lbl">Subtotal</span>
-        <span class="val">${{ "%.2f"|format(po.subtotal) }}</span>
+        <span class="val">${{ "{:,.2f}".format(po.subtotal) }}</span>
       </div>
       {% if po.core_total and po.core_total > 0 %}
-      <div class="t-row">
+      <div class="row">
         <span class="lbl">Core Charges</span>
-        <span class="val">${{ "%.2f"|format(po.core_total) }}</span>
+        <span class="val">${{ "{:,.2f}".format(po.core_total) }}</span>
       </div>
       {% endif %}
       {% if po.freight_in_cost and po.freight_in_cost > 0 %}
-      <div class="t-row">
+      <div class="row">
         <span class="lbl">Freight</span>
-        <span class="val">${{ "%.2f"|format(po.freight_in_cost) }}</span>
+        <span class="val">${{ "{:,.2f}".format(po.freight_in_cost) }}</span>
       </div>
       {% endif %}
-      <div class="t-row grand">
-        <span class="lbl">Total</span>
-        <span class="val">${{ "%.2f"|format(po.total) }}</span>
+      <div class="grand">
+        <span class="l">PO Total</span>
+        <span class="v">${{ "{:,.2f}".format(po.total) }}</span>
       </div>
     </div>
   </div>
 
-  {# ── Notes ─────────────────────────────────────────────────────────── #}
+  {# ── Notes ────────────────────────────────────────────────────────────── #}
   {% if po.notes and po.notes.strip() %}
   <div class="notes-section">
     <div class="sec-label">Notes</div>
@@ -188,17 +359,49 @@
   </div>
   {% endif %}
 
-  {# ── Drop ship instruction callout ────────────────────────────────── #}
-  {% if po.is_drop_ship %}
-  <div class="callout callout-blue">
-    <strong>Drop Ship:</strong> Please ship the items above directly to the
-    Ship-To address. Do not include any JAKS pricing or markup on the packing
-    slip. Include only this PO number on your paperwork.
+  {# ── Terms / instructions ────────────────────────────────────────────── #}
+  {% if company.terms_text %}
+  <div class="terms">
+    <div class="box">
+      <b>Terms &amp; Conditions:</b> {{ company.terms_text }}
+    </div>
+  </div>
+  {% elif po.is_drop_ship %}
+  <div class="terms">
+    <div class="box">
+      <b>Drop Ship:</b> Please ship the items above directly to the Ship-To
+      address. Do <b>not</b> include any JAKS pricing or markup on the packing
+      slip. Reference only <b>{{ po.po_number }}</b> on your paperwork.
+    </div>
+  </div>
+  {% else %}
+  <div class="terms">
+    <div class="box">
+      <b>Please confirm</b> receipt of this PO and provide expected ship date.
+      Reference <b>{{ po.po_number }}</b> on all packing slips and invoices.
+      Notify us immediately of any backorders or substitutions.
+    </div>
   </div>
   {% endif %}
 
   {% set footer_message = "Thank you for filling this order" %}
   {% include "documents/_footer.html" %}
+
+  {# ── Axle three-cell mono footer (§7) ────────────────────────────────── #}
+  <div class="doc-foot">
+    <span>
+      <svg viewBox="0 0 64 64" width="11" height="11" style="vertical-align:-1px;margin-right:5px"
+           fill="none" stroke="#7c838b" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="32" cy="32" r="28"></circle>
+        <circle cx="32" cy="32" r="17" stroke-width="3"></circle>
+        <circle cx="32" cy="32" r="6.5" fill="#7c838b" stroke="none"></circle>
+        <rect x="30" y="20" width="4" height="6" rx="1" fill="#7c838b" stroke="none"></rect>
+      </svg>
+      Axle &middot; Parts Counter System
+    </span>
+    <span class="mid">{{ po.po_number }} &middot; {{ po.created_at.strftime('%m/%d/%Y') }}</span>
+    <span class="rt">{% if company.email %}{{ company.email }}{% elif company.phone %}{{ company.phone }}{% elif company.name %}{{ company.name }}{% endif %}</span>
+  </div>
 
 </div>{# /page-shell #}
 

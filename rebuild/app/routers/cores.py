@@ -19,14 +19,21 @@ from urllib.parse import quote as url_quote
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from datetime import timedelta
 
-from app.constants import CoreDirection, CoreDenialResolution, CoreInspectionOutcome, CoreStatus, CoreVendorStatus
+from app.constants import (
+    CoreDirection, CoreDenialResolution, CoreInspectionOutcome, CoreStatus,
+    CoreVendorStatus, VCRStatus,
+)
 from app.deps import get_current_user_id, get_db
 from app.models.core import CoreCharge, CoreSlip, VendorCoreReturn
 from app.models.invoice import Invoice
+from app.models.vendor import Vendor
+from app.services.core_metrics_service import CoreMetricsService
+from app.services.core_service import VCR_OPEN_STATUSES
 from app.services.document_render import (
     customer_address_lines,
     get_company_dict,
@@ -46,13 +53,22 @@ templates = Jinja2Templates(
 # ── List ──────────────────────────────────────────────────────────────────────
 
 @router.get("/", response_class=HTMLResponse)
-def cores_list(request: Request, db: Session = Depends(get_db)):
-    # Customer cores awaiting return (OPEN or PARTIAL)
+def cores_list(request: Request, q: str = "", db: Session = Depends(get_db)):
+    # Customer cores awaiting return (OPEN or PARTIAL).
+    # C4 — exclude cores already physically received and placed on inspection
+    # HOLD: a PARTIAL+HOLD core has a return event pending inspection, so it
+    # belongs ONLY in the pending_inspection queue below. Without this filter it
+    # appeared in BOTH stages with two live action buttons → a single returned
+    # core could be credited twice. NULL outcome (not yet inspected) stays here.
     awaiting_return = (
         db.query(CoreCharge)
         .filter(
             CoreCharge.direction == CoreDirection.CUSTOMER_OWES_RETURN,
             CoreCharge.status.in_([CoreStatus.OPEN, CoreStatus.PARTIAL]),
+            or_(
+                CoreCharge.inspection_outcome.is_(None),
+                CoreCharge.inspection_outcome != CoreInspectionOutcome.HOLD,
+            ),
         )
         .order_by(CoreCharge.return_deadline)
         .all()
@@ -92,16 +108,78 @@ def cores_list(request: Request, db: Session = Depends(get_db)):
         .all()
     )
 
+    # ── R2: open VCR batches (draft → shipped → review/disputed) ─────────────
+    open_vcrs = (
+        db.query(VendorCoreReturn)
+        .filter(VendorCoreReturn.status.in_(VCR_OPEN_STATUSES))
+        .order_by(VendorCoreReturn.created_at.desc())
+        .all()
+    )
+    open_vcr_ids = {v.id for v in open_vcrs}
+    # Cores already on an open VCR are managed from the Open VCRs card —
+    # drop them from the ready-to-ship checklist (draft batches) and from the
+    # single-core vendor-decision stage (shipped batches) so the same core
+    # can't be handled on two surfaces at once.
+    pending_vendor_ship = [c for c in pending_vendor_ship if c.vcr_id not in open_vcr_ids]
+    awaiting_vendor = [c for c in awaiting_vendor if c.vcr_id not in open_vcr_ids]
+
+    vendors = db.query(Vendor).filter(Vendor.is_active == True).order_by(Vendor.name).all()  # noqa: E712
+    vendor_by_id = {v.id: v for v in vendors}
+    vcr_rows = [
+        {
+            "vcr": v,
+            "vendor": vendor_by_id.get(v.vendor_id)
+            or db.query(Vendor).filter(Vendor.id == v.vendor_id).first(),
+            "cores": list(v.core_charges),
+        }
+        for v in open_vcrs
+    ]
+
+    # ── Assemble the QB2 board: one row per open core, tagged with its stage ──
+    # (Queue-route assembly is UI-builder scope per the §6 queue-board precedent.)
+    def _match(c):
+        if not q:
+            return True
+        ql = q.lower()
+        cust = (c.customer.company_name if c.customer else "") or ""
+        sku = (c.product.sku if c.product else "") or ""
+        return ql in cust.lower() or ql in sku.lower()
+
+    rows = []
+    for stage, items in (
+        ("awaiting_return", awaiting_return),
+        ("pending_inspection", pending_inspection),
+        ("ready_to_ship", pending_vendor_ship),
+        ("awaiting_vendor", awaiting_vendor),
+    ):
+        for c in items:
+            if _match(c):
+                rows.append({
+                    "core": c,
+                    "stage": stage,
+                    "overdue": stage == "awaiting_return" and bool(getattr(c, "is_overdue", False)),
+                })
+
+    # §5.4 Core Dashboard metrics — full DB state (independent of the search
+    # filter). CoreMetricsService reproduces these count tiles AND adds the dollar
+    # figures (outstanding_core_liability, core_credits_issued, vendor_recoveries,
+    # aging_value) for the dashboard strip.
+    metrics = CoreMetricsService(db).dashboard_metrics()
+
     return templates.TemplateResponse(
+        request,
         "cores/list.html",
         {
-            "request": request,
-            "awaiting_return": awaiting_return,
-            "pending_inspection": pending_inspection,
-            "pending_vendor_ship": pending_vendor_ship,
-            "awaiting_vendor": awaiting_vendor,
+            "rows": rows,
+            "metrics": metrics,
+            "total": len(rows),
+            "q": q,
+            "vendors": vendors,
+            "vcr_rows": vcr_rows,
             "CoreDenialResolution": CoreDenialResolution,
             "CoreInspectionOutcome": CoreInspectionOutcome,
+            "CoreVendorStatus": CoreVendorStatus,
+            "VCRStatus": VCRStatus,
         },
     )
 
@@ -147,38 +225,92 @@ async def record_return(
             f"/cores/?error={url_quote('Unexpected error — core return was not recorded.')}",
             status_code=303,
         )
-    # For HOLD or REJECTED outcomes — no credit slip, redirect straight to list
+    # When recorded from the invoice's After-Sale card, the form posts via HTMX with
+    # a `from_invoice` flag: we update that core row IN PLACE (so the invoice stays
+    # open) and pop the slip in a NEW window via an HX-Trigger, instead of navigating
+    # away. The plain cores/list.html flow sends no flag → unchanged redirect.
+    from_invoice = str(form.get("from_invoice") or "").strip()
+    core_obj = db.query(CoreCharge).filter(CoreCharge.id == core_id).first()
+
+    def _inv_fragment(message: str, tone: str, slip_url: str | None = None,
+                      reload_balance: bool = False):
+        """Swap the `#core-item-{id}` row to an inline confirmation; optionally
+        trigger opening the core slip in a new window."""
+        import html as _html
+        import json as _json
+        sku = _html.escape(core_obj.product.sku if (core_obj and core_obj.product) else "")
+        tone_cls = {
+            "green": "border-green-200 bg-green-50/50",
+            "amber": "border-amber-200 bg-amber-50/50",
+            "gray": "border-gray-200 bg-gray-50",
+        }.get(tone, "border-green-200 bg-green-50/50")
+        slip_link = (
+            f'<a href="{slip_url}" target="_blank" rel="noopener" '
+            'class="shrink-0 text-xs font-semibold text-brand-700 underline whitespace-nowrap">Print slip ↗</a>'
+            if slip_url else ""
+        )
+        body = (
+            f'<div id="core-item-{core_id}" class="rounded-lg border px-4 py-3 {tone_cls}">'
+            '<div class="flex items-center justify-between gap-3">'
+            f'<div class="min-w-0"><span class="font-mono text-sm font-bold text-brand-700">{sku}</span>'
+            f'<span class="ml-2 text-xs font-semibold text-gray-700">{_html.escape(message)}</span></div>'
+            f'{slip_link}</div></div>'
+        )
+        trigger: dict = {}
+        if slip_url:
+            trigger["openCoreSlip"] = {"url": slip_url}
+        # When the credit lands on this invoice, tell the workspace to refresh
+        # so Balance Due / totals / the payment dialog reflect the new figure.
+        if reload_balance:
+            trigger["invoiceBalanceChanged"] = True
+        headers = {}
+        if trigger:
+            headers["HX-Trigger"] = _json.dumps(trigger)
+        return HTMLResponse(body, headers=headers)
+
+    # For HOLD or REJECTED outcomes — no credit slip.
     if inspection_outcome == CoreInspectionOutcome.REJECTED:
+        if from_invoice:
+            return _inv_fragment("Core refused — charge closed, no credit.", "gray")
         return RedirectResponse(
             f"/cores/?ok={url_quote('Core refused — charge closed, no credit issued.')}",
             status_code=303,
         )
     if inspection_outcome == CoreInspectionOutcome.HOLD:
+        if from_invoice:
+            return _inv_fragment("Received — held for inspection; credit deferred.", "amber")
         return RedirectResponse(
             f"/cores/?ok={url_quote('Core received and held for inspection. Credit will be issued after review.')}",
             status_code=303,
         )
 
-    # ACCEPTED — create a core slip and redirect to its print page.
+    # ACCEPTED — create (or reuse) a core slip.
     # Idempotent: if a slip was already created for this charge (e.g. a prior partial
     # return already ran this path), reuse it rather than minting a duplicate.
     try:
         from app.services.core_service import CoreService as _CS
-        core_obj = db.query(CoreCharge).filter(CoreCharge.id == core_id).first()
         if core_obj and core_obj.core_slip_id:
-            return RedirectResponse(
-                f"/cores/{core_id}/slip-print?slip_id={core_obj.core_slip_id}",
-                status_code=303,
-            )
-        slip = _CS(db, user_id).create_core_slip(core_id)
-        return RedirectResponse(f"/cores/{core_id}/slip-print?slip_id={slip.id}", status_code=303)
+            slip_url = f"/cores/{core_id}/slip-print?slip_id={core_obj.core_slip_id}"
+        else:
+            slip = _CS(db, user_id).create_core_slip(core_id)
+            slip_url = f"/cores/{core_id}/slip-print?slip_id={slip.id}"
     except Exception:
         db.rollback()
         log.exception("Could not create core slip for core_charge %s", core_id)
+        if from_invoice:
+            return _inv_fragment("Return recorded — account credit applied.", "green",
+                                 reload_balance=True)
         return RedirectResponse(
             f"/cores/?ok={url_quote('Core return recorded — account credit applied.')}",
             status_code=303,
         )
+
+    if from_invoice:
+        credit = (getattr(core_obj, "customer_unit_charge", 0) or 0) * qty
+        return _inv_fragment(
+            f"Returned — ${credit:.2f} credit applied. Refreshing balance…",
+            "green", slip_url=slip_url, reload_balance=True)
+    return RedirectResponse(slip_url, status_code=303)
 
 
 # ── Complete Inspection (resolve a HOLD) ──────────────────────────────────────
@@ -255,17 +387,22 @@ async def submit_to_vendor(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    """Mark that JAKS has physically shipped the core back to the vendor."""
+    """Mark that JAKS has physically shipped the core back to the vendor.
+
+    §23.3 Phase 3 — creates + ships a one-core VCR so single-core shipments
+    land on the same vendor-return ledger as batches (expected credit,
+    reconciliation, dispute trail), then opens the VCR box document.
+    """
     from app.services.core_service import CoreService
 
     form = await request.form()
     tracking = str(form.get("tracking_number", "")).strip() or None
     try:
-        CoreService(db, user_id).submit_to_vendor(
+        vcr = CoreService(db, user_id).submit_single_core_to_vendor(
             core_charge_id=core_id,
             tracking_number=tracking,
         )
-    except ValueError as exc:
+    except (ValueError, PermissionError) as exc:
         db.rollback()
         return RedirectResponse(f"/cores/?error={url_quote(str(exc))}", status_code=303)
     except Exception:
@@ -275,7 +412,7 @@ async def submit_to_vendor(
             f"/cores/?error={url_quote('Unexpected error — core was not submitted to vendor.')}",
             status_code=303,
         )
-    return RedirectResponse(f"/cores/{core_id}/vendor-slip-print", status_code=303)
+    return RedirectResponse(f"/cores/vcr/{vcr.id}/print", status_code=303)
 
 
 # ── Vendor Accepted ───────────────────────────────────────────────────────────
@@ -387,6 +524,118 @@ async def vendor_credit_difference(
     return RedirectResponse(f"/cores/?ok={url_quote('Vendor credit difference recorded.')}", status_code=303)
 
 
+# ── Vendor Core Return batches (R2) ───────────────────────────────────────────
+
+@router.post("/vcr/create", response_class=RedirectResponse)
+async def vcr_create(
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Batch the checked ready-to-ship cores into one VCR for the vendor."""
+    from app.services.core_service import CoreService
+
+    form = await request.form()
+    try:
+        vendor_id = int(form.get("vendor_id") or 0)
+        core_ids = [int(i) for i in form.getlist("core_ids")]
+        notes = str(form.get("notes", "")).strip()
+        vcr = CoreService(db, user_id).create_vcr(
+            vendor_id=vendor_id,
+            core_charge_ids=core_ids,
+            notes=notes,
+        )
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        return RedirectResponse(f"/cores/?error={url_quote(str(exc))}", status_code=303)
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error creating VCR for vendor %s", form.get("vendor_id"))
+        return RedirectResponse(
+            f"/cores/?error={url_quote('Unexpected error — the VCR was not created.')}",
+            status_code=303,
+        )
+    n = len(vcr.core_charges)
+    return RedirectResponse(
+        f"/cores/?ok={url_quote(f'{vcr.vcr_number} created — {n} core(s) batched, expected credit ${vcr.expected_credit:.2f}.')}",
+        status_code=303,
+    )
+
+
+@router.post("/vcr/{vcr_id}/ship", response_class=RedirectResponse)
+async def vcr_ship(
+    vcr_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Mark the whole VCR batch as shipped — opens the print doc for the box."""
+    from app.services.core_service import CoreService
+
+    form = await request.form()
+    try:
+        CoreService(db, user_id).ship_vcr(
+            vcr_id=vcr_id,
+            tracking_number=str(form.get("tracking_number", "")).strip(),
+            rma_number=str(form.get("rma_number", "")).strip(),
+        )
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        return RedirectResponse(f"/cores/?error={url_quote(str(exc))}", status_code=303)
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error shipping VCR %s", vcr_id)
+        return RedirectResponse(
+            f"/cores/?error={url_quote('Unexpected error — the VCR was not marked shipped.')}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/cores/vcr/{vcr_id}/print", status_code=303)
+
+
+@router.post("/vcr/{vcr_id}/vendor-decision", response_class=RedirectResponse)
+async def vcr_vendor_decision(
+    vcr_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """
+    Record the vendor's decision on a shipped batch: unchecked cores are
+    accepted (vendor credit each), checked cores are denied with one shared
+    reason/resolution (per-core money flows reuse the single-core service paths).
+    """
+    from app.services.core_service import CoreService
+
+    form = await request.form()
+    try:
+        actual_credit = float(form.get("actual_credit") or 0)
+        denied_ids = [int(i) for i in form.getlist("denied_core_ids")]
+        vcr = CoreService(db, user_id).record_vcr_vendor_decision(
+            vcr_id=vcr_id,
+            actual_credit=actual_credit,
+            denied_core_ids=denied_ids,
+            denial_reason=str(form.get("denial_reason", "")).strip(),
+            denial_resolution=str(
+                form.get("resolution", CoreDenialResolution.ABSORBED_BY_JAKS)
+            ).strip(),
+            notes=str(form.get("notes", "")).strip(),
+        )
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        return RedirectResponse(f"/cores/?error={url_quote(str(exc))}", status_code=303)
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error recording vendor decision for VCR %s", vcr_id)
+        return RedirectResponse(
+            f"/cores/?error={url_quote('Unexpected error — the vendor decision was not recorded.')}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        f"/cores/?ok={url_quote(f'{vcr.vcr_number} settled — vendor credit ${vcr.actual_credit:.2f} recorded.')}",
+        status_code=303,
+    )
+
+
 # ── Core Slip Print (customer receipt when core returned) ─────────────────────
 
 @router.get("/{core_id}/slip-print", response_class=HTMLResponse)
@@ -418,8 +667,7 @@ def core_slip_print(
         "email":   get_setting_value_db(db, "company_email",   ""),
     }
 
-    return templates.TemplateResponse("cores/slip_print.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "cores/slip_print.html", {
         "core": core,
         "slip": slip,
         "company": company,
@@ -450,8 +698,7 @@ def core_vendor_slip_print(
         "email":   get_setting_value_db(db, "company_email",   ""),
     }
 
-    return templates.TemplateResponse("cores/vendor_slip_print.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "cores/vendor_slip_print.html", {
         "core": core,
         "company": company,
     })
@@ -502,8 +749,7 @@ def core_slip_doc_print(slip_id: int, request: Request, db: Session = Depends(ge
     if slip is None:
         return RedirectResponse("/cores/", status_code=303)
     ctx = _slip_print_context(slip, db)
-    ctx["request"] = request
-    return templates.TemplateResponse("cores/print_slip.html", ctx)
+    return templates.TemplateResponse(request, "cores/print_slip.html", ctx)
 
 
 @router.get("/slips/{slip_id}/pdf")
@@ -524,7 +770,21 @@ def core_slip_doc_pdf(slip_id: int, request: Request, db: Session = Depends(get_
 
 # ── Vendor Core Return Sheet (VCR-XXXX) — group document ──────────────────────
 
-def _vcr_print_context(vcr: VendorCoreReturn, db: Session) -> dict:
+def _vcr_copies(copies: str) -> list[dict]:
+    """Which document copies the VCR print job renders.
+
+    Default (any value other than 'both'/'office') = a single vendor-facing copy
+    with no label — preserves the original /cores/vcr/{id}/print output. 'both'
+    renders a Vendor Copy + an Office Copy (one to ship, one for our records).
+    """
+    if copies == "both":
+        return [{"label": "Vendor Copy"}, {"label": "Office Copy"}]
+    if copies == "office":
+        return [{"label": "Office Copy"}]
+    return [{"label": None}]
+
+
+def _vcr_print_context(vcr: VendorCoreReturn, db: Session, copies: str = "") -> dict:
     company = get_company_dict(db)
 
     company_addr_lines = [
@@ -546,25 +806,27 @@ def _vcr_print_context(vcr: VendorCoreReturn, db: Session) -> dict:
         "company_addr_lines": company_addr_lines,
         "vendor_addr_lines": vendor_addr_lines_,
         "total_qty": total_qty,
+        "copies": _vcr_copies(copies),
     }
 
 
 @router.get("/vcr/{vcr_id}/print", response_class=HTMLResponse)
-def vcr_doc_print(vcr_id: int, request: Request, db: Session = Depends(get_db)):
+def vcr_doc_print(vcr_id: int, request: Request, copies: str = "",
+                  db: Session = Depends(get_db)):
     vcr = db.query(VendorCoreReturn).filter(VendorCoreReturn.id == vcr_id).first()
     if vcr is None:
         return RedirectResponse("/cores/", status_code=303)
-    ctx = _vcr_print_context(vcr, db)
-    ctx["request"] = request
-    return templates.TemplateResponse("cores/print_vcr.html", ctx)
+    ctx = _vcr_print_context(vcr, db, copies)
+    return templates.TemplateResponse(request, "cores/print_vcr.html", ctx)
 
 
 @router.get("/vcr/{vcr_id}/pdf")
-def vcr_doc_pdf(vcr_id: int, request: Request, db: Session = Depends(get_db)):
+def vcr_doc_pdf(vcr_id: int, request: Request, copies: str = "",
+                db: Session = Depends(get_db)):
     vcr = db.query(VendorCoreReturn).filter(VendorCoreReturn.id == vcr_id).first()
     if vcr is None:
         return RedirectResponse("/cores/", status_code=303)
-    ctx = _vcr_print_context(vcr, db)
+    ctx = _vcr_print_context(vcr, db, copies)
     return render_pdf_or_fallback(
         request=request,
         templates=templates,

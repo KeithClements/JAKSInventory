@@ -1,8 +1,15 @@
 {% extends "base.html" %}
-{% block title %}Products — JAKS Inventory{% endblock %}
+{% block title %}Products — Axle{% endblock %}
 {% block heading %}Products{% endblock %}
 
 {% block header_actions %}
+  <a href="/categories/" class="btn-secondary btn-sm">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+    </svg>
+    Manage Categories
+  </a>
   <a href="/products/new" class="btn-primary btn-sm">
     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
@@ -14,63 +21,297 @@
 {% block content %}
 {# Shared operational-list primitives — §7 macro library #}
 {% from "macros/list_behavior.html" import operational_list_script %}
-{% from "macros/filter_tabs.html" import filter_tabs %}
 {% from "macros/bulk_toolbar.html" import bulk_toolbar %}
 {% from "macros/preview_dock.html" import preview_dock_shell %}
+{% from "macros/sortable.html" import sortable_th %}
 {{ operational_list_script() }}
 
 <div
   class="space-y-4 pb-52"
   x-data="operationalListData('product-preview-body', '/products/preview/', [{% for p in products %}{{ p.id }}{% if not loop.last %},{% endif %}{% endfor %}])"
+  {# #5 — F2 jumps to Add Product #}
+  @keydown.window="if ($event.key === 'F2') { $event.preventDefault(); window.location.href = '/products/new'; }"
 >
 
 {# ══════════════════════════════════════════════════════════════════════════════
-   TOOLBAR
+   §7.2 ENRICH FROM CSV — bulk catalog enrichment (cross-refs + applications).
+   Posts multipart to POST /products/enrich-sync (returns a JSON summary) and renders
+   the counts client-side via Alpine fetch — the route is JSON, not an HTML fragment.
 ══════════════════════════════════════════════════════════════════════════════ #}
-<div class="flex flex-wrap items-center gap-3">
+<div x-data="{
+       open: false, busy: false, result: null, error: null,
+       async run(e) {
+         this.busy = true; this.error = null; this.result = null;
+         try {
+           const resp = await fetch('/products/enrich-sync', { method: 'POST', body: new FormData(e.target) });
+           if (!resp.ok) { this.error = 'Enrichment failed (HTTP ' + resp.status + ').'; }
+           else { this.result = await resp.json(); }
+         } catch (err) { this.error = 'Upload error: ' + err; }
+         finally { this.busy = false; }
+       }
+     }"
+     class="rounded-xl border border-gray-200 bg-white">
+  <button type="button" @click="open = !open"
+          class="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 rounded-xl transition-colors">
+    <span class="flex items-center gap-2">
+      <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+      Enrich from CSV
+      <span class="text-xs text-gray-400 font-normal">— add cross-refs &amp; applications in bulk</span>
+    </span>
+    <svg class="w-4 h-4 text-gray-400 transition-transform" :class="open ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+  </button>
 
-  {# Status tabs — §7 Primitive 1 #}
-  {% set product_tabs = [
-    ('all',           'All',           counts.all),
-    ('low_stock',     'Low Stock',     counts.low_stock),
-    ('out_of_stock',  'Out of Stock',  counts.out_of_stock),
-    ('special_order', 'Special Order', counts.special_order),
-  ] %}
-  {{ filter_tabs(product_tabs, tab, q) }}
+  <div x-show="open" x-cloak class="px-4 pb-4 pt-1 border-t border-gray-100 space-y-3">
+    <form @submit.prevent="run($event)" class="flex flex-wrap items-center gap-3">
+      <input type="file" name="file" accept=".csv,text/csv" required
+             class="text-sm text-gray-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-brand-50 file:text-brand-700 hover:file:bg-brand-100 file:cursor-pointer" />
+      <button type="submit" :disabled="busy"
+              class="px-4 py-2 text-sm font-medium text-white bg-brand-700 hover:bg-brand-600 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+        <span x-show="!busy">Run Enrichment</span>
+        <span x-show="busy" x-cloak>Working…</span>
+      </button>
+      <span class="text-xs text-gray-400">Matches existing products by SKU — never creates products.</span>
+    </form>
 
-  {# Search #}
-  <form method="get" class="flex items-center gap-2 ml-auto">
+    <div x-show="error" x-cloak class="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700" x-text="error"></div>
+
+    <template x-if="result">
+      <div class="rounded-lg bg-green-50 border border-green-200 px-4 py-3">
+        <p class="text-sm font-semibold text-green-800 mb-2">Enrichment complete — <span x-text="result.rows"></span> row(s) processed.</p>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+          <div>
+            <p class="text-xs text-gray-500 uppercase tracking-wide">Products Matched</p>
+            <p class="text-lg font-bold text-gray-900 tabular-nums" x-text="result.matched"></p>
+          </div>
+          <div>
+            <p class="text-xs text-gray-500 uppercase tracking-wide">Cross-refs Added</p>
+            <p class="text-lg font-bold text-gray-900 tabular-nums" x-text="result.cross_refs_added"></p>
+            <p class="text-xs text-gray-400" x-show="result.cross_refs_existing"><span x-text="result.cross_refs_existing"></span> already present</p>
+          </div>
+          <div>
+            <p class="text-xs text-gray-500 uppercase tracking-wide">Applications Added</p>
+            <p class="text-lg font-bold text-gray-900 tabular-nums" x-text="result.applications_added"></p>
+            <p class="text-xs text-gray-400" x-show="result.applications_existing"><span x-text="result.applications_existing"></span> already present</p>
+          </div>
+          <div>
+            <p class="text-xs text-gray-500 uppercase tracking-wide">Rows Skipped</p>
+            <p class="text-lg font-bold text-amber-600 tabular-nums" x-text="(result.skipped_no_sku || 0) + (result.skipped_no_product || 0)"></p>
+            <p class="text-xs text-gray-400"><span x-text="result.skipped_no_sku"></span> no SKU · <span x-text="result.skipped_no_product"></span> no match</p>
+          </div>
+        </div>
+      </div>
+    </template>
+  </div>
+</div>
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   FILTER BAR — Axle §4 (parts catalog): search (flex 1) + .fchip pills
+   Filter chip choice (a): inline .fchip pills replace the filter_tabs macro here.
+   Rationale: the macro's bg-gray-100 rounded-xl p-1 / bg-brand-700 active style
+   conflicts structurally with Axle's bordered radius-14 pills (active = solid
+   steel-900). Inline is less invasive than forking the macro just for this screen.
+══════════════════════════════════════════════════════════════════════════════ #}
+{% set product_tabs = [
+  ('all',           'All',           counts.all),
+  ('in_stock',      'In Stock',      counts.in_stock),
+  ('low_stock',     'Low Stock',     counts.low_stock),
+  ('out_of_stock',  'Out of Stock',  counts.out_of_stock),
+  ('special_order', 'Special Order', counts.special_order),
+  ('needs_review',  'Needs Review',  counts.needs_review),
+  ('uncategorized', 'Uncategorized', counts.uncategorized),
+] %}
+
+{# Shared query fragments — every control below (chips / sort-by / filters /
+   sortable column headers / pagination) must preserve ALL the others, or
+   switching one silently drops another (the "hard to navigate" complaint).
+   _filters_qs = q + the 3 structured filters (never includes tab/sort/direction/page,
+   each caller supplies those itself). _sort_qs additionally carries tab, for the
+   sortable_th column headers. #}
+{% set _struct_filters_qs = ''
+   ~ (('&category_id=' ~ category_id) if category_id else '')
+   ~ (('&manufacturer=' ~ (manufacturer | urlencode)) if manufacturer else '')
+   ~ (('&brand=' ~ (brand | urlencode)) if brand else '')
+%}
+{% set _filters_qs = (('&q=' ~ (q | urlencode)) if q else '') ~ _struct_filters_qs %}
+{% set _sort_qs = ('&tab=' ~ tab) ~ _filters_qs %}
+
+<div class="flex flex-wrap items-center gap-2">
+  {# Search — flex 1 per Axle spec #}
+  <form method="get" class="flex items-center gap-2 flex-1 min-w-[260px]">
     <input type="hidden" name="tab" value="{{ tab }}" />
-    <div class="relative">
+    <input type="hidden" name="sort" value="{{ sort }}" />
+    <input type="hidden" name="direction" value="{{ direction }}" />
+    <input type="hidden" name="category_id" value="{{ category_id }}" />
+    <input type="hidden" name="manufacturer" value="{{ manufacturer }}" />
+    <input type="hidden" name="brand" value="{{ brand }}" />
+    <div class="relative flex-1">
       <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
            fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
       </svg>
-      <input name="q" value="{{ q }}" placeholder="SKU, title, manufacturer…"
-             class="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white w-64
+      <input name="q" value="{{ q }}" placeholder="Search parts… name, number, engine (C15), cross-ref"
+             class="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-md bg-white
                     focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400
                     placeholder:text-gray-400" />
     </div>
-    <button type="submit"
-            class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200
-                   rounded-lg hover:bg-gray-50 transition-colors">
-      Search
-    </button>
     {% if q %}
-    <a href="?tab={{ tab }}"
+    <a href="?tab={{ tab }}{% if sort != 'sku' %}&sort={{ sort }}{% endif %}{% if direction != 'asc' %}&direction={{ direction }}{% endif %}{{ _struct_filters_qs }}"
        class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</a>
     {% endif %}
   </form>
 
+  {# Axle filter chips (.fchip / .fchip.on) — bordered radius-14 pills, active = solid steel-900 #}
+  {% for slug, label, count in product_tabs %}
+  <a href="?tab={{ slug }}{{ _filters_qs }}{% if sort != 'sku' %}&sort={{ sort }}{% endif %}{% if direction != 'asc' %}&direction={{ direction }}{% endif %}"
+     class="fchip {% if tab == slug %}on{% endif %}">
+    {{ label }}<span class="ml-1.5 tabular-nums opacity-70">{{ count }}</span>
+  </a>
+  {% endfor %}
 </div>
+
+{# Sort row — kept compact below the fbar (not in Axle spec but the route requires it).
+   Covers Vendor/Category (not visible table columns, so no header to click); SKU/Cost/
+   Avail are also sortable directly from their column headers below. #}
+<form method="get" class="flex items-center gap-2">
+  <input type="hidden" name="tab" value="{{ tab }}" />
+  <input type="hidden" name="direction" value="{{ direction }}" />
+  <input type="hidden" name="category_id" value="{{ category_id }}" />
+  <input type="hidden" name="manufacturer" value="{{ manufacturer }}" />
+  <input type="hidden" name="brand" value="{{ brand }}" />
+  {% if q %}<input type="hidden" name="q" value="{{ q }}" />{% endif %}
+  <label for="product-sort" class="label-mini">Sort by</label>
+  <select id="product-sort" name="sort" onchange="this.form.submit()"
+          class="py-1.5 pl-3 pr-8 text-xs border border-gray-200 rounded-md bg-white cursor-pointer
+                 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400">
+    <option value="sku"      {% if sort == 'sku' %}selected{% endif %}>SKU</option>
+    <option value="cost"     {% if sort == 'cost' %}selected{% endif %}>Cost</option>
+    <option value="avail"    {% if sort == 'avail' %}selected{% endif %}>Avail</option>
+    <option value="vendor"   {% if sort == 'vendor' %}selected{% endif %}>Vendor</option>
+    <option value="category" {% if sort == 'category' %}selected{% endif %}>Category</option>
+  </select>
+</form>
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   §18 FILTERS — Category (incl. subcategory/family) · Manufacturer · Brand
+══════════════════════════════════════════════════════════════════════════════ #}
+<form method="get" class="flex flex-wrap items-center gap-2">
+  <input type="hidden" name="tab" value="{{ tab }}" />
+  <input type="hidden" name="sort" value="{{ sort }}" />
+  <input type="hidden" name="direction" value="{{ direction }}" />
+  {% if q %}<input type="hidden" name="q" value="{{ q }}" />{% endif %}
+  <span class="text-xs font-medium text-gray-500">Filter</span>
+  <select name="category_id" onchange="this.form.submit()"
+          class="py-2 pl-3 pr-8 text-sm border border-gray-200 rounded-lg bg-white cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400">
+    <option value="0">All categories</option>
+    {% for c in filter_categories %}
+    <option value="{{ c.id }}" {% if category_id == c.id %}selected{% endif %}>{{ c.full_path }}</option>
+    {% endfor %}
+  </select>
+  <select name="manufacturer" onchange="this.form.submit()"
+          class="py-2 pl-3 pr-8 text-sm border border-gray-200 rounded-lg bg-white cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400">
+    <option value="">All manufacturers</option>
+    {% for m in filter_manufacturers %}
+    <option value="{{ m.name }}" {% if manufacturer == m.name %}selected{% endif %}>{{ m.name }}</option>
+    {% endfor %}
+  </select>
+  <select name="brand" onchange="this.form.submit()"
+          class="py-2 pl-3 pr-8 text-sm border border-gray-200 rounded-lg bg-white cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400">
+    <option value="">All brands</option>
+    {% for b in filter_brands %}
+    <option value="{{ b.name }}" {% if brand == b.name %}selected{% endif %}>{{ b.name }}</option>
+    {% endfor %}
+  </select>
+  {% if category_id or manufacturer or brand %}
+  <a href="?tab={{ tab }}&sort={{ sort }}{% if direction != 'asc' %}&direction={{ direction }}{% endif %}{% if q %}&q={{ q|urlencode }}{% endif %}"
+     class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear filters</a>
+  {% endif %}
+</form>
 
 {# ══════════════════════════════════════════════════════════════════════════════
    BULK ACTION BAR — §7 Primitive 4
 ══════════════════════════════════════════════════════════════════════════════ #}
 {% call bulk_toolbar() %}
-  <button class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">
+  {# §18 — Bulk Assign Category / Manufacturer to the selected rows #}
+  <div x-data="{ open: false }" class="relative">
+    <button type="button" @click="open = !open"
+            class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">
+      Assign Category / Manufacturer
+    </button>
+    <div x-show="open" x-cloak @click.outside="open = false"
+         class="absolute left-0 top-full mt-2 z-20 w-80 bg-white border border-gray-200 rounded-xl shadow-lg p-4 space-y-3">
+      <form method="post" action="/products/bulk-assign" class="space-y-3">
+        <template x-for="id in Object.keys(selected).filter(k => selected[k])" :key="id">
+          <input type="hidden" name="product_ids" :value="id" />
+        </template>
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">Category</label>
+          <select name="category_id"
+                  class="w-full py-2 pl-3 pr-8 text-sm border border-gray-200 rounded-lg bg-white">
+            <option value="">— leave unchanged —</option>
+            {% for c in filter_categories %}
+            <option value="{{ c.id }}">{{ c.full_path }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">Manufacturer / Engine Make</label>
+          <select name="manufacturer"
+                  class="w-full py-2 pl-3 pr-8 text-sm border border-gray-200 rounded-lg bg-white">
+            <option value="">— leave unchanged —</option>
+            {% for m in filter_manufacturers %}
+            <option value="{{ m.name }}">{{ m.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <button type="submit" class="btn-primary btn-sm w-full">
+          Apply to <span x-text="selectedCount"></span> selected
+        </button>
+        <p class="text-[11px] text-gray-400">Assigning clears "Needs Review" for these items.</p>
+      </form>
+    </div>
+  </div>
+  <div class="h-4 w-px bg-brand-200"></div>
+  {# Low-Stock/Reorder is inert without reorder points — bulk-set for selected rows #}
+  <div x-data="{ open: false }" class="relative">
+    <button type="button" @click="open = !open"
+            class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">
+      Set Reorder Point
+    </button>
+    <div x-show="open" x-cloak @click.outside="open = false"
+         class="absolute left-0 top-full mt-2 z-20 w-64 bg-white border border-gray-200 rounded-xl shadow-lg p-4 space-y-3">
+      <form method="post" action="/products/bulk-reorder-point" class="space-y-3">
+        <template x-for="id in Object.keys(selected).filter(k => selected[k])" :key="id">
+          <input type="hidden" name="product_ids" :value="id" />
+        </template>
+        <input type="hidden" name="return_to" value="{{ request.url.path }}?{{ request.url.query }}" />
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">Reorder point</label>
+          <input type="number" name="reorder_point" min="0" step="1" required
+                 class="w-full py-2 px-3 text-sm border border-gray-200 rounded-lg bg-white" />
+        </div>
+        <button type="submit" class="btn-primary btn-sm w-full">
+          Apply to <span x-text="selectedCount"></span> selected
+        </button>
+        <p class="text-[11px] text-gray-400">0 disables the low-stock flag for these items.</p>
+      </form>
+    </div>
+  </div>
+  <div class="h-4 w-px bg-brand-200"></div>
+  <a href="/products/export.csv?tab={{ request.query_params.get('tab','') }}&q={{ request.query_params.get('q','')|urlencode }}"
+     class="text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors">
     Export CSV
+  </a>
+  <div class="h-4 w-px bg-brand-200"></div>
+  <button type="button"
+          @click="jaksShopifyPush(Object.keys(selected).filter(function(k){return selected[k];}).map(Number))"
+          class="text-xs font-medium text-brand-700 hover:text-brand-900 transition-colors">
+    Push to Shopify
+  </button>
+  <button type="button"
+          @click="jaksShopifySync(Object.keys(selected).filter(function(k){return selected[k];}).map(Number))"
+          class="text-xs font-medium text-brand-700 hover:text-brand-900 transition-colors">
+    Re-sync price &amp; stock
   </button>
 {% endcall %}
 
@@ -82,38 +323,24 @@
   <div class="overflow-x-auto">
     <table class="w-full min-w-[960px]" aria-label="Product inventory list">
 
-      {# ── Table head ── #}
+      {# ── Table head ── Axle: th 10px Oswald uppercase steel-400 on #fafbfa bg #}
       <thead>
-        <tr class="bg-gray-50 border-b border-gray-200">
+        <tr class="border-b border-gray-200" style="background:#fafbfa;">
           {# Select all #}
-          <th class="w-10 px-4 py-3 text-center">
+          <th class="w-10 px-4 py-3 text-center" style="background:#fafbfa;">
             <input type="checkbox"
                    :checked="allSelected"
                    @change="toggleAll()"
                    aria-label="Select all products"
                    class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
           </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            SKU / Manufacturer
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Product
-          </th>
-          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Cost
-          </th>
-          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Sell
-          </th>
-          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Margin
-          </th>
-          <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            On Hand
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            Health
-          </th>
+          {{ sortable_th('Part #', 'sku', sort, direction, qs=_sort_qs, align='left') }}
+          <th class="px-4 py-3 text-left label-mini">Description</th>
+          {{ sortable_th('Cost', 'cost', sort, direction, qs=_sort_qs, align='right') }}
+          <th class="px-4 py-3 text-right label-mini">List</th>
+          <th class="px-4 py-3 text-right label-mini">Margin</th>
+          {{ sortable_th('Avail', 'avail', sort, direction, qs=_sort_qs, align='right') }}
+          <th class="px-4 py-3 text-left label-mini">Status</th>
           <th class="px-4 py-3 w-12"></th>
         </tr>
       </thead>
@@ -123,7 +350,14 @@
         {% for p in products %}
 
         {# ── Per-row computed values ── #}
-        {% set margin_pct = ((p.selling_price - p.cost) / p.selling_price * 100) | round(1) if p.selling_price > 0 else 0 %}
+        {# §21 — resolved sell price = sell_price_map[p.id] (PricingService tiered/markup
+           price the route computes); fall back to the stored selling_price only when
+           absent. Both the price column AND the margin badge read this one value so
+           they agree — previously margin used the hardcoded-30% selling_price property
+           and the price column read a never-passed `resolved_price_map`. #}
+        {% set _sell = (sell_price_map | default({})).get(p.id) %}
+        {% set _sell = _sell if _sell is not none else p.selling_price %}
+        {% set margin_pct = ((_sell - p.cost) / _sell * 100) | round(1) if _sell > 0 else 0 %}
 
         {# Inventory health #}
         {% if p.qty_on_hand == 0 %}
@@ -157,23 +391,27 @@
           {% set margin_badge = 'bg-red-50 text-red-700 border-red-100' %}
         {% endif %}
 
-        {# Manufacturer badge color #}
-        {% set _ml = (p.manufacturer or '') | lower %}
-        {% if 'cummins' in _ml %}
-          {% set mfr_cls = 'bg-blue-100 text-blue-700 border-blue-200' %}
-        {% elif 'caterpillar' in _ml %}
-          {% set mfr_cls = 'bg-yellow-100 text-yellow-700 border-yellow-200' %}
-        {% elif 'detroit' in _ml %}
-          {% set mfr_cls = 'bg-slate-100 text-slate-600 border-slate-200' %}
-        {% elif 'mack' in _ml %}
-          {% set mfr_cls = 'bg-red-100 text-red-700 border-red-200' %}
-        {% elif 'volvo' in _ml %}
-          {% set mfr_cls = 'bg-teal-100 text-teal-700 border-teal-200' %}
-        {% elif 'international' in _ml %}
-          {% set mfr_cls = 'bg-orange-100 text-orange-700 border-orange-200' %}
-        {% else %}
-          {% set mfr_cls = 'bg-slate-100 text-slate-600 border-slate-200' %}
-        {% endif %}
+        {# Manufacturer badge — §18 A1. Canonical Engine-Make (mfr_map, computed once in
+           the route via classification_service.canonical_make_for_product) drives BOTH
+           the color and the text now, not a per-row substring guess. engine_manufacturer
+           and the legacy manufacturer column disagree on ~11.8k active products (one
+           abbreviated 'CAT', the other 'CAT / Caterpillar', etc.) — matching the raw
+           field text made the same manufacturer badge two different colors depending on
+           which field happened to be populated. Falls back to the raw field only when
+           neither resolves to a known make (keeps unrecognized owner-entered text visible
+           instead of hiding it). Exact-match dict, not substring — 'CAT' no longer needs
+           to literally contain the word 'caterpillar' to be recognized. #}
+        {% set _mfr_canon = (mfr_map | default({})).get(p.id, '') %}
+        {% set _mfr_display = _mfr_canon or p.engine_manufacturer or p.manufacturer or '' %}
+        {% set _mfr_badge_classes = {
+          'Cummins':                  'bg-blue-100 text-blue-700 border-blue-200',
+          'CAT / Caterpillar':        'bg-yellow-100 text-yellow-700 border-yellow-200',
+          'Detroit':                  'bg-slate-100 text-slate-600 border-slate-200',
+          'Mack':                     'bg-red-100 text-red-700 border-red-200',
+          'Volvo':                    'bg-teal-100 text-teal-700 border-teal-200',
+          'International / Navistar': 'bg-orange-100 text-orange-700 border-orange-200',
+        } %}
+        {% set mfr_cls = _mfr_badge_classes.get(_mfr_canon, 'bg-slate-100 text-slate-600 border-slate-200') %}
 
         {# ── Row ── #}
         <tr
@@ -196,15 +434,16 @@
                    class="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-2 focus:ring-brand-400 cursor-pointer" />
           </td>
 
-          {# SKU + Manufacturer badge #}
+          {# Part # — .pn mono 12px bold ink + Manufacturer badge #}
           <td class="px-4 py-4 align-middle">
             <div class="flex items-center gap-2 flex-wrap">
               <a href="/products/{{ p.id }}"
-                 class="font-mono text-sm font-bold text-brand-700 hover:text-brand-900 hover:underline leading-none"
+                 class="font-mono pn hover:underline"
                  @click.stop>{{ p.sku }}</a>
-              {% if p.manufacturer %}
-              <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border {{ mfr_cls }}">
-                {{ p.manufacturer | truncate(4, true, '') }}
+              {% if _mfr_display %}
+              <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border {{ mfr_cls }}"
+                    title="{{ _mfr_display }}">
+                {{ _mfr_display | truncate(4, true, '') }}
               </span>
               {% endif %}
             </div>
@@ -227,44 +466,75 @@
               {% if p.special_order_only %}
               <span class="inline-block px-1 py-0 rounded text-[10px] font-semibold bg-sky-50 text-sky-600 border border-sky-100">SO</span>
               {% endif %}
+              {# Vendor availability — out_of_stock hides from storefront push;
+                 discontinued products are deactivated (won't list here). #}
+              {% if p.vendor_availability == 'out_of_stock' %}
+              <span class="inline-block px-1 py-0 rounded text-[10px] font-semibold bg-red-50 text-red-600 border border-red-100"
+                    title="Vendor reports this part out of stock — hidden from the storefront push">Vendor OOS</span>
+              {% elif p.vendor_availability == 'discontinued' %}
+              <span class="inline-block px-1 py-0 rounded text-[10px] font-semibold bg-gray-100 text-gray-600 border border-gray-200"
+                    title="Vendor discontinued this part">Disc.</span>
+              {% endif %}
             </div>
           </td>
 
           {# Title + sub-line #}
           <td class="px-4 py-4 align-middle max-w-xs">
             <p class="text-sm font-medium text-gray-900 truncate leading-snug">{{ p.title or '—' }}</p>
+            {# "Why it matched" hint — shown when the match isn't visible in the
+               SKU/title (e.g. matched on manufacturer or engine fitment). #}
+            {% set _hint = (match_hints | default({})).get(p.id) %}
+            {% if _hint %}
+            <span class="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-brand-50 text-brand-700 border border-brand-100"
+                  title="Matched your search on: {{ _hint }}">
+              <svg class="w-3 h-3 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
+              </svg>
+              {{ _hint }}
+            </span>
+            {% endif %}
             {% if p.brand and p.brand != p.manufacturer %}
             <p class="text-xs text-gray-400 mt-0.5 truncate">{{ p.brand }}</p>
             {% elif p.category %}
-            <p class="text-xs text-gray-400 mt-0.5 truncate">{{ p.category.name }}</p>
+            {# #7 — full category path (parent → subcategory), not just the leaf name #}
+            <p class="text-xs text-gray-400 mt-0.5 truncate" title="{{ p.category.full_path }}">{{ p.category.full_path }}</p>
             {% elif p.engine_manufacturer %}
             <p class="text-xs text-gray-400 mt-0.5 truncate">{{ p.engine_manufacturer }}{% if p.engine_model %} · {{ p.engine_model }}{% endif %}</p>
+            {% else %}
+            <p class="text-xs text-gray-300 mt-0.5 italic">Uncategorized</p>
             {% endif %}
           </td>
 
-          {# Cost #}
+          {# Cost — .money mono right-aligned #}
           <td class="px-4 py-4 align-middle text-right">
-            <span class="text-sm text-gray-500 tabular-nums">${{ "%.2f"|format(p.cost) }}</span>
+            <span class="money" style="color:#7c838b;">${{ "%.2f"|format(p.cost) }}</span>
           </td>
 
-          {# Sell price #}
+          {# List (sell price) — .money.ext mono 700 ink — the price-list column emphasis.
+             §21 — reads the same resolved _sell (sell_price_map / PricingService) the
+             margin badge uses, so the two columns can never disagree. #}
           <td class="px-4 py-4 align-middle text-right">
-            <span class="text-sm font-bold text-gray-900 tabular-nums">${{ "%.2f"|format(p.selling_price) }}</span>
+            <span class="money ext">${{ "%.2f"|format(_sell) }}</span>
           </td>
 
-          {# Margin % #}
+          {# Margin % — '—' when cost is $0 (unknown) so a 0-cost import doesn't read as 100% #}
           <td class="px-4 py-4 align-middle text-right">
-            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold border {{ margin_badge }} tabular-nums">
+            {% if p.cost and p.cost > 0 %}
+            <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-sm font-bold border {{ margin_badge }} tabular-nums">
               {{ "%.0f"|format(margin_pct) }}%
             </span>
+            {% else %}
+            <span title="No cost yet — margin shows after the first PO is received"
+                  class="inline-flex items-center px-2.5 py-1 rounded-lg text-sm font-medium border bg-gray-50 text-gray-400 border-gray-100 tabular-nums">—</span>
+            {% endif %}
           </td>
 
-          {# On Hand + min / max indicators #}
+          {# Avail (= on-hand) — mono bold per Axle ("Avail bolded") + min/max sub-line #}
           <td class="px-4 py-4 align-middle text-right">
-            <span class="text-sm font-bold tabular-nums
-              {% if p.qty_on_hand == 0 %}text-red-600
-              {% elif p.reorder_point > 0 and p.qty_on_hand <= p.reorder_point %}text-amber-600
-              {% else %}text-gray-800{% endif %}">
+            <span class="money" style="font-weight:700; font-size:12.5px;
+              {% if p.qty_on_hand == 0 %}color:#c0392b;
+              {% elif p.reorder_point > 0 and p.qty_on_hand <= p.reorder_point %}color:#b06511;
+              {% else %}color:#0b0c0d;{% endif %}">
               {{ p.qty_on_hand }}
             </span>
             {# Min / max #}
@@ -284,12 +554,17 @@
             {% endif %}
           </td>
 
-          {# Inventory health chip #}
+          {# Status — .stk dot+label (Axle: green In stock / amber Low / red Out) #}
           <td class="px-4 py-4 align-middle">
-            <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold {{ health_cls }}">
-              <span class="w-1.5 h-1.5 rounded-full {{ health_dot }} shrink-0"></span>
-              {{ health_label }}
-            </span>
+            {% if health == 'out' %}
+              <span class="stk out"><span class="d"></span>Out</span>
+            {% elif health == 'low' %}
+              <span class="stk low"><span class="d"></span>Low</span>
+            {% elif health == 'on_order' %}
+              <span class="stk low"><span class="d"></span>On order</span>
+            {% else %}
+              <span class="stk ok"><span class="d"></span>In stock</span>
+            {% endif %}
             {% if p.qty_backordered > 0 %}
             <div class="text-[10px] text-orange-500 mt-1 font-medium">{{ p.qty_backordered }} b/o</div>
             {% endif %}
@@ -317,15 +592,41 @@
     </table>
   </div>
 
-  {# ── Table footer count ── #}
-  <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
-    <span class="text-xs text-gray-400">
-      {{ products | length }} product{{ 's' if products | length != 1 else '' }}
+  {# ── Table footer + pagination ── Axle .pgr: mono 11px, bordered page pills #}
+  <div class="px-5 py-3 border-t border-gray-100 flex items-center justify-between gap-3"
+       style="background:#fafbfa; font-family:'IBM Plex Mono',monospace; font-size:11px; color:#7c838b;">
+    <span>
+      {% if total %}Showing {{ page_start }}–{{ page_end }} of {{ total }}{% else %}0 products{% endif %}
       {% if tab != 'all' or q %} · filtered{% endif %}
+      <span x-show="selectedCount > 0" x-cloak class="ml-2 text-brand-700 font-medium"><span x-text="selectedCount"></span> selected</span>
     </span>
-    <span x-show="selectedCount > 0" x-cloak class="text-xs text-brand-700 font-medium">
-      <span x-text="selectedCount"></span> selected
-    </span>
+    {% if total_pages > 1 %}
+    {% set _qs = (('&tab=' ~ tab) if (tab and tab != 'all') else '') ~ _filters_qs
+       ~ (('&sort=' ~ sort) if (sort and sort != 'sku') else '')
+       ~ (('&direction=' ~ direction) if (direction and direction != 'asc') else '') %}
+    <div class="flex items-center gap-1.5 shrink-0">
+      {% if page > 1 %}
+        <a href="?page={{ page - 1 }}{{ _qs }}"
+           class="inline-block border border-gray-200 rounded px-2 py-0.5 hover:bg-gray-50 hover:text-gray-900 transition-colors"
+           style="font-family:'IBM Plex Mono',monospace; font-size:11px;">← Prev</a>
+      {% else %}
+        <span class="inline-block border border-gray-200 rounded px-2 py-0.5 opacity-40 cursor-not-allowed"
+              style="font-family:'IBM Plex Mono',monospace; font-size:11px;">← Prev</span>
+      {% endif %}
+      <span class="inline-block border rounded px-2 py-0.5"
+            style="font-family:'IBM Plex Mono',monospace; font-size:11px;
+                   background:#5a6630; border-color:#5a6630; color:#fff;">{{ page }}</span>
+      <span style="color:#a9afb6;">/ {{ total_pages }}</span>
+      {% if page < total_pages %}
+        <a href="?page={{ page + 1 }}{{ _qs }}"
+           class="inline-block border border-gray-200 rounded px-2 py-0.5 hover:bg-gray-50 hover:text-gray-900 transition-colors"
+           style="font-family:'IBM Plex Mono',monospace; font-size:11px;">Next →</a>
+      {% else %}
+        <span class="inline-block border border-gray-200 rounded px-2 py-0.5 opacity-40 cursor-not-allowed"
+              style="font-family:'IBM Plex Mono',monospace; font-size:11px;">Next →</span>
+      {% endif %}
+    </div>
+    {% endif %}
   </div>
 </div>
 
@@ -343,8 +644,8 @@
   </div>
   {% if q %}
   <p class="text-sm font-semibold text-gray-700">No products match "{{ q }}"</p>
-  <p class="text-xs text-gray-400 mt-1 mb-4">Try a different SKU, title, or manufacturer.</p>
-  <a href="?tab={{ tab }}" class="btn-secondary btn-sm">Clear search</a>
+  <p class="text-xs text-gray-400 mt-1 mb-4">Try fewer words, or search by part name, number, engine (e.g. C15), or cross-ref.</p>
+  <a href="?tab={{ tab }}{% if sort != 'sku' %}&sort={{ sort }}{% endif %}{% if direction != 'asc' %}&direction={{ direction }}{% endif %}{{ _struct_filters_qs }}" class="btn-secondary btn-sm">Clear search</a>
   {% elif tab == 'low_stock' %}
   <p class="text-sm font-semibold text-gray-700">No low-stock products</p>
   <p class="text-xs text-gray-400 mt-1">All products are above their reorder points.</p>
@@ -354,6 +655,13 @@
   {% elif tab == 'special_order' %}
   <p class="text-sm font-semibold text-gray-700">No special-order products</p>
   <p class="text-xs text-gray-400 mt-1">Mark products as special-order on their detail page.</p>
+  {% elif category_id or manufacturer or brand %}
+  {# The filters/tab combination is a real, valid empty result (e.g. "0 of these
+     in stock right now") — NOT an empty catalog. Offer to relax the filters
+     instead of "Add Product", which reads as onboarding on a 30k+ row catalog. #}
+  <p class="text-sm font-semibold text-gray-700">No products match these filters</p>
+  <p class="text-xs text-gray-400 mt-1 mb-4">Try a different category, manufacturer, or brand — or clear the filters.</p>
+  <a href="?tab={{ tab }}&sort={{ sort }}{% if direction != 'asc' %}&direction={{ direction }}{% endif %}{% if q %}&q={{ q|urlencode }}{% endif %}" class="btn-secondary btn-sm">Clear filters</a>
   {% else %}
   <p class="text-sm font-semibold text-gray-700">No products yet</p>
   <p class="text-xs text-gray-400 mt-1 mb-4">Add your first product to get started.</p>
@@ -368,4 +676,43 @@
 {{ preview_dock_shell('Product Preview', 'product-preview-body') }}
 
 </div>{# end x-data wrapper #}
+
+<script>
+  // Bulk Shopify actions — selected product ids POSTed as form data to the
+  // admin-gated /shopify endpoints. Publish creates DRAFT listings; Re-sync pushes
+  // price+SEO/tags then stock to already-linked listings.
+  function _jaksSelForm(ids) {
+    var f = new FormData();
+    ids.forEach(function (i) { f.append('product_ids', i); });
+    return f;
+  }
+  function jaksShopifyPush(ids) {
+    if (!ids.length) { alert('Select at least one product first.'); return; }
+    if (!confirm('Push ' + ids.length + ' product(s) to Shopify? Existing listings KEEP '
+                 + 'their current status (live stays live); new products are created as drafts.')) return;
+    fetch('/shopify/republish', { method: 'POST', body: _jaksSelForm(ids) })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        alert((d.published || 0) + ' pushed, ' + (d.failed || 0) + ' failed'
+              + (d.error ? (' — ' + d.error) : '.'));
+        location.reload();
+      })
+      .catch(function () { alert('Shopify push request failed.'); });
+  }
+  function jaksShopifySync(ids) {
+    if (!ids.length) { alert('Select at least one product first.'); return; }
+    fetch('/shopify/update-batch', { method: 'POST', body: _jaksSelForm(ids) })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        fetch('/shopify/sync-inventory', { method: 'POST', body: _jaksSelForm(ids) })
+          .then(function (r) { return r.json(); })
+          .then(function (d2) {
+            alert('Listings updated: ' + (d.updated || 0) + ', stock synced: '
+                  + (d2.synced || 0) + ', failed: ' + ((d.failed || 0) + (d2.failed || 0)) + '.');
+            location.reload();
+          });
+      })
+      .catch(function () { alert('Shopify sync request failed.'); });
+  }
+</script>
 {% endblock %}

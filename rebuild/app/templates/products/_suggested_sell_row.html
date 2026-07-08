@@ -43,7 +43,9 @@
             hx-delete="/products/{{ product_id }}/suggested-sells/{{ suggestion.id }}"
             hx-target="closest tr"
             hx-swap="outerHTML swap:200ms"
-            hx-confirm="Remove {{ suggestion.suggested_product.sku }} from suggestions?"
+            hx-trigger="confirmed"
+            @click.prevent="jakConfirm({ title: 'Remove Suggested Sell', body: 'Remove {{ suggestion.suggested_product.sku }} from suggested sells for this product?', cta: 'Remove', danger: true, confirmEvent: 'jak-del-sugg-{{ suggestion.id }}' })"
+            @jak-del-sugg-{{ suggestion.id }}.window="htmx.trigger($el, 'confirmed')"
             class="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors">
       Remove
     </button>

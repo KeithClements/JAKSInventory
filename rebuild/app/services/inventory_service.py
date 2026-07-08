@@ -20,6 +20,7 @@ Moving-average cost (R11):
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from app.constants import (
@@ -35,8 +36,102 @@ from app.models.inventory_transfer import InventoryTransfer
 from app.models.product import Product
 from app.services.base import BaseService
 
+log = logging.getLogger(__name__)
+
 
 class InventoryService(BaseService):
+
+    # ── Document-flow stock writer (single entry point) ──────────────────────
+
+    def apply_stock_delta(
+        self,
+        product: Product,
+        delta: int,
+        txn_type: str,
+        reference_type: str,
+        reference_id: int,
+        notes: str = "",
+        *,
+        reason: str | None = None,
+        clamp_floor_zero: bool = False,
+    ) -> InventoryTransaction:
+        """
+        THE single writer of the Product.qty_on_hand cache for document flows
+        (invoice finalize/void, PO receipt, RA return-to-stock, vendor-return
+        ship). Mutates the cache AND writes the matching InventoryTransaction
+        ledger row together so the two can never diverge at a call site.
+
+        clamp_floor_zero: the CACHE floors at 0 but the ledger row still
+        records the FULL delta — pre-existing contract at the invoice-finalize
+        (no negative-inventory override) and vendor-return-ship call sites:
+        the ledger records what the document did; those paths never drive the
+        cache negative. resync_qty_on_hand reconciles any resulting gap.
+
+        No permission gate — callers gate their own document action
+        (FINALIZE_INVOICE, RECEIVE_PO, ...); this is plumbing beneath those
+        gates. No flush/commit — participates in the caller's transaction.
+        """
+        if delta == 0:
+            raise ValueError("apply_stock_delta requires a non-zero delta")
+
+        # `or 0` guards a NULL legacy cache (matches the RA writer this absorbed).
+        new_qty = (product.qty_on_hand or 0) + delta
+        if clamp_floor_zero:
+            new_qty = max(0, new_qty)
+        product.qty_on_hand = new_qty
+
+        txn = InventoryTransaction(
+            product_id=product.id,
+            transaction_type=txn_type,
+            qty_change=delta,
+            qty_after=product.qty_on_hand,
+            reference_type=reference_type,
+            reference_id=reference_id,
+            reason=reason,
+            performed_by_id=self.current_user_id,
+            notes=notes,
+        )
+        self.db.add(txn)
+        return txn
+
+    # ── Nightly cache-vs-ledger resync ────────────────────────────────────────
+
+    def resync_all_products(self) -> dict:
+        """
+        Re-derive every product's qty_on_hand cache from the ledger.
+
+        CROSS-LANE CONTRACT: the nightly scheduler calls EXACTLY
+        ``InventoryService(db).resync_all_products()`` and reads the
+        ``checked`` / ``drifted`` / ``fixed`` keys — do not rename either.
+
+        Drifted products are fixed via ProductService.resync_qty_on_hand
+        (which audit-logs each correction). The ledger sum is compared FIRST
+        so clean products produce no audit row — resync_qty_on_hand audits
+        even a zero delta (right for one-off recovery, wrong for a
+        20k-product nightly sweep). Commits once at the end.
+        """
+        from app.services.product_service import ProductService
+
+        product_svc = ProductService(self.db, self.current_user_id)
+        checked = drifted = fixed = 0
+        for pid, cached_qty in (
+            self.db.query(Product.id, Product.qty_on_hand).order_by(Product.id).all()
+        ):
+            checked += 1
+            ledger_qty = product_svc.get_qty_on_hand(pid)
+            if (cached_qty or 0) == ledger_qty:
+                continue
+            drifted += 1
+            old_qty, new_qty = product_svc.resync_qty_on_hand(pid)
+            log.warning(
+                "resync_all_products: qty_on_hand drift on product %s — "
+                "cache %s → ledger %s (fixed)",
+                pid, old_qty, new_qty,
+            )
+            fixed += 1
+
+        self.db.commit()
+        return {"checked": checked, "drifted": drifted, "fixed": fixed}
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -142,6 +237,175 @@ class InventoryService(BaseService):
         )
         self.db.commit()
         return txn
+
+    def apply_physical_count(
+        self,
+        counts,
+        *,
+        note: str = "",
+        dry_run: bool = True,
+    ) -> dict:
+        """Set on-hand quantities from a physical count (the go-live loading task).
+
+        ``counts``: iterable of ``(sku, counted_qty)``. For each resolved product,
+        computes ``delta = counted - current`` and applies it as a ledger-backed
+        adjustment (reason=CYCLE_COUNT) so the count is auditable and the nightly
+        resync can't undo it. Products whose count already matches are skipped;
+        unknown SKUs are collected and NEVER created. All writes happen in ONE
+        transaction (committed once) so a partial failure leaves the DB untouched.
+
+        ``dry_run=True`` (the default) computes the plan without writing — the
+        summary is identical either way, so an operator can preview then re-run with
+        ``dry_run=False``. Counted stock is valued at each product's existing average
+        cost (a count sets quantity, not cost).
+
+        Returns: ``{applied, unchanged, not_found: [sku], changes: [{sku, before,
+        after, delta}], dry_run}``.
+        """
+        self.assert_can(Permission.INVENTORY_ADJUST)
+
+        note = note or "Physical count load"
+        applied = 0
+        unchanged = 0
+        not_found: list[str] = []
+        changes: list[dict] = []
+
+        for raw_sku, raw_qty in counts:
+            sku = str(raw_sku).strip()
+            if not sku:
+                continue
+            try:
+                counted = int(raw_qty)
+            except (TypeError, ValueError):
+                raise ValueError(f"Count for SKU {sku!r} is not a whole number: {raw_qty!r}")
+            if counted < 0:
+                raise ValueError(f"Count for SKU {sku!r} cannot be negative: {counted}")
+
+            product = self.db.query(Product).filter(Product.sku == sku).first()
+            if product is None:
+                not_found.append(sku)
+                continue
+
+            before = product.qty_on_hand or 0
+            delta = counted - before
+            if delta == 0:
+                unchanged += 1
+                continue
+
+            changes.append({"sku": sku, "before": before, "after": counted, "delta": delta})
+            if not dry_run:
+                self.apply_stock_delta(
+                    product,
+                    delta,
+                    InventoryTxnType.MANUAL_ADJUSTMENT,
+                    EntityType.INVENTORY_ADJUSTMENT,
+                    0,
+                    notes=f"{note} — counted {counted} (was {before})",
+                    reason=AdjustmentReason.CYCLE_COUNT,
+                )
+            applied += 1
+
+        if not dry_run and changes:
+            self.db.commit()
+
+        return {
+            "applied": applied,
+            "unchanged": unchanged,
+            "not_found": not_found,
+            "changes": changes,
+            "dry_run": dry_run,
+        }
+
+    def _apply_shopify_stock_delta(
+        self, product_id: int, delta_pieces: int, *,
+        order_ref_id: int | None = None, order_name: str = "", note: str = "",
+    ) -> InventoryTransaction | None:
+        """Signed on-hand movement for a Shopify web order (negative = sale,
+        positive = cancellation/refund restock). Writes a ``shopify_sale`` ledger row
+        + audit and updates the cached qty_on_hand — the SAME discipline as every
+        other stock movement, so a counter sale and a web sale can never double-sell
+        the last unit.
+
+        SYSTEM path: the order sync runs as user_id=None (permission bypass), so this
+        deliberately does not gate on INVENTORY_ADJUST. It FLUSHES but does NOT
+        commit — the caller commits all of an order's line movements together with
+        the ShopifyProcessedOrder marker in one transaction, so idempotency is atomic
+        (either the whole order is applied-and-marked, or none of it is). No-op
+        (returns None) for a zero delta or a missing product."""
+        if delta_pieces == 0:
+            return None
+        product = self.db.query(Product).filter(Product.id == product_id).first()
+        if product is None:
+            return None
+        qty_before = product.qty_on_hand
+        if delta_pieces < 0:
+            # Web SALE. Pull only what is physically on the shelf; the remainder is
+            # DROP-SHIPPED from the vendor (PAI/IMB) and must never push on-hand
+            # negative. Most of the catalog is dropship (0 on-hand), so an unclamped
+            # decrement would accrue large phantom negatives that corrupt inventory
+            # valuation / low-stock / dead-stock. A stocked part decrements exactly as
+            # before (shelf >= sale). Returns None when nothing is on the shelf to
+            # pull — a pure dropship line, so there is no stock movement to record.
+            pulled = min(max(0, qty_before), -int(delta_pieces))
+            if pulled <= 0:
+                return None
+            applied = -pulled
+        else:
+            applied = int(delta_pieces)
+        product.qty_on_hand = qty_before + applied
+        # reference_id holds the numeric Shopify order id (~13 digits). Safe on SQLite
+        # (INTEGER is 64-bit); if this app is ever moved to a 32-bit-INT backend,
+        # widen the column to BigInteger or store the id as text.
+        ref_id = int(order_ref_id) if order_ref_id else None
+        txn = InventoryTransaction(
+            product_id=product_id,
+            transaction_type=InventoryTxnType.SHOPIFY_SALE,
+            qty_change=applied,
+            qty_after=product.qty_on_hand,
+            # Polymorphic ref is all-or-nothing (ck_inventory_txn_ref_complete).
+            reference_type=("shopify_order" if ref_id is not None else None),
+            reference_id=ref_id,
+            performed_by_id=self.current_user_id,
+            notes=(note or f"Shopify web order {order_name}").strip(),
+        )
+        self.db.add(txn)
+        self.db.flush()
+        self.audit(
+            entity_type=EntityType.PRODUCT,
+            entity_id=product_id,
+            action=AuditAction.INVENTORY_ADJUSTED,
+            old_value={"qty_on_hand": qty_before},
+            new_value={"qty_on_hand": product.qty_on_hand,
+                       "delta": applied, "source": "shopify_order",
+                       "order": order_name},
+        )
+        return txn
+
+    def record_shopify_sale(
+        self, product_id: int, qty_pieces: int, *,
+        order_ref_id: int | None = None, order_name: str = "",
+    ) -> InventoryTransaction | None:
+        """Decrement on-hand for a Shopify WEB sale. ``qty_pieces`` is already
+        expanded from storefront packs to physical pieces by the caller. No-op for a
+        non-positive qty."""
+        if qty_pieces <= 0:
+            return None
+        return self._apply_shopify_stock_delta(
+            product_id, -int(qty_pieces), order_ref_id=order_ref_id,
+            order_name=order_name, note=f"Shopify web order {order_name}".strip())
+
+    def record_shopify_order_reversal(
+        self, product_id: int, qty_pieces: int, *,
+        order_ref_id: int | None = None, order_name: str = "",
+    ) -> InventoryTransaction | None:
+        """Restock on-hand when a previously-decremented web order is later cancelled
+        or refunded on Shopify (compensating +pieces). No-op for a non-positive qty."""
+        if qty_pieces <= 0:
+            return None
+        return self._apply_shopify_stock_delta(
+            product_id, int(qty_pieces), order_ref_id=order_ref_id,
+            order_name=order_name,
+            note=f"Shopify web order {order_name} cancelled — stock restored".strip())
 
     def transfer_inventory(
         self,
@@ -287,31 +551,60 @@ class InventoryService(BaseService):
         product: Product,
         qty_received: int,
         receipt_unit_cost: float,
+        freight_adder: float = 0.0,
+        po_id: int | None = None,
     ) -> None:
         """
         R11 — Update product.cost via moving weighted average; set product.last_cost.
 
+        R3 — ``freight_adder`` is the allocated freight-in cost PER UNIT for this
+        receipt (computed by POService._compute_freight_adders from the PO's
+        freight_in_cost). The average absorbs the LANDED unit cost
+        (receipt_unit_cost + freight_adder) so product.cost / COGS reflects what
+        the unit actually cost to put on the shelf. The default of 0.0 keeps
+        every pre-R3 call path bit-for-bit identical (landed == receipt cost).
+
         Formula:
-          new_avg = ((qty_on_hand × current_avg) + (qty_received × receipt_unit_cost))
-                    / (qty_on_hand + qty_received)
+          landed    = receipt_unit_cost + freight_adder
+          new_avg   = ((qty_on_hand × current_avg) + (qty_received × landed))
+                      / (qty_on_hand + qty_received)
 
         Called WITH qty_on_hand AFTER it has been incremented (so we subtract back
         qty_received to get the pre-receipt qty for the weighting).
+
+        Always records the old→new average on ProductCostHistory (tagged with
+        ``po_id``) — the moving average is otherwise irreversible (it blends
+        into a single number), so this is the only way POService.reverse_receipt
+        can later restore the exact pre-receipt cost instead of guessing.
         """
-        if qty_received <= 0 or receipt_unit_cost <= 0:
+        landed_unit_cost = receipt_unit_cost + freight_adder
+        if qty_received <= 0 or landed_unit_cost <= 0:
             return
 
         # qty_on_hand has already been incremented at this point
         qty_before = max(0, product.qty_on_hand - qty_received)
         current_avg = product.cost or 0.0
 
-        # If we had no stock, the new cost IS the receipt cost
+        # If we had no stock, the new cost IS the (landed) receipt cost
         if qty_before <= 0:
-            product.cost = round(receipt_unit_cost, 4)
+            new_avg = round(landed_unit_cost, 4)
         else:
-            new_avg = (
-                (qty_before * current_avg) + (qty_received * receipt_unit_cost)
-            ) / (qty_before + qty_received)
-            product.cost = round(new_avg, 4)
+            new_avg = round(
+                ((qty_before * current_avg) + (qty_received * landed_unit_cost))
+                / (qty_before + qty_received),
+                4,
+            )
 
-        product.last_cost = round(receipt_unit_cost, 4)
+        from app.models.product import ProductCostHistory
+        self.db.add(ProductCostHistory(
+            product_id=product.id,
+            po_id=po_id,
+            old_cost=current_avg,
+            new_cost=new_avg,
+            changed_by_id=self.current_user_id,
+            notes="Moving-average update on PO receipt",
+        ))
+
+        product.cost = new_avg
+        product.last_cost = round(landed_unit_cost, 4)
+        product.cost_source = "receipt"   # R11 Option A — only valid writer of product.cost

@@ -1,153 +1,301 @@
 {# ═══════════════════════════════════════════════════════════════════════════
-   _lines_and_totals.html
-   HTMX-swappable container holding the line grid + totals panel.
-   Re-rendered on every add/update/delete/unlink line action.
+   _lines_and_totals.html — Axle redress
+   HTMX-swappable container. The route returns this partial after every
+   add/update/delete/unlink line action (hx-swap="outerHTML" on #lines-and-totals).
+
+   Layout: two-column (main lines card + 284px right rail) per Axle spec.
+   The right rail's Customer / Totals / QB sync cards live inside the same
+   swappable wrapper so a line edit re-renders the totals card too.
 ═════════════════════════════════════════════════════════════════════════════ #}
-<div id="lines-and-totals">
+{% from "macros/line_thumb.html" import line_thumb %}
+{% from "macros/pricing.html" import price_rule_chip, last_price_hint %}
+<div id="lines-and-totals" class="flex flex-col md:flex-row gap-4 items-stretch md:items-start">
 
-  {# ── Line items grid ──────────────────────────────────────────────────── #}
-  <div class="card">
-    <div class="card-header">
-      <h2 class="card-title">Line Items</h2>
-      <span class="text-xs text-gray-400">{{ invoice.lines | length }} line{{ 's' if invoice.lines | length != 1 }}</span>
-    </div>
+  {# ═══════════════════════ MAIN COLUMN — Line Items ════════════════════════ #}
+  <div class="flex-1 min-w-0 flex flex-col gap-3">
 
-    {% if invoice.lines %}
-    <div class="overflow-x-auto">
-      <table class="tbl">
-        <thead class="tbl-head">
-          <tr>
-            <th class="tbl-th w-12">#</th>
-            <th class="tbl-th">SKU / Type</th>
-            <th class="tbl-th">Description</th>
-            <th class="tbl-th-r w-20">Qty</th>
-            <th class="tbl-th-r w-28">Unit Price</th>
-            <th class="tbl-th-r w-20">Disc %</th>
-            <th class="tbl-th-r w-28">Extended</th>
-            {% if editable %}<th class="tbl-th w-10"></th>{% endif %}
-          </tr>
-        </thead>
-        <tbody>
-          {% for line in invoice.lines %}
-          {% set is_core = line.line_type == LineType.CORE_CHARGE %}
-          {% set is_child = line.parent_line_id is not none %}
-          <tr class="tbl-row {% if is_core %}bg-amber-50/50{% endif %}">
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      {# Card header — .chd style (Oswald uppercase label + right-rail count) #}
+      <div class="flex items-center gap-2 px-4 py-2.5 border-b border-steel-150">
+        <h4 class="label-mini text-steel-500">Line Items</h4>
+        <span class="ml-auto font-mono text-[10.5px] text-steel-400">
+          {{ invoice.lines | length }} line{% if (invoice.lines | length) != 1 %}s{% endif %}
+        </span>
+      </div>
 
-            <td class="tbl-td text-xs text-gray-400 tabular-nums">
-              {% if is_child %}↳{% else %}{{ loop.index }}{% endif %}
-            </td>
+      {% if invoice.lines %}
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-steel-200 bg-[#fafbfa] font-display font-semibold text-steel-400 uppercase tracking-[.07em] text-[10px]">
+              <th class="text-left px-3 py-2 w-10">#</th>
+              <th class="text-left px-2 py-2 w-28">Part</th>
+              <th class="text-left px-2 py-2">Description</th>
+              <th class="text-center px-2 py-2 w-14">Bin</th>
+              <th class="text-right px-2 py-2 w-14">Qty</th>
+              <th class="text-right px-2 py-2 w-28">Unit</th>
+              <th class="text-right px-2 py-2 w-14">Disc %</th>
+              {% if editable %}<th class="text-right px-2 py-2 w-16 admin-margin" x-show="showMargin" x-cloak>Margin %</th>{% endif %}
+              <th class="text-right px-3 py-2 w-24">Ext</th>
+              {% if editable %}<th class="w-8 px-2 py-2"></th>{% endif %}
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-steel-100">
+            {% for line in invoice.lines %}
+            {% set is_core = line.line_type == LineType.CORE_CHARGE %}
+            {% set is_child = line.parent_line_id is not none %}
+            {% set _row_bg = 'hover:bg-[#f6f7f2] transition-colors' %}
+            {% if is_core %}{% set _row_bg = 'bg-amber-50/40 hover:bg-amber-50/60 transition-colors' %}{% endif %}
+            {% if not editable %}{% set _row_bg = _row_bg ~ ' cursor-not-allowed' %}{% endif %}
+            <tr class="{{ _row_bg }}">
 
-            <td class="tbl-td">
-              {% if line.product %}
-              <a href="/products/{{ line.product_id }}" class="font-mono text-xs font-bold text-brand-700 hover:underline">{{ line.product.sku }}</a>
-              {% else %}
-              <span class="text-xs font-semibold text-gray-500 uppercase">{{ line.line_type | replace('_', ' ') }}</span>
-              {% endif %}
-              {% if is_core %}
-              <p class="text-xs text-amber-700 font-medium mt-0.5">Refundable Core{% if line.is_locked_to_parent %} · linked{% endif %}</p>
-              {% endif %}
-            </td>
+              {# # — row index / child marker #}
+              <td class="px-3 py-2 align-middle text-xs text-steel-400 tabular-nums {{ 'pl-5' if is_child else '' }}">
+                {% if is_child %}↳{% else %}{{ loop.index }}{% endif %}
+              </td>
 
-            <td class="tbl-td">
+              {# Part — .pn (mono 12px 700) over Barlow 12px steel-700 description (in Description col).
+                 Core lines get the .corechip pill in place of the SKU. #}
+              <td class="px-2 py-2 align-middle">
+                {% if is_core %}
+                <span class="corechip">CORE</span>
+                {% elif line.product %}
+                <a href="/products/{{ line.product_id }}" class="hover:underline"><span class="pn">{{ line.product.sku }}</span></a>
+                {% else %}
+                <span class="text-[10px] font-semibold text-steel-400 uppercase tracking-wide">{{ line.line_type | replace('_', ' ') }}</span>
+                {% endif %}
+              </td>
+
+              {# Description (editable) — Barlow 12px steel-700.
+                 Product thumbnail (if any) sits left of the description block. #}
+              <td class="px-2 py-2 align-middle min-w-0">
+                <div class="flex items-center gap-2">
+                {{ line_thumb(line.product) }}
+                <div class="min-w-0 flex-1">
+                {% if editable %}
+                <input type="text" value="{{ line.description }}"
+                       hx-post="/invoices/{{ invoice.id }}/lines/{{ line.id }}"
+                       hx-trigger="change delay:400ms"
+                       hx-target="#lines-and-totals"
+                       hx-swap="outerHTML"
+                       hx-include="this"
+                       name="description"
+                       class="w-full text-[12px] text-steel-700 border border-transparent hover:border-gray-200 focus:border-brand-400 rounded px-1.5 py-1 bg-transparent focus:bg-white focus:outline-none focus:ring-1 focus:ring-brand-400 transition-colors"/>
+                {% else %}
+                <span class="text-[12px] text-steel-700">{{ line.description }}</span>
+                {% endif %}
+                {% if is_core and line.is_locked_to_parent %}
+                <span class="ml-1 text-[10px] text-hub-deep font-medium uppercase tracking-wide">· linked</span>
+                {% endif %}
+                </div>{# /desc block #}
+                </div>{# /thumb+desc flex #}
+              </td>
+
+              {# Bin — .bin pill; em-dash when no bin/no product #}
+              <td class="px-2 py-2 align-middle text-center">
+                {% if line.product and line.product.bin_location %}
+                <span class="bin">{{ line.product.bin_location }}</span>
+                {% else %}
+                <span class="text-steel-300 text-xs">—</span>
+                {% endif %}
+              </td>
+
+              {# Qty (editable) #}
+              <td class="px-2 py-2 align-middle text-right tabular-nums">
+                {% if editable and not (is_core and line.is_locked_to_parent) %}
+                <input type="number" value="{{ line.qty }}" min="1"
+                       hx-post="/invoices/{{ invoice.id }}/lines/{{ line.id }}"
+                       hx-trigger="change"
+                       hx-target="#lines-and-totals"
+                       hx-swap="outerHTML"
+                       hx-include="this"
+                       name="qty"
+                       class="w-14 text-right text-sm border border-gray-200 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-400 tabular-nums"/>
+                {% else %}
+                <span class="font-mono text-sm tabular-nums {% if is_core %}text-hub-deep{% endif %}">{{ line.qty }}</span>
+                {% endif %}
+              </td>
+
+              {# Unit Price (editable) — money mono right-aligned #}
+              <td class="px-2 py-2 align-middle text-right tabular-nums">
+                {% if editable %}
+                <div class="relative">
+                  <span class="absolute left-1.5 top-1/2 -translate-y-1/2 text-steel-400 text-xs pointer-events-none">$</span>
+                  <input type="number" value="{{ '%.2f' % line.unit_price }}" min="0" step="0.01"
+                         hx-post="/invoices/{{ invoice.id }}/lines/{{ line.id }}"
+                         hx-trigger="change"
+                         hx-target="#lines-and-totals"
+                         hx-swap="outerHTML"
+                         hx-include="this"
+                         name="unit_price"
+                         class="w-24 pl-4 pr-1.5 text-right border border-gray-200 rounded py-1 text-sm focus:outline-none focus:ring-1 focus:ring-brand-400 tabular-nums"/>
+                </div>
+                {% else %}
+                <span class="money">${{ "%.2f"|format(line.unit_price) }}</span>
+                {% endif %}
+                {# ── Customer-pricing surface (§5.3): source-deal chip + margin-warn,
+                   or a click-to-apply last-price hint when no rule matched. The apply
+                   button writes this cell's unit_price input and fires `change` so the
+                   existing HTMX handler persists + re-renders. Guarded — empty-safe. #}
+                {% if line.pricing_ctx %}
+                <div class="mt-1 flex flex-wrap items-center justify-end gap-1">
+                  {% if line.pricing_ctx.customer_price %}
+                    {{ price_rule_chip(line.pricing_ctx.customer_price) }}
+                  {% endif %}
+                  {% if line.pricing_ctx.last_price %}
+                    <span @click="
+                            const btn = $event.target.closest('[data-apply-price]');
+                            if (!btn) return;
+                            const inp = $el.closest('td').querySelector('input[name=&quot;unit_price&quot;]');
+                            if (inp) { inp.value = btn.dataset.applyPrice; inp.dispatchEvent(new Event('change', { bubbles: true })); }
+                          ">{{ last_price_hint(line.pricing_ctx) }}</span>
+                  {% endif %}
+                </div>
+                {% endif %}
+              </td>
+
+              {# Disc % (editable) — not on core lines #}
+              <td class="px-2 py-2 align-middle text-right tabular-nums">
+                {% if editable and not is_core %}
+                <input type="number" value="{{ line.discount_pct }}" min="0" max="100" step="0.5"
+                       hx-post="/invoices/{{ invoice.id }}/lines/{{ line.id }}"
+                       hx-trigger="change"
+                       hx-target="#lines-and-totals"
+                       hx-swap="outerHTML"
+                       hx-include="this"
+                       name="discount_pct"
+                       class="w-12 text-right text-sm border border-gray-200 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-400 tabular-nums"/>
+                {% else %}
+                <span class="text-xs text-steel-400 tabular-nums">{{ line.discount_pct }}%</span>
+                {% endif %}
+              </td>
+
+              {# Margin % — admin-only, gated by showMargin (no input wiring — Invoice line
+                 service doesn't yet expose unit_cost / margin_pct on InvoiceLine; show a
+                 dimmed em-dash so the column shape lines up with the Quote rather than
+                 fabricating a value). #}
               {% if editable %}
-              <input type="text" value="{{ line.description }}"
-                     hx-post="/invoices/{{ invoice.id }}/lines/{{ line.id }}"
-                     hx-trigger="change delay:400ms"
-                     hx-target="#lines-and-totals"
-                     hx-swap="outerHTML"
-                     hx-include="this"
-                     name="description"
-                     class="w-full text-sm border-0 bg-transparent hover:bg-white focus:bg-white border border-transparent hover:border-gray-200 focus:border-brand-400 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-brand-400"/>
-              {% else %}
-              <span class="text-sm text-gray-700">{{ line.description }}</span>
+              <td class="px-2 py-2 align-middle text-right text-xs text-steel-300 tabular-nums admin-margin" x-show="showMargin" x-cloak>
+                —
+              </td>
               {% endif %}
-            </td>
 
-            <td class="tbl-td-r">
-              {% if editable and not (is_core and line.is_locked_to_parent) %}
-              <input type="number" value="{{ line.qty }}" min="1"
-                     hx-post="/invoices/{{ invoice.id }}/lines/{{ line.id }}"
-                     hx-trigger="change"
-                     hx-target="#lines-and-totals"
-                     hx-swap="outerHTML"
-                     hx-include="this"
-                     name="qty"
-                     class="w-16 text-right text-sm border border-gray-200 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-400"/>
-              {% else %}
-              <span class="text-sm tabular-nums {% if is_core and line.is_locked_to_parent %}text-amber-700{% endif %}">{{ line.qty }}</span>
-              {% endif %}
-            </td>
+              {# Ext — .money.ext (mono 12.5px 700, ink) #}
+              <td class="px-3 py-2 align-middle text-right">
+                <span class="money ext">${{ "%.2f"|format(line.line_total) }}</span>
+              </td>
 
-            <td class="tbl-td-r">
+              {# Row actions (editable only) — delete / unlink → dispatch to outer modal #}
               {% if editable %}
-              <input type="number" value="{{ '%.2f' % line.unit_price }}" min="0" step="0.01"
-                     hx-post="/invoices/{{ invoice.id }}/lines/{{ line.id }}"
-                     hx-trigger="change"
-                     hx-target="#lines-and-totals"
-                     hx-swap="outerHTML"
-                     hx-include="this"
-                     name="unit_price"
-                     class="w-24 text-right text-sm border border-gray-200 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-400 tabular-nums"/>
-              {% else %}
-              <span class="text-sm tabular-nums">${{ "%.2f"|format(line.unit_price) }}</span>
+              <td class="px-2 py-2 align-middle text-right">
+                {% if is_core and line.is_locked_to_parent %}
+                <button type="button"
+                        @click="$dispatch('inv-line-confirm', {
+                          url: '/invoices/{{ invoice.id }}/lines/{{ line.id }}/unlink',
+                          msg: 'Unlink this core line from its parent? It will no longer auto-sync with parent qty changes.'
+                        })"
+                        class="text-xs text-amber-600 hover:text-amber-800" title="Unlink from parent">⛓</button>
+                {% else %}
+                <button type="button"
+                        @click="$dispatch('inv-line-confirm', {
+                          url: '/invoices/{{ invoice.id }}/lines/{{ line.id }}/delete',
+                          msg: 'Remove this line?{% if line.children %} Linked auto-generated children (e.g. core) will also be removed.{% endif %}'
+                        })"
+                        class="text-xs text-red-400 hover:text-red-600 font-bold" title="Delete line">×</button>
+                {% endif %}
+              </td>
               {% endif %}
-            </td>
-
-            <td class="tbl-td-r">
-              {% if editable and not is_core %}
-              <input type="number" value="{{ line.discount_pct }}" min="0" max="100" step="0.5"
-                     hx-post="/invoices/{{ invoice.id }}/lines/{{ line.id }}"
-                     hx-trigger="change"
-                     hx-target="#lines-and-totals"
-                     hx-swap="outerHTML"
-                     hx-include="this"
-                     name="discount_pct"
-                     class="w-14 text-right text-sm border border-gray-200 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-400 tabular-nums"/>
-              {% else %}
-              <span class="text-xs text-gray-500 tabular-nums">{{ line.discount_pct }}%</span>
-              {% endif %}
-            </td>
-
-            <td class="tbl-td-r font-semibold text-gray-800 tabular-nums">
-              ${{ "%.2f"|format(line.line_total) }}
-            </td>
-
-            {% if editable %}
-            <td class="tbl-td text-right">
-              {% if is_core and line.is_locked_to_parent %}
-              <button type="button"
-                      hx-post="/invoices/{{ invoice.id }}/lines/{{ line.id }}/unlink"
-                      hx-target="#lines-and-totals"
-                      hx-swap="outerHTML"
-                      hx-confirm="Unlink this core line from its parent? It will no longer auto-sync with parent qty changes."
-                      class="text-xs text-amber-600 hover:text-amber-800" title="Unlink from parent">⛓</button>
-              {% else %}
-              <button type="button"
-                      hx-post="/invoices/{{ invoice.id }}/lines/{{ line.id }}/delete"
-                      hx-target="#lines-and-totals"
-                      hx-swap="outerHTML"
-                      hx-confirm="Remove this line?{% if line.children %} Linked auto-generated children (e.g. core) will also be removed.{% endif %}"
-                      class="text-xs text-red-400 hover:text-red-600 font-bold" title="Delete line">×</button>
-              {% endif %}
-            </td>
-            {% endif %}
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% else %}
-    <div class="tbl-empty">
-      {% if editable %}
-      No lines yet — search above to add a product or type free text to add a misc line.
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
       {% else %}
-      Invoice has no lines.
+      <div class="px-4 py-10 text-center text-sm text-steel-400 italic">
+        {% if editable %}
+        No lines yet — search above to add a part or type free text to add a misc line.
+        {% else %}
+        Invoice has no lines.
+        {% endif %}
+      </div>
       {% endif %}
+
+      {# Card footer — Add Line / Scan ghost actions. .alertchip slot intentionally
+         omitted: no price-expiry / out-of-stock alert field is in the invoice context.
+         The spec forbids fabricating data — slot returns when the data does. #}
+      {% if editable %}
+      <div class="flex items-center gap-2 px-4 py-2.5 border-t border-steel-150">
+        <button type="button" @click="document.getElementById('line-search-input')?.focus()"
+                class="btn-secondary btn-sm" title="Focus the part search above">
+          + Add Line
+        </button>
+        <button type="button" @click="document.getElementById('line-search-input')?.focus()"
+                class="btn-secondary btn-sm" title="Scan a barcode / type a SKU">
+          Scan
+        </button>
+      </div>
+      {% endif %}
+    </div>{# /lines card #}
+  </div>{# /main column #}
+
+  {# ═══════════════════════ RIGHT RAIL (284px) ══════════════════════════════ #}
+  <aside class="w-full md:w-[284px] shrink-0 flex flex-col gap-3.5">
+
+    {# Customer card — rail summary (header strip already shows balances). #}
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="flex items-center gap-2 px-4 py-2.5 border-b border-steel-150">
+        <h4 class="label-mini text-steel-500">Customer</h4>
+        {% if invoice.customer.account_number %}
+        <span class="ml-auto font-mono text-[10.5px] text-steel-400">Acct {{ invoice.customer.account_number }}</span>
+        {% endif %}
+      </div>
+      <div class="px-4 pt-2.5 pb-3">
+        <div class="font-display font-semibold text-[15px] text-ink">{{ invoice.customer.company_name }}</div>
+        <div class="text-xs text-steel-500 mt-1 leading-relaxed">
+          {{ cust_payment_terms | replace('_', ' ') | title }}
+          {% if invoice.customer.is_tax_exempt %} · Tax-exempt{% endif %}
+          {% if invoice.customer.contact_name %}<br>{{ invoice.customer.contact_name }}{% if invoice.customer.phone %} — {{ invoice.customer.phone }}{% endif %}{% endif %}
+        </div>
+      </div>
     </div>
-    {% endif %}
-  </div>
 
-  {# ── Totals panel ─────────────────────────────────────────────────────── #}
-  {% include "invoices/_totals_panel.html" %}
+    {# Totals card — .kv rows + .tot block (Axle redress in _totals_panel.html) #}
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="flex items-center gap-2 px-4 py-2.5 border-b border-steel-150">
+        <h4 class="label-mini text-steel-500">Totals</h4>
+      </div>
+      {% include "invoices/_totals_panel.html" %}
+      {# Margin block — admin toggle; numeric stays em-dash until the invoice
+         intelligence service exposes per-document margin_pct on the totals dict. #}
+      <div class="margin border-t border-steel-150" x-show="showMargin" x-cloak>
+        <div class="row">
+          <span>Margin</span>
+          <b>—</b>
+        </div>
+        <div class="bar"><i style="width:0%"></i></div>
+      </div>
+    </div>
 
+    {# QuickBooks sync card — .sync LED. State-aware label using existing
+       qbo_invoice_id / qbo_sync_status fields. #}
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="sync">
+        <span class="led"></span>
+        {% if invoice.qbo_invoice_id %}
+        <span><b>QuickBooks</b> synced</span>
+        <span class="t">id {{ invoice.qbo_invoice_id }}</span>
+        {% elif invoice.qbo_sync_status == 'error' %}
+        <span><b>QuickBooks</b> error</span>
+        <span class="t">retry from More ▾</span>
+        {% elif editable %}
+        <span><b>QuickBooks</b> ready</span>
+        <span class="t">on finalize</span>
+        {% else %}
+        <span><b>QuickBooks</b> ready</span>
+        <span class="t">push from More ▾</span>
+        {% endif %}
+      </div>
+    </div>
+
+  </aside>{# /rail #}
 </div>

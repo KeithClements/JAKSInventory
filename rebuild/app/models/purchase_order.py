@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime
-from sqlalchemy import String, Text, Float, Integer, Boolean, ForeignKey, DateTime, Index, func
+from sqlalchemy import String, Text, Float, Integer, Boolean, ForeignKey, DateTime, Index, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 from app.models.mixins import QBOSyncMixin
-from app.constants import POStatus, VendorBillStatus, QBOSyncStatus, Carrier, MatchResolution
+from app.constants import POStatus, POShipToType, VendorBillStatus, QBOSyncStatus, Carrier, MatchResolution
+
+# 3-way-match cost tolerance: a billed unit cost is a DISCREPANCY when it differs
+# from the PO/receipt unit cost by at least this much (1 cent). Single source of
+# truth — POService.compute_match_line and create_vendor_bill import this so the
+# match grid, the bill-status gate, and the line flag can never use different
+# thresholds. Money path: a vendor overcharge must never silently auto-approve.
+COST_VARIANCE_TOLERANCE = 0.01
 
 
 class PurchaseOrder(QBOSyncMixin, Base):
@@ -22,8 +29,28 @@ class PurchaseOrder(QBOSyncMixin, Base):
     vendor_confirmation_number: Mapped[str | None] = mapped_column(
         String(100), nullable=True
     )
+    # Vendor acknowledged the order. Lets staff record a confirmation even when
+    # the vendor gives no confirmation number (phone/portal "yes, we've got it").
+    vendor_confirmed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
 
-    # ── Drop-Ship ─────────────────────────────────────────────────────────────
+    # ── Bill-To / Ship-To ─────────────────────────────────────────────────────
+    # Bill-to is always one of our own CompanyLocations (default = primary).
+    bill_to_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("company_locations.id"), nullable=True
+    )
+    # ship_to_type drives which ship-to fields apply: 'location' → ship_to_location_id,
+    # 'ad_hoc' → ship_to_snapshot, 'drop_ship' → the drop_ship_* fields below.
+    ship_to_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=POShipToType.LOCATION
+    )
+    ship_to_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("company_locations.id"), nullable=True
+    )
+    ship_to_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # ── Drop-Ship (ship_to_type == 'drop_ship') ───────────────────────────────
     is_drop_ship: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     drop_ship_customer_id: Mapped[int | None] = mapped_column(
         ForeignKey("customers.id"), nullable=True
@@ -34,6 +61,16 @@ class PurchaseOrder(QBOSyncMixin, Base):
 
     # ── Costs ────────────────────────────────────────────────────────────────
     freight_in_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    # Vendor volume discount snapshot: the % actually applied to THIS PO's line
+    # costs (0 = none). Snapshotted from the vendor's VendorProgram at apply time
+    # so a later edit to the vendor's rule never rewrites a historical PO. The
+    # pre-discount price lives per-line in POLine.list_unit_cost (reversible +
+    # lets the UI show the struck list price). Parts only — core charges and
+    # freight-in are never discounted. See POService.apply_volume_discount.
+    volume_discount_pct: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default=text("0")
+    )
 
     # ── Dates ────────────────────────────────────────────────────────────────
     ordered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -67,6 +104,13 @@ class PurchaseOrder(QBOSyncMixin, Base):
         overlaps="lines,po_line,receipt",
     )
     bills: Mapped[list[VendorBill]] = relationship("VendorBill", back_populates="po")
+    # Two FKs to company_locations → disambiguate with foreign_keys.
+    bill_to_location: Mapped[CompanyLocation | None] = relationship(
+        "CompanyLocation", foreign_keys=[bill_to_location_id]
+    )
+    ship_to_location: Mapped[CompanyLocation | None] = relationship(
+        "CompanyLocation", foreign_keys=[ship_to_location_id]
+    )
 
     # ── Computed ──────────────────────────────────────────────────────────────
     @property
@@ -102,6 +146,12 @@ class POLine(Base):
     qty_billed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     unit_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     core_charge_per_unit: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    # Pre-discount unit cost — set when a vendor volume discount is applied so the
+    # discount is reversible and the original list price can be shown struck out.
+    # NULL = no discount on this line; when set, unit_cost holds the discounted
+    # value (= round(list_unit_cost * (1 - pct/100), 2)).
+    list_unit_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Allocated freight-in cost per unit (computed by POService after receipt)
     landed_cost_per_unit: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -155,7 +205,10 @@ class POLine(Base):
 
     @property
     def has_billing_discrepancy(self) -> bool:
-        return self.qty_billed > self.qty_received
+        # D-4b — billed qty is a discrepancy when it exceeds EITHER the received
+        # qty or the PO-ordered ceiling. Over-receipt can push qty_received above
+        # qty_ordered, so the received check alone lets an over-ordered bill pass.
+        return self.qty_billed > self.qty_received or self.qty_billed > self.qty_ordered
 
 
 class POReceipt(Base):
@@ -178,6 +231,12 @@ class POReceipt(Base):
         String(30), nullable=True, default=None
     )
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    # Reversal (undo a mis-receive). Whole-receipt, atomic, idempotent — see
+    # POService.reverse_receipt. NULL = never reversed.
+    reversed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reversed_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reversal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # One receipt can span lines from multiple POs.
     # The POs involved are found via: [rl.po_line.po for rl in self.lines]
@@ -207,11 +266,25 @@ class POReceiptLine(Base):
 class VendorBill(QBOSyncMixin, Base):
     """
     Vendor's invoice to JAKS. Matched against receipts (3-way match).
-    Status = discrepancy when qty_billed > qty_received on any line.
+    Status = DISCREPANCY when any line is over-billed (qty_billed > qty_received),
+    over-ordered (qty_billed > qty_ordered — billed beyond what the PO authorized),
+    OR cost-varied (billed unit cost differs from PO/receipt cost beyond
+    COST_VARIANCE_TOLERANCE). Any of these blocks approval.
     """
     __tablename__ = "vendor_bills"
     __table_args__ = (
         Index("ix_vendor_bills_qbo_sync_status", "qbo_sync_status"),
+        # R3 — DB backstop behind the R1-5 service guard: the same vendor may
+        # not have two bills with the same bill_number (double-payment risk).
+        # Partial: NULL / blank bill numbers repeat freely. Name must match
+        # _PENDING_UNIQUE_INDEXES in app/database.py (defensive live-DB path).
+        # NOTE: narrower than the service guard, which is also case/whitespace-
+        # insensitive — the index catches only exact-string duplicates.
+        Index(
+            "uq_vendor_bills_vendor_bill_number", "vendor_id", "bill_number",
+            unique=True,
+            sqlite_where=text("bill_number IS NOT NULL AND bill_number != ''"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -226,6 +299,14 @@ class VendorBill(QBOSyncMixin, Base):
         String(20), nullable=False, default=VendorBillStatus.PENDING
     )
     total_amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # Vendor-billed freight — e.g. PAI puts the freight charge on the SAME invoice
+    # as the parts. Defaults from the PO's freight_in_cost at bill creation (net of
+    # freight already billed on prior bills of that PO) and is editable on
+    # correction. It is PART of total_amount (the AP payable, so the bill matches
+    # the vendor's invoice) and posts to QBO as its own freight-in expense line.
+    # Freight billed by a SEPARATE carrier should be zeroed here and entered as its
+    # own bill — the parts lines (and the 3-way match) are unaffected either way.
+    freight_amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
     # ── QBO Sync ──────────────────────────────────────────────────────────────
     # qbo_sync_status, qbo_last_synced_at, qbo_sync_error, qbo_sync_retry_count
@@ -238,6 +319,9 @@ class VendorBill(QBOSyncMixin, Base):
     po: Mapped[PurchaseOrder | None] = relationship(
         "PurchaseOrder", back_populates="bills"
     )
+    # §21 — read-only nav to the vendor (the standalone Vendor Bills list + AP
+    # aging join on this). vendor_id FK already exists; no schema change.
+    vendor: Mapped[Vendor] = relationship("Vendor", viewonly=True)
     lines: Mapped[list[VendorBillLine]] = relationship(
         "VendorBillLine", back_populates="bill", cascade="all, delete-orphan"
     )
@@ -245,6 +329,12 @@ class VendorBill(QBOSyncMixin, Base):
     @property
     def has_discrepancy(self) -> bool:
         return any(ln.has_discrepancy for ln in self.lines)
+
+    @property
+    def parts_subtotal(self) -> float:
+        """Sum of the billed parts lines, before freight. total_amount =
+        parts_subtotal + freight_amount."""
+        return round(sum(ln.line_total for ln in self.lines), 2)
 
 
 class VendorBillLine(Base):
@@ -267,12 +357,27 @@ class VendorBillLine(Base):
 
     @property
     def has_discrepancy(self) -> bool:
+        """A bill line is a discrepancy when the billed qty exceeds the received
+        qty (over-billed), OR exceeds the PO-ordered qty (billed beyond what was
+        authorized), OR the billed unit cost differs from the PO/receipt unit
+        cost beyond tolerance (vendor overcharge/undercharge). Each must block
+        approval — paying for more units than were ordered, or at a higher cost
+        than agreed, is just as much a money problem as over-billing what was
+        received."""
         if self.po_line is None:
             return False
-        return self.qty_billed > self.po_line.qty_received
+        if self.qty_billed > self.po_line.qty_received:
+            return True
+        # D-4b — over-receipt (R6, allow-with-warning) can lift qty_received above
+        # the PO ceiling, so a bill that "matches receipts" can still bill MORE
+        # than the PO authorized. The 3-way match must clamp to qty_ordered too.
+        if self.qty_billed > self.po_line.qty_ordered:
+            return True
+        return abs(self.unit_cost - self.po_line.unit_cost) >= COST_VARIANCE_TOLERANCE
 
 
 # ── Late imports ───────────────────────────────────────────────────────────────
 from app.models.vendor import Vendor                         # noqa: E402
 from app.models.product import Product                       # noqa: E402
 from app.models.customer import CustomerAddress              # noqa: E402
+from app.models.company_location import CompanyLocation      # noqa: E402

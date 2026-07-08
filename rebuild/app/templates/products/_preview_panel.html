@@ -8,7 +8,10 @@
     {# ── Identity ── #}
     <div class="col-span-1">
       <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Identity</p>
-      <div class="space-y-1.5">
+      <div class="flex gap-3">
+        {% set _img0 = p.primary_image or (p.images[0] if p.images else None) %}
+        {% if _img0 %}<img src="{{ _img0.url }}" alt="{{ p.title or p.sku }}" loading="lazy" class="w-14 h-14 shrink-0 rounded-lg object-cover border border-gray-200 bg-gray-50" />{% endif %}
+        <div class="space-y-1.5 min-w-0">
         <div class="flex items-center gap-2 flex-wrap">
           <span class="font-mono text-base font-bold text-brand-700 leading-none">{{ p.sku }}</span>
           <span class="{% if p.status == 'active' %}badge-green{% elif p.status == 'superseded' %}badge-amber{% else %}badge-red{% endif %} text-[10px]">
@@ -41,6 +44,7 @@
           {{ p.engine_manufacturer }}{% if p.engine_model %} · {{ p.engine_model }}{% endif %}
         </p>
         {% endif %}
+        </div>
       </div>
     </div>
 
@@ -60,14 +64,21 @@
         {% endif %}
         <div class="flex items-center justify-between">
           <span class="text-xs text-gray-500">Sell Price</span>
-          <span class="text-sm font-bold text-gray-900 tabular-nums">${{ "%.2f"|format(p.selling_price) }}</span>
+          {# STAGED — Backend-resolved price when present (scalar resolved_price or
+             resolved_price_map[p.id]), else stored selling_price. Guarded, no-op until then. #}
+          {% set _rp = resolved_price if (resolved_price is defined and resolved_price is not none) else (resolved_price_map | default({})).get(p.id) %}
+          <span class="text-sm font-bold text-gray-900 tabular-nums">${{ "%.2f"|format(_rp if _rp is not none else p.selling_price) }}</span>
         </div>
         <div class="flex items-center justify-between pt-1 border-t border-gray-100">
           <span class="text-xs text-gray-500">Margin</span>
+          {% if p.cost and p.cost > 0 %}
           <span class="text-sm font-bold tabular-nums
             {% if margin_pct >= 25 %}text-green-600{% elif margin_pct >= 15 %}text-amber-600{% else %}text-red-600{% endif %}">
             {{ "%.1f"|format(margin_pct) }}%
           </span>
+          {% else %}
+          <span class="text-sm text-gray-400 tabular-nums" title="No cost yet — set on first PO receipt">—</span>
+          {% endif %}
         </div>
         {% if p.has_core %}
         <div class="pt-1 border-t border-gray-100 space-y-1">
@@ -90,9 +101,12 @@
       <div class="space-y-1.5">
         <div class="flex items-center justify-between">
           <span class="text-xs text-gray-500">On Hand</span>
+          {# is_low_stock inlined + None-guarded: the property compares
+             qty_on_hand <= reorder_point and raises TypeError when either is
+             NULL (legacy import rows) — same truthiness guard as Available below #}
           <span class="text-sm font-bold tabular-nums
-            {% if p.qty_on_hand == 0 %}text-red-600{% elif p.is_low_stock %}text-amber-600{% else %}text-gray-900{% endif %}">
-            {{ p.qty_on_hand }}
+            {% if not p.qty_on_hand %}text-red-600{% elif p.reorder_point and p.qty_on_hand <= p.reorder_point %}text-amber-600{% else %}text-gray-900{% endif %}">
+            {{ p.qty_on_hand or 0 }}
           </span>
         </div>
         <div class="flex items-center justify-between">
@@ -182,7 +196,12 @@
             </svg>
             Edit Product
           </a>
-          <a href="/purchase-orders/new{% if pvs %}?vendor_id={{ pvs.vendor_id }}{% endif %}"
+          {# Open the New-PO slide-over pre-seeded with this part. Driven by an
+             explicit htmx.ajax() from @click (not declarative hx-get) because this
+             panel is itself injected via htmx.ajax, so descendant hx-* aren't wired. #}
+          <button type="button"
+             data-new-po-url="/purchase-orders/new?product_id={{ p.id }}{% if pvs %}&vendor_id={{ pvs.vendor_id }}{% endif %}"
+             @click="createSlideTitle = 'New Purchase Order'; createSlideOpen = true; htmx.ajax('GET', $el.dataset.newPoUrl, {target: '#create-slide-content', swap: 'innerHTML'})"
              class="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold
                     bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 transition-colors">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -190,7 +209,7 @@
                     d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
             </svg>
             New PO
-          </a>
+          </button>
         </div>
       </div>
     </div>

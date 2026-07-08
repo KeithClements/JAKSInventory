@@ -15,16 +15,22 @@ Typical use: monthly statements for net-terms customers.
 """
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta
+from types import SimpleNamespace
 from typing import TypedDict
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
-from app.constants import CoreDirection, CoreStatus, InvoiceStatus
+from app.constants import CoreDirection, CoreStatus, CreditMemoStatus, InvoiceStatus
 from app.models.core import CoreCharge
+from app.models.credit_memo import CreditMemo
 from app.models.customer import Customer
 from app.models.invoice import Invoice, Payment
+from app.models.statement import CustomerStatement
+from app.services.ar_aging_utils import AGING_BUCKETS, as_date, zero_buckets, bucket_for
+from app.settings_utils import bump_counter
 
 
 class StatementLine(TypedDict):
@@ -87,6 +93,30 @@ class StatementService:
         )
         opening_balance = round(sum(inv.balance_due for inv in pre_period_invoices), 2)
 
+        # §21 — credit memos reduce net A/R but are absent from invoice balances
+        # (balance_due = total − payment allocations only; CMs are independent
+        # documents). A customer with a warranty/core/return credit therefore
+        # showed an inflated statement balance. Net pre-period CMs into the
+        # opening balance so the running balance starts from the true figure.
+        _ACTIVE_CM = [
+            CreditMemoStatus.OPEN, CreditMemoStatus.APPLIED, CreditMemoStatus.PARTIAL,
+        ]
+        pre_period_cm_total = round(
+            sum(
+                cm.total_amount for cm in (
+                    self.db.query(CreditMemo)
+                    .filter(
+                        CreditMemo.customer_id == customer_id,
+                        CreditMemo.status.in_(_ACTIVE_CM),
+                        func.date(CreditMemo.created_at) < period_start,
+                    )
+                    .all()
+                )
+            ),
+            2,
+        )
+        opening_balance = round(opening_balance - pre_period_cm_total, 2)
+
         # ── Activity within period ─────────────────────────────────────────────
         period_invoices = (
             self.db.query(Invoice)
@@ -115,6 +145,19 @@ class StatementService:
             .all()
         )
 
+        # §21 — credit memos issued within the period, shown as credit lines.
+        period_credit_memos = (
+            self.db.query(CreditMemo)
+            .filter(
+                CreditMemo.customer_id == customer_id,
+                CreditMemo.status.in_(_ACTIVE_CM),
+                func.date(CreditMemo.created_at) >= period_start,
+                func.date(CreditMemo.created_at) <= period_end,
+            )
+            .order_by(CreditMemo.created_at)
+            .all()
+        )
+
         # Merge and sort all transactions by date
         raw_txns: list[tuple[date, str, str, float, float]] = []
         # (date, type, reference, charges, credits)
@@ -125,8 +168,12 @@ class StatementService:
 
         for pmt in period_payments:
             pmt_date = pmt.payment_date.date() if isinstance(pmt.payment_date, datetime) else pmt.payment_date
-            ref = pmt.reference_number or pmt.payment_method or "Payment"
+            ref = pmt.check_number or pmt.payment_method or "Payment"
             raw_txns.append((pmt_date, "payment", ref, 0.0, pmt.amount_received))
+
+        for cm in period_credit_memos:
+            cm_date = cm.created_at.date() if isinstance(cm.created_at, datetime) else cm.created_at
+            raw_txns.append((cm_date, "credit_memo", cm.cm_number, 0.0, cm.total_amount))
 
         raw_txns.sort(key=lambda t: t[0])
 
@@ -164,32 +211,21 @@ class StatementService:
             .all()
         )
 
-        aging: dict[str, float] = {
-            "current": 0.0,
-            "1_30": 0.0,
-            "31_60": 0.0,
-            "61_90": 0.0,
-            "over_90": 0.0,
-        }
+        # Bucket open balances using the shared ar_aging_utils helpers so that
+        # the statement aging agrees exactly with the AR aging report and the
+        # customer balance widget (same boundaries, same code).
+        aging: dict[str, float] = zero_buckets()
         for inv in open_invoices:
             bal = inv.balance_due
             if bal <= 0:
                 continue
-            if inv.due_date is None:
+            due = as_date(inv.due_date)
+            if due is None:
                 aging["current"] = round(aging["current"] + bal, 2)
                 continue
-            due = inv.due_date.date() if isinstance(inv.due_date, datetime) else inv.due_date
             days_late = (as_of - due).days
-            if days_late <= 0:
-                aging["current"] = round(aging["current"] + bal, 2)
-            elif days_late <= 30:
-                aging["1_30"] = round(aging["1_30"] + bal, 2)
-            elif days_late <= 60:
-                aging["31_60"] = round(aging["31_60"] + bal, 2)
-            elif days_late <= 90:
-                aging["61_90"] = round(aging["61_90"] + bal, 2)
-            else:
-                aging["over_90"] = round(aging["over_90"] + bal, 2)
+            b = bucket_for(days_late)
+            aging[b] = round(aging[b] + bal, 2)
 
         return StatementData(
             customer=customer,
@@ -203,6 +239,197 @@ class StatementService:
             total_charges=total_charges,
             total_credits=total_credits,
         )
+
+    # ── R3 — Statement persistence (immutable record of what was sent) ────────
+
+    def generate_bulk_statements(
+        self,
+        period_start: date,
+        period_end: date,
+        generated_by_user_id: int | None = None,
+    ) -> dict:
+        """§21 — generate + persist a statement for every customer who has an open
+        AR balance (an OPEN/PARTIAL invoice). Lets the bookkeeper run month-end
+        statements in one pass instead of one customer at a time. Returns a
+        summary; per-customer failures are collected, not raised.
+
+        (Generation only — there's no email provider yet, so 'send' is out of
+        scope; the persisted statements are printable/archivable as usual.)"""
+        customer_ids = [
+            cid for (cid,) in (
+                self.db.query(Invoice.customer_id)
+                .filter(Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL]))
+                .distinct()
+                .all()
+            )
+        ]
+        generated = 0
+        errors: list[str] = []
+        for cid in customer_ids:
+            try:
+                stmt = self.generate_statement(cid, period_start, period_end)
+                if stmt["closing_balance"] <= 0 and not stmt["lines"]:
+                    continue  # nothing to show
+                self.persist_statement(stmt, generated_by_user_id)
+                generated += 1
+            except Exception as exc:  # noqa: BLE001 — one bad customer must not abort the batch
+                errors.append(f"customer {cid}: {exc}")
+        return {"customers": len(customer_ids), "generated": generated, "errors": errors}
+
+    def persist_statement(
+        self,
+        stmt: StatementData,
+        generated_by_user_id: int | None = None,
+    ) -> CustomerStatement:
+        """
+        Persist a CustomerStatement row recording exactly what `stmt` showed.
+
+        Called at the print / PDF moment — the point a statement is considered
+        "sent to the customer" — so a disputed statement can be re-rendered
+        from its stored snapshot even after the underlying invoices and
+        payments change.
+
+        IDEMPOTENCY RULE: regenerating the SAME customer + SAME period
+        (period_start AND period_end both equal) on the SAME calendar day
+        reuses and refreshes the existing row — repeated print/PDF clicks do
+        not mint duplicate statement numbers. A different period (either
+        bound) or a new calendar day mints a fresh number from the
+        next_statement_number counter (ST-YYYY-NNNN).
+
+        Commits — callers are GET print/PDF routes that otherwise never commit.
+        """
+        customer = stmt["customer"]
+        today = date.today()
+        aging = stmt["aging"]
+
+        row = (
+            self.db.query(CustomerStatement)
+            .filter(
+                CustomerStatement.customer_id == customer.id,
+                CustomerStatement.date_range_start == stmt["period_start"],
+                CustomerStatement.date_range_end == stmt["period_end"],
+                func.date(CustomerStatement.generated_at) == today.isoformat(),
+            )
+            .order_by(CustomerStatement.id.desc())
+            .first()
+        )
+        if row is None:
+            number = bump_counter(self.db, "next_statement_number", "ST", today.year)
+            row = CustomerStatement(
+                statement_number=number,
+                customer_id=customer.id,
+                date_range_start=stmt["period_start"],
+                date_range_end=stmt["period_end"],
+            )
+            self.db.add(row)
+
+        row.generated_at = datetime.now()
+        if generated_by_user_id is not None:
+            row.generated_by_user_id = generated_by_user_id
+        row.opening_balance = stmt["opening_balance"]
+        row.closing_balance = stmt["closing_balance"]
+        row.total_invoiced = stmt["total_charges"]
+        row.total_paid = stmt["total_credits"]
+        # Bucket keys follow ar_aging_utils.AGING_BUCKETS; the model's legacy
+        # due_120 column is dead (see app/models/statement.py) — over_90 is
+        # the terminal bucket.
+        row.current_due = float(aging.get("current", 0.0))
+        row.due_30 = float(aging.get("1_30", 0.0))
+        row.due_60 = float(aging.get("31_60", 0.0))
+        row.due_90 = float(aging.get("61_90", 0.0))
+        row.over_90 = float(aging.get("over_90", 0.0))
+        row.snapshot_json = json.dumps(self._snapshot_payload(stmt), sort_keys=True)
+        self.db.commit()
+        self.db.refresh(row)
+        return row
+
+    @staticmethod
+    def _snapshot_payload(stmt: StatementData) -> dict:
+        """JSON-safe copy of the full statement (dates → isoformat strings)."""
+        c = stmt["customer"]
+        return {
+            "customer": {
+                "id": c.id,
+                "company_name": c.company_name,
+                "address_line1": getattr(c, "address_line1", None),
+                "address_line2": getattr(c, "address_line2", None),
+                "city": getattr(c, "city", None),
+                "state": getattr(c, "state", None),
+                "zip_code": getattr(c, "zip_code", None),
+                "phone": getattr(c, "phone", None),
+            },
+            "as_of": stmt["as_of"].isoformat(),
+            "period_start": stmt["period_start"].isoformat(),
+            "period_end": stmt["period_end"].isoformat(),
+            "opening_balance": stmt["opening_balance"],
+            "closing_balance": stmt["closing_balance"],
+            "total_charges": stmt["total_charges"],
+            "total_credits": stmt["total_credits"],
+            "aging": {k: float(stmt["aging"].get(k, 0.0)) for k in AGING_BUCKETS},
+            "lines": [
+                {
+                    "txn_date": ln["txn_date"].isoformat(),
+                    "txn_type": ln["txn_type"],
+                    "reference": ln["reference"],
+                    "charges": ln["charges"],
+                    "credits": ln["credits"],
+                    "running_balance": ln["running_balance"],
+                }
+                for ln in stmt["lines"]
+            ],
+        }
+
+    def get_statement(self, statement_id: int) -> dict | None:
+        """Parsed snapshot of a persisted statement (R3 re-print path).
+
+        Returns the statement_print.html-shaped ctx rebuilt from the stored
+        snapshot_json — i.e. exactly what was sent, regardless of how the
+        underlying invoices/payments have changed since. None if the row
+        doesn't exist or predates snapshots (legacy rows)."""
+        row = self.db.get(CustomerStatement, statement_id)
+        if row is None:
+            return None
+        return self.snapshot_to_render_ctx(row)
+
+    def get_statement_history(
+        self, customer_id: int, limit: int = 24
+    ) -> list[CustomerStatement]:
+        """Saved statements for a customer, newest first (history panel)."""
+        return (
+            self.db.query(CustomerStatement)
+            .filter(CustomerStatement.customer_id == customer_id)
+            .order_by(CustomerStatement.generated_at.desc(), CustomerStatement.id.desc())
+            .limit(limit)
+            .all()
+        )
+
+    @staticmethod
+    def snapshot_to_render_ctx(row: CustomerStatement) -> dict | None:
+        """
+        Rebuild a statement_print.html-shaped dict from a saved snapshot.
+
+        READ-ONLY: never touches live invoice/payment data — this is the
+        dispute-resolution view of exactly what was sent. Returns None for
+        legacy rows persisted without a snapshot.
+        """
+        if not row.snapshot_json:
+            return None
+        snap = json.loads(row.snapshot_json)
+        return {
+            "customer": SimpleNamespace(**snap.get("customer", {})),
+            "as_of": date.fromisoformat(snap["as_of"]),
+            "period_start": date.fromisoformat(snap["period_start"]),
+            "period_end": date.fromisoformat(snap["period_end"]),
+            "opening_balance": snap["opening_balance"],
+            "closing_balance": snap["closing_balance"],
+            "total_charges": snap["total_charges"],
+            "total_credits": snap["total_credits"],
+            "aging": snap["aging"],
+            "lines": [
+                {**ln, "txn_date": date.fromisoformat(ln["txn_date"])}
+                for ln in snap["lines"]
+            ],
+        }
 
     # ── Customer balance summary (used by Quote + Invoice workspace headers) ──
 

@@ -16,6 +16,7 @@ Method index:
   get_inventory_valuation()
   get_open_pos()
   get_core_charges_outstanding()
+  get_low_stock()
 """
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+from sqlalchemy import DateTime, func, type_coerce
 from sqlalchemy.orm import Session, joinedload
 
 from app.constants import (
@@ -35,10 +37,13 @@ from app.constants import (
 from app.models.core import CoreCharge, CoreSlip
 from app.models.customer import Customer
 from app.models.invoice import Invoice, InvoiceLine
-from app.models.product import Product
+from app.models.product import Product, ProductCategory, ProductVendorSource
 from app.models.purchase_order import PurchaseOrder, POLine
-from app.models.quote import LostSaleLog, SalesOrder, SOLine
+from app.models.quote import LostSaleLog, Quote, SalesOrder, SOLine
 from app.services.base import BaseService
+from app.services.ar_aging_utils import (
+    AGING_BUCKETS, as_date, zero_buckets, bucket_for,
+)
 
 
 # Statuses that count as "finalized" — posted invoices that represent real revenue.
@@ -49,31 +54,75 @@ _FINALIZED_INVOICE_STATUSES = (
     InvoiceStatus.PAID,
 )
 
+# Period-bucketing date for finalized-invoice reports (sales tax, sales by
+# customer/product). QBO posts each invoice with TxnDate = locked_at (the finalize
+# date), so bucketing by created_at made "June sales tax" in the ERP disagree with
+# QBO's June for any invoice drafted in one month and finalized in the next.
+# coalesce(locked_at, created_at) ties these reports to the QBO period; a finalized
+# invoice always has locked_at, the fallback only guards legacy rows.
+# (C-review: report date basis mismatch.)
+# A fresh expression per call — NOT a shared module-level instance: reusing one
+# ColumnElement across queries can collide in SQLAlchemy's compiled-statement cache
+# and bind the datetime comparison wrong (observed: the route matched 0 rows while a
+# direct call matched 1). type_coerce keeps the DateTime affinity that a bare
+# func.coalesce loses, so the ">= start_dt" comparison binds correctly when locked_at
+# is NULL (finalized invoices always have locked_at in production; the fallback to
+# created_at only guards legacy/test rows).
+def _invoice_post_date():
+    return type_coerce(func.coalesce(Invoice.locked_at, Invoice.created_at), DateTime)
+
 # Open core charge states for the outstanding-cores report
 _OPEN_CORE_STATUSES = (
     CoreStatus.OPEN,
     CoreStatus.PARTIAL,
 )
 
-# Aging bucket keys — kept in display order
-_AGING_BUCKETS = ("current", "1_30", "31_60", "61_90", "over_90")
-
-
-def _as_date(value: Any) -> date | None:
-    """Normalize a datetime/date/None to a date for day-diff math."""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    return value
-
-
-def _zero_buckets() -> dict[str, float]:
-    return {k: 0.0 for k in _AGING_BUCKETS}
+# Aging bucket keys — canonical order from shared utils (kept here for imports
+# that reference report_service._AGING_BUCKETS if any).  New code should import
+# directly from ar_aging_utils.
+_AGING_BUCKETS = AGING_BUCKETS
 
 
 class ReportService(BaseService):
     """Read-only report queries. Inherits db + audit machinery but never writes."""
+
+    # ── Cost-estimation fallback (R1-14 margin truth) ────────────────────────
+
+    @staticmethod
+    def _fallback_unit_cost(product) -> float:
+        """
+        Estimated unit cost for invoice lines whose frozen unit_cost snapshot
+        is 0 (sold before the product was ever receipted — true for the whole
+        un-receipted imported catalog, which otherwise reports ~100% margin).
+
+        Order: preferred vendor source vendor_cost (the per-source vendor quote
+        is the source of truth for what we'd pay today, §8N), then last_cost
+        (most recent actual receipt cost). Returns 0.0 when no usable cost.
+        """
+        if product is None:
+            return 0.0
+        src = product.preferred_vendor_source
+        if src is not None and (src.vendor_cost or 0.0) > 0:
+            return src.vendor_cost
+        if (product.last_cost or 0.0) > 0:
+            return product.last_cost
+        return 0.0
+
+    def _resolve_line_cost(self, ln) -> tuple[float, bool, bool]:
+        """
+        Per-line COGS for sales reports: (unit_cost, estimated, zero_cost).
+
+        estimated  — snapshot was 0 but a fallback cost was substituted.
+        zero_cost  — no cost basis at all on a revenue-carrying line (margin
+                     overstated for that line).
+        """
+        unit_cost = ln.unit_cost or 0.0
+        if unit_cost > 0:
+            return unit_cost, False, False
+        est = self._fallback_unit_cost(ln.product)
+        if est > 0:
+            return est, True, False
+        return 0.0, False, ln.line_total != 0
 
     # ── 1. AR Aging ───────────────────────────────────────────────────────────
 
@@ -104,9 +153,12 @@ class ReportService(BaseService):
         """
         as_of = as_of_date or date.today()
 
-        # Load all non-void invoices with the relationships needed for balance_due
-        # and customer name. DRAFT invoices have no balance due (not posted) but
-        # leaving them in costs nothing — they'll be filtered out by balance<=0.
+        # Only POSTED invoices carry A/R. DRAFT invoices are NOT filtered out by
+        # balance<=0 (a draft carries its full total as balance_due — nothing zeroes
+        # it except VOID), so including them silently inflated A/R and the dashboard
+        # by the sum of every open draft, and disagreed with StatementService (which
+        # filters OPEN/PARTIAL). Restrict to finalized statuses. (C-review: A/R aging
+        # included drafts.)
         invoices = (
             self.db.query(Invoice)
             .options(
@@ -114,7 +166,7 @@ class ReportService(BaseService):
                 joinedload(Invoice.allocations),
                 joinedload(Invoice.customer),
             )
-            .filter(Invoice.status != InvoiceStatus.VOID)
+            .filter(Invoice.status.in_(_FINALIZED_INVOICE_STATUSES))
             .all()
         )
 
@@ -122,7 +174,7 @@ class ReportService(BaseService):
             "customer": None,
             "customer_id": None,
             "invoice_count": 0,
-            **_zero_buckets(),
+            **zero_buckets(),
             "total": 0.0,
             "invoices": [],
         })
@@ -140,24 +192,24 @@ class ReportService(BaseService):
             row["total"] = round(row["total"] + balance, 2)
 
             # Use due_date if present, else fall back to invoice created date
-            reference_date = _as_date(inv.due_date) or _as_date(inv.created_at)
+            reference_date = as_date(inv.due_date) or as_date(inv.created_at)
             if reference_date is None:
                 # Truly no date — treat as current rather than crashing
                 row["current"] = round(row["current"] + balance, 2)
                 continue
 
             days_late = (as_of - reference_date).days
-            bucket = self._bucket_for(days_late)
+            bucket = bucket_for(days_late)
             row[bucket] = round(row[bucket] + balance, 2)
 
         # Sort by total descending — biggest debtors at the top
         rows = sorted(aging.values(), key=lambda r: r["total"], reverse=True)
 
-        totals = {b: round(sum(r[b] for r in rows), 2) for b in _AGING_BUCKETS}
+        totals = {b: round(sum(r[b] for r in rows), 2) for b in AGING_BUCKETS}
         totals["total"] = round(sum(r["total"] for r in rows), 2)
 
         # Smoke check: bucket columns must sum to grand total
-        bucket_sum = round(sum(totals[b] for b in _AGING_BUCKETS), 2)
+        bucket_sum = round(sum(totals[b] for b in AGING_BUCKETS), 2)
         if abs(bucket_sum - totals["total"]) > 0.02:
             log.warning(
                 "AR aging bucket sum %.2f != totals.total %.2f (as_of=%s)",
@@ -166,17 +218,164 @@ class ReportService(BaseService):
 
         return {"as_of": as_of, "rows": rows, "totals": totals}
 
-    @staticmethod
-    def _bucket_for(days_late: int) -> str:
-        if days_late <= 0:
-            return "current"
-        if days_late <= 30:
-            return "1_30"
-        if days_late <= 60:
-            return "31_60"
-        if days_late <= 90:
-            return "61_90"
-        return "over_90"
+    # ── 1b. AP Aging (payables — what JAKS owes vendors) ──────────────────────
+
+    def get_ap_aging(self, as_of_date: date | None = None) -> dict[str, Any]:
+        """§21 — payables mirror of get_ar_aging. Buckets unpaid vendor-bill
+        balances (total_amount NET of applied, non-reversed vendor credits) by age
+        relative to as_of. Excludes PAID bills; reference date = due_date, else
+        bill_date, else created_at. Vendor-level rows + grand totals."""
+        from sqlalchemy import func as _func
+        from app.constants import VendorBillStatus
+        from app.models.purchase_order import VendorBill
+        from app.models.vendor_credit import VendorCreditMemoAllocation
+
+        as_of = as_of_date or date.today()
+        bills = (
+            self.db.query(VendorBill)
+            .options(joinedload(VendorBill.vendor))
+            .filter(VendorBill.status != VendorBillStatus.PAID)
+            .all()
+        )
+        # Applied (non-reversed) vendor credits per bill — net them off the balance.
+        credit_by_bill = {
+            bid: float(amt or 0.0)
+            for bid, amt in (
+                self.db.query(
+                    VendorCreditMemoAllocation.vendor_bill_id,
+                    _func.sum(VendorCreditMemoAllocation.amount_applied),
+                )
+                .filter(VendorCreditMemoAllocation.is_reversed == False)  # noqa: E712
+                .group_by(VendorCreditMemoAllocation.vendor_bill_id)
+                .all()
+            )
+        }
+
+        aging: dict[int, dict[str, Any]] = defaultdict(lambda: {
+            "vendor": None, "vendor_id": None, "bill_count": 0,
+            **zero_buckets(), "total": 0.0, "bills": [],
+        })
+        for bill in bills:
+            balance = round(bill.total_amount - credit_by_bill.get(bill.id, 0.0), 2)
+            if balance <= 0:
+                continue
+            row = aging[bill.vendor_id]
+            row["vendor"] = bill.vendor
+            row["vendor_id"] = bill.vendor_id
+            row["bill_count"] += 1
+            row["bills"].append(bill)
+            row["total"] = round(row["total"] + balance, 2)
+            ref = as_date(bill.due_date) or as_date(bill.bill_date) or as_date(bill.created_at)
+            if ref is None:
+                row["current"] = round(row["current"] + balance, 2)
+                continue
+            bucket = bucket_for((as_of - ref).days)
+            row[bucket] = round(row[bucket] + balance, 2)
+
+        rows = sorted(aging.values(), key=lambda r: r["total"], reverse=True)
+        totals = {b: round(sum(r[b] for r in rows), 2) for b in AGING_BUCKETS}
+        totals["total"] = round(sum(r["total"] for r in rows), 2)
+        return {"as_of": as_of, "rows": rows, "totals": totals}
+
+    # ── Quote conversion rate (§21.10) ────────────────────────────────────────
+
+    def get_quote_conversion(self, start_date: date, end_date: date) -> dict[str, Any]:
+        """§21 — quote win-rate over a period. Conversion = won / (won + lost)
+        decided quotes; also reports pending + dollar value won vs total."""
+        from app.constants import QuoteOutcome
+        quotes = (
+            self.db.query(Quote)
+            .options(joinedload(Quote.lines))
+            .filter(
+                func.date(Quote.created_at) >= start_date,
+                func.date(Quote.created_at) <= end_date,
+            )
+            .all()
+        )
+        counts = {QuoteOutcome.WON: 0, QuoteOutcome.LOST: 0,
+                  QuoteOutcome.PENDING: 0, QuoteOutcome.NO_DECISION: 0}
+        won_value = total_value = 0.0
+        for q in quotes:
+            counts[q.outcome] = counts.get(q.outcome, 0) + 1
+            sub = q.subtotal
+            total_value = round(total_value + sub, 2)
+            if q.outcome == QuoteOutcome.WON:
+                won_value = round(won_value + sub, 2)
+        won, lost = counts[QuoteOutcome.WON], counts[QuoteOutcome.LOST]
+        decided = won + lost
+        return {
+            "start_date": start_date, "end_date": end_date,
+            "total": len(quotes), "won": won, "lost": lost,
+            "pending": counts[QuoteOutcome.PENDING],
+            "no_decision": counts[QuoteOutcome.NO_DECISION],
+            "conversion_rate": round(won / decided * 100, 1) if decided else None,
+            "won_value": won_value, "total_value": total_value,
+        }
+
+    # ── Vendor performance (§21.10) ───────────────────────────────────────────
+
+    def get_vendor_performance(self, start_date: date, end_date: date) -> dict[str, Any]:
+        """§21 — per-vendor PO/bill scorecard over a period: PO count + value,
+        fill rate (qty_received / qty_ordered across the vendor's PO lines), and
+        bill-discrepancy count (3-way-match failures: over-bill / cost variance).
+        (On-time delivery isn't reported — a receipt can span multiple POs, so
+        there's no clean per-PO received date to compare against expected_at.)"""
+        from app.models.purchase_order import VendorBill
+        from app.models.vendor import Vendor
+
+        pos = (
+            self.db.query(PurchaseOrder)
+            .options(joinedload(PurchaseOrder.vendor), joinedload(PurchaseOrder.lines))
+            .filter(
+                func.date(PurchaseOrder.created_at) >= start_date,
+                func.date(PurchaseOrder.created_at) <= end_date,
+            )
+            .all()
+        )
+        bills = (
+            self.db.query(VendorBill)
+            .options(joinedload(VendorBill.lines))
+            .filter(
+                func.date(VendorBill.created_at) >= start_date,
+                func.date(VendorBill.created_at) <= end_date,
+            )
+            .all()
+        )
+
+        rows: dict[int, dict[str, Any]] = defaultdict(lambda: {
+            "vendor": None, "vendor_id": None, "po_count": 0, "po_value": 0.0,
+            "qty_ordered": 0, "qty_received": 0, "bills": 0, "discrepancy_bills": 0,
+        })
+        for po in pos:
+            r = rows[po.vendor_id]
+            r["vendor"] = po.vendor
+            r["vendor_id"] = po.vendor_id
+            r["po_count"] += 1
+            r["po_value"] = round(r["po_value"] + po.total, 2)
+            for ln in po.lines:
+                r["qty_ordered"] += ln.qty_ordered
+                r["qty_received"] += ln.qty_received
+        for b in bills:
+            r = rows[b.vendor_id]
+            if r["vendor_id"] is None:
+                r["vendor_id"] = b.vendor_id
+            r["bills"] += 1
+            if b.has_discrepancy:
+                r["discrepancy_bills"] += 1
+
+        # Fill any vendor names still missing (bill-only rows).
+        missing = [vid for vid, r in rows.items() if r["vendor"] is None]
+        if missing:
+            for v in self.db.query(Vendor).filter(Vendor.id.in_(missing)).all():
+                rows[v.id]["vendor"] = v
+        for r in rows.values():
+            r["fill_rate"] = (
+                round(r["qty_received"] / r["qty_ordered"] * 100, 1)
+                if r["qty_ordered"] else None
+            )
+
+        out = sorted(rows.values(), key=lambda r: r["po_value"], reverse=True)
+        return {"start_date": start_date, "end_date": end_date, "rows": out}
 
     # ── 2. Sales by Customer ─────────────────────────────────────────────────
 
@@ -219,14 +418,14 @@ class ReportService(BaseService):
         invoices = (
             self.db.query(Invoice)
             .options(
-                joinedload(Invoice.lines),
+                joinedload(Invoice.lines).joinedload(InvoiceLine.product),
                 joinedload(Invoice.allocations),
                 joinedload(Invoice.customer),
             )
             .filter(
                 Invoice.status.in_(_FINALIZED_INVOICE_STATUSES),
-                Invoice.created_at >= start_dt,
-                Invoice.created_at < end_exclusive,
+                _invoice_post_date() >= start_dt,
+                _invoice_post_date() < end_exclusive,
             )
             .all()
         )
@@ -242,19 +441,34 @@ class ReportService(BaseService):
             "margin_pct": None,
         })
 
+        # R1-14 margin truth — lines sold before any receipt carry a frozen
+        # unit_cost of 0; fall back to vendor/receipt cost and count the
+        # substitutions so the UI can flag the margin as estimated.
+        cost_estimated_lines = 0
+        zero_cost_lines = 0
+
         for inv in invoices:
             row = by_customer[inv.customer_id]
             row["customer"] = inv.customer
             row["invoice_count"] += 1
-            row["gross_sales"] = round(row["gross_sales"] + inv.total, 2)
+            # Core-charge lines are a deposit on part returns, not earned revenue.
+            # Subtract their line_total from the invoice total so reports reflect
+            # true product/service revenue only.
+            core_deposits = sum(ln.line_total for ln in inv.lines if ln.is_core_line)
+            row["gross_sales"] = round(row["gross_sales"] + inv.total - core_deposits, 2)
             row["payments_received"] = round(
                 row["payments_received"] + inv.amount_paid, 2
             )
             row["balance_due"] = round(row["balance_due"] + inv.balance_due, 2)
-            # Cost snapshot is per-line; sum across all lines
-            line_cost = sum(
-                (ln.unit_cost or 0.0) * ln.qty for ln in inv.lines
-            )
+            # Cost snapshot is per-line; exclude core-charge lines (deposit, not COGS).
+            line_cost = 0.0
+            for ln in inv.lines:
+                if ln.is_core_line:
+                    continue
+                unit_cost, estimated, zero_cost = self._resolve_line_cost(ln)
+                line_cost += unit_cost * ln.qty
+                cost_estimated_lines += estimated
+                zero_cost_lines += zero_cost
             row["cost"] = round(row["cost"] + line_cost, 2)
 
         # Compute margin and margin_pct per row
@@ -285,6 +499,8 @@ class ReportService(BaseService):
             "end_date": end_date,
             "rows": rows,
             "totals": totals,
+            "cost_estimated_lines": cost_estimated_lines,
+            "zero_cost_lines": zero_cost_lines,
         }
 
     # ── 3. Sales by Product ──────────────────────────────────────────────────
@@ -330,8 +546,8 @@ class ReportService(BaseService):
             .join(Invoice, InvoiceLine.invoice_id == Invoice.id)
             .filter(
                 Invoice.status.in_(_FINALIZED_INVOICE_STATUSES),
-                Invoice.created_at >= start_dt,
-                Invoice.created_at < end_exclusive,
+                _invoice_post_date() >= start_dt,
+                _invoice_post_date() < end_exclusive,
             )
             .all()
         )
@@ -348,7 +564,16 @@ class ReportService(BaseService):
             "margin_pct": None,
         })
 
+        # R1-14 margin truth — same estimated-cost fallback as Sales by Customer.
+        cost_estimated_lines = 0
+        zero_cost_lines = 0
+
         for ln in lines:
+            # Core-charge lines are a deposit on part returns — exclude them from
+            # revenue so the product revenue report shows earned income only.
+            if ln.is_core_line:
+                continue
+
             key = ln.product_id  # None means non-product line (freight, misc fee, etc.)
             row = by_product[key]
 
@@ -362,11 +587,13 @@ class ReportService(BaseService):
                 row["sku"] = "—"
                 row["description"] = "(non-product lines)"
 
+            unit_cost, estimated, zero_cost = self._resolve_line_cost(ln)
+            cost_estimated_lines += estimated
+            zero_cost_lines += zero_cost
+
             row["qty_sold"] += ln.qty
             row["revenue"] = round(row["revenue"] + ln.line_total, 2)
-            row["cost"] = round(
-                row["cost"] + (ln.unit_cost or 0.0) * ln.qty, 2
-            )
+            row["cost"] = round(row["cost"] + unit_cost * ln.qty, 2)
 
         for row in by_product.values():
             row["margin"] = round(row["revenue"] - row["cost"], 2)
@@ -391,46 +618,216 @@ class ReportService(BaseService):
             "end_date": end_date,
             "rows": rows,
             "totals": totals,
+            "cost_estimated_lines": cost_estimated_lines,
+            "zero_cost_lines": zero_cost_lines,
         }
 
     # ── 4. Inventory Valuation ───────────────────────────────────────────────
+    #
+    # Valuation rule (UNCHANGED — both the summary and the detail paths mirror it
+    # exactly so the headline number ties out across every view):
+    #   * Active products only (Product.is_active == True).
+    #   * value per part = round(qty_on_hand * cost, 2)   (cost = moving-avg COGS).
+    #   * total_value    = sum of those per-part values (negative-qty rows included,
+    #                      exactly as before — they net the valuation down).
+    #   * total_units / in_stock_skus count only qty_on_hand > 0.
+    #   * zero_cost_count counts qty_on_hand > 0 AND cost <= 0.
+    #
+    # Perf: the headline totals + the by-category breakdown are computed in SQL with
+    # GROUP BY (get_inventory_valuation_summary) so the page never materialises all
+    # ~31k products. Detail rows are paginated / category-scoped on demand.
 
-    def get_inventory_valuation(self) -> dict[str, Any]:
+    def _inventory_warning_case(self):
+        """SQLAlchemy CASE classifying a product into 'zero_cost' | 'negative_qty' | ''."""
+        from sqlalchemy import case
+        return case(
+            (Product.qty_on_hand < 0, "negative_qty"),
+            ((Product.qty_on_hand > 0) & (func.coalesce(Product.cost, 0.0) <= 0), "zero_cost"),
+            else_="",
+        )
+
+    def get_inventory_valuation_summary(self) -> dict[str, Any]:
+        """
+        Fast, fully-aggregated inventory valuation — computed in SQL (GROUP BY),
+        never materialising the ~31k product rows in Python.
+
+        Returns:
+          {
+            "totals": {sku_count, in_stock_skus, total_units, total_value, zero_cost_count,
+                       zero_cost_recoverable_count, cost_source_breakdown},
+            "by_category": [
+              {
+                "category_id": int | None, "category": str,
+                "sku_count": int, "in_stock_skus": int,
+                "total_units": int, "total_value": float, "zero_cost_count": int,
+              }, ...  # sorted by total_value desc
+            ],
+          }
+
+        §23.3 Phase 2 — "cost-source callout": the valuation math itself is
+        UNCHANGED (still raw Product.cost, never effective_cost — see the rule
+        comment above this method); this only adds VISIBILITY into WHY a SKU
+        has the cost it shows. cost_source_breakdown counts active products by
+        Product.cost_source ("receipt" = real moving-avg from a PO receipt,
+        "manual" = user-set OR simply never touched — it's the column default,
+        "vendor" = legacy, no longer written). zero_cost_recoverable_count is
+        the subset of zero_cost_count that DOES have an active vendor source
+        with a real cost on file — i.e. Product.effective_cost would price
+        these non-zero even though this report's own $0 total does not.
+        """
+        from sqlalchemy import case, exists
+
+        # round(qty*cost, 2) per row, summed — matches the per-row rounding the old
+        # Python path used (SQLite ROUND then SUM keeps cents identical at this scale).
+        value_expr = func.sum(
+            func.round(Product.qty_on_hand * func.coalesce(Product.cost, 0.0), 2)
+        )
+        in_stock_expr = func.sum(case((Product.qty_on_hand > 0, 1), else_=0))
+        units_expr = func.sum(case((Product.qty_on_hand > 0, Product.qty_on_hand), else_=0))
+        zero_cost_cond = (Product.qty_on_hand > 0) & (func.coalesce(Product.cost, 0.0) <= 0)
+        zero_cost_expr = func.sum(case((zero_cost_cond, 1), else_=0))
+        # Correlated EXISTS (not a join) so a product with multiple vendor
+        # sources never fans out the surrounding GROUP BY aggregates.
+        has_vendor_cost = exists().where(
+            ProductVendorSource.product_id == Product.id,
+            ProductVendorSource.is_active == True,  # noqa: E712
+            ProductVendorSource.vendor_cost > 0,
+        )
+        zero_cost_recoverable_expr = func.sum(
+            case((zero_cost_cond & has_vendor_cost, 1), else_=0)
+        )
+
+        rows = (
+            self.db.query(
+                Product.category_id.label("category_id"),
+                ProductCategory.name.label("category_name"),
+                func.count(Product.id).label("sku_count"),
+                in_stock_expr.label("in_stock_skus"),
+                units_expr.label("total_units"),
+                value_expr.label("total_value"),
+                zero_cost_expr.label("zero_cost_count"),
+            )
+            .outerjoin(ProductCategory, Product.category_id == ProductCategory.id)
+            .filter(Product.is_active == True)  # noqa: E712
+            .group_by(Product.category_id, ProductCategory.name)
+            .all()
+        )
+
+        by_category: list[dict[str, Any]] = []
+        tot_sku = tot_instock = tot_units = tot_zero = 0
+        tot_value = 0.0
+        for r in rows:
+            value = round(float(r.total_value or 0.0), 2)
+            by_category.append({
+                "category_id":   r.category_id,
+                "category":      r.category_name or "Uncategorized",
+                "sku_count":     int(r.sku_count or 0),
+                "in_stock_skus": int(r.in_stock_skus or 0),
+                "total_units":   int(r.total_units or 0),
+                "total_value":   value,
+                "zero_cost_count": int(r.zero_cost_count or 0),
+            })
+            tot_sku     += int(r.sku_count or 0)
+            tot_instock += int(r.in_stock_skus or 0)
+            tot_units   += int(r.total_units or 0)
+            tot_zero    += int(r.zero_cost_count or 0)
+            tot_value   += value
+
+        by_category.sort(key=lambda c: c["total_value"], reverse=True)
+
+        # Separate query (whole-population, single row) — cost_source_breakdown
+        # and zero_cost_recoverable_count are catalog-wide, not per-category.
+        cs_rows = (
+            self.db.query(
+                Product.cost_source.label("cost_source"),
+                func.count(Product.id).label("n"),
+            )
+            .filter(Product.is_active == True)  # noqa: E712
+            .group_by(Product.cost_source)
+            .all()
+        )
+        cost_source_breakdown = {(r.cost_source or "manual"): int(r.n or 0) for r in cs_rows}
+
+        zero_cost_recoverable = (
+            self.db.query(zero_cost_recoverable_expr)
+            .filter(Product.is_active == True)  # noqa: E712
+            .scalar()
+        ) or 0
+
+        totals = {
+            "sku_count":       tot_sku,
+            "in_stock_skus":   tot_instock,
+            "total_units":     tot_units,
+            "total_value":     round(tot_value, 2),
+            "zero_cost_count": tot_zero,
+            "zero_cost_recoverable_count": int(zero_cost_recoverable),
+            "cost_source_breakdown": cost_source_breakdown,
+        }
+        return {"totals": totals, "by_category": by_category}
+
+    def get_inventory_valuation(
+        self,
+        *,
+        page: int | None = None,
+        page_size: int | None = None,
+        category_id: int | None = None,
+        uncategorized: bool = False,
+    ) -> dict[str, Any]:
         """
         Per-active-product valuation snapshot.
 
         Per spec:
           - Active products only.
           - Return qty_on_hand, avg cost (Product.cost), last_cost, total value.
-          - Bottom totals.
+          - Bottom totals (full-population, computed in SQL — independent of paging).
           - Flag zero/negative cost with warning field.
+
+        Pagination / drill-down (all optional — when page/page_size are omitted the
+        method returns EVERY active row exactly as before, so the CSV export and the
+        original callers keep their contract):
+          - page / page_size  -> server-side window of detail rows.
+          - category_id        -> restrict detail rows to one category (drill-down).
+          - uncategorized      -> restrict detail rows to products with no category.
 
         Returns:
           {
-            "rows": [
-              {
-                "product": Product, "sku": str, "title": str,
-                "qty_on_hand": int, "qty_committed": int, "qty_available": int,
-                "avg_cost": float, "last_cost": float,
-                "total_value": float,
-                "warning": str | None,   # "zero_cost" | "negative_qty" | None
-              }, ...
-            ],
-            "totals": {
-              "sku_count": int,
-              "in_stock_skus": int,
-              "total_units": int,
-              "total_value": float,
-              "zero_cost_count": int,
-            },
+            "rows": [ {product, sku, title, qty_on_hand, qty_committed,
+                       qty_available, avg_cost, last_cost, total_value,
+                       warning}, ... ],     # highest-value first
+            "totals": {sku_count, in_stock_skus, total_units, total_value,
+                       zero_cost_count},    # whole active population (not the page)
+            "page": int, "page_size": int | None, "total_rows": int,
+            "total_pages": int, "category_id": int | None,
           }
         """
-        products = (
+        # Totals are always the full-population SQL aggregate — never the page.
+        totals = self.get_inventory_valuation_summary()["totals"]
+
+        q = (
             self.db.query(Product)
             .filter(Product.is_active == True)  # noqa: E712
-            .order_by(Product.sku)
-            .all()
         )
+        if uncategorized:
+            q = q.filter(Product.category_id.is_(None))
+        elif category_id is not None:
+            q = q.filter(Product.category_id == category_id)
+
+        # Highest-value SKUs first (most useful), computed in SQL so paging windows
+        # over the right order. NULLs (no cost) sort last via coalesce.
+        value_order = (Product.qty_on_hand * func.coalesce(Product.cost, 0.0)).desc()
+        q = q.order_by(value_order, Product.sku)
+
+        total_rows = q.count()
+
+        if page_size is not None:
+            page = max(1, page or 1)
+            total_pages = max(1, (total_rows + page_size - 1) // page_size)
+            page = min(page, total_pages)
+            products = q.offset((page - 1) * page_size).limit(page_size).all()
+        else:
+            page = 1
+            total_pages = 1
+            products = q.all()
 
         rows: list[dict[str, Any]] = []
         for p in products:
@@ -446,6 +843,18 @@ class ReportService(BaseService):
             elif qty_on_hand < 0:
                 warning = "negative_qty"
 
+            # §23.3 Phase 2 — cost-source callout. Doesn't change avg_cost/value
+            # (still raw Product.cost, per the locked valuation rule above); only
+            # surfaces WHY: cost_source explains what set the shown cost, and for
+            # a zero_cost row, recoverable_cost is the vendor cost Product.
+            # effective_cost would use instead — None when no vendor cost exists
+            # either (a genuinely blank cost basis, not just an unreceived part).
+            recoverable_cost: float | None = None
+            if warning == "zero_cost":
+                eff = p.effective_cost
+                if eff and eff > 0:
+                    recoverable_cost = eff
+
             rows.append({
                 "product": p,
                 "sku": p.sku,
@@ -457,28 +866,19 @@ class ReportService(BaseService):
                 "last_cost": last_cost,
                 "total_value": value,
                 "warning": warning,
+                "cost_source": p.cost_source or "manual",
+                "recoverable_cost": recoverable_cost,
             })
 
-        # Sort so the highest-value SKUs appear first (most useful for the table)
-        rows.sort(key=lambda r: r["total_value"], reverse=True)
-
-        totals = {
-            "sku_count":       len(rows),
-            "in_stock_skus":   sum(1 for r in rows if r["qty_on_hand"] > 0),
-            "total_units":     sum(r["qty_on_hand"] for r in rows if r["qty_on_hand"] > 0),
-            "total_value":     round(sum(r["total_value"] for r in rows), 2),
-            "zero_cost_count": sum(1 for r in rows if r["warning"] == "zero_cost"),
+        return {
+            "rows": rows,
+            "totals": totals,
+            "page": page,
+            "page_size": page_size,
+            "total_rows": total_rows,
+            "total_pages": total_pages,
+            "category_id": category_id,
         }
-
-        # Smoke check: total_value must equal sum of qty × avg_cost per row
-        computed = round(sum(r["qty_on_hand"] * r["avg_cost"] for r in rows), 2)
-        if abs(computed - totals["total_value"]) > 0.02:
-            log.warning(
-                "Inventory valuation drift: computed=%.2f totals.total_value=%.2f",
-                computed, totals["total_value"],
-            )
-
-        return {"rows": rows, "totals": totals}
 
     # ── 5. Open POs ──────────────────────────────────────────────────────────
 
@@ -576,7 +976,7 @@ class ReportService(BaseService):
             if not line_rows:
                 continue  # fully fulfilled (status not yet rolled to RECEIVED)
 
-            expected_date = _as_date(po.expected_at)
+            expected_date = as_date(po.expected_at)
             overdue = expected_date is not None and expected_date < as_of
 
             rows.append({
@@ -685,7 +1085,7 @@ class ReportService(BaseService):
                 continue  # safety — status should already exclude these
 
             amount = round(core.customer_unit_charge * qty_out, 2)
-            created_d = _as_date(core.created_at) or as_of
+            created_d = as_date(core.created_at) or as_of
             age_days = max((as_of - created_d).days, 0)
 
             invoice_number = (
@@ -729,6 +1129,51 @@ class ReportService(BaseService):
             if c.direction != CoreDirection.CUSTOMER_OWES_RETURN:
                 log.warning("Outstanding core %d direction=%s — expected CUSTOMER_OWES_RETURN", c.id, c.direction)
 
+        return {"as_of": as_of, "rows": rows, "totals": totals}
+
+    # ── 6b. Overdue Cores (§23.3 Phase 3) ─────────────────────────────────────
+
+    def get_overdue_cores(self) -> dict[str, Any]:
+        """
+        Standalone overdue-cores chase list: open customer cores PAST their
+        return deadline. This is the "who do we call today" subset of the
+        Outstanding Cores report, so it derives from the same query (single
+        source of truth) and adds days_overdue + the customer's phone number.
+
+        Returns:
+          {
+            "as_of": date,
+            "rows": [ ...outstanding-cores row + {
+                "days_overdue": int,
+                "customer_phone": str | None,
+            } ],   # most-overdue first
+            "totals": {
+              "core_count": int, "qty_outstanding": int,
+              "amount": float, "oldest_days_overdue": int,
+            },
+          }
+        """
+        base = self.get_core_charges_outstanding()
+        as_of = base["as_of"]
+
+        rows: list[dict[str, Any]] = []
+        for r in base["rows"]:
+            if not r["overdue"] or r["return_deadline"] is None:
+                continue
+            deadline_d = as_date(r["return_deadline"]) or as_of
+            r = dict(r)
+            r["days_overdue"] = max((as_of - deadline_d).days, 0)
+            r["customer_phone"] = r["customer"].phone if r["customer"] else None
+            rows.append(r)
+
+        rows.sort(key=lambda r: r["days_overdue"], reverse=True)
+
+        totals = {
+            "core_count":          len(rows),
+            "qty_outstanding":     sum(r["qty_outstanding"] for r in rows),
+            "amount":              round(sum(r["amount"] for r in rows), 2),
+            "oldest_days_overdue": max((r["days_overdue"] for r in rows), default=0),
+        }
         return {"as_of": as_of, "rows": rows, "totals": totals}
 
     # ── 7. Overdue Invoices + Accrued Interest ────────────────────────────────
@@ -797,7 +1242,7 @@ class ReportService(BaseService):
             if balance <= 0:
                 continue
 
-            due = _as_date(inv.due_date)
+            due = as_date(inv.due_date)
             if due is None:
                 continue  # safety — filter above should already exclude these
 
@@ -886,8 +1331,8 @@ class ReportService(BaseService):
             )
             .filter(
                 Invoice.status.in_(_FINALIZED_INVOICE_STATUSES),
-                Invoice.created_at >= start_dt,
-                Invoice.created_at < end_exclusive,
+                _invoice_post_date() >= start_dt,
+                _invoice_post_date() < end_exclusive,
             )
             .all()
         )
@@ -901,17 +1346,19 @@ class ReportService(BaseService):
             if tax_collected <= 0:
                 continue  # skip non-taxable invoices
 
-            # Taxable revenue = sum of line totals for taxable lines
+            # Taxable revenue = sum of line totals for taxable lines.
+            # line_total is net of the per-line discount — qty × unit_price
+            # would overstate the tax base on discounted lines (R1-14).
             taxable_revenue = round(
                 sum(
-                    ln.qty * ln.unit_price
+                    ln.line_total
                     for ln in inv.lines
                     if getattr(ln, "is_taxable", False)
                 ),
                 2,
             )
 
-            invoice_date = _as_date(inv.created_at) or date.today()
+            invoice_date = as_date(inv.locked_at) or as_date(inv.created_at) or date.today()
 
             rows.append({
                 "invoice": inv,
@@ -1072,3 +1519,325 @@ class ReportService(BaseService):
             "rows":       rows,
             "totals":     totals,
         }
+
+    # ── 10. Low Stock / Reorder ──────────────────────────────────────────────
+
+    def get_low_stock(self) -> dict[str, Any]:
+        """
+        R2 — printable morning reorder worklist: every active product whose
+        stock sits at or below its reorder point, with vendor ordering info.
+
+        Filter (same threshold as the dashboard low-stock counter and the
+        products-list "Low stock" tab):
+          - is_active
+          - reorder_point > 0      (no reorder point set = unmanaged → excluded)
+          - qty_on_hand <= reorder_point
+        Unlike the products-list tab (which adds qty_on_hand > 0 because full
+        stockouts live under its separate "Out of stock" tab), stockouts ARE
+        included here — a managed part at zero on-hand is the most urgent
+        reorder of all.
+
+        Suggested order qty (documented rule):
+          - target = max_stock_level when set (> 0), else reorder_point
+            (no max ⇒ restock at least back up to the reorder threshold)
+          - suggested = max(target - qty_on_hand - qty_on_order, 0)
+            (inbound PO qty counts toward the target; never suggest negative)
+
+        Estimated order cost per row = suggested_qty × estimated unit cost,
+        using the same fallback order as the sales reports
+        (_fallback_unit_cost: preferred-vendor vendor_cost, then last_cost,
+        else 0 — rows costed at 0 understate the Est. Order Cost total).
+
+        Returns:
+          {
+            "as_of": date,
+            "rows": [
+              {
+                "product": Product, "sku": str, "title": str,
+                "category": str,                       # "" when uncategorized
+                "qty_on_hand": int, "qty_committed": int,
+                "qty_available": int, "qty_on_order": int,
+                "reorder_point": int, "max_stock_level": int | None,
+                "suggested_qty": int,
+                "vendor_name": str | None,             # preferred ACTIVE source
+                "vendor_part_number": str | None,
+                "vendor_cost": float | None,
+                "est_unit_cost": float,
+                "est_order_cost": float,
+              }, ...
+            ],
+            "totals": {
+              "item_count": int, "stockout_count": int,
+              "total_suggested_qty": int, "total_order_cost": float,
+              "no_vendor_count": int,
+            },
+          }
+          Rows sorted most-negative availability first (deepest hole on top).
+        """
+        from app.models.product import ProductVendorSource
+
+        as_of = date.today()
+
+        products = (
+            self.db.query(Product)
+            .options(
+                # Bulk-load sources + their vendors so preferred_vendor_source
+                # (a Python property over vendor_sources) never lazy-loads N+1.
+                joinedload(Product.vendor_sources)
+                .joinedload(ProductVendorSource.vendor),
+                joinedload(Product.category),
+            )
+            .filter(
+                Product.is_active == True,  # noqa: E712
+                Product.reorder_point > 0,
+                Product.qty_on_hand <= Product.reorder_point,
+            )
+            .order_by(Product.sku)
+            .all()
+        )
+
+        rows: list[dict[str, Any]] = []
+        for p in products:
+            qty_on_hand = p.qty_on_hand
+            qty_on_order = p.qty_on_order or 0
+
+            # Suggested order qty — see docstring for the rule.
+            target = (
+                p.max_stock_level
+                if (p.max_stock_level or 0) > 0
+                else p.reorder_point
+            )
+            suggested = max(target - qty_on_hand - qty_on_order, 0)
+
+            src = p.preferred_vendor_source  # active+preferred only (§8N)
+            est_unit_cost = self._fallback_unit_cost(p)
+
+            rows.append({
+                "product": p,
+                "sku": p.sku,
+                "title": p.title,
+                "category": p.category.name if p.category else "",
+                "qty_on_hand": qty_on_hand,
+                "qty_committed": p.qty_committed,
+                "qty_available": p.qty_available,
+                "qty_on_order": qty_on_order,
+                "reorder_point": p.reorder_point,
+                "max_stock_level": p.max_stock_level,
+                "suggested_qty": suggested,
+                "vendor_name": src.vendor.name if src and src.vendor else None,
+                "vendor_part_number": src.vendor_part_number if src else None,
+                "vendor_cost": src.vendor_cost if src else None,
+                "est_unit_cost": est_unit_cost,
+                "est_order_cost": round(suggested * est_unit_cost, 2),
+            })
+
+        # Most-negative availability first — committed-beyond-stock parts are
+        # the most urgent; ties broken by SKU for a stable printable order.
+        rows.sort(key=lambda r: (r["qty_available"], r["sku"]))
+
+        totals = {
+            "item_count":          len(rows),
+            "stockout_count":      sum(1 for r in rows if r["qty_on_hand"] <= 0),
+            "total_suggested_qty": sum(r["suggested_qty"] for r in rows),
+            "total_order_cost":    round(sum(r["est_order_cost"] for r in rows), 2),
+            "no_vendor_count":     sum(1 for r in rows if r["vendor_name"] is None),
+        }
+
+        return {"as_of": as_of, "rows": rows, "totals": totals}
+
+    # ── Dead Stock (§23.3 Phase 2) ────────────────────────────────────────────
+
+    def get_dead_stock(self, days: int = 90) -> dict[str, Any]:
+        """
+        Active products with stock on hand that have NOT sold in `days` days —
+        cash tied up in inventory nobody's buying. Companion to get_low_stock
+        (which flags too little stock); this flags too much of the wrong stock.
+
+        "Last sold" = the most recent FINALIZED invoice's created_at across
+        every non-core PRODUCT line referencing the SKU (same finalized-status
+        set + core-line exclusion as get_sales_by_product, so this ties out
+        with the sales reports). Computed as a single GROUP BY subquery joined
+        once — never loads invoice_lines/invoices into Python — so it scales to
+        the same ~31k-SKU catalog get_inventory_valuation_summary does.
+
+        A product that has NEVER sold (no subquery row at all) is treated as
+        maximally dead — sorted first, days_since_sale is None (not a number,
+        so the template can print "Never sold" instead of a huge day count).
+
+        Filter:
+          - is_active
+          - qty_on_hand > 0        (nothing to report on stock that's already gone)
+          - last sale is NULL or older than `days` days ago
+
+        Returns:
+          {
+            "as_of": date, "cutoff_date": date, "days": int,
+            "rows": [
+              {
+                "product": Product, "sku": str, "title": str, "category": str,
+                "qty_on_hand": int, "cost": float, "tied_up_value": float,
+                "last_sold_at": datetime | None, "days_since_sale": int | None,
+              }, ...
+            ],  # never-sold first, then oldest last-sale first
+            "totals": {item_count, total_units, total_tied_up_value, never_sold_count},
+          }
+        """
+        as_of = date.today()
+        cutoff_dt = datetime.combine(as_of, datetime.min.time()) - timedelta(days=days)
+
+        last_sold_subq = (
+            self.db.query(
+                InvoiceLine.product_id.label("product_id"),
+                func.max(Invoice.created_at).label("last_sold_at"),
+            )
+            .join(Invoice, InvoiceLine.invoice_id == Invoice.id)
+            .filter(
+                Invoice.status.in_(_FINALIZED_INVOICE_STATUSES),
+                InvoiceLine.product_id.isnot(None),
+                InvoiceLine.is_core_line == False,  # noqa: E712 — a core line isn't a part sale
+            )
+            .group_by(InvoiceLine.product_id)
+            .subquery()
+        )
+
+        results = (
+            self.db.query(Product, last_sold_subq.c.last_sold_at)
+            .outerjoin(last_sold_subq, last_sold_subq.c.product_id == Product.id)
+            .options(joinedload(Product.category))
+            .filter(
+                Product.is_active == True,  # noqa: E712
+                Product.qty_on_hand > 0,
+            )
+            .filter(
+                (last_sold_subq.c.last_sold_at.is_(None))
+                | (last_sold_subq.c.last_sold_at < cutoff_dt)
+            )
+            .order_by(last_sold_subq.c.last_sold_at.asc().nullsfirst(), Product.sku)
+            .all()
+        )
+
+        rows: list[dict[str, Any]] = []
+        for p, last_sold_at in results:
+            cost = p.cost or 0.0
+            days_since_sale = (
+                (datetime.combine(as_of, datetime.min.time()) - last_sold_at).days
+                if last_sold_at else None
+            )
+            rows.append({
+                "product": p,
+                "sku": p.sku,
+                "title": p.title,
+                "category": p.category.name if p.category else "",
+                "qty_on_hand": p.qty_on_hand,
+                "cost": cost,
+                "tied_up_value": round(p.qty_on_hand * cost, 2),
+                "last_sold_at": last_sold_at,
+                "days_since_sale": days_since_sale,
+            })
+
+        totals = {
+            "item_count":          len(rows),
+            "total_units":         sum(r["qty_on_hand"] for r in rows),
+            "total_tied_up_value": round(sum(r["tied_up_value"] for r in rows), 2),
+            "never_sold_count":    sum(1 for r in rows if r["last_sold_at"] is None),
+        }
+
+        return {"as_of": as_of, "cutoff_date": cutoff_dt.date(), "days": days,
+                "rows": rows, "totals": totals}
+
+    # ── Inventory Movement History (audit follow-up) ──────────────────────────
+
+    def get_inventory_movement(
+        self,
+        *,
+        sku_query: str | None = None,
+        start: date | None = None,
+        end: date | None = None,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        """Append-only ledger view: every InventoryTransaction (receipt, sale,
+        return, void correction, transfer, manual adjust) in the window, newest
+        first, so staff can trace WHY a SKU's on-hand changed — the gap flagged
+        in the audit. Optional SKU substring filter + date range. Capped at
+        ``limit`` rows; ``truncated`` is set when more matched than were returned.
+        """
+        from app.models.inventory import InventoryTransaction
+        q = (
+            self.db.query(InventoryTransaction)
+            .join(Product, InventoryTransaction.product_id == Product.id)
+            .options(joinedload(InventoryTransaction.product))
+        )
+        if sku_query and sku_query.strip():
+            q = q.filter(Product.sku.ilike(f"%{sku_query.strip()}%"))
+        if start:
+            q = q.filter(InventoryTransaction.performed_at >= datetime(start.year, start.month, start.day))
+        if end:
+            _end_dt = datetime(end.year, end.month, end.day) + timedelta(days=1)  # inclusive
+            q = q.filter(InventoryTransaction.performed_at < _end_dt)
+
+        total_matched = q.count()
+        txns = (
+            q.order_by(InventoryTransaction.performed_at.desc(), InventoryTransaction.id.desc())
+            .limit(limit).all()
+        )
+        rows = [{
+            "created_at": t.performed_at,
+            "product_id": t.product_id,
+            "sku": t.product.sku if t.product else "",
+            "title": t.product.title if t.product else "",
+            "transaction_type": t.transaction_type,
+            "qty_change": t.qty_change,
+            "qty_after": t.qty_after,
+            "reference_type": t.reference_type,
+            "reference_id": t.reference_id,
+            "notes": t.notes or "",
+        } for t in txns]
+        totals = {
+            "row_count": len(rows),
+            "total_matched": total_matched,
+            "truncated": total_matched > len(rows),
+        }
+        return {
+            "rows": rows, "totals": totals,
+            "start": start, "end": end, "sku_query": (sku_query or "").strip(),
+        }
+
+    # ── QBO Unsynced Transactions (audit follow-up) ───────────────────────────
+
+    def get_qbo_unsynced(self) -> dict[str, Any]:
+        """Finalized invoices whose QBO sync is still PENDING or in ERROR — the
+        drill-down behind the dashboard QBO chip (audit: the count existed but
+        there was no list). ERROR rows first (they need action), then oldest
+        PENDING. Read-only. (Payments/vendor-bills/credit-memos also carry the
+        QBO mixin; surfacing those here is a straightforward follow-up.)"""
+        from app.constants import InvoiceStatus, QBOSyncStatus
+        unsynced = (QBOSyncStatus.PENDING, QBOSyncStatus.ERROR)
+        invs = (
+            self.db.query(Invoice)
+            .filter(
+                Invoice.qbo_sync_status.in_(unsynced),
+                Invoice.status != InvoiceStatus.DRAFT,
+            )
+            .options(joinedload(Invoice.customer))
+            .all()
+        )
+        rows = [{
+            "id": inv.id,
+            "invoice_number": inv.invoice_number,
+            "customer": inv.customer.company_name if inv.customer else "",
+            "total": inv.total,
+            "status": inv.qbo_sync_status,
+            "error": inv.qbo_sync_error or "",
+            "retry_count": getattr(inv, "qbo_sync_retry_count", 0) or 0,
+            "last_synced_at": inv.qbo_last_synced_at,
+            "created_at": inv.created_at,
+        } for inv in invs]
+        # ERROR first, then PENDING; within each, oldest first (longest stuck).
+        rows.sort(key=lambda r: (r["status"] != QBOSyncStatus.ERROR, r["created_at"] or datetime.min))
+        totals = {
+            "count": len(rows),
+            "error_count": sum(1 for r in rows if r["status"] == QBOSyncStatus.ERROR),
+            "pending_count": sum(1 for r in rows if r["status"] == QBOSyncStatus.PENDING),
+            "amount": round(sum(r["total"] for r in rows), 2),
+        }
+        return {"rows": rows, "totals": totals}

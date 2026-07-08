@@ -23,6 +23,17 @@ class ProductStatus(StrEnum):
     SPECIAL_ORDER = "special_order"
 
 
+class VendorAvailability(StrEnum):
+    """Per-vendor supply status reported by the scraper feed (NOT our own stock,
+    which is the InventoryTransaction ledger). Blank/None = unknown (importer
+    leaves it untouched). Drives the owner-locked "full automation" policy:
+    out_of_stock → product hidden from the storefront push; discontinued →
+    product deactivated. See ProductImportService._apply_availability_to_product."""
+    IN_STOCK      = "in_stock"
+    OUT_OF_STOCK  = "out_of_stock"
+    DISCONTINUED  = "discontinued"
+
+
 class ProductReturnPolicy(StrEnum):
     STANDARD      = "standard"
     NON_RETURNABLE = "non_returnable"
@@ -103,6 +114,16 @@ class VendorProgramType(StrEnum):
 
 # ─── Customers ────────────────────────────────────────────────────────────────
 
+class CustomerStatus(StrEnum):
+    """Owner-locked 4-state customer lifecycle status (separate from is_active).
+    active = normal · inactive = deactivated · on_hold = work paused (no block) ·
+    credit_hold = account frozen (mirrors the Credit-Hold flag for the status row)."""
+    ACTIVE      = "active"
+    INACTIVE    = "inactive"
+    ON_HOLD     = "on_hold"
+    CREDIT_HOLD = "credit_hold"
+
+
 class PaymentTerms(StrEnum):
     COD    = "cod"
     NET_30 = "net_30"
@@ -114,6 +135,89 @@ class PricingTier(StrEnum):
     WHOLESALE = "wholesale"
     FLEET     = "fleet"
     DEALER    = "dealer"
+
+
+class ScopeType(StrEnum):
+    """Customer-Specific Product Pricing — the scope a CustomerPriceRule covers.
+    PRODUCT (a single SKU) > BRAND / CATEGORY (a line) > CUSTOMER (the whole
+    account). scope_ref holds the product id / category id / brand string;
+    CUSTOMER rules have scope_ref = NULL."""
+    PRODUCT  = "PRODUCT"
+    CATEGORY = "CATEGORY"
+    BRAND    = "BRAND"
+    CUSTOMER = "CUSTOMER"
+
+
+class PriceMethod(StrEnum):
+    """Customer-Specific Product Pricing — cost-plus method for a price rule.
+    Both ride the moving-avg product.cost:
+      markup → cost × (1 + value/100)
+      margin → cost / (1 - value/100)"""
+    MARKUP = "markup"
+    MARGIN = "margin"
+
+
+class CustomerType(StrEnum):
+    """P2-D6 — single customer type, fixed list. The key that maps to the
+    type-driven default profiles (customer_type_defaults / P2-D1). OTHER is the
+    global-fallback profile. Existing customers default to OTHER (unaffected)."""
+    FLEET          = "fleet"
+    OWNER_OPERATOR = "owner_operator"
+    REPAIR_SHOP    = "repair_shop"
+    DEALER         = "dealer"
+    MUNICIPALITY   = "municipality"
+    INTERNAL       = "internal"
+    OTHER          = "other"
+
+
+# Human labels for the Customer Type chips/select (UI reads these; enum stays the
+# wire/DB value). Order matches the fixed list in P2-D6.
+CUSTOMER_TYPE_LABELS: dict[str, str] = {
+    CustomerType.FLEET:          "Fleet",
+    CustomerType.OWNER_OPERATOR: "Owner-Operator",
+    CustomerType.REPAIR_SHOP:    "Repair Shop",
+    CustomerType.DEALER:         "Dealer",
+    CustomerType.MUNICIPALITY:   "Municipality",
+    CustomerType.INTERNAL:       "Internal",
+    CustomerType.OTHER:          "Other",
+}
+
+
+class CustomerFlag(StrEnum):
+    """P2-D2 — structured customer flags shown as chips everywhere transactions
+    happen (list, preview, detail, quote/SO/invoice workspaces). Flags can drive
+    rules later (e.g. Requires-PO warns before finalize). Stored on Customer.flags
+    as a CSV of these values; CustomerService.flags_for() is the merged read view
+    that also surfaces TAX_EXEMPT / TEXT_PREFERRED derived from the customer's
+    canonical columns so a chip can never contradict the underlying field."""
+    REQUIRES_PO         = "requires_po"
+    CREDIT_HOLD         = "credit_hold"
+    TAX_EXEMPT          = "tax_exempt"
+    CALL_FIRST          = "call_first"
+    TEXT_PREFERRED      = "text_preferred"
+    WARRANTY_ESCALATION = "warranty_escalation"
+
+
+# Human labels for flag chips. Order matches the enum (= display order).
+CUSTOMER_FLAG_LABELS: dict[str, str] = {
+    CustomerFlag.REQUIRES_PO:         "Requires PO #",
+    CustomerFlag.CREDIT_HOLD:         "Credit Hold",
+    CustomerFlag.TAX_EXEMPT:          "Tax Exempt",
+    CustomerFlag.CALL_FIRST:          "Call First",
+    CustomerFlag.TEXT_PREFERRED:      "Text Preferred",
+    CustomerFlag.WARRANTY_ESCALATION: "Warranty Escalation",
+}
+
+# Flags persisted in Customer.flags (CSV). TAX_EXEMPT / TEXT_PREFERRED are NOT
+# here — they are DERIVED from the canonical columns (is_tax_exempt /
+# preferred_contact_method) by Customer.flag_keys so a chip can't contradict the
+# field. Single source shared by the model property and CustomerService writers.
+CUSTOMER_STORED_FLAGS: frozenset[str] = frozenset({
+    CustomerFlag.REQUIRES_PO,
+    CustomerFlag.CREDIT_HOLD,
+    CustomerFlag.CALL_FIRST,
+    CustomerFlag.WARRANTY_ESCALATION,
+})
 
 
 class DeliveryType(StrEnum):
@@ -152,10 +256,23 @@ class CallType(StrEnum):
     IN_PERSON = "in_person"
 
 
+class ActivityType(StrEnum):
+    """Kind of customer interaction — the primary field for the unified Activity Log.
+    activity_type governs which outcome options are relevant; call_type (direction)
+    is a secondary field for calls only. Contract: ACTIVITY_LOG_CONTRACT.md."""
+    CALL          = "call"
+    TEXT          = "text"
+    COUNTER_VISIT = "counter_visit"
+    EMAIL         = "email"
+    NOTE          = "note"
+
+
 class CallOutcome(StrEnum):
     QUOTED           = "quoted"
     ORDER_PLACED     = "order_placed"
     NO_ANSWER        = "no_answer"
+    REACHED          = "reached"       # Activity Log: call connected, no specific outcome
+    VOICEMAIL        = "voicemail"     # Activity Log: left a voicemail
     FOLLOW_UP_NEEDED = "follow_up_needed"
     RESOLVED         = "resolved"
     OTHER            = "other"
@@ -177,6 +294,29 @@ class QuoteOutcome(StrEnum):
     WON         = "won"
     LOST        = "lost"
     NO_DECISION = "no_decision"
+
+
+class LostReason(StrEnum):
+    """P2-D7 — structured reason captured when a quote is marked lost. Drives the
+    lost_sales_log → win-rate / lost-revenue reporting. COMPETITOR pairs with an
+    optional competitor name + price on the log row."""
+    PRICE            = "price"
+    LEAD_TIME        = "lead_time"
+    COMPETITOR       = "competitor"
+    NO_LONGER_NEEDED = "no_longer_needed"
+    NO_RESPONSE      = "no_response"
+    OTHER            = "other"
+
+
+# Human labels for the Mark-Lost reason picker. Order matches the enum.
+LOST_REASON_LABELS: dict[str, str] = {
+    LostReason.PRICE:            "Price",
+    LostReason.LEAD_TIME:        "Lead time",
+    LostReason.COMPETITOR:       "Competitor",
+    LostReason.NO_LONGER_NEEDED: "No longer needed",
+    LostReason.NO_RESPONSE:      "No response",
+    LostReason.OTHER:            "Other",
+}
 
 
 # ─── Sales Orders ─────────────────────────────────────────────────────────────
@@ -272,6 +412,27 @@ class LineType(StrEnum):
     MISC                = "misc"
 
 
+# Line types that make up the discountable "parts" subtotal. The invoice-level
+# discount (invoice.discount_pct) applies to THESE ONLY — cores are pass-through
+# liability and freight is billed at cost. Single source of truth shared by the
+# Invoice model's totals and InvoiceService.calculate_totals so the two never drift.
+PARTS_LINE_TYPES = frozenset({
+    LineType.PRODUCT,
+    LineType.MISC,
+    LineType.WARRANTY,
+})
+
+# Line types billed as freight / delivery — surfaced in their own totals bucket
+# (billed at cost, never discounted). Single source of truth shared by the
+# Invoice model's totals and InvoiceService.calculate_totals via
+# app.invoice_totals.compute_invoice_totals so the two engines never drift.
+FREIGHT_LINE_TYPES = frozenset({
+    LineType.SHIPPING,
+    LineType.FREIGHT,
+    LineType.LOCAL_DELIVERY,
+    LineType.FUEL_SERVICE_CHARGE,
+})
+
 # R5 — line types that NEVER take a discount, even from customer.discount_pct
 NON_DISCOUNTABLE_LINE_TYPES = frozenset({
     LineType.CORE_CHARGE,
@@ -350,6 +511,16 @@ class POStatus(StrEnum):
     CANCELLED    = "cancelled"
 
 
+class POShipToType(StrEnum):
+    """Where a PO ships. LOCATION = one of our CompanyLocations (the primary is
+    "ship to me"); AD_HOC = a one-time typed address; DROP_SHIP = straight to a
+    customer (uses the existing drop_ship_* fields so receiving still skips
+    inventory and the print shows the drop-ship block)."""
+    LOCATION  = "location"
+    AD_HOC    = "ad_hoc"
+    DROP_SHIP = "drop_ship"
+
+
 class VendorBillStatus(StrEnum):
     PENDING     = "pending"
     APPROVED    = "approved"
@@ -368,6 +539,7 @@ class MatchResolution(StrEnum):
     ON_HOLD    = "on_hold"    # parked pending more info
     CREDITED   = "credited"   # offset by a linked vendor credit memo
     CLEARED    = "cleared"    # manually dismissed (corrected outside system)
+    CORRECTED  = "corrected"  # PO and/or bill numbers edited so the line reconciles
 
 
 # ─── Payments ─────────────────────────────────────────────────────────────────
@@ -562,6 +734,7 @@ class InventoryTxnType(StrEnum):
     WRITE_OFF          = "write_off"
     INITIAL_COUNT      = "initial_count"
     DROP_SHIP_SALE     = "drop_ship_sale"
+    SHOPIFY_SALE       = "shopify_sale"   # web order decrement (order-sync feed)
     CORRECTION         = "correction"
 
 
@@ -598,6 +771,33 @@ class InventoryLocationType(StrEnum):
     VENDOR_DROP_SHIP  = "vendor_drop_ship"
     QUARANTINE        = "quarantine"
     CORE_STAGING      = "core_staging"
+
+
+# ─── Inventory Count Sessions (§24) ──────────────────────────────────────────
+
+class CountType(StrEnum):
+    """§24.1 — one count document, four flavors (differ only in scope + posting)."""
+    AUDIT   = "audit"      # spot check — a few SKUs, ad-hoc
+    CYCLE   = "cycle"      # recurring slice (category/vendor/bin/ABC)
+    FULL    = "full"       # wall-to-wall physical inventory (a whole location)
+    OPENING = "opening"    # initial inventory on hand at go-live (baseline vs 0)
+
+
+class CountStatus(StrEnum):
+    """§24.3 — lifecycle. POSTED and CANCELLED are terminal."""
+    DRAFT     = "draft"      # being scoped; scope still editable
+    OPEN      = "open"       # snapshot frozen; counting in progress
+    REVIEW    = "review"     # variances computed, recounts flagged, blind reveal
+    POSTED    = "posted"     # ledger adjustments written; immutable
+    CANCELLED = "cancelled"  # abandoned; zero ledger effect
+
+
+class CountLineStatus(StrEnum):
+    UNCOUNTED = "uncounted"  # in scope, not yet counted
+    COUNTED   = "counted"    # a count was entered
+    RECOUNT   = "recount"    # flagged for recount (over threshold)
+    POSTED    = "posted"     # adjustment written to the ledger
+    SKIPPED   = "skipped"    # not counted and not zeroed at post
 
 
 # ─── Shipping ─────────────────────────────────────────────────────────────────
@@ -645,6 +845,8 @@ class AuditAction(StrEnum):
     INVOICE_CONVERTED  = "invoice_converted"
     STATUS_CHANGED     = "status_changed"
     MATCH_RESOLVED     = "match_resolved"
+    MATCH_CORRECTED    = "match_corrected"
+    COUNT_POSTED       = "count_posted"   # §24 — a count session posted its adjustments
 
 
 # ─── Scraper / Enrichment ─────────────────────────────────────────────────────
@@ -676,6 +878,24 @@ class ScrapedItemReviewStatus(StrEnum):
     ACCEPTED = "accepted"  # applied to product record
     REJECTED = "rejected"  # wrong part / bad data
     IGNORED  = "ignored"   # deliberately skipped
+
+
+# ─── Smart Import / Review Queue ──────────────────────────────────────────────
+# The scraper (or any CSV/Excel feed) never writes the catalog directly: each row
+# is staged as an ImportCandidate, reviewed by a human, then applied.
+
+class ImportBatchStatus(StrEnum):
+    STAGED    = "staged"     # analyzed, candidates awaiting review
+    APPLYING  = "applying"   # approved candidates being written to the catalog
+    APPLIED   = "applied"    # done
+    DISCARDED = "discarded"  # batch thrown away
+
+
+class ImportDisposition(StrEnum):
+    NEW       = "new"        # SKU not in the catalog
+    UPDATE    = "update"     # SKU already exists -> update path
+    CROSS_REF = "cross_ref"  # different SKU but an OEM cross-ref matches a product
+    DUPLICATE = "duplicate"  # appears more than once within the same feed
 
 
 # ─── QBO / Integrations ───────────────────────────────────────────────────────
@@ -724,6 +944,7 @@ class EntityType(StrEnum):
     RESEARCH_ITEM        = "research_item"
     INVENTORY_ADJUSTMENT = "inventory_adjustment"
     INVENTORY_TRANSFER   = "inventory_transfer"
+    COUNT_SESSION        = "count_session"   # §24 — physical inventory count
     COMMUNICATION        = "communication"
 
 
@@ -782,6 +1003,7 @@ class VendorReturnStatus(StrEnum):
     REJECTED  = "rejected"
     PARTIAL   = "partial"
     CLOSED    = "closed"
+    VOIDED    = "voided"    # cancelled before credit; a SHIPPED void restocks inventory
 
 
 class VendorReturnLineOutcome(StrEnum):
@@ -852,6 +1074,9 @@ class Permission(StrEnum):
     INVENTORY_ADJUST            = "inventory_adjust"
     NEGATIVE_INVENTORY_OVERRIDE = "negative_inventory_override"
     VOID_LOCKED_INVOICE         = "void_locked_invoice"
+    FINALIZE_INVOICE            = "finalize_invoice"   # commit cost snapshot + decrement inventory + lock to AR
+    RECEIVE_PO                  = "receive_po"          # increment qty_on_hand + alter moving-average cost
+    RECORD_PAYMENT              = "record_payment"
     REPUSH_QBO                  = "repush_qbo"
     MERGE_CUSTOMERS             = "merge_customers"
     CHANGE_SETTINGS             = "change_settings"
@@ -864,3 +1089,110 @@ class Permission(StrEnum):
     RECEIVE_WITHOUT_PO          = "receive_without_po"
     INVENTORY_TRANSFER          = "inventory_transfer"
     APPROVE_VENDOR_BILL         = "approve_vendor_bill"
+    APPLY_IMPORT                = "apply_import"
+    PUBLISH_SHOPIFY             = "publish_shopify"
+    MERGE_CATALOG               = "merge_catalog"       # category/brand/manufacturer merges — irreversible bulk reassignment
+    MERGE_PRODUCTS              = "merge_products"      # merge one product into another — irreversible bulk reassignment
+    IMPORT_CUSTOMERS            = "import_customers"    # bulk customer CSV import confirm
+    INVENTORY_COUNT             = "inventory_count"          # §24 — create/scope/enter physical counts (floor staff)
+    INVENTORY_COUNT_APPROVE     = "inventory_count_approve"  # §24 — review + POST a count (writes stock adjustments)
+    REVERSE_PO_RECEIPT          = "reverse_po_receipt"       # undo a receipt: reverses qty_on_hand + moving-average cost
+
+
+# ─── Engine Make / Model catalog ─────────────────────────────────────────────
+# Standardized engine make + dependent model lists for the quote/job header (and,
+# later, SO/invoice headers, product lookup, and cross-reference search). Picking
+# from these presets is what stops the messy free-text that blocks filtering and
+# cross-refs — "Cat" / "CAT" / "Caterpillar", "C15 Acert" / "c-15", "Cummins ISX15".
+#
+# These string values ARE what gets stored (currently in the engine_manufacturer /
+# engine_model columns). The UI renders a cascading make→model picker; selecting
+# "Other" reveals a free-text input so a value outside the presets can still be
+# captured. Invariants enforced by tests/test_engine_catalog.py:
+#   • every ENGINE_MODELS_BY_MAKE key is a member of ENGINE_MAKES
+#   • every make in ENGINE_MAKES has a model list (makes with no real presets —
+#     Mercedes, Other — offer just ["Other"])
+#   • every model list ends with "Other" so a custom value is always reachable
+
+ENGINE_MAKES: list[str] = [
+    "CAT / Caterpillar",
+    "Cummins",
+    "Detroit",
+    "Paccar",
+    "Mack",
+    "Volvo",
+    "International / Navistar",
+    "Mercedes",
+    "Other",
+]
+
+ENGINE_MODELS_BY_MAKE: dict[str, list[str]] = {
+    "CAT / Caterpillar": [
+        "3406E", "C7", "C9", "C10", "C12", "C13", "C15", "C16",
+        "3126", "3116", "3208", "Other",
+    ],
+    "Cummins": [
+        "4BT", "6BT", "ISB", "ISC", "ISL", "ISM", "ISX", "X15",
+        "N14", "Big Cam", "Other",
+    ],
+    "Detroit": [
+        "Series 60 12.7", "Series 60 14.0", "DD13", "DD15", "DD16",
+        "8V92", "6V92", "Other",
+    ],
+    "Paccar": ["MX-11", "MX-13", "PX-7", "PX-9", "Other"],
+    "Mack": ["E6", "E7", "ASET", "MP7", "MP8", "MP10", "Other"],
+    "Volvo": ["D11", "D12", "D13", "D16", "Other"],
+    "International / Navistar": [
+        "DT466", "DT530", "MaxxForce 7", "MaxxForce DT", "MaxxForce 13",
+        "N13", "Other",
+    ],
+    # Makes the owner listed without a preset model set — free-text via "Other".
+    "Mercedes": ["Other"],
+    "Other": ["Other"],
+}
+
+
+# ─── Brands (§18.2 — owner-maintained parts-brand list) ───────────────────────
+# Brand = the parts brand on the box. DISTINCT from Vendor (who we buy it from) and
+# from Manufacturer / Engine Make (the engine platform — see ENGINE_MAKES above).
+# Seeds the `brands` table (app/seeds.py:seed_brands). "JAK'S" is the house brand.
+BRANDS: list[str] = [
+    "PAI",
+    "Interstate-McBee",
+    "SAMPA",
+    "JAK'S",
+]
+
+
+# ─── Margin-target brackets (Customer-Specific Product Pricing) ────────────────
+# Cost-bracket → target gross-margin % used as the margin guard for customer
+# price rules (CUSTOMER_PRICING_DESIGN.md §1). When a resolved customer price's
+# margin falls BELOW the target for its cost bracket, the UI shows a red badge
+# (warn-only — never blocks the sale). Each row is (min_cost, max_cost, target%);
+# max_cost None = open-ended top bracket. Brackets are [min_cost, max_cost).
+MARGIN_TARGET_BRACKETS: list[tuple[float, float | None, float]] = [
+    (0.0,     25.0,   50.0),
+    (25.0,    100.0,  45.0),
+    (100.0,   500.0,  40.0),
+    (500.0,   2000.0, 35.0),
+    (2000.0,  3000.0, 30.0),
+    (3000.0,  None,   25.0),
+]
+
+
+def target_margin_for_cost(cost: float) -> float:
+    """Target gross-margin % for a product whose moving-avg COGS is ``cost``.
+
+    Walks MARGIN_TARGET_BRACKETS and returns the target % for the bracket that
+    contains ``cost`` ([min, max)). A negative/None cost is treated as 0 and
+    lands in the first bracket; a cost above every bracket lands in the open-ended
+    top bracket (so a value is always returned)."""
+    c = cost if (cost is not None and cost > 0) else 0.0
+    for min_cost, max_cost, target in MARGIN_TARGET_BRACKETS:
+        if c < min_cost:
+            continue
+        if max_cost is not None and c >= max_cost:
+            continue
+        return target
+    # Fallback (cost above the highest finite bracket but no open-ended row found):
+    return MARGIN_TARGET_BRACKETS[-1][2]

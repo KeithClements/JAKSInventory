@@ -1,82 +1,50 @@
 {% extends "base.html" %}
-{% block title %}{{ invoice.invoice_number }} — JAKS Inventory{% endblock %}
+{% block title %}{{ invoice.invoice_number }} — Axle{% endblock %}
 {% block heading %}{{ invoice.invoice_number }}{% endblock %}
 
+{# Axle status chips — .chip-axle base + state modifier (dot + Oswald label) #}
 {% set status_pill_map = {
-  'draft':   ('badge-gray',  'DRAFT'),
-  'open':    ('badge-blue',  'OPEN'),
-  'partial': ('badge-amber', 'PARTIAL'),
-  'paid':    ('badge-green', 'PAID'),
-  'void':    ('badge-red',   'VOID'),
+  'draft':   ('chip-draft',   'DRAFT'),
+  'open':    ('chip-invoice', 'OPEN'),
+  'partial': ('chip-low',     'PARTIAL'),
+  'paid':    ('chip-ok',      'PAID'),
+  'void':    ('chip-out',     'VOID'),
 } %}
 
 {% block header_actions %}
-  {# DRAFT — Save Draft (autosaved already, but explicit indicator) + Finalize #}
-  {% if editable %}
-    <button type="button"
-            class="btn-secondary btn-sm"
-            onclick="document.getElementById('inv-header-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}))"
-            title="Save header changes">
-      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-              d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/>
-      </svg>
-      Save Draft
-    </button>
-    <form method="post" action="/invoices/{{ invoice.id }}/finalise" class="inline">
-      <button type="submit"
-              class="btn-primary btn-sm"
-              onclick="return confirm('Finalize this invoice? Once finalized it becomes read-only and changes will require void-and-reissue.')">
-        Finalize
-        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-        </svg>
-      </button>
-    </form>
-
-  {# OPEN / PARTIAL — Print, Email, Take Payment, Void #}
-  {% elif invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL] %}
-    <a href="/invoices/{{ invoice.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
-    <a href="/invoices/{{ invoice.id }}/pdf" class="btn-secondary btn-sm">PDF</a>
-    <button type="button" class="btn-primary btn-sm"
-            @click="$dispatch('open-payment')">
-      Take Payment
-    </button>
-    <button type="button" class="btn-danger btn-sm"
-            @click="$dispatch('open-void')">
-      Void
-    </button>
-
-  {# PAID — Print only (and Void as escape hatch) #}
-  {% elif invoice.status == InvoiceStatus.PAID %}
-    <a href="/invoices/{{ invoice.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
-    <a href="/invoices/{{ invoice.id }}/pdf" class="btn-secondary btn-sm">PDF</a>
-    <button type="button" class="btn-danger btn-sm"
-            @click="$dispatch('open-void')">
-      Void
-    </button>
-
-  {# VOID — Print only #}
-  {% elif invoice.status == InvoiceStatus.VOID %}
-    <a href="/invoices/{{ invoice.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
-  {% endif %}
-
-  <a href="/invoices/" class="text-sm text-gray-500 hover:text-gray-700">← Invoices</a>
+{% include "invoices/_header_actions.html" %}
 {% endblock %}
 
 
 {% block content %}
-<div class="max-w-6xl space-y-3"
+{% from "macros/linked_docs.html" import linked_strip %}
+{% from "macros/engine_picker.html" import engine_picker %}
+{% import "macros/customer_flags.html" as flagmacro %}
+{% import "macros/credit_status.html" as creditmacro %}
+{% import "macros/intelligence.html" as intel %}
+{% import "macros/motion.html" as motion %}
+<div class="max-w-7xl space-y-3"
      x-data="{
        showVehicleInfo: {{ 'true' if (invoice.esn or invoice.engine_manufacturer or invoice.engine_model) else 'false' }},
        paymentOpen: false,
        voidOpen: false,
-       changeCustomerOpen: false
+       finalizeOpen: false,
+       changeCustomerOpen: false,
+       creditMemoOpen: false,
+       lineConfirmOpen: false,
+       lineConfirmUrl: '',
+       lineConfirmMsg: ''
      }"
      @open-payment.window="paymentOpen = true"
      @open-void.window="voidOpen = true"
+     @open-finalize.window="finalizeOpen = true"
      @open-change-customer.window="changeCustomerOpen = true"
-     @keydown.escape.window="paymentOpen = false; voidOpen = false; changeCustomerOpen = false">
+     @open-credit-memo.window="creditMemoOpen = true"
+     @inv-line-confirm.window="lineConfirmUrl = $event.detail.url; lineConfirmMsg = $event.detail.msg; lineConfirmOpen = true"
+     @keydown.escape.window="paymentOpen = false; voidOpen = false; finalizeOpen = false; changeCustomerOpen = false; creditMemoOpen = false; lineConfirmOpen = false">
+
+  {# ── Linked documents (cross-document navigation strip) ── #}
+  {{ linked_strip(linked_documents|default([])) }}
 
   {# ── Flash / Success banner after finalize ──────────────────────────────── #}
   {% if request.query_params.get('ok') %}
@@ -95,6 +63,31 @@
     <div class="flex-1">{{ request.query_params.get('error') }}</div>
   </div>
   {% endif %}
+
+  {# ── §21 credit-hold WARN-and-CONFIRM — finalize bounced here because the
+       customer is on credit hold (owner decision 6.16: warn, never block). The
+       "Finalize anyway" button re-POSTs with confirm_credit_hold=1. ──────────── #}
+  {% if request.query_params.get('credit_hold') %}
+  <div class="rounded-lg bg-amber-50 border border-amber-300 px-4 py-3 text-sm text-amber-900 flex items-start gap-3">
+    <svg class="w-5 h-5 mt-0.5 text-amber-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3L12.74 5a2 2 0 00-3.48 0L3.2 16a2 2 0 001.73 3z"/>
+    </svg>
+    <div class="flex-1">
+      <strong>{{ invoice.customer.company_name if invoice.customer else 'This customer' }} is on credit hold.</strong>
+      Review the account before invoicing on terms. You can finalize anyway if you've approved it.
+    </div>
+    <form method="post" action="/invoices/{{ invoice.id }}/finalise" class="shrink-0">
+      <input type="hidden" name="confirm_credit_hold" value="1">
+      <button type="submit"
+              class="px-3 py-1.5 rounded-md bg-amber-600 text-white text-xs font-semibold hover:bg-amber-700">
+        Finalize anyway
+      </button>
+    </form>
+  </div>
+  {% endif %}
+
+  {# ── §4.5 credit warn (WARN-ONLY) — on_hold / over_limit banner ─────────── #}
+  {{ creditmacro.credit_warn(credit_status | default({})) }}
 
   {# ── Lock banner — shown for ALL OPEN/PARTIAL invoices (content is read-only) #}
   {% if invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL] %}
@@ -151,14 +144,20 @@
         hx-swap="outerHTML"
         hx-trigger="change from:input,select,textarea,checkbox delay:300ms, submit"
         class="card">
+    {# Optimistic-lock version (R9) — refreshed from X-Updated-At by the
+       header-save listener below, so only another session's save conflicts. #}
+    <input type="hidden" name="_updated_at" value="{{ invoice.updated_at.isoformat() if invoice.updated_at else '' }}">
     <div class="card-body py-3">
+      {# Header-save failures (409 conflict / validation) land here — htmx won't
+         swap a 4xx into #totals-panel, so this strip is the visible surface. #}
+      <div id="inv-header-save-error" class="hidden mb-2 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700"></div>
 
       {# Row 1 — primary info #}
       <div class="flex items-center gap-x-5 gap-y-2 flex-wrap text-sm">
 
-        {# Status pill #}
-        {% set pill = status_pill_map.get(invoice.status, ('badge-gray', invoice.status|upper)) %}
-        <span class="{{ pill[0] }} text-xs font-bold tracking-wider">{{ pill[1] }}</span>
+        {# Status chip — Axle .chip-axle #}
+        {% set pill = status_pill_map.get(invoice.status, ('chip-draft', invoice.status|upper)) %}
+        <span class="chip-axle {{ pill[0] }}"><span class="dot"></span>{{ pill[1] }}</span>
 
         {# Customer — link + change customer button when DRAFT #}
         <div class="flex items-center gap-2 shrink-0">
@@ -166,11 +165,19 @@
           <a href="/customers/{{ invoice.customer_id }}" class="font-semibold text-gray-800 link">
             {{ invoice.customer.company_name }}
           </a>
+          {{ flagmacro.customer_flags(invoice.customer.flag_keys | default([])) }}
           {% if editable %}
           <button type="button"
                   @click="changeCustomerOpen = true"
-                  class="text-xs text-gray-400 hover:text-brand-700 underline-offset-2 hover:underline"
-                  title="Change customer (DRAFT only)">change</button>
+                  aria-label="Change customer (DRAFT only)"
+                  class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium
+                         text-gray-500 bg-gray-100 hover:bg-brand-50 hover:text-brand-700 transition-colors">
+            <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>
+            </svg>
+            Change
+          </button>
           {% endif %}
         </div>
 
@@ -256,22 +263,17 @@
           {% endif %}
         </div>
 
-        {# Vehicle/Engine toggle #}
-        <button type="button" @click="showVehicleInfo = !showVehicleInfo"
-                class="text-xs text-brand-700 hover:text-brand-600 font-medium shrink-0 flex items-center gap-1">
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"
-               :class="showVehicleInfo ? 'rotate-90' : ''" style="transition: transform 0.15s">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-          </svg>
+        {# Vehicle/Engine — shown inline (always visible); toggle removed per UI wave #}
+        <span class="text-xs text-gray-400 font-semibold uppercase tracking-wide shrink-0 flex items-center gap-1.5">
           Vehicle / Engine Info
           {% if invoice.esn or invoice.engine_manufacturer or invoice.engine_model %}
           <span class="badge-brand">filled</span>
           {% endif %}
-        </button>
+        </span>
       </div>
 
-      {# Row 2 — Vehicle/Engine Info (expandable) #}
-      <div x-show="showVehicleInfo" x-cloak class="mt-3 pt-3 border-t border-gray-100">
+      {# Row 2 — Vehicle/Engine Info (inline; year/make · engine · ESN always visible) #}
+      <div class="mt-3 pt-3 border-t border-gray-100">
         <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
           <div>
             <label class="form-label">ESN</label>
@@ -281,22 +283,23 @@
             <p class="text-sm text-gray-700">{{ invoice.esn or '—' }}</p>
             {% endif %}
           </div>
+          {% if editable %}
+          {# Engine Make / Model — standardized cascading dropdowns (replaces free
+             text; same macro as the quote workspace). Renders two grid cells via
+             display:contents and submits engine_manufacturer / engine_model
+             exactly as before, so the header autosave + carry-forward stay
+             unchanged. Legacy free-text values are preserved as "Other". #}
+          {{ engine_picker(invoice.engine_manufacturer, invoice.engine_model, engine_makes, engine_models_by_make) }}
+          {% else %}
           <div>
             <label class="form-label">Engine Make</label>
-            {% if editable %}
-            <input type="text" name="engine_manufacturer" value="{{ invoice.engine_manufacturer or '' }}" class="form-input text-sm"/>
-            {% else %}
             <p class="text-sm text-gray-700">{{ invoice.engine_manufacturer or '—' }}</p>
-            {% endif %}
           </div>
           <div>
             <label class="form-label">Engine Model</label>
-            {% if editable %}
-            <input type="text" name="engine_model" value="{{ invoice.engine_model or '' }}" class="form-input text-sm"/>
-            {% else %}
             <p class="text-sm text-gray-700">{{ invoice.engine_model or '—' }}</p>
-            {% endif %}
           </div>
+          {% endif %}
           <div>
             <label class="form-label">Truck / Job</label>
             {% if editable %}
@@ -335,23 +338,29 @@
     </div>
   </form>
 
+  {# ── Invoice Intelligence Panel (§5.8 / P2-D3) — Profit & Margin gated by the
+       live Show-margin toggle (the macro wraps them in x-show="showMargin",
+       inherited from the base.html <body> scope). metrics: invoice_intelligence. #}
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm mb-3 overflow-hidden">
+    <div class="flex items-center gap-2 px-4 py-2.5 border-b border-steel-150">
+      <h4 class="label-mini text-steel-500">Invoice Intelligence</h4>
+    </div>
+    <div class="px-4 py-3">
+      {{ intel.invoice_intelligence_panel(invoice_intelligence | default({})) }}
+    </div>
+  </div>
+
   {# ── Change-Customer Modal (DRAFT only) — §3 Modal standard ──────────────── #}
   {% if editable %}
   {# Backdrop #}
   <div x-show="changeCustomerOpen" x-cloak
        @click="changeCustomerOpen = false"
        class="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm"
-       x-transition:enter="transition ease-out duration-150"
-       x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
-       x-transition:leave="transition ease-in duration-100"
-       x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"></div>
+       {{ motion.backdrop_fade() }}></div>
   {# Panel #}
   <div x-show="changeCustomerOpen" x-cloak
        class="fixed inset-0 z-[60] flex items-center justify-center p-4"
-       x-transition:enter="transition ease-out duration-200"
-       x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
-       x-transition:leave="transition ease-in duration-100"
-       x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95">
+       {{ motion.modal_scale() }}>
     <div @click.stop class="w-full max-w-lg rounded-2xl bg-white shadow-2xl overflow-hidden">
       <form method="post" action="/invoices/{{ invoice.id }}/change-customer">
         {# Header #}
@@ -401,131 +410,23 @@
   {# ════════════════════════════════════════════════════════════════════════
      LINE SEARCH (DRAFT only)
   ═══════════════════════════════════════════════════════════════════════════ #}
+  {# ── Shared one-click line-adder (Architect §8H) — sibling above #lines-and-totals
+     so an add (which swaps the section outerHTML) never destroys the search box. #}
   {% if editable %}
-  <div x-data="invoiceLineAdder({{ invoice.id }})"
-       @click.away="results = []"
-       @record-created.window="if ($event.detail.type === 'product') addCreatedProduct($event.detail)"
-       class="card">
-    <div class="card-body py-3">
-      <div class="flex gap-2 items-center">
-        <div class="relative flex-1">
-          <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
-               fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
-          </svg>
-          <input type="text"
-                 x-ref="searchInput"
-                 x-model="q"
-                 @input.debounce.250ms="doSearch()"
-                 @keydown.escape="results = []; q = ''"
-                 placeholder="Search parts — Part #, OEM #, description (or type free text for a misc line)"
-                 autocomplete="off"
-                 class="w-full pl-10 pr-32 py-2.5 text-sm border-2 border-gray-300 rounded-lg focus:border-brand-400 focus:outline-none bg-white"/>
-          <button type="button" @click="addMiscLine()"
-                  x-show="q.length > 0 && results.length === 0"
-                  class="absolute right-2 top-1/2 -translate-y-1/2 btn-primary btn-xs">
-            + Add as misc line
-          </button>
-        </div>
-        <button type="button"
-                hx-get="/products/quick-create-form"
-                hx-target="#create-slide-content"
-                hx-swap="innerHTML"
-                @click="$dispatch('open-create-slide', { title: 'New Product' })"
-                title="Create a new product and add it to this invoice"
-                class="shrink-0 px-3 py-2 text-xs font-medium text-brand-700 border border-brand-200
-                       rounded-lg bg-brand-50 hover:bg-brand-100 transition-colors whitespace-nowrap">
-          + New Product
-        </button>
-      </div>
-
-      {# Search results dropdown #}
-      <div x-show="results.length > 0" x-cloak
-           class="mt-1 border border-gray-200 rounded-lg bg-white shadow-lg max-h-80 overflow-y-auto">
-        <template x-for="p in results" :key="p.id">
-          <button type="button" @click="addProduct(p)"
-                  class="w-full text-left px-3 py-2 hover:bg-stone-100 border-b border-gray-100 last:border-b-0 flex items-center gap-3">
-            <div class="flex-1 min-w-0">
-              <p class="font-mono text-xs font-bold text-brand-700" x-text="p.sku"></p>
-              <p class="text-xs text-gray-500 truncate" x-text="p.title"></p>
-            </div>
-            <div class="text-right shrink-0 text-xs">
-              <p class="tabular-nums font-semibold text-gray-700">$<span x-text="p.price.toFixed(2)"></span></p>
-              <p class="text-gray-400">QOH: <span x-text="p.qoh" class="tabular-nums"></span></p>
-              <p x-show="p.has_core" class="text-amber-600 font-medium">+core $<span x-text="p.core.toFixed(2)" class="tabular-nums"></span></p>
-            </div>
-          </button>
-        </template>
-      </div>
-    </div>
-  </div>
-
-  <script>
-    function invoiceLineAdder(invoiceId) {
-      return {
-        q: '',
-        results: [],
-        async doSearch() {
-          if (this.q.length < 2) { this.results = []; return; }
-          const r = await fetch('/invoices/_/product-search?q=' + encodeURIComponent(this.q));
-          const html = await r.text();
-          // Parse the returned HTML to extract product data attributes
-          const tmp = document.createElement('div');
-          tmp.innerHTML = html;
-          this.results = Array.from(tmp.querySelectorAll('[data-product]')).map(el => ({
-            id: parseInt(el.dataset.id),
-            sku: el.dataset.sku,
-            title: el.dataset.title,
-            price: parseFloat(el.dataset.price),
-            qoh: parseInt(el.dataset.qoh),
-            cost: parseFloat(el.dataset.cost),
-            has_core: el.dataset.hasCore === '1',
-            core: parseFloat(el.dataset.core || '0'),
-          }));
-        },
-        async addProduct(p) {
-          const fd = new FormData();
-          fd.set('product_id', p.id);
-          fd.set('description', p.title || p.sku);
-          fd.set('qty', '1');
-          fd.set('unit_price', p.price.toFixed(2));
-          fd.set('unit_cost', p.cost.toFixed(2));
-          fd.set('line_type', 'product');
-          const r = await fetch(`/invoices/${invoiceId}/lines`, {method: 'POST', body: fd});
-          const html = await r.text();
-          document.getElementById('lines-and-totals').outerHTML = html;
-          this.q = ''; this.results = [];
-          this.$nextTick(() => this.$refs.searchInput.focus());
-        },
-        async addMiscLine() {
-          const fd = new FormData();
-          fd.set('description', this.q);
-          fd.set('qty', '1');
-          fd.set('unit_price', '0');
-          fd.set('line_type', 'misc');
-          const r = await fetch(`/invoices/${invoiceId}/lines`, {method: 'POST', body: fd});
-          const html = await r.text();
-          document.getElementById('lines-and-totals').outerHTML = html;
-          this.q = ''; this.results = [];
-        },
-        async addCreatedProduct(detail) {
-          // Triggered after the quick-create slide-over saves a new product.
-          // Add it to this invoice immediately at qty 1, suggested sell.
-          await this.addProduct({
-            id: detail.id,
-            sku: detail.part_number || '',
-            title: detail.description || '',
-            price: detail.suggested_sell != null ? detail.suggested_sell : 0,
-            cost: detail.current_cost != null ? detail.current_cost : 0,
-            qoh: 0,
-            has_core: false,
-            core: 0,
-          });
-        }
-      }
-    }
-  </script>
+  {% set la = {
+       'doc_type':      'invoice',
+       'doc_id':        invoice.id,
+       'search_url':    '/line-items/product-search',
+       'post_url':      '/invoices/' ~ invoice.id ~ '/lines',
+       'mode':          'sell',
+       'show_discount': true,
+       'target':        '#lines-and-totals',
+       'swap':          'outerHTML',
+       'child_mode':    false,
+       'new_product':   true,
+       'freight':       true,
+     } %}
+  {% include "line_items/_line_adder.html" %}
   {% endif %}
 
   {# ════════════════════════════════════════════════════════════════════════
@@ -539,42 +440,189 @@
   ═══════════════════════════════════════════════════════════════════════════ #}
   {% set active_allocations = invoice.allocations | selectattr('is_reversed', 'equalto', false) | list %}
   {% if active_allocations %}
-  <div class="card">
-    <div class="card-header">
-      <h2 class="card-title">Payments</h2>
-      <span class="text-xs text-gray-400">{{ active_allocations | length }} payment{{ 's' if active_allocations | length != 1 }}</span>
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <div class="flex items-center gap-2 px-4 py-2.5 border-b border-steel-150">
+      <h4 class="label-mini text-steel-500">Payments</h4>
+      <span class="ml-auto font-mono text-[10.5px] text-steel-400">{{ active_allocations | length }} payment{{ 's' if active_allocations | length != 1 }}</span>
     </div>
     <div class="overflow-x-auto">
-      <table class="tbl">
-        <thead class="tbl-head">
-          <tr>
-            <th class="tbl-th">Date</th>
-            <th class="tbl-th">Method</th>
-            <th class="tbl-th">Reference</th>
-            <th class="tbl-th-r">Amount</th>
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-steel-200 bg-[#fafbfa] font-display font-semibold text-steel-400 uppercase tracking-[.07em] text-[10px]">
+            <th class="text-left px-4 py-2">Date</th>
+            <th class="text-left px-4 py-2">Method</th>
+            <th class="text-left px-4 py-2">Reference</th>
+            <th class="text-right px-4 py-2">Amount</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody class="divide-y divide-steel-100">
           {% for a in active_allocations %}
-          <tr class="tbl-row">
-            <td class="tbl-td text-xs text-gray-600">{{ a.payment.payment_date.strftime('%b %d, %Y') }}</td>
-            <td class="tbl-td">
-              <span class="badge-gray">{{ a.payment.payment_method | title }}</span>
+          <tr class="hover:bg-[#f6f7f2] transition-colors">
+            <td class="px-4 py-2.5 align-middle text-xs text-steel-500 font-mono">{{ a.payment.payment_date.strftime('%b %d, %Y') }}</td>
+            <td class="px-4 py-2.5 align-middle">
+              <span class="chip-axle chip-draft">{{ a.payment.payment_method | title }}</span>
             </td>
-            <td class="tbl-td text-xs text-gray-500">
+            <td class="px-4 py-2.5 align-middle text-xs text-steel-400">
               {% if a.payment.check_number %}#{{ a.payment.check_number }}{% else %}—{% endif %}
             </td>
-            <td class="tbl-td-r font-semibold text-green-700">${{ "%.2f"|format(a.amount_applied) }}</td>
+            <td class="px-4 py-2.5 align-middle text-right"><span class="money" style="color:#15803d;">${{ "%.2f"|format(a.amount_applied) }}</span></td>
           </tr>
           {% endfor %}
         </tbody>
-        <tfoot class="border-t-2 border-gray-200">
-          <tr class="bg-gray-50">
-            <td colspan="3" class="px-4 py-2 text-right text-xs font-semibold text-gray-500">Total received</td>
-            <td class="px-4 py-2 text-right text-sm font-bold text-green-700 tabular-nums">${{ "%.2f"|format(totals.amount_paid) }}</td>
+        <tfoot class="border-t-2 border-steel-200">
+          <tr class="bg-[#fafbfa]">
+            <td colspan="3" class="px-4 py-2 text-right label-mini text-steel-500">Total received</td>
+            <td class="px-4 py-2 text-right"><span class="money ext" style="color:#15803d;">${{ "%.2f"|format(totals.amount_paid) }}</span></td>
           </tr>
         </tfoot>
       </table>
+    </div>
+  </div>
+  {% endif %}
+
+
+  {# ════════════════════════════════════════════════════════════════════════
+     AFTER-SALE SERVICE — start a core return, warranty claim, or RA from the
+     invoice, pre-seeded with this customer + invoice + parts. Finalized only.
+     Core sub-block reuses the cores/list.html "awaiting_return" form pattern
+     (copied, not extracted — §7 needs 3 identical users; this is the 2nd). The
+     two buttons drive the global create slide-over defined in base.html.
+  ═══════════════════════════════════════════════════════════════════════════ #}
+  {% if invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL, InvoiceStatus.PAID] %}
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <div class="flex items-center gap-2 px-4 py-2.5 border-b border-steel-150">
+      <h4 class="label-mini text-steel-500">After-Sale Service</h4>
+      <span class="ml-auto font-mono text-[10.5px] text-steel-400">core returns · warranty · returns</span>
+    </div>
+    <div class="px-4 py-4 space-y-5">
+
+      {# ── Core returns — only when this invoice still has open cores ── #}
+      {% if invoice_cores %}
+      <div>
+        <p class="label-mini text-steel-400 mb-2">Core Returns</p>
+        <div class="space-y-2">
+          {% for core in invoice_cores %}
+          <div id="core-item-{{ core.id }}" x-data="{ open: false, outcome: 'accepted' }"
+               class="rounded-lg border border-orange-100 bg-orange-50/30 overflow-hidden">
+            {# Row summary + expand toggle #}
+            <div class="flex items-center justify-between gap-3 px-4 py-3">
+              <div class="min-w-0">
+                <div class="flex items-center gap-2">
+                  <span class="pn">{{ core.product.sku if core.product else '—' }}</span>
+                  <span class="corechip">⟲ Core</span>
+                  {% if core.is_overdue %}<span class="chip-axle chip-out"><span class="dot"></span>Overdue</span>{% endif %}
+                </div>
+                <p class="text-xs text-gray-500 truncate max-w-[320px]">{{ core.product.title if core.product else '—' }}</p>
+              </div>
+              <div class="flex items-center gap-4 shrink-0">
+                <div class="text-right">
+                  <p class="text-[10px] text-gray-400 uppercase tracking-wide">Outstanding</p>
+                  <p class="text-sm font-semibold tabular-nums text-gray-700">
+                    {{ core.qty_outstanding }} × <span class="text-orange-600">${{ '%.2f' % core.customer_unit_charge }}</span>
+                  </p>
+                </div>
+                <button type="button" @click="open = !open"
+                        class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-brand-700 text-white hover:bg-brand-600 transition-colors">
+                  <span x-text="open ? 'Cancel' : 'Record Return'"></span>
+                </button>
+              </div>
+            </div>
+            {# Inline return form (qty + inspection + condition) — HTMX post so the
+               invoice STAYS OPEN: the row swaps to a confirmation in place, and the
+               core slip pops in a NEW window (openCoreSlip trigger). The from_invoice
+               flag is what tells /cores/{id}/return to return a fragment instead of
+               redirecting (the cores/list.html flow has no flag → unchanged redirect). #}
+            <div x-show="open" x-cloak class="px-4 pb-4 pt-1 border-t border-orange-100">
+              <form hx-post="/cores/{{ core.id }}/return"
+                    hx-target="#core-item-{{ core.id }}" hx-swap="outerHTML"
+                    class="space-y-3">
+                <input type="hidden" name="from_invoice" value="{{ invoice.id }}" />
+                <div class="flex items-end gap-3 flex-wrap">
+                  <div>
+                    <label class="form-label">Qty Returned</label>
+                    <input type="number" name="qty_returned" min="1" max="{{ core.qty_outstanding }}" value="{{ core.qty_outstanding }}"
+                           class="w-24 form-input" />
+                  </div>
+                  <div>
+                    <label class="form-label">Inspection</label>
+                    <select name="inspection_outcome" x-model="outcome" class="form-select">
+                      <option value="accepted">✓ Accept — issue credit now</option>
+                      <option value="hold">⏸ Hold — inspect later, defer credit</option>
+                      <option value="rejected">✗ Reject — bad core, no credit</option>
+                    </select>
+                  </div>
+                  <div class="flex-1 min-w-44">
+                    <label class="form-label">Condition Notes</label>
+                    <input type="text" name="condition" placeholder="Good condition, clean, no damage…" class="form-input" />
+                  </div>
+                </div>
+                <div class="flex items-center gap-3 flex-wrap">
+                  <button type="submit"
+                          :class="outcome === 'rejected' ? 'btn-danger' : (outcome === 'hold' ? 'btn-secondary' : 'btn-primary')">
+                    <span x-show="outcome === 'accepted'">Record Return &amp; Credit Account</span>
+                    <span x-show="outcome === 'hold'" x-cloak>Record Return — Hold for Inspection</span>
+                    <span x-show="outcome === 'rejected'" x-cloak>Refuse Core — Close Charge</span>
+                  </button>
+                  <p class="text-xs text-gray-400">
+                    <span x-show="outcome === 'accepted'">Credit ${{ '%.2f' | format(core.customer_unit_charge) }}/ea applied immediately.</span>
+                    <span x-show="outcome === 'hold'" x-cloak>Core logged; credit deferred until inspection complete.</span>
+                    <span x-show="outcome === 'rejected'" x-cloak>No credit issued; charge will be closed.</span>
+                  </p>
+                </div>
+              </form>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {# Pop the core slip in a new window when a return is recorded (HX-Trigger
+           openCoreSlip). Bound once; the "Print slip ↗" link in the swapped row is
+           the fallback if the browser blocks the popup. #}
+        <script>
+          if (!window.__coreSlipBound) {
+            window.__coreSlipBound = true;
+            document.body.addEventListener('openCoreSlip', function (e) {
+              var url = e.detail && e.detail.url;
+              if (url) window.open(url, '_blank', 'noopener');
+            });
+            // A returned core that auto-applies credit to THIS invoice lowers
+            // Balance Due. Reload (after the slip tab opens) so the totals, the
+            // payment dialog default and the status chip all reflect the new figure.
+            document.body.addEventListener('invoiceBalanceChanged', function () {
+              setTimeout(function () { window.location.reload(); }, 450);
+            });
+          }
+        </script>
+      </div>
+      {% endif %}
+
+      {# ── Warranty & Returns — always available on a finalized invoice ── #}
+      <div>
+        <p class="label-mini text-steel-400 mb-2">Warranty &amp; Returns</p>
+        <div class="flex flex-wrap items-center gap-3">
+          <button type="button"
+                  hx-get="/warranty/new?invoice_id={{ invoice.id }}"
+                  hx-target="#create-slide-content"
+                  @click="createSlideOpen = true; createSlideTitle = 'New Warranty Claim'"
+                  class="btn-secondary">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+            </svg>
+            Start Warranty Claim
+          </button>
+          <button type="button"
+                  hx-get="/returns/new?invoice_id={{ invoice.id }}"
+                  hx-target="#create-slide-content"
+                  @click="createSlideOpen = true; createSlideTitle = 'New Return (RA)'"
+                  class="btn-secondary">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"/>
+            </svg>
+            Start Return
+          </button>
+          <p class="text-xs text-gray-400">Opens pre-filled with this invoice's customer and parts.</p>
+        </div>
+      </div>
+
     </div>
   </div>
   {% endif %}
@@ -586,22 +634,16 @@
      open/close state lives on the root wrapper (paymentOpen).
   ═══════════════════════════════════════════════════════════════════════════ #}
   {% if invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL] %}
-  <div x-data="{ method: '{{ PaymentMethod.CASH }}' }">
+  <div x-data="{ method: '{{ PaymentMethod.CASH }}', amount: {{ '%.2f'|format(totals.balance_due) }}, balanceDue: {{ '%.2f'|format(totals.balance_due) }} }">
     {# Backdrop #}
     <div x-show="paymentOpen" x-cloak
          @click="paymentOpen = false"
          class="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm"
-         x-transition:enter="transition ease-out duration-150"
-         x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
-         x-transition:leave="transition ease-in duration-100"
-         x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"></div>
+         {{ motion.backdrop_fade() }}></div>
     {# Panel #}
     <div x-show="paymentOpen" x-cloak
          class="fixed inset-0 z-[60] flex items-center justify-center p-4"
-         x-transition:enter="transition ease-out duration-200"
-         x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
-         x-transition:leave="transition ease-in duration-100"
-         x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95">
+         {{ motion.modal_scale() }}>
       <div @click.stop class="w-full max-w-2xl rounded-2xl bg-white shadow-2xl overflow-hidden">
         {# Header #}
         <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
@@ -629,6 +671,7 @@
               <div>
                 <label class="form-label">Amount</label>
                 <input type="number" name="amount" step="0.01" min="0.01" required
+                       x-model.number="amount"
                        value="{{ "%.2f"|format(totals.balance_due) }}"
                        class="form-input"/>
               </div>
@@ -655,6 +698,23 @@
               </div>
             </div>
 
+            {# Over-balance notice (B-1): never silent — surface the applied/credit split #}
+            <div x-show="amount > balanceDue + 0.005" x-cloak
+                 class="flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
+              <svg class="w-4 h-4 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+              </svg>
+              <span>
+                This exceeds the Balance Due by
+                <span class="font-semibold" x-text="'$' + (amount - balanceDue).toFixed(2)"></span>.
+                <span class="font-semibold" x-text="'$' + balanceDue.toFixed(2)"></span>
+                will be applied to this invoice and the remaining
+                <span class="font-semibold" x-text="'$' + (amount - balanceDue).toFixed(2)"></span>
+                will be held as <span class="font-semibold">unapplied credit</span> on the customer's
+                account, available to apply to future invoices.
+              </span>
+            </div>
+
             {# Card convenience-fee info note (informational only) #}
             <div x-show="method === '{{ PaymentMethod.CREDIT_CARD }}'" x-cloak
                  class="flex items-start gap-2 rounded-lg bg-blue-50 border border-blue-100 px-3 py-2 text-xs text-blue-700">
@@ -673,7 +733,10 @@
           <div class="px-6 py-4 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
             <button type="button" class="btn-secondary btn-sm"
                     @click="paymentOpen = false">Cancel</button>
-            <button type="submit" class="btn-primary btn-sm">Record Payment</button>
+            <button type="submit" class="btn-primary btn-sm">
+              <span x-show="amount <= balanceDue + 0.005">Record Payment</span>
+              <span x-show="amount > balanceDue + 0.005" x-cloak>Record Payment + Credit</span>
+            </button>
           </div>
         </form>
 
@@ -703,28 +766,190 @@
   {# ════════════════════════════════════════════════════════════════════════
      VOID MODAL (opened from header on OPEN/PARTIAL/PAID) — §3 Modal standard
   ═══════════════════════════════════════════════════════════════════════════ #}
+  {# ════════════════════════════════════════════════════════════════════════
+     FINALIZE CONFIRM MODAL (draft invoices only) — §3 Modal standard
+     Replaces the former native window.confirm() on the header Finalize button.
+  ═══════════════════════════════════════════════════════════════════════════ #}
+  {% if editable %}
+  <div>
+    {# Backdrop #}
+    <div x-show="finalizeOpen" x-cloak
+         @click="finalizeOpen = false"
+         aria-hidden="true"
+         class="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm"
+         {{ motion.backdrop_fade() }}></div>
+    {# Panel #}
+    <div x-show="finalizeOpen" x-cloak
+         role="dialog" aria-modal="true" aria-labelledby="finalize-modal-title"
+         class="fixed inset-0 z-[60] flex items-center justify-center p-4"
+         {{ motion.modal_scale() }}>
+      <div @click.stop class="w-full max-w-lg rounded-2xl bg-white shadow-2xl overflow-hidden">
+        <form method="post" action="/invoices/{{ invoice.id }}/finalise">
+          {# Header #}
+          <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+            <h2 id="finalize-modal-title" class="font-semibold text-sm text-gray-900">Finalize invoice</h2>
+            <button type="button" @click="finalizeOpen = false"
+                    aria-label="Close"
+                    class="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
+          {# Body #}
+          <div class="px-6 py-6">
+            <p class="text-sm text-gray-700">Once finalized, this invoice becomes <strong>read-only</strong>. Any corrections will require void-and-reissue.</p>
+            <p class="text-sm text-gray-500 mt-2">Continue?</p>
+          </div>
+          {# Footer #}
+          <div class="px-6 py-4 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
+            <button type="button" class="btn-secondary btn-sm"
+                    @click="finalizeOpen = false">Cancel</button>
+            <button type="submit" class="btn-primary btn-sm">
+              Finalize
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+              </svg>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ════════════════════════════════════════════════════════════════════════
+     LINE-ACTION CONFIRM MODAL (delete / unlink lines) — §3 Modal standard
+     Opened by dispatching 'inv-line-confirm' with { url, msg } from the
+     HTMX-swapped _lines_and_totals.html partial. Confirm fires htmx.ajax.
+  ═══════════════════════════════════════════════════════════════════════════ #}
+  {% if editable %}
+  <div>
+    {# Backdrop #}
+    <div x-show="lineConfirmOpen" x-cloak
+         @click="lineConfirmOpen = false"
+         aria-hidden="true"
+         class="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm"
+         {{ motion.backdrop_fade() }}></div>
+    {# Panel #}
+    <div x-show="lineConfirmOpen" x-cloak
+         role="dialog" aria-modal="true" aria-labelledby="line-confirm-modal-title"
+         class="fixed inset-0 z-[60] flex items-center justify-center p-4"
+         {{ motion.modal_scale() }}>
+      <div @click.stop class="w-full max-w-lg rounded-2xl bg-white shadow-2xl overflow-hidden">
+        {# Header #}
+        <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+          <h2 id="line-confirm-modal-title" class="font-semibold text-sm text-gray-900">Confirm action</h2>
+          <button type="button" @click="lineConfirmOpen = false"
+                  aria-label="Close"
+                  class="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+        {# Body #}
+        <div class="px-6 py-6">
+          <p class="text-sm text-gray-700" x-text="lineConfirmMsg"></p>
+        </div>
+        {# Footer #}
+        <div class="px-6 py-4 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
+          <button type="button" class="btn-secondary btn-sm"
+                  @click="lineConfirmOpen = false">Cancel</button>
+          <button type="button" class="btn-danger btn-sm"
+                  @click="htmx.ajax('POST', lineConfirmUrl, { target: '#lines-and-totals', swap: 'outerHTML' }); lineConfirmOpen = false">
+            Confirm
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ════════════════════════════════════════════════════════════════════════
+     ISSUE CREDIT MEMO MODAL (OPEN/PARTIAL/PAID) — §3 Modal standard
+     Posts to /invoices/{id}/issue-credit-memo. A credit memo is an independent
+     document — it does NOT modify this locked invoice. Defaults to crediting the
+     full invoice; the override credits a custom amount (a single CM line).
+  ═══════════════════════════════════════════════════════════════════════════ #}
+  {% if invoice.status in [InvoiceStatus.OPEN, InvoiceStatus.PARTIAL, InvoiceStatus.PAID] %}
+  <div x-data="{ reason: '', useOverride: false }">
+    {# Backdrop #}
+    <div x-show="creditMemoOpen" x-cloak
+         @click="creditMemoOpen = false"
+         class="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm"
+         {{ motion.backdrop_fade() }}></div>
+    {# Panel #}
+    <div x-show="creditMemoOpen" x-cloak
+         class="fixed inset-0 z-[60] flex items-center justify-center p-4"
+         {{ motion.modal_scale() }}>
+      <div @click.stop class="w-full max-w-lg rounded-2xl bg-white shadow-2xl overflow-hidden">
+        <form method="post" action="/invoices/{{ invoice.id }}/issue-credit-memo">
+          {# Header #}
+          <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+            <h2 class="font-semibold text-sm text-gray-900">Issue Credit Memo</h2>
+            <button type="button" @click="creditMemoOpen = false"
+                    class="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
+          {# Body #}
+          <div class="px-6 py-6 space-y-4">
+            <p class="text-xs text-gray-600 bg-gray-50 border border-gray-100 rounded-lg p-3">
+              A credit memo is an <strong>independent</strong> financial document — it does not change
+              this locked invoice. By default it credits the full invoice
+              (<span class="font-semibold tabular-nums">${{ "%.2f"|format(invoice.total) }}</span>).
+            </p>
+            <div>
+              <label class="form-label">Reason (required)</label>
+              <input type="text" name="reason" x-model="reason" required
+                     placeholder="e.g. overcharge, pricing correction, goodwill credit"
+                     @keydown.enter.prevent
+                     class="form-input"/>
+            </div>
+            <label class="flex items-center gap-2 text-sm text-gray-700">
+              <input type="checkbox" x-model="useOverride"
+                     class="rounded border-gray-300 text-brand-600 focus:ring-brand-400"/>
+              Credit a custom amount instead of the full invoice
+            </label>
+            <div x-show="useOverride" x-cloak>
+              <label class="form-label">Credit Amount</label>
+              <input type="number" name="amount" step="0.01" min="0.01"
+                     :disabled="!useOverride" :required="useOverride"
+                     value="{{ "%.2f"|format(invoice.total) }}"
+                     class="form-input w-40 text-right disabled:bg-gray-50 disabled:text-gray-400"/>
+            </div>
+          </div>
+          {# Footer #}
+          <div class="px-6 py-4 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between">
+            <button type="button" class="btn-secondary btn-sm"
+                    @click="creditMemoOpen = false">Cancel</button>
+            <button type="submit" class="btn-primary btn-sm" :disabled="!reason.trim()">Issue Credit Memo</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
   {% if invoice.status not in [InvoiceStatus.DRAFT, InvoiceStatus.VOID] %}
   <div x-data="{ reason: '' }">
     {# Backdrop #}
     <div x-show="voidOpen" x-cloak
          @click="voidOpen = false"
          class="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm"
-         x-transition:enter="transition ease-out duration-150"
-         x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
-         x-transition:leave="transition ease-in duration-100"
-         x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"></div>
+         {{ motion.backdrop_fade() }}></div>
     {# Panel #}
     <div x-show="voidOpen" x-cloak
          class="fixed inset-0 z-[60] flex items-center justify-center p-4"
-         x-transition:enter="transition ease-out duration-200"
-         x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
-         x-transition:leave="transition ease-in duration-100"
-         x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95">
+         {{ motion.modal_scale() }}>
       <div @click.stop class="w-full max-w-lg rounded-2xl bg-white shadow-2xl overflow-hidden">
         <form method="post" action="/invoices/{{ invoice.id }}/void">
           {# Header #}
           <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-            <h2 class="font-semibold text-sm text-red-700">Void this invoice</h2>
+            <h2 class="font-semibold text-sm text-gray-900">Void this invoice</h2>
             <button type="button" @click="voidOpen = false"
                     class="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -756,6 +981,34 @@
     </div>
   </div>
   {% endif %}
+
+{# ── Header-save listener (R9 optimistic locking) ────────────────────────────
+   After every /header save: on success adopt the server's fresh updated_at
+   (X-Updated-At) so the next autosave never self-conflicts; on failure show
+   the server's message — htmx doesn't swap 4xx responses, so without this the
+   409 conflict (or a validation 400) would be silently invisible. #}
+<script>
+  if (!window.__invHeaderSaveBound) {
+    window.__invHeaderSaveBound = true;
+    document.body.addEventListener('htmx:afterRequest', function (evt) {
+      var path = (evt.detail.pathInfo && evt.detail.pathInfo.requestPath) || '';
+      if (!/\/invoices\/\d+\/header$/.test(path)) return;
+      var xhr = evt.detail.xhr;
+      var err = document.getElementById('inv-header-save-error');
+      var hid = document.querySelector('#inv-header-form input[name="_updated_at"]');
+      if (xhr && xhr.status >= 200 && xhr.status < 300) {
+        if (err) { err.classList.add('hidden'); err.textContent = ''; }
+        var ts = xhr.getResponseHeader('X-Updated-At');
+        if (ts && hid) hid.value = ts;
+      } else if (err) {
+        err.textContent = (xhr && xhr.status === 409)
+          ? 'This invoice was changed by another user — reload the page to pick up their changes, then re-apply your edit.'
+          : 'Save failed — your last header change was not saved.';
+        err.classList.remove('hidden');
+      }
+    });
+  }
+</script>
 
 </div>
 {% endblock %}

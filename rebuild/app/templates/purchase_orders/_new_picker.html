@@ -1,5 +1,21 @@
-<div x-data="{ vendorId: '' }">
+<div x-data="{ vendorId: '{{ preselect_vendor_id or '' }}' }">
   <form method="post" action="/purchase-orders/new" class="space-y-4">
+
+    {% if product %}
+    {# Launched from a product — order this part (added as the PO's first line). #}
+    <input type="hidden" name="product_id" value="{{ product.id }}" />
+    <div class="flex items-start gap-2.5 rounded-lg border border-brand-100 bg-brand-50/60 px-3 py-2.5">
+      <svg class="w-4 h-4 mt-0.5 shrink-0 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10"/>
+      </svg>
+      <div class="min-w-0">
+        <p class="text-[10px] font-bold text-brand-700 uppercase tracking-widest">Ordering this part</p>
+        <p class="text-sm font-mono font-semibold text-gray-800 truncate">{{ product.sku }}</p>
+        {% if product.title %}<p class="text-xs text-gray-500 truncate">{{ product.title }}</p>{% endif %}
+      </div>
+    </div>
+    {% endif %}
 
     <div>
       <label class="form-label">Vendor <span class="text-red-500">*</span></label>
@@ -35,13 +51,9 @@
       </div>
     </div>
 
-    <div>
-      <label class="form-label">Order Type</label>
-      <select name="status" class="form-select">
-        <option value="draft">Draft PO</option>
-        <option value="verbal_order">Verbal / Phone Order</option>
-      </select>
-    </div>
+    {# UX6: Order Type selector dropped — POs are created as Draft today; status is
+       advanced (verbal / sent) from the PO workspace. Submit draft by default. #}
+    <input type="hidden" name="status" value="draft" />
 
     <div class="grid grid-cols-2 gap-4">
       <div>

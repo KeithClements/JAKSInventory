@@ -12,24 +12,37 @@ Leaf models (no FK dependencies) first; junction/child tables last.
 from app.models.setting import Setting
 from app.models.user import User, UserSession
 from app.models.audit import AuditLog
+from app.models.pricing import MarkupTier, CustomerPriceRule
 
 # ── Master data ───────────────────────────────────────────────────────────────
 from app.models.vendor import Vendor, VendorContact, VendorCredit, VendorProgram
-from app.models.customer import Customer, CustomerAddress, CustomerContact, CustomerCallLog
+from app.models.customer import (
+    Customer, CustomerAddress, CustomerContact, CustomerCallLog, CustomerTypeDefault,
+)
 from app.models.product import (
     ProductCategory,
+    Brand,
+    Manufacturer,
     Product,
     ProductVendorSource,
     ProductImage,
     CrossReference,
+    ProductApplication,
     ProductCostHistory,
     ProductSerialNumber,
     ProductKit,
     ProductKitLine,
 )
+from app.models.competitor import CompetitorPrice, CompetitorPriceHistory
 
 # ── Inventory ─────────────────────────────────────────────────────────────────
 from app.models.inventory import InventoryLocation, InventoryTransaction
+
+# ── Inventory counts (§24) ──────────────────────────────────────────────────────
+from app.models.count_session import CountSession, CountLine
+
+# ── Company locations (our bill-to / ship-to address book) ──────────────────────
+from app.models.company_location import CompanyLocation
 
 # ── Purchasing ────────────────────────────────────────────────────────────────
 from app.models.purchase_order import (
@@ -43,6 +56,9 @@ from app.models.purchase_order import (
 
 # ── Research ──────────────────────────────────────────────────────────────────
 from app.models.research import ResearchItem, ResearchActivityLog
+
+# ── Smart Import / Review Queue ───────────────────────────────────────────────
+from app.models.import_review import ImportBatch, ImportCandidate
 
 # ── Sales cycle ───────────────────────────────────────────────────────────────
 from app.models.quote import (
@@ -73,15 +89,6 @@ from app.models.warranty import (
     EngineConfig,
 )
 
-# ── Scraper / Enrichment ──────────────────────────────────────────────────────
-from app.models.scraper import (
-    ScraperSource,
-    ScrapeRun,
-    ScrapedItem,
-    ScrapedCrossRef,
-    ScraperFieldMapping,
-)
-
 # ── Credit Memos + Vendor Credits + Returns (R8, R11) ────────────────────────
 from app.models.credit_memo import CreditMemo, CreditMemoLine, CreditMemoAllocation
 from app.models.vendor_credit import VendorCreditMemo, VendorCreditMemoAllocation
@@ -98,11 +105,14 @@ from app.models.inventory_transfer import InventoryTransfer
 # ── Supporting ────────────────────────────────────────────────────────────────
 from app.models.shipping import Shipment
 from app.models.attachments import DocumentAttachment
+from app.models.shopify_order import ShopifyProcessedOrder
 
 # ── Exposed to init_db() ──────────────────────────────────────────────────────
 __all_models__ = [
     # Foundation
     Setting,
+    MarkupTier,
+    CustomerPriceRule,
     User,
     UserSession,
     AuditLog,
@@ -115,18 +125,25 @@ __all_models__ = [
     CustomerAddress,
     CustomerContact,
     CustomerCallLog,
+    CustomerTypeDefault,
     ProductCategory,
+    Brand,
+    Manufacturer,
     Product,
     ProductVendorSource,
     ProductImage,
     CrossReference,
+    ProductApplication,
     ProductCostHistory,
     ProductSerialNumber,
     ProductKit,
     ProductKitLine,
+    CompetitorPrice,
+    CompetitorPriceHistory,
     # Inventory
     InventoryLocation,
     InventoryTransaction,
+    CompanyLocation,
     # Purchasing
     PurchaseOrder,
     POLine,
@@ -148,6 +165,9 @@ __all_models__ = [
     # Research
     ResearchItem,
     ResearchActivityLog,
+    # Smart Import / Review Queue
+    ImportBatch,
+    ImportCandidate,
     # Special processes
     CoreCharge,
     CoreReturnEvent,
@@ -177,13 +197,11 @@ __all_models__ = [
     CommunicationAttachment,
     # Inventory transfers
     InventoryTransfer,
-    # Scraper / Enrichment
-    ScraperSource,
-    ScrapeRun,
-    ScrapedItem,
-    ScrapedCrossRef,
-    ScraperFieldMapping,
+    # Inventory counts (§24)
+    CountSession,
+    CountLine,
     # Supporting
     Shipment,
     DocumentAttachment,
+    ShopifyProcessedOrder,
 ]

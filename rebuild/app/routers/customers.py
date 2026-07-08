@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import html
 import io
@@ -6,25 +6,35 @@ import csv
 import json
 import logging
 import re
+from datetime import datetime
+from urllib.parse import quote as url_quote
 
 from fastapi import APIRouter, Depends, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.constants import (
     AddressType, CallOutcome, CallType,
     CommunicationChannel, CommunicationDirection,
-    CoreStatus, PaymentTerms, PricingTier, QuoteStatus, SOStatus,
+    CoreStatus, PaymentTerms, Permission, PricingTier, QuoteStatus, SOStatus,
+    CustomerType, CustomerStatus, CustomerFlag, CUSTOMER_TYPE_LABELS, CUSTOMER_FLAG_LABELS,
+    CUSTOMER_STORED_FLAGS,
 )
-from app.deps import get_db
+from app.deps import get_db, get_current_user_id
 from app.models.communication import Communication
 from app.models.customer import Customer, CustomerAddress, CustomerCallLog
 from app.models.core import CoreCharge
 from app.models.invoice import Invoice, PaymentAllocation
 from app.models.quote import Quote, SalesOrder
+from app.services.base import PermissionDeniedError
 from app.services.crm_service import CRMService
+from app.services.customer_service import (
+    CustomerService, is_valid_email, normalize_phone,
+)
+from app.services.customer_metrics_service import CustomerMetricsService
 from app.services.messaging_service import MessagingService
 from app.services.quote_service import QuoteService
 
@@ -32,8 +42,6 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/customers", tags=["customers"])
 templates = Jinja2Templates(directory="app/templates")
-
-CURRENT_USER_ID = 1
 
 
 def _digits(s: str | None) -> str:
@@ -44,6 +52,23 @@ def _digits(s: str | None) -> str:
 def _normalize_name(s: str | None) -> str:
     """Lowercase + strip non-alphanumerics — for fuzzy duplicate-name detection."""
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def _form_customer_type(form) -> str:
+    """Read + validate the customer_type form field, defaulting to OTHER (P2-D6).
+    Keeps an unknown/blank value from ever reaching the column."""
+    try:
+        return CustomerType(str(form.get("customer_type", "")))
+    except ValueError:
+        return CustomerType.OTHER
+
+
+def _form_customer_status(form) -> str:
+    """Read + validate the customer_status form field, defaulting to ACTIVE."""
+    try:
+        return CustomerStatus(str(form.get("customer_status", "")))
+    except ValueError:
+        return CustomerStatus.ACTIVE
 
 
 def _find_duplicate_customers(
@@ -69,18 +94,58 @@ def _find_duplicate_customers(
     return matches
 
 
+def _find_customer_by_email(
+    db: Session, email: str, exclude_id: int | None = None
+) -> Customer | None:
+    """C10 — return the existing customer that owns `email` (case-insensitive),
+    if any. Unlike the company-name match this is a HARD dedup key (DB unique
+    index uq_customers_email), so callers must block, not warn. Blank → no match."""
+    em = (email or "").strip()
+    if not em:
+        return None
+    q = db.query(Customer).filter(func.lower(Customer.email) == em.lower())
+    if exclude_id:
+        q = q.filter(Customer.id != exclude_id)
+    return q.first()
+
+
+def _find_customer_by_phone(
+    db: Session, phone: str, exclude_id: int | None = None
+) -> Customer | None:
+    """QA — return an existing ACTIVE customer whose phone normalizes to the same
+    digits as ``phone`` (counter staff look people up by phone, so a shared phone
+    is the same fragmentation the email check prevents). Blank phone → no match
+    (phoneless customers never collide). Unlike email this is NOT a unique DB key,
+    so the caller WARNS with a "Create Anyway" override rather than hard-blocking.
+    Delegates the normalization rule to CustomerService.find_by_phone."""
+    return CustomerService(db).find_by_phone(phone, exclude_id=exclude_id)
+
+
 # ── List tab definitions (JAKS_UI_Change_Plan.md §2) ─────────────────────────
 
-# Tab slug → filter behavior.  "all" = no extra filter beyond is_active=True.
+# Tab slug → filter behavior.  The four operational tabs all scope to ACTIVE
+# customers ("all" = every *active* customer); this is the busy counter screen
+# and its default view must not surface deactivated accounts.  The "inactive"
+# lifecycle tab is the only one that drops the is_active==True filter — it shows
+# *only* deactivated customers so they stay reachable and can be reactivated from
+# detail.  (Mirrors the Vendors fix, which defaults to `active` and hides
+# deactivated records; Customers keeps `all` as its active-scoped default rather
+# than a true union — see JAKS_UI_Change_Plan.md "Customers List".)
 _CUST_TABS: list[tuple[str, str]] = [
     ("all",           "All"),
     ("open_invoices", "Open Invoices"),
     ("open_quotes",   "Open Quotes"),
     ("terms",         "On Terms"),
+    ("inactive",      "Inactive"),   # lifecycle tab — is_active == False only
 ]
 
 # Payment-terms values that fall under the "On Terms" tab.
 _TERMS_VALUES = {"net_15", "net_30", "net_60"}
+
+# Invoice statuses that count as an "open invoice" (activity chips + tab).
+_OPEN_INVOICE_STATUSES = ["draft", "open", "partial"]
+# Quote statuses that are terminal (NOT open) — any other status is an open quote.
+_CLOSED_QUOTE_STATUSES = [QuoteStatus.CONVERTED, QuoteStatus.DECLINED, QuoteStatus.EXPIRED]
 
 
 # ── List ──────────────────────────────────────────────────────────────────────
@@ -90,6 +155,8 @@ def customer_list(
     request: Request,
     q: str = "",
     tab: str = "all",
+    sort: str = "company_name",
+    direction: str = "asc",
     db: Session = Depends(get_db),
 ):
     # Normalise unknown tab slugs
@@ -97,16 +164,21 @@ def customer_list(
     if tab not in valid_tabs:
         tab = "all"
 
-    # ── Unfiltered counts (must come from the full active dataset) ────────────
+    # ── Unfiltered counts ─────────────────────────────────────────────────────
+    # Operational-tab counts come from the full ACTIVE dataset; the lifecycle
+    # "inactive" tab is counted separately (it lives outside `all_active`).
     all_active = db.query(Customer).filter(Customer.is_active == True).all()
     all_ids = [c.id for c in all_active]
+    inactive_count = (
+        db.query(func.count(Customer.id)).filter(Customer.is_active == False).scalar() or 0
+    )
 
     if all_ids:
         _inv_active = dict(
             db.query(Invoice.customer_id, func.count(Invoice.id))
             .filter(
                 Invoice.customer_id.in_(all_ids),
-                Invoice.status.in_(["draft", "open", "partial"]),
+                Invoice.status.in_(_OPEN_INVOICE_STATUSES),
             )
             .group_by(Invoice.customer_id)
             .all()
@@ -115,11 +187,7 @@ def customer_list(
             db.query(Quote.customer_id, func.count(Quote.id))
             .filter(
                 Quote.customer_id.in_(all_ids),
-                Quote.status.notin_([
-                    QuoteStatus.CONVERTED,
-                    QuoteStatus.DECLINED,
-                    QuoteStatus.EXPIRED,
-                ]),
+                Quote.status.notin_(_CLOSED_QUOTE_STATUSES),
             )
             .group_by(Quote.customer_id)
             .all()
@@ -133,23 +201,24 @@ def customer_list(
         "open_invoices": sum(1 for c in all_active if _inv_active.get(c.id, 0) > 0),
         "open_quotes":   sum(1 for c in all_active if _quote_active.get(c.id, 0) > 0),
         "terms":         sum(1 for c in all_active if (c.payment_terms or "") in _TERMS_VALUES),
+        "inactive":      inactive_count,
     }
 
     # ── Apply tab filter ──────────────────────────────────────────────────────
-    if tab == "open_invoices":
+    if tab == "inactive":
+        # The only tab that surfaces deactivated customers — pulled with a
+        # dedicated query since `all_active` (and its activity maps) exclude them.
+        base_pool = db.query(Customer).filter(Customer.is_active == False).all()
+    elif tab == "open_invoices":
         with_inv = {cid for cid, cnt in _inv_active.items() if cnt > 0}
-        tab_ids = [c.id for c in all_active if c.id in with_inv]
         base_pool = [c for c in all_active if c.id in with_inv]
     elif tab == "open_quotes":
         with_q = {cid for cid, cnt in _quote_active.items() if cnt > 0}
-        tab_ids = [c.id for c in all_active if c.id in with_q]
         base_pool = [c for c in all_active if c.id in with_q]
     elif tab == "terms":
         base_pool = [c for c in all_active if (c.payment_terms or "") in _TERMS_VALUES]
-        tab_ids = [c.id for c in base_pool]
     else:
         base_pool = all_active
-        tab_ids = all_ids
 
     # ── Apply search ──────────────────────────────────────────────────────────
     if q:
@@ -161,18 +230,52 @@ def customer_list(
                 (c.company_name and q_lower in c.company_name.lower())
                 or (c.contact_name and q_lower in c.contact_name.lower())
                 or (c.email and q_lower in c.email.lower())
+                or (c.account_number and q_lower in c.account_number.lower())  # #5
                 or (q_digits and c.phone and q_digits in _digits(c.phone))
             )
         ]
     else:
         customers = base_pool
 
-    customers = sorted(customers, key=lambda c: c.company_name or "")
+    # ── Sort (#4 — whitelisted keys, asc/desc; mirrors products.py) ───────────
+    _CUST_SORT_KEYS = {
+        "company_name":   lambda c: (c.company_name or "").lower(),
+        "account_number": lambda c: (c.account_number or "").lower(),
+        "contact_name":   lambda c: (c.contact_name or "").lower(),
+        "created":        lambda c: c.created_at or datetime.min,
+    }
+    sort = sort if sort in _CUST_SORT_KEYS else "company_name"
+    direction = "desc" if str(direction).lower() == "desc" else "asc"
+    customers = sorted(customers, key=_CUST_SORT_KEYS[sort], reverse=(direction == "desc"))
 
     # ── Per-customer activity counts (for the rows we're actually showing) ────
     customer_ids = [c.id for c in customers]
-    open_invoice_counts = {cid: _inv_active.get(cid, 0) for cid in customer_ids}
-    open_quote_counts = {cid: _quote_active.get(cid, 0) for cid in customer_ids}
+    if tab == "inactive" and customer_ids:
+        # Inactive rows aren't in the active-dataset maps; look their counts up
+        # directly so a deactivated account with lingering open items reads true.
+        _inv_inactive = dict(
+            db.query(Invoice.customer_id, func.count(Invoice.id))
+            .filter(
+                Invoice.customer_id.in_(customer_ids),
+                Invoice.status.in_(_OPEN_INVOICE_STATUSES),
+            )
+            .group_by(Invoice.customer_id)
+            .all()
+        )
+        _q_inactive = dict(
+            db.query(Quote.customer_id, func.count(Quote.id))
+            .filter(
+                Quote.customer_id.in_(customer_ids),
+                Quote.status.notin_(_CLOSED_QUOTE_STATUSES),
+            )
+            .group_by(Quote.customer_id)
+            .all()
+        )
+        open_invoice_counts = {cid: _inv_inactive.get(cid, 0) for cid in customer_ids}
+        open_quote_counts = {cid: _q_inactive.get(cid, 0) for cid in customer_ids}
+    else:
+        open_invoice_counts = {cid: _inv_active.get(cid, 0) for cid in customer_ids}
+        open_quote_counts = {cid: _quote_active.get(cid, 0) for cid in customer_ids}
 
     # ── Last-sale dates ───────────────────────────────────────────────────────
     if customer_ids:
@@ -267,13 +370,44 @@ def customer_list(
         open_so_counts = {}
         outstanding_cores_map = {}
 
+    # ── Phase 2 §4 — flags + relationship metrics for the visible rows ─────────
+    # Scoped to `customer_ids` (the rendered subset), like the §2B maps above, so
+    # it scales with what's shown. flags_for is pure-Python on already-loaded rows;
+    # metrics_for_batch is the §4.4 contract (P2-Q1 single definition). The plan
+    # flags cache/materialisation as the later perf path.
+    if customer_ids:
+        _csvc = CustomerService(db)
+        customer_flags = {c.id: _csvc.flags_for(c) for c in customers}
+        customer_metrics = CustomerMetricsService(db).metrics_for_batch(customer_ids)
+
+        # last_contacted_map (#5) — most recent CustomerCallLog.logged_at per
+        # visible customer.  Single grouped query, no N+1.
+        _lc_raw = dict(
+            db.query(
+                CustomerCallLog.customer_id,
+                func.max(CustomerCallLog.logged_at),
+            )
+            .filter(CustomerCallLog.customer_id.in_(customer_ids))
+            .group_by(CustomerCallLog.customer_id)
+            .all()
+        )
+        last_contacted_map: dict[int, datetime | None] = {
+            cid: _lc_raw.get(cid) for cid in customer_ids
+        }
+    else:
+        customer_flags = {}
+        customer_metrics = {}
+        last_contacted_map = {}
+
     return templates.TemplateResponse(
+        request,
         "customers/list.html",
         {
-            "request": request,
             "customers": customers,
             "q": q,
             "tab": tab,
+            "sort": sort,
+            "direction": direction,
             "counts": counts,
             "tabs": _CUST_TABS,
             "open_invoice_counts": open_invoice_counts,
@@ -283,7 +417,174 @@ def customer_list(
             "balance_due_map": balance_due_map,
             "open_so_counts": open_so_counts,
             "outstanding_cores_map": outstanding_cores_map,
+            # Phase 2 §4 contracts (UI wires columns/chips)
+            "customer_flags": customer_flags,
+            "customer_metrics": customer_metrics,
+            "customer_flag_labels": CUSTOMER_FLAG_LABELS,
+            "customer_type_labels": CUSTOMER_TYPE_LABELS,
+            # #5 — last_contacted_map: {customer_id: datetime|None}
+            "last_contacted_map": last_contacted_map,
         },
+    )
+
+
+# ── Export CSV — MUST be before /{customer_id} ───────────────────────────────
+
+@router.get("/export.csv")
+def customer_export_csv(
+    tab: str = "all",
+    q: str = "",
+    db: Session = Depends(get_db),
+):
+    """
+    Stream the current filtered customer list as a CSV download.
+    Mirrors the list view's tab/q filters so "export what I see" matches exactly
+    (same pattern as /products/export.csv).
+    """
+    from fastapi.responses import StreamingResponse
+
+    valid_tabs = {t[0] for t in _CUST_TABS}
+    if tab not in valid_tabs:
+        tab = "all"
+
+    if tab == "inactive":
+        pool = db.query(Customer).filter(Customer.is_active == False).all()  # noqa: E712
+    else:
+        pool = db.query(Customer).filter(Customer.is_active == True).all()  # noqa: E712
+        ids = [c.id for c in pool]
+        if tab == "open_invoices" and ids:
+            with_inv = {
+                cid for (cid,) in db.query(Invoice.customer_id)
+                .filter(
+                    Invoice.customer_id.in_(ids),
+                    Invoice.status.in_(_OPEN_INVOICE_STATUSES),
+                )
+                .distinct()
+            }
+            pool = [c for c in pool if c.id in with_inv]
+        elif tab == "open_quotes" and ids:
+            with_q = {
+                cid for (cid,) in db.query(Quote.customer_id)
+                .filter(
+                    Quote.customer_id.in_(ids),
+                    Quote.status.notin_(_CLOSED_QUOTE_STATUSES),
+                )
+                .distinct()
+            }
+            pool = [c for c in pool if c.id in with_q]
+        elif tab == "terms":
+            pool = [c for c in pool if (c.payment_terms or "") in _TERMS_VALUES]
+
+    if q:
+        q_lower = q.lower()
+        q_digits = _digits(q)
+        pool = [
+            c for c in pool
+            if (
+                (c.company_name and q_lower in c.company_name.lower())
+                or (c.contact_name and q_lower in c.contact_name.lower())
+                or (c.email and q_lower in c.email.lower())
+                or (c.account_number and q_lower in c.account_number.lower())
+                or (q_digits and c.phone and q_digits in _digits(c.phone))
+            )
+        ]
+
+    pool.sort(key=lambda c: (c.company_name or "").lower())
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "company_name", "contact_name", "account_number", "phone", "email",
+        "city", "state", "zip_code", "payment_terms", "pricing_tier",
+        "credit_limit", "discount_pct", "is_tax_exempt", "is_active",
+    ])
+    for c in pool:
+        writer.writerow([
+            c.company_name,
+            c.contact_name,
+            c.account_number,
+            c.phone,
+            c.email,
+            c.city,
+            c.state,
+            c.zip_code,
+            c.payment_terms,
+            c.pricing_tier,
+            f"{c.credit_limit:.2f}" if c.credit_limit else "",
+            f"{c.discount_pct:.2f}" if c.discount_pct else "",
+            "yes" if c.is_tax_exempt else "no",
+            "yes" if c.is_active else "no",
+        ])
+
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=customers.csv"},
+    )
+
+
+# ── Review-seeding exports ───────────────────────────────────────────────────
+# Cold-start social proof: turn finalized sales history into review-request
+# files. Multi-segment paths, so they never collide with /{customer_id}.
+# See app/services/review_outreach_service.py for the consent + dedupe rules.
+
+def _csv_response(filename: str, header: list[str], rows: list[list]) -> "StreamingResponse":
+    from fastapi.responses import StreamingResponse
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(header)
+    for r in rows:
+        writer.writerow(r)
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.get("/review-requests/judgeme.csv")
+def review_requests_judgeme_csv(
+    paid_only: bool = True,
+    db: Session = Depends(get_db),
+):
+    """Judge.me 'send review requests via CSV' importer file (product reviews).
+
+    paid_only=true (default) targets only paid invoices; pass paid_only=false to
+    include all finalized (open/partial/paid) sales.
+    """
+    from app.services.review_outreach_service import ReviewOutreachService
+
+    rows = ReviewOutreachService(db).judgeme_rows(paid_only=paid_only)
+    return _csv_response(
+        "judgeme_review_requests.csv",
+        ["reviewer_name", "reviewer_email", "product_id", "fulfilled_at", "quantity"],
+        [[r["reviewer_name"], r["reviewer_email"], r["product_id"], r["fulfilled_at"], r["quantity"]]
+         for r in rows],
+    )
+
+
+@router.get("/review-requests/google.csv")
+def review_requests_google_csv(
+    paid_only: bool = True,
+    db: Session = Depends(get_db),
+):
+    """Personal-ask outreach list for the Google Business Profile review track.
+
+    One row per customer (best customers first), with per-channel consent flags
+    so you only email/text people who agreed to it.
+    """
+    from app.services.review_outreach_service import ReviewOutreachService
+
+    rows = ReviewOutreachService(db).google_outreach_rows(paid_only=paid_only)
+    return _csv_response(
+        "google_review_outreach.csv",
+        ["customer_name", "company_name", "email", "phone", "allow_email",
+         "allow_sms", "orders", "total_spent", "last_purchase", "sample_product"],
+        [[r["customer_name"], r["company_name"], r["email"], r["phone"],
+          r["allow_email"], r["allow_sms"], r["orders"], r["total_spent"],
+          r["last_purchase"], r["sample_product"]] for r in rows],
     )
 
 
@@ -383,54 +684,173 @@ def customer_preview_panel(
         or 0
     )
 
+    # last_contact — most recent CustomerCallLog.logged_at.
+    # Delegated to CustomerService.last_contacted so the query lives in exactly
+    # one place (single-customer path; list route uses a grouped query instead).
+    _csvc = CustomerService(db)
+    last_contact = _csvc.last_contacted(customer_id)  # datetime | None
     return templates.TemplateResponse(
+        request,
         "customers/_preview_panel.html",
         {
-            "request": request,
             "c": c,
             "open_invoice_count": open_invoice_count,
             "open_quote_count": open_quote_count,
             "last_sale": last_sale,
+            "last_contact": last_contact,  # Seam 2 — for the dynamic preview dock
             "balance_due": balance_due,
             "open_so_count": open_so_count,
             "outstanding_core_count": outstanding_core_count,
+            # Phase 2 §4 contracts (condensed on preview)
+            "flags": _csvc.flags_for(c),
+            "metrics": CustomerMetricsService(db).metrics_for(c),
+            "credit_status": _csvc.credit_status(c),
+            "customer_flag_labels": CUSTOMER_FLAG_LABELS,
+            "customer_type_labels": CUSTOMER_TYPE_LABELS,
         },
     )
 
 
 # ── New ───────────────────────────────────────────────────────────────────────
 
+def _new_customer_ctx(db: Session) -> dict:
+    """Shared context for the new-customer form (GET and the dup-warning
+    re-render both need it, or the Customer Type select + type-defaults pre-fill
+    JSON go missing on the dup path)."""
+    return {
+        "payment_terms": list(PaymentTerms),
+        "pricing_tiers": list(PricingTier),
+        # P2-D1/D6 — Customer Type + type-driven default profiles. The UI picks
+        # a type, then pre-fills the form from `type_defaults[<type>]` client-side.
+        "customer_types": list(CustomerType),
+        "customer_type_labels": CUSTOMER_TYPE_LABELS,
+        "customer_flag_labels": CUSTOMER_FLAG_LABELS,
+        "type_defaults": CustomerService(db).all_type_defaults(),
+    }
+
+
 @router.get("/new", response_class=HTMLResponse)
-def customer_new(request: Request):
-    return templates.TemplateResponse(
-        "customers/new.html",
-        {"request": request, "payment_terms": list(PaymentTerms)},
-    )
+def customer_new(request: Request, db: Session = Depends(get_db)):
+    return templates.TemplateResponse(request, "customers/new.html", _new_customer_ctx(db))
+
+
+@router.get("/type-defaults/{customer_type}")
+def customer_type_defaults(customer_type: str, db: Session = Depends(get_db)):
+    """JSON contract — resolved default profile for one Customer Type. The
+    new-customer form can fetch this on type-change as an alternative to the
+    embedded `type_defaults` map. Unknown types resolve to the OTHER profile."""
+    return CustomerService(db).resolve_defaults(customer_type)
 
 
 @router.post("/new", response_class=RedirectResponse)
-async def customer_create(request: Request, db: Session = Depends(get_db)):
+async def customer_create(
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
     form = await request.form()
     company_name = str(form.get("company_name", "")).strip()
+    contact_name = str(form.get("contact_name", "")).strip()
+    email = str(form.get("email", "")).strip()
+    phone = str(form.get("phone", "")).strip()
+
+    # A customer with neither a company name nor a contact name is an
+    # unidentifiable AR record — counter staff can't look it up and it fragments
+    # reporting. The company_name field carries HTML `required`, but that only
+    # guards the happy path; a scripted or JS-less POST otherwise saves a
+    # nameless customer. Require at least one name here.
+    if not company_name and not contact_name:
+        return templates.TemplateResponse(
+            request,
+            "customers/new.html",
+            {
+                **_new_customer_ctx(db),
+                "email_error": "Enter a company name or a contact name.",
+                "prefill": {k: str(v) for k, v in form.items()},
+            },
+            status_code=422,
+        )
+
+    # QA — server-side email-format validation. The browser only enforces
+    # type=email; a scripted/old-browser POST of "notanemail" otherwise saves.
+    # Blank stays allowed (matches the column default ''); only validate a value.
+    if email and not is_valid_email(email):
+        return templates.TemplateResponse(
+            request,
+            "customers/new.html",
+            {
+                **_new_customer_ctx(db),
+                "email_error": "Please enter a valid email address (e.g. name@example.com).",
+                "prefill": {k: str(v) for k, v in form.items()},
+            },
+            status_code=422,
+        )
+
+    # A standing discount outside 0–100 poisons every downstream document header:
+    # quote/invoice services now REJECT bad values, so a bad stored customer
+    # default would brick "+ Quote" / "New Invoice" for that customer entirely.
+    try:
+        _discount = float(form.get("discount_pct") or 0)
+    except (TypeError, ValueError):
+        _discount = -1.0
+    if not (0.0 <= _discount <= 100.0):
+        return templates.TemplateResponse(
+            request,
+            "customers/new.html",
+            {
+                **_new_customer_ctx(db),
+                "email_error": "Standing discount must be between 0 and 100.",
+                "prefill": {k: str(v) for k, v in form.items()},
+            },
+            status_code=422,
+        )
+
+    # C10 — HARD email dedup. A duplicate email means split AR / inconsistent
+    # credit hold / duplicate QBO push, so this is a block (not a "create
+    # anyway" warning like the company-name case). Pre-check for a friendly
+    # message; the DB unique index is the backstop below if a race slips past.
+    email_conflict = _find_customer_by_email(db, email)
+    if email_conflict is not None:
+        return templates.TemplateResponse(
+            request,
+            "customers/new.html",
+            {
+                **_new_customer_ctx(db),
+                "email_conflict": email_conflict,
+                "prefill": {k: str(v) for k, v in form.items()},
+            },
+        )
 
     # Duplicate protection — warn instead of silently creating a near-duplicate,
     # unless the user explicitly chose "Create Anyway" (confirm_duplicate=1).
-    if company_name and str(form.get("confirm_duplicate", "")) != "1":
-        dup_matches = _find_duplicate_customers(db, company_name)
-        if dup_matches:
+    # Covers BOTH a similar company name AND a shared phone (counter staff look
+    # customers up by phone, so a duplicate phone fragments AR exactly like a
+    # duplicate name). Phone is not a unique DB key, so it warns (override-able)
+    # rather than hard-blocking like email.
+    if str(form.get("confirm_duplicate", "")) != "1":
+        dup_matches = _find_duplicate_customers(db, company_name) if company_name else []
+        phone_conflict = _find_customer_by_phone(db, phone)
+        if dup_matches or phone_conflict is not None:
             return templates.TemplateResponse(
+                request,
                 "customers/new.html",
                 {
-                    "request": request,
-                    "payment_terms": list(PaymentTerms),
+                    **_new_customer_ctx(db),
                     "dup_matches": dup_matches,
+                    "phone_conflict": phone_conflict,
                     "prefill": {k: str(v) for k, v in form.items()},
                 },
             )
 
+    # blank → NULL (use system default); explicit value (incl. 0) overrides — mirrors update
+    _cs = str(form.get("card_surcharge_pct", "")).strip()
     c = Customer(
-        company_name=str(form.get("company_name", "")).strip(),
-        contact_name=str(form.get("contact_name", "")).strip(),
+        company_name=company_name,
+        contact_name=contact_name,
+        customer_type=_form_customer_type(form),
+        customer_status=_form_customer_status(form),
+        account_number=str(form.get("account_number", "")).strip(),
+        card_surcharge_pct=float(_cs) if _cs else None,
         phone=str(form.get("phone", "")).strip(),
         email=str(form.get("email", "")).strip(),
         address_line1=str(form.get("address_line1", "")).strip(),
@@ -449,7 +869,24 @@ async def customer_create(request: Request, db: Session = Depends(get_db)):
         internal_notes=str(form.get("internal_notes", "")).strip(),
     )
     db.add(c)
-    db.commit()
+    # P2-D2 — flags chip editor (Requires-PO / Credit-Hold / Call-first /
+    # Warranty-escalation). No-op for a new customer when the form omits them.
+    CustomerService(db).set_stored_flags(c, form.getlist("flags"))
+    try:
+        db.commit()
+    except IntegrityError:
+        # C10 backstop — a concurrent insert won the email race (or another
+        # unique key collided). Re-render with the conflict instead of a 500.
+        db.rollback()
+        return templates.TemplateResponse(
+            request,
+            "customers/new.html",
+            {
+                **_new_customer_ctx(db),
+                "email_conflict": _find_customer_by_email(db, email),
+                "prefill": {k: str(v) for k, v in form.items()},
+            },
+        )
     return RedirectResponse(f"/customers/{c.id}", status_code=303)
 
 
@@ -457,11 +894,11 @@ async def customer_create(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/quick-create-form", response_class=HTMLResponse)
 def customer_quick_create_form(request: Request):
-    return templates.TemplateResponse("customers/_quick_create.html", {"request": request})
+    return templates.TemplateResponse(request, "customers/_quick_create.html")
 
 
 @router.post("/quick-create", response_class=HTMLResponse)
-async def customer_quick_create(request: Request, db: Session = Depends(get_db)):
+async def customer_quick_create(request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     form = await request.form()
     company_name = str(form.get("company_name", "")).strip()
     if not company_name:
@@ -472,18 +909,33 @@ async def customer_quick_create(request: Request, db: Session = Depends(get_db))
 
     _action = str(form.get("_action", "save"))
 
+    # QA — server-side email-format validation (parity with the full form). The
+    # quick-create email field is type=email only client-side; blank stays OK.
+    _qc_email = str(form.get("email", "")).strip()
+    if _qc_email and not is_valid_email(_qc_email):
+        return HTMLResponse(
+            '<p class="text-sm text-red-600 font-medium px-5 py-3">'
+            'Please enter a valid email address (e.g. name@example.com).</p>',
+            status_code=422,
+        )
+
     # ── Duplicate protection ──────────────────────────────────────────────────
     # Unless the user explicitly chose "Create Anyway" (confirm_duplicate=1), warn
-    # about existing/similar company names instead of silently creating a dupe.
-    # Re-render the form with the entered values preserved + a warning banner.
+    # about existing/similar company names OR a shared phone instead of silently
+    # creating a dupe. The phone match is folded into the same dup_matches list
+    # the warning banner + "Create Anyway" button already render (a counter person
+    # looks customers up by phone, so a shared phone fragments AR like a dup name).
     confirm_duplicate = str(form.get("confirm_duplicate", "")) == "1"
     if not confirm_duplicate:
         dup_matches = _find_duplicate_customers(db, company_name)
+        phone_conflict = _find_customer_by_phone(db, str(form.get("phone", "")).strip())
+        if phone_conflict is not None and not any(m.id == phone_conflict.id for m in dup_matches):
+            dup_matches = [*dup_matches, phone_conflict]
         if dup_matches:
             return templates.TemplateResponse(
+                request,
                 "customers/_quick_create.html",
                 {
-                    "request": request,
                     "dup_matches": dup_matches,
                     "prefill": {k: str(v) for k, v in form.items()},
                 },
@@ -535,15 +987,16 @@ async def customer_quick_create(request: Request, db: Session = Depends(get_db))
     # ── Save & New: return fresh form with in-panel success flash ──────────
     if _action == "save_new":
         return templates.TemplateResponse(
+            request,
             "customers/_quick_create.html",
-            {"request": request, "success_flash": f"✓ {company_name} saved."},
+            {"success_flash": f"✓ {company_name} saved."},
         )
 
     # ── Save & Quote: create a draft quote and drop into the quote workspace ──
     # Mirrors POST /quotes/new (row "+ Quote" + preview-panel Quote both do this),
     # so the "Save & Quote →" label actually delivers the quote screen.
     if _action == "save_quote":
-        quote = QuoteService(db, CURRENT_USER_ID).create_quote(
+        quote = QuoteService(db, user_id).create_quote(
             customer_id=c.id,
             data={
                 "discount_pct": c.discount_pct,
@@ -609,15 +1062,16 @@ def customer_search_partial(request: Request, q: str = "", db: Session = Depends
             .all()
         )
     return templates.TemplateResponse(
+        request,
         "customers/_search_results.html",
-        {"request": request, "customers": customers},
+        {"customers": customers},
     )
 
 
 # ── Global Log Call (from header button — customer selected in form body) ─────
 
 @router.post("/log-call", response_class=HTMLResponse)
-async def log_call_global(request: Request, db: Session = Depends(get_db)):
+async def log_call_global(request: Request, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     """
     Handles the Quick Log Call slide-over in base.html.
     customer_id comes from the form body (chosen via typeahead, not URL).
@@ -650,7 +1104,7 @@ async def log_call_global(request: Request, db: Session = Depends(get_db)):
     outcome   = str(form.get("outcome", CallOutcome.OTHER))
     notes     = str(form.get("notes", "")).strip()
 
-    crm = CRMService(db, current_user_id=CURRENT_USER_ID)
+    crm = CRMService(db, current_user_id=user_id)
     crm.log_call(
         customer_id=customer.id,
         call_type=call_type,
@@ -683,19 +1137,59 @@ async def log_call_global(request: Request, db: Session = Depends(get_db)):
 
 # Maps common column name variants → canonical field name
 _IMPORT_ALIASES: dict[str, str] = {
+    # ── Company name (§1.2h fix: add CRM export variants) ─────────────────────
     "company": "company_name",
     "company name": "company_name",
+    "company_name": "company_name",
     "business": "company_name",
     "business name": "company_name",
+    # QuickBooks exports "Customer Name"; Salesforce/HubSpot use "Account Name";
+    # Sage/Xero use "Client" or "Client Name"; generic exports use "Name" too.
+    "customer name": "company_name",
+    "customer": "company_name",
+    "account name": "company_name",
+    "account": "company_name",
+    "client name": "company_name",
+    "client": "company_name",
+    "vendor name": "company_name",   # vendors imported as customers occasionally
+    "organization": "company_name",
+    "organisation": "company_name",
+    "org": "company_name",
+    # ── Contact name ──────────────────────────────────────────────────────────
     "contact": "contact_name",
     "contact name": "contact_name",
     "name": "contact_name",
+    # ── Phone (§1.2h fix: mobile number + office variants) ───────────────────
     "phone": "phone",
     "phone number": "phone",
     "tel": "phone",
     "telephone": "phone",
+    "mobile": "phone",
+    "mobile phone": "phone",
+    "mobile number": "phone",       # missing — common CRM export
+    "cell": "phone",
+    "cell phone": "phone",
+    "work phone": "phone",
+    "office phone": "phone",        # missing — common CRM export
+    "direct": "phone",              # missing — common CRM export
+    "main phone": "phone",
+    "primary phone": "phone",
+    "phone 1": "phone",
+    "phone1": "phone",
+    "ph": "phone",
+    "phone #": "phone",
+    # ── Email ─────────────────────────────────────────────────────────────────
     "email": "email",
     "email address": "email",
+    "e-mail": "email",
+    "e-mail address": "email",
+    "email_address": "email",
+    "work email": "email",
+    "primary email": "email",
+    "business email": "email",
+    "email1": "email",
+    "email 1": "email",
+    "e mail": "email",
     "address": "address_line1",
     "address line 1": "address_line1",
     "address_line1": "address_line1",
@@ -826,21 +1320,31 @@ def _read_xlsx(content: bytes) -> list[dict[str, str]]:
 
 
 def _read_csv(content: bytes) -> list[dict[str, str]]:
-    text = content.decode("utf-8-sig")  # handles BOM from Excel CSV exports
-    reader = csv.DictReader(io.StringIO(text))
-    return [
-        {k.strip(): v.strip() for k, v in row.items()}
-        for row in reader
-        if any(v.strip() for v in row.values())
-    ]
+    try:
+        text = content.decode("utf-8-sig")  # handles BOM from Excel CSV exports
+    except UnicodeDecodeError:
+        text = content.decode("cp1252", errors="replace")  # Excel "CSV (Comma delimited)" saves ANSI
+    # newline="" lets the csv module handle \r\n / bare-\r endings and embedded
+    # newlines inside quoted fields (QBO multi-line billing addresses) itself.
+    reader = csv.DictReader(io.StringIO(text, newline=""))
+    rows: list[dict[str, str]] = []
+    for row in reader:
+        cleaned = {
+            (k or "").strip(): " ".join(str(v or "").split())
+            for k, v in row.items()
+            if k is not None and not isinstance(v, list)
+        }
+        if any(cleaned.values()):
+            rows.append(cleaned)
+    return rows
 
 
 @router.get("/import", response_class=HTMLResponse)
 def customer_import_form(request: Request):
     return templates.TemplateResponse(
+        request,
         "customers/import.html",
         {
-            "request": request,
             "preview_rows": None,
             "import_json": None,
             "skipped": [],
@@ -861,29 +1365,29 @@ async def customer_import_preview(
     filename = (file.filename or "").lower()
 
     try:
-        if filename.endswith(".xlsx"):
+        if filename.endswith(".xlsx") or filename.endswith(".xls"):
             raw_rows = _read_xlsx(content)
         elif filename.endswith(".csv"):
             raw_rows = _read_csv(content)
         else:
             return templates.TemplateResponse(
+                request,
                 "customers/import.html",
                 {
-                    "request": request,
                     "preview_rows": None,
                     "import_json": None,
                     "skipped": [],
                     "total_valid": 0,
                     "total_skipped": 0,
-                    "error": "Unsupported file type. Please upload a .xlsx or .csv file.",
+                    "error": "Unsupported file type. Please upload a .xls, .xlsx, or .csv file.",
                 },
             )
     except Exception as exc:
         log.exception("Failed to parse import file %s", filename)
         return templates.TemplateResponse(
+            request,
             "customers/import.html",
             {
-                "request": request,
                 "preview_rows": None,
                 "import_json": None,
                 "skipped": [],
@@ -904,9 +1408,9 @@ async def customer_import_preview(
         row["_duplicate"] = row["company_name"].lower() in existing_names
 
     return templates.TemplateResponse(
+        request,
         "customers/import.html",
         {
-            "request": request,
             "preview_rows": valid_rows[:200],
             "import_json": json.dumps(valid_rows),
             "skipped": skipped_rows,
@@ -921,14 +1425,36 @@ async def customer_import_preview(
 async def customer_import_confirm(
     request: Request,
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     """Write validated rows to DB.
 
-    Duplicate check uses ALL customers (including inactive) so that soft-deleted
-    records are not silently re-created.  The preview stage only flags active
-    duplicates — if the user sees no warning but the confirm skips a row, the
-    redirect message will show the skip count as a clue.
+    Gated by IMPORT_CUSTOMERS — a bulk write of the customer master must not be
+    reachable by a counter clerk when the single-create path is role-gated.
+
+    Per-row guard rails mirror the single-create handler (POST /customers/new):
+      • email format (is_valid_email) — a malformed email is skipped, never saved.
+      • HARD email dedup (uq_customers_email) — applies regardless of
+        skip_duplicates, exactly like the single-create block (no override).
+      • name dedup honours the skip_duplicates checkbox: lowercase-exact against
+        ALL customers (including inactive, so soft-deleted records are not
+        silently re-created) PLUS the same fuzzy match the single-create warn
+        uses (_find_duplicate_customers rule, active customers only). Unchecking
+        skip_duplicates is the import's "Create Anyway".
+
+    Rows are committed INDIVIDUALLY so one poisoned row (e.g. a constraint hit
+    the pre-checks could not predict) skips that row only — it can no longer
+    roll back the whole batch. Every skip carries a reason surfaced in the
+    redirect summary.
     """
+    try:
+        CustomerService(db, user_id).assert_can(Permission.IMPORT_CUSTOMERS)
+    except PermissionDeniedError:
+        return RedirectResponse(
+            "/customers/import?error=You+do+not+have+permission+to+import+customers.",
+            status_code=303,
+        )
+
     form = await request.form()
     import_json = str(form.get("import_json", "")).strip()
     skip_dupes = str(form.get("skip_duplicates", "1")) == "1"
@@ -940,57 +1466,108 @@ async def customer_import_confirm(
     except (json.JSONDecodeError, ValueError):
         return RedirectResponse("/customers/import?error=Invalid+import+data", status_code=303)
 
+    # Dedup keys are prefetched once and extended as rows commit, so a duplicate
+    # WITHIN the batch is caught the same way as one already in the DB.
     existing_names: set[str] = set()
+    existing_norm_names: set[str] = set()
     if skip_dupes:
-        # ALL customers including inactive — prevents name collision with soft-deleted records.
         existing_names = {
             r[0].lower()
             for r in db.query(Customer.company_name).all()
         }
+        existing_norm_names = {
+            n for n in (
+                _normalize_name(r[0])
+                for r in db.query(Customer.company_name)
+                .filter(Customer.is_active == True).all()  # noqa: E712
+            ) if n
+        }
+    # Email is checked against ALL customers (the unique index has no is_active
+    # carve-out) and independently of skip_duplicates — it is a hard key.
+    existing_emails = {
+        r[0].lower()
+        for r in db.query(Customer.email).filter(Customer.email != "").all()
+    }
+
+    # Import dedup is EXACT-normalized-name only. The interactive single-create
+    # flow also warns on substring matches, but there the operator can override;
+    # an import has no per-row override, and the substring rule silently drops
+    # distinct companies ('Cummins Northwest' skipped because 'Cummins' exists).
+    def _is_name_dup(norm: str) -> bool:
+        return bool(norm) and norm in existing_norm_names
 
     created = 0
-    skipped = 0
-    try:
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            company = row.get("company_name", "")
-            if not company:
-                continue
-            if skip_dupes and company.lower() in existing_names:
-                skipped += 1
-                continue
-            db.add(Customer(
-                company_name=company,
-                contact_name=row.get("contact_name", ""),
-                phone=row.get("phone", ""),
-                email=row.get("email", ""),
-                address_line1=row.get("address_line1", ""),
-                address_line2=row.get("address_line2", ""),
-                city=row.get("city", ""),
-                state=row.get("state", ""),
-                zip_code=row.get("zip_code", ""),
-                payment_terms=row.get("payment_terms", PaymentTerms.COD),
-                discount_pct=_safe_float(row.get("discount_pct", 0)),
-                interest_rate=_safe_float(row.get("interest_rate", 0)),
-                is_tax_exempt=bool(row.get("is_tax_exempt", False)),
-                notes=row.get("notes", ""),
-                internal_notes=row.get("internal_notes", ""),
-            ))
-            created += 1
-        db.commit()
-    except Exception:
-        db.rollback()
-        log.exception("Import failed during DB write")
-        return RedirectResponse(
-            "/customers/import?error=Database+error+during+import",
-            status_code=303,
-        )
+    skip_reasons: dict[str, int] = {}
 
-    msg = f"Imported+{created}+customer{'s' if created != 1 else ''}"
+    def _skip(reason: str) -> None:
+        skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        company = str(row.get("company_name", "") or "").strip()
+        if not company:
+            continue
+        email = str(row.get("email", "") or "").strip()
+
+        if email and not is_valid_email(email):
+            _skip("invalid email")
+            continue
+        if email and email.lower() in existing_emails:
+            _skip("duplicate email")
+            continue
+        if skip_dupes and (
+            company.lower() in existing_names
+            or _is_name_dup(_normalize_name(company))
+        ):
+            _skip("duplicate")
+            continue
+        # Out-of-range standing discount would brick quote/invoice creation for
+        # this customer (document services reject it) — skip with a named reason.
+        _discount = _safe_float(row.get("discount_pct", 0))
+        if not (0.0 <= _discount <= 100.0):
+            _skip("invalid discount")
+            continue
+
+        db.add(Customer(
+            company_name=company,
+            contact_name=row.get("contact_name", ""),
+            phone=row.get("phone", ""),
+            email=email,
+            address_line1=row.get("address_line1", ""),
+            address_line2=row.get("address_line2", ""),
+            city=row.get("city", ""),
+            state=row.get("state", ""),
+            zip_code=row.get("zip_code", ""),
+            payment_terms=row.get("payment_terms", PaymentTerms.COD),
+            discount_pct=_discount,
+            interest_rate=_safe_float(row.get("interest_rate", 0)),
+            is_tax_exempt=bool(row.get("is_tax_exempt", False)),
+            notes=row.get("notes", ""),
+            internal_notes=row.get("internal_notes", ""),
+        ))
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            log.exception("Import failed writing customer %r", company)
+            _skip("database error")
+            continue
+
+        created += 1
+        existing_names.add(company.lower())
+        norm = _normalize_name(company)
+        if norm:
+            existing_norm_names.add(norm)
+        if email:
+            existing_emails.add(email.lower())
+
+    skipped = sum(skip_reasons.values())
+    msg = f"Imported {created} customer{'s' if created != 1 else ''}"
     if skipped:
-        msg += f"+(skipped+{skipped}+duplicate{'s' if skipped != 1 else ''})"
-    return RedirectResponse(f"/customers/?ok={msg}", status_code=303)
+        detail = ", ".join(f"{n} {reason}" for reason, n in skip_reasons.items())
+        msg += f" (skipped {skipped}: {detail})"
+    return RedirectResponse(f"/customers/?ok={url_quote(msg)}", status_code=303)
 
 
 # ── Balance mini-panel (HTMX partial for Quote / Invoice workspace headers) ───
@@ -1008,8 +1585,9 @@ def customer_balance_mini(
     from app.services.statement_service import StatementService
     summary = StatementService(db).get_customer_balance_summary(customer_id)
     return templates.TemplateResponse(
+        request,
         "customers/_balance_mini.html",
-        {"request": request, **summary},
+        {**summary},
     )
 
 
@@ -1040,16 +1618,32 @@ def customer_detail(
         db.query(Quote)
         .filter(
             Quote.customer_id == customer_id,
-            Quote.status.notin_([QuoteStatus.CONVERTED, QuoteStatus.DECLINED]),
+            # Phase-1.1 — use the canonical closed-status list (includes EXPIRED)
+            # so expired quotes don't inflate the badge or the Open-quotes panel,
+            # matching the list/preview paths.
+            Quote.status.notin_(_CLOSED_QUOTE_STATUSES),
         )
         .order_by(Quote.created_at.desc())
         .all()
     )
 
+    svc = CustomerService(db)
+
+    # ── Customer-Specific Product Pricing — active deals for the §"Pricing &
+    #    Deals" panel (pricing_deals_panel) + the Quick Deal modal options. ─────
+    # Shared with the HTMX panel-refresh routes via build_customer_rules_context
+    # (single source of truth for the per-rule dicts + scope-picker options).
+    from app.routers.pricing_rules import build_customer_rules_context
+
+    _deals_ctx = build_customer_rules_context(db, c)
+    pricing_rules = _deals_ctx["rules"]
+    deal_categories = _deals_ctx["deal_categories"]
+    deal_brands = _deals_ctx["deal_brands"]
+
     return templates.TemplateResponse(
+        request,
         "customers/detail.html",
         {
-            "request": request,
             "customer": c,
             "recent_invoices": recent_invoices,
             "open_quotes": open_quotes,
@@ -1057,25 +1651,109 @@ def customer_detail(
             "pricing_tiers": list(PricingTier),
             "call_types": list(CallType),
             "call_outcomes": list(CallOutcome),
+            # ── Customer-Specific Product Pricing (pricing_deals_panel + modal) ──
+            "rules": pricing_rules,
+            "customer_id": c.id,
+            "deal_categories": deal_categories,
+            "deal_brands": deal_brands,
+            # ── Phase 2 §4 contracts (UI wires the chips/panel) ───────────────
+            "customer_types": list(CustomerType),
+            "customer_type_labels": CUSTOMER_TYPE_LABELS,
+            "customer_flag_labels": CUSTOMER_FLAG_LABELS,
+            "flags": svc.flags_for(c),                       # §4.3 chips (merged view)
+            # Edit-form flag chip editor (operator-settable flags only) + the
+            # customer's currently-stored set so checkboxes reflect state.
+            "stored_flag_options": [
+                (f, CUSTOMER_FLAG_LABELS.get(f, f)) for f in (
+                    CustomerFlag.REQUIRES_PO, CustomerFlag.CALL_FIRST,
+                    CustomerFlag.WARRANTY_ESCALATION, CustomerFlag.CREDIT_HOLD,
+                ) if f in CUSTOMER_STORED_FLAGS
+            ],
+            "customer_stored_flags": set(CustomerService._parse_stored(c.flags)),
+            "metrics": CustomerMetricsService(db).metrics_for(c),  # §4.4 live panel
+            "credit_status": svc.credit_status(c),           # §4.5 warn-only
+            # §4.6 / #8 unified timeline — unblocks _timeline.html
+            "timeline": CRMService(db).get_unified_timeline(customer_id),
         },
     )
 
 
 # ── Update ────────────────────────────────────────────────────────────────────
 
+@router.post("/{customer_id}/post-interest", response_class=RedirectResponse)
+async def customer_post_interest(
+    customer_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """§21 — charge accrued interest: create a DRAFT finance-charge invoice the
+    operator then reviews + finalizes. Redirects to the new draft on success."""
+    try:
+        inv = CRMService(db, current_user_id=user_id).post_interest_charge(customer_id)
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(
+            f"/customers/{customer_id}?error={url_quote(str(exc))}", status_code=303)
+    except Exception:
+        db.rollback()
+        log.exception("Unexpected error posting interest for customer %s", customer_id)
+        return RedirectResponse(
+            f"/customers/{customer_id}?error={url_quote('Unexpected error — interest was not charged.')}",
+            status_code=303)
+    return RedirectResponse(f"/invoices/{inv.id}?ok={url_quote('Draft finance-charge invoice created — review and finalize.')}", status_code=303)
+
+
 @router.post("/{customer_id}", response_class=RedirectResponse)
 async def customer_update(
     customer_id: int,
     request: Request,
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     c = db.query(Customer).filter(Customer.id == customer_id).first()
     if not c:
         return RedirectResponse("/customers/", status_code=303)
 
     form = await request.form()
+
+    # QA — server-side email-format validation (parity with create). Blank stays
+    # allowed; reject a malformed value before mutating anything.
+    _new_email = str(form.get("email", "")).strip()
+    if _new_email and not is_valid_email(_new_email):
+        return RedirectResponse(
+            f"/customers/{customer_id}?error="
+            + url_quote("Please enter a valid email address (e.g. name@example.com)."),
+            status_code=303,
+        )
+
+    # C10 — block editing email to one another customer already owns (the unique
+    # index would otherwise 500 at commit). Check before mutating anything.
+    if _new_email:
+        _conflict = _find_customer_by_email(db, _new_email, exclude_id=customer_id)
+        if _conflict is not None:
+            return RedirectResponse(
+                f"/customers/{customer_id}?error="
+                + url_quote(f"Another customer already uses that email: {_conflict.company_name}"),
+                status_code=303,
+            )
+
+    # QA — block editing phone to one another ACTIVE customer already owns
+    # (counter staff look people up by phone). Self excluded; blank exempt. Phone
+    # is not a unique DB key, so unlike email there's no commit-time backstop —
+    # this pre-check is the guard. The operator changes the phone or merges.
+    _new_phone = str(form.get("phone", "")).strip()
+    if _new_phone:
+        _phone_conflict = _find_customer_by_phone(db, _new_phone, exclude_id=customer_id)
+        if _phone_conflict is not None:
+            return RedirectResponse(
+                f"/customers/{customer_id}?error="
+                + url_quote(f"Another customer already uses that phone: {_phone_conflict.company_name}"),
+                status_code=303,
+            )
+
     c.company_name = str(form.get("company_name", "")).strip()
     c.contact_name = str(form.get("contact_name", "")).strip()
+    c.account_number = str(form.get("account_number", "")).strip()
     c.phone = str(form.get("phone", "")).strip()
     c.email = str(form.get("email", "")).strip()
     c.address_line1 = str(form.get("address_line1", "")).strip()
@@ -1086,14 +1764,154 @@ async def customer_update(
     c.payment_terms = str(form.get("payment_terms", PaymentTerms.COD))
     c.pricing_tier  = str(form.get("pricing_tier", "standard"))
     c.credit_limit  = float(form.get("credit_limit") or 0)
-    c.discount_pct  = float(form.get("discount_pct") or 0)
+    # Out-of-range standing discount bricks quote/invoice creation for this
+    # customer (document services now reject it) — block it at the source.
+    try:
+        _discount = float(form.get("discount_pct") or 0)
+    except (TypeError, ValueError):
+        _discount = -1.0
+    if not (0.0 <= _discount <= 100.0):
+        return RedirectResponse(
+            f"/customers/{customer_id}?error="
+            + url_quote("Standing discount must be between 0 and 100."),
+            status_code=303,
+        )
+    c.discount_pct  = _discount
     c.interest_rate = float(form.get("interest_rate") or 0)
+    _cs = str(form.get("card_surcharge_pct", "")).strip()
+    c.card_surcharge_pct = float(_cs) if _cs else None  # blank → NULL = use system default; 0 = no surcharge
     c.is_tax_exempt = bool(form.get("is_tax_exempt"))
     c.tax_exempt_cert_number = str(form.get("tax_exempt_cert_number", "")).strip() or None
     c.notes = str(form.get("notes", "")).strip()
     c.internal_notes = str(form.get("internal_notes", "")).strip()
-    db.commit()
+    # P2-D6 — only touch type when the form sends it (older edit forms don't, and
+    # must not silently reset an existing customer's type to OTHER).
+    if "customer_type" in form:
+        c.customer_type = _form_customer_type(form)
+    if "customer_status" in form:
+        c.customer_status = _form_customer_status(form)
+    # P2-D2 — only rewrite flags when the chip editor submitted them (hidden
+    # flags_submitted marker), else a save from a form without the editor would
+    # wipe the flags. set_stored_flags leaves tax-exempt / contact-method alone.
+    if form.get("flags_submitted"):
+        # set_stored_flags syncs customer_status ↔ CREDIT_HOLD (go-live bug #3).
+        CustomerService(db).set_stored_flags(c, form.getlist("flags"))
+    elif "customer_status" in form:
+        # When the status dropdown is saved WITHOUT the chip editor, mirror the
+        # CREDIT_HOLD flag in the stored CSV so the two fields stay consistent.
+        from app.constants import CustomerStatus as _CS, CustomerFlag as _CF
+        _stored = set(CustomerService._parse_stored(c.flags))
+        if c.customer_status == _CS.CREDIT_HOLD:
+            _stored.add(_CF.CREDIT_HOLD)
+        else:
+            _stored.discard(_CF.CREDIT_HOLD)
+        c.flags = CustomerService._serialize_stored(_stored)
+    try:
+        db.commit()
+    except IntegrityError:
+        # C10 race backstop — another insert/edit took the email between the
+        # pre-check and commit.
+        db.rollback()
+        return RedirectResponse(
+            f"/customers/{customer_id}?error="
+            + url_quote("Could not save — that email is already used by another customer."),
+            status_code=303,
+        )
     return RedirectResponse(f"/customers/{customer_id}?saved=1", status_code=303)
+
+
+# ── SMS consent + opt-out controls (§22 Function B) ──────────────────────────
+# "OK to text" / "Stop texting" / "Do Not Contact" toggles on the customer
+# profile + communications page. Each posts a normal form and redirects 303
+# back to the doc it was triggered from (Referer), defaulting to the detail page.
+# The shared MessagingService owns the consent/opt-out semantics; these routes
+# are thin form handlers around it.
+
+def _consent_redirect(request: Request, customer_id: int) -> str:
+    """Redirect target for the consent toggles — back to the referring customer
+    page (detail or communications), defaulting to the detail page. Only same-app
+    customer URLs are honored so the Referer header can't bounce us off-site."""
+    ref = request.headers.get("referer", "") or ""
+    if ref:
+        from urllib.parse import urlsplit
+        path = urlsplit(ref).path
+        if path.startswith(f"/customers/{customer_id}"):
+            return path
+    return f"/customers/{customer_id}"
+
+
+@router.post("/{customer_id}/sms-consent", response_class=RedirectResponse)
+def customer_sms_consent(
+    customer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Record verbal SMS consent — sets allow_sms + sms_consent_at + method.
+    Audited + committed inside MessagingService.record_consent."""
+    MessagingService(db, current_user_id=user_id).record_consent(
+        customer_id, CommunicationChannel.SMS, "verbal"
+    )
+    return RedirectResponse(_consent_redirect(request, customer_id), status_code=303)
+
+
+@router.post("/{customer_id}/sms-optout", response_class=RedirectResponse)
+def customer_sms_optout(
+    customer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Stop texting this customer — clears allow_sms only (email untouched, and
+    they are NOT marked do_not_contact). Audited like the nearby routes."""
+    c = db.query(Customer).filter(Customer.id == customer_id).first()
+    if c:
+        c.allow_sms = False
+        MessagingService(db, current_user_id=user_id).audit(
+            entity_type="customer",
+            entity_id=customer_id,
+            action="sms_opt_out",
+            new_value={"allow_sms": False},
+        )
+        db.commit()
+    return RedirectResponse(_consent_redirect(request, customer_id), status_code=303)
+
+
+@router.post("/{customer_id}/contact-optout", response_class=RedirectResponse)
+def customer_contact_optout(
+    customer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Mark Do Not Contact — sets do_not_contact and clears allow_sms/allow_email.
+    Audited + committed inside MessagingService.record_opt_out."""
+    MessagingService(db, current_user_id=user_id).record_opt_out(
+        customer_id, reason="manual"
+    )
+    return RedirectResponse(_consent_redirect(request, customer_id), status_code=303)
+
+
+@router.post("/{customer_id}/contact-allow", response_class=RedirectResponse)
+def customer_contact_allow(
+    customer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Undo Do Not Contact — clears do_not_contact (does not silently re-grant
+    SMS consent; the rep re-arms "OK to text" explicitly). Audited."""
+    c = db.query(Customer).filter(Customer.id == customer_id).first()
+    if c:
+        c.do_not_contact = False
+        MessagingService(db, current_user_id=user_id).audit(
+            entity_type="customer",
+            entity_id=customer_id,
+            action="contact_allowed",
+            new_value={"do_not_contact": False},
+        )
+        db.commit()
+    return RedirectResponse(_consent_redirect(request, customer_id), status_code=303)
 
 
 # ── Log Call (HTMX) ───────────────────────────────────────────────────────────
@@ -1103,13 +1921,14 @@ async def log_call(
     customer_id: int,
     request: Request,
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     form = await request.form()
     call_type = str(form.get("call_type", CallType.INBOUND))
     outcome = str(form.get("outcome", CallOutcome.OTHER))
     notes = str(form.get("notes", "")).strip()
 
-    crm = CRMService(db, current_user_id=CURRENT_USER_ID)
+    crm = CRMService(db, current_user_id=user_id)
     entry = crm.log_call(
         customer_id=customer_id,
         call_type=call_type,
@@ -1118,8 +1937,9 @@ async def log_call(
     )
 
     return templates.TemplateResponse(
+        request,
         "customers/_call_log_row.html",
-        {"request": request, "log": entry},
+        {"log": entry},
     )
 
 
@@ -1180,6 +2000,7 @@ def customer_communications(
             related_links[comm.id] = None
 
     return templates.TemplateResponse(
+        request,
         "customers/communications.html",
         {
             "request":        request,
@@ -1207,6 +2028,7 @@ async def customer_communications_log(
     customer_id: int,
     request: Request,
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     """Log a manual communication entry (no real send — all go through NullProvider)."""
     form = await request.form()
@@ -1223,7 +2045,7 @@ async def customer_communications_log(
         (CommunicationChannel.MANUAL_NOTE, CommunicationDirection.OUTBOUND),
     )
 
-    svc = MessagingService(db, current_user_id=CURRENT_USER_ID)
+    svc = MessagingService(db, current_user_id=user_id)
     if direction == CommunicationDirection.INBOUND:
         svc.record_inbound(
             customer_id=customer_id,
@@ -1258,16 +2080,18 @@ def customer_balance(
     customer_id: int,
     request: Request,
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
-    crm = CRMService(db, current_user_id=CURRENT_USER_ID)
+    crm = CRMService(db, current_user_id=user_id)
     balance = crm.get_account_balance(customer_id)
     return templates.TemplateResponse(
+        request,
         "customers/_balance_widget.html",
-        {"request": request, "balance": balance},
+        {"balance": balance},
     )
 
 
-# ── Deactivate ────────────────────────────────────────────────────────────────
+# ── Deactivate / Reactivate ─────────────────────────────────────────────────
 
 @router.post("/{customer_id}/deactivate", response_class=RedirectResponse)
 def customer_deactivate(
@@ -1281,7 +2105,59 @@ def customer_deactivate(
     return RedirectResponse("/customers/", status_code=303)
 
 
+@router.post("/{customer_id}/reactivate", response_class=RedirectResponse)
+def customer_reactivate(
+    customer_id: int,
+    db: Session = Depends(get_db),
+):
+    """Undo a deactivate — restores the customer to the active lists.
+    Redirects back to the detail page (not the list) so the user sees the
+    now-reactivated record, mirroring /vendors/{id}/reactivate."""
+    c = db.query(Customer).filter(Customer.id == customer_id).first()
+    if c:
+        c.is_active = True
+        db.commit()
+    return RedirectResponse(f"/customers/{customer_id}", status_code=303)
+
+
 # ── Statement ─────────────────────────────────────────────────────────────────
+
+def _optional_user_id(request: Request) -> int | None:
+    """Resolve the signed-in user id WITHOUT enforcing auth (R3 — statement
+    persistence attribution only; the route itself stays as permissive as it
+    was before persistence existed)."""
+    try:
+        from app.auth import read_session_token, SESSION_COOKIE
+        return read_session_token(request.cookies.get(SESSION_COOKIE))
+    except Exception:
+        return None
+
+
+@router.post("/statements/bulk-generate", response_class=RedirectResponse)
+def customers_bulk_statements(
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """§21 — month-end: generate + persist a statement for every customer with an
+    open AR balance, for the current calendar month. Redirects to AR aging with a
+    summary flash."""
+    from datetime import datetime
+    from app.services.statement_service import StatementService
+    # Use the UTC date — invoices are timestamped UTC (func.now()), so a local
+    # date.today() near midnight could exclude "today's" just-created invoices.
+    today = datetime.utcnow().date()
+    period_start = today.replace(day=1)
+    try:
+        summary = StatementService(db).generate_bulk_statements(
+            period_start, today, generated_by_user_id=user_id)
+    except Exception:
+        log.exception("bulk statement generation failed")
+        return RedirectResponse(
+            f"/reports/ar-aging?error={url_quote('Bulk statement generation failed.')}",
+            status_code=303)
+    msg = f"Generated {summary['generated']} statement(s) for {summary['customers']} customer(s) with a balance."
+    return RedirectResponse(f"/reports/ar-aging?ok={url_quote(msg)}", status_code=303)
+
 
 @router.get("/{customer_id}/statement", response_class=HTMLResponse)
 def customer_statement_form(
@@ -1289,8 +2165,9 @@ def customer_statement_form(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    """Statement date-range selector page."""
+    """Statement date-range selector page + saved-statement history (R3)."""
     from datetime import date
+    from app.services.statement_service import StatementService
     c = db.query(Customer).filter(Customer.id == customer_id).first()
     if c is None:
         return RedirectResponse("/customers/", status_code=303)
@@ -1298,12 +2175,14 @@ def customer_statement_form(
     # Default: first of current month → today
     default_start = today.replace(day=1)
     return templates.TemplateResponse(
+        request,
         "customers/statement_form.html",
         {
-            "request": request,
             "customer": c,
             "default_start": default_start.isoformat(),
             "default_end": today.isoformat(),
+            # R3 — archived statements (immutable snapshots of what was sent)
+            "history": StatementService(db).get_statement_history(customer_id),
         },
     )
 
@@ -1317,11 +2196,14 @@ def customer_statement_print(
     db: Session = Depends(get_db),
 ):
     """Print-ready statement HTML. Also used by /pdf to generate the PDF bytes."""
-    from datetime import date
+    from datetime import date, datetime
     from app.services.statement_service import StatementService
     from app.settings_utils import get_setting_value_db
 
-    today = date.today()
+    # Use the UTC date — invoices are timestamped UTC (func.now()), so a local
+    # date.today() near midnight could exclude "today's" just-created invoices
+    # (mirrors the bulk-statement route above).
+    today = datetime.utcnow().date()
     try:
         period_start = date.fromisoformat(start) if start else today.replace(day=1)
         period_end = date.fromisoformat(end) if end else today
@@ -1329,11 +2211,15 @@ def customer_statement_print(
         period_start = today.replace(day=1)
         period_end = today
 
-    stmt = StatementService(db).generate_statement(
+    svc = StatementService(db)
+    stmt = svc.generate_statement(
         customer_id=customer_id,
         period_start=period_start,
         period_end=period_end,
     )
+    # R3 — the print view is the "this went to the customer" moment: persist an
+    # immutable snapshot (idempotent per customer+period+day, see service).
+    saved = svc.persist_statement(stmt, generated_by_user_id=_optional_user_id(request))
     company = {
         "name":    get_setting_value_db(db, "company_name",    "JAKS Parts"),
         "address": get_setting_value_db(db, "company_address", ""),
@@ -1341,8 +2227,10 @@ def customer_statement_print(
         "email":   get_setting_value_db(db, "company_email",   ""),
     }
     return templates.TemplateResponse(
+        request,
         "customers/statement_print.html",
-        {"request": request, "stmt": stmt, "company": company},
+        {"stmt": stmt, "company": company,
+         "statement_number": saved.statement_number},
     )
 
 
@@ -1355,13 +2243,14 @@ def customer_statement_pdf(
     db: Session = Depends(get_db),
 ):
     """Server-side PDF via WeasyPrint. Falls back to print view if GTK missing."""
-    from datetime import date
+    from datetime import date, datetime
     from urllib.parse import quote as url_quote
     from app.services.statement_service import StatementService
     from app.settings_utils import get_setting_value_db
     from fastapi.responses import Response as FastAPIResponse
 
-    today = date.today()
+    # UTC date to match UTC-stamped invoices (see print route / bulk route).
+    today = datetime.utcnow().date()
     try:
         period_start = date.fromisoformat(start) if start else today.replace(day=1)
         period_end = date.fromisoformat(end) if end else today
@@ -1369,11 +2258,15 @@ def customer_statement_pdf(
         period_start = today.replace(day=1)
         period_end = today
 
-    stmt = StatementService(db).generate_statement(
+    svc = StatementService(db)
+    stmt = svc.generate_statement(
         customer_id=customer_id,
         period_start=period_start,
         period_end=period_end,
     )
+    # R3 — PDF generation is also a "sent to customer" moment; same idempotent
+    # persistence as /print (same customer+period+day reuses the row).
+    saved = svc.persist_statement(stmt, generated_by_user_id=_optional_user_id(request))
     company = {
         "name":    get_setting_value_db(db, "company_name",    "JAKS Parts"),
         "address": get_setting_value_db(db, "company_address", ""),
@@ -1382,10 +2275,15 @@ def customer_statement_pdf(
     }
     html_str = templates.env.get_template("customers/statement_print.html").render(
         request=request, stmt=stmt, company=company,
+        statement_number=saved.statement_number,
     )
     try:
         from weasyprint import HTML
-        pdf_bytes = HTML(string=html_str, base_url=str(request.base_url)).write_pdf()
+        from app.services.document_render import static_url_fetcher
+        pdf_bytes = HTML(
+            string=html_str, base_url=str(request.base_url),
+            url_fetcher=static_url_fetcher,
+        ).write_pdf()
     except Exception:
         return RedirectResponse(
             f"/customers/{customer_id}/statement/print?start={start}&end={end}",
@@ -1399,5 +2297,54 @@ def customer_statement_pdf(
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
             "Content-Length": str(len(pdf_bytes)),
+        },
+    )
+
+
+@router.get("/{customer_id}/statement/archive/{statement_id}", response_class=HTMLResponse)
+def customer_statement_archive(
+    customer_id: int,
+    statement_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """R3 — read-only ARCHIVED statement, re-rendered from snapshot_json.
+
+    This is the dispute-resolution view: it shows exactly what was generated
+    and sent, never live data. No persistence, no recalculation."""
+    from app.models.statement import CustomerStatement
+    from app.services.statement_service import StatementService
+    from app.settings_utils import get_setting_value_db
+
+    row = (
+        db.query(CustomerStatement)
+        .filter(
+            CustomerStatement.id == statement_id,
+            CustomerStatement.customer_id == customer_id,
+        )
+        .first()
+    )
+    if row is None:
+        return RedirectResponse(f"/customers/{customer_id}/statement", status_code=303)
+
+    stmt = StatementService.snapshot_to_render_ctx(row)
+    if stmt is None:  # legacy row persisted before snapshots existed
+        return RedirectResponse(f"/customers/{customer_id}/statement", status_code=303)
+
+    company = {
+        "name":    get_setting_value_db(db, "company_name",    "JAKS Parts"),
+        "address": get_setting_value_db(db, "company_address", ""),
+        "phone":   get_setting_value_db(db, "company_phone",   ""),
+        "email":   get_setting_value_db(db, "company_email",   ""),
+    }
+    return templates.TemplateResponse(
+        request,
+        "customers/statement_print.html",
+        {
+            "stmt": stmt,
+            "company": company,
+            "statement_number": row.statement_number,
+            "archived": True,
+            "archived_generated_at": row.generated_at,
         },
     )

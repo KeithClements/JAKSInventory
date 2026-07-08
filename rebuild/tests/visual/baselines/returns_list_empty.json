@@ -1,0 +1,24 @@
+{
+  "columns": [],
+  "h1": "Return Authorizations",
+  "html_size_kb": 57,
+  "markers": {
+    "divide-y": true,
+    "divide-y divide-gray-100": true,
+    "fixed bottom-0 left-64": true,
+    "overflow-x-auto": false,
+    "pb-52": true,
+    "preview_dock_shell": false,
+    "tbl-td": true,
+    "tbl-th": true,
+    "togglePreview": true,
+    "x-show=\"selectedCount > 0\"": true
+  },
+  "status_code": 200,
+  "tabs": [
+    "\n       class=",
+    " class="
+  ],
+  "title": "Return Authorizations \u2014 JAKS Inventory",
+  "url": "/returns/?q=zzz_no_match_xyz"
+}

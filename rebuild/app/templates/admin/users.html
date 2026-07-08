@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}Users & Roles — Axle{% endblock %}
+{% block heading %}Users & Roles{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl space-y-5">
+
+  {% if ok %}
+  <div class="rounded-lg border border-green-200 bg-green-50 px-4 py-2 text-sm text-green-700">{{ ok }}</div>
+  {% endif %}
+  {% if error %}
+  <div class="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{{ error }}</div>
+  {% endif %}
+
+  {# ── Create user ──────────────────────────────────────────────────────── #}
+  <div class="card">
+    <div class="card-header"><h2 class="card-title">Add User</h2></div>
+    <form method="post" action="/admin/users" class="p-4 grid grid-cols-1 sm:grid-cols-5 gap-3 items-end">
+      <div class="sm:col-span-1">
+        <label class="form-label">Name</label>
+        <input name="name" required class="form-input" placeholder="Full name" />
+      </div>
+      <div class="sm:col-span-1">
+        <label class="form-label">Username</label>
+        <input name="username" required class="form-input" placeholder="login" autocomplete="off" />
+      </div>
+      <div class="sm:col-span-1">
+        <label class="form-label">Password</label>
+        <input name="password" type="password" required minlength="8" class="form-input" placeholder="min 8 chars" autocomplete="new-password" />
+      </div>
+      <div class="sm:col-span-1">
+        <label class="form-label">Role</label>
+        <select name="role" class="form-select">
+          {% for r in roles %}
+          <option value="{{ r }}" {% if r == 'sales' %}selected{% endif %}>{{ r | replace('_',' ') | title }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="sm:col-span-1">
+        <button type="submit" class="btn-primary w-full">Create</button>
+      </div>
+    </form>
+    <p class="px-4 pb-4 -mt-1 text-xs text-gray-400">
+      Roles: <b>Admin</b> = everything · <b>Bookkeeping</b> = payments, finalize invoices, receive POs, void
+      · <b>Sales</b> = counter clerk (quote/SO; cannot finalize, receive, or take payment)
+      · <b>Read-Only</b> = view only.
+    </p>
+  </div>
+
+  {# ── Existing users ───────────────────────────────────────────────────── #}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Accounts</h2>
+      <span class="text-xs text-gray-400">{{ users | length }} user{{ 's' if users | length != 1 }}</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead class="tbl-head">
+          <tr>
+            <th class="tbl-th">User</th>
+            <th class="tbl-th">Role</th>
+            <th class="tbl-th">Status</th>
+            <th class="tbl-th">Reset Password</th>
+            <th class="tbl-th-r">Account</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for u in users %}
+          <tr class="tbl-row {% if not u.is_active %}opacity-50{% endif %}">
+            <td class="tbl-td">
+              <div class="font-medium text-gray-900">{{ u.username }}{% if u.id == me.id %} <span class="text-xs text-brand-600">(you)</span>{% endif %}</div>
+              <div class="text-xs text-gray-400">{{ u.name }}</div>
+            </td>
+            <td class="tbl-td">
+              <form method="post" action="/admin/users/{{ u.id }}/role" class="flex items-center gap-1">
+                <select name="role" class="form-select text-xs py-1" {% if u.id == me.id %}disabled title="You can't change your own role"{% endif %}>
+                  {% for r in roles %}
+                  <option value="{{ r }}" {% if r == u.role %}selected{% endif %}>{{ r | replace('_',' ') | title }}</option>
+                  {% endfor %}
+                </select>
+                {% if u.id != me.id %}
+                <button type="submit" class="btn-secondary btn-sm">Set</button>
+                {% endif %}
+              </form>
+            </td>
+            <td class="tbl-td">
+              {% if u.is_active %}
+              <span class="inline-flex items-center rounded-full bg-green-50 px-2 py-0.5 text-xs font-medium text-green-700">Active</span>
+              {% else %}
+              <span class="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-500">Inactive</span>
+              {% endif %}
+            </td>
+            <td class="tbl-td">
+              <form method="post" action="/admin/users/{{ u.id }}/password" class="flex items-center gap-1">
+                <input name="new_password" type="password" minlength="8" placeholder="new password"
+                       class="form-input text-xs py-1 w-32" autocomplete="new-password" />
+                <button type="submit" class="btn-secondary btn-sm">Reset</button>
+              </form>
+            </td>
+            <td class="tbl-td-r">
+              {% if u.id != me.id %}
+              <form method="post" action="/admin/users/{{ u.id }}/toggle-active">
+                <button type="submit" class="btn-sm {% if u.is_active %}text-red-600 hover:underline{% else %}text-green-700 hover:underline{% endif %}">
+                  {{ 'Deactivate' if u.is_active else 'Activate' }}
+                </button>
+              </form>
+              {% else %}
+              <span class="text-xs text-gray-300">—</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

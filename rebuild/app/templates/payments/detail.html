@@ -1,8 +1,51 @@
 {% extends "base.html" %}
-{% block title %}Payment #{{ payment.id }} — JAKS Inventory{% endblock %}
+{% block title %}Payment #{{ payment.id }} — Axle{% endblock %}
 {% block heading %}Payment #{{ payment.id }}{% endblock %}
 
 {% block header_actions %}
+  {# ── Phase 1B — QuickBooks payment push ──
+     Gate (mirrors the invoice workspace's sync-status idiom): only an APPLIED
+     payment whose every active allocation targets an already-synced invoice
+     (qbo_invoice_id present) can be pushed — the QBO Payment links to those
+     invoices' QBO ids, so the invoice must be in QuickBooks first. Connectivity
+     is handled fail-soft by the route (an unconnected push just flashes an error),
+     the same as the invoice push. #}
+  {% set ns = namespace(all_synced=true, has_alloc=false) %}
+  {% for alloc in active_allocations %}
+    {% set ns.has_alloc = true %}
+    {% if not (alloc.invoice and alloc.invoice.qbo_invoice_id) %}{% set ns.all_synced = false %}{% endif %}
+  {% endfor %}
+
+  {% if payment.qbo_payment_id %}
+    <span class="inline-flex items-center gap-1 rounded-md bg-green-50 border border-green-200 text-green-700 px-2.5 py-1 text-xs font-medium"
+          title="Synced to QuickBooks (id {{ payment.qbo_payment_id }})">
+      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+      </svg>
+      QBO Synced
+    </span>
+  {% elif payment.payment_method == 'account_credit' %}
+    {# Synthetic non-cash row (credit memo / credit balance applied to an invoice).
+       Never pushed — a QBO Payment here would book phantom cash into Undeposited
+       Funds; the credit memo document is the QuickBooks-side record. #}
+    <span class="inline-flex items-center gap-1 rounded-md bg-gray-50 border border-gray-200 text-gray-500 px-2.5 py-1 text-xs font-medium"
+          title="Account-credit applications are non-cash and never sync to QuickBooks — the credit memo (or the credit's source document) is the QBO record.">
+      Non-cash — not synced to QBO
+    </span>
+  {% elif payment.status == PaymentStatus.APPLIED and ns.has_alloc and ns.all_synced %}
+    <form method="post" action="/qbo/push-payment/{{ payment.id }}" class="inline">
+      <button type="submit" class="btn-secondary btn-sm"
+        {% if payment.qbo_sync_status == 'error' and payment.qbo_sync_error %}title="Last error: {{ payment.qbo_sync_error }}"{% endif %}>
+        {% if payment.qbo_sync_status == 'error' %}Retry QBO push{% else %}Push to QBO{% endif %}
+      </button>
+    </form>
+  {% elif payment.status == PaymentStatus.APPLIED and ns.has_alloc and not ns.all_synced %}
+    <span class="inline-flex items-center gap-1 rounded-md bg-gray-50 border border-gray-200 text-gray-500 px-2.5 py-1 text-xs font-medium"
+          title="Push the applied invoice(s) to QuickBooks first — the payment links to them.">
+      Sync invoice(s) to QBO first
+    </span>
+  {% endif %}
+
   <a href="/payments/" class="btn-secondary btn-sm">← Payments</a>
 {% endblock %}
 
@@ -25,6 +68,26 @@
 {% if ok_msg %}
 <div class="mb-4 px-4 py-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">
   ✓ {{ ok_msg }}
+</div>
+{% endif %}
+
+{# ── Needs manual reversal in QuickBooks ──
+   Sync is one-way create-only (JAKS → QBO): a payment that synced and was
+   LATER reversed/NSF'd here still shows as received cash in QBO until a human
+   voids it there. connection_summary().needs_reversal counts these. #}
+{% if payment.qbo_payment_id and payment.status in (PaymentStatus.REVERSED, PaymentStatus.NSF) %}
+<div class="mb-4 px-4 py-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+  <p class="font-semibold">Needs manual fix in QuickBooks</p>
+  <p class="mt-1">
+    This payment was synced to QuickBooks (QBO payment id
+    <span class="font-mono">{{ payment.qbo_payment_id }}</span>) and later
+    {% if payment.status == PaymentStatus.NSF %}returned NSF{% else %}reversed{% endif %}
+    here — Axle never writes back to QuickBooks, so void or delete that QBO payment manually.
+    {% if payment.surcharge_amount and payment.surcharge_amount > 0 %}
+      Also remove the card-surcharge sales receipt
+      (DocNumber <span class="font-mono">JAKS-SC-{{ payment.id }}</span>).
+    {% endif %}
+  </p>
 </div>
 {% endif %}
 
@@ -194,7 +257,7 @@
   </div>
 
   {# ── Apply unapplied balance to an invoice ── #}
-  {% if payment.amount_unallocated > 0.005 and payment.status != PaymentStatus.REVERSED %}
+  {% if payment.amount_unallocated > 0.005 and payment.status not in (PaymentStatus.REVERSED, PaymentStatus.NSF) %}
   <div class="card border-brand-100">
     <div class="card-header">
       <div>
