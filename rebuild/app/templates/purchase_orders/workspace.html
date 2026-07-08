@@ -30,6 +30,14 @@
   <a href="/purchase-orders/{{ po.id }}/print" target="_blank" class="btn-secondary btn-sm">Print</a>
   <a href="/purchase-orders/{{ po.id }}/pdf" class="btn-secondary btn-sm">PDF</a>
 
+  {# Return to Vendor — seed a Vendor Return (VR) from this PO's lines (real
+     products + costs). The natural "send some of this PO back" entry point. #}
+  {% if po.status != 'cancelled' %}
+  <a href="/vendor-returns/new?po_id={{ po.id }}" class="btn-secondary btn-sm">
+    <span class="hdr-full">Return to Vendor</span><span class="hdr-abbr">Return</span>
+  </a>
+  {% endif %}
+
   {# ── Email to Vendor — separate from placing the order. SMTP isn't configured,
      so this opens an honest pre-filled mail draft + the PDF to attach, rather
      than pretending to send. Available on any live (non-cancelled) PO. ── #}

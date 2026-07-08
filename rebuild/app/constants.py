@@ -1003,6 +1003,7 @@ class VendorReturnStatus(StrEnum):
     REJECTED  = "rejected"
     PARTIAL   = "partial"
     CLOSED    = "closed"
+    VOIDED    = "voided"    # cancelled before credit; a SHIPPED void restocks inventory
 
 
 class VendorReturnLineOutcome(StrEnum):

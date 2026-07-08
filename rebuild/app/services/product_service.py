@@ -459,6 +459,35 @@ class ProductService(BaseService):
             if field in data:
                 setattr(product, field, data[field])
 
+        # ── SKU rename (owner-editable master / selling SKU) ────────────────────
+        # `sku` is deliberately NOT in the blind-setattr whitelist above: it is the
+        # unique master identifier, so an empty value must never blank it and a
+        # collision must return a clean error rather than a DB IntegrityError (500).
+        # This is the SELLING sku (shown on quotes/invoices/storefront); the vendor
+        # part numbers used for ORDERING live on product_vendor_sources and are
+        # untouched here. Documents reference the product by product_id and derive
+        # the SKU live, so a rename is snapshot-safe; sku_norm is recomputed by the
+        # Product before_update event listener.
+        if "sku" in data:
+            new_sku = (data.get("sku") or "").strip().upper()
+            current_sku = (product.sku or "").strip().upper()
+            if not new_sku:
+                # Autosave/legacy forms always post `sku`; an empty value means the
+                # field was cleared, which is not allowed for the required master SKU.
+                raise ValueError("SKU is required — it cannot be blank.")
+            if new_sku != current_sku:
+                clash = (
+                    self.db.query(Product)
+                    .filter(Product.sku == new_sku, Product.id != product_id)
+                    .first()
+                )
+                if clash:
+                    raise ValueError(
+                        f"SKU '{new_sku}' already exists (product {clash.id}). "
+                        "Pick a unique SKU."
+                    )
+                product.sku = new_sku
+
         # ── Operator price lock (scraper-audit bug #11) ────────────────────────
         # An operator CHANGING the exact sell price via the UI locks it against
         # the nightly scraper feed (pricing_update_sell skips locked products'

@@ -50,6 +50,7 @@ class VendorReturnService(BaseService):
         original_po_id: int | None = None,
         original_vendor_bill_id: int | None = None,
         notes: str = "",
+        restocking_fee: float = 0.0,
     ) -> VendorReturn:
         """
         Create a vendor return in DRAFT status.
@@ -62,6 +63,9 @@ class VendorReturnService(BaseService):
             original_po_id:          back-ref to original PO if applicable
             original_vendor_bill_id: back-ref to vendor bill if applicable
             notes:                   free-text
+            restocking_fee:          header-level restocking fee the vendor keeps
+                                     (any per-line ``restocking_fee`` values are
+                                     added on top, preserving the older contract)
 
         Returns the created VR (committed).
         """
@@ -83,7 +87,7 @@ class VendorReturnService(BaseService):
 
         # Calculate expected_credit total + restocking_fee total
         expected_credit_total = 0.0
-        restocking_total = 0.0
+        restocking_total = float(restocking_fee or 0.0)
         for ln in lines:
             qty = int(ln.get("qty", 1))
             unit_credit = float(ln.get("expected_unit_credit", 0.0))
@@ -135,6 +139,190 @@ class VendorReturnService(BaseService):
                 "original_vendor_bill_id": original_vendor_bill_id,
             },
             notes=reason,
+        )
+        self.db.commit()
+        return vr
+
+    # ── Edit (DRAFT only) ───────────────────────────────────────────────────────
+
+    def update_vendor_return(
+        self,
+        vr_id: int,
+        *,
+        vendor_id: int | None = None,
+        reason: str | None = None,
+        notes: str | None = None,
+        restocking_fee: float | None = None,
+        original_po_id: int | None = None,
+        original_vendor_bill_id: int | None = None,
+        lines: list[dict] | None = None,
+    ) -> VendorReturn:
+        """
+        Edit a DRAFT vendor return in place.
+
+        DRAFT-only by design: once a VR is SHIPPED it is a shipping + credit
+        record (tracking captured, inventory decremented, vendor deciding), so
+        it must not be silently rewritten. When ``lines`` is provided it REPLACES
+        every existing line — safe on a DRAFT because no vendor outcomes exist
+        yet — and ``expected_credit`` is recomputed. Passing ``None`` for a field
+        leaves it unchanged; passing an explicit value (incl. clearing the PO/bill
+        link with ``0``) overwrites it.
+        """
+        if self.current_user_id is not None:
+            self.assert_can(Permission.ISSUE_CREDIT_MEMO)
+
+        vr = self._get_or_404(vr_id)
+        if vr.status != VendorReturnStatus.DRAFT:
+            raise ValueError(
+                f"VR {vr.vr_number} is '{vr.status}', not DRAFT. "
+                "Only draft vendor returns can be edited."
+            )
+
+        old = {
+            "reason": vr.reason,
+            "notes": vr.notes,
+            "line_count": len(vr.lines),
+            "expected_credit": vr.expected_credit,
+        }
+
+        if vendor_id is not None and vendor_id != vr.vendor_id:
+            vendor = self.db.query(Vendor).filter(Vendor.id == vendor_id).first()
+            if vendor is None:
+                raise ValueError(f"Vendor {vendor_id} not found")
+            vr.vendor_id = vendor_id
+
+        if reason is not None:
+            if not reason.strip():
+                raise ValueError("Return reason is required")
+            vr.reason = reason.strip()
+
+        if notes is not None:
+            vr.notes = notes.strip()
+
+        # PO / bill links: an explicit 0 clears; a positive id sets; None skips.
+        if original_po_id is not None:
+            vr.original_po_id = original_po_id or None
+        if original_vendor_bill_id is not None:
+            vr.original_vendor_bill_id = original_vendor_bill_id or None
+
+        if lines is not None:
+            if not lines:
+                raise ValueError("Vendor return must have at least one line")
+            # Replace lines wholesale — the delete-orphan cascade removes the old
+            # rows when they leave the collection, then flush before re-adding so
+            # the deletes commit ahead of the inserts.
+            vr.lines.clear()
+            self.db.flush()
+            expected_total = 0.0
+            for ln in lines:
+                qty = max(1, int(ln.get("qty", 1)))
+                unit_credit = float(ln.get("expected_unit_credit", 0.0))
+                expected_total += qty * unit_credit
+                vr.lines.append(VendorReturnLine(
+                    product_id=ln.get("product_id"),
+                    description=str(ln.get("description", "")),
+                    qty=qty,
+                    expected_unit_credit=unit_credit,
+                    actual_unit_credit=0.0,
+                    vendor_outcome=VendorReturnLineOutcome.PENDING,
+                    notes=str(ln.get("notes", "")),
+                ))
+            vr.expected_credit = round(expected_total, 2)
+
+        if restocking_fee is not None:
+            vr.restocking_fee = round(float(restocking_fee), 2)
+
+        self.db.flush()
+        self.audit(
+            entity_type=EntityType.VENDOR_RETURN,
+            entity_id=vr_id,
+            action=AuditAction.EDITED,
+            old_value=old,
+            new_value={
+                "reason": vr.reason,
+                "notes": vr.notes,
+                "line_count": len(vr.lines),
+                "expected_credit": vr.expected_credit,
+            },
+        )
+        self.db.commit()
+        return vr
+
+    # ── Void / cancel ───────────────────────────────────────────────────────────
+
+    def void_vendor_return(self, vr_id: int, reason: str = "") -> VendorReturn:
+        """
+        Cancel a vendor return. Allowed from DRAFT (no side effects) or SHIPPED
+        (goods left the shelf but the vendor hasn't credited us yet).
+
+        A SHIPPED void makes inventory whole by reversing EXACTLY what the
+        shipment decremented — read from the ledger (the ``vendor_return_shipped``
+        transactions), so a ship that skipped the decrement restores nothing and
+        multiple lines on the same product net correctly. Terminal: a voided VR
+        cannot be reopened.
+        """
+        if self.current_user_id is not None:
+            self.assert_can(Permission.ISSUE_CREDIT_MEMO)
+
+        vr = self._get_or_404(vr_id)
+        voidable = (VendorReturnStatus.DRAFT, VendorReturnStatus.SHIPPED)
+        if vr.status not in voidable:
+            raise ValueError(
+                f"VR {vr.vr_number} is '{vr.status}'. "
+                f"Only {' or '.join(voidable)} returns can be voided."
+            )
+
+        old_status = vr.status
+        qty_restored = 0
+
+        if old_status == VendorReturnStatus.SHIPPED:
+            from app.models.inventory import InventoryTransaction
+            from app.services.inventory_service import InventoryService
+            inv_svc = InventoryService(self.db, self.current_user_id)
+
+            ship_txns = (
+                self.db.query(InventoryTransaction)
+                .filter(
+                    InventoryTransaction.reference_type == EntityType.VENDOR_RETURN,
+                    InventoryTransaction.reference_id == vr.id,
+                    InventoryTransaction.reason == "vendor_return_shipped",
+                )
+                .all()
+            )
+            # Net per product so re-shipped/adjusted lines can't double-restore.
+            by_product: dict[int, int] = {}
+            for t in ship_txns:
+                by_product[t.product_id] = by_product.get(t.product_id, 0) + t.qty_change
+            for pid, net in by_product.items():
+                if net >= 0:
+                    continue  # only reverse the shipment's net decrement
+                product = self.db.query(Product).filter(Product.id == pid).first()
+                if product is None:
+                    continue
+                inv_svc.apply_stock_delta(
+                    product,
+                    -net,
+                    InventoryTxnType.MANUAL_ADJUSTMENT,
+                    EntityType.VENDOR_RETURN,
+                    vr.id,
+                    notes=f"Void of VR {vr.vr_number} — returned to stock",
+                    reason="vendor_return_void",
+                )
+                qty_restored += -net
+
+        vr.status = VendorReturnStatus.VOIDED
+        if reason and reason.strip():
+            stamp = f"Voided: {reason.strip()}"
+            vr.notes = f"{vr.notes}\n{stamp}".strip() if vr.notes else stamp
+
+        self.db.flush()
+        self.audit(
+            entity_type=EntityType.VENDOR_RETURN,
+            entity_id=vr_id,
+            action=AuditAction.VOIDED,
+            old_value={"status": old_status},
+            new_value={"status": VendorReturnStatus.VOIDED, "qty_restored": qty_restored},
+            notes=reason or None,
         )
         self.db.commit()
         return vr

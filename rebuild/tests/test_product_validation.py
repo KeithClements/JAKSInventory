@@ -183,6 +183,70 @@ def test_update_without_cost_does_not_trip_guard():
     assert fresh.title == "Renamed widget" and fresh.cost == 100.0
 
 
+# ── update_product: SKU is editable (owner's own selling SKU) ─────────────────
+# Regression: the master `sku` was omitted from update_product's field whitelist,
+# so editing a product's SKU on the detail page silently did nothing (the page
+# still flashed "Saved." because every OTHER field saved). Owner wants to keep
+# their own selling SKU distinct from the vendor part number used for ordering.
+
+def test_update_saves_new_sku():
+    svc = _svc()
+    p = svc.create_product({
+        "sku": "OLD-SELLSKU", "title": "Rename me", "cost": 10.0,
+    })
+    _svc().update_product(p.id, {"sku": "MY-HOUSE-SKU"})
+    fresh = _appdb.SessionLocal().query(Product).filter(Product.id == p.id).first()
+    assert fresh.sku == "MY-HOUSE-SKU"
+    # sku_norm (search column) is kept in sync by the model event listener
+    # (lower-cased, separators stripped) so search finds the renamed SKU.
+    assert fresh.sku_norm == "myhousesku"
+
+
+def test_update_sku_is_uppercased():
+    svc = _svc()
+    p = svc.create_product({
+        "sku": "LOWER-1", "title": "Case test", "cost": 10.0,
+    })
+    _svc().update_product(p.id, {"sku": "renamed-lower"})
+    fresh = _appdb.SessionLocal().query(Product).filter(Product.id == p.id).first()
+    assert fresh.sku == "RENAMED-LOWER"
+
+
+def test_update_rejects_duplicate_sku():
+    svc = _svc()  # hold the session so both created products stay bound
+    svc.create_product({"sku": "TAKEN-SKU", "title": "First", "cost": 5.0})
+    other = svc.create_product({"sku": "MOVER-SKU", "title": "Second", "cost": 5.0})
+    with pytest.raises(ValueError) as exc:
+        _svc().update_product(other.id, {"sku": "TAKEN-SKU"})
+    assert "already exists" in str(exc.value).lower()
+    # The rejected rename left the SKU untouched (clean error, no partial write).
+    fresh = _appdb.SessionLocal().query(Product).filter(Product.id == other.id).first()
+    assert fresh.sku == "MOVER-SKU"
+    # And the keeper still owns the SKU exactly once.
+    assert _appdb.SessionLocal().query(Product).filter(Product.sku == "TAKEN-SKU").count() == 1
+
+
+def test_update_rejects_blank_sku():
+    """Autosave posts `sku` every debounce; an empty value must not blank it."""
+    svc = _svc()
+    p = svc.create_product({"sku": "KEEPME-SKU", "title": "No blanking", "cost": 5.0})
+    with pytest.raises(ValueError) as exc:
+        _svc().update_product(p.id, {"sku": "   "})
+    assert "required" in str(exc.value).lower()
+    fresh = _appdb.SessionLocal().query(Product).filter(Product.id == p.id).first()
+    assert fresh.sku == "KEEPME-SKU"
+
+
+def test_update_resubmit_same_sku_is_noop():
+    """Autosave re-posts the whole form (unchanged SKU) — must not error or clash
+    with itself."""
+    svc = _svc()
+    p = svc.create_product({"sku": "SELF-SKU", "title": "Autosave", "cost": 5.0})
+    _svc().update_product(p.id, {"sku": "SELF-SKU", "title": "Autosave edited"})
+    fresh = _appdb.SessionLocal().query(Product).filter(Product.id == p.id).first()
+    assert fresh.sku == "SELF-SKU" and fresh.title == "Autosave edited"
+
+
 # ── route surfaces the error (422, product not created) ───────────────────────
 # These drive the real POST /products/new (auto-SKU path) with a seeded vendor, so
 # the negative-cost guard is reached after the vendor/part# pre-checks.
@@ -217,6 +281,27 @@ def test_create_route_accepts_zero_cost(route_client, route_db):
     })
     assert resp.status_code == 303, resp.text
     assert route_db.query(Product).count() == 1
+
+
+def test_autosave_route_persists_new_sku(route_client, route_db):
+    """Reproduces the owner-reported symptom: editing the SKU on the detail page
+    flashed 'Saved.' but the SKU reverted. The Info-tab autosave POSTs the whole
+    form to /products/{id}/autosave; the new SKU must actually persist."""
+    p = ProductService(route_db, current_user_id=1).create_product({
+        "sku": "ROUTE-OLD", "title": "Autosave rename", "cost": 12.0,
+    })
+    pid = p.id
+    resp = route_client.post(f"/products/{pid}/autosave", data={
+        "sku": "ROUTE-NEW",
+        "title": "Autosave rename",
+        "cost": "12.0",
+        "reorder_point": "0",
+        "vendor_core_charge": "0", "customer_core_charge": "0",
+    })
+    assert resp.status_code == 200, resp.text
+    route_db.expire_all()
+    fresh = route_db.query(Product).filter(Product.id == pid).first()
+    assert fresh.sku == "ROUTE-NEW"
 
 
 # ── template: phantom core banner is properly guarded (LOW) ────────────────────
