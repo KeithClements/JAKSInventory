@@ -1232,10 +1232,10 @@ class ProductImportService(BaseService):
             # scheme). The raw CSV SKU + part# are parked on the vendor source
             # (vendor_sku/vendor_part_number, below) so they stay searchable. Skip
             # (don't crash) if the assembled SKU collides with an existing one.
-            # Private-label vendor → hide the vendor code, use the house prefix
-            # instead ({prefix}-{prefix}-{part#}); the product is flagged house brand.
+            # Private-label vendor → omit the vendor code segment entirely (never
+            # double the prefix) → {prefix}-{part#}; product is flagged house brand.
             row_private = private_label_by_code.get(row_code, False)
-            code_for_sku = _sku_prefix if row_private else row_code
+            code_for_sku = "" if row_private else row_code
             prod_sku = build_vendor_sku(
                 _sku_prefix, code_for_sku, _bare_part_number(p["pai_part"] or sku)
             )
