@@ -573,6 +573,40 @@ def _split_tags(tags: str) -> list[str]:
     return [t for t in parts if t]
 
 
+def _cross_reference_search_tags(p) -> list[str]:
+    """Return clean part-number tags that Shopify storefront search can index."""
+    candidates = [
+        getattr(p, "sku", ""),
+        getattr(p, "primary_pn", ""),
+        getattr(p, "secondary_pn", ""),
+        getattr(p, "oem_pn", ""),
+        getattr(p, "oem_part_number", ""),
+        getattr(p, "pai_sku", ""),
+        getattr(p, "pai_part_number", ""),
+        getattr(p, "supplier_part_number", ""),
+    ]
+    candidates.extend(getattr(p, "xrefs", []) or [])
+    candidates.extend(getattr(p, "pai_alternates", []) or [])
+    tags: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        value = str(candidate or "").strip()
+        if ":" in value:
+            value = value.split(":", 1)[1].strip()
+        value = value.replace(",", " ")
+        if not value:
+            continue
+        key = value.casefold()
+        if key not in seen:
+            seen.add(key)
+            tags.append(value)
+        compact = "".join(ch for ch in value if ch.isalnum())
+        if compact and compact.casefold() not in seen:
+            seen.add(compact.casefold())
+            tags.append(compact)
+    return tags
+
+
 def _fmt_money(value) -> str:
     try:
         return f"{float(value):.2f}"
@@ -867,6 +901,8 @@ def upload_product(product_id, p, publish, include_core, *, markup_pct: float | 
         getattr(p, "engine_model_tags", None),
         manufacturer=getattr(p, "manufacturer", None),  # Pass manufacturer for hierarchical tags
     )
+    searchable_tags = _split_tags(tags) + _cross_reference_search_tags(p)
+    tags = ",".join(dict.fromkeys(searchable_tags[:200]))
     product_payload = {
         "title": p.title,
         "body_html": p.description_jaks_html,
