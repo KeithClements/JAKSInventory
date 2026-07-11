@@ -115,6 +115,16 @@ class PAIPartResult:
     total_available: int = 0
     not_available: bool = False  # True when PAI STOCK says "Not Available" (vs warehouse out-of-stock)
 
+    # Alternate / substitute part offered by PAI in the "Alternate" panel of the
+    # detail page. PAI surfaces this when the searched part has a recommended
+    # replacement (supersession or aftermarket equivalent). Captured here as a
+    # cross-reference so the enrichment pipeline can offer it as a fallback.
+    alternate_sku: str = ""
+    alternate_description: str = ""
+    alternate_your_price: float = 0.0
+    alternate_in_stock: bool = False
+    alternate_url: str = ""
+
 
 def search_pai_portal(
     part_number: str,
@@ -1031,3 +1041,98 @@ def _parse_detail_page(page, result: PAIPartResult):
         oem = re.search(r"\bOEM\s*(?:NUMBER|#|NO\.?)?\s*:?\s*([A-Z0-9][A-Z0-9\-]{3,})", full_text, re.IGNORECASE)
         if oem and oem.group(1).strip().upper() not in _OEM_BLOCKLIST:
             result.oem_number = oem.group(1).strip()
+
+    # Alternate / substitute part from the "Alternate" panel (cross-reference).
+    _extract_alternate(soup, result, alt_section)
+
+
+def _extract_alternate(soup, result: PAIPartResult, alt_section=None) -> None:
+    """Capture the alternate/substitute part PAI offers on the detail page.
+
+    The detail page splits into a "Your Selection" panel (the searched part)
+    and an "Alternate" panel (PAI's recommended replacement). Previously the
+    alternate panel was only located so its stock badges could be EXCLUDED
+    from the main product. Here we mine that same panel for the alternate's
+    SKU, description, price, and availability and attach them to ``result`` as
+    a cross-reference.
+
+    Best-effort and defensive: any parse failure leaves the alternate fields
+    at their defaults.
+    """
+    try:
+        # Reuse the alt_section the caller already located if it has a product
+        # link; otherwise locate the panel from the "Alternate" header.
+        container = None
+        if alt_section is not None and alt_section.select_one('a[href*="/product/"]'):
+            container = alt_section
+        else:
+            for header_el in soup.find_all(string=re.compile(r"^\s*Alternate\s*$", re.IGNORECASE)):
+                node = header_el
+                for _ in range(8):
+                    node = getattr(node, "parent", None)
+                    if node is None:
+                        break
+                    if hasattr(node, "select_one") and node.select_one('a[href*="/product/"]'):
+                        container = node
+                        break
+                if container is not None:
+                    break
+
+        if container is None:
+            return
+
+        main_sku = (result.sku or "").strip().upper()
+
+        # Find the alternate product link whose SKU differs from the main part.
+        alt_href = ""
+        alt_sku = ""
+        for link in container.select('a[href*="/product/"]'):
+            href = str(link.get("href", ""))
+            m = re.search(r"/product/([A-Z0-9\-]+)", href, re.IGNORECASE)
+            if not m:
+                continue
+            candidate = m.group(1).strip()
+            if len(candidate) < 3 or candidate.upper() == main_sku:
+                continue
+            alt_sku = candidate
+            alt_href = href
+            break
+
+        if not alt_sku:
+            return
+
+        result.alternate_sku = alt_sku
+        result.alternate_url = (
+            alt_href if alt_href.startswith("http") else f"{PAI_BASE}{alt_href}"
+        )
+
+        container_text = container.get_text("\n", strip=True)
+
+        # Alternate price (logged-in customer price).
+        yp = re.search(r"YOUR\s*PRICE\s*:?\s*\$?([\d,]+\.\d{2})", container_text, re.IGNORECASE)
+        if yp:
+            try:
+                result.alternate_your_price = float(yp.group(1).replace(",", ""))
+            except Exception:
+                pass
+
+        # Alternate description.
+        desc = re.search(
+            r"DESC(?:RIPTION)?\s*:?\s*(?:English:?\s*)?([^\n]+)", container_text, re.IGNORECASE
+        )
+        if desc:
+            result.alternate_description = re.sub(
+                r"\s*Spanish:.*$", "", desc.group(1).strip(), flags=re.IGNORECASE
+            ).strip()
+
+        # Alternate availability: any "XXX - N In Stock" quantity, or a success badge.
+        if re.search(r"\b[A-Z]{3}\s*[-–]\s*[1-9]\d*\s*In\s*Stock\b", container_text, re.IGNORECASE):
+            result.alternate_in_stock = True
+        else:
+            for badge in container.find_all(class_=re.compile(r"badge", re.IGNORECASE)):
+                classes = " ".join(badge.get("class", []))
+                if "badge-success" in classes or "success" in classes:
+                    result.alternate_in_stock = True
+                    break
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.debug("[PAI Scraper] Alternate extraction failed: %s", exc)
